@@ -36,8 +36,8 @@
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    BasicBlock, BasicBlockLabel, BlockTerminationState, Brand, Dyn, FunctionValue, InstructionView,
-    ModuleBrand, ReturnMarker, Value,
+    BasicBlock, BasicBlockLabel, BlockId, BlockTerminationState, Brand, Dyn, FunctionValue,
+    InstructionView, ModuleBrand, ReturnMarker, Value,
 };
 
 use super::file_loc::{FileLoc, FileLocRange};
@@ -199,23 +199,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
             .and_then(|v| FunctionValue::try_from(v).ok())
     }
 
-    /// Block label containing `loc`. Mirrors `getBlockAtLocation(const FileLoc &)`.
-    /// The reverse lookup returns a copyable [`BasicBlockLabel`] instead of a
+    /// Block containing `loc`. Mirrors `getBlockAtLocation(const FileLoc &)`.
+    /// The reverse lookup returns the storable [`BlockId`] instead of a
     /// fresh insertion-capability handle; callers that need source locations for
     /// a held block should use [`AsmParserContext::block_location`].
     #[inline]
-    pub fn block_at(&self, loc: FileLoc) -> Option<BasicBlockLabel<'ctx, Dyn, B>> {
+    pub fn block_at(&self, loc: FileLoc) -> Option<BlockId<Dyn, B>> {
         self.blocks
             .handle_at(loc)
             .and_then(|v| BasicBlockLabel::try_from(v).ok())
+            .map(|label| label.id())
     }
 
-    /// Block label whose recorded range matches `query`.
+    /// Block whose recorded range matches `query`.
     #[inline]
-    pub fn block_at_range(&self, query: FileLocRange) -> Option<BasicBlockLabel<'ctx, Dyn, B>> {
+    pub fn block_at_range(&self, query: FileLocRange) -> Option<BlockId<Dyn, B>> {
         self.blocks
             .handle_at_range(query)
             .and_then(|v| BasicBlockLabel::try_from(v).ok())
+            .map(|label| label.id())
     }
 
     /// Instruction (erased identity) containing `loc`. Mirrors
@@ -287,10 +289,10 @@ mod tests {
 
             let mut map: LocMap<'_> = LocMap::default();
             let r = FileLocRange::new(FileLoc::new(2, 0), FileLoc::new(4, 0));
-            map.add(g.into_erased(), r).unwrap();
-            assert_eq!(map.location_of(g.into_erased()), Some(r));
+            map.add(m.view(g).into_erased(), r).unwrap();
+            assert_eq!(map.location_of(m.view(g).into_erased()), Some(r));
             assert_eq!(
-                map.add(g.into_erased(), r),
+                map.add(m.view(g).into_erased(), r),
                 Err(LocationError::DuplicateHandle)
             );
         });
@@ -309,10 +311,16 @@ mod tests {
 
             let mut map: LocMap<'_> = LocMap::default();
             let r = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(1, 5));
-            map.add(g.into_erased(), r).unwrap();
+            map.add(m.view(g).into_erased(), r).unwrap();
 
-            assert_eq!(map.handle_at(FileLoc::new(1, 0)), Some(g.into_erased()));
-            assert_eq!(map.handle_at(FileLoc::new(1, 4)), Some(g.into_erased()));
+            assert_eq!(
+                map.handle_at(FileLoc::new(1, 0)),
+                Some(m.view(g).into_erased())
+            );
+            assert_eq!(
+                map.handle_at(FileLoc::new(1, 4)),
+                Some(m.view(g).into_erased())
+            );
             assert_eq!(map.handle_at(FileLoc::new(1, 5)), None);
             assert_eq!(map.handle_at(FileLoc::new(0, 0)), None);
         });
@@ -335,11 +343,14 @@ mod tests {
             let mut map: LocMap<'_> = LocMap::default();
             let inner = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(2, 0));
             let far = FileLocRange::new(FileLoc::new(5, 0), FileLoc::new(6, 0));
-            map.add(g_inner.into_erased(), inner).unwrap();
-            map.add(g_far.into_erased(), far).unwrap();
+            map.add(m.view(g_inner).into_erased(), inner).unwrap();
+            map.add(m.view(g_far).into_erased(), far).unwrap();
 
             let outer = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(3, 0));
-            assert_eq!(map.handle_at_range(outer), Some(g_inner.into_erased()));
+            assert_eq!(
+                map.handle_at_range(outer),
+                Some(m.view(g_inner).into_erased())
+            );
 
             // Mismatched start — no hit.
             let shifted = FileLocRange::new(FileLoc::new(1, 1), FileLoc::new(3, 0));

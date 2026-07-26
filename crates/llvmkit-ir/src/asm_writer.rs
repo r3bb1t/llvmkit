@@ -78,19 +78,19 @@ impl SlotTracker {
 
         for arg in f.params() {
             if arg.name().is_none() {
-                local.insert(arg.id(), next);
+                local.insert(IsValue::slot(arg), next);
                 next += 1;
             }
         }
 
         for bb in f.basic_blocks() {
             if bb.name().is_none() {
-                blocks.insert(bb.id(), next);
+                blocks.insert(bb.slot(), next);
                 next += 1;
             }
             for inst in bb.instructions() {
                 if produces_named_result(&inst) && inst.name().is_none() {
-                    local.insert(inst.id(), next);
+                    local.insert(inst.slot(), next);
                     next += 1;
                 }
             }
@@ -769,7 +769,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     let mut next = 0_u32;
     for global in module.iter_globals::<crate::module::Brand<'_>>() {
         if global.into_erased().name().is_none() {
-            if global.id() == id {
+            if global.slot() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -777,7 +777,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     }
     for alias in module.iter_aliases::<crate::module::Brand<'_>>() {
         if alias.into_erased().name().is_none() {
-            if alias.id() == id {
+            if alias.slot() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -785,7 +785,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     }
     for ifunc in module.iter_ifuncs::<crate::module::Brand<'_>>() {
         if ifunc.into_erased().name().is_none() {
-            if ifunc.id() == id {
+            if ifunc.slot() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -793,7 +793,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     }
     for function in module.iter_functions::<crate::module::Brand<'_>>() {
         if function.into_erased().name().is_none() {
-            if function.id() == id {
+            if function.slot() == id {
                 return Some(next);
             }
             next = next.saturating_add(1);
@@ -937,7 +937,7 @@ pub(super) fn fmt_instruction(
                 fmt_llvm_name(f, "%", &n)?;
                 f.write_str(" = ")?;
             }
-            None => match slots.local(inst.id()) {
+            None => match slots.local(inst.slot()) {
                 Some(slot) => write!(f, "%{slot} = ")?,
                 None => f.write_str("%<unnumbered> = ")?,
             },
@@ -2449,7 +2449,7 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
     if let Some(name) = bb.name() {
         fmt_llvm_name_without_prefix(f, &name)?;
         f.write_str(":")?;
-    } else if let Some(slot) = slots.block(bb.id()) {
+    } else if let Some(slot) = slots.block(bb.slot()) {
         write!(f, "{slot}:")?;
     } else {
         f.write_str("<unnamed>:")?;
@@ -2531,7 +2531,7 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         f.write_str(" ")?;
         match arg.name() {
             Some(n) => fmt_llvm_name(f, "%", &n)?,
-            None => match slots.local(arg.id()) {
+            None => match slots.local(IsValue::slot(arg)) {
                 Some(slot) => write!(f, "%{slot}")?,
                 None => f.write_str("%<unnumbered>")?,
             },

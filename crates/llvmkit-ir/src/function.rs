@@ -65,7 +65,7 @@ use super::unnamed_addr::UnnamedAddr;
 use super::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot, sealed,
 };
-use super::value_id::FunctionId;
+use super::value_id::{FunctionId, TypedFunctionId};
 use super::value_symbol_table::ValueSymbolTable;
 
 // --------------------------------------------------------------------------
@@ -240,7 +240,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// return-shape marker `R`; the signature is recovered from the arena on
     /// view.
     #[inline]
-    pub fn to_id(self) -> FunctionId<R, B> {
+    pub fn id(self) -> FunctionId<R, B> {
         FunctionId::from_raw(self.module.id(), self.id)
     }
 
@@ -317,26 +317,27 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self.signature().return_type()
     }
 
-    /// Wrap this function with a typed parameter tuple schema.
+    /// Wrap this function with a typed parameter tuple schema, returning the
+    /// storable [`TypedFunctionId`]. Resolve it back into the borrowing
+    /// [`TypedFunctionValue`] facade with [`Module::view`](crate::Module::view).
     #[inline]
-    pub fn with_typed_params<Params>(self) -> IrResult<TypedFunctionValue<'ctx, R, Params, B>>
+    pub fn with_typed_params<Params>(self) -> IrResult<TypedFunctionId<R, Params, B>>
     where
         R: FunctionReturn<Marker = R>,
         Params: FunctionParamList,
     {
-        TypedFunctionValue::<R, Params, B>::try_from_function(self)
+        TypedFunctionValue::<R, Params, B>::try_from_function(self).map(|f| f.id())
     }
 
-    /// Wrap this function with a Rust function-pointer signature schema.
+    /// Wrap this function with a Rust function-pointer signature schema,
+    /// returning the storable [`TypedFunctionId`].
     #[inline]
-    pub fn with_typed_signature<Sig>(
-        self,
-    ) -> IrResult<TypedFunctionValue<'ctx, Sig::Ret, Sig::Params, B>>
+    pub fn with_typed_signature<Sig>(self) -> IrResult<TypedFunctionId<Sig::Ret, Sig::Params, B>>
     where
         Sig: FunctionSignature,
         Sig::Ret: FunctionReturn<Marker = R>,
     {
-        TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(self)
+        TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(self).map(|f| f.id())
     }
 
     /// Linkage of this function.
@@ -559,7 +560,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         C: IsConstant<'ctx, B>,
     {
         let constant = data.as_constant();
-        Ok(constant.id())
+        Ok(constant.slot())
     }
 
     pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
@@ -833,7 +834,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             });
         }
         let mut blocks = self.data().basic_blocks.borrow_mut();
-        let Some(pos) = blocks.iter().position(|id| *id == block.id()) else {
+        let Some(pos) = blocks.iter().position(|id| *id == block.slot()) else {
             return Err(IrError::InvalidOperation {
                 message: "block does not belong to function",
             });
@@ -1096,6 +1097,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Function
         FunctionValue::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(FunctionValue[R: ReturnMarker]);
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
@@ -1150,6 +1152,56 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FunctionValue<'ctx
                 got: v.category().into(),
             }),
         }
+    }
+}
+
+mod into_callee_sealed {
+    pub trait Sealed {}
+}
+
+/// Values accepted where a builder names a **direct** function callee — the
+/// `@name` operand of `call` / `invoke` / `callbr`, as opposed to the
+/// function-*pointer* operand of the indirect forms (which take
+/// [`IntoPointerValue`](crate::IntoPointerValue)).
+///
+/// The storable currency at these positions is [`FunctionId`] — that is what
+/// [`Module::add_function_dyn`](crate::Module::add_function_dyn) and the
+/// [`FunctionBuilder`] hand back and what a struct stores. This trait is the
+/// *accepting* bound: it also takes the borrowing [`FunctionValue`] directly,
+/// so an in-scope handle can be called without a round trip through the
+/// module. Resolution is module-checked and fallible, exactly like
+/// [`IntoErasedValue`](crate::IntoErasedValue) at operand positions: a
+/// [`FunctionId`] minted in another module yields
+/// [`IrError::ForeignValueId`] instead of silently naming a same-numbered slot
+/// here.
+///
+/// The return marker `R` rides through unchanged, so the callee still pins the
+/// call's result shape.
+pub trait IntoCallee<'ctx, R: ReturnMarker, B: ModuleBrand>: into_callee_sealed::Sealed {
+    #[doc(hidden)]
+    fn into_callee(self, module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>>;
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> into_callee_sealed::Sealed
+    for FunctionValue<'ctx, R, B>
+{
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B>
+    for FunctionValue<'ctx, R, B>
+{
+    #[inline]
+    fn into_callee(self, _module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>> {
+        Ok(self)
+    }
+}
+
+impl<R: ReturnMarker, B: ModuleBrand> into_callee_sealed::Sealed for FunctionId<R, B> {}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B> for FunctionId<R, B> {
+    #[inline]
+    fn into_callee(self, module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>> {
+        crate::value_id::ViewIn::resolve_in(self, module).ok_or(IrError::ForeignValueId)
     }
 }
 
@@ -1376,11 +1428,17 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         self
     }
 
-    /// Materialize the function. Mirrors `Function::Create`.
+    /// Materialize the function, returning its storable [`FunctionId`].
+    /// Mirrors `Function::Create`. Resolve the id back into a borrowing
+    /// [`FunctionValue`] with [`Module::view`](crate::Module::view).
+    ///
+    /// The chain up to here stays handle-free: every setter takes and returns
+    /// the builder itself, and the borrowing handle exists only inside this
+    /// method, where the collected settings are applied.
     ///
     /// Returns [`IrError::ReturnTypeMismatch`] if the signature's
     /// return type does not match the chosen [`ReturnMarker`].
-    pub fn build(self) -> IrResult<FunctionValue<'ctx, R, B>> {
+    pub fn build(self) -> IrResult<FunctionId<R, B>> {
         let f = self.module.module().add_function_checked::<B, R, _>(
             &self.name,
             self.signature,
@@ -1403,13 +1461,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
             *f.data().gc.borrow_mut() = Some(gc);
         }
         if let Some(prefix_data) = self.prefix_data {
-            f.data().prefix_data.set(Some(prefix_data.id()));
+            f.data().prefix_data.set(Some(prefix_data.slot()));
         }
         if let Some(prologue_data) = self.prologue_data {
-            f.data().prologue_data.set(Some(prologue_data.id()));
+            f.data().prologue_data.set(Some(prologue_data.slot()));
         }
         if let Some(personality_fn) = self.personality_fn {
-            f.data().personality_fn.set(Some(personality_fn.id()));
+            f.data().personality_fn.set(Some(personality_fn.slot()));
         }
         if let Some(comdat) = self.comdat {
             *f.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
@@ -1424,9 +1482,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         // Apply parameter names.
         for (slot, name) in self.param_names {
             let arg = f.param(slot)?;
-            f.set_local_value_name(arg.id(), Some(&name));
+            f.set_local_value_name(IsValue::slot(arg), Some(&name));
         }
-        Ok(f)
+        Ok(f.id())
     }
 }
 

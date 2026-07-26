@@ -18,7 +18,7 @@ fn main() {
             .add_typed_function::<(), (), _>("f", Linkage::External)
             .unwrap()
             .as_function();
-        let mut b = llvmkit_ir::SsaBuilder::for_function(&m, f).unwrap();
+        let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f)).unwrap();
         let entry = b.create_block("entry");
         let second = b.create_block("second");
 

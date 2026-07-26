@@ -17,13 +17,15 @@ fn main() {
         let i32_ty = left.i32_type();
         let left_value = i32_ty.const_int(1_i32);
         Module::with_new::<_, _, _>("right", |right| {
-            let callee = right
-                .add_typed_function::<i32, (i32,), _>("callee", Linkage::External)
-                .unwrap();
+            let callee = right.view(
+                right
+                    .add_typed_function::<i32, (i32,), _>("callee", Linkage::External)
+                    .unwrap(),
+            );
             let caller = right
                 .add_typed_function::<i32, (), _>("caller", Linkage::External)
                 .unwrap();
-            let entry = caller.append_basic_block(&right, "entry");
+            let entry = right.view(caller).append_basic_block(&right, "entry");
             let builder = IRBuilder::new_for::<i32>(&right).position_at_end(entry);
             // `left_value` carries module `left`'s brand; `builder` is
             // positioned in module `right`. Filling `callee`'s call-argument

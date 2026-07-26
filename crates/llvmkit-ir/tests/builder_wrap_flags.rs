@@ -24,12 +24,12 @@ fn add_nuw_nsw_flags_round_trip() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("addf", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i32> = f.param(0)?.try_into()?;
-        let rhs: IntValue<i32> = f.param(1)?.try_into()?;
+        let lhs: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let rhs: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let r = b.build_int_add_with_flags(lhs, rhs, AddFlags::new().nuw().nsw(), "r")?;
-        let inst = InstructionView::try_from(r.into_erased())?;
+        let inst = InstructionView::try_from(b.view(r).into_erased())?;
         let add = match inst.kind() {
             Some(InstructionKind::Add(a)) => a,
             _ => panic!("expected Add"),
@@ -54,12 +54,12 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
 
         let sub_fn = m.add_function_dyn("sub_f", fn_ty, Linkage::External)?;
-        let entry = sub_fn.append_basic_block(&m, "entry");
+        let entry = m.view(sub_fn).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i32> = sub_fn.param(0)?.try_into()?;
-        let rhs: IntValue<i32> = sub_fn.param(1)?.try_into()?;
+        let lhs: IntValue<i32> = m.view(sub_fn).param(0)?.try_into()?;
+        let rhs: IntValue<i32> = m.view(sub_fn).param(1)?.try_into()?;
         let r = b.build_int_sub_with_flags(lhs, rhs, SubFlags::new().nuw(), "r")?;
-        let inst = InstructionView::try_from(r.into_erased())?;
+        let inst = InstructionView::try_from(b.view(r).into_erased())?;
         if let Some(InstructionKind::Sub(s)) = inst.kind() {
             assert!(s.has_no_unsigned_wrap());
         } else {
@@ -68,12 +68,12 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
         b.build_ret(r)?;
 
         let mul_fn = m.add_function_dyn("mul_f", fn_ty, Linkage::External)?;
-        let entry = mul_fn.append_basic_block(&m, "entry");
+        let entry = m.view(mul_fn).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i32> = mul_fn.param(0)?.try_into()?;
-        let rhs: IntValue<i32> = mul_fn.param(1)?.try_into()?;
+        let lhs: IntValue<i32> = m.view(mul_fn).param(0)?.try_into()?;
+        let rhs: IntValue<i32> = m.view(mul_fn).param(1)?.try_into()?;
         let r = b.build_int_mul_with_flags(lhs, rhs, MulFlags::new().nuw(), "r")?;
-        let inst = InstructionView::try_from(r.into_erased())?;
+        let inst = InstructionView::try_from(b.view(r).into_erased())?;
         if let Some(InstructionKind::Mul(s)) = inst.kind() {
             assert!(s.has_no_unsigned_wrap());
         } else {
@@ -82,12 +82,12 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
         b.build_ret(r)?;
 
         let shl_fn = m.add_function_dyn("shl_f", fn_ty, Linkage::External)?;
-        let entry = shl_fn.append_basic_block(&m, "entry");
+        let entry = m.view(shl_fn).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i32> = shl_fn.param(0)?.try_into()?;
-        let rhs: IntValue<i32> = shl_fn.param(1)?.try_into()?;
+        let lhs: IntValue<i32> = m.view(shl_fn).param(0)?.try_into()?;
+        let rhs: IntValue<i32> = m.view(shl_fn).param(1)?.try_into()?;
         let r = b.build_int_shl_with_flags(lhs, rhs, ShlFlags::new().nuw(), "r")?;
-        let inst = InstructionView::try_from(r.into_erased())?;
+        let inst = InstructionView::try_from(b.view(r).into_erased())?;
         if let Some(InstructionKind::Shl(s)) = inst.kind() {
             assert!(s.has_no_unsigned_wrap());
         } else {
@@ -111,12 +111,12 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
 
         let udiv_fn = m.add_function_dyn("udiv_f", fn_ty, Linkage::External)?;
-        let entry = udiv_fn.append_basic_block(&m, "entry");
+        let entry = m.view(udiv_fn).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i32> = udiv_fn.param(0)?.try_into()?;
-        let rhs: IntValue<i32> = udiv_fn.param(1)?.try_into()?;
+        let lhs: IntValue<i32> = m.view(udiv_fn).param(0)?.try_into()?;
+        let rhs: IntValue<i32> = m.view(udiv_fn).param(1)?.try_into()?;
         let r = b.build_int_udiv_with_flags(lhs, rhs, UDivFlags::new().exact(), "r")?;
-        let inst = InstructionView::try_from(r.into_erased())?;
+        let inst = InstructionView::try_from(b.view(r).into_erased())?;
         if let Some(InstructionKind::UDiv(s)) = inst.kind() {
             assert!(s.is_exact());
         } else {
@@ -125,12 +125,12 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
         b.build_ret(r)?;
 
         let sdiv_fn = m.add_function_dyn("sdiv_f", fn_ty, Linkage::External)?;
-        let entry = sdiv_fn.append_basic_block(&m, "entry");
+        let entry = m.view(sdiv_fn).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i32> = sdiv_fn.param(0)?.try_into()?;
-        let rhs: IntValue<i32> = sdiv_fn.param(1)?.try_into()?;
+        let lhs: IntValue<i32> = m.view(sdiv_fn).param(0)?.try_into()?;
+        let rhs: IntValue<i32> = m.view(sdiv_fn).param(1)?.try_into()?;
         let r = b.build_int_sdiv_with_flags(lhs, rhs, SDivFlags::new().exact(), "r")?;
-        let inst = InstructionView::try_from(r.into_erased())?;
+        let inst = InstructionView::try_from(b.view(r).into_erased())?;
         if let Some(InstructionKind::SDiv(s)) = inst.kind() {
             assert!(s.is_exact());
         } else {
@@ -139,12 +139,12 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
         b.build_ret(r)?;
 
         let lshr_fn = m.add_function_dyn("lshr_f", fn_ty, Linkage::External)?;
-        let entry = lshr_fn.append_basic_block(&m, "entry");
+        let entry = m.view(lshr_fn).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i32> = lshr_fn.param(0)?.try_into()?;
-        let rhs: IntValue<i32> = lshr_fn.param(1)?.try_into()?;
+        let lhs: IntValue<i32> = m.view(lshr_fn).param(0)?.try_into()?;
+        let rhs: IntValue<i32> = m.view(lshr_fn).param(1)?.try_into()?;
         let r = b.build_int_lshr_with_flags(lhs, rhs, LShrFlags::new().exact(), "r")?;
-        let inst = InstructionView::try_from(r.into_erased())?;
+        let inst = InstructionView::try_from(b.view(r).into_erased())?;
         if let Some(InstructionKind::LShr(s)) = inst.kind() {
             assert!(s.is_exact());
         } else {
@@ -153,12 +153,12 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
         b.build_ret(r)?;
 
         let ashr_fn = m.add_function_dyn("ashr_f", fn_ty, Linkage::External)?;
-        let entry = ashr_fn.append_basic_block(&m, "entry");
+        let entry = m.view(ashr_fn).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i32> = ashr_fn.param(0)?.try_into()?;
-        let rhs: IntValue<i32> = ashr_fn.param(1)?.try_into()?;
+        let lhs: IntValue<i32> = m.view(ashr_fn).param(0)?.try_into()?;
+        let rhs: IntValue<i32> = m.view(ashr_fn).param(1)?.try_into()?;
         let r = b.build_int_ashr_with_flags(lhs, rhs, AShrFlags::new().exact(), "r")?;
-        let inst = InstructionView::try_from(r.into_erased())?;
+        let inst = InstructionView::try_from(b.view(r).into_erased())?;
         if let Some(InstructionKind::AShr(s)) = inst.kind() {
             assert!(s.is_exact());
         } else {

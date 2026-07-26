@@ -37,7 +37,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdge {
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.edit_cond_br(&from)?.remove_then()?;
+        reshape.edit_cond_br(from.id())?.remove_then()?;
         Ok(reshape.done())
     }
 }
@@ -57,17 +57,20 @@ fn build_and_empty_phi() -> IrResult<String> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
         // to(%p: i32): reached ONLY from entry.
-        let (to_bb, to_params) =
-            IRBuilder::new_for::<Dyn>(&m).append_block_with_params(f, &[i32_ty.as_type()], "to")?;
-        let to_lbl = to_bb.label();
-        let other_lbl = other.label();
+        let (to_bb, to_params) = IRBuilder::new_for::<Dyn>(&m).append_block_with_params(
+            m.view(f),
+            &[i32_ty.as_type()],
+            "to",
+        )?;
+        let to_lbl = to_bb.id();
+        let other_lbl = other.id();
 
         // entry: %c = icmp eq %a, 0 ; br %c ? to(%a) : other()
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
+        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let c = b.build_icmp_eq(a, 0_i32, "c")?;
         b.build_cond_br_with_args(c, to_lbl, &[a.into_erased()], other_lbl, &[])?;
 
@@ -83,7 +86,8 @@ fn build_and_empty_phi() -> IrResult<String> {
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         let pass = RemoveEdge { from_name: "entry" };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
+        let f_view = verified.view(f);
+        let out = run_function_pass(pass, verified, f_view, &mut analyses)?;
         let reverified = out.verify().expect("remove_then output must re-verify");
         Ok(format!("{reverified}"))
     })

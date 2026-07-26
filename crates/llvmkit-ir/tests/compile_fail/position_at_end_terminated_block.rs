@@ -16,7 +16,7 @@ fn main() {
             .add_typed_function::<(), (), _>("f", Linkage::External)
             .unwrap()
             .as_function();
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let (terminated_bb, _term) = b.build_ret_void();
         // `terminated_bb` carries `Terminated`, which `position_at_end` does not accept.

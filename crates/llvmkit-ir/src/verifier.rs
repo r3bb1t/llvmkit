@@ -136,7 +136,7 @@ impl<'ctx> Verifier<'ctx> {
                 ));
             }
             if g.linkage() == crate::global_value::Linkage::Common {
-                let init_data = self.module.context().value_data(init.id());
+                let init_data = self.module.context().value_data(init.slot());
                 let zero = matches!(
                     &init_data.kind,
                     ValueKindData::Constant(crate::constant::ConstantData::Int(words))
@@ -179,7 +179,7 @@ impl<'ctx> Verifier<'ctx> {
     }
 
     fn verify_constant_tree(&self, constant: crate::constant::Constant<'ctx>) -> IrResult<()> {
-        let value_data = self.module.context().value_data(constant.id());
+        let value_data = self.module.context().value_data(constant.slot());
         let ValueKindData::Constant(data) = &value_data.kind else {
             return Ok(());
         };
@@ -201,7 +201,7 @@ impl<'ctx> Verifier<'ctx> {
                     self.module,
                     self.module.label_type().as_type().id(),
                 );
-                if block.parent_function().map(|f| f.id()) != Some(*function) {
+                if block.parent_function().map(|f| f.slot()) != Some(*function) {
                     return Err(IrError::InvalidOperation {
                         message: "blockaddress block must belong to referenced function",
                     });
@@ -381,7 +381,7 @@ impl<'ctx> Verifier<'ctx> {
         // Collect block ids in declaration order so use-before-def
         // can check forward references between blocks (cross-block
         // checks are conservative -- see deferred-coverage note).
-        let block_ids: Vec<ValueSlot> = f.basic_blocks().map(|bb| bb.id()).collect();
+        let block_ids: Vec<ValueSlot> = f.basic_blocks().map(|bb| bb.slot()).collect();
         let block_index: HashMap<ValueSlot, usize> = block_ids
             .iter()
             .copied()
@@ -458,14 +458,14 @@ impl<'ctx> Verifier<'ctx> {
         for user in intrinsic_value.users() {
             let used_as_callee = match user.kind() {
                 Some(crate::instruction::InstructionKind::Call(call)) => {
-                    call.callee().id() == intrinsic_value.id()
+                    call.callee().slot() == intrinsic_value.slot()
                 }
                 _ => match user.terminator_kind() {
                     Some(crate::instruction::TerminatorKind::Invoke(invoke)) => {
-                        invoke.callee().id() == intrinsic_value.id()
+                        invoke.callee().slot() == intrinsic_value.slot()
                     }
                     Some(crate::instruction::TerminatorKind::CallBr(callbr)) => {
-                        callbr.callee().id() == intrinsic_value.id()
+                        callbr.callee().slot() == intrinsic_value.slot()
                     }
                     _ => false,
                 },
@@ -2435,7 +2435,7 @@ impl<'ctx> Verifier<'ctx> {
         }
 
         let preds = predecessors
-            .get(&bb.id())
+            .get(&bb.slot())
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
 
@@ -2795,7 +2795,7 @@ impl<'ctx> Verifier<'ctx> {
                     format!(
                         "operand %{} does not dominate its use in block %{}",
                         slot_label(self.module, op_id),
-                        slot_label(self.module, bb.id())
+                        slot_label(self.module, bb.slot())
                     ),
                 ));
             }
@@ -2828,7 +2828,7 @@ impl<'ctx> Verifier<'ctx> {
         };
         for op_id in kind.operand_ids() {
             // Self-reference (`Verifier/SelfReferential.ll`).
-            if op_id == inst.id() {
+            if op_id == inst.slot() {
                 return Err(self.fail(
                     f,
                     bb,
@@ -2841,10 +2841,10 @@ impl<'ctx> Verifier<'ctx> {
             // must be strictly less than `index_in_block`.
             if let ValueKindData::Instruction(op_inst) =
                 &self.module.context().value_data(op_id).kind
-                && op_inst.parent.get() == bb.id()
+                && op_inst.parent.get() == bb.slot()
             {
                 // Find op_id's index in block.
-                if let Some(op_idx) = block_instructions.iter().position(|i| i.id() == op_id)
+                if let Some(op_idx) = block_instructions.iter().position(|i| i.slot() == op_id)
                     && op_idx >= index_in_block
                 {
                     return Err(self.fail(
@@ -2919,9 +2919,9 @@ fn build_predecessors(f: FunctionValue<'_, Dyn>) -> HashMap<ValueSlot, Vec<Value
     let mut preds: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
     for edge in cfg.edges() {
         preds
-            .entry(edge.end().id())
+            .entry(edge.end().slot())
             .or_default()
-            .push(edge.start().id());
+            .push(edge.start().slot());
     }
     preds
 }
@@ -3245,13 +3245,13 @@ mod tests {
     ) -> (ValueSlot, ValueSlot) {
         let fn_ty = m.fn_type(ret_ty, params.iter().copied(), false);
         let f = m.add_function_dyn(name, fn_ty, Linkage::External).unwrap();
-        let bb = f.append_basic_block(m, "entry");
+        let bb = m.view(f).append_basic_block(m, "entry");
         // Reach the value-id pair without leaking the return marker.
         let f_id = {
             // FunctionValue<Dyn> has a private id field; widen via as_dyn.
-            f.as_dyn().id()
+            m.view(f).as_dyn().slot()
         };
-        let bb_id = bb.as_dyn().id();
+        let bb_id = bb.as_dyn().slot();
         (f_id, bb_id)
     }
 
@@ -3281,7 +3281,7 @@ mod tests {
             let f = m
                 .get_or_insert_intrinsic_declaration_by_name("llvm.abs.i32")
                 .expect("intrinsic declaration");
-            *f.data().attributes.borrow_mut() = crate::attributes::AttributeStorage::new();
+            *m.view(f).data().attributes.borrow_mut() = crate::attributes::AttributeStorage::new();
             m.verify_borrowed()
                 .expect_err("missing generated attrs rejected")
         });
@@ -3302,7 +3302,7 @@ mod tests {
             let f = m
                 .get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i32")
                 .expect("intrinsic declaration");
-            f.data().function_attr_groups.borrow_mut().push(0);
+            m.view(f).data().function_attr_groups.borrow_mut().push(0);
             m.verify_borrowed().expect_err("extra attr group rejected")
         });
 
@@ -3370,7 +3370,7 @@ mod tests {
                 &m,
                 bb_id,
                 i32_ty.id(),
-                InstructionKindData::Add(BinaryOpData::new(p0.id(), p1.id())),
+                InstructionKindData::Add(BinaryOpData::new(IsValue::slot(p0), IsValue::slot(p1))),
             );
             append_ret_void(&m, bb_id);
             let err = m.verify_borrowed().unwrap_err();
@@ -3389,8 +3389,8 @@ mod tests {
             let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
             let then_bb = f.append_basic_block(&m, "then");
             let else_bb = f.append_basic_block(&m, "else");
-            append_ret_void(&m, then_bb.id());
-            append_ret_void(&m, else_bb.id());
+            append_ret_void(&m, then_bb.slot());
+            append_ret_void(&m, else_bb.slot());
             let p0 = f.param(0).unwrap();
             fabricate_instruction(
                 &m,
@@ -3398,9 +3398,9 @@ mod tests {
                 void_ty.id(),
                 InstructionKindData::Br(BranchInstData {
                     kind: core::cell::RefCell::new(BranchKind::Conditional {
-                        cond: core::cell::Cell::new(p0.id()),
-                        then_bb: then_bb.id(),
-                        else_bb: else_bb.id(),
+                        cond: core::cell::Cell::new(IsValue::slot(p0)),
+                        then_bb: then_bb.slot(),
+                        else_bb: else_bb.slot(),
                     }),
                 }),
             );
@@ -3438,7 +3438,7 @@ mod tests {
                 &m,
                 entry_id,
                 i32_ty.id(),
-                InstructionKindData::Add(BinaryOpData::new(p0.id(), p1.id())),
+                InstructionKindData::Add(BinaryOpData::new(IsValue::slot(p0), IsValue::slot(p1))),
             );
             fabricate_instruction(
                 &m,
@@ -3539,7 +3539,7 @@ mod tests {
             let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
             let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
             let dead = f.append_basic_block(&m, "dead");
-            let dead_id = dead.id();
+            let dead_id = dead.slot();
             fabricate_instruction(
                 &m,
                 dead_id,
@@ -3564,7 +3564,7 @@ mod tests {
             let (f_id, entry_id) = skeleton(&m, void_ty, &[i1_ty], "f");
             let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
             let target = f.append_basic_block(&m, "target");
-            let cond_id = f.param(0).unwrap().id();
+            let cond_id = IsValue::slot(f.param(0).unwrap());
             fabricate_instruction(
                 &m,
                 entry_id,
@@ -3572,8 +3572,8 @@ mod tests {
                 InstructionKindData::Br(BranchInstData {
                     kind: core::cell::RefCell::new(BranchKind::Conditional {
                         cond: core::cell::Cell::new(cond_id),
-                        then_bb: target.id(),
-                        else_bb: target.id(),
+                        then_bb: target.slot(),
+                        else_bb: target.slot(),
                     }),
                 }),
             );
@@ -3586,8 +3586,13 @@ mod tests {
             phi.incoming
                 .borrow_mut()
                 .push((core::cell::Cell::new(two), entry_id));
-            fabricate_instruction(&m, target.id(), i32_ty.id(), InstructionKindData::Phi(phi));
-            append_ret_void(&m, target.id());
+            fabricate_instruction(
+                &m,
+                target.slot(),
+                i32_ty.id(),
+                InstructionKindData::Phi(phi),
+            );
+            append_ret_void(&m, target.slot());
             let err = m.verify_borrowed().unwrap_err();
             assert_rule(&err, VerifierRule::AmbiguousPhi);
         });
@@ -3608,17 +3613,22 @@ mod tests {
                 entry_id,
                 void_ty.id(),
                 InstructionKindData::Br(BranchInstData {
-                    kind: core::cell::RefCell::new(BranchKind::Unconditional(target.id())),
+                    kind: core::cell::RefCell::new(BranchKind::Unconditional(target.slot())),
                 }),
             );
-            append_ret_void(&m, unrelated.id());
+            append_ret_void(&m, unrelated.slot());
             let bogus = fab_const_int_id(&m, i32_ty.id(), 7);
             let phi = PhiData::new();
             phi.incoming
                 .borrow_mut()
-                .push((core::cell::Cell::new(bogus), unrelated.id()));
-            fabricate_instruction(&m, target.id(), i32_ty.id(), InstructionKindData::Phi(phi));
-            append_ret_void(&m, target.id());
+                .push((core::cell::Cell::new(bogus), unrelated.slot()));
+            fabricate_instruction(
+                &m,
+                target.slot(),
+                i32_ty.id(),
+                InstructionKindData::Phi(phi),
+            );
+            append_ret_void(&m, target.slot());
             let err = m.verify_borrowed().unwrap_err();
             assert_rule(&err, VerifierRule::PhiPredecessorMismatch);
         });
@@ -3637,11 +3647,11 @@ mod tests {
             let callee = m
                 .add_function_dyn("callee", callee_fn_ty, Linkage::External)
                 .unwrap();
-            let cb = callee.append_basic_block(&m, "entry");
+            let cb = m.view(callee).append_basic_block(&m, "entry");
             let zero = fab_const_int_id(&m, i32_ty.id(), 0);
             fabricate_instruction(
                 &m,
-                cb.id(),
+                cb.slot(),
                 void_ty.id(),
                 InstructionKindData::Ret(ReturnOpData::new(Some(zero))),
             );
@@ -3650,21 +3660,21 @@ mod tests {
             let caller = m
                 .add_function_dyn("caller", caller_fn_ty, Linkage::External)
                 .unwrap();
-            let entry = caller.append_basic_block(&m, "entry");
-            let arg_id = caller.param(0).unwrap().id();
+            let entry = m.view(caller).append_basic_block(&m, "entry");
+            let arg_id = IsValue::slot(m.view(caller).param(0).unwrap());
             fabricate_instruction(
                 &m,
-                entry.id(),
+                entry.slot(),
                 i32_ty.id(),
                 InstructionKindData::Call(crate::instr_types::CallInstData::new(
-                    callee.id(),
+                    m.view(callee).slot(),
                     callee_fn_ty.as_type().id(),
                     [arg_id],
                     crate::CallingConv::default(),
                     crate::instr_types::TailCallKind::None,
                 )),
             );
-            append_ret_void(&m, entry.id());
+            append_ret_void(&m, entry.slot());
             let err = m.verify_borrowed().unwrap_err();
             assert_rule(&err, VerifierRule::CallArgCountMismatch);
         });

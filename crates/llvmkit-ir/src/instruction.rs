@@ -21,7 +21,7 @@
 use core::iter::FusedIterator;
 
 use super::asm_writer::{SlotTracker, fmt_instruction};
-use super::basic_block::{BasicBlock, BasicBlockLabel};
+use super::basic_block::BasicBlock;
 use super::block_state::Unterminated;
 use super::float_kind::FloatDyn;
 use super::function::FunctionValue;
@@ -45,7 +45,6 @@ use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataSlot};
 use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
-use super::phi_state::Closed as PhiClosed;
 use super::term_open_state::Closed as TermClosed;
 use super::r#type::TypeSlot;
 use super::r#use::Use;
@@ -54,6 +53,7 @@ use super::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot, ValueUse,
     sealed,
 };
+use super::value_id::BlockId;
 use super::{DebugLoc, IrError, IrResult, Type, TypeKind};
 
 // --------------------------------------------------------------------------
@@ -384,10 +384,17 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         self.as_view().to_erased()
     }
 
-    /// Opaque arena id of the underlying value (same id as
+    /// Bare arena slot of the underlying value (same slot as
     /// [`to_erased`](Self::to_erased)).
+    ///
+    /// Named `slot` rather than `id` since cycle B: across the crate `.id()`
+    /// mints a *storable, module-tagged* id, and an instruction — which may be
+    /// void, hence value-less — has none of its own. Reach a storable id
+    /// through `to_erased().id()` (a value-defining instruction) or through the
+    /// per-opcode handle's `id()` ([`CallInst::id`](crate::CallInst::id),
+    /// [`PhiInst::id`](crate::PhiInst::id), ...).
     #[inline]
-    pub fn id(&self) -> ValueSlot {
+    pub fn slot(&self) -> ValueSlot {
         self.to_erased().id
     }
 
@@ -574,10 +581,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     }
 
     /// Containing basic block label.
-    pub fn parent(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
+    pub fn parent(&self) -> BlockId<Dyn, B> {
         let parent = self.data().parent.get();
-        let label_ty = self.module.module().label_type().as_type().id();
-        BasicBlock::<Dyn, Unterminated, B>::from_parts(parent, self.module, label_ty).label()
+        BlockId::<Dyn, B>::from_raw(self.module.id(), parent)
     }
 
     /// Read-only opcode discriminator for non-terminator opcodes.
@@ -868,7 +874,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     }
 
     /// Containing basic block label.
-    pub fn parent(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
+    pub fn parent(&self) -> BlockId<Dyn, B> {
         self.as_view().parent()
     }
 
@@ -1117,7 +1123,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
         block: &BasicBlock<'ctx, R, Unterminated, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
-        let parent_id = block.id();
+        let parent_id = block.slot();
         let parent_fn_id = block.to_erased().local_parent_function_id();
         block.as_dyn().append_instruction(self.id);
         update_instruction_parent(module, self.id, parent_id);
@@ -1425,6 +1431,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for InstructionView<'ctx, B> 
         InstructionView::to_erased(&self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(InstructionView);
 impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for InstructionView<'ctx, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
@@ -1678,9 +1685,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
 #[derive(Debug)]
 pub enum PhiKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    Int(PhiInst<'ctx, IntDyn, PhiClosed, B>),
-    Fp(FpPhiInst<'ctx, FloatDyn, PhiClosed, B>),
-    Ptr(PointerPhiInst<'ctx, PhiClosed, B>),
+    Int(PhiInst<'ctx, IntDyn, B>),
+    Fp(FpPhiInst<'ctx, FloatDyn, B>),
+    Ptr(PointerPhiInst<'ctx, B>),
     Other(OtherPhiInst<'ctx, B>),
 }
 
@@ -1699,10 +1706,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
     /// variant. The value comes back type-erased (`Value`), which is all a
     /// value-only consumer needs; the per-variant handles keep the narrowed
     /// accessors.
-    pub fn incoming(
-        &self,
-        index: u32,
-    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+    pub fn incoming(&self, index: u32) -> IrResult<(Value<'ctx, B>, BlockId<Dyn, B>)> {
         match self {
             Self::Int(p) => p.incoming(index),
             Self::Fp(p) => p.incoming(index),
@@ -1720,17 +1724,38 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
     /// narrowed accessors.
     pub fn incomings(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
-        let entries: Vec<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> = match self {
+        let entries: Vec<(Value<'ctx, B>, BlockId<Dyn, B>)> = match self {
             Self::Int(p) => p.incomings().collect(),
             Self::Fp(p) => p.incomings().collect(),
             Self::Ptr(p) => p.incomings().collect(),
             Self::Other(p) => p.incomings().collect(),
         };
         entries.into_iter()
+    }
+
+    /// Remove the incoming `(value, block)` pair at `index` and return the
+    /// removed value, independent of variant — the variant-independent form of
+    /// [`PhiInst::remove_incoming`](crate::PhiInst::remove_incoming), which is
+    /// the shape a CFG rewriter reaching a phi through rediscovery wants.
+    /// Mirrors `PHINode::removeIncomingValue`, including its
+    /// order-not-preserved backfill; see
+    /// [`PhiInst::remove_incoming`](crate::PhiInst::remove_incoming) for the
+    /// empty-phi contract.
+    pub fn remove_incoming(
+        &self,
+        module_token: &Module<'ctx, B, Unverified>,
+        index: u32,
+    ) -> IrResult<Value<'ctx, B>> {
+        match self {
+            Self::Int(p) => p.remove_incoming(module_token, index),
+            Self::Fp(p) => p.remove_incoming(module_token, index),
+            Self::Ptr(p) => p.remove_incoming(module_token, index),
+            Self::Other(p) => p.remove_incoming(module_token, index),
+        }
     }
 
     /// Read-only erased instruction view for this phi.
@@ -1911,11 +1936,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
         self.view.to_erased()
     }
 
-    /// Opaque arena id of the underlying value (same id as
-    /// [`to_erased`](Self::to_erased)).
+    /// Bare arena slot of the underlying value (same slot as
+    /// [`to_erased`](Self::to_erased)). Named `slot` rather than `id` for the
+    /// reason given on [`Instruction::slot`].
     #[inline]
-    pub fn id(&self) -> ValueSlot {
-        self.view.id()
+    pub fn slot(&self) -> ValueSlot {
+        self.view.slot()
     }
 
     /// Crate-internal: wrap a view already known to be a non-terminator.

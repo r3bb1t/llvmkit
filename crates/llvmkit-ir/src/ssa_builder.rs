@@ -26,7 +26,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use super::basic_block::{BasicBlock, BasicBlockLabel};
+use super::basic_block::BasicBlock;
 use super::block_state::Unterminated;
 use super::constants::ConstantIntValue;
 use super::float_kind::{FloatKind, IntoFloatValue, StaticFloatKind};
@@ -42,6 +42,7 @@ use super::r#type::TypeSlot;
 use super::value::{
     FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Typed, Value, ValueSlot,
 };
+use super::value_id::BlockId;
 use super::{FloatType, IntType, IrError, IrResult, PointerType};
 
 /// Folds either of `IntoConstantInt`'s two possible associated `Error`
@@ -264,72 +265,61 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerVariable<'ctx, B> {
 /// escape hatch for feeding a `br`/successor built through the plain
 /// [`IRBuilder`] surface elsewhere.
 ///
+/// Wraps the storable [`BlockId`] currency with the owning builder's identity,
+/// so it is lifetime-free like the id it carries.
+///
 /// [`IRBuilder`]: crate::IRBuilder
-pub struct SsaBlock<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
-    label: BasicBlockLabel<'ctx, R, B>,
+pub struct SsaBlock<R: ReturnMarker, B: ModuleBrand> {
+    id: BlockId<R, B>,
     owner: SsaBuilderId,
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> Clone for SsaBlock<'ctx, R, B> {
+impl<R: ReturnMarker, B: ModuleBrand> Clone for SsaBlock<R, B> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> Copy for SsaBlock<'ctx, R, B> {}
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> core::fmt::Debug for SsaBlock<'ctx, R, B> {
+impl<R: ReturnMarker, B: ModuleBrand> Copy for SsaBlock<R, B> {}
+impl<R: ReturnMarker, B: ModuleBrand> core::fmt::Debug for SsaBlock<R, B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SsaBlock")
-            .field("label", &self.label)
+            .field("id", &self.id)
             .field("owner", &self.owner)
             .finish()
     }
 }
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> PartialEq for SsaBlock<'ctx, R, B> {
+impl<R: ReturnMarker, B: ModuleBrand> PartialEq for SsaBlock<R, B> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        // Compare through the erased `Value` rather than `self.label`
-        // directly. `BasicBlockLabel`'s hand-written `PartialEq` already
-        // compares only `id`/`module`/`ty` — it deliberately does *not*
-        // bound `R: PartialEq` (which `ReturnMarker` does not guarantee) —
-        // so this mirrors that same `id`/`module`/`ty` comparison through
-        // `to_erased`, exactly as `BasicBlock`'s own manual `PartialEq`
-        // (above) does instead of touching the phantom markers.
-        self.label.to_erased() == other.label.to_erased() && self.owner == other.owner
+        // `BlockId`'s hand-written `PartialEq` compares `tag`/`slot` only — it
+        // deliberately does *not* bound `R: PartialEq` (which `ReturnMarker`
+        // does not guarantee) — so this stays clear of the phantom markers,
+        // exactly as `BasicBlock`'s own manual `PartialEq` does.
+        self.id == other.id && self.owner == other.owner
     }
 }
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Eq for SsaBlock<'ctx, R, B> {}
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> core::hash::Hash for SsaBlock<'ctx, R, B> {
+impl<R: ReturnMarker, B: ModuleBrand> Eq for SsaBlock<R, B> {}
+impl<R: ReturnMarker, B: ModuleBrand> core::hash::Hash for SsaBlock<R, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
-        self.label.to_erased().hash(h);
+        self.id.hash(h);
         self.owner.hash(h);
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> SsaBlock<'ctx, R, B> {
-    /// The underlying copyable block label, usable anywhere a
+impl<R: ReturnMarker, B: ModuleBrand> SsaBlock<R, B> {
+    /// The underlying storable [`BlockId`], usable anywhere a
     /// [`crate::IntoBasicBlockLabel`] source is accepted (e.g. a plain
     /// `IRBuilder::build_br` target).
     #[inline]
-    pub fn label(&self) -> BasicBlockLabel<'ctx, R, B> {
-        self.label
+    pub fn id(&self) -> BlockId<R, B> {
+        self.id
     }
 }
 
 // `IntoBasicBlockLabel` is sealed to `basic_block.rs` (its `Sealed`
 // marker trait is a private submodule there), so `SsaBlock`'s impl lives
 // alongside the other implementors in that file instead of here.
-
-/// Resolve a block label to the [`ValueSlot`] the Braun engine's block-keyed
-/// maps use. Blocks are values (`LabelType`), so the label's own value-id
-/// *is* the block id -- this mirrors how [`crate::cfg`] keys its
-/// successor/predecessor maps off `block.to_erased().id`.
-#[inline]
-fn label_value_id<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx>(
-    label: &BasicBlockLabel<'ctx, R, B>,
-) -> ValueSlot {
-    label.id()
-}
 
 /// Diagnostic name for a block id: falls back to a slot-style
 /// placeholder when the block was never given a textual name, mirroring
@@ -502,20 +492,17 @@ where
     /// auto-Braun-sealed: entry has no predecessors by definition
     /// (`Verifier::visitFunction`), so a later branch TO it errors with
     /// [`IrError::SsaBranchToSealedBlock`] once edge-recording lands.
-    pub fn create_block<Name: Into<String>>(&mut self, name: Name) -> SsaBlock<'ctx, R, B> {
+    pub fn create_block<Name: Into<String>>(&mut self, name: Name) -> SsaBlock<R, B> {
         let block = self.function.append_basic_block(self.module, name);
-        let label = block.label();
-        let block_id = label_value_id(&label);
+        let id = block.id();
+        let block_id = block.slot();
         if self.state.block_order.is_empty() {
             self.state.sealed.insert(block_id);
         }
         self.state.block_order.push(block_id);
         self.state.preds.entry(block_id).or_default();
         self.state.open_blocks.insert(block_id, block);
-        SsaBlock {
-            label,
-            owner: self.id,
-        }
+        SsaBlock { id, owner: self.id }
     }
 
     /// Declare a strict int variable: reading it on a def-less path is a
@@ -678,7 +665,7 @@ where
         ModuleRef::new(self.module.core_ref())
     }
 
-    fn check_owner_block(&self, block: &SsaBlock<'ctx, R, B>) -> IrResult<()> {
+    fn check_owner_block(&self, block: &SsaBlock<R, B>) -> IrResult<()> {
         if block.owner != self.id {
             return Err(IrError::SsaForeignBlock);
         }
@@ -701,9 +688,9 @@ where
 
     /// Braun `sealBlock`: the predecessor set is complete; complete this
     /// block's incomplete phis.
-    pub fn seal_block(&mut self, block: SsaBlock<'ctx, R, B>) -> IrResult<()> {
+    pub fn seal_block(&mut self, block: SsaBlock<R, B>) -> IrResult<()> {
         self.check_owner_block(&block)?;
-        let block_id = label_value_id(&block.label);
+        let block_id = block.id.slot();
         if self.state.sealed.contains(&block_id) {
             return Err(IrError::SsaBlockAlreadySealed {
                 block: block_name(self.module_ref(), block_id),
@@ -738,10 +725,10 @@ where
     /// half-built block behind while moving to another one.
     pub fn switch_to_block(
         mut self,
-        block: SsaBlock<'ctx, R, B>,
+        block: SsaBlock<R, B>,
     ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Positioned, R>> {
         self.check_owner_block(&block)?;
-        let block_id = label_value_id(&block.label);
+        let block_id = block.id.slot();
         if self.state.filled.contains(&block_id) {
             return Err(IrError::SsaBlockAlreadyFilled {
                 block: block_name(self.module_ref(), block_id),
@@ -824,9 +811,9 @@ where
     /// The block this builder is currently positioned at, as a copyable
     /// [`SsaBlock`] handle (usable as a branch target / phi predecessor
     /// elsewhere in this builder's own surface).
-    pub fn current_block(&self) -> SsaBlock<'ctx, R, B> {
+    pub fn current_block(&self) -> SsaBlock<R, B> {
         SsaBlock {
-            label: self.ins().insert_block().label(),
+            id: self.ins().insert_block().id(),
             owner: self.id,
         }
     }
@@ -835,7 +822,7 @@ where
     /// -- the Braun engine's block key.
     #[inline]
     fn current_block_id(&self) -> ValueSlot {
-        self.ins().insert_block().id()
+        self.ins().insert_block().slot()
     }
 
     /// Braun `writeVariable`: pure bookkeeping, no IR emitted.
@@ -879,7 +866,7 @@ where
         let v = value.into_int_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.into_erased().ty())?;
         let block = self.current_block_id();
-        self.write_variable(var.index, block, v.id());
+        self.write_variable(var.index, block, v.slot());
         Ok(())
     }
 
@@ -919,7 +906,7 @@ where
         let v = value.into_float_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
         let block = self.current_block_id();
-        self.write_variable(var.index, block, v.id());
+        self.write_variable(var.index, block, v.slot());
         Ok(())
     }
 
@@ -961,7 +948,7 @@ where
         let v = value.into_pointer_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
         let block = self.current_block_id();
-        self.write_variable(var.index, block, v.id());
+        self.write_variable(var.index, block, v.slot());
         Ok(())
     }
 
@@ -997,10 +984,10 @@ where
     /// Produce `br label %dest`. Mirrors `IRBuilder::CreateBr`.
     pub fn br(
         mut self,
-        dest: SsaBlock<'ctx, R, B>,
+        dest: SsaBlock<R, B>,
     ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>> {
         self.check_owner_block(&dest)?;
-        let dest_id = label_value_id(&dest.label);
+        let dest_id = dest.id.slot();
         if self.state.sealed.contains(&dest_id) {
             return Err(IrError::SsaBranchToSealedBlock {
                 block: block_name(self.module_ref(), dest_id),
@@ -1010,7 +997,7 @@ where
         let inner = self.inner.take().unwrap_or_else(|| {
             unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
         });
-        let (_terminated, _inst) = inner.build_br(dest.label)?;
+        let (_terminated, _inst) = inner.build_br(dest.id)?;
         self.state.preds.entry(dest_id).or_default().push(src_id);
         self.state.filled.insert(src_id);
         Ok(SsaBuilder {
@@ -1032,16 +1019,16 @@ where
     pub fn cond_br<C>(
         mut self,
         cond: C,
-        then_dest: SsaBlock<'ctx, R, B>,
-        else_dest: SsaBlock<'ctx, R, B>,
+        then_dest: SsaBlock<R, B>,
+        else_dest: SsaBlock<R, B>,
     ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>>
     where
         C: IntoIntValue<'ctx, bool, B>,
     {
         self.check_owner_block(&then_dest)?;
         self.check_owner_block(&else_dest)?;
-        let then_id = label_value_id(&then_dest.label);
-        let else_id = label_value_id(&else_dest.label);
+        let then_id = then_dest.id.slot();
+        let else_id = else_dest.id.slot();
         if self.state.sealed.contains(&then_id) {
             return Err(IrError::SsaBranchToSealedBlock {
                 block: block_name(self.module_ref(), then_id),
@@ -1056,7 +1043,7 @@ where
         let inner = self.inner.take().unwrap_or_else(|| {
             unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
         });
-        let (_terminated, _inst) = inner.build_cond_br(cond, then_dest.label, else_dest.label)?;
+        let (_terminated, _inst) = inner.build_cond_br(cond, then_dest.id, else_dest.id)?;
         self.state.preds.entry(then_id).or_default().push(src_id);
         self.state.preds.entry(else_id).or_default().push(src_id);
         self.state.filled.insert(src_id);
@@ -1102,20 +1089,20 @@ where
     pub fn switch<W, V, C, Cases>(
         mut self,
         cond: V,
-        default_dest: SsaBlock<'ctx, R, B>,
+        default_dest: SsaBlock<R, B>,
         cases: Cases,
     ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>>
     where
         W: IntWidth,
         V: IntoIntValue<'ctx, W, B>,
-        Cases: IntoIterator<Item = (C, SsaBlock<'ctx, R, B>)>,
+        Cases: IntoIterator<Item = (C, SsaBlock<R, B>)>,
         C: IntoConstantInt<'ctx, W, B>,
         Result<ConstantIntValue<'ctx, W, B>, C::Error>: IntoIrResult<ConstantIntValue<'ctx, W, B>>,
     {
         self.check_owner_block(&default_dest)?;
         let cond = cond.into_int_value(self.module_ref())?;
         let cond_ty = cond.ty();
-        let cases: Vec<(ConstantIntValue<'ctx, W, B>, SsaBlock<'ctx, R, B>)> = cases
+        let cases: Vec<(ConstantIntValue<'ctx, W, B>, SsaBlock<R, B>)> = cases
             .into_iter()
             .map(|(case_value, target)| {
                 self.check_owner_block(&target)?;
@@ -1124,10 +1111,10 @@ where
             })
             .collect::<IrResult<Vec<_>>>()?;
         let mut dest_ids = Vec::with_capacity(cases.len() + 1);
-        let default_id = label_value_id(&default_dest.label);
+        let default_id = default_dest.id.slot();
         dest_ids.push(default_id);
         for (_, target) in &cases {
-            dest_ids.push(label_value_id(&target.label));
+            dest_ids.push(target.id.slot());
         }
         for &dest_id in &dest_ids {
             if self.state.sealed.contains(&dest_id) {
@@ -1140,10 +1127,10 @@ where
         let inner = self.inner.take().unwrap_or_else(|| {
             unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
         });
-        let (_terminated, open) = inner.build_switch_dyn(cond, default_dest.label, "")?;
+        let (_terminated, open) = inner.build_switch_dyn(cond, default_dest.id, "")?;
         let mut open = open;
         for (case_value, target) in cases {
-            open = open.add_case(case_value, target.label).unwrap_or_else(|_| {
+            open = open.add_case(case_value, target.id).unwrap_or_else(|_| {
                 unreachable!(
                     "SsaBuilder invariant: case_value was lifted via cond's own IntType in \
                      the pre-pass, so add_case's cond_ty == v.ty() check cannot fail here"
@@ -1310,15 +1297,18 @@ where
     let id = match category {
         VarCategory::Int => {
             let int_ty = IntType::<super::int_width::IntDyn, B>::new(ty, module);
-            builder.build_int_phi_dyn(int_ty, name)?.id()
+            let phi = builder.build_int_phi_dyn(int_ty, name)?;
+            builder.view(phi).slot()
         }
         VarCategory::Float => {
             let float_ty = FloatType::<super::float_kind::FloatDyn, B>::new(ty, module);
-            builder.build_fp_phi_dyn(float_ty, name)?.id()
+            let phi = builder.build_fp_phi_dyn(float_ty, name)?;
+            builder.view(phi).slot()
         }
         VarCategory::Pointer => {
             let ptr_ty = PointerType::<B>::new(ty, module);
-            builder.build_pointer_phi_in_addrspace(ptr_ty, name)?.id()
+            let phi = builder.build_pointer_phi_in_addrspace(ptr_ty, name)?;
+            builder.view(phi).slot()
         }
     };
     Ok(id)
@@ -1627,7 +1617,7 @@ where
         } else if let Some(current) = self
             .inner
             .as_ref()
-            .filter(|b| b.insert_block().id() == block)
+            .filter(|b| b.insert_block().slot() == block)
         {
             // Empty and currently positioned: the phi builders take
             // `&self`, so appending through the live builder directly
@@ -1706,7 +1696,7 @@ where
     fn phi_user_ids(&self, phi: ValueSlot) -> Vec<ValueSlot> {
         let module = self.module_ref();
         let value = Value::from_parts(phi, module, module.value_data(phi).ty);
-        value.users().map(|u| u.id()).collect()
+        value.users().map(|u| u.slot()).collect()
     }
 
     /// A strict variable's read reached function entry with no write on
@@ -1721,7 +1711,7 @@ where
             let module = self.module_ref();
             let ty = super::r#type::Type::new(data.ty, module);
             let poison = ty.get_poison();
-            return Ok(poison.id());
+            return Ok(poison.slot());
         }
         Err(IrError::SsaUseOfUndefinedVariable {
             variable: data.name.clone(),
@@ -1740,7 +1730,7 @@ where
             .state
             .created_phis
             .get(&phi)
-            .map(|h| h.parent().id())
+            .map(|h| h.parent().slot())
             .unwrap_or_else(|| {
                 unreachable!(
                     "SsaBuilder invariant: try_remove_trivial_phi only calls this helper on a \
@@ -1791,7 +1781,7 @@ where
                     )
                 });
             Instruction::<Attached, B>::from_parts(phi, module).erase_from_parent(self.module);
-            let resolved = poison.id();
+            let resolved = poison.slot();
             self.state.resolved.borrow_mut().insert(phi, resolved);
             for user in users {
                 if self.state.created_phis.contains_key(&user) {
@@ -1824,14 +1814,14 @@ mod tests {
         Module::with_new("ssa-entry-seal", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
-            let entry_id = label_value_id(&entry.label);
+            let entry_id = entry.id.slot();
             assert!(b.state.sealed.contains(&entry_id));
 
             // A second block is NOT auto-sealed.
             let second = b.create_block("second");
-            let second_id = label_value_id(&second.label);
+            let second_id = second.id.slot();
             assert!(!b.state.sealed.contains(&second_id));
             Ok(())
         })
@@ -1845,7 +1835,7 @@ mod tests {
         Module::with_new("ssa-double-seal", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let _entry = b.create_block("entry");
             let second = b.create_block("second"); // not entry -- unsealed
             b.seal_block(second)?;
@@ -1866,8 +1856,8 @@ mod tests {
         Module::with_new("ssa-nonempty-fn", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let _entry = f.append_basic_block(&m, "entry");
-            match SsaBuilder::for_function(&m, f) {
+            let _entry = m.view(f).append_basic_block(&m, "entry");
+            match SsaBuilder::for_function(&m, m.view(f)) {
                 Err(IrError::SsaFunctionHasBlocks) => {}
                 Ok(_) => panic!("expected SsaFunctionHasBlocks, got Ok"),
                 Err(other) => panic!("expected SsaFunctionHasBlocks, got {other:?}"),
@@ -1884,11 +1874,11 @@ mod tests {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
             let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
-            let mut b1 = SsaBuilder::for_function(&m, f1)?;
+            let mut b1 = SsaBuilder::for_function(&m, m.view(f1))?;
             let _entry1 = b1.create_block("entry");
             let other1 = b1.create_block("other");
 
-            let mut b2 = SsaBuilder::for_function(&m, f2)?;
+            let mut b2 = SsaBuilder::for_function(&m, m.view(f2))?;
             let _entry2 = b2.create_block("entry");
 
             match b2.seal_block(other1) {
@@ -1906,7 +1896,7 @@ mod tests {
         Module::with_new("ssa-declare", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let int_var = b.declare_int_var::<i32, _>("x");
             let float_var = b.declare_float_var::<f64, _>("y");
             let ptr_var = b.declare_pointer_var("z");
@@ -1933,12 +1923,12 @@ mod tests {
         Module::with_new("ssa-straight-line", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
-            let entry_id = label_value_id(&entry.label);
+            let entry_id = entry.id.slot();
 
             let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let one = m.i32_type().const_int(1_i32).id();
+            let one = m.i32_type().const_int(1_i32).slot();
             b.write_variable(var.index, entry_id, one);
             let read = b.read_variable_in(var.index, entry_id)?;
             assert_eq!(read, one);
@@ -1961,18 +1951,18 @@ mod tests {
         Module::with_new("ssa-incomplete-phi", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let _entry = b.create_block("entry");
-            let entry_id = label_value_id(&_entry.label);
+            let entry_id = _entry.id.slot();
             let loop_bb = b.create_block("loop");
-            let loop_id = label_value_id(&loop_bb.label);
+            let loop_id = loop_bb.id.slot();
 
             // Record edges: entry -> loop, loop -> loop (self back-edge).
             b.state.preds.entry(loop_id).or_default().push(entry_id);
             b.state.preds.entry(loop_id).or_default().push(loop_id);
 
             let var: IntVariable<i32, _> = b.declare_int_var("i");
-            let zero = m.i32_type().const_int(0_i32).id();
+            let zero = m.i32_type().const_int(0_i32).slot();
             b.write_variable(var.index, entry_id, zero);
 
             // Read inside the not-yet-sealed loop block: creates an
@@ -1985,7 +1975,7 @@ mod tests {
             // Record the loop body's own write (e.g. `i + 1`, modeled
             // here as reusing a fresh constant is fine -- the engine
             // does not care what the value IS, only that a def exists).
-            let one = m.i32_type().const_int(1_i32).id();
+            let one = m.i32_type().const_int(1_i32).slot();
             b.write_variable(var.index, loop_id, one);
 
             // Sealing completes the incomplete phi: two distinct incoming
@@ -2019,15 +2009,15 @@ mod tests {
         Module::with_new("ssa-trivial-join", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let _entry = b.create_block("entry");
-            let entry_id = label_value_id(&_entry.label);
+            let entry_id = _entry.id.slot();
             let left = b.create_block("left");
-            let left_id = label_value_id(&left.label);
+            let left_id = left.id.slot();
             let right = b.create_block("right");
-            let right_id = label_value_id(&right.label);
+            let right_id = right.id.slot();
             let join = b.create_block("join");
-            let join_id = label_value_id(&join.label);
+            let join_id = join.id.slot();
 
             b.state.preds.entry(left_id).or_default().push(entry_id);
             b.state.preds.entry(right_id).or_default().push(entry_id);
@@ -2037,7 +2027,7 @@ mod tests {
             b.seal_block(right)?;
 
             let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let same_value = m.i32_type().const_int(7_i32).id();
+            let same_value = m.i32_type().const_int(7_i32).slot();
             // Both predecessors write the SAME value.
             b.write_variable(var.index, left_id, same_value);
             b.write_variable(var.index, right_id, same_value);
@@ -2072,9 +2062,9 @@ mod tests {
         Module::with_new("ssa-undefined-strict", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
-            let entry_id = label_value_id(&entry.label);
+            let entry_id = entry.id.slot();
 
             let var: IntVariable<i32, _> = b.declare_int_var("x");
             match b.read_variable_in(var.index, entry_id) {
@@ -2097,14 +2087,14 @@ mod tests {
         Module::with_new("ssa-undefined-poison", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
-            let entry_id = label_value_id(&entry.label);
+            let entry_id = entry.id.slot();
 
             let var: IntVariable<i32, _> = b.declare_int_var_poison("x");
             let read = b.read_variable_in(var.index, entry_id)?;
             let i32_ty = m.i32_type();
-            let poison_id = i32_ty.as_type().get_poison().id();
+            let poison_id = i32_ty.as_type().get_poison().slot();
             assert_eq!(read, poison_id);
             Ok(())
         })
@@ -2130,15 +2120,15 @@ mod tests {
         Module::with_new("ssa-chase-memoization", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
-            let entry_id = label_value_id(&entry.label);
+            let entry_id = entry.id.slot();
             let b1 = b.create_block("b1");
-            let b1_id = label_value_id(&b1.label);
+            let b1_id = b1.id.slot();
             let b2 = b.create_block("b2");
-            let b2_id = label_value_id(&b2.label);
+            let b2_id = b2.id.slot();
             let b3 = b.create_block("b3");
-            let b3_id = label_value_id(&b3.label);
+            let b3_id = b3.id.slot();
 
             // Straight-line chain: entry -> b1 -> b2 -> b3, each with a
             // single predecessor, all sealed as soon as their one edge is
@@ -2151,7 +2141,7 @@ mod tests {
             b.seal_block(b3)?;
 
             let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let one = m.i32_type().const_int(1_i32).id();
+            let one = m.i32_type().const_int(1_i32).slot();
             b.write_variable(var.index, entry_id, one);
 
             // Before the read: only entry has a current_def entry.
@@ -2211,7 +2201,7 @@ mod tests {
         Module::with_new("ssa-forged-static-width", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
             let x = b.declare_int_var::<i32, _>("x");
 
@@ -2249,7 +2239,7 @@ mod tests {
         Module::with_new("ssa-forged-static-kind", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
             let x = b.declare_float_var::<f32, _>("x");
 
@@ -2294,7 +2284,7 @@ mod tests {
         Module::with_new("ssa-forged-pointer", |m| {
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, f)?;
+            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
             let entry = b.create_block("entry");
             let p = b.declare_pointer_var("p");
 

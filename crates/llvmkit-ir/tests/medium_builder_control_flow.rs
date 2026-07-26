@@ -18,8 +18,8 @@ fn build_br_emits_unconditional() -> Result<(), IrError> {
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let exit = f.append_basic_block(&m, "exit");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let exit = m.view(f).append_basic_block(&m, "exit");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(&exit)?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exit);
@@ -40,11 +40,11 @@ fn build_cond_br_branches_on_i1() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(void.as_type(), [i32_ty.as_type()], false);
         let f = m.add_function_dyn("cb", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let then_bb = f.append_basic_block(&m, "then");
-        let else_bb = f.append_basic_block(&m, "else");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let then_bb = m.view(f).append_basic_block(&m, "then");
+        let else_bb = m.view(f).append_basic_block(&m, "else");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
         b.build_cond_br(cond, &then_bb, &else_bb)?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
@@ -70,7 +70,7 @@ fn build_unreachable_terminator() -> Result<(), IrError> {
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("dead", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let (_sealed, inst) = b.build_unreachable();
         assert!(matches!(

@@ -82,8 +82,9 @@ impl BasicBlockData {
 /// consumes the builder, the returned handle names the same block with
 /// `Term = Terminated`. `BasicBlock` is intentionally linear (`!Copy` /
 /// `!Clone`) so retaining an old unterminated insertion capability cannot
-/// reopen a terminated construction path. Use [`BasicBlockLabel`] for
-/// copyable branch targets and PHI predecessors.
+/// reopen a terminated construction path. Use [`id`](Self::id) to mint the
+/// copyable [`BlockId`] that names this block at branch-target and
+/// PHI-predecessor positions.
 pub struct BasicBlock<
     'ctx,
     R: ReturnMarker,
@@ -131,11 +132,19 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand, Params:
     }
 }
 
-/// Copyable label reference to a basic block.
+/// Copyable, borrowing *view* of a basic block — the handle a
+/// [`BlockId`] resolves to through
+/// [`Module::view`](crate::Module::view) / [`IRBuilder::view`](crate::IRBuilder::view).
 ///
 /// Unlike [`BasicBlock`], this is not an insertion capability: it can name a
 /// branch target or PHI predecessor, but it cannot be passed to
-/// [`IRBuilder::position_at_end`](crate::IRBuilder::position_at_end).
+/// [`IRBuilder::position_at_end`](crate::IRBuilder::position_at_end) — use the
+/// checked [`IRBuilder::position_at_end_dyn`](crate::IRBuilder::position_at_end_dyn)
+/// with a [`BlockId`] for that.
+///
+/// Since llvmkit 2.0 this is the ephemeral read view, not the stored currency:
+/// producers hand back [`BlockId`] and consumers accept it, so a label is
+/// something you *take* to read a block, not something you keep.
 pub struct BasicBlockLabel<
     'ctx,
     R: ReturnMarker,
@@ -211,7 +220,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     /// Opaque arena id of the underlying value (same id as
     /// [`to_erased`](Self::to_erased)).
     #[inline]
-    pub fn id(&self) -> ValueSlot {
+    pub fn slot(&self) -> ValueSlot {
         self.to_erased().id
     }
 
@@ -220,7 +229,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     /// [`Module::try_view`](crate::Module::try_view) back into a copyable
     /// [`BasicBlockLabel`]. Preserves the return-shape and parameter markers.
     #[inline]
-    pub fn to_id(&self) -> BlockId<R, B, Params> {
+    pub fn id(&self) -> BlockId<R, B, Params> {
         BlockId::from_raw(self.module.id(), self.id)
     }
 
@@ -246,10 +255,47 @@ mod block_label_sealed {
 }
 
 /// Values accepted where an instruction names a basic-block label.
+///
+/// The storable currency at these positions is [`BlockId`] — that is what a
+/// producer hands back and what a struct stores. This trait is the *accepting*
+/// bound: it also takes the borrowing block handles directly, so an
+/// in-scope [`BasicBlock`] can name its own branch target without a round trip
+/// through the module. Resolution is module-checked and fallible, exactly like
+/// [`IntoErasedValue`](crate::IntoErasedValue) at operand positions: a
+/// [`BlockId`] minted in another module yields
+/// [`IrError::ForeignValueId`] instead of silently naming a same-numbered slot
+/// here.
+///
+/// The produced [`BasicBlockLabel`] is the ephemeral *view*, parameter-erased:
+/// the typed parameter schema is honoured by the [`BlockCall`] edge
+/// ([`BasicBlockLabel::call`] / [`BasicBlock::call`]), not by the plain label
+/// positions.
 pub trait IntoBasicBlockLabel<'ctx, R: ReturnMarker, B: ModuleBrand>:
     block_label_sealed::Sealed
 {
-    fn into_basic_block_label(self) -> BasicBlockLabel<'ctx, R, B>;
+    fn into_basic_block_label(
+        self,
+        module: ModuleRef<'ctx, B>,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B>>;
+}
+
+impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> block_label_sealed::Sealed
+    for BlockId<R, B, Params>
+{
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
+    IntoBasicBlockLabel<'ctx, R, B> for BlockId<R, B, Params>
+{
+    #[inline]
+    fn into_basic_block_label(
+        self,
+        module: ModuleRef<'ctx, B>,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        crate::value_id::ViewIn::resolve_in(self, module)
+            .map(BasicBlockLabel::erase_params)
+            .ok_or(IrError::ForeignValueId)
+    }
 }
 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> block_label_sealed::Sealed
@@ -261,8 +307,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, 
     for BasicBlockLabel<'ctx, R, B>
 {
     #[inline]
-    fn into_basic_block_label(self) -> BasicBlockLabel<'ctx, R, B> {
-        self
+    fn into_basic_block_label(
+        self,
+        _module: ModuleRef<'ctx, B>,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        Ok(self)
     }
 }
 
@@ -284,14 +333,17 @@ where
     Params: BlockParams,
 {
     #[inline]
-    fn into_basic_block_label(self) -> BasicBlockLabel<'ctx, R, B> {
-        BasicBlockLabel {
+    fn into_basic_block_label(
+        self,
+        _module: ModuleRef<'ctx, B>,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        Ok(BasicBlockLabel {
             id: self.id,
             module: self.module,
             ty: self.ty,
             _r: PhantomData,
             _params: PhantomData,
-        }
+        })
     }
 }
 
@@ -313,31 +365,37 @@ where
     Params: BlockParams,
 {
     #[inline]
-    fn into_basic_block_label(self) -> BasicBlockLabel<'ctx, R, B> {
+    fn into_basic_block_label(
+        self,
+        _module: ModuleRef<'ctx, B>,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
         // `IntoBasicBlockLabel` yields the parameter-erased label (its return
         // type pins `BlockParamsDyn`), so construct it directly rather than
-        // through `label()`, which now threads this block's `Params`.
-        BasicBlockLabel {
+        // through `label()`, which threads this block's `Params`.
+        Ok(BasicBlockLabel {
             id: self.id,
             module: self.module,
             ty: self.ty,
             _r: PhantomData,
             _params: PhantomData,
-        }
+        })
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> block_label_sealed::Sealed
-    for super::ssa_builder::SsaBlock<'ctx, R, B>
+impl<R: ReturnMarker, B: ModuleBrand> block_label_sealed::Sealed
+    for super::ssa_builder::SsaBlock<R, B>
 {
 }
 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, B>
-    for super::ssa_builder::SsaBlock<'ctx, R, B>
+    for super::ssa_builder::SsaBlock<R, B>
 {
     #[inline]
-    fn into_basic_block_label(self) -> BasicBlockLabel<'ctx, R, B> {
-        self.label()
+    fn into_basic_block_label(
+        self,
+        module: ModuleRef<'ctx, B>,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
+        self.id().into_basic_block_label(module)
     }
 }
 
@@ -345,7 +403,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, 
 // Typed control-flow edge bundle
 // --------------------------------------------------------------------------
 
-/// A typed control-flow edge: a branch target ([`BasicBlockLabel`]) stamped
+/// A typed control-flow edge: a branch target ([`BlockId`]) stamped
 /// with its parameter schema `Params`, paired with the block-argument values
 /// that seed the target's leading head-phis on that edge.
 ///
@@ -366,13 +424,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, 
 /// [`IRBuilder::build_br_call`](crate::IRBuilder::build_br_call) /
 /// [`IRBuilder::build_cond_br_call`](crate::IRBuilder::build_cond_br_call),
 /// where a `?` is already expected.
-pub struct BlockCall<
-    'ctx,
-    R: ReturnMarker,
-    B: ModuleBrand = Brand<'ctx>,
-    Params: BlockParams = BlockParamsDyn,
-> {
-    target: BasicBlockLabel<'ctx, R, B, Params>,
+pub struct BlockCall<R: ReturnMarker, B: ModuleBrand, Params: BlockParams = BlockParamsDyn> {
+    target: BlockId<R, B, Params>,
     /// The edge's block-arguments lowered to arena value-ids in declaration
     /// order, or the deferred lowering error to surface at build time. The
     /// arity and per-position types are already fixed by the compile-time
@@ -400,13 +453,13 @@ where
     /// lowering failure is deferred into the returned [`BlockCall`] and surfaces
     /// when the branch builder consumes it.
     #[inline]
-    pub fn call<A>(self, args: A) -> BlockCall<'ctx, R, B, Params>
+    pub fn call<A>(self, args: A) -> BlockCall<R, B, Params>
     where
         A: CallArgs<'ctx, Params, B>,
     {
         let lowered = args.lower(self.module);
         BlockCall {
-            target: self,
+            target: self.id(),
             lowered,
         }
     }
@@ -424,7 +477,7 @@ where
     /// Borrows the block, so the handle stays usable (e.g. to reposition the
     /// builder into it afterwards). See [`BasicBlockLabel::call`].
     #[inline]
-    pub fn call<A>(&self, args: A) -> BlockCall<'ctx, R, B, Params>
+    pub fn call<A>(&self, args: A) -> BlockCall<R, B, Params>
     where
         A: CallArgs<'ctx, Params, B>,
     {
@@ -445,14 +498,12 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     }
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
-    BlockCall<'ctx, R, B, Params>
-{
-    /// Decompose into the parameter-erased target label and the edge's
+impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> BlockCall<R, B, Params> {
+    /// Decompose into the parameter-erased target id and the edge's
     /// lowered-or-deferred block-arguments. Crate-internal: the typed branch
     /// builders consume the bundle here, then reuse the erased phi-seeding path.
     #[inline]
-    pub(crate) fn into_parts(self) -> (BasicBlockLabel<'ctx, R, B>, IrResult<Box<[ValueSlot]>>) {
+    pub(crate) fn into_parts(self) -> (BlockId<R, B>, IrResult<Box<[ValueSlot]>>) {
         (self.target.erase_params(), self.lowered)
     }
 }
@@ -487,7 +538,15 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         }
     }
 
-    /// Copyable label reference for branch targets and PHI predecessors.
+    /// Copyable label *view* of this block.
+    ///
+    /// Crate-internal since llvmkit 2.0: [`BlockId`] is the branch-target and
+    /// PHI-predecessor currency a caller stores and passes around, minted with
+    /// [`id`](Self::id); [`BasicBlockLabel`] is the ephemeral view, reached
+    /// publicly through [`Module::view`](crate::Module::view) /
+    /// [`IRBuilder::view`](crate::IRBuilder::view) like every other handle.
+    /// In-crate this stays the cheap way to get a label from a block that
+    /// already carries its module.
     ///
     /// The returned label threads this block's `Params` marker through, so a
     /// typed block (`BasicBlock<…, Params>`) yields a typed label
@@ -495,7 +554,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// parameter-erased block (the [`BlockParamsDyn`] default) yields the
     /// erased label form, unchanged.
     #[inline]
-    pub fn label(&self) -> BasicBlockLabel<'ctx, R, B, Params> {
+    pub(crate) fn label(&self) -> BasicBlockLabel<'ctx, R, B, Params> {
         BasicBlockLabel {
             id: self.id,
             module: self.module,
@@ -520,7 +579,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// Opaque arena id of the underlying value (same id as
     /// [`to_erased`](Self::to_erased)).
     #[inline]
-    pub fn id(&self) -> ValueSlot {
+    pub fn slot(&self) -> ValueSlot {
         self.to_erased().id
     }
 
@@ -531,7 +590,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// borrows `self` and leaves it usable — minting a `Copy` id from a
     /// non-`Copy` block.
     #[inline]
-    pub fn to_id(&self) -> BlockId<R, B, Params> {
+    pub fn id(&self) -> BlockId<R, B, Params> {
         BlockId::from_raw(self.module.id(), self.id)
     }
 
@@ -675,9 +734,9 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         Some(InstructionView::from_parts(last, self.module))
     }
 
-    /// Successor block labels of this block's terminator, preserving duplicate CFG edges.
+    /// Successor block ids of this block's terminator, preserving duplicate CFG edges.
     /// Returns an empty list for unterminated blocks and terminators without successors.
-    pub fn successors(&self) -> Vec<BasicBlockLabel<'ctx, Dyn, B>> {
+    pub fn successors(&self) -> Vec<BlockId<Dyn, B>> {
         crate::cfg::block_successors(&self.as_dyn())
     }
 
@@ -794,7 +853,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         let source_fn_id = self.parent_id();
         let dest_fn_id = dest.parent_id();
         let rehome_names = source_fn_id != dest_fn_id;
-        let dest_id = dest.id();
+        let dest_id = dest.slot();
         let drained: Vec<ValueSlot> = {
             let mut src = self.data().instructions.borrow_mut();
             core::mem::take(&mut *src)
@@ -854,7 +913,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         let parent_fn =
             FunctionValue::<'ctx, R, B>::from_parts_unchecked(parent_fn_id, self.module);
         let new_block = parent_fn.append_basic_block(module_token, name);
-        let split_id = before.id();
+        let split_id = before.slot();
         let suffix: Vec<ValueSlot> = {
             let mut src = self.data().instructions.borrow_mut();
             let pos =
@@ -865,7 +924,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
                     })?;
             src.split_off(pos)
         };
-        let new_id = new_block.id();
+        let new_id = new_block.slot();
         {
             let mut dst = new_block.data().instructions.borrow_mut();
             dst.extend(suffix.iter().copied());
@@ -991,7 +1050,7 @@ mod tests {
             let void_ty = m.void_type().as_type();
             let fn_ty = m.fn_type_no_params(void_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-            let bb = f.append_basic_block(&m, "entry");
+            let bb = m.view(f).append_basic_block(&m, "entry");
 
             // A label recovered from an untyped `Value` carries no static
             // parameter promise, so it must land in the `BlockParamsDyn`
@@ -1000,7 +1059,7 @@ mod tests {
             let recovered: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = v
                 .try_into()
                 .expect("a basic-block value narrows to a label");
-            assert_eq!(recovered.id(), bb.id());
+            assert_eq!(recovered.slot(), bb.slot());
             assert_dyn_params(recovered);
         });
     }
@@ -1011,14 +1070,14 @@ mod tests {
             let void_ty = m.void_type().as_type();
             let fn_ty = m.fn_type_no_params(void_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-            let bb = f.append_basic_block(&m, "entry");
+            let bb = m.view(f).append_basic_block(&m, "entry");
             let label = bb.label();
 
             let round: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = label
                 .to_erased()
                 .try_into()
                 .expect("a label's value round-trips to a label");
-            assert_eq!(round.id(), label.id());
+            assert_eq!(round.slot(), label.slot());
             assert_dyn_params(round);
         });
     }

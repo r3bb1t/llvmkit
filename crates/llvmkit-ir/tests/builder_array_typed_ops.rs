@@ -30,11 +30,12 @@ fn typed_arr_extract_returns_typed_element() {
         let f = m
             .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         // Narrow the erased `[4 x i32]` param into the statically typed handle.
-        let a: ArrayValue<'_, i32, ArrLen<4>> = f
+        let a: ArrayValue<'_, i32, ArrLen<4>> = m
+            .view(f)
             .param(0)
             .expect("p0")
             .into_erased()
@@ -71,10 +72,11 @@ fn typed_arr_insert_round_trips() {
         let f = m
             .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let a: ArrayValue<'_, i32, ArrLen<4>> = f
+        let a: ArrayValue<'_, i32, ArrLen<4>> = m
+            .view(f)
             .param(0)
             .expect("p0")
             .into_erased()
@@ -123,12 +125,12 @@ fn typed_array_type_allocas() {
         let f = m
             .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         // `build_alloca` takes any `IrType`; the typed array handle qualifies.
         let slot = b.build_alloca(arr_ty, "slot").expect("alloca");
-        let _ = slot.into_erased();
+        let _ = b.view(slot).into_erased();
 
         b.build_ret_void().expect("ret void");
 

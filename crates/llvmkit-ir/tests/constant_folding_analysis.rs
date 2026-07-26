@@ -39,7 +39,7 @@ fn load_from_const_ptr_uses_little_endian_layout() -> Result<(), IrError> {
         let g = m.add_global_constant("bytes", init)?;
 
         let folded = constant_fold_load_from_const_ptr(
-            g.as_global_constant_ptr(),
+            m.view(g).as_global_constant_ptr(),
             i16_ty.as_type(),
             ApInt::zero(64),
             &dl,
@@ -65,7 +65,7 @@ fn load_from_const_ptr_oob_returns_poison() -> Result<(), IrError> {
         let g = m.add_global_constant("one", init)?;
 
         let folded = constant_fold_load_from_const_ptr(
-            g.as_global_constant_ptr(),
+            m.view(g).as_global_constant_ptr(),
             i32_ty.as_type(),
             ApInt::zero(64),
             &dl,
@@ -242,12 +242,12 @@ fn interposable_constant_global_load_declines_to_fold() -> Result<(), IrError> {
         let dl = DataLayout::parse("e-p:64:64:64")?;
         let i32_ty = m.i32_type();
         let weak = m.add_global_constant("weak_g", i32_ty.const_int(42_i32))?;
-        weak.set_linkage(&m, Linkage::WeakAny);
+        m.view(weak).set_linkage(&m, Linkage::WeakAny);
         let strong = m.add_global_constant("strong_g", i32_ty.const_int(7_i32))?;
 
         assert_eq!(
             constant_fold_load_from_const_ptr(
-                weak.as_global_constant_ptr(),
+                m.view(weak).as_global_constant_ptr(),
                 i32_ty.as_type(),
                 ApInt::zero(64),
                 &dl,
@@ -256,7 +256,7 @@ fn interposable_constant_global_load_declines_to_fold() -> Result<(), IrError> {
             "interposable initializer must not fold"
         );
         let folded = constant_fold_load_from_const_ptr(
-            strong.as_global_constant_ptr(),
+            m.view(strong).as_global_constant_ptr(),
             i32_ty.as_type(),
             ApInt::zero(64),
             &dl,
@@ -507,7 +507,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
             )?
             .as_constant();
 
-        let offset = is_constant_offset_from_global(g.as_global_constant_ptr(), &dl)
+        let offset = is_constant_offset_from_global(m.view(g).as_global_constant_ptr(), &dl)
             .expect("global pointer has a constant offset");
         assert_eq!(offset.offset(), &ApInt::zero(64));
         assert_eq!(constant_fold_constant(c7, &dl, Some(&tli))?, c7);
@@ -584,10 +584,10 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
 
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("api_fold_inst", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let add = b.build_int_add::<i32, _, _, _>(c2_i, c5_i, "sum")?;
-        let instruction = InstructionView::try_from(add.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(add).into_erased())?;
         assert_eq!(
             constant_fold_inst_operands(
                 &instruction,
@@ -611,10 +611,10 @@ fn crate_root_constant_offset_from_global_resolves_global_pointer() -> Result<()
         let i8_ty = m.i8_type();
         let g = m.add_global_constant("root_export", i8_ty.const_int(0_i8))?;
 
-        let resolved = constant_offset_from_global(g.ptr_offset(3), &dl)
+        let resolved = constant_offset_from_global(m.view(g).ptr_offset(3), &dl)
             .expect("global pointer plus constant offset resolves");
 
-        assert_eq!(resolved.global(), g);
+        assert_eq!(resolved.global(), m.view(g));
         assert_eq!(resolved.offset(), &ApInt::from_words(64, &[3]));
         Ok(())
     })
@@ -630,16 +630,16 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("freeze_fold", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
         let concrete = b.build_freeze(i32_ty.const_int(42_i32), "concrete")?;
         let undef = b.build_freeze(i32_ty.as_type().get_undef(), "undef")?;
         let poison = b.build_freeze(i32_ty.as_type().get_poison(), "poison")?;
 
-        let concrete_inst = concrete.as_view();
-        let undef_inst = undef.as_view();
-        let poison_inst = poison.as_view();
+        let concrete_inst = b.view(concrete).as_view();
+        let undef_inst = b.view(undef).as_view();
+        let poison_inst = b.view(poison).as_view();
 
         assert_eq!(
             constant_fold_instruction(&concrete_inst, &dl, None)?,
@@ -674,7 +674,7 @@ fn recursive_gep_load_through_bitcast_from_global_folds() -> Result<(), IrError>
             m.ptr_type(0).as_type(),
             ConstantExprOpcode::GetElementPtr,
             [
-                g.as_global_constant_ptr().into_erased(),
+                m.view(g).as_global_constant_ptr().into_erased(),
                 zero.into_erased(),
                 one.into_erased(),
             ],
@@ -685,7 +685,7 @@ fn recursive_gep_load_through_bitcast_from_global_folds() -> Result<(), IrError>
 
         let resolved = constant_offset_from_global(gep, &dl)
             .expect("recursive GEP offset resolves to the base global");
-        assert_eq!(resolved.global(), g);
+        assert_eq!(resolved.global(), m.view(g));
         assert_eq!(resolved.offset(), &ApInt::from_words(64, &[4]));
 
         let folded =
@@ -716,7 +716,11 @@ fn non_integral_pointer_load_through_bitcast_declines() -> Result<(), IrError> {
 
         assert!(dl.is_non_integral_address_space(1));
         assert_eq!(
-            constant_fold_load_through_bitcast(g.as_global_constant_ptr(), i64_ty.as_type(), &dl)?,
+            constant_fold_load_through_bitcast(
+                m.view(g).as_global_constant_ptr(),
+                i64_ty.as_type(),
+                &dl
+            )?,
             None
         );
         assert_eq!(
@@ -742,14 +746,15 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type_no_params(f32_ty, false);
         let f = m.add_function_dyn("denormal_attr", fn_ty, Linkage::External)?;
-        f.set_string_attribute(&m, AttrIndex::Function, "denormal-fp-math", "ieee,ieee");
-        f.set_string_attribute(
+        m.view(f)
+            .set_string_attribute(&m, AttrIndex::Function, "denormal-fp-math", "ieee,ieee");
+        m.view(f).set_string_attribute(
             &m,
             AttrIndex::Function,
             "denormal-fp-math-f32",
             "positive-zero,positive-zero",
         );
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let denormal =
             ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
@@ -757,7 +762,7 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
         let lhs = f32_ty.const_ap_float(&denormal)?;
         let rhs = f32_ty.const_ap_float(&denormal)?;
         let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
-        let instruction = InstructionView::try_from(add.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(add).into_erased())?;
 
         let folded = constant_fold_instruction(&instruction, &dl, None)?
             .expect("f32 denormal inputs fold after f32 attribute flush");
@@ -792,14 +797,14 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
             .linkage(Linkage::External)
             .function_attr_group(0)
             .build()?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let denormal =
             ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
         let lhs = f32_ty.const_ap_float(&denormal)?;
         let rhs = f32_ty.const_ap_float(&denormal)?;
         let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
-        let instruction = InstructionView::try_from(add.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(add).into_erased())?;
 
         let folded = constant_fold_instruction(&instruction, &dl, None)?
             .expect("f32 denormal inputs fold after attribute-group f32 flush");
@@ -882,13 +887,13 @@ fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type_no_params(f32_ty, false);
         let f = m.add_function_dyn("nsz_fadd", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let one = f32_ty.const_float(1.0);
         let two = f32_ty.const_float(2.0);
         let add =
             b.build_fp_add_fmf::<f32, _, _, _>(one, two, FastMathFlags::NO_SIGNED_ZEROS, "sum")?;
-        let instruction = InstructionView::try_from(add.into_erased())?;
+        let instruction = InstructionView::try_from(b.view(add).into_erased())?;
         let operands = [one.as_constant(), two.as_constant()];
 
         assert_eq!(
@@ -970,7 +975,7 @@ fn ptrtoint_eq_null_folds_to_false_for_nonweak_global() -> Result<(), IrError> {
         let ptrtoint = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().into_erased()],
+            [m.view(g).as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1047,7 +1052,7 @@ fn ptrtoint_pair_eq_folds_via_pointer_operand_compare() -> Result<(), IrError> {
         let lhs = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g1.as_global_constant_ptr().into_erased()],
+            [m.view(g1).as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1055,7 +1060,7 @@ fn ptrtoint_pair_eq_folds_via_pointer_operand_compare() -> Result<(), IrError> {
         let rhs = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [g2.as_global_constant_ptr().into_erased()],
+            [m.view(g2).as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1087,7 +1092,7 @@ fn same_base_inbounds_gep_ult_folds_via_offset_compare() -> Result<(), IrError> 
         let i64_ty = m.i64_type();
         let ptr_ty = m.ptr_type(0);
         let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
-        let base = g.as_global_constant_ptr();
+        let base = m.view(g).as_global_constant_ptr();
         let four = i64_ty.const_int(4_i64).as_constant();
         let eight = i64_ty.const_int(8_i64).as_constant();
         let inbounds = ConstantExprOptions::new()
@@ -1135,7 +1140,7 @@ fn non_inbounds_same_base_gep_eq_still_folds() -> Result<(), IrError> {
         let i64_ty = m.i64_type();
         let ptr_ty = m.ptr_type(0);
         let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
-        let base = g.as_global_constant_ptr();
+        let base = m.view(g).as_global_constant_ptr();
         let four = i64_ty.const_int(4_i64).as_constant();
         let eight = i64_ty.const_int(8_i64).as_constant();
         let lhs = m.constant_expr_with_options(
@@ -1182,7 +1187,7 @@ fn non_inbounds_same_base_gep_ult_declines_to_fold() -> Result<(), IrError> {
         let i64_ty = m.i64_type();
         let ptr_ty = m.ptr_type(0);
         let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
-        let base = g.as_global_constant_ptr();
+        let base = m.view(g).as_global_constant_ptr();
         let four = i64_ty.const_int(4_i64).as_constant();
         let eight = i64_ty.const_int(8_i64).as_constant();
         let lhs = m.constant_expr_with_options(
@@ -1236,8 +1241,8 @@ fn same_base_gep_offset_ult_folds_via_offset_compare() -> Result<(), IrError> {
         let dl = DataLayout::parse("e-p:64:64:64")?;
         let i8_ty = m.i8_type();
         let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
-        let lhs = g.ptr_offset(4);
-        let rhs = g.ptr_offset(8);
+        let lhs = m.view(g).ptr_offset(4);
+        let rhs = m.view(g).ptr_offset(8);
 
         let folded = constant_fold_compare_inst_operands(
             CmpPredicate::Int(IntPredicate::Ult),
@@ -1272,8 +1277,8 @@ fn nested_gep_over_gep_offset_mid_folds_via_offset_compare() -> Result<(), IrErr
         let i64_ty = m.i64_type();
         let ptr_ty = m.ptr_type(0);
         let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
-        let mid_lhs = g.ptr_offset(4);
-        let mid_rhs = g.ptr_offset(4);
+        let mid_lhs = m.view(g).ptr_offset(4);
+        let mid_rhs = m.view(g).ptr_offset(4);
         let one = i64_ty.const_int(1_i64).as_constant();
         let two = i64_ty.const_int(2_i64).as_constant();
         let inbounds = ConstantExprOptions::new()
@@ -1321,8 +1326,8 @@ fn different_base_gep_offset_declines_to_fold() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let g1 = m.add_global_constant("g1", i8_ty.const_int(0_i8))?;
         let g2 = m.add_global_constant("g2", i8_ty.const_int(0_i8))?;
-        let lhs = g1.ptr_offset(4);
-        let rhs = g2.ptr_offset(8);
+        let lhs = m.view(g1).ptr_offset(4);
+        let rhs = m.view(g2).ptr_offset(8);
 
         assert_eq!(
             constant_fold_compare_inst_operands(
@@ -1361,7 +1366,10 @@ fn gep_i32_index_canonicalizes_to_i8_offset() -> Result<(), IrError> {
         let gep = m.constant_expr_with_options(
             ptr_ty.as_type(),
             ConstantExprOpcode::GetElementPtr,
-            [g.as_global_constant_ptr().into_erased(), four.into_erased()],
+            [
+                m.view(g).as_global_constant_ptr().into_erased(),
+                four.into_erased(),
+            ],
             [],
             [],
             ConstantExprOptions::new()
@@ -1371,10 +1379,10 @@ fn gep_i32_index_canonicalizes_to_i8_offset() -> Result<(), IrError> {
 
         let folded = constant_fold_constant(gep, &dl, None)?;
 
-        assert_eq!(folded.to_string(), g.ptr_offset(16).to_string());
+        assert_eq!(folded.to_string(), m.view(g).ptr_offset(16).to_string());
         let resolved = constant_offset_from_global(folded, &dl)
             .expect("canonical i8 GEP resolves to base + offset");
-        assert_eq!(resolved.global(), g);
+        assert_eq!(resolved.global(), m.view(g));
         assert_eq!(resolved.offset(), &ApInt::from_words(64, &[16]));
         Ok(())
     })
@@ -1399,7 +1407,10 @@ fn nested_gep_merges_into_single_i8_offset() -> Result<(), IrError> {
         let inner = m.constant_expr_with_options(
             ptr_ty.as_type(),
             ConstantExprOpcode::GetElementPtr,
-            [g.as_global_constant_ptr().into_erased(), one.into_erased()],
+            [
+                m.view(g).as_global_constant_ptr().into_erased(),
+                one.into_erased(),
+            ],
             [],
             [],
             inbounds.clone(),
@@ -1415,10 +1426,10 @@ fn nested_gep_merges_into_single_i8_offset() -> Result<(), IrError> {
 
         let folded = constant_fold_constant(outer, &dl, None)?;
 
-        assert_eq!(folded.to_string(), g.ptr_offset(8).to_string());
+        assert_eq!(folded.to_string(), m.view(g).ptr_offset(8).to_string());
         let resolved = constant_offset_from_global(folded, &dl)
             .expect("merged nested GEP resolves to base + offset");
-        assert_eq!(resolved.global(), g);
+        assert_eq!(resolved.global(), m.view(g));
         assert_eq!(resolved.offset(), &ApInt::from_words(64, &[8]));
         Ok(())
     })
@@ -1440,7 +1451,7 @@ fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
         let i64_ty = m.i64_type();
         let ptr_ty = m.ptr_type(0);
         let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
-        let g_ptr = g.as_global_constant_ptr();
+        let g_ptr = m.view(g).as_global_constant_ptr();
         let one = i64_ty.const_int(1_i64).as_constant();
         let neg_one = i64_ty.const_int(-1_i64).as_constant();
         let inbounds = ConstantExprOptions::new()
@@ -1474,7 +1485,7 @@ fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
         assert_eq!(folded.to_string(), g_ptr.to_string());
         let resolved =
             constant_offset_from_global(folded, &dl).expect("cancelling GEP resolves to base");
-        assert_eq!(resolved.global(), g);
+        assert_eq!(resolved.global(), m.view(g));
         assert_eq!(resolved.offset(), &ApInt::zero(64));
         Ok(())
     })
@@ -1514,7 +1525,7 @@ fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), 
         let h_int = m.constant_expr(
             i64_ty.as_type(),
             ConstantExprOpcode::PtrToInt,
-            [h.as_global_constant_ptr().into_erased()],
+            [m.view(h).as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -1527,7 +1538,7 @@ fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), 
             ptr_ty.as_type(),
             ConstantExprOpcode::GetElementPtr,
             [
-                g.as_global_constant_ptr().into_erased(),
+                m.view(g).as_global_constant_ptr().into_erased(),
                 h_int.into_erased(),
             ],
             [],

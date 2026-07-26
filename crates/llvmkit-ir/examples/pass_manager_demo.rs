@@ -84,29 +84,29 @@ impl<'ctx> FunctionPass<'ctx> for ReportFunctionPass {
 pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let f = m.add_typed_function::<i32, (bool, i32, i32), _>("select_or_add", Linkage::External)?;
-    let entry = f.append_basic_block(m, "entry");
-    let then_bb = f.append_basic_block(m, "then");
-    let else_bb = f.append_basic_block(m, "else");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let then_bb = m.view(f).append_basic_block(m, "then");
+    let else_bb = m.view(f).append_basic_block(m, "else");
     // `merge`'s single `i32` parameter is the diamond's head-phi: the `then`
     // and `else` arms carry their values in as block arguments below.
     let bwp = IRBuilder::new_for::<i32>(m);
     let (merge, params) =
-        bwp.append_block_with_params(f.as_function(), &[i32_ty.as_type()], "merge")?;
-    let then_label = then_bb.label();
-    let else_label = else_bb.label();
-    let merge_label = merge.label();
+        bwp.append_block_with_params(m.view(f).as_function(), &[i32_ty.as_type()], "merge")?;
+    let then_label = then_bb.id();
+    let else_label = else_bb.id();
+    let merge_label = merge.id();
 
-    let (cond, x, y) = f.params();
+    let (cond, x, y) = m.view(f).params();
 
     IRBuilder::at_end(entry).build_cond_br(cond, then_label, else_label)?;
 
     let bt = IRBuilder::at_end(then_bb);
     let add_xy = bt.build_int_add(x, y, "add_xy")?;
-    bt.build_br_with_args(merge_label, &[add_xy.into_erased()])?;
+    bt.build_br_with_args(merge_label, &[m.view(add_xy).into_erased()])?;
 
     let be = IRBuilder::at_end(else_bb);
     let sub_xy = be.build_int_sub(x, y, "sub_xy")?;
-    be.build_br_with_args(merge_label, &[sub_xy.into_erased()])?;
+    be.build_br_with_args(merge_label, &[m.view(sub_xy).into_erased()])?;
 
     let bm = IRBuilder::at_end(merge);
     // `params[0]` is `merge`'s head-phi, seeded with `[ %add_xy, %then ]` and

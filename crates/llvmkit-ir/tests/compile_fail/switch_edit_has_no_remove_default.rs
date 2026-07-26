@@ -19,7 +19,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for SwitchNoRemoveDefaul
         let reshape = cx.mutate();
         let bb = reshape.function().entry_block().expect("entry");
         // `SwitchEdit` has no `remove_default`: a switch must keep its default.
-        reshape.edit_switch(&bb)?.remove_default();
+        reshape.edit_switch(bb.id())?.remove_default();
         Ok(reshape.done())
     }
 }

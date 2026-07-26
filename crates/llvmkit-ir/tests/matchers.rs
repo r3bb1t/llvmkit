@@ -20,15 +20,15 @@ fn add_sub_allones_binds_operands() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
-        let y: IntValue<i32> = f.param(1)?.try_into()?;
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let y: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let sub = b.build_int_sub::<i32, _, _, _>(x, y, "s")?;
         let neg_one = i32_ty.const_int(-1_i32);
         let add = b.build_int_add::<i32, _, _, _>(sub, neg_one, "r")?;
 
-        let view = view_of(add.into_erased());
+        let view = view_of(b.view(add).into_erased());
         let (mx, my) = m_add(m_one_use(m_sub(m_value(), m_value())), m_all_ones())
             .match_view(&view)
             .expect("pattern should match");
@@ -46,17 +46,17 @@ fn one_use_gate_rejects_multi_use_subexpr() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
-        let y: IntValue<i32> = f.param(1)?.try_into()?;
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let y: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let sub = b.build_int_sub::<i32, _, _, _>(x, y, "s")?;
         let neg_one = i32_ty.const_int(-1_i32);
         let add = b.build_int_add::<i32, _, _, _>(sub, neg_one, "r")?;
         // Second user of `sub`, so it no longer has one use.
         let _other = b.build_int_add::<i32, _, _, _>(sub, x, "o")?;
 
-        let view = view_of(add.into_erased());
+        let view = view_of(b.view(add).into_erased());
         assert!(
             m_add(m_one_use(m_sub(m_value(), m_value())), m_all_ones())
                 .match_view(&view)
@@ -80,14 +80,14 @@ fn commutative_add_matches_swapped_operands() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
-        let y: IntValue<i32> = f.param(1)?.try_into()?;
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let y: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         // add %y, %x  (x is the second operand)
         let add = b.build_int_add::<i32, _, _, _>(y, x, "r")?;
 
-        let view = view_of(add.into_erased());
+        let view = view_of(b.view(add).into_erased());
         // Non-commutative fails (x is not operand 0)...
         assert!(
             m_add(m_specific(x.into_erased()), m_value())
@@ -110,19 +110,19 @@ fn not_and_neg_sugar() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let v: IntValue<i32> = f.param(0)?.try_into()?;
+        let v: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let not = b.build_int_xor::<i32, _, _, _>(v, i32_ty.const_int(-1_i32), "n")?;
         let neg = b.build_int_sub::<i32, _, _, _>(i32_ty.const_int(0_i32), v, "g")?;
 
         let (nv,) = m_not(m_value())
-            .match_view(&view_of(not.into_erased()))
+            .match_view(&view_of(b.view(not).into_erased()))
             .expect("m_not should match xor v, -1");
         assert_eq!(nv, v.into_erased());
 
         let (gv,) = m_neg(m_value())
-            .match_view(&view_of(neg.into_erased()))
+            .match_view(&view_of(b.view(neg).into_erased()))
             .expect("m_neg should match sub 0, v");
         assert_eq!(gv, v.into_erased());
         Ok(())
@@ -138,15 +138,15 @@ fn load_of_gep_binds_base() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let base: PointerValue = f.param(0)?.try_into()?;
-        let idx: IntValue<IntDyn> = f.param(1)?.try_into()?;
+        let base: PointerValue = m.view(f).param(0)?.try_into()?;
+        let idx: IntValue<IntDyn> = m.view(f).param(1)?.try_into()?;
         let gep = b.build_gep(i32_ty, base, [idx], "p")?;
         let load = b.build_load(i32_ty, gep, "v")?;
 
         let (bound,): (Value,) = m_load(m_gep(m_value()))
-            .match_view(&view_of(load))
+            .match_view(&view_of(b.view(load)))
             .expect("load-of-gep should match");
         assert_eq!(bound, base.into_erased());
         Ok(())
@@ -160,7 +160,7 @@ fn constant_predicates() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
 
         // Materialised constants; matched directly as Values.
         let zero = i32_ty.const_int(0_i32).into_erased();
@@ -198,21 +198,21 @@ fn two_step_specific_reuse() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
-        let y: IntValue<i32> = f.param(1)?.try_into()?;
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let y: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let or = b.build_int_or::<i32, _, _, _>(x, y, "o")?;
         let and = b.build_int_and::<i32, _, _, _>(x, y, "a")?;
 
         // Step 1: bind (a, b) from the `or`.
         let (a, bb) = m_or(m_value(), m_value())
-            .match_view(&view_of(or.into_erased()))
+            .match_view(&view_of(b.view(or).into_erased()))
             .expect("or matches");
         // Step 2: require the `and` to use exactly those, in either order.
         assert!(
             m_c_and(m_specific(a), m_specific(bb))
-                .match_view(&view_of(and.into_erased()))
+                .match_view(&view_of(b.view(and).into_erased()))
                 .is_some()
         );
         Ok(())
@@ -227,14 +227,15 @@ fn m_phi_binds_phi_kind() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
 
         // join(%p: i32): two unconditional predecessors merge here, each
         // carrying its own constant into the head-phi: `[1, entry], [2, other]`.
         let bwp = IRBuilder::new_for::<Dyn>(&m);
-        let (join, params) = bwp.append_block_with_params(f, &[i32_ty.as_type()], "join")?;
-        let join_label = join.label();
+        let (join, params) =
+            bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
+        let join_label = join.id();
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
@@ -257,13 +258,13 @@ fn m_phi_rejects_non_phi() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
-        let y: IntValue<i32> = f.param(1)?.try_into()?;
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let y: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let add = b.build_int_add::<i32, _, _, _>(x, y, "r")?;
 
-        let view = view_of(add.into_erased());
+        let view = view_of(b.view(add).into_erased());
         assert!(m_phi().match_view(&view).is_none());
         Ok(())
     })
@@ -277,14 +278,15 @@ fn m_phi_composes_with_m_one_use() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
 
         // join(%p: i32): two unconditional predecessors merge here, carrying
         // `[1, entry], [2, other]` into the head-phi.
         let bwp = IRBuilder::new_for::<Dyn>(&m);
-        let (join, params) = bwp.append_block_with_params(f, &[i32_ty.as_type()], "join")?;
-        let join_label = join.label();
+        let (join, params) =
+            bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
+        let join_label = join.id();
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)

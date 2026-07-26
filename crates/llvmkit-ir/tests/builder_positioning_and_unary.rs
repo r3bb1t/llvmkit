@@ -22,9 +22,9 @@ fn position_before_inserts_between_prev_and_anchor() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let a = b.build_int_add(n, 1_i32, "a")?;
         let (sealed_block, ret_inst) = b.build_ret(a)?;
         let _ = sealed_block;
@@ -54,13 +54,13 @@ fn position_past_allocas_anchors_after_alloca_prefix() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let slot = b.build_alloca(i32_ty, "slot")?;
         let zero = i32_ty.const_int(0_i32);
         b.build_store(zero, slot)?;
         b.build_ret_void()?;
-        let b2 = IRBuilder::new_for::<Dyn>(&m).position_past_allocas(f);
+        let b2 = IRBuilder::new_for::<Dyn>(&m).position_past_allocas(m.view(f));
         let _hoisted = b2.build_alloca(i32_ty, "hoisted")?;
         let text = format!("{m}");
         let pos_slot = text.find("%slot = alloca").expect("slot present");
@@ -83,10 +83,10 @@ fn save_and_restore_insert_point_before_terminator() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let saved = b.save_insert_point();
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let a = b.build_int_add(n, 1_i32, "a")?;
         let b2 = IRBuilder::new_for::<Dyn>(&m).restore_insert_point(saved)?;
         let extra = b2.build_int_add(n, 2_i32, "extra")?;
@@ -105,10 +105,10 @@ fn restore_insert_point_rejects_terminated_block() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let saved = b.save_insert_point();
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let a = b.build_int_add(n, 1_i32, "a")?;
         let _ = b.build_ret(a)?;
         let err = match IRBuilder::new_for::<Dyn>(&m).restore_insert_point(saved) {
@@ -118,6 +118,77 @@ fn restore_insert_point_rejects_terminated_block() -> Result<(), IrError> {
         assert!(matches!(err, IrError::InvalidOperation { .. }));
         Ok(())
     })
+}
+
+/// llvmkit-specific (llvmkit 2.0 id currency). Closest upstream construct is
+/// `Builder.SetInsertPoint(BB)` in `IRBuilder.h`, which takes a raw
+/// `BasicBlock*` recovered from a walk. Our linear
+/// [`IRBuilder::position_at_end`] consumes an `Unterminated` block token, so a
+/// pass that only kept the block's [`llvmkit_ir::BlockId`] reaches the same
+/// insertion point through the checked `_dyn` form.
+#[test]
+fn position_at_end_dyn_reopens_an_unterminated_block_from_its_id() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let entry_id = entry.id();
+        // The linear token is consumed here; only the id survives.
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a = b.build_int_add(n, 1_i32, "a")?;
+        // Give the block's linear token back to the builder and let it go:
+        // from here only `entry_id` names the block.
+        let _consumed = b.into_insert_block();
+
+        let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end_dyn(entry_id)?;
+        b2.build_ret(a)?;
+        let text = format!("{m}");
+        assert!(
+            text.contains("%a = add i32 %0, 1\n  ret i32 %a\n"),
+            "got:\n{text}"
+        );
+        Ok(())
+    })
+}
+
+/// Rust-side T2 regression mirroring
+/// [`restore_insert_point_rejects_terminated_block`]: the `_dyn` reposition
+/// carries no termination marker, so it enforces LLVM's
+/// `Verifier::visitBasicBlock` terminator invariant at run time instead.
+#[test]
+fn position_at_end_dyn_rejects_a_terminated_block() -> Result<(), IrError> {
+    Module::with_new("a", |m| {
+        let i32_ty = m.i32_type();
+        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let entry_id = entry.id();
+        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a = b.build_int_add(n, 1_i32, "a")?;
+        let _ = b.build_ret(a)?;
+
+        let err = match IRBuilder::new_for::<Dyn>(&m).position_at_end_dyn(entry_id) {
+            Ok(_) => panic!("a terminated block must not be reopened from its id"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, IrError::InvalidOperation { .. }));
+        Ok(())
+    })
+}
+
+/// The other `position_at_end_dyn` rejection — a [`llvmkit_ir::BlockId`] minted
+/// in a different module, reported as `IrError::ForeignValueId` — is deferred
+/// for the same reason as `id_roundtrip.rs`'s
+/// `foreign_tag_rejection_is_deferred_to_cycle_c`: two `Module::with_new`
+/// closures carry distinct lifetime brands, so a cross-module id is rejected at
+/// *compile* time and never reaches the runtime tag comparison. A genuine
+/// runtime foreign-tag test needs two modules sharing a brand *type*.
+#[test]
+fn position_at_end_dyn_foreign_id_rejection_is_deferred_to_cycle_c() {
+    // Intentionally empty: see the doc comment.
 }
 
 // --- Unary integer helpers --------------------------------------------
@@ -133,9 +204,9 @@ fn build_int_neg_emits_sub_zero() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let neg = b.build_int_neg(n, "neg")?;
         b.build_ret(neg)?;
         let text = format!("{m}");
@@ -155,9 +226,9 @@ fn build_int_neg_nsw_emits_sub_nsw() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let neg = b.build_int_neg_nsw(n, "neg")?;
         b.build_ret(neg)?;
         let text = format!("{m}");
@@ -177,9 +248,9 @@ fn build_int_not_emits_xor_minus_one() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let inv = b.build_int_not(n, "inv")?;
         b.build_ret(inv)?;
         let text = format!("{m}");
@@ -201,9 +272,9 @@ fn build_pointer_cast_same_addrspace_emits_bitcast() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: PointerValue = f.param(0)?.try_into()?;
+        let p: PointerValue = m.view(f).param(0)?.try_into()?;
         let cast = b.build_pointer_cast(p, ptr_ty, "cast")?;
         b.build_ret(cast)?;
         let text = format!("{m}");
@@ -226,9 +297,9 @@ fn build_is_null_emits_icmp_eq_null() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i1_ty, [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: PointerValue = f.param(0)?.try_into()?;
+        let p: PointerValue = m.view(f).param(0)?.try_into()?;
         let r = b.build_is_null(p, "isn")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -250,9 +321,9 @@ fn build_is_not_null_emits_icmp_ne_null() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i1_ty, [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: PointerValue = f.param(0)?.try_into()?;
+        let p: PointerValue = m.view(f).param(0)?.try_into()?;
         let r = b.build_is_not_null(p, "ok")?;
         b.build_ret(r)?;
         let text = format!("{m}");

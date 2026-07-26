@@ -19,9 +19,9 @@ fn catchswitch_within_none_unwind_to_caller() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("instructions.funclets", fn_ty, Linkage::External)?;
-        let cs1_block = f.append_basic_block(&m, "catchswitch1");
-        let cp1_block = f.append_basic_block(&m, "catchpad1");
-        let cp1_label = cp1_block.label();
+        let cs1_block = m.view(f).append_basic_block(&m, "catchswitch1");
+        let cp1_block = m.view(f).append_basic_block(&m, "catchpad1");
+        let cp1_label = cp1_block.id();
         {
             // Stub a terminator on the handler so the block is well-formed.
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(cp1_block);
@@ -47,10 +47,10 @@ fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let cs_block = f.append_basic_block(&m, "cs");
-        let cp_block = f.append_basic_block(&m, "cp");
-        let exit = f.append_basic_block(&m, "exit");
-        let cp_label = cp_block.label();
+        let cs_block = m.view(f).append_basic_block(&m, "cs");
+        let cp_block = m.view(f).append_basic_block(&m, "cp");
+        let exit = m.view(f).append_basic_block(&m, "exit");
+        let cp_label = cp_block.id();
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exit);
             bb_b.build_ret_void()?;
@@ -80,7 +80,7 @@ fn cleanuppad_within_none_empty_args() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let _ =
             b.build_cleanup_pad_within_none(Vec::<llvmkit_ir::value::Value>::new(), "clean.1")?;
@@ -103,7 +103,7 @@ fn cleanupret_unwind_to_caller() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let cp =
             b.build_cleanup_pad_within_none(Vec::<llvmkit_ir::value::Value>::new(), "clean")?;
@@ -131,11 +131,11 @@ fn catchret_to_label() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let cs_block = f.append_basic_block(&m, "cs_block");
-        let cp_block = f.append_basic_block(&m, "cp_block");
-        let return_block = f.append_basic_block(&m, "return");
-        let cp_label = cp_block.label();
-        let return_label = return_block.label();
+        let cs_block = m.view(f).append_basic_block(&m, "cs_block");
+        let cp_block = m.view(f).append_basic_block(&m, "cp_block");
+        let return_block = m.view(f).append_basic_block(&m, "return");
+        let cp_label = cp_block.id();
+        let return_label = return_block.id();
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(return_block);
             bb_b.build_ret_void()?;

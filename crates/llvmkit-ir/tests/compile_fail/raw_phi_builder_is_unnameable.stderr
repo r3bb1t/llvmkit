@@ -6,10 +6,7 @@ error[E0624]: method `build_int_phi` is private
    |
   ::: src/ir_builder.rs
    |
-   | /     pub(crate) fn build_int_phi<W, Name>(
-   | |         &self,
-   | |         name: Name,
-   | |     ) -> IrResult<PhiInst<'ctx, W, PhiOpen, B>>
+   | /     pub(crate) fn build_int_phi<W, Name>(&self, name: Name) -> IrResult<PhiInstId<W, B>>
    | |     where
    | |         Name: AsRef<str>,
    | |         W: crate::int_width::StaticIntWidth,
@@ -23,10 +20,7 @@ error[E0624]: method `build_fp_phi` is private
    |
   ::: src/ir_builder.rs
    |
-   | /     pub(crate) fn build_fp_phi<K, Name>(
-   | |         &self,
-   | |         name: Name,
-   | |     ) -> IrResult<FpPhiInst<'ctx, K, PhiOpen, B>>
+   | /     pub(crate) fn build_fp_phi<K, Name>(&self, name: Name) -> IrResult<FpPhiInstId<K, B>>
    | |     where
    | |         Name: AsRef<str>,
    | |         K: super::float_kind::StaticFloatKind,
@@ -40,10 +34,7 @@ error[E0624]: method `build_pointer_phi` is private
    |
   ::: src/ir_builder.rs
    |
-   | /     pub(crate) fn build_pointer_phi<Name>(
-   | |         &self,
-   | |         name: Name,
-   | |     ) -> IrResult<PointerPhiInst<'ctx, PhiOpen, B>>
+   | /     pub(crate) fn build_pointer_phi<Name>(&self, name: Name) -> IrResult<PointerPhiInstId<B>>
    | |     where
    | |         Name: AsRef<str>,
    | |_________________________- private method defined here

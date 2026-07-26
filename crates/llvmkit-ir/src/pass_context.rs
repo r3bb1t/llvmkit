@@ -62,7 +62,7 @@ use super::analysis::{
     FunctionAnalysisManager, ModuleAnalysis, ModuleAnalysisList, ModuleAnalysisManager,
     ModuleAnalysisSelector, PreservedAnalyses, RepairOutcome,
 };
-use super::basic_block::BasicBlockLabel;
+use super::basic_block::IntoBasicBlockLabel;
 use super::block_state::{Terminated, Unterminated};
 use super::cfg_update::CfgUpdate;
 use super::dominator_tree::DominatorTreeAnalysis;
@@ -78,7 +78,8 @@ use super::pass_access::{
 };
 use super::phi_check::{check_phi_incoming, render_phi_violation};
 use super::r#type::{Type, TypeSlot};
-use super::value::{IsValue, Typed, Value, ValueSlot};
+use super::value::{IntoErasedValue, IsValue, Typed, Value, ValueSlot};
+use super::value_id::{BlockId, FunctionId, ValueId, ViewIn};
 use super::worklist::Worklist;
 
 /// Read-only view of a basic block under its owning module brand.
@@ -107,6 +108,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     #[inline]
     pub(super) fn as_basic_block(&self) -> BasicBlock<'ctx, Dyn, Terminated, B> {
         BasicBlock::from_parts(self.id, self.module, self.ty)
+    }
+
+    /// Storable, module-tagged id for the viewed block — the currency the
+    /// CFG-edit surface speaks ([`FnReshape::edit_terminator`],
+    /// [`FnReshape::split_block`], every `redirect_*`). The view itself borrows
+    /// `'ctx`; the id does not, so this is how a pass stashes "which block" in
+    /// a `Vec`, a map key, or a struct field.
+    #[inline]
+    pub fn id(&self) -> BlockId<Dyn, B> {
+        self.as_basic_block().id()
     }
 
     /// Optional textual name.
@@ -229,6 +240,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionView<'ctx, B> {
         self.function
     }
 
+    /// Storable, module-tagged id for the viewed function. The lifetime-free
+    /// half of this view: stash the id, re-`view` it when a read is needed.
+    #[inline]
+    pub fn id(self) -> FunctionId<Dyn, B> {
+        self.function.id()
+    }
+
     /// Function name.
     #[inline]
     pub fn name(self) -> &'ctx str {
@@ -344,6 +362,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
     #[inline]
     pub fn as_function(self) -> FunctionValue<'ctx, Dyn, B> {
         self.function
+    }
+
+    /// Storable, module-tagged id for this function. Mirrors
+    /// [`FunctionView::id`].
+    #[inline]
+    pub fn id(self) -> FunctionId<Dyn, B> {
+        self.function.id()
     }
 
     /// Function name.
@@ -611,7 +636,7 @@ where
     /// [`Self::replace_all_uses`] maintain it (push cascade + self-remove), so a
     /// worklist pass reaches a fixpoint without a restart-scan. `None` (the
     /// default) is exactly today's behavior — no overhead, no behavior change.
-    worklist: core::cell::RefCell<Option<Worklist>>,
+    worklist: core::cell::RefCell<Option<Worklist<B>>>,
 }
 
 impl<'m, 'r, 'ctx, B, R> FnPatch<'m, 'r, 'ctx, B, R>
@@ -735,17 +760,18 @@ where
     /// cannot fail.
     #[inline]
     pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
-        let id = target.id();
+        let id = target.slot();
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
         // Capture operand ids before erasing (erase drops their uses). Push them
         // all unconditionally — `Worklist::pop` is panic-safe and skips any id that
         // is not an instruction (constant/param operands), so no filter is needed
         // here. Then remove `id` itself so the erased instruction never surfaces.
         if let Some(wl) = self.worklist.borrow_mut().as_mut() {
+            let tag = self.module.id();
             for op_id in inst.as_view().operand_ids() {
-                wl.push(op_id);
+                wl.push(ValueId::from_raw(tag, op_id));
             }
-            wl.remove(id);
+            wl.remove(ValueId::from_raw(tag, id));
         }
         inst.erase_from_parent(self.module);
         self.dirty.set(true);
@@ -771,6 +797,10 @@ where
     /// Replace every use of `view`'s result with `replacement`, leaving the
     /// instruction itself in place. Mirrors
     /// [`Instruction::replace_all_uses_with`].
+    ///
+    /// `replacement` is an erased-by-design operand position, so it takes a
+    /// handle *or* a storable id ([`IntoErasedValue`]) — a pass that holds a
+    /// builder result needs no intervening `view`.
     #[inline]
     pub fn replace_all_uses<V>(
         &self,
@@ -778,16 +808,20 @@ where
         replacement: V,
     ) -> IrResult<()>
     where
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
-        let id = view.id();
+        let replacement = replacement.into_erased_value(self.module.module_ref())?;
+        let id = view.slot();
         // Capture the former users only when a worklist is active — the
         // inactive path must stay allocation-free (the field's zero-overhead
         // promise). The `borrow()` is a let-RHS temporary, released before the
         // later `borrow_mut()`. Users must be captured *before* the RAUW rewires
         // them.
-        let users: Vec<ValueSlot> = if self.worklist.borrow().is_some() {
-            view.into_erased().users().map(|u| u.id()).collect()
+        let users: Vec<ValueId<B>> = if self.worklist.borrow().is_some() {
+            view.into_erased()
+                .users()
+                .map(|u| u.to_erased().id())
+                .collect()
         } else {
             Vec::new()
         };
@@ -823,7 +857,7 @@ where
         );
         let mut wl = Worklist::new();
         for inst in self.body_instructions() {
-            wl.push(inst.id());
+            wl.push(inst.to_erased().id());
         }
         *self.worklist.borrow_mut() = Some(wl);
         WorklistScope { patch: self }
@@ -1066,7 +1100,8 @@ where
     }
 
     /// Replace every use of `view`'s result with `replacement`. Delegated from
-    /// the inner [`FnPatch`]; preserves the CFG.
+    /// the inner [`FnPatch`]; preserves the CFG. Takes a handle or a storable
+    /// id, exactly as [`FnPatch::replace_all_uses`] does.
     #[inline]
     pub fn replace_all_uses<V>(
         &self,
@@ -1074,7 +1109,7 @@ where
         replacement: V,
     ) -> IrResult<()>
     where
-        V: IsValue<'ctx, B>,
+        V: IntoErasedValue<'ctx, B>,
     {
         self.patch.replace_all_uses(view, replacement)
     }
@@ -1131,15 +1166,41 @@ where
             .expect("pushed value is A::Result")
     }
 
+    /// Resolve a caller-supplied [`BlockId`] into the ephemeral read-only view
+    /// the mutator's internals work through. The single choke point for the
+    /// reshape surface's block arguments: a foreign id is rejected here, before
+    /// any successor scan, phi read, or arena write.
+    #[inline]
+    fn resolve_block(&self, block: BlockId<Dyn, B>) -> IrResult<BasicBlockView<'ctx, B>> {
+        let module_ref = self.patch.module_mut().module_ref();
+        let slot = block.into_basic_block_label(module_ref)?.slot();
+        let label_ty = module_ref.module().label_type().as_type().id();
+        Ok(BasicBlockView::new(BasicBlock::from_parts(
+            slot, module_ref, label_ty,
+        )))
+    }
+
     /// Split `block` before instruction `before`: `before` and everything after
     /// it move into a fresh block (named `name`) appended to the function; the
     /// original block keeps the prefix. The caller is responsible for adding a
     /// terminator flowing to the new block. The genuine CFG operation that makes
     /// this rung distinct from [`FnPatch`]; wired to [`BasicBlock::split_at`].
+    ///
+    /// `block` is a storable [`BlockId`] — the same currency the `redirect_*`
+    /// surface takes — resolved against this function's module before any arena
+    /// work, so a foreign id is rejected with [`IrError::ForeignValueId`]. The
+    /// *return*, by contrast, is deliberately the linear
+    /// `BasicBlock<Unterminated>` and not a [`BlockId`]: the fresh block owes a
+    /// terminator, and that obligation is carried by a non-`Copy` handle. Ids
+    /// are `Copy`, so handing one back here would silently discard the
+    /// obligation. Take `.id()` off it once it is terminated.
+    ///
+    /// Errors: [`IrError::ForeignValueId`] if `block` is not from this module;
+    /// otherwise the errors of [`BasicBlock::split_at`].
     #[inline]
     pub fn split_block<Name>(
         &self,
-        block: &BasicBlockView<'ctx, B>,
+        block: BlockId<Dyn, B>,
         before: &InstructionView<'ctx, B>,
         name: Name,
     ) -> IrResult<BasicBlock<'ctx, Dyn, Unterminated, B>>
@@ -1152,12 +1213,14 @@ where
         // purely this rewiring: each edge `block → s` becomes `new_block → s`
         // (the caller wires the fresh `block → new_block` edge later, through
         // its own terminator, so that edge is not this method's to record).
-        let source = block.as_basic_block();
-        let source_id = source.id();
+        let source = self.resolve_block(block)?.as_basic_block();
+        let source_id = source.slot();
+        let module_ref = source.module_ref();
+        let label_ty = module_ref.module().label_type().as_type().id();
         let successors = crate::cfg::block_successors(&source);
 
         let new_block = source.split_at(self.patch.module_mut(), before, name)?;
-        let new_id = new_block.id();
+        let new_id = new_block.slot();
 
         // The terminator moved to `new_block`, so every edge that used to
         // leave `block` now leaves `new_block`. Phis in the successors
@@ -1167,9 +1230,9 @@ where
         // BasicBlock::replacePhiUsesWith does for upstream splitters).
         for succ in &successors {
             let succ_block: BasicBlock<'ctx, Dyn, Terminated, B> =
-                BasicBlock::from_parts(succ.id, succ.module, succ.ty);
+                BasicBlock::from_parts(succ.slot(), module_ref, label_ty);
             for inst_id in succ_block.instruction_ids() {
-                let data = succ.module.value_data(inst_id);
+                let data = module_ref.value_data(inst_id);
                 let crate::value::ValueKindData::Instruction(inst) = &data.kind else {
                     continue;
                 };
@@ -1189,7 +1252,7 @@ where
         if !successors.is_empty() {
             let mut log = self.cfg_updates.borrow_mut();
             for succ in &successors {
-                let succ_id = succ.id();
+                let succ_id = succ.slot();
                 log.push(CfgUpdate::delete(source_id, succ_id));
                 log.push(CfgUpdate::insert(new_id, succ_id));
             }
@@ -1322,12 +1385,12 @@ where
         slot: EditSlot,
     ) -> IrResult<()> {
         let from_block = from.as_basic_block();
-        let from_id = from_block.id();
+        let from_id = from_block.slot();
         let ctx = self.patch.module_mut().core_ref().context();
 
         // Mutate the terminator and learn the removed target block.
         let target_id = match slot {
-            EditSlot::SwitchCase(to_id) => {
+            EditSlot::SwitchCase(id) => {
                 let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
                 else {
                     unreachable!("remove_slot: terminator is not an instruction");
@@ -1340,7 +1403,7 @@ where
                 // operand of the switch).
                 let mut dropped_case_values: Vec<ValueSlot> = Vec::new();
                 switch.cases.borrow_mut().retain(|(case_val, dest)| {
-                    if *dest == to_id {
+                    if *dest == id {
                         dropped_case_values.push(case_val.get());
                         false
                     } else {
@@ -1356,7 +1419,7 @@ where
                         uses.remove(pos);
                     }
                 }
-                to_id
+                id
             }
             EditSlot::BrThen | EditSlot::BrElse => {
                 let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
@@ -1421,7 +1484,7 @@ where
         );
         let surviving = crate::cfg::block_successors(&from_block)
             .iter()
-            .filter(|succ| succ.id() == target_id)
+            .filter(|succ| succ.slot() == target_id)
             .count();
         self.drop_incoming_from_pred(&target_block, from_id, surviving)?;
 
@@ -1460,12 +1523,28 @@ where
         from: &BasicBlockView<'ctx, B>,
         term_id: ValueSlot,
         slot: EditSlot,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        phi_values: &[Value<'ctx, B>],
+        new_to: BlockId<Dyn, B>,
+        phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
         let from_block = from.as_basic_block();
-        let from_id = from_block.id();
-        let new_id = new_to.id();
+        let from_id = from_block.slot();
+        // Resolve the target id against this function's module *first*: a
+        // foreign `BlockId` is rejected here, before any successor scan or phi
+        // read touches the arena.
+        let new_to = new_to.into_basic_block_label(from_block.module_ref())?;
+        let new_id = new_to.slot();
+        // Same for the seed values: resolve every caller-supplied `ValueId`
+        // against this module *before* any precondition scan, so a foreign id
+        // is rejected while the terminator and every phi are still untouched.
+        // These views are ephemeral — they live only for the rest of this call.
+        let phi_values: Vec<Value<'ctx, B>> = phi_values
+            .iter()
+            .map(|id| {
+                id.resolve_in(from_block.module_ref())
+                    .ok_or(IrError::ForeignValueId)
+            })
+            .collect::<IrResult<_>>()?;
+        let phi_values = &phi_values[..];
         let ctx = self.patch.module_mut().core_ref().context();
 
         // Centralized edge precondition: `from` must not already reach
@@ -1478,7 +1557,7 @@ where
         // priority.
         if crate::cfg::block_successors(&from_block)
             .iter()
-            .any(|succ| succ.id() == new_id)
+            .any(|succ| succ.slot() == new_id)
         {
             return Err(IrError::InvalidOperation {
                 message: "redirect: `from` already reaches `new_to`",
@@ -1652,7 +1731,7 @@ where
             BasicBlock::<Dyn, Terminated, B>::from_parts(old_id, from_block.module, from_block.ty);
         let surviving = crate::cfg::block_successors(&from_block)
             .iter()
-            .filter(|succ| succ.id() == old_id)
+            .filter(|succ| succ.slot() == old_id)
             .count();
         self.drop_incoming_from_pred(&old_block, from_id, surviving)?;
 
@@ -1729,18 +1808,24 @@ where
     /// narrow) and then reuse it — the cached id is stale and an edge op on it
     /// would hit an `unreachable!`. Re-narrow with a fresh `edit_*` instead.
     ///
-    /// Errors: [`IrError::InvalidOperation`] if `from` has no terminator.
+    /// `from` is a storable [`BlockId`] — the whole CFG-edit surface speaks one
+    /// currency: block ids in (`from`, `new_to`, `old_to`), value ids for the
+    /// phi seeds. Take an id off a [`BasicBlockView`] with
+    /// [`BasicBlockView::id`].
+    ///
+    /// Errors: [`IrError::ForeignValueId`] if `from` is not from this module;
+    /// [`IrError::InvalidOperation`] if `from` has no terminator.
     #[inline]
     pub fn edit_terminator<'e>(
         &'e self,
-        from: &BasicBlockView<'ctx, B>,
+        from: BlockId<Dyn, B>,
     ) -> IrResult<TermEdit<'e, 'm, 'r, 'ctx, B, R>> {
-        let from_block = from.as_basic_block();
+        let from_view = self.resolve_block(from)?;
+        let from_block = from_view.as_basic_block();
         let term = from_block.terminator().ok_or(IrError::InvalidOperation {
             message: "edit_terminator: `from` has no terminator",
         })?;
-        let term_id = term.id();
-        let from_view = *from;
+        let term_id = term.slot();
         let kind = term.terminator_kind().ok_or(IrError::InvalidOperation {
             message: "edit_terminator: `from`'s last instruction is not a terminator",
         })?;
@@ -1793,7 +1878,7 @@ where
     #[inline]
     pub fn edit_switch<'e>(
         &'e self,
-        from: &BasicBlockView<'ctx, B>,
+        from: BlockId<Dyn, B>,
     ) -> IrResult<SwitchEdit<'e, 'm, 'r, 'ctx, B, R>> {
         match self.edit_terminator(from)? {
             TermEdit::Switch(edit) => Ok(edit),
@@ -1811,7 +1896,7 @@ where
     #[inline]
     pub fn edit_cond_br<'e>(
         &'e self,
-        from: &BasicBlockView<'ctx, B>,
+        from: BlockId<Dyn, B>,
     ) -> IrResult<CondBrEdit<'e, 'm, 'r, 'ctx, B, R>> {
         match self.edit_terminator(from)? {
             TermEdit::CondBr(edit) => Ok(edit),
@@ -1830,7 +1915,7 @@ where
     #[inline]
     pub fn edit_br<'e>(
         &'e self,
-        from: &BasicBlockView<'ctx, B>,
+        from: BlockId<Dyn, B>,
     ) -> IrResult<BrEdit<'e, 'm, 'r, 'ctx, B, R>> {
         match self.edit_terminator(from)? {
             TermEdit::Br(edit) => Ok(edit),
@@ -1848,7 +1933,7 @@ where
     #[inline]
     pub fn edit_invoke<'e>(
         &'e self,
-        from: &BasicBlockView<'ctx, B>,
+        from: BlockId<Dyn, B>,
     ) -> IrResult<InvokeEdit<'e, 'm, 'r, 'ctx, B, R>> {
         match self.edit_terminator(from)? {
             TermEdit::Invoke(edit) => Ok(edit),
@@ -1866,7 +1951,7 @@ where
     #[inline]
     pub fn edit_callbr<'e>(
         &'e self,
-        from: &BasicBlockView<'ctx, B>,
+        from: BlockId<Dyn, B>,
     ) -> IrResult<CallBrEdit<'e, 'm, 'r, 'ctx, B, R>> {
         match self.edit_terminator(from)? {
             TermEdit::CallBr(edit) => Ok(edit),
@@ -1877,17 +1962,21 @@ where
     }
 
     /// Insert a fully-witnessed phi at `block`'s phi head from **typed**
-    /// incomings, and return its result as the same typed handle `V`.
+    /// incomings, and return its result as the same typed id `Id`.
     ///
-    /// Every incoming shares the one handle type `V`, so the phi's result type is
+    /// Every incoming shares the one id type `Id`, so the phi's result type is
     /// derived from them (no restated type argument — the erased
     /// [`Self::insert_phi_dyn`] is what takes a `Type`), and mixing a wrong-typed
     /// incoming is a **compile error** rather than the runtime coherence error
-    /// the erased path raises. For a statically-marked `V` (`IntValue<i32>`,
-    /// `PointerValue`, `FloatValue<f64>`, …) the type-agreement obligation the
+    /// the erased path raises. For a statically-marked `Id` (`IntValueId<i32>`,
+    /// `PointerValueId`, `FloatValueId<f64>`, …) the type-agreement obligation the
     /// verifier and parser check is discharged at compile time; for an
-    /// erased-marker `V` (`IntValue<IntDyn>`) the width still varies per handle,
+    /// erased-marker `Id` (`IntValueId<IntDyn>`) the width still varies per id,
     /// so the shared runtime coherence check still applies.
+    ///
+    /// In *and* out this is id currency: the incomings are the storable ids the
+    /// builders hand back, and the result is the storable id of the new phi —
+    /// view it with [`Module::view`](crate::Module::view) when a read is needed.
     ///
     /// The completeness and dominance obligations are *not* in the type (the CFG
     /// shape is dynamic), so they are witnessed at the call exactly as
@@ -1897,35 +1986,47 @@ where
     /// a zero-incoming phi has no type to give — use [`Self::insert_phi_dyn`] for
     /// that degenerate case.
     ///
-    /// Errors: `IrError::InvalidOperation` if `incomings` is empty; otherwise the
-    /// same errors as [`Self::insert_phi_dyn`] (dominance / coherence).
+    /// Errors: `IrError::InvalidOperation` if `incomings` is empty;
+    /// [`IrError::ForeignValueId`] if an incoming id is not from this module;
+    /// otherwise the same errors as [`Self::insert_phi_dyn`] (dominance /
+    /// coherence).
     #[inline]
-    pub fn insert_phi<V, I>(
+    pub fn insert_phi<Id, I>(
         &mut self,
-        block: &BasicBlockView<'ctx, B>,
-        incomings: &[(V, BasicBlockLabel<'ctx, Dyn, B>)],
-    ) -> IrResult<V>
+        block: BlockId<Dyn, B>,
+        incomings: &[(Id, BlockId<Dyn, B>)],
+    ) -> IrResult<Id>
     where
-        V: IsValue<'ctx, B> + Typed<'ctx, B> + TryFrom<Value<'ctx, B>, Error = IrError>,
+        Id: ViewIn<'ctx, B>,
+        Id::View: IsValue<'ctx, B> + Typed<'ctx, B> + TryFrom<Value<'ctx, B>, Error = IrError>,
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
     {
+        let module_ref = self.patch.module_mut().module_ref();
         let (first, _) = *incomings.first().ok_or(IrError::InvalidOperation {
             message: "insert_phi: needs at least one typed incoming to derive the \
                       result type; use insert_phi_dyn for the zero-incoming case",
         })?;
-        let ty = first.ty();
-        let erased: Vec<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> = incomings
-            .iter()
-            .map(|(value, pred)| (value.into_erased(), *pred))
-            .collect();
-        let phi = self.insert_phi_dyn::<I>(block, ty, &erased)?;
-        // Total by construction: the phi was created with `ty` == `V`'s type, so
-        // narrowing back to `V` cannot fail. The map guards the invariant rather
-        // than trusting it.
-        V::try_from(phi).map_err(|_| IrError::InvalidOperation {
+        // Resolve each incoming id to its ephemeral handle (tag-checked) and
+        // widen; a foreign id is rejected before any arena work.
+        let mut erased: Vec<(Value<'ctx, B>, BlockId<Dyn, B>)> =
+            Vec::with_capacity(incomings.len());
+        for (id, pred) in incomings {
+            let view = id.resolve_in(module_ref).ok_or(IrError::ForeignValueId)?;
+            erased.push((view.into_erased(), *pred));
+        }
+        let ty = first
+            .resolve_in(module_ref)
+            .ok_or(IrError::ForeignValueId)?
+            .ty();
+        let phi = self.insert_phi_value::<I>(block, ty, &erased)?;
+        // Total by construction: the phi was created with `ty` == `Id`'s type, so
+        // narrowing back to `Id::View` cannot fail. The narrow guards the
+        // invariant rather than trusting it, and only then is the id minted.
+        Id::View::try_from(phi).map_err(|_| IrError::InvalidOperation {
             message: "insert_phi: constructed phi type disagreed with the incoming \
                       handle type (internal invariant)",
-        })
+        })?;
+        Ok(Id::id_from_raw(module_ref.id(), phi.slot()))
     }
 
     /// Insert a fully-witnessed phi at `block`'s phi head from erased incomings,
@@ -1973,14 +2074,55 @@ where
     #[inline]
     pub fn insert_phi_dyn<I>(
         &mut self,
-        block: &BasicBlockView<'ctx, B>,
+        block: BlockId<Dyn, B>,
         ty: Type<'ctx, B>,
-        incomings: &[(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)],
+        incomings: &[(ValueId<B>, BlockId<Dyn, B>)],
+    ) -> IrResult<ValueId<B>>
+    where
+        R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
+    {
+        let module_ref = self.patch.module_mut().module_ref();
+        // Resolve the caller's value ids to ephemeral handles (tag-checked)
+        // before anything else; a foreign id is rejected with
+        // `IrError::ForeignValueId` while nothing has been touched.
+        let mut resolved: Vec<(Value<'ctx, B>, BlockId<Dyn, B>)> =
+            Vec::with_capacity(incomings.len());
+        for (id, pred) in incomings {
+            resolved.push((
+                id.resolve_in(module_ref).ok_or(IrError::ForeignValueId)?,
+                *pred,
+            ));
+        }
+        self.insert_phi_value::<I>(block, ty, &resolved)
+            .map(|phi| phi.id())
+    }
+
+    /// Shared core of [`Self::insert_phi`] / [`Self::insert_phi_dyn`]: every
+    /// obligation is witnessed here and the freshly created phi is handed back
+    /// as the ephemeral [`Value`] handle. Crate-private on purpose — the two
+    /// public wrappers are what mint the storable id (typed and erased
+    /// respectively), so the handle never escapes the module.
+    fn insert_phi_value<I>(
+        &mut self,
+        block: BlockId<Dyn, B>,
+        ty: Type<'ctx, B>,
+        incomings: &[(Value<'ctx, B>, BlockId<Dyn, B>)],
     ) -> IrResult<Value<'ctx, B>>
     where
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
     {
-        let target_id = block.as_basic_block().id();
+        let target_block = self.resolve_block(block)?.as_basic_block();
+        let target_id = target_block.slot();
+        // Resolve every predecessor id against this function's module up front:
+        // a foreign `BlockId` is rejected before any coherence, dominance, or
+        // arena work runs. The resolved labels are the ephemeral views the rest
+        // of this method reads through.
+        let module_ref = target_block.module_ref();
+        let incomings: Vec<_> = incomings
+            .iter()
+            .map(|(value, pred)| pred.into_basic_block_label(module_ref).map(|l| (*value, l)))
+            .collect::<IrResult<_>>()?;
+        let incomings = &incomings[..];
 
         // (1) Predecessor multiset of `block`: invert `block_successors` over
         // the function's blocks (the pattern `check_function_phi_coherence`
@@ -1989,9 +2131,9 @@ where
         let mut preds: Vec<ValueSlot> = Vec::new();
         for bb in self.function().basic_blocks() {
             let handle = bb.as_basic_block();
-            let pred_id = handle.id();
+            let pred_id = handle.slot();
             for succ in crate::cfg::block_successors(&handle) {
-                if succ.id() == target_id {
+                if succ.slot() == target_id {
                     preds.push(pred_id);
                 }
             }
@@ -2002,7 +2144,7 @@ where
         let ty_id = ty.id();
         let incoming_ids: Vec<(ValueSlot, ValueSlot)> = incomings
             .iter()
-            .map(|(value, pred)| (value.id, pred.id()))
+            .map(|(value, pred)| (value.id, pred.slot()))
             .collect();
         let ctx = self.patch.module_mut().core_ref().context();
         let value_ty_of = |id: ValueSlot| ctx.value_data(id).ty;
@@ -2026,7 +2168,7 @@ where
                 if let Ok(inst) = InstructionView::try_from(*value) {
                     let def_block = inst.parent();
                     if !dt.dominates_block(def_block, *pred) {
-                        dom_failure = Some((def_block.id(), pred.id()));
+                        dom_failure = Some((def_block.slot(), pred.slot()));
                         break;
                     }
                 }
@@ -2047,7 +2189,7 @@ where
         let phi_val = builder.make_phi_in_block(target_id, ty_id, "");
         for (value, pred) in incomings {
             let pred_block =
-                BasicBlock::<Dyn, Terminated, B>::from_parts(pred.id, pred.module, pred.ty);
+                BasicBlock::<Dyn, Terminated, B>::from_parts(pred.slot(), module_ref, pred.ty);
             builder.phi_add_incoming_from_value(phi_val, *value, pred_block)?;
         }
 
@@ -2137,11 +2279,7 @@ where
     /// path; see [`SwitchEdit::redirect_successor`] for the phi-values contract
     /// and errors.
     #[inline]
-    pub fn redirect(
-        &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        phi_values: &[Value<'ctx, B>],
-    ) -> IrResult<()> {
+    pub fn redirect(&self, new_to: BlockId<Dyn, B>, phi_values: &[ValueId<B>]) -> IrResult<()> {
         self.reshape.redirect_slot(
             &self.from,
             self.term_id,
@@ -2181,8 +2319,8 @@ where
     #[inline]
     pub fn redirect_then(
         &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        phi_values: &[Value<'ctx, B>],
+        new_to: BlockId<Dyn, B>,
+        phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
             &self.from,
@@ -2199,8 +2337,8 @@ where
     #[inline]
     pub fn redirect_else(
         &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        phi_values: &[Value<'ctx, B>],
+        new_to: BlockId<Dyn, B>,
+        phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
             &self.from,
@@ -2261,10 +2399,12 @@ where
     /// contract**; every other `redirect_*` on the typed edit handles shares it.
     ///
     /// **Typed phi values.** `phi_values` is aligned to `new_to`'s leading phis
-    /// (its block parameters), one value per phi: its length must equal that
-    /// count ([`IrError::PhiArgArityMismatch`]) and each value's type must match
-    /// its phi ([`IrError::TypeMismatch`]). Both are checked, together with the
-    /// edge precondition, *before* any mutation, so a rejected call leaves the
+    /// (its block parameters), one storable [`ValueId`] per phi: its length must
+    /// equal that count ([`IrError::PhiArgArityMismatch`]) and each value's type
+    /// must match its phi ([`IrError::TypeMismatch`]). Every id is resolved
+    /// against this module first, so a foreign one is rejected with
+    /// [`IrError::ForeignValueId`]. All three checks run, together with the edge
+    /// precondition, *before* any mutation, so a rejected call leaves the
     /// terminator and every phi untouched. Dominance of each supplied value over
     /// the new edge is the caller's obligation, settled at
     /// [`Module::verify`](crate::Module::verify).
@@ -2285,11 +2425,13 @@ where
     #[inline]
     pub fn redirect_successor(
         &self,
-        old_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        phi_values: &[Value<'ctx, B>],
+        old_to: BlockId<Dyn, B>,
+        new_to: BlockId<Dyn, B>,
+        phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
-        let old_id = old_to.id();
+        let old_id = old_to
+            .into_basic_block_label(self.from.as_basic_block().module_ref())?
+            .slot();
         // `old_to` is target-based, so witness it names a live case before
         // delegating: a bogus `old_to` retargets zero cases yet the shared tail
         // would still seed `new_to`'s phis / log a spurious `CfgUpdate`. This
@@ -2315,8 +2457,8 @@ where
     #[inline]
     pub fn redirect_default(
         &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        phi_values: &[Value<'ctx, B>],
+        new_to: BlockId<Dyn, B>,
+        phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
             &self.from,
@@ -2346,8 +2488,10 @@ where
     /// Errors: [`IrError::InvalidOperation`] if `old_to` is the switch's default
     /// edge (a `switch` must keep its default) or is not a case successor.
     #[inline]
-    pub fn remove_successor(&self, old_to: &BasicBlockLabel<'ctx, Dyn, B>) -> IrResult<()> {
-        let old_id = old_to.id();
+    pub fn remove_successor(&self, old_to: BlockId<Dyn, B>) -> IrResult<()> {
+        let old_id = old_to
+            .into_basic_block_label(self.from.as_basic_block().module_ref())?
+            .slot();
         if self.reshape.switch_default_dest(self.term_id) == old_id {
             return Err(IrError::InvalidOperation {
                 message: "remove_successor: cannot remove a `switch`'s default edge",
@@ -2394,8 +2538,8 @@ where
     #[inline]
     pub fn redirect_normal(
         &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        phi_values: &[Value<'ctx, B>],
+        new_to: BlockId<Dyn, B>,
+        phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
             &self.from,
@@ -2412,8 +2556,8 @@ where
     #[inline]
     pub fn redirect_unwind(
         &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        phi_values: &[Value<'ctx, B>],
+        new_to: BlockId<Dyn, B>,
+        phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
             &self.from,
@@ -2453,8 +2597,8 @@ where
     #[inline]
     pub fn redirect_default(
         &self,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        phi_values: &[Value<'ctx, B>],
+        new_to: BlockId<Dyn, B>,
+        phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
             &self.from,
@@ -2473,8 +2617,8 @@ where
     pub fn redirect_indirect(
         &self,
         index: usize,
-        new_to: &BasicBlockLabel<'ctx, Dyn, B>,
-        phi_values: &[Value<'ctx, B>],
+        new_to: BlockId<Dyn, B>,
+        phi_values: &[ValueId<B>],
     ) -> IrResult<()> {
         self.reshape.redirect_slot(
             &self.from,
@@ -3012,11 +3156,11 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(1_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3050,15 +3194,15 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             // `%dead` has no uses — a non-terminator we can erase.
             let dead = b.build_int_add(x, 1_i32, "dead")?;
             b.build_ret(x)?;
 
-            let function = FunctionView::from(f);
-            let dead_view = InstructionView::try_from(dead.into_erased())?;
+            let function = FunctionView::from(m.view(f));
+            let dead_view = InstructionView::try_from(m.view(dead).into_erased())?;
 
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
@@ -3115,11 +3259,11 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3158,12 +3302,12 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             // A second, deliberately-open block so an end-of-block insert point
             // restores successfully (the terminated-block guard rejects only an
             // end-of-block ip whose block has since grown a terminator).
-            let scratch = f.append_basic_block(&m, "scratch");
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let scratch = m.view(f).append_basic_block(&m, "scratch");
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(entry)
                 .build_ret(x)?;
@@ -3171,7 +3315,7 @@ mod tests {
                 .position_at_end(scratch)
                 .save_insert_point();
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3202,12 +3346,12 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             b.build_ret(x)?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let terminator = function
                 .entry_block()
                 .expect("definition has an entry block")
@@ -3230,12 +3374,12 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             b.build_ret(x)?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3263,14 +3407,14 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             let _d1 = b.build_int_add(x, 1_i32, "d1")?;
             let _d2 = b.build_int_add(x, 2_i32, "d2")?;
             b.build_ret(x)?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
             let patch = cx.mutate();
 
@@ -3305,7 +3449,7 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
             let dead = b.build_int_add::<i32, _, _, _>(
                 i32_ty.const_int(1_u32),
@@ -3314,7 +3458,7 @@ mod tests {
             )?;
             b.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3323,7 +3467,7 @@ mod tests {
             let reshape = cx.mutate();
             // Erase the dead instruction so the dirty flag is set; only then
             // does `done()` report the ReshapeCfg floor.
-            let dead_view = InstructionView::try_from(dead.into_erased())?;
+            let dead_view = InstructionView::try_from(m.view(dead).into_erased())?;
             reshape.erase(
                 &dead_view
                     .as_non_terminator()
@@ -3347,11 +3491,11 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3383,12 +3527,12 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
-            let next = f.append_basic_block(&m, "next");
+            let entry = m.view(f).append_basic_block(&m, "entry");
+            let next = m.view(f).append_basic_block(&m, "next");
             // Ids captured up front — the block handles are consumed by the
             // builders below.
-            let entry_id = entry.id();
-            let next_id = next.id();
+            let entry_id = entry.slot();
+            let next_id = next.slot();
 
             // entry: %x = add 1, 2 ; br label %next
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -3397,12 +3541,12 @@ mod tests {
                 i32_ty.const_int(2_u32),
                 "x",
             )?;
-            b.build_br(next.label())?;
+            b.build_br(next.id())?;
             // next: ret 0
             let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
             b2.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
             let results = Reqs::collect(&fam, function)?;
@@ -3422,8 +3566,8 @@ mod tests {
                 .as_basic_block()
                 .terminator()
                 .expect("entry is terminated by the br");
-            let new_block = reshape.split_block(&entry_view, &terminator, "entry.split")?;
-            let new_id = new_block.id();
+            let new_block = reshape.split_block(entry_view.id(), &terminator, "entry.split")?;
+            let new_id = new_block.slot();
 
             // Exactly the rewiring: entry loses `→ next`, the new block gains it.
             assert_eq!(
@@ -3450,9 +3594,9 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
-            let next = f.append_basic_block(&m, "next");
-            let next_label = next.label();
+            let entry = m.view(f).append_basic_block(&m, "entry");
+            let next = m.view(f).append_basic_block(&m, "next");
+            let next_label = next.id();
 
             // entry: %x = add 1, 2 ; br label %next    next: ret 0
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -3461,11 +3605,11 @@ mod tests {
                 i32_ty.const_int(2_u32),
                 "x",
             )?;
-            b.build_br(next.label())?;
+            b.build_br(next.id())?;
             let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
             b2.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let mut fam = FunctionAnalysisManager::new();
             Reqs::prefetch(&mut fam, function)?;
 
@@ -3487,7 +3631,7 @@ mod tests {
                 .as_basic_block()
                 .terminator()
                 .expect("entry is terminated by the br");
-            let _new = reshape.split_block(&entry_view, &terminator, "entry.split")?;
+            let _new = reshape.split_block(entry_view.id(), &terminator, "entry.split")?;
 
             // The repaired tree recomputed from the current CFG, in which `next`
             // is no longer reachable — proving it is not the stale cache.
@@ -3509,12 +3653,12 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(1_u32))?;
 
             let module = m.as_view();
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
 
             let mam = ModuleAnalysisManager::new();
             let mut fam = FunctionAnalysisManager::new();
@@ -3551,7 +3695,7 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(0_u32))?;
 
@@ -3595,28 +3739,28 @@ mod tests {
 
             // Definition `f1` with a dead `add` we can erase.
             let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
-            let e1 = f1.append_basic_block(&m, "entry");
+            let e1 = m.view(f1).append_basic_block(&m, "entry");
             let b1 = IRBuilder::new_for::<Dyn>(&m).position_at_end(e1);
-            let x1: IntValue<i32> = f1.param(0)?.try_into()?;
+            let x1: IntValue<i32> = m.view(f1).param(0)?.try_into()?;
             let dead1 = b1.build_int_add(x1, 1_i32, "dead")?;
             b1.build_ret(x1)?;
 
             // Definition `f2`, likewise.
             let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
-            let e2 = f2.append_basic_block(&m, "entry");
+            let e2 = m.view(f2).append_basic_block(&m, "entry");
             let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(e2);
-            let x2: IntValue<i32> = f2.param(0)?.try_into()?;
+            let x2: IntValue<i32> = m.view(f2).param(0)?.try_into()?;
             let dead2 = b2.build_int_add(x2, 1_i32, "dead")?;
             b2.build_ret(x2)?;
 
             // A declaration (no body) — must be skipped.
             let decl = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
 
-            let fv1 = FunctionView::from(f1);
-            let fv2 = FunctionView::from(f2);
-            let decl_view = FunctionView::from(decl);
-            let dead1_view = InstructionView::try_from(dead1.into_erased())?;
-            let dead2_view = InstructionView::try_from(dead2.into_erased())?;
+            let fv1 = FunctionView::from(m.view(f1));
+            let fv2 = FunctionView::from(m.view(f2));
+            let decl_view = FunctionView::from(m.view(decl));
+            let dead1_view = InstructionView::try_from(m.view(dead1).into_erased())?;
+            let dead2_view = InstructionView::try_from(m.view(dead2).into_erased())?;
 
             // Each def starts with `dead` + `ret`.
             assert_eq!(fv1.entry_block().expect("def").instruction_count(), 2);
@@ -3677,16 +3821,16 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             // a = x+1 (used by b), b = a+1 (used by c), c = b+1 (unused/dead).
             let a = b.build_int_add(x, 1_i32, "a")?;
             let bb = b.build_int_add(a, 1_i32, "b")?;
             let _c = b.build_int_add(bb, 1_i32, "c")?;
             b.build_ret(x)?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
             let patch = cx.mutate();
 
@@ -3720,17 +3864,17 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             // a = x+1 ; b = a+1 (so b's operand `a` IS an instruction) ; ret x.
             let a = b.build_int_add(x, 1_i32, "a")?;
             let bb = b.build_int_add(a, 1_i32, "b")?;
             b.build_ret(x)?;
-            let a_id = a.id();
-            let b_id = bb.id();
+            let a_id = m.view(a).slot();
+            let b_id = m.view(bb).slot();
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
             let patch = cx.mutate();
 
@@ -3739,9 +3883,9 @@ mod tests {
             // instructions are still attached.
             let scope = patch.worklist();
             let first = scope.next().expect("seed pops b first (LIFO)");
-            assert_eq!(first.id(), b_id, "LIFO seed order: b before a");
+            assert_eq!(first.slot(), b_id, "LIFO seed order: b before a");
             let second = scope.next().expect("seed pops a second");
-            assert_eq!(second.id(), a_id);
+            assert_eq!(second.slot(), a_id);
             assert!(scope.next().is_none(), "seed fully drained");
 
             // Erase `b` through the active worklist: this must push `b`'s
@@ -3755,7 +3899,7 @@ mod tests {
             assert_eq!(
                 resurfaced
                     .expect("a re-pushed by erase's operand cascade")
-                    .id(),
+                    .slot(),
                 a_id,
             );
             drop(scope);
@@ -3776,13 +3920,13 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             let _a = b.build_int_add(x, 1_i32, "a")?;
             b.build_ret(x)?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let cx: FnCx<'_, '_, '_, _, PatchBody, ()> = FnCx::new(&m, function, ());
             let patch = cx.mutate();
 
@@ -3826,14 +3970,14 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
-            let exit = f.append_basic_block(&m, "exit");
+            let entry = m.view(f).append_basic_block(&m, "entry");
+            let exit = m.view(f).append_basic_block(&m, "exit");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_br(&exit)?;
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exit);
             b.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let named: Vec<Option<String>> = function.basic_blocks().map(|bb| bb.name()).collect();
             let mut walked = Vec::new();
             for bb in function {
@@ -3859,20 +4003,20 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            let x: IntValue<i32> = f.param(0)?.try_into()?;
+            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
             let sum = b.build_int_add(x, 1_i32, "sum")?;
             b.build_ret(sum)?;
 
-            let function = FunctionView::from(f);
+            let function = FunctionView::from(m.view(f));
             let block = function
                 .entry_block()
                 .expect("definition has an entry block");
-            let ids: Vec<_> = block.instructions().map(|inst| inst.id()).collect();
+            let ids: Vec<_> = block.instructions().map(|inst| inst.slot()).collect();
             let mut walked = Vec::new();
             for inst in block {
-                walked.push(inst.id());
+                walked.push(inst.slot());
             }
             assert_eq!(walked, ids);
             assert_eq!(block.instruction_count(), 2, "add + ret");

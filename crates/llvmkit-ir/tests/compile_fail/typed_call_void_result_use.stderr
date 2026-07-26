@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `(): IntoIntValue<'_, i32, Brand<'_>>` is not satisfied
   --> tests/compile_fail/typed_call_void_result_use.rs:27:40
    |
-27 |         let _ = b.build_int_add::<i32, _, _, _>(void_call.result(), n, "x");
+27 |         let _ = b.build_int_add::<i32, _, _, _>(b.view(void_call).result(), n, "x");
    |                   -------------        ^ the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `()`
    |                   |
    |                   required by a bound introduced by this call

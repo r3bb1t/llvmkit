@@ -599,20 +599,29 @@ wrong-width case or a non-pointer jump address is a compile error too — see th
 summary table above.
 
 Underneath, the incremental editing window still exists — the `PhiInst` handle
-*type* and its read accessors stay public (a `_dyn` builder returns one, and
-rediscovery yields it), but *authoring through it* is now crate-internal: the
-marker-form `build_*_phi` builders and the open handle's `add_incoming`/`finish`
-mutators are `pub(crate)`, and the few entry points the separate parser crate
-needs are `#[doc(hidden)] pub` "internal contract" items. The handle is a
-typestate:
+*type* and its read accessors stay public (a `_dyn` builder returns the matching
+`PhiInstId`, which views back into one, and rediscovery yields it), but
+*authoring through it* is crate-internal: the marker-form `build_*_phi` builders
+and the `add_incoming` mutator are `pub(crate)`, and the few entry points the
+separate parser crate needs are `#[doc(hidden)] pub` "internal contract" items.
+That **visibility** is what keeps a phi unobservable mid-construction from
+outside the crate:
 
 ```rust
-pub struct PhiInst<'ctx, W: IntWidth, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
+pub struct PhiInst<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
     /* fields omitted */
 }
 ```
 
-Only an open phi accepts incoming edges, and `add_incoming` witnesses the *local*
+The handle carried an `Open`/`Closed` construction typestate until cycle B
+(slice B1g) retired it. Cycle B's builders hand back `Copy` ids, and a view
+minted from a `Copy` id is re-mintable, so a linear "only one open capability"
+marker could no longer be *true* — and the public `remove_incoming` added
+alongside it mutates exactly the rediscovered handles the marker called
+finalised. A marker that gates nothing is worse than none, so it went; the
+crate-internal visibility above is the guarantee that survives.
+
+`add_incoming` witnesses the *local*
 phi facts at the call site rather than at `verify()` time: the incoming value's
 type is checked against the phi (the untyped parser / SSA-builder path
 `phi_add_incoming_from_value` included), and a second incoming for a predecessor
@@ -624,10 +633,19 @@ of cursor position (the verifier's `PhiNotAtTop` check stays as defense in
 depth). What these local checks do *not* cover — phi-incoming completeness against
 the final predecessor set, and dominance — remains `Module::verify()`'s job; the
 `.ll` parser additionally checks that completeness once all predecessors are
-known. Calling `finish` returns a closed view exposing read accessors, not
-`add_incoming`.
+known.
 
-The same linear open/closed pattern remains **public** for the variable-arity
+Edge *removal* is public: `remove_incoming` (on all four phi handles and on the
+variant-independent `PhiKind`) mirrors `PHINode::removeIncomingValue`, including
+its backfill-from-the-end ordering, and takes an `Unverified` module token as
+its mutation-capability witness. It deliberately does **not** mirror upstream's
+`DeletePHIIfEmpty`: llvmkit erases through `Instruction::erase_from_parent`,
+which consumes the linear lifecycle handle so use-after-erase is a compile
+error, and a `Copy` opcode handle cannot express that consumption. Auto-erasing
+an emptied phi ships where it can be sound instead — on the `ReshapeCfg` edge
+edits, which RAUW it with poison and erase it (LLVM `removePredecessor`).
+
+The linear open/closed pattern remains **public** for the variable-arity
 terminators — `switch`, `indirectbr`, `landingpad`, and `catchswitch`: open
 handles are not `Copy`, mutators consume `self`, and `finish()` returns a closed
 view. Rediscovery through `InstructionKind` / `TerminatorKind` also returns closed

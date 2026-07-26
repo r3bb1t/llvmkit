@@ -19,9 +19,9 @@
 
 use llvmkit_ir::{
     AShrFlags, AddFlags, Align, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn,
-    FloatPredicate, FloatValue, IRBuilder, IntPredicate, IntValue, IntrinsicId, IrError, LShrFlags,
-    Linkage, MemoryEffects, Module, MulFlags, PointerValue, SDivFlags, ShlFlags, SubFlags,
-    UDivFlags, VerifierRule,
+    FloatPredicate, FloatValue, FloatValueId, IRBuilder, IntPredicate, IntValue, IntValueId,
+    IntrinsicId, IrError, LShrFlags, Linkage, MemoryEffects, Module, MulFlags, PointerValue,
+    PointerValueId, SDivFlags, ShlFlags, SubFlags, UDivFlags, VerifierRule,
 };
 
 fn abs_function_attrs_without_immarg() -> AttributeStorage {
@@ -140,7 +140,7 @@ fn intrinsic_declaration_missing_generated_function_attrs_is_rejected() -> Resul
             AttrIndex::Param(1),
             Attribute::enum_attr(AttrKind::ImmArg).expect("generated immarg attribute"),
         );
-        abs.set_attributes(&m, attrs);
+        m.view(abs).set_attributes(&m, attrs);
 
         let err = m
             .verify_borrowed()
@@ -160,7 +160,8 @@ fn intrinsic_declaration_missing_generated_argument_attr_is_rejected() -> Result
             IntrinsicId::ABS,
             &[m.i32_type().as_type()],
         )?;
-        abs.set_attributes(&m, abs_function_attrs_without_immarg());
+        m.view(abs)
+            .set_attributes(&m, abs_function_attrs_without_immarg());
 
         let err = m
             .verify_borrowed()
@@ -179,9 +180,15 @@ fn intrinsic_declaration_by_name_applies_generated_argument_names() -> Result<()
         let intrinsic =
             m.get_or_insert_intrinsic_declaration_by_name("llvm.nvvm.tcgen05.mma.tensor")?;
 
-        assert_eq!(intrinsic.param(5)?.name().as_deref(), Some("kind"));
-        assert_eq!(intrinsic.param(6)?.name().as_deref(), Some("cta_group"));
-        assert_eq!(intrinsic.param(7)?.name().as_deref(), Some("collector"));
+        assert_eq!(m.view(intrinsic).param(5)?.name().as_deref(), Some("kind"));
+        assert_eq!(
+            m.view(intrinsic).param(6)?.name().as_deref(),
+            Some("cta_group")
+        );
+        assert_eq!(
+            m.view(intrinsic).param(7)?.name().as_deref(),
+            Some("collector")
+        );
 
         m.verify_borrowed()?;
         Ok(())
@@ -196,13 +203,17 @@ fn intrinsic_declaration_used_as_non_callee_operand_is_rejected() -> Result<(), 
     Module::with_new::<_, _, _>("intrinsic-noncallee-use", |m| {
         let void_ty = m.void_type();
         let intrinsic = m.get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i32")?;
-        let sink_ty = m.fn_type(void_ty.as_type(), [intrinsic.signature().as_type()], false);
+        let sink_ty = m.fn_type(
+            void_ty.as_type(),
+            [m.view(intrinsic).signature().as_type()],
+            false,
+        );
         let sink = m.add_function_dyn("sink", sink_ty, Linkage::External)?;
         let caller_ty = m.fn_type_no_params(void_ty.as_type(), false);
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-        let entry = caller.append_basic_block(&m, "entry");
+        let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        b.build_call_dyn(sink, [intrinsic.into_erased()], "")?;
+        b.build_call_dyn(sink, [m.view(intrinsic).into_erased()], "")?;
         b.build_ret_void()?;
 
         let err = m
@@ -249,9 +260,9 @@ fn verify_identity_function() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("id", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         b.build_ret(x)?;
         m.verify_borrowed()?;
         Ok(())
@@ -268,10 +279,10 @@ fn verify_int_arithmetic_full() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("k", fn_ty, Linkage::External)?;
-        let bb = f.append_basic_block(&m, "entry");
+        let bb = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
-        let y: IntValue<i32> = f.param(1)?.try_into()?;
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let y: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let a = b.build_int_add_with_flags(x, y, AddFlags::new().nuw().nsw(), "a")?;
         let s = b.build_int_sub_with_flags(a, y, SubFlags::new().nsw(), "s")?;
         let mu = b.build_int_mul_with_flags(s, x, MulFlags::new().nuw(), "mu")?;
@@ -301,10 +312,10 @@ fn verify_float_arithmetic_full() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type(), f32_ty.as_type()], false);
         let f = m.add_function_dyn("k", fn_ty, Linkage::External)?;
-        let bb = f.append_basic_block(&m, "entry");
+        let bb = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
-        let x: FloatValue<f32> = f.param(0)?.try_into()?;
-        let y: FloatValue<f32> = f.param(1)?.try_into()?;
+        let x: FloatValue<f32> = m.view(f).param(0)?.try_into()?;
+        let y: FloatValue<f32> = m.view(f).param(1)?.try_into()?;
         let a = b.build_fp_add(x, y, "a")?;
         let s = b.build_fp_sub(a, y, "s")?;
         let mu = b.build_fp_mul(s, x, "mu")?;
@@ -342,26 +353,26 @@ fn verify_casts_full() -> Result<(), IrError> {
             false,
         );
         let f = m.add_function_dyn("c", fn_ty, Linkage::External)?;
-        let bb = f.append_basic_block(&m, "entry");
+        let bb = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
-        let x: IntValue<i64> = f.param(0)?.try_into()?;
-        let y: FloatValue<f32> = f.param(1)?.try_into()?;
-        let p: PointerValue = f.param(2)?.try_into()?;
-        let s: IntValue<i8> = f.param(3)?.try_into()?;
-        let t: IntValue<i32> = b.build_trunc(x, i32_ty, "t")?;
-        let e: IntValue<i64> = b.build_sext(t, i64_ty, "e")?;
-        let z: IntValue<i64> = b.build_zext(s, i64_ty, "z")?;
-        let xf: FloatValue<f64> = b.build_fp_ext(y, f64_ty, "xf")?;
-        let _xt: FloatValue<f32> = b.build_fp_trunc(xf, f32_ty, "xt")?;
-        let fi: IntValue<i64> = b.build_fp_to_si(y, i64_ty, "fi")?;
-        let _fu: IntValue<i64> = b.build_fp_to_ui(y, i64_ty, "fu")?;
-        let _is: FloatValue<f32> = b.build_si_to_fp(x, f32_ty, "is")?;
-        let _iu: FloatValue<f32> = b.build_ui_to_fp(x, f32_ty, "iu")?;
-        let pi: IntValue<i64> = b.build_ptr_to_int(p, i64_ty, "pi")?;
-        let _ip: PointerValue = b.build_int_to_ptr(pi, ptr_ty, "ip")?;
+        let x: IntValue<i64> = m.view(f).param(0)?.try_into()?;
+        let y: FloatValue<f32> = m.view(f).param(1)?.try_into()?;
+        let p: PointerValue = m.view(f).param(2)?.try_into()?;
+        let s: IntValue<i8> = m.view(f).param(3)?.try_into()?;
+        let t: IntValueId<i32, _> = b.build_trunc(x, i32_ty, "t")?;
+        let e: IntValueId<i64, _> = b.build_sext(t, i64_ty, "e")?;
+        let z: IntValueId<i64, _> = b.build_zext(s, i64_ty, "z")?;
+        let xf: FloatValueId<f64, _> = b.build_fp_ext(y, f64_ty, "xf")?;
+        let _xt: FloatValueId<f32, _> = b.build_fp_trunc(xf, f32_ty, "xt")?;
+        let fi: IntValueId<i64, _> = b.build_fp_to_si(y, i64_ty, "fi")?;
+        let _fu: IntValueId<i64, _> = b.build_fp_to_ui(y, i64_ty, "fu")?;
+        let _is: FloatValueId<f32, _> = b.build_si_to_fp(x, f32_ty, "is")?;
+        let _iu: FloatValueId<f32, _> = b.build_ui_to_fp(x, f32_ty, "iu")?;
+        let pi: IntValueId<i64, _> = b.build_ptr_to_int(p, i64_ty, "pi")?;
+        let _ip: PointerValueId<_> = b.build_int_to_ptr(pi, ptr_ty, "ip")?;
         // `addrspacecast` (identity here -- both ptrs in addr space 0 --
         // is a no-op, but exercises the builder + verifier path).
-        let _ac: PointerValue = b.build_addrspace_cast(p, ptr_ty, "ac")?;
+        let _ac: PointerValueId<_> = b.build_addrspace_cast(p, ptr_ty, "ac")?;
         let sum = b.build_int_add(e, z, "sum")?;
         let total = b.build_int_add(sum, fi, "total")?;
         b.build_ret(total)?;
@@ -381,22 +392,23 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("k", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let then_bb = f.append_basic_block(&m, "then");
-        let else_bb = f.append_basic_block(&m, "else");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let then_bb = m.view(f).append_basic_block(&m, "then");
+        let else_bb = m.view(f).append_basic_block(&m, "else");
         let bwp = IRBuilder::new_for::<Dyn>(&m);
-        let (join, params) = bwp.append_block_with_params(f, &[i32_ty.as_type()], "join")?;
-        let then_label = then_bb.label();
-        let else_label = else_bb.label();
-        let join_label = join.label();
+        let (join, params) =
+            bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
+        let then_label = then_bb.id();
+        let else_label = else_bb.id();
+        let join_label = join.id();
 
-        let p: PointerValue = f.param(0)?.try_into()?;
-        let v: IntValue<i32> = f.param(1)?.try_into()?;
+        let p: PointerValue = m.view(f).param(0)?.try_into()?;
+        let v: IntValue<i32> = m.view(f).param(1)?.try_into()?;
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let slot = b.build_alloca(i32_ty, "slot")?;
         b.build_store_with_align(v, slot, Align::new(4)?)?;
-        let loaded: IntValue<i32> = b.build_int_load::<i32, _, _>(p, "ld")?;
+        let loaded: IntValue<i32> = b.view(b.build_int_load::<i32, _, _>(p, "ld")?);
         let cmp = b.build_int_cmp(IntPredicate::Slt, loaded, 0_i32, "cmp")?;
         let arr_ty = m.array_type(i32_ty, 4);
         let v_dyn: IntValue<llvmkit_ir::IntDyn> = v.into();
@@ -411,7 +423,8 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
         // `SelectArm` (constants narrow through value not int-value path).
         let _ = (one_const, two_const);
         let sel = bt.build_select(cmp, loaded, loaded, "sel")?;
-        bt.build_br_with_args(join_label, &[sel.into_erased()])?;
+        let sel_arg = bt.view(sel).into_erased();
+        bt.build_br_with_args(join_label, &[sel_arg])?;
 
         let be = IRBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
         be.build_br_with_args(join_label, &[loaded.into_erased()])?;
@@ -435,18 +448,19 @@ fn verify_call() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let callee = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
-        let cb = callee.append_basic_block(&m, "entry");
+        let cb = m.view(callee).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(cb);
-        let x: IntValue<i32> = callee.param(0)?.try_into()?;
+        let x: IntValue<i32> = m.view(callee).param(0)?.try_into()?;
         let r = b.build_int_add(x, 1_i32, "r")?;
         b.build_ret(r)?;
 
         let caller = m.add_function_dyn("dbl", fn_ty, Linkage::External)?;
-        let bb = caller.append_basic_block(&m, "entry");
+        let bb = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
-        let arg: IntValue<i32> = caller.param(0)?.try_into()?;
+        let arg: IntValue<i32> = m.view(caller).param(0)?.try_into()?;
         let inst = b.build_call_dyn(callee, [arg.into_erased()], "c1")?;
-        let one: IntValue<i32> = inst
+        let one: IntValue<i32> = b
+            .view(inst)
             .return_value()
             .expect("non-void call returns a value")
             .try_into()?;
@@ -470,14 +484,14 @@ fn verify_void_return_and_unreachable() -> Result<(), IrError> {
         let i1 = m.bool_type();
         let fn_ty = m.fn_type(void, [i1.as_type()], false);
         let f = m.add_function_dyn("trap", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let then_bb = f.append_basic_block(&m, "then");
-        let else_bb = f.append_basic_block(&m, "else");
-        let then_label = then_bb.label();
-        let else_label = else_bb.label();
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let then_bb = m.view(f).append_basic_block(&m, "then");
+        let else_bb = m.view(f).append_basic_block(&m, "else");
+        let then_label = then_bb.id();
+        let else_label = else_bb.id();
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let cond: IntValue<bool> = f.param(0)?.try_into()?;
+        let cond: IntValue<bool> = m.view(f).param(0)?.try_into()?;
         b.build_cond_br(cond, then_label, else_label)?;
 
         let bt = IRBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
@@ -503,7 +517,7 @@ fn verify_consuming_returns_branded_module() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("k", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(0_i32))?;
 
@@ -547,7 +561,7 @@ fn verify_function_with_empty_block_fails_missing_terminator() -> Result<(), IrE
         let void = m.void_type();
         let fn_ty = m.fn_type_no_params(void, false);
         let f = m.add_function_dyn("empty", fn_ty, Linkage::External)?;
-        let _entry = f.append_basic_block(&m, "entry");
+        let _entry = m.view(f).append_basic_block(&m, "entry");
         // Deliberately no IRBuilder calls -- block stays empty.
         let err = m
             .verify_borrowed()
@@ -574,10 +588,10 @@ fn verify_cross_block_dominated_use_passes() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let next = f.append_basic_block(&m, "next");
-        let next_label = next.label();
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let next = m.view(f).append_basic_block(&m, "next");
+        let next_label = next.id();
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let y = b.build_int_add(x, 1_i32, "y")?;
@@ -600,15 +614,15 @@ fn verify_cross_block_branch_value_used_after_join_fails() -> Result<(), IrError
         let bool_ty = m.bool_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let then_bb = f.append_basic_block(&m, "then");
-        let else_bb = f.append_basic_block(&m, "else");
-        let join = f.append_basic_block(&m, "join");
-        let then_label = then_bb.label();
-        let else_label = else_bb.label();
-        let join_label = join.label();
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
-        let cond: IntValue<bool> = f.param(1)?.try_into()?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let then_bb = m.view(f).append_basic_block(&m, "then");
+        let else_bb = m.view(f).append_basic_block(&m, "else");
+        let join = m.view(f).append_basic_block(&m, "join");
+        let then_label = then_bb.id();
+        let else_label = else_bb.id();
+        let join_label = join.id();
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let cond: IntValue<bool> = m.view(f).param(1)?.try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
@@ -650,23 +664,24 @@ fn verify_phi_incoming_edge_dominance_passes() -> Result<(), IrError> {
         let bool_ty = m.bool_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let then_bb = f.append_basic_block(&m, "then");
-        let else_bb = f.append_basic_block(&m, "else");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let then_bb = m.view(f).append_basic_block(&m, "then");
+        let else_bb = m.view(f).append_basic_block(&m, "else");
         let bwp = IRBuilder::new_for::<Dyn>(&m);
-        let (join, params) = bwp.append_block_with_params(f, &[i32_ty.as_type()], "join")?;
-        let then_label = then_bb.label();
-        let else_label = else_bb.label();
-        let join_label = join.label();
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
-        let cond: IntValue<bool> = f.param(1)?.try_into()?;
+        let (join, params) =
+            bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
+        let then_label = then_bb.id();
+        let else_label = else_bb.id();
+        let join_label = join.id();
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let cond: IntValue<bool> = m.view(f).param(1)?.try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_cond_br(cond, then_label, else_label)?;
         let bt = IRBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
         let y = bt.build_int_add(x, 1_i32, "y")?;
-        bt.build_br_with_args(join_label, &[y.into_erased()])?;
+        bt.build_br_with_args(join_label, &[m.view(y).into_erased()])?;
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(else_bb)
             .build_br_with_args(join_label, &[x.into_erased()])?;
@@ -690,17 +705,17 @@ fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
         let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let normal = f.append_basic_block(&m, "normal");
-        let unwind = f.append_basic_block(&m, "unwind");
-        let normal_label = normal.label();
-        let unwind_label = unwind.label();
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let normal = m.view(f).append_basic_block(&m, "normal");
+        let unwind = m.view(f).append_basic_block(&m, "unwind");
+        let normal_label = normal.id();
+        let unwind_label = unwind.id();
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
 
         let (_sealed, invoke) = IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_invoke_dyn(
-                callee,
+                m.view(callee),
                 Vec::<llvmkit_ir::Value>::new(),
                 normal_label,
                 unwind_label,

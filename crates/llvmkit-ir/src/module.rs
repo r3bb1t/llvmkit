@@ -71,7 +71,7 @@ use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, Type
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{Value, ValueData, ValueKindData, ValueSlot, ValueUse};
-use super::value_id::ViewIn;
+use super::value_id::{FunctionId, GlobalId, TypedFunctionId, TypedVarArgsFunctionId, ViewIn};
 use super::vec_len::{Len, LenDyn};
 
 fn reject_reserved_intrinsic_name(name: &str) -> IrResult<()> {
@@ -556,6 +556,44 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     #[inline]
     pub fn id(self) -> ModuleId {
         self.core.id()
+    }
+
+    /// Resolve a storable id back into its borrowing handle — the same
+    /// module-tag choke point as [`Module::view`], reachable from a read-only
+    /// [`ModuleView`].
+    ///
+    /// This is what lets a *pass* speak ids: the capability-graded pass surface
+    /// hands out a `ModuleView` (never `&Module`, whose declaration surface no
+    /// mutating rung's preservation floor accounts for), so without this the
+    /// ids a pass stores would have no resolution path inside `run`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the id belongs to a different module (foreign tag) or its slot
+    /// is absent, exactly as [`Module::view`] does. Use
+    /// [`try_view`](Self::try_view) for the fallible form.
+    #[inline]
+    pub fn view<I>(self, id: I) -> I::View
+    where
+        I: ViewIn<'ctx, B>,
+    {
+        id.resolve_in(self.into()).unwrap_or_else(|| {
+            panic!(
+                "ModuleView::view: id does not resolve in this module \
+                 (foreign module tag or absent/tombstoned slot)"
+            )
+        })
+    }
+
+    /// Fallible [`view`](Self::view): `None` when the id belongs to a different
+    /// module (foreign tag) or its slot is absent. The `ModuleView` twin of
+    /// [`Module::try_view`].
+    #[inline]
+    pub fn try_view<I>(self, id: I) -> Option<I::View>
+    where
+        I: ViewIn<'ctx, B>,
+    {
+        id.resolve_in(self.into())
     }
 
     /// Module identifier.
@@ -2252,7 +2290,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
         crate::verifier::Verifier::new(self.as_view()).run()
     }
 
-    /// Resolve a storable value id (from [`Value::to_id`](crate::Value::to_id)
+    /// Resolve a storable value id (from [`Value::id`](crate::Value::id)
     /// and its per-kind siblings) back into its borrowing handle — the
     /// resolution boundary for the llvmkit 2.0 id family.
     ///
@@ -2881,11 +2919,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         )
     }
 
+    /// Declare a typed function `Ret @name(Params...)`, returning its storable
+    /// [`TypedFunctionId`]. Resolve it back into the borrowing
+    /// [`TypedFunctionValue`] facade with [`view`](Self::view).
     pub fn add_typed_function<Ret, Params, Name>(
         &self,
         name: Name,
         linkage: Linkage,
-    ) -> IrResult<TypedFunctionValue<'ctx, Ret, Params, B>>
+    ) -> IrResult<TypedFunctionId<Ret, Params, B>>
     where
         Ret: FunctionReturn,
         Params: FunctionParamList,
@@ -2893,14 +2934,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     {
         let signature = self.typed_function_type::<Ret, Params>()?;
         let function = self.declare_function::<Ret::Marker>(name.as_ref(), signature, linkage)?;
-        TypedFunctionValue::<Ret, Params, B>::try_from_function(function)
+        TypedFunctionValue::<Ret, Params, B>::try_from_function(function).map(|f| f.id())
     }
 
+    /// Declare a typed function from a Rust function-pointer schema, returning
+    /// its storable [`TypedFunctionId`].
     pub fn add_typed_function_of<Sig, Name>(
         &self,
         name: Name,
         linkage: Linkage,
-    ) -> IrResult<TypedFunctionValue<'ctx, Sig::Ret, Sig::Params, B>>
+    ) -> IrResult<TypedFunctionId<Sig::Ret, Sig::Params, B>>
     where
         Sig: FunctionSignature,
         Name: AsRef<str>,
@@ -2911,16 +2954,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
             signature,
             linkage,
         )?;
-        TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(function)
+        TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(function).map(|f| f.id())
     }
 
-    /// Declare a variadic typed function `Ret @name(Params..., ...)`
-    /// and wrap it in a [`crate::function_signature::TypedVarArgsFunctionValue`].
+    /// Declare a variadic typed function `Ret @name(Params..., ...)`,
+    /// returning its storable [`TypedVarArgsFunctionId`]. Resolve it back into
+    /// the borrowing [`crate::function_signature::TypedVarArgsFunctionValue`]
+    /// facade with [`view`](Self::view).
     pub fn add_typed_varargs_function<Ret, Params, Name>(
         &self,
         name: Name,
         linkage: Linkage,
-    ) -> IrResult<crate::function_signature::TypedVarArgsFunctionValue<'ctx, Ret, Params, B>>
+    ) -> IrResult<TypedVarArgsFunctionId<Ret, Params, B>>
     where
         Ret: FunctionReturn,
         Params: FunctionParamList,
@@ -2931,18 +2976,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         crate::function_signature::TypedVarArgsFunctionValue::<Ret, Params, B>::try_from_function(
             function,
         )
+        .map(|f| f.id())
     }
 
-    /// Declare a variadic typed function from a Rust function-pointer
-    /// schema and wrap it in a
-    /// [`crate::function_signature::TypedVarArgsFunctionValue`].
+    /// Declare a variadic typed function from a Rust function-pointer schema,
+    /// returning its storable [`TypedVarArgsFunctionId`].
     pub fn add_typed_varargs_function_of<Sig, Name>(
         &self,
         name: Name,
         linkage: Linkage,
-    ) -> IrResult<
-        crate::function_signature::TypedVarArgsFunctionValue<'ctx, Sig::Ret, Sig::Params, B>,
-    >
+    ) -> IrResult<TypedVarArgsFunctionId<Sig::Ret, Sig::Params, B>>
     where
         Sig: FunctionSignature,
         Name: AsRef<str>,
@@ -2956,6 +2999,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         crate::function_signature::TypedVarArgsFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(
             function,
         )
+        .map(|f| f.id())
     }
 
     /// Shared declaration tail for every public constructor: name
@@ -2999,23 +3043,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// Add a function whose return marker is erased to [`Dyn`].
     ///
     /// The honest erased declaration path: it takes a runtime [`FunctionType`] and
-    /// returns a `FunctionValue<Dyn>`. Unlike [`add_typed_function`](Self::add_typed_function) it
+    /// returns a `FunctionId<Dyn>`. Unlike [`add_typed_function`](Self::add_typed_function) it
     /// carries no static return marker and runs no return-marker check — `Dyn` matches
     /// every signature by definition. Use this for the parser and runtime-schema-driven
     /// tooling; for statically-typed authoring prefer
     /// [`add_typed_function`](Self::add_typed_function), whose turbofish *is* the schema
     /// (no separate `FunctionType`, and its parameters come back typed).
+    ///
+    /// Resolve the id back into a borrowing [`FunctionValue`] with
+    /// [`view`](Self::view).
     pub fn add_function_dyn<Name>(
         &self,
         name: Name,
         signature: FunctionType<'ctx, B>,
         linkage: crate::global_value::Linkage,
-    ) -> IrResult<FunctionValue<'ctx, crate::marker::Dyn, B>>
+    ) -> IrResult<FunctionId<crate::marker::Dyn, B>>
     where
         Name: AsRef<str>,
     {
         // `R = Dyn` matches every signature, so no return-marker check is needed.
         self.declare_function::<crate::marker::Dyn>(name.as_ref(), signature, linkage)
+            .map(|f| f.id())
     }
 
     pub fn intrinsic_descriptor_from_signature(
@@ -3032,7 +3080,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     pub fn get_or_insert_intrinsic_declaration(
         &self,
         descriptor: &IntrinsicDescriptor<'ctx, B>,
-    ) -> IrResult<FunctionValue<'ctx, Dyn, B>> {
+    ) -> IrResult<FunctionId<Dyn, B>> {
         let function = self
             .core
             .get_or_insert_intrinsic_declaration::<B>(descriptor)?;
@@ -3040,14 +3088,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
             let arg = function.param(arg_index)?;
             arg.set_name(self, name);
         }
-        Ok(function)
+        Ok(function.id())
     }
 
     pub fn get_or_insert_intrinsic_declaration_by_id(
         &self,
         id: IntrinsicId,
         overloads: &[Type<'ctx, B>],
-    ) -> IrResult<FunctionValue<'ctx, Dyn, B>> {
+    ) -> IrResult<FunctionId<Dyn, B>> {
         let descriptor = IntrinsicDescriptor::new(id, overloads.to_vec())?;
         self.get_or_insert_intrinsic_declaration(&descriptor)
     }
@@ -3055,7 +3103,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     pub fn get_or_insert_intrinsic_declaration_by_name<Name>(
         &self,
         name: Name,
-    ) -> IrResult<FunctionValue<'ctx, Dyn, B>>
+    ) -> IrResult<FunctionId<Dyn, B>>
     where
         Name: AsRef<str>,
     {
@@ -3073,7 +3121,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// handle or a Rust scalar literal (`add_global("marker", 0i32)`). The
     /// global's value type is the constant's type, so a creation-time type
     /// mismatch is unrepresentable.
-    pub fn add_global<N, C>(&self, name: N, initializer: C) -> IrResult<GlobalVariable<'ctx, B>>
+    ///
+    /// Returns the storable [`GlobalId`]; resolve it back into a borrowing
+    /// [`GlobalVariable`] with [`view`](Self::view).
+    pub fn add_global<N, C>(&self, name: N, initializer: C) -> IrResult<GlobalId<B>>
     where
         N: AsRef<str>,
         C: IntoConstantValue<'ctx, B>,
@@ -3092,11 +3143,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     ///
     /// Like [`add_global`](Self::add_global) but marks the global as
     /// `constant` rather than mutable.
-    pub fn add_global_constant<N, C>(
-        &self,
-        name: N,
-        initializer: C,
-    ) -> IrResult<GlobalVariable<'ctx, B>>
+    pub fn add_global_constant<N, C>(&self, name: N, initializer: C) -> IrResult<GlobalId<B>>
     where
         N: AsRef<str>,
         C: IntoConstantValue<'ctx, B>,
@@ -3119,11 +3166,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// this uses the module's default linkage. Accepts any
     /// `impl Into<Type>` so a typed handle needn't be widened via
     /// `.as_type()`.
-    pub fn add_global_uninitialized<N, T>(
-        &self,
-        name: N,
-        value_type: T,
-    ) -> IrResult<GlobalVariable<'ctx, B>>
+    pub fn add_global_uninitialized<N, T>(&self, name: N, value_type: T) -> IrResult<GlobalId<B>>
     where
         N: AsRef<str>,
         T: Into<Type<'ctx, B>>,
@@ -3136,11 +3179,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         .build()
     }
 
-    pub fn add_external_global<N, T>(
-        &self,
-        name: N,
-        value_type: T,
-    ) -> IrResult<GlobalVariable<'ctx, B>>
+    pub fn add_external_global<N, T>(&self, name: N, value_type: T) -> IrResult<GlobalId<B>>
     where
         N: AsRef<str>,
         T: Into<Type<'ctx, B>>,

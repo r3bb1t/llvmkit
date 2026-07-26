@@ -61,7 +61,7 @@ impl KnownBitsCacheKey {
             value,
             context_instruction: query
                 .context_instruction
-                .map(|instruction| instruction.id()),
+                .map(|instruction| instruction.slot()),
             demanded_elements: query.demanded_elements.cloned(),
             uses_instruction_info: query.uses_instruction_info(),
         }
@@ -379,15 +379,15 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     if depth > query.max_depth() {
         return Ok(KnownBits::unknown(width));
     }
-    if stack.contains(&value.id()) {
+    if stack.contains(&value.slot()) {
         return Ok(KnownBits::unknown(width));
     }
-    let cache_key = KnownBitsCacheKey::new(value.id(), query);
+    let cache_key = KnownBitsCacheKey::new(value.slot(), query);
     if let Some(cached) = query.cache().borrow().get(&cache_key).cloned() {
         return Ok(cached);
     }
 
-    stack.insert(value.id());
+    stack.insert(value.slot());
     let known = match &value.data().kind {
         ValueKindData::Constant(c) => compute_constant_known_bits(value, c, query, depth, stack)?,
         ValueKindData::Instruction(inst) => {
@@ -402,7 +402,7 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
         | ValueKindData::MetadataAsValue(_)
         | ValueKindData::InlineAsm(_) => KnownBits::unknown(width),
     };
-    stack.remove(&value.id());
+    stack.remove(&value.slot());
     query.cache().borrow_mut().insert(cache_key, known.clone());
     Ok(known)
 }
@@ -1949,19 +1949,19 @@ mod tests {
             let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2, false);
             let fn_ty = m.fn_type_no_params(m.void_type(), false);
             let f = m.add_function_dyn("f", fn_ty, crate::Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
 
             let base = ptr_vec_ty.const_vector([ptr1_ty.const_null(); 2])?;
             let minus_one = i32_ty.const_int(-1_i32);
             let gep_ty = ptr_vec_ty.as_type();
             let gep_id = fabricate_instruction(
                 &m,
-                entry.id(),
+                entry.slot(),
                 gep_ty.id(),
                 InstructionKindData::Gep(GepInstData::new(
                     i8_ty.as_type().id(),
-                    base.id(),
-                    [minus_one.id()],
+                    base.slot(),
+                    [minus_one.slot()],
                     crate::GepNoWrapFlags::empty(),
                 )),
             );

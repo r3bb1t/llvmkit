@@ -247,19 +247,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// Opaque arena id for structured side tables such as use-list order
     /// records.
     #[inline]
-    pub fn id(self) -> ValueSlot {
+    pub fn slot(self) -> ValueSlot {
         self.id
     }
 
     /// Storable, module-tagged [`ValueId`] for this value (llvmkit 2.0).
     ///
-    /// Unlike [`id`](Self::id) — which returns the bare, untagged arena
+    /// Unlike [`slot`](Self::slot) — which returns the bare, untagged arena
     /// [`ValueSlot`] — the returned [`ValueId`] carries the owning
     /// [`ModuleId`](crate::ModuleId) and can be resolved back into a handle
     /// with [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view).
     #[inline]
-    pub fn to_id(self) -> ValueId<B> {
+    pub fn id(self) -> ValueId<B> {
         ValueId::from_raw(self.module.id(), self.id)
     }
 
@@ -527,10 +527,10 @@ pub trait IsValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
     fn into_erased(self) -> Value<'ctx, B>;
 
     /// Opaque arena id of the underlying value. Every handle shares the
-    /// id of its erased [`Value`], so `x.id()` replaces the
+    /// id of its erased [`Value`], so `x.slot()` replaces the
     /// `x.into_erased().id` widen-then-project chain.
     #[inline]
-    fn id(self) -> ValueSlot {
+    fn slot(self) -> ValueSlot {
         self.into_erased().id
     }
 }
@@ -595,6 +595,89 @@ impl<B: ModuleBrand> HasDebugLoc for Value<'_, B> {
 }
 
 // --------------------------------------------------------------------------
+// IntoErasedValue: operand input at an erased-by-design slot
+// --------------------------------------------------------------------------
+
+/// Inputs accepted where a builder wants an **erased** [`Value`] operand.
+///
+/// The erased sibling of [`IntoIntValue`](crate::IntoIntValue) /
+/// [`IntoFloatValue`](crate::IntoFloatValue) / [`IntoPointerValue`]: it is the
+/// bound on every builder operand whose declared parameter type is the erased
+/// [`Value`] — `build_store`'s stored value, `build_freeze`'s operand, the
+/// aggregate/vector element slots, the call-argument lists, and so on. Where
+/// those three *narrow* to a pinned IR type, this one only widens, so it
+/// accepts strictly more:
+///
+/// - every value **handle** — the whole [`IsValue`] family — for which the
+///   `module` argument is unused and the lift is infallible; and
+/// - the storable **ids** ([`ValueId`], [`IntValueId`], [`FloatValueId`],
+///   [`PointerValueId`], [`FunctionId`](crate::FunctionId) and
+///   [`GlobalId`](crate::GlobalId)), which resolve against `module` and report
+///   [`IrError::ForeignValueId`] for an id minted by a different module.
+///
+/// The *erased* [`ValueId`] is admitted here and **nowhere else**: an operand
+/// slot bound by this trait is erased by design (its parameter type is
+/// [`Value`]), so erased-in / erased-out is not the silent erased -> typed
+/// narrowing that [`IntoIntValue`](crate::IntoIntValue) and friends forbid.
+/// Narrowing an erased id stays spelled —
+/// [`Module::try_view`](crate::Module::try_view) or `TryFrom`.
+///
+/// The trait is **sealed**, and deliberately carries *no* blanket impl over
+/// [`IsValue`]: a blanket keyed on a trait bound would conflict with the
+/// concrete id impls, because rustc has no negative reasoning with which to
+/// prove `IntValueId: !IsValue`. Every implementor is therefore spelled out,
+/// mostly by the handle-declaring macros via the crate-internal
+/// `impl_into_erased_value_for_handle!`.
+pub trait IntoErasedValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
+    Sized + into_erased_value_sealed::Sealed
+{
+    #[doc(hidden)]
+    fn into_erased_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
+}
+
+/// Seals [`IntoErasedValue`] to the value handles plus the storable id family.
+///
+/// `pub(crate)` so each impl can live beside the type it is for — the
+/// per-kind handles next to their handle, the id family in `value_id.rs` —
+/// while the trait inside stays crate-private, so the seal holds.
+pub(crate) mod into_erased_value_sealed {
+    pub trait Sealed {}
+}
+
+/// Implement [`IntoErasedValue`] for one or more value **handles**, whose lift
+/// is the infallible [`IsValue::into_erased`] widen (the `module` argument is
+/// unused). Optional square-bracketed marker parameters are emitted ahead of
+/// the brand `B`, matching how every handle orders its generics
+/// (`IntValue<'ctx, W, B>`, `ArrayValue<'ctx, E, L, B>`, ...).
+///
+/// This exists because [`IntoErasedValue`] cannot be blanket-implemented over
+/// [`IsValue`] without colliding with the id-family impls; see the trait docs.
+macro_rules! impl_into_erased_value_for_handle {
+    ($( $name:ident $([$($mk:ident : $mkb:path),+ $(,)?])? ),+ $(,)?) => { $(
+        impl<'ctx, $($($mk: $mkb,)+)? B: $crate::module::ModuleBrand + 'ctx>
+            $crate::value::into_erased_value_sealed::Sealed
+            for $name<'ctx, $($($mk,)+)? B>
+        {
+        }
+        impl<'ctx, $($($mk: $mkb,)+)? B: $crate::module::ModuleBrand + 'ctx>
+            $crate::value::IntoErasedValue<'ctx, B>
+            for $name<'ctx, $($($mk,)+)? B>
+        {
+            #[inline]
+            fn into_erased_value(
+                self,
+                _module: $crate::module::ModuleRef<'ctx, B>,
+            ) -> $crate::error::IrResult<$crate::value::Value<'ctx, B>> {
+                Ok($crate::value::IsValue::into_erased(self))
+            }
+        }
+    )+ };
+}
+pub(crate) use impl_into_erased_value_for_handle;
+
+impl_into_erased_value_for_handle!(Value);
+
+// --------------------------------------------------------------------------
 // Per-kind value handles
 // --------------------------------------------------------------------------
 
@@ -629,7 +712,7 @@ macro_rules! decl_value_handle {
             /// resolvable via [`Module::view`](crate::Module::view) /
             /// [`Module::try_view`](crate::Module::try_view).
             #[inline]
-            pub fn to_id(self) -> $id<B> {
+            pub fn id(self) -> $id<B> {
                 $id::from_raw(self.module.id(), self.id)
             }
 
@@ -683,6 +766,7 @@ macro_rules! decl_value_handle {
             #[inline]
             fn into_erased(self) -> Value<'ctx, B> { Self::into_erased(self) }
         }
+        impl_into_erased_value_for_handle!($name);
         impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for $name<'ctx, B> {
             #[inline]
             fn ty(self) -> Type<'ctx, B> {
@@ -962,6 +1046,7 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
         Self::into_erased(self)
     }
 }
+impl_into_erased_value_for_handle!(ArrayValue[E: VecElem, L: ArrayLen]);
 impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> Typed<'ctx, B>
     for ArrayValue<'ctx, E, L, B>
 {
@@ -1211,6 +1296,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for StructValue<'ctx, B> {
         Self::into_erased(self)
     }
 }
+impl_into_erased_value_for_handle!(StructValue);
 impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for StructValue<'ctx, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
@@ -1441,6 +1527,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
         Self::into_erased(self)
     }
 }
+impl_into_erased_value_for_handle!(VectorValue[E: VecElem, L: VecLen]);
 impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> Typed<'ctx, B>
     for VectorValue<'ctx, E, L, B>
 {
@@ -1599,7 +1686,7 @@ decl_value_handle!(
     /// elsewhere; this handle only refines the type, not the category.
     ///
     /// Has no dedicated id family (it refines only the *type*, not the value
-    /// category), so [`to_id`](FunctionTypedValue::to_id) mints the erased
+    /// category), so [`id`](FunctionTypedValue::id) mints the erased
     /// [`ValueId`].
     FunctionTypedValue, ValueId, Function, FunctionType,
     type_predicate |d| matches!(d, TypeData::Function { .. })
@@ -1724,7 +1811,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
     /// [`Module::try_view`](crate::Module::try_view). Preserves the width
     /// marker `W`.
     #[inline]
-    pub fn to_id(self) -> IntValueId<W, B> {
+    pub fn id(self) -> IntValueId<W, B> {
         IntValueId::from_raw(self.module.id(), self.id)
     }
     /// Owning module reference.
@@ -1785,6 +1872,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for IntValue<'ct
         Self::into_erased(self)
     }
 }
+impl_into_erased_value_for_handle!(IntValue[W: IntWidth]);
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Typed<'ctx, B> for IntValue<'ctx, W, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
@@ -2094,7 +2182,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
     /// [`Module::try_view`](crate::Module::try_view). Preserves the
     /// float-kind marker `K`.
     #[inline]
-    pub fn to_id(self) -> FloatValueId<K, B> {
+    pub fn id(self) -> FloatValueId<K, B> {
         FloatValueId::from_raw(self.module.id(), self.id)
     }
     #[inline]
@@ -2147,6 +2235,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FloatValue<
         Self::into_erased(self)
     }
 }
+impl_into_erased_value_for_handle!(FloatValue[K: FloatKind]);
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FloatValue<'ctx, K, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {

@@ -12,7 +12,7 @@ fn main() {
             .add_typed_function::<(), (), _>("f", Linkage::External)
             .unwrap()
             .as_function();
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         b.build_ret_void();

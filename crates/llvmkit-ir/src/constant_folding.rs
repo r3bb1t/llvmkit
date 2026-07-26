@@ -434,8 +434,8 @@ pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx>(
                     return Ok(constant);
                 };
                 let folded = constant_fold_constant(element, dl, tli)?;
-                changed |= folded.id() != id;
-                folded_ids.push(folded.id());
+                changed |= folded.slot() != id;
+                folded_ids.push(folded.slot());
             }
             if !changed {
                 return Ok(constant);
@@ -983,9 +983,9 @@ fn fold_pointer_base_offset<'ctx, B: ModuleBrand + 'ctx>(
 fn base_identity<'ctx, B: ModuleBrand + 'ctx>(base: Constant<'ctx, B>) -> ValueSlot {
     match &base.into_erased().data().kind {
         ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => *value,
-        ValueKindData::Function(_) | ValueKindData::GlobalVariable(_) => base.id(),
+        ValueKindData::Function(_) | ValueKindData::GlobalVariable(_) => base.slot(),
         ValueKindData::Constant(ConstantData::GepOffset { base_id, .. }) => *base_id,
-        _ => base.id(),
+        _ => base.slot(),
     }
 }
 
@@ -1689,7 +1689,7 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
     };
 
     let module = pointer.into_erased().module();
-    let index_ids: Vec<ValueSlot> = indices.iter().map(|index| index.id()).collect();
+    let index_ids: Vec<ValueSlot> = indices.iter().map(|index| index.slot()).collect();
     // `Offset = APInt(BitWidth, DL.getIndexedOffsetInType(SrcElemTy, Ops[1..]), ...)`.
     // Bails (matching `for i in 1..: if (!isa<ConstantInt>(Ops[i])) return
     // nullptr;`) whenever an index isn't a plain scalar `ConstantInt`.
@@ -2829,5 +2829,9 @@ fn rebrand_constant<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx>,
     module: ModuleView<'ctx, B>,
 ) -> Constant<'ctx, B> {
-    Constant::from_parts(Value::from_parts(constant.id(), module, constant.ty().id()))
+    Constant::from_parts(Value::from_parts(
+        constant.slot(),
+        module,
+        constant.ty().id(),
+    ))
 }

@@ -22,15 +22,15 @@ fn invoke_void_to_unwind() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let callee = m.add_function_dyn("f.fastcc", callee_ty, Linkage::External)?;
-        callee.set_calling_conv(&m, CallingConv::FAST);
+        m.view(callee).set_calling_conv(&m, CallingConv::FAST);
         let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let caller =
             m.add_function_dyn("instructions.terminators", caller_ty, Linkage::External)?;
-        let entry = caller.append_basic_block(&m, "entry");
-        let normal = caller.append_basic_block(&m, "defaultdest");
-        let unwind = caller.append_basic_block(&m, "exc");
-        let normal_label = normal.label();
-        let unwind_label = unwind.label();
+        let entry = m.view(caller).append_basic_block(&m, "entry");
+        let normal = m.view(caller).append_basic_block(&m, "defaultdest");
+        let unwind = m.view(caller).append_basic_block(&m, "exc");
+        let normal_label = normal.id();
+        let unwind_label = unwind.id();
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(normal);
             bb_b.build_ret_void()?;
@@ -41,7 +41,7 @@ fn invoke_void_to_unwind() -> Result<(), IrError> {
         }
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let _ = b.build_invoke_dyn_with_config(
-            callee,
+            m.view(callee),
             Vec::<llvmkit_ir::Value>::new(),
             normal_label,
             unwind_label,
@@ -70,18 +70,19 @@ fn typed_invoke_derives_return_marker_from_callee() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let callee = m.add_typed_function::<i32, (), _>("callee", Linkage::External)?;
         let caller = m.add_typed_function::<i32, (i32,), _>("caller", Linkage::External)?;
-        let entry = caller.append_basic_block(&m, "entry");
-        let normal = caller.append_basic_block(&m, "normal");
-        let unwind = caller.append_basic_block(&m, "unwind");
-        let normal_label = normal.label();
-        let unwind_label = unwind.label();
-        let (x,) = caller.params();
+        let entry = m.view(caller).append_basic_block(&m, "entry");
+        let normal = m.view(caller).append_basic_block(&m, "normal");
+        let unwind = m.view(caller).append_basic_block(&m, "unwind");
+        let normal_label = normal.id();
+        let unwind_label = unwind.id();
+        let (x,) = m.view(caller).params();
         {
             let bb_b = IRBuilder::new_for::<i32>(&m).position_at_end(unwind);
             bb_b.build_ret(x)?;
         }
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let (_sealed, invoke) = b.build_invoke(callee, (), normal_label, unwind_label, "iv")?;
+        let (_sealed, invoke) =
+            b.build_invoke(m.view(callee), (), normal_label, unwind_label, "iv")?;
         // The invoke's marker is already `i32` (derived from the callee),
         // so this infallible-in-practice narrowing never errors.
         let result: IntValue<i32> = invoke.to_erased().try_into()?;
@@ -113,11 +114,11 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
         let callee = m.get_or_insert_intrinsic_declaration_by_name("llvm.amdgcn.kill")?;
         let caller_ty = m.fn_type(void_ty.as_type(), [bool_ty.as_type()], false);
         let caller = m.add_function_dyn("test_kill", caller_ty, Linkage::External)?;
-        let entry = caller.append_basic_block(&m, "entry");
-        let kill = caller.append_basic_block(&m, "kill");
-        let cont = caller.append_basic_block(&m, "cont");
-        let kill_label = kill.label();
-        let cont_label = cont.label();
+        let entry = m.view(caller).append_basic_block(&m, "entry");
+        let kill = m.view(caller).append_basic_block(&m, "kill");
+        let cont = m.view(caller).append_basic_block(&m, "cont");
+        let kill_label = kill.id();
+        let cont_label = cont.id();
         {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(kill);
             bb_b.build_unreachable();
@@ -127,7 +128,7 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
             bb_b.build_ret_void()?;
         }
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let c: llvmkit_ir::IntValue<bool> = caller.param(0)?.try_into()?;
+        let c: llvmkit_ir::IntValue<bool> = m.view(caller).param(0)?.try_into()?;
         let _ = b.build_callbr(callee, [c.into_erased()], cont_label, [kill_label], "")?;
         let text = format!("{m}");
         assert!(
@@ -161,11 +162,11 @@ fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
         );
         let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let caller = m.add_function_dyn("foo", caller_ty, Linkage::External)?;
-        let entry = caller.append_basic_block(&m, "entry");
-        let bb1 = caller.append_basic_block(&m, "1");
-        let bb2 = caller.append_basic_block(&m, "2");
-        let bb1_label = bb1.label();
-        let bb2_label = bb2.label();
+        let entry = m.view(caller).append_basic_block(&m, "entry");
+        let bb1 = m.view(caller).append_basic_block(&m, "1");
+        let bb2 = m.view(caller).append_basic_block(&m, "2");
+        let bb1_label = bb1.id();
+        let bb2_label = bb2.id();
         for bb in [bb1, bb2] {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
             bb_b.build_ret_void()?;

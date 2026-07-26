@@ -17,11 +17,11 @@ fn phi_same_constant_folds() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let entry_label = entry.label();
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let entry_label = entry.id();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b
-            .build_int_phi::<i32, _>("p")?
+            .view(b.build_int_phi::<i32, _>("p")?)
             .add_incoming(7_i32, entry_label)?
             .add_incoming(7_i32, entry_label)?;
         let instruction = InstructionView::try_from(phi.as_int_value().into_erased())?;
@@ -46,10 +46,10 @@ fn phi_poison_and_undef_incomings_fold_to_undef() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
-        let entry_label = entry.label();
-        let other_label = other.label();
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
+        let entry_label = entry.id();
+        let other_label = other.id();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let poison = IntValue::try_from(i32_ty.as_type().get_poison().into_erased())?;
         let undef = IntValue::try_from(i32_ty.as_type().get_undef().into_erased())?;
@@ -57,7 +57,7 @@ fn phi_poison_and_undef_incomings_fold_to_undef() -> Result<(), IrError> {
         // the *same* block is ill-formed (AmbiguousPhi); the folder arm under
         // test folds by value regardless of predecessor identity.
         let phi = b
-            .build_int_phi::<i32, _>("p")?
+            .view(b.build_int_phi::<i32, _>("p")?)
             .add_incoming(poison, entry_label)?
             .add_incoming(undef, other_label)?;
         let instruction = InstructionView::try_from(phi.as_int_value().into_erased())?;
@@ -79,17 +79,17 @@ fn phi_poison_beside_constant_folds_to_the_constant() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
-        let entry_label = entry.label();
-        let other_label = other.label();
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let other = m.view(f).append_basic_block(&m, "other");
+        let entry_label = entry.id();
+        let other_label = other.id();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let poison = IntValue::try_from(i32_ty.as_type().get_poison().into_erased())?;
         // Distinct predecessor blocks: two different values from one block is
         // ill-formed (AmbiguousPhi); the poison-skipping folder arm folds by
         // value regardless of predecessor identity.
         let phi = b
-            .build_int_phi::<i32, _>("p")?
+            .view(b.build_int_phi::<i32, _>("p")?)
             .add_incoming(poison, entry_label)?
             .add_incoming(7_i32, other_label)?;
         let instruction = InstructionView::try_from(phi.as_int_value().into_erased())?;

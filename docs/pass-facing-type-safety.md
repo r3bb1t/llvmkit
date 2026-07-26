@@ -72,7 +72,7 @@ Ok(patch.done())      // clean run → all-preserved; any mutation → the rung 
 
 ```rust
 let mut reshape = cx.mutate();
-let new_bb = reshape.split_block(&block, &before, "split")?;   // records the CfgUpdate decomposition
+let new_bb = reshape.split_block(block.id(), &before, "split")?; // records the CfgUpdate decomposition
 
 // Mid-pass, read the dominator tree *repaired* to the current CFG. Holding a plain cached
 // CFG-analysis ref across the edit is a COMPILE error — this is the only sound way to read it:

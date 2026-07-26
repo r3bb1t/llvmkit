@@ -113,6 +113,7 @@ macro_rules! decl_constant_handle {
             #[inline]
             fn into_erased(self) -> Value<'ctx, B> { Self::into_erased(self) }
         }
+        crate::value::impl_into_erased_value_for_handle!($name);
         impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for $name<'ctx, B> {
             #[inline]
             fn as_constant(self) -> Constant<'ctx, B> { Self::as_constant(self) }
@@ -287,6 +288,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for ConstantIntV
         Self::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(ConstantIntValue[W: IntWidth]);
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsConstant<'ctx, B>
     for ConstantIntValue<'ctx, W, B>
 {
@@ -498,6 +500,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
         Self::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(ConstantFloatValue[K: FloatKind]);
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsConstant<'ctx, B>
     for ConstantFloatValue<'ctx, K, B>
 {
@@ -1087,7 +1090,7 @@ impl<'ctx> ModuleCore {
         R: ReturnMarker,
         S: BlockTerminationState,
     {
-        if block.parent_function().map(|f| f.id()) != Some(function.as_dyn().id()) {
+        if block.parent_function().map(|f| f.slot()) != Some(function.as_dyn().slot()) {
             return Err(IrError::InvalidOperation {
                 message: "blockaddress block must belong to function",
             });
@@ -1095,8 +1098,8 @@ impl<'ctx> ModuleCore {
         let ty = self.ptr_type(function.address_space()).as_type().id();
         let id = self.context().intern_constant_block_address(
             ty,
-            function.as_dyn().id(),
-            block.as_dyn().id(),
+            function.as_dyn().slot(),
+            block.as_dyn().slot(),
         );
         Ok(constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty))
     }
@@ -1135,7 +1138,7 @@ impl<'ctx> ModuleCore {
         let ty = self.ptr_type(0).as_type().id();
         let id = self
             .context()
-            .intern_constant_dso_local_equivalent(ty, function.id());
+            .intern_constant_dso_local_equivalent(ty, function.slot());
         constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty)
     }
     /// `dso_local_equivalent` over a function, alias-to-function, or ifunc.
@@ -1143,7 +1146,7 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         global: Constant<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
-        let value = match &self.context().value_data(global.id()).kind {
+        let value = match &self.context().value_data(global.slot()).kind {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Value::from_parts(
                 *value,
                 ModuleRef::<B>::new(self),
@@ -1179,7 +1182,7 @@ impl<'ctx> ModuleCore {
         function: FunctionValue<'ctx, Dyn, B>,
     ) -> Constant<'ctx, B> {
         let ty = self.ptr_type(0).as_type().id();
-        let id = self.context().intern_constant_no_cfi(ty, function.id());
+        let id = self.context().intern_constant_no_cfi(ty, function.slot());
         constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty)
     }
 
@@ -1188,7 +1191,7 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         global: Constant<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
-        let value = match &self.context().value_data(global.id()).kind {
+        let value = match &self.context().value_data(global.slot()).kind {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Value::from_parts(
                 *value,
                 ModuleRef::<B>::new(self),
@@ -1714,7 +1717,7 @@ fn constant_with_replaced_operand(
             validate_constant_expr_data(module, &expr)?;
             let result_ty = Type::new(expr.result_ty, module);
             if let Some(folded) = fold_constant_expr_data(module, result_ty, &expr)? {
-                return Ok(Some(folded.id()));
+                return Ok(Some(folded.slot()));
             }
             Ok(Some(module.context().intern_constant_expr(expr)))
         }
@@ -2515,7 +2518,7 @@ mod tests {
             let ptr_as_int = m.constant_expr(
                 i64_ty.as_type(),
                 ConstantExprOpcode::PtrToInt,
-                [global.as_global_constant_ptr().into_erased()],
+                [m.view(global).as_global_constant_ptr().into_erased()],
                 [],
                 [],
                 ConstantExprFlags::none(),
@@ -2534,12 +2537,12 @@ mod tests {
             let replacement = i64_ty.const_zero().as_constant();
             let rewritten = constant_with_replaced_operand(
                 m.core_ref(),
-                expr.id(),
-                ptr_as_int.id(),
-                replacement.id(),
+                expr.slot(),
+                ptr_as_int.slot(),
+                replacement.slot(),
             )?;
 
-            assert_eq!(rewritten, Some(i64_ty.const_int(1_i64).id()));
+            assert_eq!(rewritten, Some(i64_ty.const_int(1_i64).slot()));
             Ok(())
         })
     }

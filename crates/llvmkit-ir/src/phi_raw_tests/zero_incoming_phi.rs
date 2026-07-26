@@ -14,9 +14,13 @@
 //! in-crate home.
 
 use crate::{
-    Analyses, BasicBlockLabel, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError,
-    IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, VerifierRule, run_function_pass,
+    Analyses, BlockId, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError, IrResult,
+    Linkage, Module, ModuleBrand, ReshapeCfg, VerifierRule, run_function_pass,
 };
+
+/// `Dyn`-marked block id in the default brand: the storable branch-target
+/// currency these fixtures hand back for the pass-side redirect surface.
+type DynBlockId<'ctx> = BlockId<Dyn, crate::Brand<'ctx>>;
 
 /// A `ReshapeCfg` pass that removes the `from_name` block's `cond_br` then-edge
 /// (its target `to` is the then-arm by construction), collapsing the `cond_br`
@@ -37,7 +41,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdge {
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.edit_cond_br(&from)?.remove_then()?;
+        reshape.edit_cond_br(from.id())?.remove_then()?;
         Ok(reshape.done())
     }
 }
@@ -46,12 +50,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdge {
 /// (its target `old_to` by construction) onto `new_to`. `new_to` is authored
 /// with no leading phis, so the `redirect_then` `phi_values` slice is empty. The
 /// label is stashed at build time (arena ids are stable across `verify()`).
-struct RedirectEmptyEdge<'ctx, B: ModuleBrand + 'ctx> {
+struct RedirectEmptyEdge<B: ModuleBrand> {
     from_name: &'static str,
-    new_to: BasicBlockLabel<'ctx, Dyn, B>,
+    new_to: BlockId<Dyn, B>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectEmptyEdge<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectEmptyEdge<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-edge-empty-phi";
@@ -65,8 +69,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectEmptyEdge<'c
             .expect("`from` block is present");
         // `new_to` has no leading phis, so no incoming values are supplied.
         reshape
-            .edit_cond_br(&from)?
-            .redirect_then(&self.new_to, &[])?;
+            .edit_cond_br(from.id())?
+            .redirect_then(self.new_to, &[])?;
         Ok(reshape.done())
     }
 }
@@ -85,29 +89,33 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectEmptyEdge<'c
 /// ```
 fn build_single_pred_phi<'ctx>(
     m: &Module<'ctx, crate::Brand<'ctx>, crate::Unverified>,
-) -> IrResult<(crate::FunctionValue<'ctx, Dyn>, BasicBlockLabel<'ctx, Dyn>)> {
+) -> IrResult<(
+    crate::FunctionValue<'ctx, Dyn>,
+    BlockId<Dyn, crate::Brand<'ctx>>,
+)> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block(m, "entry");
-    let to = f.append_basic_block(m, "to");
-    let other = f.append_basic_block(m, "other");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let to = m.view(f).append_basic_block(m, "to");
+    let other = m.view(f).append_basic_block(m, "other");
 
-    let entry_lbl = entry.label();
-    let to_lbl = to.label();
-    let other_lbl = other.label();
-    let to_dyn: BasicBlockLabel<Dyn> = to_lbl.to_erased().try_into()?;
+    let entry_lbl = entry.id();
+    let to_lbl = to.id();
+    let other_lbl = other.id();
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, to, other
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let x = b.build_int_add(a, 7_i32, "x")?;
     let c = b.build_icmp_slt(a, 5_i32, "c")?;
     b.build_cond_br(c, to_lbl, other_lbl)?;
 
     // to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(to);
-    let p = b.build_int_phi::<i32, _>("p")?.add_incoming(x, entry_lbl)?;
+    let p = b
+        .view(b.build_int_phi::<i32, _>("p")?)
+        .add_incoming(x, entry_lbl)?;
     let u = b.build_int_add(p.as_int_value(), 1_i32, "u")?;
     b.build_ret(u)?;
 
@@ -115,7 +123,7 @@ fn build_single_pred_phi<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
-    Ok((f, to_dyn))
+    Ok((m.view(f), to_lbl))
 }
 
 /// Removing `entry → to` — `entry` being `to`'s only predecessor — empties
@@ -176,34 +184,34 @@ fn build_redirect_single_pred_phi<'ctx>(
     m: &Module<'ctx, crate::Brand<'ctx>, crate::Unverified>,
 ) -> IrResult<(
     crate::FunctionValue<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
-    BasicBlockLabel<'ctx, Dyn>,
+    DynBlockId<'ctx>,
+    DynBlockId<'ctx>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block(m, "entry");
-    let old_to = f.append_basic_block(m, "old_to");
-    let other = f.append_basic_block(m, "other");
-    let new_to = f.append_basic_block(m, "new_to");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let old_to = m.view(f).append_basic_block(m, "old_to");
+    let other = m.view(f).append_basic_block(m, "other");
+    let new_to = m.view(f).append_basic_block(m, "new_to");
 
-    let entry_lbl = entry.label();
-    let old_to_lbl = old_to.label();
-    let other_lbl = other.label();
-    let new_to_lbl = new_to.label();
-    let old_to_dyn: BasicBlockLabel<Dyn> = old_to_lbl.to_erased().try_into()?;
-    let new_to_dyn: BasicBlockLabel<Dyn> = new_to_lbl.to_erased().try_into()?;
+    let entry_lbl = entry.id();
+    let old_to_lbl = old_to.id();
+    let other_lbl = other.id();
+    let new_to_lbl = new_to.id();
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, old_to, other
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = f.param(0)?.try_into()?;
+    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let x = b.build_int_add(a, 7_i32, "x")?;
     let c = b.build_icmp_slt(a, 5_i32, "c")?;
     b.build_cond_br(c, old_to_lbl, other_lbl)?;
 
     // old_to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(old_to);
-    let p = b.build_int_phi::<i32, _>("p")?.add_incoming(x, entry_lbl)?;
+    let p = b
+        .view(b.build_int_phi::<i32, _>("p")?)
+        .add_incoming(x, entry_lbl)?;
     let u = b.build_int_add(p.as_int_value(), 1_i32, "u")?;
     b.build_ret(u)?;
 
@@ -215,7 +223,7 @@ fn build_redirect_single_pred_phi<'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new_to);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
-    Ok((f, old_to_dyn, new_to_dyn))
+    Ok((m.view(f), old_to_lbl, new_to_lbl))
 }
 
 /// Redirecting `entry → old_to` onto `new_to` — `entry` being `old_to`'s only
@@ -288,9 +296,9 @@ fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = f.append_basic_block(&m, "b");
-        let b_label = b.label();
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = m.view(f).append_basic_block(&m, "b");
+        let b_label = b.id();
 
         // entry: br b   (so `b` is reachable from entry)
         let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -298,7 +306,7 @@ fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
 
         // b: %p = phi i32   (no add_incoming) ; ret 0
         let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(b);
-        let _p = bld.build_int_phi::<i32, _>("p")?.finish();
+        let _p = bld.view(bld.build_int_phi::<i32, _>("p")?);
         bld.build_ret(i32_ty.const_int(0_u32))?;
 
         let err = m
@@ -330,9 +338,9 @@ fn zero_incoming_phi_in_unreachable_block_is_accepted() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         // `u` has no edge into it — unreachable from entry.
-        let u = f.append_basic_block(&m, "u");
+        let u = m.view(f).append_basic_block(&m, "u");
 
         // entry: ret 0
         let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -340,7 +348,7 @@ fn zero_incoming_phi_in_unreachable_block_is_accepted() -> Result<(), IrError> {
 
         // u: %q = phi i32   (no add_incoming) ; ret 0
         let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(u);
-        let _q = bld.build_int_phi::<i32, _>("q")?.finish();
+        let _q = bld.view(bld.build_int_phi::<i32, _>("q")?);
         bld.build_ret(i32_ty.const_int(0_u32))?;
 
         m.verify_borrowed()

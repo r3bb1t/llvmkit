@@ -11,8 +11,10 @@ fn manager_for<'ctx, B: ModuleBrand + 'ctx>(
 fn main() {
     Module::with_new::<_, _, _>("left", |left| {
         let left_function = left
-            .add_typed_function::<(), (), _>("left", Linkage::External)
-            .unwrap()
+            .view(
+                left.add_typed_function::<(), (), _>("left", Linkage::External)
+                    .unwrap(),
+            )
             .as_function();
 
         Module::with_new::<_, _, _>("right", |right| {

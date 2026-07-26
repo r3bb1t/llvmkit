@@ -34,7 +34,7 @@ use crate::float_kind::{BFloat, Fp128, Half, PpcFp128, StaticFloatKind, X86Fp80}
 use crate::int_width::StaticIntWidth;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::Type;
-use crate::value::{FloatValue, IntValue, IsValue, Value};
+use crate::value::{FloatValue, IntValue, IntoErasedValue, IsValue, Value};
 
 /// Base marker trait — the bound a typed vector/array handle's element
 /// parameter carries. The element analog of [`IntWidth`](crate::IntWidth).
@@ -86,7 +86,12 @@ pub trait StaticVecElem<'ctx, B: ModuleBrand>: VecElem {
     /// The scalar value handle for this element: what `extractelement`
     /// returns and what `insertelement` / `splat` accept. `IntValue` for the
     /// int markers, `FloatValue` for the float markers.
-    type Value: IsValue<'ctx, B> + Copy;
+    ///
+    /// [`IntoErasedValue`] is bound alongside [`IsValue`] because the typed
+    /// vector builders forward this handle into the erased element operand of
+    /// `build_insert_element` / `build_vector_splat`, which is what that
+    /// bound spells. Every [`IsValue`] handle satisfies it.
+    type Value: IsValue<'ctx, B> + IntoErasedValue<'ctx, B> + Copy;
 
     /// Project the marker into the matching erased element [`Type`] from the
     /// caller's module.

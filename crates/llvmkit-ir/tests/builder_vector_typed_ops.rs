@@ -32,17 +32,19 @@ fn typed_vector_binops_match_dyn_golden() {
         let f = m
             .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         // Narrow the erased `<2 x i64>` params into the statically typed handle.
-        let a: VectorValue<'_, i64, Len<2>> = f
+        let a: VectorValue<'_, i64, Len<2>> = m
+            .view(f)
             .param(0)
             .expect("p0")
             .into_erased()
             .try_into()
             .expect("narrow p0");
-        let c: VectorValue<'_, i64, Len<2>> = f
+        let c: VectorValue<'_, i64, Len<2>> = m
+            .view(f)
             .param(1)
             .expect("p1")
             .into_erased()
@@ -94,10 +96,11 @@ fn typed_extract_returns_typed_element() {
         let f = m
             .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let a: VectorValue<'_, i64, Len<2>> = f
+        let a: VectorValue<'_, i64, Len<2>> = m
+            .view(f)
             .param(0)
             .expect("p0")
             .into_erased()
@@ -133,10 +136,15 @@ fn typed_splat_element_from_scalar_length_free() {
         let f = m
             .add_function_dyn("g", fn_ty, Linkage::External)
             .expect("g");
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let scalar: IntValue<'_, i32> = f.param(0).expect("p0").try_into().expect("i32 scalar");
+        let scalar: IntValue<'_, i32> = m
+            .view(f)
+            .param(0)
+            .expect("p0")
+            .try_into()
+            .expect("i32 scalar");
 
         // Element `i32` and length `Len<4>` come from the result annotation;
         // `scalar: E::Value` then checks the scalar is an `IntValue<i32>`.

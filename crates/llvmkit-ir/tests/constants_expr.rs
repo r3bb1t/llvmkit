@@ -58,7 +58,7 @@ fn constant_expr_ptrtoaddr_round_trips() -> Result<(), IrError> {
         let expr = m.constant_expr(
             m.i64_type().as_type(),
             ConstantExprOpcode::PtrToAddr,
-            [g.as_global_constant_ptr().into_erased()],
+            [m.view(g).as_global_constant_ptr().into_erased()],
             [],
             [],
             ConstantExprFlags::none(),
@@ -80,8 +80,8 @@ fn blockaddress_constant_round_trips() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let addr = m.block_address(f, &entry)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let addr = m.block_address(m.view(f), &entry)?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let terminator = b.build_ret_void()?.1;
         assert!(terminator.is_terminator());
@@ -106,8 +106,8 @@ fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
             .linkage(Linkage::External)
             .address_space(2)
             .build()?;
-        let entry = f.append_basic_block(&m, "entry");
-        let addr = m.block_address(f, &entry)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let addr = m.block_address(m.view(f), &entry)?;
         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
         let terminator = b.build_ret_void().1;
         assert!(terminator.is_terminator());
@@ -203,7 +203,7 @@ fn bitcast_scalar_pointer_and_one_lane_pointer_vector_round_trip() -> Result<(),
         let ptr_ty = m.ptr_type(0);
         let vec_ptr_ty = m.vector_type(ptr_ty.as_type(), 1, false);
         let g = m.add_global("g", i32_ty.const_zero())?;
-        let scalar = g.as_global_constant_ptr();
+        let scalar = m.view(g).as_global_constant_ptr();
         let to_vec = m.constant_expr(
             vec_ptr_ty.as_type(),
             ConstantExprOpcode::BitCast,
@@ -245,7 +245,7 @@ fn invalid_bitcast_constant_expr_is_rejected() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let zero = i32_ty.const_int(0i32);
         let g = m.add_global("g", zero)?;
-        let ptr = g.as_global_constant_ptr().into_erased();
+        let ptr = m.view(g).as_global_constant_ptr().into_erased();
 
         let err = m
             .constant_expr(
@@ -294,7 +294,7 @@ fn invalid_gep_constant_expr_indices_are_rejected() -> Result<(), IrError> {
                 m.ptr_type(0).as_type(),
                 ConstantExprOpcode::GetElementPtr,
                 [
-                    g.as_global_constant_ptr().into_erased(),
+                    m.view(g).as_global_constant_ptr().into_erased(),
                     zero.into_erased(),
                     one.into_erased(),
                 ],
@@ -715,7 +715,7 @@ fn constant_expr_gep_inrange_words_are_truncated_before_interning() -> Result<()
     Module::with_new("constexpr_inrange_canonical_words", |m| {
         let i8_ty = m.i8_type();
         let g = m.add_global("g", i8_ty.const_zero())?;
-        let ptr = g.as_global_constant_ptr();
+        let ptr = m.view(g).as_global_constant_ptr();
         let offset = m.i64_type().const_int(1i64);
         let canonical_range = ConstantExprInRange::new(Box::from([0]), Box::from([1]), 64);
         let high_word_range =
@@ -770,7 +770,7 @@ fn constant_expr_gep_inrange_width_must_match_base_index_width() -> Result<(), I
                 m.ptr_type(0).as_type(),
                 ConstantExprOpcode::GetElementPtr,
                 [
-                    g.as_global_constant_ptr().into_erased(),
+                    m.view(g).as_global_constant_ptr().into_erased(),
                     offset.into_erased(),
                 ],
                 [],
@@ -818,7 +818,7 @@ fn invalid_gep_constant_expr_address_space_mismatch_is_rejected() -> Result<(), 
                 wrong_result_ty.as_type(),
                 ConstantExprOpcode::GetElementPtr,
                 [
-                    target.as_global_constant_ptr().into_erased(),
+                    m.view(target).as_global_constant_ptr().into_erased(),
                     vector_index.into_erased(),
                 ],
                 [],
@@ -845,7 +845,7 @@ fn ptrauth_constructor_requires_five_operand_shape() -> Result<(), IrError> {
     Module::with_new("ptrauth_constructor", |m| {
         let i8_ty = m.i8_type();
         let g = m.add_global("g", i8_ty.const_zero())?;
-        let ptr = g.as_global_constant_ptr();
+        let ptr = m.view(g).as_global_constant_ptr();
         let key = m.i32_type().const_zero();
         let disc = m.i64_type().const_int(1i64);
         let addr_disc = m.ptr_type(0).const_null();

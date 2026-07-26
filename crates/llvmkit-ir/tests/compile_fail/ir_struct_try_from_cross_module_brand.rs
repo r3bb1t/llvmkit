@@ -16,13 +16,13 @@ fn main() -> Result<(), IrError> {
         let point_ty = <Point as llvmkit_ir::StructSchema>::ir_type(&left)?;
         let fn_ty = left.fn_type(left.void_type(), [point_ty.as_type()], false);
         let left_fn = left.add_function_dyn("left", fn_ty, Linkage::External)?;
-        let left_point = PointValue::try_from(left_fn.param(0)?)?;
+        let left_point = PointValue::try_from(left.view(left_fn).param(0)?)?;
 
         Module::with_new("right", |right| {
             let right_fn = right
                 .add_typed_function::<(), (), _>("right", Linkage::External)?
                 .as_function();
-            let entry = right_fn.append_basic_block(&right, "entry");
+            let entry = right.view(right_fn).append_basic_block(&right, "entry");
             let builder = IRBuilder::new_for::<()>(&right).position_at_end(entry);
             let _ = builder.build_insert_field::<Point, i32, _, _, _>(
                 left_point,

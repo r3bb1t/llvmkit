@@ -47,9 +47,9 @@ fn derive_builds_nested_named_structs_and_accessors() -> Result<(), IrError> {
             "normalize",
             Linkage::External,
         )?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let (placement,) = f.params();
+        let (placement,) = m.view(f).params();
         let rect = placement.normal_position(&b)?;
         let min = rect.min(&b)?;
         let max = rect.max(&b)?;
@@ -109,9 +109,9 @@ fn derive_builds_nested_named_structs_and_accessors() -> Result<(), IrError> {
 fn derive_try_from_raw_ir_values() -> Result<(), IrError> {
     Module::with_new("derived_try_from", |m| {
         let f = m.add_typed_function::<(), (WindowPlacement,), _>("read_raw", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let arg = f.as_function().param(0)?;
+        let arg = m.view(f).as_function().param(0)?;
         let placement = WindowPlacementValue::try_from(arg)?;
         let normal_position = placement.normal_position(&b)?;
         let _: RectValue<'_, _> = normal_position;
@@ -130,9 +130,9 @@ fn derive_struct_fields_unpacks_top_level_fields() -> Result<(), IrError> {
             "normalize_fields",
             Linkage::External,
         )?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let (show_cmd, normal_position) = f.params();
+        let (show_cmd, normal_position) = m.view(f).params();
         let _: IntValue<'_, i32, _> = show_cmd;
         let _: RectValue<'_, _> = normal_position;
         let rebuilt = WindowPlacementValue::build(&m, &b, show_cmd, normal_position, "rebuilt")?;
@@ -167,7 +167,7 @@ fn derive_build_accepts_fields_named_like_helper_parameters() -> Result<(), IrEr
 
     Module::with_new("collision", |m| {
         let f = m.add_typed_function::<CollisionNames, (), _>("collision", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let value = CollisionNamesValue::build(&m, &b, 1_i32, 2_i32, 3_i32, "collision")?;
         b.build_ret(value)?;
@@ -188,7 +188,7 @@ fn derive_build_accepts_fields_named_like_helper_parameters() -> Result<(), IrEr
 fn derive_emits_into_call_arg_for_struct_schema() -> Result<(), IrError> {
     Module::with_new("derived_call_arg", |m| {
         let f = m.add_typed_function::<i32, (Point,), _>("consume_point", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let point = PointValue::build(&m, &b, 1_i32, 2_i32, "point")?;
 

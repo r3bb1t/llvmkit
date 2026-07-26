@@ -19,7 +19,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for CondBrDoubleRemove {
     fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
         let reshape = cx.mutate();
         let bb = reshape.function().entry_block().expect("entry");
-        let e = reshape.edit_cond_br(&bb)?;
+        let e = reshape.edit_cond_br(bb.id())?;
         // `remove_then` consumes `e`; the second removal is a use-after-move.
         e.remove_then()?;
         e.remove_else()?;

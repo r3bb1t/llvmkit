@@ -10,7 +10,7 @@
 
 use llvmkit_ir::{
     Brand, ConstantFolder, Dyn, FastMathFlags, FloatValue, IRBuilder, InstructionKind,
-    InstructionView, IntValue, IrError, Linkage, Module, PointerValue, Positioned,
+    InstructionView, IntValueId, IrError, Linkage, Module, PointerValue, Positioned,
 };
 
 // --- Builder-context FMF -----------------------------------------------
@@ -26,13 +26,13 @@ fn fmf_propagates_from_builder_to_fadd() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .with_fast_math_flags(FastMathFlags::fast());
         assert_eq!(b.fast_math_flags(), FastMathFlags::fast());
         assert!(b.fast_math_flags().is_fast());
-        let p: FloatValue<f32> = f.param(0)?.try_into()?;
+        let p: FloatValue<f32> = m.view(f).param(0)?.try_into()?;
         let add = b.build_fp_add(p, p, "add")?;
         let div = b.build_fp_div(add, add, "div")?;
         b.build_ret(div)?;
@@ -59,13 +59,13 @@ fn clear_fast_math_flags_drops_flags_from_subsequent_ops() -> Result<(), IrError
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .with_fast_math_flags(FastMathFlags::fast())
             .clear_fast_math_flags();
         assert!(b.fast_math_flags().is_empty());
-        let p: FloatValue<f32> = f.param(0)?.try_into()?;
+        let p: FloatValue<f32> = m.view(f).param(0)?.try_into()?;
         let r = b.build_fp_div(p, p, "r")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -84,13 +84,13 @@ fn fmf_allow_reciprocal_propagates_to_fdiv() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let fmf = FastMathFlags::ALLOW_RECIPROCAL;
         let b = IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .with_fast_math_flags(fmf);
         assert_eq!(b.fast_math_flags(), fmf);
-        let p: FloatValue<f32> = f.param(0)?.try_into()?;
+        let p: FloatValue<f32> = m.view(f).param(0)?.try_into()?;
         let r = b.build_fp_div(p, p, "r")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -113,10 +113,10 @@ fn fmf_propagates_to_fcmp_oeq() -> Result<(), IrError> {
         let i1_ty = m.bool_type();
         let fn_ty = m.fn_type(i1_ty, [f32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         assert!(b.fast_math_flags().is_empty());
-        let p: FloatValue<f32> = f.param(0)?.try_into()?;
+        let p: FloatValue<f32> = m.view(f).param(0)?.try_into()?;
         let c0 = b.build_fcmp_oeq::<f32, _, _, _>(p, p, "c0")?;
         let fmf = FastMathFlags::ALLOW_RECIPROCAL;
         let b = b.with_fast_math_flags(fmf);
@@ -148,14 +148,14 @@ fn fmf_save_and_restore_round_trip() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         // Original: empty FMF.
         assert!(b.fast_math_flags().is_empty());
         // Snapshot, change to AllowReciprocal, build an op, restore.
         let orig = b.fast_math_flags();
         let b = b.with_fast_math_flags(FastMathFlags::ALLOW_RECIPROCAL);
-        let p: FloatValue<f32> = f.param(0)?.try_into()?;
+        let p: FloatValue<f32> = m.view(f).param(0)?.try_into()?;
         let r = b.build_fp_add(p, p, "r")?;
         assert!(
             b.fast_math_flags()
@@ -184,12 +184,12 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: FloatValue<f32> = f.param(0)?.try_into()?;
+        let p: FloatValue<f32> = m.view(f).param(0)?.try_into()?;
         let n0 = b.build_float_neg::<f32, _, _>(p, "n0")?;
         let Some(InstructionKind::FNeg(n0_inst)) =
-            InstructionView::try_from(n0.into_erased())?.kind()
+            InstructionView::try_from(b.view(n0).into_erased())?.kind()
         else {
             panic!("expected n0 to be fneg");
         };
@@ -197,7 +197,7 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
         let fmf = FastMathFlags::NO_NANS | FastMathFlags::NO_SIGNED_ZEROS;
         let n1 = b.build_float_neg_with_flags::<f32, _, _>(n0, fmf, "n1")?;
         let Some(InstructionKind::FNeg(n1_inst)) =
-            InstructionView::try_from(n1.into_erased())?.kind()
+            InstructionView::try_from(b.view(n1).into_erased())?.kind()
         else {
             panic!("expected n1 to be fneg");
         };
@@ -226,10 +226,10 @@ fn fmf_accumulates_contract_approx_reassoc_on_fmul() -> Result<(), IrError> {
         let f32_ty = m.f32_type();
         let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         assert!(b.fast_math_flags().is_empty());
-        let p: FloatValue<f32> = f.param(0)?.try_into()?;
+        let p: FloatValue<f32> = m.view(f).param(0)?.try_into()?;
         let _ = b.build_fp_add(p, p, "no_contract")?;
 
         let contract = FastMathFlags::ALLOW_CONTRACT;
@@ -345,17 +345,17 @@ where
         &IRBuilder<'_, 'ctx, Brand<'ctx>, ConstantFolder, Positioned, Dyn>,
         FloatValue<'ctx, f32>,
         FloatValue<'ctx, f32>,
-    ) -> Result<IntValue<'ctx, bool>, IrError>,
+    ) -> Result<IntValueId<bool, Brand<'ctx>>, IrError>,
 {
     Module::with_new("a", |m| {
         let f32_ty = m.f32_type();
         let i1_ty = m.bool_type();
         let fn_ty = m.fn_type(i1_ty, [f32_ty.as_type(), f32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: FloatValue<f32> = f.param(0)?.try_into()?;
-        let rhs: FloatValue<f32> = f.param(1)?.try_into()?;
+        let lhs: FloatValue<f32> = m.view(f).param(0)?.try_into()?;
+        let rhs: FloatValue<f32> = m.view(f).param(1)?.try_into()?;
         let r = mk(&b, lhs, rhs)?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -379,14 +379,15 @@ fn build_fp_phi_emits_phi_with_double_kind() -> Result<(), IrError> {
         let f64_ty = m.f64_type();
         let fn_ty = m.fn_type(f64_ty, [f64_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         // join(%p: double): a block whose single f64 parameter is the head-phi.
         let bwp = IRBuilder::new_for::<Dyn>(&m);
-        let (join, params) = bwp.append_block_with_params(f, &[f64_ty.as_type()], "join")?;
-        let join_label = join.label();
+        let (join, params) =
+            bwp.append_block_with_params(m.view(f), &[f64_ty.as_type()], "join")?;
+        let join_label = join.id();
         // entry: br join(%0) — the incoming f64 rides the edge into the head-phi.
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: FloatValue<f64> = f.param(0)?.try_into()?;
+        let p: FloatValue<f64> = m.view(f).param(0)?.try_into()?;
         b.build_br_with_args(join_label, &[p.into_erased()])?;
         // join: ret %p (the head-phi param, where the phi result was used).
         let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
@@ -412,14 +413,15 @@ fn build_pointer_phi_emits_phi_with_ptr() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         // join(%p: ptr): a block whose single pointer parameter is the head-phi.
         let bwp = IRBuilder::new_for::<Dyn>(&m);
-        let (join, params) = bwp.append_block_with_params(f, &[ptr_ty.as_type()], "join")?;
-        let join_label = join.label();
+        let (join, params) =
+            bwp.append_block_with_params(m.view(f), &[ptr_ty.as_type()], "join")?;
+        let join_label = join.id();
         // entry: br join(%0) — the incoming ptr rides the edge into the head-phi.
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: PointerValue = f.param(0)?.try_into()?;
+        let p: PointerValue = m.view(f).param(0)?.try_into()?;
         b.build_br_with_args(join_label, &[p.into_erased()])?;
         // join: ret %p (the head-phi param, where the phi result was used).
         let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);

@@ -32,7 +32,7 @@ fn for_function_succeeds_on_empty_function() -> Result<(), IrError> {
     Module::with_new("ssa-construct", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let _b = SsaBuilder::for_function(&m, f)?;
+        let _b = SsaBuilder::for_function(&m, m.view(f))?;
         Ok(())
     })
 }
@@ -45,8 +45,8 @@ fn for_function_rejects_function_with_existing_body() -> Result<(), IrError> {
     Module::with_new("ssa-construct-nonempty", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let _entry = f.append_basic_block(&m, "entry");
-        match SsaBuilder::for_function(&m, f) {
+        let _entry = m.view(f).append_basic_block(&m, "entry");
+        match SsaBuilder::for_function(&m, m.view(f)) {
             Err(IrError::SsaFunctionHasBlocks) => Ok(()),
             Ok(_) => panic!("expected SsaFunctionHasBlocks, got Ok"),
             Err(other) => panic!("expected SsaFunctionHasBlocks, got {other:?}"),
@@ -62,7 +62,7 @@ fn with_folder_for_function_accepts_custom_folder() -> Result<(), IrError> {
     Module::with_new("ssa-construct-folder", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let _b = SsaBuilder::with_folder_for_function(&m, f, NoFolder)?;
+        let _b = SsaBuilder::with_folder_for_function(&m, m.view(f), NoFolder)?;
         Ok(())
     })
 }
@@ -76,14 +76,21 @@ fn create_block_appends_named_block_to_function() -> Result<(), IrError> {
     Module::with_new("ssa-create-block", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
-        assert_eq!(entry.label().to_erased().name().as_deref(), Some("entry"));
+        assert_eq!(
+            m.view(entry.id()).to_erased().name().as_deref(),
+            Some("entry")
+        );
 
         let second = b.create_block("second");
-        assert_eq!(second.label().to_erased().name().as_deref(), Some("second"));
+        assert_eq!(
+            m.view(second.id()).to_erased().name().as_deref(),
+            Some("second")
+        );
 
-        let entry_fn = f
+        let entry_fn = m
+            .view(f)
             .entry_block()
             .expect("create_block's first call names the function's entry block");
         assert_eq!(entry_fn.name().as_deref(), Some("entry"));
@@ -98,7 +105,7 @@ fn seal_block_succeeds_once_then_errors() -> Result<(), IrError> {
     Module::with_new("ssa-seal-once", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let _entry = b.create_block("entry");
         let second = b.create_block("second");
         b.seal_block(second)?;
@@ -122,11 +129,11 @@ fn seal_block_rejects_block_from_different_builder() -> Result<(), IrError> {
         let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
         let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
 
-        let mut b1 = SsaBuilder::for_function(&m, f1)?;
+        let mut b1 = SsaBuilder::for_function(&m, m.view(f1))?;
         let _entry1 = b1.create_block("entry");
         let other1 = b1.create_block("other");
 
-        let mut b2 = SsaBuilder::for_function(&m, f2)?;
+        let mut b2 = SsaBuilder::for_function(&m, m.view(f2))?;
         let _entry2 = b2.create_block("entry");
 
         match b2.seal_block(other1) {
@@ -146,7 +153,7 @@ fn declare_var_family_covers_every_category_and_variant() -> Result<(), IrError>
     Module::with_new("ssa-declare-all", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
 
         let strict_int = b.declare_int_var::<i32, _>("i");
         let poison_int = b.declare_int_var_poison::<i64, _>("ip");
@@ -189,21 +196,21 @@ fn declare_var_family_covers_every_category_and_variant() -> Result<(), IrError>
     })
 }
 
-/// llvmkit-specific: `SsaBlock::label()` is the escape hatch back to a
-/// plain [`llvmkit_ir::BasicBlockLabel`] -- e.g. for feeding a branch
+/// llvmkit-specific: `SsaBlock::id()` is the escape hatch back to a
+/// plain [`llvmkit_ir::BlockId`] -- e.g. for feeding a branch
 /// target built through the ordinary `IRBuilder` surface once the
-/// public def/use/terminator API lands. Locks that the label survives
+/// public def/use/terminator API lands. Locks that the id survives
 /// the round trip and names the same underlying block.
 #[test]
 fn ssa_block_label_round_trips_to_basic_block_label() -> Result<(), IrError> {
     Module::with_new("ssa-block-label", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
-        let label = entry.label();
-        assert_eq!(label.to_erased().name().as_deref(), Some("entry"));
-        assert_eq!(label.to_erased().id(), entry.label().to_erased().id());
+        let id = entry.id();
+        assert_eq!(m.view(id).to_erased().name().as_deref(), Some("entry"));
+        assert_eq!(id, entry.id());
         Ok(())
     })
 }
@@ -225,7 +232,7 @@ fn single_pred_read_emits_no_phi() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let second = b.create_block("second");
 
@@ -262,7 +269,7 @@ fn diamond_merge_places_single_phi_at_join() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let left = b.create_block("left");
         let right = b.create_block("right");
@@ -271,7 +278,7 @@ fn diamond_merge_places_single_phi_at_join() -> Result<(), IrError> {
         let x = b.declare_int_var::<i32, _>("x");
 
         let b = b.switch_to_block(entry)?;
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let cond = b
             .ins()
             .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "cond")?;
@@ -318,7 +325,7 @@ fn loop_backedge_completes_incomplete_phi_on_seal() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("factorial", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let base = b.create_block("base");
         let loop_bb = b.create_block("loop");
@@ -328,7 +335,7 @@ fn loop_backedge_completes_incomplete_phi_on_seal() -> Result<(), IrError> {
         let i_var = b.declare_int_var::<i32, _>("i");
 
         let mut b = b.switch_to_block(entry)?;
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let is_zero =
             b.ins()
                 .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
@@ -417,7 +424,7 @@ fn strict_use_before_def_is_typed_error() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let x = b.declare_int_var::<i32, _>("x");
 
@@ -442,7 +449,7 @@ fn poison_variable_reads_poison_on_undef_path() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let x = b.declare_int_var_poison::<i32, _>("x");
 
@@ -487,7 +494,7 @@ fn dead_cycle_phi_names_the_actual_strict_variable_not_same_type_poison() -> Res
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let loop1 = b.create_block("loop1");
         let loop2 = b.create_block("loop2");
@@ -554,7 +561,7 @@ fn branch_to_sealed_block_rejected() -> Result<(), IrError> {
     Module::with_new("ssa-branch-sealed", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let second = b.create_block("second");
 
@@ -580,7 +587,7 @@ fn double_seal_rejected() -> Result<(), IrError> {
     Module::with_new("ssa-double-seal-public", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let _entry = b.create_block("entry");
         let second = b.create_block("second");
         b.seal_block(second)?;
@@ -603,10 +610,10 @@ fn foreign_variable_rejected() -> Result<(), IrError> {
         let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
         let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
 
-        let mut b1 = SsaBuilder::for_function(&m, f1)?;
+        let mut b1 = SsaBuilder::for_function(&m, m.view(f1))?;
         let x1 = b1.declare_int_var::<i32, _>("x");
 
-        let mut b2 = SsaBuilder::for_function(&m, f2)?;
+        let mut b2 = SsaBuilder::for_function(&m, m.view(f2))?;
         let entry2 = b2.create_block("entry");
         let mut b2 = b2.switch_to_block(entry2)?;
 
@@ -633,7 +640,7 @@ fn finish_reports_unfilled_block() -> Result<(), IrError> {
         let f = m
             .add_typed_function::<(), (), _>("f", Linkage::External)?
             .as_function();
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let _unfilled = b.create_block("unfilled");
 
@@ -657,7 +664,7 @@ fn switch_to_block_rejects_already_filled_block() -> Result<(), IrError> {
         let f = m
             .add_typed_function::<(), (), _>("f", Linkage::External)?
             .as_function();
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
 
         let b = b.switch_to_block(entry)?;
@@ -694,7 +701,7 @@ fn dyn_int_var_wrong_width_def_rejected() -> Result<(), IrError> {
     Module::with_new("ssa-dyn-wrong-width", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
 
         let i32_dyn_ty = m.custom_width_int_type(32)?;
@@ -728,7 +735,7 @@ fn dyn_float_var_wrong_kind_def_rejected() -> Result<(), IrError> {
     Module::with_new("ssa-dyn-float-wrong-kind", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
 
         let half_dyn_ty = m.half_type().as_dyn();
@@ -767,7 +774,7 @@ fn pointer_var_wrong_addrspace_def_rejected() -> Result<(), IrError> {
         let ptr_as1_ty = m.ptr_type(1);
         let fn_ty = m.fn_type(void_ty, [ptr_as1_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
 
         let addrspace0_ty = m.ptr_type(0);
@@ -777,7 +784,7 @@ fn pointer_var_wrong_addrspace_def_rejected() -> Result<(), IrError> {
         // The parameter is a pointer in addrspace 1; `px` was declared
         // in addrspace 0. Narrowing to `PointerValue` succeeds (it is a
         // pointer); the address-space mismatch is caught by `def_pointer_var`.
-        let wrong_addrspace_ptr: PointerValue = f.param(0)?.try_into()?;
+        let wrong_addrspace_ptr: PointerValue = m.view(f).param(0)?.try_into()?;
         let err = b
             .def_pointer_var(px, wrong_addrspace_ptr)
             .expect_err("a wrong-address-space def must be rejected");
@@ -823,7 +830,7 @@ fn switch_records_one_edge_per_case_occurrence() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let pre = b.create_block("pre");
         let switch_source = b.create_block("switch_source");
@@ -833,7 +840,7 @@ fn switch_records_one_edge_per_case_occurrence() -> Result<(), IrError> {
         let x = b.declare_int_var::<i32, _>("x");
 
         let b = b.switch_to_block(entry)?;
-        let mode: IntValue<i32> = f.param(0)?.try_into()?;
+        let mode: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let take_pre =
             b.ins()
                 .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, mode, 0_i32, "take_pre")?;
@@ -846,7 +853,7 @@ fn switch_records_one_edge_per_case_occurrence() -> Result<(), IrError> {
         let b = b.br(shared)?;
 
         let mut b = b.switch_to_block(switch_source)?;
-        let n: IntValue<i32> = f.param(1)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         b.def_int_var(x, 100_i32)?;
         let case0 = 0_i32;
         let case1 = 1_i32;
@@ -896,7 +903,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let second = b.create_block("second");
         let x = b.declare_int_var::<i32, _>("x");
@@ -919,7 +926,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let left = b.create_block("left");
         let right = b.create_block("right");
@@ -927,7 +934,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
         let x = b.declare_int_var::<i32, _>("x");
 
         let b = b.switch_to_block(entry)?;
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let cond = b
             .ins()
             .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "cond")?;
@@ -957,7 +964,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("factorial", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let base = b.create_block("base");
         let loop_bb = b.create_block("loop");
@@ -966,7 +973,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
         let i_var = b.declare_int_var::<i32, _>("i");
 
         let mut b = b.switch_to_block(entry)?;
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
         let is_zero =
             b.ins()
                 .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
@@ -1009,7 +1016,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
         let f = m
             .add_typed_function::<(), (i32, f64, Ptr), _>("g", Linkage::External)?
             .as_function();
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let case_bb = b.create_block("case_bb");
         let unreachable_bb = b.create_block("unreachable_bb");
@@ -1017,9 +1024,9 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
         let px = b.declare_pointer_var("px");
 
         let mut b = b.switch_to_block(entry)?;
-        let n: IntValue<i32> = f.param(0)?.try_into()?;
-        let fparam: FloatValue<f64> = f.param(1)?.try_into()?;
-        let pparam: PointerValue = f.param(2)?.try_into()?;
+        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let fparam: FloatValue<f64> = m.view(f).param(1)?.try_into()?;
+        let pparam: PointerValue = m.view(f).param(2)?.try_into()?;
         b.def_float_var(fx, fparam)?;
         b.def_pointer_var(px, pparam)?;
         let case0 = 0_i32;
@@ -1060,7 +1067,7 @@ fn switch_dyn_condition_bad_width_case_rejected_before_emit() -> Result<(), IrEr
     Module::with_new("ssa-dyn-bad-case-preemit", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let default_bb = b.create_block("default_bb");
         let case_bb = b.create_block("case_bb");
@@ -1230,7 +1237,7 @@ fn build_straight_line(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutc
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let mut b = SsaBuilder::for_function(m, f)?;
+    let mut b = SsaBuilder::for_function(m, m.view(f))?;
     let entry = b.create_block("entry");
     let mid = b.create_block("mid");
     let exit = b.create_block("exit");
@@ -1272,7 +1279,7 @@ fn build_diamond(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, I
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let mut b = SsaBuilder::for_function(m, f)?;
+    let mut b = SsaBuilder::for_function(m, m.view(f))?;
     let entry = b.create_block("entry");
     let left = b.create_block("left");
     let right = b.create_block("right");
@@ -1283,7 +1290,7 @@ fn build_diamond(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, I
         .collect();
 
     let b = b.switch_to_block(entry)?;
-    let n: IntValue<i32> = f.param(0)?.try_into()?;
+    let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let cond = b
         .ins()
         .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "cond")?;
@@ -1337,7 +1344,7 @@ fn build_loop(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrEr
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("factorial", fn_ty, Linkage::External)?;
-    let mut b = SsaBuilder::for_function(m, f)?;
+    let mut b = SsaBuilder::for_function(m, m.view(f))?;
     let entry = b.create_block("entry");
     let base = b.create_block("base");
     let loop_bb = b.create_block("loop");
@@ -1348,7 +1355,7 @@ fn build_loop(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrEr
         .collect();
 
     let mut b = b.switch_to_block(entry)?;
-    let n: IntValue<i32> = f.param(0)?.try_into()?;
+    let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     let is_zero = b
         .ins()
         .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
@@ -1408,7 +1415,7 @@ fn build_switch_shared(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutc
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-    let mut b = SsaBuilder::for_function(m, f)?;
+    let mut b = SsaBuilder::for_function(m, m.view(f))?;
     let entry = b.create_block("entry");
     let shared = b.create_block("shared");
     let default_bb = b.create_block("default_bb");
@@ -1418,7 +1425,7 @@ fn build_switch_shared(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutc
         .collect();
 
     let mut b = b.switch_to_block(entry)?;
-    let n: IntValue<i32> = f.param(0)?.try_into()?;
+    let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
     for (i, var) in vars.iter().enumerate() {
         if case.undef_var != Some(i) {
             b.def_int_var(*var, case.literals[i])?;
@@ -1533,7 +1540,7 @@ fn dead_block_poison_read_user_is_rerouted_to_poison() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let dead = b.create_block("dead");
         let x = b.declare_int_var_poison::<i32, _>("x");
@@ -1546,7 +1553,7 @@ fn dead_block_poison_read_user_is_rerouted_to_poison() -> Result<(), IrError> {
         let mut b = b.switch_to_block(dead)?;
         let read = b.use_int_var(x)?;
         let sum = b.ins().build_int_add(read, 1_i32, "sum")?;
-        let b = b.ret(sum)?;
+        let b = b.ret(m.view(sum))?;
 
         // finish() seals `dead` with zero predecessors: the incomplete phi
         // collapses through `undefined_phi_replacement`'s poison arm, which
@@ -1574,7 +1581,7 @@ fn dead_cycle_poison_read_with_live_user_resolves_to_poison() -> Result<(), IrEr
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let loop1 = b.create_block("loop1");
         let loop2 = b.create_block("loop2");
@@ -1615,7 +1622,7 @@ fn sealed_single_pred_cycle_read_errors_for_strict_variable() -> Result<(), IrEr
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let cyc_a = b.create_block("cyc_a");
         let cyc_b = b.create_block("cyc_b");
@@ -1656,7 +1663,7 @@ fn sealed_single_pred_cycle_read_resolves_poison_variable() -> Result<(), IrErro
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, f)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
         let entry = b.create_block("entry");
         let cyc_a = b.create_block("cyc_a");
         let cyc_b = b.create_block("cyc_b");

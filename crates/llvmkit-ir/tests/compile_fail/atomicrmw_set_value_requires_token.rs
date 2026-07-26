@@ -18,9 +18,9 @@ fn main() -> IrResult<()> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
-        let word: PointerValue = f.param(0)?.try_into()?;
+        let word: PointerValue = m.view(f).param(0)?.try_into()?;
         let twelve = i32_ty.const_int(12_i32);
         let armw = b.build_atomicrmw(
             AtomicRMWBinOp::Xchg,
@@ -29,6 +29,10 @@ fn main() -> IrResult<()> {
             AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
             "armw",
         )?;
+        // `build_atomicrmw` hands back the storable `AtomicRMWInstId`, so one
+        // view recovers the opcode handle — this fixture must keep testing the
+        // capability token, not id-versus-handle typing.
+        let armw = b.view(armw);
 
         let replacement = i32_ty.const_int(99_i32);
         // Missing the `&Module<Unverified>` capability token.

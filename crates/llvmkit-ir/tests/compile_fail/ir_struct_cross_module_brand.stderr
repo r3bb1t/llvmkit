@@ -1,7 +1,7 @@
 error[E0521]: borrowed data escapes outside of closure
   --> tests/compile_fail/ir_struct_cross_module_brand.rs:25:21
    |
-17 |           let (left_point,) = left_fn.params();
+17 |           let (left_point,) = left.view(left_fn).params();
    |                ---------- `left_point` declared here, outside of the closure body
 18 |
 19 |           Module::with_new("right", |right| {

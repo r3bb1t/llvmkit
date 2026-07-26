@@ -123,7 +123,6 @@ pub mod pass_pipeline;
 pub(crate) mod phi_check;
 #[cfg(test)]
 mod phi_raw_tests;
-pub mod phi_state;
 pub mod ssa_builder;
 pub mod struct_body_state;
 pub mod struct_schema;
@@ -221,10 +220,10 @@ pub use derived_types::{
 pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBlock};
 pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRule};
 pub use fmf::FastMathFlags;
-pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue};
+pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue, IntoCallee};
 pub use function_signature::{
     CallArgs, FunctionParam, FunctionParamList, FunctionReturn, FunctionSignature, IntoCallArg,
-    TypedFunctionValue, TypedVarArgsFunctionValue,
+    IntoTypedCallee, IntoVarArgsCallee, TypedFunctionValue, TypedVarArgsFunctionValue,
 };
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
@@ -315,7 +314,6 @@ pub use pass_pipeline::{
     SIMPLIFYCFG, cleanup_lift_pipeline, cleanup_min_pipeline, cleanup_o1_ish_pipeline,
     default_o0_pipeline, default_o1_pipeline, default_pipeline, parse_pass_pipeline_text,
 };
-pub use phi_state::{Closed, Open, PhiState};
 // Internal contract for llvmkit-asmparser; not public API, may change
 // without notice. The parser runs the verifier's phi-coherence algorithm
 // via this shared helper so the two cannot drift.
@@ -338,11 +336,15 @@ pub use unnamed_addr::UnnamedAddr;
 pub use r#use::Use;
 pub use user::User;
 pub use value::{
-    ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoPointerValue,
-    IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueSlot, VectorValue,
+    ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoErasedValue,
+    IntoPointerValue, IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueSlot,
+    VectorValue,
 };
 pub use value_id::{
-    BlockId, FloatValueId, FunctionId, GlobalId, IntValueId, PointerValueId, ValueId, ViewIn,
+    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
+    FreezeInstId, FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, IntValueId, IntrinsicInstId,
+    OtherPhiInstId, PhiInstId, PointerPhiInstId, PointerValueId, TypedCallInstId, TypedFunctionId,
+    TypedVarArgsFunctionId, VAArgInstId, ValueId, ViewIn,
 };
 pub use worklist::Worklist;
 

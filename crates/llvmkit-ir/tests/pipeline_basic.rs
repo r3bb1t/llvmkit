@@ -35,10 +35,10 @@ fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block(m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     b.build_ret(i32_ty.const_int(1_u32))?;
-    Ok(f.into())
+    Ok(m.view(f).into())
 }
 
 /// `i32 @<name>()` with one unused `add` named `dead` before the terminator.
@@ -51,7 +51,7 @@ fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
-    let entry = f.append_basic_block(m, "entry");
+    let entry = m.view(f).append_basic_block(m, "entry");
     let b = IRBuilder::with_folder(m, NoFolder).position_at_end(entry);
     let _dead = b.build_int_add::<i32, _, _, _>(
         i32_ty.const_int(10_u32),
@@ -59,7 +59,7 @@ fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
         "dead",
     )?;
     b.build_ret(i32_ty.const_int(1_u32))?;
-    Ok(f.into())
+    Ok(m.view(f).into())
 }
 
 // ==========================================================================

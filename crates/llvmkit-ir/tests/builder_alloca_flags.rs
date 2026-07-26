@@ -14,7 +14,7 @@ fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
     Module::with_new("se", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         b.build_alloca_dyn(
             m.ptr_type(0),
@@ -41,7 +41,7 @@ fn inalloca_alloca_prints() -> Result<(), IrError> {
     Module::with_new("ia", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         b.build_alloca_dyn(
             m.i32_type(),
@@ -64,7 +64,7 @@ fn swifterror_non_pointer_alloca_rejected() -> Result<(), IrError> {
     Module::with_new("se", |m| {
         let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         b.build_alloca_dyn(
             m.i32_type(),
@@ -94,7 +94,7 @@ fn swifterror_array_alloca_rejected() -> Result<(), IrError> {
         let i32_ty = m.custom_width_int_type(32)?;
         let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let count: IntValue<IntDyn, _> =
             i32_ty.const_int_checked(4_i64)?.into_erased().try_into()?;
@@ -127,7 +127,7 @@ fn swifterror_size_one_alloca_verifies_and_drops_canonical_size() -> Result<(), 
         let i32_ty = m.custom_width_int_type(32)?;
         let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let one: IntValue<IntDyn, _> = i32_ty.const_int_checked(1_i64)?.into_erased().try_into()?;
         b.build_alloca_dyn(

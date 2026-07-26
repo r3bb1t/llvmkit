@@ -110,7 +110,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// resolvable via [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view).
     #[inline]
-    pub fn to_id(self) -> GlobalId<B> {
+    pub fn id(self) -> GlobalId<B> {
         GlobalId::from_raw(self.module.id(), self.id)
     }
 
@@ -522,6 +522,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalVariable<'ctx, B> {
         GlobalVariable::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(GlobalVariable);
 impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalVariable<'ctx, B> {
     #[inline]
     fn as_constant(self) -> Constant<'ctx, B> {
@@ -737,10 +738,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
         self
     }
 
-    /// Materialise the global. Mirrors the second
-    /// `GlobalVariable::GlobalVariable(Module &M, ...)` ctor.
-    pub fn build(self) -> IrResult<GlobalVariable<'ctx, B>> {
-        self.module.module().install_global_variable::<B>(self)
+    /// Materialise the global, returning its storable [`GlobalId`]. Mirrors
+    /// the second `GlobalVariable::GlobalVariable(Module &M, ...)` ctor.
+    /// Resolve the id back into a borrowing [`GlobalVariable`] with
+    /// [`Module::view`](crate::Module::view).
+    pub fn build(self) -> IrResult<GlobalId<B>> {
+        self.module
+            .module()
+            .install_global_variable::<B>(self)
+            .map(|g| g.id())
     }
 
     pub(super) fn into_data(

@@ -62,7 +62,7 @@ fn inspect_module_pass_stays_verified_and_runs() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(1_u32))?;
 
@@ -113,7 +113,7 @@ fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(0_u32))?;
 
@@ -177,7 +177,7 @@ fn inspect_function_pass_stays_verified_and_runs() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(1_u32))?;
 
@@ -189,7 +189,9 @@ fn inspect_function_pass_stays_verified_and_runs() -> Result<(), IrError> {
 
         // The explicit `Verified` annotation is the compile-time half of the
         // assertion: a wrong driver verdict here fails to compile.
-        let out: Module<'_, _, Verified> = run_function_pass(pass, verified, f, &mut analyses)?;
+        let f_view = verified.view(f);
+        let out: Module<'_, _, Verified> =
+            run_function_pass(pass, verified, f_view, &mut analyses)?;
 
         assert!(ran.get(), "Inspect FunctionPass::run must actually execute");
         // A read-only pass leaves the IR untouched.

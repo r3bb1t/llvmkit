@@ -23,9 +23,9 @@ struct CpuState {
 fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult<()> {
     let typed = Module::with_new("m", |m| {
         let f = m.add_typed_function::<i32, (i32,), _>("f", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = f.builder(&m).position_at_end(entry);
-        let (x,) = f.params();
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = m.view(f).builder(&m).position_at_end(entry);
+        let (x,) = m.view(f).params();
         let slot = b.build_typed_alloca::<i32, _>("slot")?;
         b.build_typed_store(x, slot)?;
         let v = b.build_typed_load(slot, "v")?; // IntValue<'_, i32, _> -- no try_into
@@ -34,9 +34,9 @@ fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult
     })?;
     let erased = Module::with_new("m", |m| {
         let f = m.add_typed_function::<i32, (i32,), _>("f", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = f.builder(&m).position_at_end(entry);
-        let (x,) = f.params();
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = m.view(f).builder(&m).position_at_end(entry);
+        let (x,) = m.view(f).params();
         let slot = b.build_alloca(m.i32_type(), "slot")?;
         b.build_store(x, slot)?;
         let v = b.build_int_load::<i32, _, _>(slot, "v")?;
@@ -67,8 +67,8 @@ fn field_gep_projects_field_type_at_compile_time() -> IrResult<()> {
 
     Module::with_new("m", |m| {
         let f = m.add_typed_function::<i64, (), _>("f", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = f.builder(&m).position_at_end(entry);
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let b = m.view(f).builder(&m).position_at_end(entry);
         let cpu = b.build_typed_alloca::<CpuState, _>("cpu")?;
         let pc_ptr = b.build_field_gep::<CpuState, 1, _>(cpu, "pc.ptr")?; // TypedPointerValue<i64>
         let pc = b.build_typed_load(pc_ptr, "pc")?; // IntValue<'_, i64, _>

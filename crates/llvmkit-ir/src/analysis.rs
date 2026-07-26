@@ -664,7 +664,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     ) {
         let handle = function.as_function();
         let module_id = handle.module().id();
-        let function_id = handle.id();
+        let function_id = handle.slot();
         for (key, cached) in &mut self.results {
             if key.0 != module_id || key.2 != function_id {
                 continue;
@@ -745,7 +745,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         let function = function.into();
         let function_handle = function.as_function();
         let module_id = function_handle.module().id();
-        let function_id = function_handle.id();
+        let function_id = function_handle.slot();
         let snapshot = FunctionAnalysisSnapshot {
             cached: self.results.keys().copied().collect(),
         };
@@ -1067,7 +1067,7 @@ where
     B: ModuleBrand + 'ctx,
 {
     let function = function.as_function();
-    (function.module().id(), TypeId::of::<A>(), function.id())
+    (function.module().id(), TypeId::of::<A>(), function.slot())
 }
 
 fn module_key<'ctx, A, B>(module: ModuleView<'ctx, B>) -> (TypeId, ModuleId)
@@ -1551,12 +1551,12 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(0_u32))?;
             m.verify_borrowed()?;
 
-            let function: FunctionView<'_> = f.into();
+            let function: FunctionView<'_> = m.view(f).into();
             let mut fam = FunctionAnalysisManager::new();
             type Reqs = (DominatorTreeAnalysis,);
             <Reqs as FunctionAnalysisList<'_, _>>::prefetch(&mut fam, function)?;
@@ -1590,19 +1590,19 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
-            let next = f.append_basic_block(&m, "next");
-            let entry_id = entry.id();
-            let next_id = next.id();
-            let next_label = next.label();
+            let entry = m.view(f).append_basic_block(&m, "entry");
+            let next = m.view(f).append_basic_block(&m, "next");
+            let entry_id = entry.slot();
+            let next_id = next.slot();
+            let next_label = next.id();
 
             // entry: br next    next: ret 0
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            b.build_br(next.label())?;
+            b.build_br(next.id())?;
             let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
             b2.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function: FunctionView<'_> = f.into();
+            let function: FunctionView<'_> = m.view(f).into();
 
             // Cache a dom tree while `next` is still reachable.
             let mut dt = DominatorTree::new(function.as_function());
@@ -1616,7 +1616,7 @@ mod tests {
             let new_bb = entry_bb.split_at(&m, &terminator, "entry.split")?;
             let updates = [
                 CfgUpdate::delete(entry_id, next_id),
-                CfgUpdate::insert(new_bb.id(), next_id),
+                CfgUpdate::insert(new_bb.slot(), next_id),
             ];
 
             // Repairing the stale cached tree returns Repaired and yields the
@@ -1677,11 +1677,11 @@ mod tests {
             let i32_ty = m.i32_type();
             let fn_ty = m.fn_type_no_params(i32_ty, false);
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+            let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function: FunctionView<'_> = f.into();
+            let function: FunctionView<'_> = m.view(f).into();
             type Reqs = (ThresholdAnalysis,);
 
             // Without pre-registration, prefetch fails: the no-op

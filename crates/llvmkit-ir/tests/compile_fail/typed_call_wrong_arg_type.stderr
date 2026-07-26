@@ -17,7 +17,7 @@ error[E0277]: `std::string::String` cannot fill a call-argument slot of schema `
 note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_call`
   --> src/ir_builder.rs
    |
-   |     pub fn build_call<Ret, Params, A, Name>(
+   |     pub fn build_call<Ret, Params, A, Callee, Name>(
    |            ---------- required by a bound in this associated function
 ...
    |         A: CallArgs<'ctx, Params, B>,

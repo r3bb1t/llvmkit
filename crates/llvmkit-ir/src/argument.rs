@@ -113,6 +113,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Argument<'ctx, B> {
         Argument::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(Argument);
 impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for Argument<'ctx, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {

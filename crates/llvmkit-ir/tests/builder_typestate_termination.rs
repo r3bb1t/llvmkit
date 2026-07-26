@@ -20,13 +20,13 @@ fn cond_br_terminator_terminates_block() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(void_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("cb", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let then_bb = f.append_basic_block(&m, "then");
-        let else_bb = f.append_basic_block(&m, "else");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let then_bb = m.view(f).append_basic_block(&m, "then");
+        let else_bb = m.view(f).append_basic_block(&m, "else");
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i32> = f.param(0)?.try_into()?;
-        let cond: IntValue<bool> =
+        let lhs: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let cond: llvmkit_ir::IntValueId<bool, _> =
             b.build_int_cmp(llvmkit_ir::IntPredicate::Eq, lhs, 0_i32, "cond")?;
         let (terminated_entry, term) = b.build_cond_br(cond, &then_bb, &else_bb)?;
 
@@ -65,8 +65,8 @@ fn termination_typestate_does_not_change_asm_output() -> Result<(), IrError> {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let exit = f.append_basic_block(&m, "exit");
+        let entry = m.view(f).append_basic_block(&m, "entry");
+        let exit = m.view(f).append_basic_block(&m, "exit");
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(&exit)?;

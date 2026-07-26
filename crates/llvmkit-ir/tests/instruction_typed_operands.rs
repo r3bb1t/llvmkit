@@ -19,12 +19,12 @@ fn load_pointer_operand_is_typed() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: PointerValue = f.param(0)?.try_into()?;
+        let p: PointerValue = m.view(f).param(0)?.try_into()?;
         let loaded = b.build_load(i32_ty, p, "v")?;
 
-        let view = InstructionView::try_from(loaded)?;
+        let view = InstructionView::try_from(b.view(loaded))?;
         let Some(InstructionKind::Load(load)) = view.kind() else {
             panic!("expected a load instruction");
         };
@@ -44,13 +44,15 @@ fn direct_call_callee_is_direct() -> Result<(), IrError> {
         let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-        let entry = caller.append_basic_block(&m, "entry");
+        let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = caller.param(0)?.try_into()?;
+        let x: IntValue<i32> = m.view(caller).param(0)?.try_into()?;
         let call = b.build_call_dyn(callee, [x.into_erased()], "r")?;
 
-        match call.classify_callee() {
-            Callee::Direct(function) => assert_eq!(function.into_erased(), callee.into_erased()),
+        match b.view(call).classify_callee() {
+            Callee::Direct(function) => {
+                assert_eq!(function.into_erased(), b.view(callee).into_erased())
+            }
             Callee::Indirect(_) => panic!("expected a direct call to classify as Direct"),
         }
         Ok(())
@@ -65,14 +67,14 @@ fn classify_is_total() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
-        let y: IntValue<i32> = f.param(1)?.try_into()?;
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let y: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let sum = b.build_int_add::<i32, _, _, _>(x, y, "s")?;
         b.build_ret(sum)?;
 
-        let sum_view = InstructionView::try_from(sum.into_erased())?;
+        let sum_view = InstructionView::try_from(m.view(sum).into_erased())?;
         assert!(matches!(
             sum_view.classify(),
             Classified::Inst(InstructionKind::Add(_))
@@ -80,7 +82,8 @@ fn classify_is_total() -> Result<(), IrError> {
 
         // The block terminator classifies as Term(Ret) — the case the
         // split kind()/terminator_kind() pair makes easy to miss.
-        let term = f
+        let term = m
+            .view(f)
             .basic_blocks()
             .next()
             .unwrap()
@@ -102,15 +105,15 @@ fn binop_and_cmp_groupings() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         // Non-constant operands so the folder leaves real instructions.
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
-        let y: IntValue<i32> = f.param(1)?.try_into()?;
+        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let y: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let sum = b.build_int_add::<i32, _, _, _>(x, y, "s")?;
         let cmp = b.build_icmp_slt::<i32, _, _, _>(x, y, "c")?;
 
-        let sum_view = InstructionView::try_from(sum.into_erased())?;
+        let sum_view = InstructionView::try_from(b.view(sum).into_erased())?;
         let bop = sum_view
             .kind()
             .and_then(|k| k.as_binary_op())
@@ -120,7 +123,7 @@ fn binop_and_cmp_groupings() -> Result<(), IrError> {
         assert_eq!(bop.lhs(), x.into_erased());
         assert_eq!(bop.rhs(), y.into_erased());
 
-        let cmp_view = InstructionView::try_from(cmp.into_erased())?;
+        let cmp_view = InstructionView::try_from(b.view(cmp).into_erased())?;
         let cv = cmp_view
             .kind()
             .and_then(|k| k.as_cmp())
@@ -142,14 +145,18 @@ fn indirect_call_callee_is_indirect() -> Result<(), IrError> {
         // define i32 @caller(ptr %fp) { %r = call i32 %fp(); ret ... }
         let caller_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-        let entry = caller.append_basic_block(&m, "entry");
+        let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let fp: PointerValue = caller.param(0)?.try_into()?;
+        let fp: PointerValue = m.view(caller).param(0)?.try_into()?;
         let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let call =
-            b.build_indirect_call_dyn::<i32, _, Value, _>(callee_ty, fp, Vec::<Value>::new(), "r")?;
+        let call = b.build_indirect_call_dyn::<i32, _, Value, _, _>(
+            callee_ty,
+            fp,
+            Vec::<Value>::new(),
+            "r",
+        )?;
 
-        match call.classify_callee() {
+        match b.view(call).classify_callee() {
             Callee::Indirect(pointer) => assert_eq!(pointer.into_erased(), fp.into_erased()),
             Callee::Direct(_) => panic!("expected an indirect call to classify as Indirect"),
         }

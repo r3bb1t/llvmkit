@@ -36,15 +36,15 @@ use std::collections::HashMap;
 
 use llvmkit_ir::{
     Align, AllocaFlags, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, ApIntSignedness,
-    AtomicLoadConfig, AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, BasicBlockLabel, Brand,
-    CallingConv, Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode,
-    ConstantExprOptions, DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType,
-    FloatValue, GepNoWrapFlags, IRBuilder, IntDyn, IntType, IntValue, IntrinsicNameResolution,
-    IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
-    Positioned, RoundingMode, SelectionKind, StructType, SyncScope, ThreadLocalMode, Type,
-    TypeKind, UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord,
-    Visibility, constant_fold_select_instruction, derived_types::PointerType,
-    resolve_intrinsic_name, shufflevector_mask_from_constant,
+    AtomicLoadConfig, AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, Brand, CallingConv,
+    Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
+    DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FloatValue,
+    GepNoWrapFlags, IRBuilder, IntDyn, IntType, IntValue, IntrinsicNameResolution, IrError,
+    IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue, Positioned,
+    RoundingMode, SelectionKind, StructType, SyncScope, ThreadLocalMode, Type, TypeKind,
+    UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord, Visibility,
+    constant_fold_select_instruction, derived_types::PointerType, resolve_intrinsic_name,
+    shufflevector_mask_from_constant,
 };
 use llvmkit_support::{Span, Spanned};
 
@@ -1731,7 +1731,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let value = self.convert_val_id_to_value(ty, val_id, pfs)?;
         self.expect_punct(PunctKind::Comma, "',' before uselistorder indexes")?;
         let indexes = self.parse_use_list_order_indexes()?;
-        UseListOrderRecord::new(value.id(), ty.id(), indexes).map_err(|e| match e {
+        UseListOrderRecord::new(value.slot(), ty.id(), indexes).map_err(|e| match e {
             IrError::InvalidOperation { message } => ParseError::Expected {
                 expected: message.into(),
                 loc: DiagLoc::span(loc),
@@ -1846,15 +1846,18 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         };
         self.expect_punct(PunctKind::Comma, "',' before uselistorder_bb indexes")?;
         let indexes = self.parse_use_list_order_indexes()?;
-        let record =
-            UseListOrderBBRecord::new(function.into_erased().id(), block.to_erased().id(), indexes)
-                .map_err(|e| match e {
-                    IrError::InvalidOperation { message } => ParseError::Expected {
-                        expected: message.into(),
-                        loc: DiagLoc::span(loc),
-                    },
-                    other => self.builder_err("uselistorder_bb", other),
-                })?;
+        let record = UseListOrderBBRecord::new(
+            function.into_erased().slot(),
+            block.to_erased().slot(),
+            indexes,
+        )
+        .map_err(|e| match e {
+            IrError::InvalidOperation { message } => ParseError::Expected {
+                expected: message.into(),
+                loc: DiagLoc::span(loc),
+            },
+            other => self.builder_err("uselistorder_bb", other),
+        })?;
         self.module
             .append_use_list_order_bb(record)
             .map_err(|e| match e {
@@ -2302,7 +2305,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let ty = self.parse_type(false)?;
         let value = self.parse_value(state, ty)?;
         Ok(llvmkit_ir::metadata::DebugMetadataOperand::Value(
-            value.id(),
+            value.slot(),
         ))
     }
 
@@ -3179,6 +3182,9 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             expected: format!("valid global definition: {e}"),
             loc: DiagLoc::span(decl_loc),
         })?;
+        // The parser threads borrowing handles through its deferred-fixup and
+        // slot-numbering tables, so resolve the freshly minted id once here.
+        let g = self.module.view(g);
         for (kind, id) in metadata {
             g.set_metadata(self.module, kind, id);
         }
@@ -3298,6 +3304,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 loc: DiagLoc::span(decl_loc),
             })?;
             if let NameOrId::Id(id) = name_id {
+                let a = self.module.view(a);
                 self.numbered_globals
                     .add(id, GlobalRef::Alias(a))
                     .map_err(|source| ParseError::InvalidSlotId {
@@ -3319,6 +3326,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 loc: DiagLoc::span(decl_loc),
             })?;
             if let NameOrId::Id(id) = name_id {
+                let i = self.module.view(i);
                 self.numbered_globals
                     .add(id, GlobalRef::IFunc(i))
                     .map_err(|source| ParseError::InvalidSlotId {
@@ -5139,7 +5147,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     loop {
                         let ty = self.parse_type(false)?;
                         let value = self.parse_value(state, ty)?;
-                        inputs.push(value.id());
+                        inputs.push(value.slot());
                         if !self.eat_punct(PunctKind::Comma)? {
                             break;
                         }
@@ -5291,6 +5299,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     .module
                     .get_or_insert_intrinsic_declaration(&descriptor)
                     .map_err(|e| self.intrinsic_parse_error(decl_loc, e))?;
+                let f = self.module.view(f);
                 for (slot, name) in param_names.into_iter().enumerate() {
                     if let Some(name) = name {
                         let slot = u32::try_from(slot).map_err(|_| ParseError::Expected {
@@ -5344,6 +5353,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     expected: format!("valid function declaration: {e}"),
                     loc: DiagLoc::span(decl_loc),
                 })?;
+            let f = self.module.view(f);
             f.set_visibility(self.module, visibility);
             f.set_dll_storage_class(self.module, dll_storage_class);
             f.set_dso_locality(self.module, dso_locality);
@@ -5555,6 +5565,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     expected: format!("valid function definition: {e}"),
                     loc: DiagLoc::span(decl_loc),
                 })?;
+            let f = self.module.view(f);
             f.set_visibility(self.module, visibility);
             f.set_dll_storage_class(self.module, dll_storage_class);
             f.set_dso_locality(self.module, dso_locality);
@@ -6218,7 +6229,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_add_with_flags::<IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("add", e))?
-                    .into_erased()
             }
             IntBinOp::Sub => {
                 let mut flags = SubFlags::new();
@@ -6230,7 +6240,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_sub_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("sub", e))?
-                    .into_erased()
             }
             IntBinOp::Mul => {
                 let mut flags = MulFlags::new();
@@ -6242,7 +6251,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_mul_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("mul", e))?
-                    .into_erased()
             }
             IntBinOp::Shl => {
                 let mut flags = ShlFlags::new();
@@ -6254,7 +6262,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_shl_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("shl", e))?
-                    .into_erased()
             }
             IntBinOp::UDiv => {
                 let mut flags = UDivFlags::new();
@@ -6263,7 +6270,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_udiv_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("udiv", e))?
-                    .into_erased()
             }
             IntBinOp::SDiv => {
                 let mut flags = SDivFlags::new();
@@ -6272,7 +6278,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_sdiv_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("sdiv", e))?
-                    .into_erased()
             }
             IntBinOp::LShr => {
                 let mut flags = LShrFlags::new();
@@ -6281,7 +6286,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_lshr_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("lshr", e))?
-                    .into_erased()
             }
             IntBinOp::AShr => {
                 let mut flags = AShrFlags::new();
@@ -6290,20 +6294,16 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
                 b.build_int_ashr_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("ashr", e))?
-                    .into_erased()
             }
             IntBinOp::URem => b
                 .build_int_urem::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
-                .map_err(|e| self.builder_err("urem", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("urem", e))?,
             IntBinOp::SRem => b
                 .build_int_srem::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
-                .map_err(|e| self.builder_err("srem", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("srem", e))?,
             IntBinOp::And => b
                 .build_int_and::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
-                .map_err(|e| self.builder_err("and", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("and", e))?,
             IntBinOp::Or => {
                 let flags = if disjoint_or {
                     OrFlags::new().disjoint()
@@ -6312,14 +6312,12 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 };
                 b.build_int_or_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("or", e))?
-                    .into_erased()
             }
             IntBinOp::Xor => b
                 .build_int_xor::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
-                .map_err(|e| self.builder_err("xor", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("xor", e))?,
         };
-        Ok(v)
+        Ok(b.view(v).into_erased())
     }
 
     /// `icmp [samesign] PRED TYPE LHS, RHS`. Mirrors `LLParser::parseCompare`.
@@ -6363,7 +6361,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let r = b
             .build_int_cmp_with_flags_dyn(pred, lhs, rhs, flags, name)
             .map_err(|e| self.builder_err("icmp", e))?;
-        Ok(r.into_erased())
+        Ok(b.view(r).into_erased())
     }
 
     /// `trunc [nuw] [nsw] TYPE VALUE to TYPE` / `zext [nneg] TYPE VALUE to TYPE` / `sext TYPE VALUE to TYPE`.
@@ -6410,7 +6408,6 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     b.build_trunc_dyn(src_int, dst_int, name)
                 }
                 .map_err(|e| self.builder_err("trunc", e))?
-                .into_erased()
             }
             IntCast::ZExt => if zext_nneg {
                 b.build_zext_with_flags_dyn(
@@ -6422,14 +6419,12 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             } else {
                 b.build_zext_dyn(src_int, dst_int, name)
             }
-            .map_err(|e| self.builder_err("zext", e))?
-            .into_erased(),
+            .map_err(|e| self.builder_err("zext", e))?,
             IntCast::SExt => b
                 .build_sext_dyn(src_int, dst_int, name)
-                .map_err(|e| self.builder_err("sext", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("sext", e))?,
         };
-        Ok(v)
+        Ok(b.view(v).into_erased())
     }
 
     /// `ptrtoint TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
@@ -6454,7 +6449,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_ptr_to_int(src_ptr, dst_int, result_name.as_str())
             .map_err(|e| self.builder_err("ptrtoint", e))?;
-        Ok(v.into_erased())
+        Ok(b.view(v).into_erased())
     }
 
     /// `inttoptr TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
@@ -6479,7 +6474,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_int_to_ptr(src_int, dst_ptr, result_name.as_str())
             .map_err(|e| self.builder_err("inttoptr", e))?;
-        Ok(v.into_erased())
+        Ok(b.view(v).into_erased())
     }
 
     /// `fneg [nnan ninf ...] TYPE VALUE`. Mirrors `LLParser::parseUnaryOp` for `Instruction::FNeg`.
@@ -6501,7 +6496,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             b.build_float_neg_with_flags::<FloatDyn, _, _>(f, fmf, result_name.as_str())
         }
         .map_err(|e| self.builder_err("fneg", e))?;
-        Ok(r.into_erased())
+        Ok(b.view(r).into_erased())
     }
 
     /// `OP [nnan ninf ...] TYPE LHS, RHS` for fadd/fsub/fmul/fdiv/frem.
@@ -6531,38 +6526,33 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             } else {
                 b.build_fp_add_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
-            .map_err(|e| self.builder_err("fadd", e))?
-            .into_erased(),
+            .map_err(|e| self.builder_err("fadd", e))?,
             FpBinOp::Sub => if fmf.is_empty() {
                 b.build_fp_sub::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
             } else {
                 b.build_fp_sub_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
-            .map_err(|e| self.builder_err("fsub", e))?
-            .into_erased(),
+            .map_err(|e| self.builder_err("fsub", e))?,
             FpBinOp::Mul => if fmf.is_empty() {
                 b.build_fp_mul::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
             } else {
                 b.build_fp_mul_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
-            .map_err(|e| self.builder_err("fmul", e))?
-            .into_erased(),
+            .map_err(|e| self.builder_err("fmul", e))?,
             FpBinOp::Div => if fmf.is_empty() {
                 b.build_fp_div::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
             } else {
                 b.build_fp_div_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
-            .map_err(|e| self.builder_err("fdiv", e))?
-            .into_erased(),
+            .map_err(|e| self.builder_err("fdiv", e))?,
             FpBinOp::Rem => if fmf.is_empty() {
                 b.build_fp_rem::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
             } else {
                 b.build_fp_rem_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
             }
-            .map_err(|e| self.builder_err("frem", e))?
-            .into_erased(),
+            .map_err(|e| self.builder_err("frem", e))?,
         };
-        Ok(v)
+        Ok(b.view(v).into_erased())
     }
 
     /// `fcmp [nnan ninf ...] PRED TYPE LHS, RHS`. Mirrors `LLParser::parseCompare` FP arm.
@@ -6608,13 +6598,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let r = if fmf.is_empty() {
             b.build_fp_cmp::<llvmkit_ir::FloatDyn, _, _, _>(pred, lhs, rhs, name)
                 .map_err(|e| self.builder_err("fcmp", e))?
-                .into_erased()
         } else {
             b.build_fp_cmp_fmf::<llvmkit_ir::FloatDyn, _, _, _>(pred, lhs, rhs, fmf, name)
                 .map_err(|e| self.builder_err("fcmp", e))?
-                .into_erased()
         };
-        Ok(r)
+        Ok(b.view(r).into_erased())
     }
 
     /// `alloca TYPE [, TYPE COUNT] [, align N]`.
@@ -6645,7 +6633,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let r = b
             .build_alloca_dyn(ty, size, align, addr_space, flags, result_name.as_str())
             .map_err(|e| self.builder_err("alloca", e))?;
-        Ok(r.into_erased())
+        Ok(b.view(r).into_erased())
     }
 
     /// Optional `, <intty> <size>` array-size operand for `alloca`, present
@@ -6732,7 +6720,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
             let v = b
                 .build_load_atomic(ty, ptr, config, result_name.as_str())
                 .map_err(|e| self.builder_err("load", e))?;
-            Ok(v)
+            Ok(b.view(v))
         } else {
             let align = self.parse_optional_comma_align()?;
             let v = if volatile {
@@ -6747,7 +6735,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 }
             }
             .map_err(|e| self.builder_err("load", e))?;
-            Ok(v)
+            Ok(b.view(v))
         }
     }
 
@@ -6838,7 +6826,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_gep_with_flags(source_ty, ptr, indices, flags, name)
             .map_err(|e| self.builder_err("getelementptr", e))?;
-        Ok(v.into_erased())
+        Ok(b.view(v).into_erased())
     }
 
     /// `select i1 COND, TYPE TRUE, TYPE FALSE`. Dispatches to
@@ -6908,9 +6896,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let f: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = false_v
                     .try_into()
                     .map_err(|_| self.expected("int-typed select arm"))?;
-                b.build_select(cond_i1, t, f, name)
-                    .map_err(|e| self.builder_err("select", e))?
-                    .into_erased()
+                b.view(
+                    b.build_select(cond_i1, t, f, name)
+                        .map_err(|e| self.builder_err("select", e))?,
+                )
+                .into_erased()
             }
             AnyTypeEnum::Float(_) => {
                 let t: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn, B> = true_v
@@ -6920,9 +6910,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                     false_v
                         .try_into()
                         .map_err(|_| self.expected("float-typed select arm"))?;
-                b.build_select(cond_i1, t, f, name)
-                    .map_err(|e| self.builder_err("select", e))?
-                    .into_erased()
+                b.view(
+                    b.build_select(cond_i1, t, f, name)
+                        .map_err(|e| self.builder_err("select", e))?,
+                )
+                .into_erased()
             }
             AnyTypeEnum::Pointer(_) => {
                 let t: llvmkit_ir::PointerValue<'ctx, B> = true_v
@@ -6931,9 +6923,11 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let f: llvmkit_ir::PointerValue<'ctx, B> = false_v
                     .try_into()
                     .map_err(|_| self.expected("ptr-typed select arm"))?;
-                b.build_select(cond_i1, t, f, name)
-                    .map_err(|e| self.builder_err("select", e))?
-                    .into_erased()
+                b.view(
+                    b.build_select(cond_i1, t, f, name)
+                        .map_err(|e| self.builder_err("select", e))?,
+                )
+                .into_erased()
             }
             _ => {
                 return Err(
@@ -6968,14 +6962,12 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = match op {
             FpToInt::FpToSI => b
                 .build_fp_to_si(src_fp, dst_int, name)
-                .map_err(|e| self.builder_err("fptosi", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("fptosi", e))?,
             FpToInt::FpToUI => b
                 .build_fp_to_ui(src_fp, dst_int, name)
-                .map_err(|e| self.builder_err("fptoui", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("fptoui", e))?,
         };
-        Ok(v)
+        Ok(b.view(v).into_erased())
     }
 
     /// `sitofp`/`uitofp TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
@@ -7003,8 +6995,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = match op {
             IntToFp::SIToFp => b
                 .build_si_to_fp(src_int, dst_fp, name)
-                .map_err(|e| self.builder_err("sitofp", e))?
-                .into_erased(),
+                .map_err(|e| self.builder_err("sitofp", e))?,
             IntToFp::UIToFp => {
                 if nneg {
                     b.build_ui_to_fp_with_flags_dyn(
@@ -7014,15 +7005,13 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                         name,
                     )
                     .map_err(|e| self.builder_err("uitofp", e))?
-                    .into_erased()
                 } else {
                     b.build_ui_to_fp(src_int, dst_fp, name)
                         .map_err(|e| self.builder_err("uitofp", e))?
-                        .into_erased()
                 }
             }
         };
-        Ok(v)
+        Ok(b.view(v).into_erased())
     }
 
     /// `addrspacecast ptr VALUE to ptr`. Mirrors `LLParser::parseCast`
@@ -7047,7 +7036,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_addrspace_cast(src_ptr, dst_ptr, result_name.as_str())
             .map_err(|e| self.builder_err("addrspacecast", e))?;
-        Ok(v.into_erased())
+        Ok(b.view(v).into_erased())
     }
 
     // ── S3.2: new opcode parsers ──────────────────────────────────────────
@@ -7071,7 +7060,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_bitcast_dyn(src_v, dst_ty, name)
             .map_err(|e| self.builder_err("bitcast", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// `fptrunc <fp-ty> <val> to <fp-ty>`. Mirrors `LLParser::parseCast`
@@ -7098,7 +7087,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_fp_trunc_dyn(sv, df, result_name.as_str())
             .map_err(|e| self.builder_err("fptrunc", e))?;
-        Ok(v.into_erased())
+        Ok(b.view(v).into_erased())
     }
 
     /// `fpext <fp-ty> <val> to <fp-ty>`. Mirrors `LLParser::parseCast`
@@ -7125,7 +7114,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_fp_ext_dyn(sv, df, result_name.as_str())
             .map_err(|e| self.builder_err("fpext", e))?;
-        Ok(v.into_erased())
+        Ok(b.view(v).into_erased())
     }
 
     /// `ptrtoaddr <ptr-or-vector-ty> <val> to <int-or-vector-ty>`. Mirrors
@@ -7145,7 +7134,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_ptr_to_addr_dyn(src_v, dst_ty, result_name.as_str())
             .map_err(|e| self.builder_err("ptrtoaddr", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// `extractelement <vec-ty> <vec>, <idx-ty> <idx>`.
@@ -7169,7 +7158,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_extract_element(vec_v, idx, result_name.as_str())
             .map_err(|e| self.builder_err("extractelement", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// `insertelement <vec-ty> <vec>, <elt-ty> <elt>, <idx-ty> <idx>`.
@@ -7196,7 +7185,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_insert_element(vec_v, elt_v, idx, result_name.as_str())
             .map_err(|e| self.builder_err("insertelement", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// `shufflevector <vec-ty> <v1>, <vec-ty> <v2>, <mask>`.
@@ -7221,7 +7210,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_shuffle_vector(v1, v2, &mask, result_name.as_str())
             .map_err(|e| self.builder_err("shufflevector", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// Parse a shufflevector mask typed constant operand and decode it with
@@ -7279,7 +7268,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_extract_value_dyn(agg_v, &indices, result_name.as_str())
             .map_err(|e| self.builder_err("extractvalue", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, <idx>, ...`. Mirrors
@@ -7305,7 +7294,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_insert_value_dyn(agg_v, elt_v, &indices, result_name.as_str())
             .map_err(|e| self.builder_err("insertvalue", e))?;
-        Ok(v)
+        Ok(b.view(v))
     }
 
     /// `phi <ty> [ <val>, <label> ], ...`. Handles any first-class *data*
@@ -7331,19 +7320,19 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let phi = b
                     .build_int_phi_dyn(int_ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
-                phi.to_erased()
+                b.view(phi).to_erased()
             }
             AnyTypeEnum::Float(fp_ty) => {
                 let phi = b
                     .build_fp_phi_dyn(fp_ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
-                phi.to_erased()
+                b.view(phi).to_erased()
             }
             AnyTypeEnum::Pointer(ptr_ty) => {
                 let phi = b
                     .build_pointer_phi_in_addrspace(ptr_ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
-                phi.to_erased()
+                b.view(phi).to_erased()
             }
             // The remaining first-class *data* types — vector, array, and
             // non-opaque struct — are legal phi result types. Route them through
@@ -7358,7 +7347,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 let phi = b
                     .build_phi_dyn(ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
-                phi.to_erased()
+                b.view(phi).to_erased()
             }
             // Everything else is rejected here. `label`, `metadata`, and
             // `token` are first-class per `Type::is_first_class` yet are not
@@ -7377,7 +7366,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         // Record the phi's source location, keyed by its arena id, so the
         // end-of-function coherence check can anchor a diagnostic here — a
         // numbered/anonymous phi has no matchable textual name.
-        state.phi_locs.push((phi_val.id(), self.loc()));
+        state.phi_locs.push((phi_val.slot(), self.loc()));
         // Parse incoming pairs: `[ val, label ], ...`
         // First pair has no leading comma; subsequent pairs have one.
         let mut first = true;
@@ -7636,29 +7625,32 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 for arg in args {
                     builder = builder.arg(arg);
                 }
-                builder
+                let call = builder
                     .name(name)
                     .build()
-                    .map_err(|e| self.builder_err("call", e))?
-                    .to_erased()
+                    .map_err(|e| self.builder_err("call", e))?;
+                b.view(call).to_erased()
             }
             ParsedCallee::InlineAsm(asm) => {
                 if asm.label_constraint_count() != 0 {
                     return Err(self.expected("inline asm call without label constraints"));
                 }
-                b.build_inline_asm_call::<llvmkit_ir::Dyn, _, _, _>(asm, args, name)
-                    .map_err(|e| self.builder_err("call", e))?
-                    .to_erased()
+                let call = b
+                    .build_inline_asm_call::<llvmkit_ir::Dyn, _, _, _>(asm, args, name)
+                    .map_err(|e| self.builder_err("call", e))?;
+                b.view(call).to_erased()
             }
-            ParsedCallee::Indirect(callee) => b
-                .build_indirect_call_dyn::<llvmkit_ir::Dyn, _, _, _>(
-                    parsed_fn_ty,
-                    callee,
-                    args,
-                    name,
-                )
-                .map_err(|e| self.builder_err("indirect call", e))?
-                .to_erased(),
+            ParsedCallee::Indirect(callee) => {
+                let call = b
+                    .build_indirect_call_dyn::<llvmkit_ir::Dyn, _, _, _, _>(
+                        parsed_fn_ty,
+                        callee,
+                        args,
+                        name,
+                    )
+                    .map_err(|e| self.builder_err("indirect call", e))?;
+                b.view(call).to_erased()
+            }
         };
         Ok(v)
     }
@@ -7830,7 +7822,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                             .module
                             .get_or_insert_intrinsic_declaration(&descriptor)
                             .map_err(|e| self.intrinsic_parse_error(loc, e))?;
-                        Ok(ParsedCallee::Function(f))
+                        Ok(ParsedCallee::Function(self.module.view(f)))
                     }
                     IntrinsicNameResolution::UnknownIntrinsic => Err(ParseError::Expected {
                         expected: "unknown intrinsic".into(),
@@ -7845,7 +7837,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                                 loc: DiagLoc::span(loc),
                             })?;
                         self.forward_function_decls.entry(name).or_insert(loc);
-                        Ok(ParsedCallee::Function(f))
+                        Ok(ParsedCallee::Function(self.module.view(f)))
                     }
                 }
             }
@@ -7921,7 +7913,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_va_arg(list_ptr, result_ty, result_name.as_str())
             .map_err(|e| self.builder_err("va_arg", e))?;
-        Ok(v.to_erased())
+        Ok(b.view(v).to_erased())
     }
 
     /// `freeze <ty> <val>`. Mirrors `LLParser::parseFreeze`.
@@ -7938,7 +7930,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let r = b
             .build_freeze(v, result_name.as_str())
             .map_err(|e| self.builder_err("freeze", e))?;
-        Ok(r.to_erased())
+        Ok(b.view(r).to_erased())
     }
 
     /// `switch <ty> <val>, label %default [ <ty> N, label %case ... ]`.
@@ -8088,7 +8080,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_atomic_cmpxchg(ptr, cmp_v, new_v, config, result_name.as_str())
             .map_err(|e| self.builder_err("cmpxchg", e))?;
-        Ok(v.to_erased())
+        Ok(b.view(v).to_erased())
     }
 
     /// `atomicrmw [volatile] <op> ptr <ptr>, <ty> <val>
@@ -8127,6 +8119,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let v = b
             .build_atomicrmw(op, ptr, val_v, config, result_name.as_str())
             .map_err(|e| self.builder_err("atomicrmw", e))?;
+        let v = b.view(v);
         if let Some((val_ref, loc)) = deferred_value {
             state
                 .deferred_atomicrmw_values
@@ -8344,7 +8337,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         let parent_pad = self.parse_optional_pad_token(state)?;
         // `[handler1, handler2, ...]`
         self.expect_punct(PunctKind::LSquare, "'[' in catchswitch handlers")?;
-        let mut handlers: Vec<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> = Vec::new();
+        let mut handlers: Vec<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> = Vec::new();
         loop {
             if matches!(self.peek(), Token::RSquare) {
                 self.bump()?;
@@ -8488,7 +8481,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
                 .map_err(|e| self.builder_err("invoke", e))?
             }
             ParsedCallee::Indirect(callee_ptr) => b
-                .build_indirect_invoke_dyn_with_config::<llvmkit_ir::Dyn, _, _, _, _>(
+                .build_indirect_invoke_dyn_with_config::<llvmkit_ir::Dyn, _, _, _, _, _>(
                     callee_ptr,
                     parsed_fn_ty,
                     args,
@@ -8573,7 +8566,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
         )?;
         let fallthrough = self.parse_block_ref(state)?;
         // Optional `[ label %ind1, ... ]`
-        let mut indirect: Vec<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> = Vec::new();
+        let mut indirect: Vec<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> = Vec::new();
         if matches!(self.peek(), Token::Comma) || matches!(self.peek(), Token::LSquare) {
             if matches!(self.peek(), Token::Comma) {
                 self.bump()?;
@@ -8700,7 +8693,7 @@ impl<'src, 'm, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'm, 'ctx, B> {
     fn parse_block_ref(
         &mut self,
         state: &mut PerFunctionState<'ctx, B>,
-    ) -> ParseResult<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> {
+    ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
         let loc = self.loc();
         match self.peek() {
             Token::LocalVar(_) => {
@@ -8955,13 +8948,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         module: &Module<'ctx, B, Unverified>,
         name: &str,
         loc: Span,
-    ) -> ParseResult<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> {
+    ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
         if let Some(value) = self.blocks.get(name).copied() {
             return self.value_as_block_label(value, loc);
         }
         let bb = self.func.append_basic_block(module, name);
         self.blocks.insert(name.to_owned(), bb.to_erased());
-        Ok(bb.label())
+        Ok(bb.id())
     }
 
     /// Define a textual basic block label.
@@ -9079,8 +9072,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         &self,
         value: llvmkit_ir::Value<'ctx, B>,
         loc: Span,
-    ) -> ParseResult<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> {
-        Ok(self.value_as_block_view(value, loc)?.label())
+    ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
+        Ok(self.value_as_block_view(value, loc)?.id())
     }
 
     fn get_or_create_numbered_block_label(
@@ -9088,7 +9081,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         module: &Module<'ctx, B, Unverified>,
         id: u32,
         loc: Span,
-    ) -> ParseResult<BasicBlockLabel<'ctx, llvmkit_ir::Dyn, B>> {
+    ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
         if let Some(value) = self.local_numbered.get(&id).copied() {
             return self.value_as_block_label(value, loc);
         }
@@ -9100,7 +9093,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         } else {
             let bb = self.func.append_basic_block(module, "");
             self.numbered_blocks.insert(id, bb.to_erased());
-            bb.label()
+            bb.id()
         };
         self.numbered_block_refs.entry(id).or_insert(loc);
         Ok(label)
@@ -9125,7 +9118,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             BlockRef::Named(name) => self.ensure_block_label(module, name, loc)?,
             BlockRef::Numbered(id) => self.get_or_create_numbered_block_label(module, *id, loc)?,
         };
-        self.value_as_block_view(label.to_erased(), loc)
+        self.value_as_block_view(module.view(label).to_erased(), loc)
     }
 
     fn bind_local(

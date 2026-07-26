@@ -21,7 +21,7 @@ error[E0277]: the trait bound `FloatValue<'_, f64, Brand<'_>>: IntoIntValue<'_, 
 note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_call`
   --> src/ir_builder.rs
    |
-   |     pub fn build_call<Ret, Params, A, Name>(
+   |     pub fn build_call<Ret, Params, A, Callee, Name>(
    |            ---------- required by a bound in this associated function
 ...
    |         A: CallArgs<'ctx, Params, B>,

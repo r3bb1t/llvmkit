@@ -37,19 +37,19 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
         let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let lhs: IntValue<i32> = f.param(0)?.try_into()?;
-        let rhs: IntValue<i32> = f.param(1)?.try_into()?;
+        let lhs: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let rhs: IntValue<i32> = m.view(f).param(1)?.try_into()?;
         let sum = b.build_int_add(lhs, rhs, "sum")?;
         let (entry, _) = b.build_ret(sum)?;
 
         // ---- Assertions ----
 
         // Exactly one basic block.
-        assert_eq!(f.basic_blocks().count(), 1);
+        assert_eq!(m.view(f).basic_blocks().count(), 1);
 
         // Terminator is a Ret.
         let term = entry.terminator().expect("entry must have a terminator");
@@ -64,12 +64,12 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
             _ => panic!("not a Ret"),
         };
         let returned = ret_inst.return_value().expect("ret had a value");
-        assert_eq!(returned.ty(), sum.ty().as_type());
+        assert_eq!(returned.ty(), m.view(sum).ty().as_type());
 
         // The `add` instruction's operands are the function's two args.
-        let arg0: Argument = f.param(0)?;
-        let arg1: Argument = f.param(1)?;
-        let add_kind = sum.into_erased().name();
+        let arg0: Argument = m.view(f).param(0)?;
+        let arg1: Argument = m.view(f).param(1)?;
+        let add_kind = m.view(sum).into_erased().name();
         assert_eq!(add_kind.as_deref(), Some("sum"));
         let _ = arg0;
         let _ = arg1;
@@ -89,12 +89,12 @@ fn mismatched_widths_error_at_runtime_when_dyn() -> Result<(), IrError> {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i64_ty.as_type()], false);
         let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         // Static narrowing rejects the i64 arg as an i32-typed IntValue.
-        let _a: IntValue<i32> = f.param(0)?.try_into()?;
-        let err: Result<IntValue<i32>, IrError> = f.param(1)?.try_into();
+        let _a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let err: Result<IntValue<i32>, IrError> = m.view(f).param(1)?.try_into();
         assert!(matches!(
             err,
             Err(IrError::OperandWidthMismatch { lhs: 32, rhs: 64 })
@@ -139,7 +139,7 @@ fn argument_to_int_value_narrowing_validates_type() -> Result<(), IrError> {
         let void = m.void_type();
         let fn_ty = m.fn_type(void.as_type(), [f64_ty.as_type()], false);
         let f = m.add_function_dyn("takes_double", fn_ty, Linkage::External)?;
-        let arg = f.param(0)?;
+        let arg = m.view(f).param(0)?;
         let err: Result<IntValue<i32>, IrError> = IntValue::try_from(arg);
         assert!(matches!(err, Err(IrError::TypeMismatch { .. })));
         Ok(())
@@ -181,8 +181,8 @@ fn function_builder_chains_options() -> Result<(), IrError> {
                 Attribute::enum_attr(AttrKind::AlwaysInline).expect("flag attribute"),
             )
             .build()?;
-        assert_eq!(f.linkage(), Linkage::Internal);
-        assert_eq!(f.calling_conv(), CallingConv::FAST);
+        assert_eq!(m.view(f).linkage(), Linkage::Internal);
+        assert_eq!(m.view(f).calling_conv(), CallingConv::FAST);
         Ok(())
     })
 }
@@ -212,9 +212,9 @@ fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
         let i64_ty = m.i64_type();
         let fn_ty = m.fn_type(i32_ty, [i64_ty.as_type()], false);
         let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new(&m).position_at_end(entry);
-        let arg = f.param(0)?; // i64
+        let arg = m.view(f).param(0)?; // i64
         let err = b
             .build_ret(arg)
             .expect_err("returning i64 from i32-returning function must error");
@@ -232,13 +232,13 @@ fn function_value_into_iter_yields_blocks_in_order() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        f.append_basic_block(&m, "entry");
-        f.append_basic_block(&m, "mid");
-        f.append_basic_block(&m, "exit");
+        m.view(f).append_basic_block(&m, "entry");
+        m.view(f).append_basic_block(&m, "mid");
+        m.view(f).append_basic_block(&m, "exit");
 
-        let named: Vec<Option<String>> = f.basic_blocks().map(|bb| bb.name()).collect();
+        let named: Vec<Option<String>> = m.view(f).basic_blocks().map(|bb| bb.name()).collect();
         let mut walked = Vec::new();
-        for bb in f {
+        for bb in m.view(f) {
             walked.push(bb.name());
         }
         assert_eq!(walked, named);

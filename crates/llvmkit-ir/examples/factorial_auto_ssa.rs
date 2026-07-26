@@ -61,13 +61,15 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m
-        .function_builder::<i32, _>("factorial", fn_ty)
-        .linkage(Linkage::External)
-        .param_name(0, "n")
-        .build()?
+        .view(
+            m.function_builder::<i32, _>("factorial", fn_ty)
+                .linkage(Linkage::External)
+                .param_name(0, "n")
+                .build()?,
+        )
         .with_typed_params::<(i32,)>()?;
 
-    let mut b = SsaBuilder::for_function(m, f.as_function())?;
+    let mut b = SsaBuilder::for_function(m, m.view(f).as_function())?;
 
     // Same block names, same creation order as the manual example:
     // entry (auto-sealed), base, loop, exit.
@@ -81,7 +83,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let acc_var = b.declare_int_var::<i32, _>("acc");
     let i_var = b.declare_int_var::<i32, _>("i");
 
-    let (n,) = f.params();
+    let (n,) = m.view(f).params();
 
     // entry: %is_zero = icmp eq i32 %n, 0; def acc=1, i=n (this loop's
     // entry-edge incoming values belong to `entry`, the block they're

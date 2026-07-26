@@ -55,29 +55,31 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m
-        .function_builder::<i32, _>("factorial", fn_ty)
-        .linkage(Linkage::External)
-        .param_name(0, "n")
-        .build()?
+        .view(
+            m.function_builder::<i32, _>("factorial", fn_ty)
+                .linkage(Linkage::External)
+                .param_name(0, "n")
+                .build()?,
+        )
         .with_typed_params::<(i32,)>()?;
 
-    let entry = f.append_basic_block(m, "entry");
-    let base = f.append_basic_block(m, "base");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let base = m.view(f).append_basic_block(m, "base");
     // The loop header's two parameters ARE the head-phis: `params[0]` carries
     // the accumulator (`%acc`), `params[1]` the counter (`%i`). Their incomings
     // arrive later as block arguments on the branches into `loop`.
     let bwp = IRBuilder::new_for::<i32>(m);
     let (loop_bb, params) = bwp.append_block_with_named_params(
-        f.as_function(),
+        m.view(f).as_function(),
         &[(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
         "loop",
     )?;
-    let exit = f.append_basic_block(m, "exit");
-    let base_label = base.label();
-    let loop_label = loop_bb.label();
-    let exit_label = exit.label();
+    let exit = m.view(f).append_basic_block(m, "exit");
+    let base_label = base.id();
+    let loop_label = loop_bb.id();
+    let exit_label = exit.id();
 
-    let (n,) = f.params();
+    let (n,) = m.view(f).params();
 
     // entry: %is_zero = icmp eq i32 %n, 0; then branch to `base` with no
     // arguments, or into `loop` carrying the header-phis' initial values
@@ -111,7 +113,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         exit_label,
         &[],
         loop_label,
-        &[next_acc.into_erased(), next_i.into_erased()],
+        &[m.view(next_acc).into_erased(), m.view(next_i).into_erased()],
     )?;
 
     // exit: ret i32 %next_acc

@@ -16,7 +16,7 @@ fn main() {
                 .add_typed_function::<i64, (), _>("f", Linkage::External)
                 .unwrap()
                 .as_function();
-            let entry = function.append_basic_block(&right, "entry");
+            let entry = right.view(function).append_basic_block(&right, "entry");
             let builder = IRBuilder::new_for::<i64>(&right).position_at_end(entry);
             let _ = builder.build_int_add(left_value, left_value, "bad");
         });

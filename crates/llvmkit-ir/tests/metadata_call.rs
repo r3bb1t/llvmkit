@@ -64,11 +64,12 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
         // define i64 @get_sp() { %rsp = call ...; call void ...; ret i64 %rsp }
         let host_ty = m.fn_type(i64_ty, Vec::<llvmkit_ir::Type>::new(), false);
         let host = m.add_function_dyn("get_sp", host_ty, Linkage::External)?;
-        let entry = host.append_basic_block(&m, "entry");
+        let entry = m.view(host).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let rsp = b.build_call_dyn(read, [md], "rsp")?;
-        let rsp_val: llvmkit_ir::IntValue<i64> = rsp
+        let rsp_val: llvmkit_ir::IntValue<i64> = b
+            .view(rsp)
             .return_value()
             .expect("read_register returns value")
             .try_into()?;
@@ -126,19 +127,20 @@ fn post_construction_function_attributes() -> Result<(), IrError> {
         // Forward declaration via `add_function_dyn` (no builder).
         let f = m.add_function_dyn("trampoline", fn_ty, Linkage::External)?;
         // Body is defined later; decorate the existing value.
-        f.add_attribute(
+        m.view(f).add_attribute(
             &m,
             AttrIndex::Function,
             Attribute::enum_attr(AttrKind::NoRedZone).expect("flag attribute"),
         );
-        f.add_attribute(
+        m.view(f).add_attribute(
             &m,
             AttrIndex::Function,
             Attribute::enum_attr(AttrKind::Naked).expect("flag attribute"),
         );
-        f.set_string_attribute(&m, AttrIndex::Function, "frame-pointer", "all");
+        m.view(f)
+            .set_string_attribute(&m, AttrIndex::Function, "frame-pointer", "all");
 
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret_void()?;
 
@@ -183,7 +185,7 @@ fn metadata_string_as_value_prints_inline() -> Result<(), IrError> {
         let g = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let host_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("f", host_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let s = m.metadata_string("rsp");
         let md = m.metadata_as_value(s);
@@ -242,14 +244,14 @@ fn range_metadata_on_load_verifies_and_prints() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
+        let p: llvmkit_ir::PointerValue = m.view(f).param(0)?.try_into()?;
         let ld = b.build_int_load::<i8, _, _>(p, "v")?;
         let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
         let hi = m.metadata_constant(i8_ty.const_int(0x20_u8));
         let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
-        let inst = InstructionView::try_from(ld.into_erased())?;
+        let inst = InstructionView::try_from(b.view(ld).into_erased())?;
         inst.set_metadata(MetadataAttachmentKind::Range, range);
         b.build_ret(ld)?;
 
@@ -270,13 +272,13 @@ fn range_metadata_rejects_odd_operand_count() -> Result<(), IrError> {
         let ptr_ty = m.ptr_type(0);
         let fn_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: llvmkit_ir::PointerValue = f.param(0)?.try_into()?;
+        let p: llvmkit_ir::PointerValue = m.view(f).param(0)?.try_into()?;
         let ld = b.build_int_load::<i8, _, _>(p, "v")?;
         let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
         let range = m.metadata_tuple([MetadataRef(lo)]);
-        let inst = InstructionView::try_from(ld.into_erased())?;
+        let inst = InstructionView::try_from(b.view(ld).into_erased())?;
         inst.set_metadata(MetadataAttachmentKind::Range, range);
         b.build_ret(ld)?;
 
@@ -310,25 +312,32 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
 
         let call_host_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
         let call_host = m.add_function_dyn("call_host", call_host_ty, Linkage::External)?;
-        let call_entry = call_host.append_basic_block(&m, "entry");
+        let call_entry = m.view(call_host).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(call_entry);
-        let p: llvmkit_ir::PointerValue = call_host.param(0)?.try_into()?;
-        let call = b.build_call_dyn(callee, [p.into_erased()], "v")?;
+        let p: llvmkit_ir::PointerValue = m.view(call_host).param(0)?.try_into()?;
+        let call = b.view(b.build_call_dyn(callee, [p.into_erased()], "v")?);
         call.as_view()
             .set_metadata(MetadataAttachmentKind::Range, range);
-        b.build_ret(call.return_int_value())?;
+        let ret = call.return_int_value();
+        b.build_ret(ret)?;
 
         let invoke_host_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
         let invoke_host = m.add_function_dyn("invoke_host", invoke_host_ty, Linkage::External)?;
-        let entry = invoke_host.append_basic_block(&m, "entry");
-        let normal = invoke_host.append_basic_block(&m, "normal");
-        let unwind = invoke_host.append_basic_block(&m, "unwind");
-        let normal_label = normal.label();
-        let unwind_label = unwind.label();
-        let p: llvmkit_ir::PointerValue = invoke_host.param(0)?.try_into()?;
+        let entry = m.view(invoke_host).append_basic_block(&m, "entry");
+        let normal = m.view(invoke_host).append_basic_block(&m, "normal");
+        let unwind = m.view(invoke_host).append_basic_block(&m, "unwind");
+        let normal_label = normal.id();
+        let unwind_label = unwind.id();
+        let p: llvmkit_ir::PointerValue = m.view(invoke_host).param(0)?.try_into()?;
         let (_entry, invoke) = IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
-            .build_invoke_dyn(callee, [p.into_erased()], normal_label, unwind_label, "v")?;
+            .build_invoke_dyn(
+                m.view(callee),
+                [p.into_erased()],
+                normal_label,
+                unwind_label,
+                "v",
+            )?;
         invoke
             .as_view()
             .set_metadata(MetadataAttachmentKind::Range, range);
@@ -352,14 +361,14 @@ fn range_metadata_rejects_non_load_call_invoke_user() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let fn_ty = m.fn_type(i8_ty, Vec::<llvmkit_ir::Type>::new(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let add =
             b.build_int_add::<i8, _, _, _>(i8_ty.const_int(1_u8), i8_ty.const_int(2_u8), "sum")?;
         let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
         let hi = m.metadata_constant(i8_ty.const_int(0x20_u8));
         let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
-        let inst = InstructionView::try_from(add.into_erased())?;
+        let inst = InstructionView::try_from(b.view(add).into_erased())?;
         inst.set_metadata(MetadataAttachmentKind::Range, range);
         b.build_ret(add)?;
 
@@ -388,7 +397,8 @@ fn absolute_symbol_zero_zero_is_empty_range() -> Result<(), IrError> {
         let lo = m.metadata_constant(i64_ty.const_int(0_i64));
         let hi = m.metadata_constant(i64_ty.const_int(0_i64));
         let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
-        g.set_metadata(&m, MetadataAttachmentKind::AbsoluteSymbol, range);
+        m.view(g)
+            .set_metadata(&m, MetadataAttachmentKind::AbsoluteSymbol, range);
 
         let err = m
             .verify_borrowed()

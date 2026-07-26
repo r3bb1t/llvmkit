@@ -44,20 +44,22 @@ fn build() -> Result<(), IrError> {
 
         let fn_ty = m.fn_type(i32_ty.as_type(), [v4i32.as_type(), v4i32.as_type()], false);
         let vadd = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
-        let entry = vadd.append_basic_block(&m, "entry");
+        let entry = m.view(vadd).append_basic_block(&m, "entry");
         let b = IRBuilder::at_end(entry);
 
         // Narrow the erased `<4 x i32>` params into the statically typed handle.
         // `try_into` checks BOTH element (i32) and lane count (4) at run time,
         // then stamps the markers — a `<2 x i32>` or `<4 x i64>` value fails
         // here with `OperandWidthMismatch` / `TypeMismatch`.
-        let a: VectorValue<'_, i32, Len<4>> = vadd
+        let a: VectorValue<'_, i32, Len<4>> = m
+            .view(vadd)
             .param(0)
             .expect("param 0")
             .into_erased()
             .try_into()
             .expect("narrow param 0 to <4 x i32>");
-        let c: VectorValue<'_, i32, Len<4>> = vadd
+        let c: VectorValue<'_, i32, Len<4>> = m
+            .view(vadd)
             .param(1)
             .expect("param 1")
             .into_erased()
@@ -83,10 +85,11 @@ fn build() -> Result<(), IrError> {
 
         let fn_ty = m.fn_type(i32_ty.as_type(), [a4i32.as_type()], false);
         let apack = m.add_function_dyn("apack", fn_ty, Linkage::External)?;
-        let entry = apack.append_basic_block(&m, "entry");
+        let entry = m.view(apack).append_basic_block(&m, "entry");
         let b = IRBuilder::at_end(entry);
 
-        let arr: ArrayValue<'_, i32, ArrLen<4>> = apack
+        let arr: ArrayValue<'_, i32, ArrLen<4>> = m
+            .view(apack)
             .param(0)
             .expect("param 0")
             .into_erased()

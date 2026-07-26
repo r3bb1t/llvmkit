@@ -24,11 +24,11 @@ fn main() {
         let void_ty = m.void_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
         // A typed non-pointer value handle: the `i32` function parameter
         // narrowed to `IntValue<i32>`.
-        let addr: IntValue<i32> = f.param(0).unwrap().try_into().unwrap();
+        let addr: IntValue<i32> = m.view(f).param(0).unwrap().try_into().unwrap();
         let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
 
         // `IntValue<'_, i32, _>` does not implement `IntoPointerValue`, so it

@@ -18,6 +18,7 @@ use super::module::ModuleBrand;
 use super::pass_context::BasicBlockView;
 use super::r#use::Use;
 use super::value::{IsValue, Value, ValueKindData, ValueSlot};
+use super::value_id::BlockId;
 
 /// Analysis marker for caching a [`DominatorTree`] in the new-pass-manager
 /// substrate. Its invalidation rule is wired in `analysis.rs`: preserved by
@@ -65,7 +66,7 @@ where
 {
     #[inline]
     fn dominator_block_id(self) -> ValueSlot {
-        self.id()
+        self.slot()
     }
 }
 
@@ -85,7 +86,7 @@ where
 {
     #[inline]
     fn dominator_block_id(self) -> ValueSlot {
-        self.id()
+        self.slot()
     }
 }
 
@@ -96,6 +97,42 @@ where
 {
 }
 
+impl<R, B> dominator_block_sealed::Sealed for BlockId<R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand,
+{
+}
+
+impl<'ctx, R, B> DominatorTreeBlock<'ctx> for BlockId<R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand,
+{
+    #[inline]
+    fn dominator_block_id(self) -> ValueSlot {
+        self.slot()
+    }
+}
+
+impl<R, B> dominator_block_sealed::Sealed for &BlockId<R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand,
+{
+}
+
+impl<'ctx, R, B> DominatorTreeBlock<'ctx> for &BlockId<R, B>
+where
+    R: ReturnMarker,
+    B: ModuleBrand,
+{
+    #[inline]
+    fn dominator_block_id(self) -> ValueSlot {
+        (*self).slot()
+    }
+}
+
 impl<'ctx, R, B> DominatorTreeBlock<'ctx> for BasicBlockLabel<'ctx, R, B>
 where
     R: ReturnMarker,
@@ -103,7 +140,7 @@ where
 {
     #[inline]
     fn dominator_block_id(self) -> ValueSlot {
-        self.id()
+        self.slot()
     }
 }
 
@@ -121,7 +158,7 @@ where
 {
     #[inline]
     fn dominator_block_id(self) -> ValueSlot {
-        self.id()
+        self.slot()
     }
 }
 
@@ -130,7 +167,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> dominator_block_sealed::Sealed for BasicBlockV
 impl<'ctx, B: ModuleBrand + 'ctx> DominatorTreeBlock<'ctx> for BasicBlockView<'ctx, B> {
     #[inline]
     fn dominator_block_id(self) -> ValueSlot {
-        self.as_basic_block().id()
+        self.as_basic_block().slot()
     }
 }
 
@@ -201,8 +238,8 @@ impl DominatorTree {
     ) -> bool {
         let use_bb = user.parent();
         let def_bb = def.parent();
-        let def_id = def.id();
-        let user_id = user.id();
+        let def_id = def.slot();
+        let user_id = user.slot();
 
         if !self.is_reachable_from_entry(use_bb) {
             return true;
@@ -216,7 +253,7 @@ impl DominatorTree {
         if is_invoke(def) || is_callbr(def) || is_phi(user) {
             return self.dominates_instruction_block(def, use_bb);
         }
-        if def_bb.id() != use_bb.id() {
+        if def_bb.slot() != use_bb.slot() {
             return self.dominates_block(def_bb, use_bb);
         }
         self.instruction_comes_before(def_id, user_id)
@@ -234,20 +271,20 @@ impl DominatorTree {
     {
         let use_bb_id = block.dominator_block_id();
         let def_bb = def.parent();
-        let def_id = def.id();
+        let def_id = def.slot();
         if !self.reachable.contains(&use_bb_id) {
             return true;
         }
         if !self.is_reachable_from_entry(def_bb) {
             return false;
         }
-        if def_bb.id() == use_bb_id {
+        if def_bb.slot() == use_bb_id {
             return false;
         }
         if let Some(normal_dest) = self.normal_dest.get(&def_id).copied() {
-            return self.dominates_edge_ids(def_bb.id(), normal_dest, use_bb_id);
+            return self.dominates_edge_ids(def_bb.slot(), normal_dest, use_bb_id);
         }
-        self.dominates_block_ids(def_bb.id(), use_bb_id)
+        self.dominates_block_ids(def_bb.slot(), use_bb_id)
     }
 
     /// Whether `def` dominates this specific operand use. Non-instruction
@@ -263,8 +300,8 @@ impl DominatorTree {
         let Ok(user_inst) = InstructionView::try_from(use_edge.user()) else {
             return true;
         };
-        let def_id = def_inst.id();
-        let user_id = user_inst.id();
+        let def_id = def_inst.slot();
+        let user_id = user_inst.slot();
         let Some(def_bb_id) = self.instruction_parent.get(&def_id).copied() else {
             return false;
         };
@@ -289,14 +326,14 @@ impl DominatorTree {
     }
 
     /// Whether edge `edge` dominates all uses in `block`.
-    pub fn dominates_edge<'ctx, EB, B>(&self, edge: BasicBlockEdge<'ctx, EB>, block: B) -> bool
+    pub fn dominates_edge<'ctx, EB, B>(&self, edge: BasicBlockEdge<EB>, block: B) -> bool
     where
         EB: ModuleBrand + 'ctx,
         B: DominatorTreeBlock<'ctx>,
     {
         self.dominates_edge_ids(
-            edge.start().id(),
-            edge.end().id(),
+            edge.start().slot(),
+            edge.end().slot(),
             block.dominator_block_id(),
         )
     }
@@ -304,16 +341,16 @@ impl DominatorTree {
     /// Whether edge `edge` dominates this specific use.
     pub fn dominates_edge_use<'ctx, EB: ModuleBrand + 'ctx, B: ModuleBrand + 'ctx>(
         &self,
-        edge: BasicBlockEdge<'ctx, EB>,
+        edge: BasicBlockEdge<EB>,
         use_edge: Use<'ctx, B>,
     ) -> bool {
         let Ok(user_inst) = InstructionView::try_from(use_edge.user()) else {
             return true;
         };
         self.dominates_edge_use_ids(
-            edge.start().id(),
-            edge.end().id(),
-            user_inst.id(),
+            edge.start().slot(),
+            edge.end().slot(),
+            user_inst.slot(),
             use_edge.index(),
         )
     }
@@ -436,17 +473,17 @@ fn compute_reachable<'ctx, B: ModuleBrand + 'ctx>(
     cfg: &FunctionCfg<'ctx, B>,
 ) -> HashSet<ValueSlot> {
     let mut reachable = HashSet::new();
-    let Some(entry) = function.entry_block().map(|bb| bb.label()) else {
+    let Some(entry) = function.entry_block().map(|bb| bb.id()) else {
         return reachable;
     };
     let mut worklist = VecDeque::from([entry]);
     while let Some(block) = worklist.pop_front() {
-        let block_id = block.id();
+        let block_id = block.slot();
         if !reachable.insert(block_id) {
             continue;
         }
         for succ in cfg.successors(block) {
-            if !reachable.contains(&succ.id()) {
+            if !reachable.contains(&succ.slot()) {
                 worklist.push_back(succ);
             }
         }
@@ -465,11 +502,11 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
     let all_reachable = reachable.clone();
     let mut doms: HashMap<ValueSlot, HashSet<ValueSlot>> = HashMap::new();
     for block in function.basic_blocks().map(|bb| bb.as_dyn()) {
-        let id = block.id();
+        let id = block.slot();
         if !reachable.contains(&id) {
             continue;
         }
-        if id == entry.id() {
+        if id == entry.slot() {
             doms.insert(id, HashSet::from([id]));
         } else {
             doms.insert(id, all_reachable.clone());
@@ -480,15 +517,15 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
     while changed {
         changed = false;
         for block in function.basic_blocks().map(|bb| bb.as_dyn()) {
-            let block_id = block.id();
-            if block_id == entry.id() || !reachable.contains(&block_id) {
+            let block_id = block.slot();
+            if block_id == entry.slot() || !reachable.contains(&block_id) {
                 continue;
             }
             let mut pred_sets = cfg
                 .predecessors(&block)
                 .into_iter()
-                .filter(|pred| reachable.contains(&pred.id()))
-                .filter_map(|pred| doms.get(&pred.id()).cloned());
+                .filter(|pred| reachable.contains(&pred.slot()))
+                .filter_map(|pred| doms.get(&pred.slot()).cloned());
             let mut new_set = pred_sets.next().unwrap_or_default();
             for pred_set in pred_sets {
                 new_set = new_set.intersection(&pred_set).copied().collect();
@@ -509,9 +546,9 @@ fn compute_predecessors<'ctx, B: ModuleBrand + 'ctx>(
     let mut predecessors: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
     for edge in cfg.edges() {
         predecessors
-            .entry(edge.end().id())
+            .entry(edge.end().slot())
             .or_default()
-            .push(edge.start().id());
+            .push(edge.start().slot());
     }
     predecessors
 }
@@ -531,9 +568,9 @@ fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
     let mut normal_dest = HashMap::new();
     let mut phi_incoming_blocks = HashMap::new();
     for block in function.basic_blocks() {
-        let block_id = block.id();
+        let block_id = block.slot();
         for (index, inst) in block.instructions().enumerate() {
-            let inst_id = inst.id();
+            let inst_id = inst.slot();
             parent.insert(inst_id, block_id);
             order.insert(inst_id, (block_id, index));
             if let ValueKindData::Instruction(data) = &inst.into_erased().data().kind {
