@@ -39,18 +39,22 @@ let i32 = ctx.i32_type();
 llvmkit:
 
 ```rust
-use llvmkit_ir::Module;
+use llvmkit_ir::module_new;
 
-Module::with_new("foo", |module| {
-    let i32 = module.i32_type();
-    // Build or parse IR using `&module` here.
-});
+let module = module_new!("foo")?;
+let i32 = module.i32_type();
+// Build or parse IR using `&module`, then `module.verify()?`.
 ```
 
-`Module<'ctx, B, Unverified>` is created inside `Module::with_new`; the closure
-carries the fresh brand and the unverified mutation token. There is no separate
-`Context` value to construct first, and there is no public raw `ModuleCore`
-handle.
+`module_new!` yields a `Module<B, Unverified>` — an owned token carrying a
+compile-time brand `B` (declared at the macro's expansion site, so unnameable
+elsewhere) and the unverified mutation authority. `Module::branded::<B>` takes a
+brand you name; `Module::dynamic` opts out of the compile-time half of identity
+when the module count is decided at run time. There is no separate `Context`
+value to construct first, and there is no public raw `ModuleCore` handle.
+
+The token owns its storage and borrows nothing, so it can be returned from a
+function, stored in a struct or `Vec`, and moved across a thread boundary.
 
 ## Type identity
 
@@ -110,9 +114,9 @@ shapes and is distinct from `IntDyn` / `FloatDyn`.
 
 |Inkwell|llvmkit|Notes|
 |---|---|---|
-|`Context::create()`|`Module::with_new(name, \|m\| ...)`|fresh branded module token scoped to the closure|
-|`context.create_module(n)`|`Module::with_new(n, \|m\| ...)`|same|
-|`context.i32_type()`|`m.i32_type()`|inside the `with_new` closure, not on a context|
+|`Context::create()`|`module_new!(name)?`|owned, branded module token; no separate context|
+|`context.create_module(n)`|`module_new!(n)?` / `Module::branded::<B>(n)?` / `Module::dynamic(n)`|same, three brand policies|
+|`context.i32_type()`|`m.i32_type()`|on the module (or its `ModuleView`), not on a context|
 |`context.custom_width_int_type(n)`|`module.custom_width_int_type(n)?`|fallible (returns `IrResult<IntType<'ctx, IntDyn>>`)|
 |`context.struct_type(&fields, packed)`|`module.struct_type(fields, packed)`|takes any `IntoIterator<Item = impl Into<Type<'ctx>>>`|
 |`context.opaque_struct_type(n)`|`module.named_struct(n)`|get-or-create, name preserved; `module.opaque_struct(n)?` is the typestate form (`StructType<'ctx, Opaque>`, `Err` if the name is taken)|
@@ -175,12 +179,21 @@ encodes insertion state, and `S = Unpositioned` has no `build_*` methods. There
 is no `IrError::WrongModule` for the common branded path; the module brand plus
 `ModuleRef` checks reject cross-module values.
 
-## Lifetime brand
+## Module brand
 
-llvmkit handles carry a generative module brand. Each `Module::with_new` call
-creates a fresh `Brand<'brand>` and passes
-`Module<'brand, Brand<'brand>, Unverified>` into a `for<'brand>` closure, so
-handles from separate modules cannot be mixed in normal code.
+llvmkit handles carry a compile-time module brand: a `'static` type that names
+the owning module, kept unique by a process-global registry (at most one live
+module per brand). `module_new!` mints one per expansion site,
+`Module::branded::<B>` takes one you name, `Module::branded_once::<B>` retires it
+permanently on drop, and `DynBrand` (via `Module::dynamic`) opts out in favour of
+the runtime module tag alone. Handles from separate branded modules cannot be
+mixed in normal code.
+
+Because a brand is a type rather than a lifetime, the module token is an ordinary
+owned value: `Module<B, Unverified>` has no lifetime parameter. Handles still
+borrow it (`Value<'a, B>`), while storable ids (`ValueId`, `FunctionId`,
+`BlockId`, …) carry the brand without the borrow and so outlive the module — the
+runtime `ModuleId` tag is what refuses a stale one.
 
 ## Things you give up
 

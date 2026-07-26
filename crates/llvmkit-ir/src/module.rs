@@ -9,12 +9,14 @@
 //!
 //! ## Identity and verification model
 //!
-//! A [`Module`] is a linear token that **owns** its `ModuleCore` storage. The
-//! token carries a [`ModuleBrand`] and a verification state: [`Unverified`]
-//! while IR is still being built and [`Verified`] after structural verification
-//! succeeds. Handles store a state-erased [`ModuleRef`] with the same brand, so
-//! same-brand APIs reject cross-module values statically and erased/parser
-//! paths can still fall back to [`ModuleId`] checks.
+//! A [`Module`] is a linear token that **owns** its `ModuleCore` storage and
+//! borrows nothing, so it has no lifetime parameter: it is an ordinary movable
+//! value. The token carries a [`ModuleBrand`] and a verification state:
+//! [`Unverified`] while IR is still being built and [`Verified`] after
+//! structural verification succeeds. Handles store a state-erased
+//! [`ModuleRef`] with the same brand, so same-brand APIs reject cross-module
+//! values statically and erased/parser paths can still fall back to
+//! [`ModuleId`] checks.
 //!
 //! ## Choosing a brand
 //!
@@ -29,9 +31,13 @@
 //! [`ModuleBrand`]. [`DynBrand`] opts out of the compile-time half of identity
 //! and relies on the [`ModuleId`] tag alone.
 //!
-//! Public handle accessors expose [`ModuleView`], a read-only branded view of
-//! the storage. Construction and mutation require the unverified [`Module`]
-//! token instead of a raw storage reference.
+//! Public handle accessors expose [`ModuleView`], a branded view of the
+//! storage. It carries every *type* constructor — interning a type is
+//! preservation-neutral, so it needs no mutation authority, which is what lets
+//! the schema traits ([`crate::IrField`], [`crate::StructSchema`]) be declared
+//! against it. Module-structural work — declaring functions, globals, aliases,
+//! ifuncs, and the typestate struct-body setters — requires the unverified
+//! [`Module`] token instead.
 
 use core::any::TypeId;
 use core::hash::{Hash, Hasher};
@@ -339,8 +345,9 @@ impl<B> Drop for BrandGuard<B> {
 /// The macro expands to a block that declares a fresh `struct`, implements
 /// [`ModuleBrand`] for it, and hands it to [`Module::branded`]. Because the
 /// struct is declared *inside* the block it is unnameable from anywhere else,
-/// so no other code can spell the brand — the ergonomic equivalent of the
-/// generative lifetime brand, but on an owned, movable token.
+/// so no other code can spell the brand. It is the ergonomic descendant of the
+/// generative lifetime brand this crate used to mint from a callback, but on an
+/// owned, movable token rather than one pinned to the callback's frame.
 ///
 /// ```
 /// use llvmkit_ir::{IrError, module_new};
@@ -490,10 +497,13 @@ impl<B: ModuleBrand> core::fmt::Debug for ModuleRef<'_, B> {
 // ModuleView helper
 // --------------------------------------------------------------------------
 
-/// Read-only branded view of a module.
+/// Branded view of a module: everything reachable without mutation authority.
 ///
 /// `ModuleView` lets handles report their owning module without exposing the
-/// crate-private storage or the linear verification-state token.
+/// crate-private storage or the linear verification-state token. Beyond reads
+/// it carries the full type-constructor surface (see the `Type constructors`
+/// section below for why that is not a loosening), which is what the
+/// user-implementable schema traits are declared against.
 #[derive(Clone, Copy)]
 pub struct ModuleView<'ctx, B: ModuleBrand> {
     core: &'ctx ModuleCore,

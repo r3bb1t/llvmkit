@@ -30,9 +30,12 @@ return `InstructionView`, and cursor-driven mutation goes through
 `BlockCursor::next` on an unterminated block.
 
 
-Every `Module::with_new` session carries a fresh compile-time module brand.
-Normal users do not write that brand: builder, type, constant, global, and block
-APIs infer it from the `Module` or type receiver. Cross-module operands are
+Every module carries a compile-time brand — a `'static` type that names it.
+`module_new!("name")` mints a fresh one per expansion site,
+`Module::branded::<B>` takes a brand you name, and `Module::dynamic` opts out in
+favour of the runtime module tag alone. Normal users do not write the brand at
+handle types: builder, type, constant, global, and block APIs infer it from the
+`Module` or type receiver. Cross-module operands are
 therefore rejected by Rust's type checker instead of by a runtime "foreign
 value" error. Advanced extension APIs, such as generic pass or folder helpers,
 may name `B: ModuleBrand` when they intentionally abstract over any module

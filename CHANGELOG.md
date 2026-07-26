@@ -7,6 +7,68 @@ tagged release is cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### llvmkit 2.0 — owned modules, branded by type (cycle C)
+
+A module is now an ordinary owned value. `Module<'ctx, B, S>` becomes
+`Module<B, S>`: it owns its storage, borrows nothing, and can be returned from a
+function, stored in a struct field or a `Vec`, and moved across a thread
+boundary. Identity moves from a generative lifetime to a `'static` **type**.
+
+#### Removed (breaking)
+
+- **`Module::with_new` and the lifetime brand `Brand<'id>` are gone.** Replace
+  `Module::with_new("m", |m| { ... })` with `let m = module_new!("m")?;` and
+  outdent — the body is otherwise unchanged, and the module now outlives it.
+- **The `B: ModuleBrand = Brand<'ctx>` default type parameter is gone** from
+  every handle, together with the defaults that preceded it in a declaration
+  (`Term = Unterminated`, `Body = StructBodyDyn`, `E = ElemDyn`, `R = Dyn`,
+  `P = TermOpen`, …), which Rust requires to be trailing. Spell the brand, or
+  `_` where it is inferred: `IntValue<'_, i32, _>`, `Vec::<Type<_>>::new()`.
+- **`Attribute::*_for_brand`** — the un-suffixed constructors are now the
+  brand-generic ones. `Attribute::enum_attr` / `int` / `memory` / `string`.
+
+#### Changed (breaking)
+
+- **`ModuleBrand` requires `'static`.** It was already required by the brand
+  registry, which keys by `TypeId`; the bound simply moves from the individual
+  constructors onto the trait. A brand names a module, it never borrows one.
+- **Brands are types.** `Module::branded::<B>(name)` claims a brand you name (at
+  most one live module per brand, released on drop);
+  `Module::branded_once::<B>(name)` retires it permanently on drop, so no
+  successor can ever replay a stale `'static` id against fresh storage;
+  `module_new!(name)` mints an unnameable brand per expansion site;
+  `Module::dynamic(name)` is registry-exempt for a run-time module count.
+  Collisions report `IrError::BrandInUse` / `BrandRetired`.
+- **The schema traits take a `ModuleView`.** `IrField::ir_type`,
+  `StructSchema::field_types` / `ir_type`, `FunctionReturn::ir_type`,
+  `FunctionParam::ir_type` and `FunctionParamList::ir_types` now take
+  `ModuleView<'ctx, B>` instead of `&'ctx Module<'ctx, B, Unverified>`; the
+  `#[derive(IrStruct)]` `build` constructor follows. Call sites go from
+  `X::ir_type(&m)` to `X::ir_type(m.as_view())`. Type construction is
+  preservation-neutral, which is why the view already carried the constructor
+  surface; `get_or_set_named_struct_body`, `named_struct` and
+  `get_named_struct` join it. The typestate body setters (`set_struct_body`,
+  `set_struct_body_dyn`) and every module-structural declaration stay on the
+  `Module<Unverified>` token.
+
+#### Added
+
+- **Closure-free parser entry points**, re-exported at the crate root:
+  `parse_into(module, src)`, `parse_branded::<B>(src)`, `parse_dynamic(src)`,
+  `parse_file_branded::<B>(path)`, `parse_file_dynamic(path)` — each returns the
+  owned `Module`, so it can be verified, stored, and moved. The closure forms
+  remain for callers who need the `ParsedModule` slot mapping, which borrows the
+  module it was parsed from and so cannot be returned alongside it.
+  `ParseError` gains `BrandInUse` / `BrandRetired`.
+- **`Module<B, S>` is `Send`** — including under a brand type that is itself
+  `!Send`, because the brand rides as `PhantomData<fn(B) -> B>`. It stays
+  `!Sync`: a module moves between threads, it is not shared between them.
+
+#### Unchanged
+
+Printed IR is byte-identical across the whole cycle — the byte-locked example
+suites and the parser round-trip corpus pass untouched at every slice.
+
 ### llvmkit 2.0 — id-first handles (cycle B: builders speak ids)
 
 Every builder and declaration now returns a storable id instead of a borrowing
