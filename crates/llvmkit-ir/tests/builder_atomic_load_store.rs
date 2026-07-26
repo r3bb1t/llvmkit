@@ -8,7 +8,7 @@
 
 use llvmkit_ir::{
     Align, AtomicLoadConfig, AtomicOrdering, AtomicStoreConfig, Constant, ConstantFloatValue, Dyn,
-    IRBuilder, IntValue, IrError, Linkage, Module, SyncScope, VerifierRule,
+    IRBuilder, IntValue, IrError, Linkage, SyncScope, VerifierRule, module_new,
 };
 
 // --- Atomic load shapes (compatibility.ll lines 902-906) ---------------
@@ -17,88 +17,85 @@ use llvmkit_ir::{
 /// `%ld.1 = load atomic i32, ptr %word monotonic, align 4`.
 #[test]
 fn load_atomic_monotonic_align4() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i32_ty = m.i32_type();
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-        let cfg = AtomicLoadConfig::new(
-            AtomicOrdering::Monotonic,
-            SyncScope::System,
-            Align::new(4).expect("align 4"),
-        );
-        let ld = b.build_int_load_atomic::<i32, _, _>(word, cfg, "ld.1")?;
-        b.build_ret(ld)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("%ld.1 = load atomic i32, ptr %0 monotonic, align 4\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let cfg = AtomicLoadConfig::new(
+        AtomicOrdering::Monotonic,
+        SyncScope::System,
+        Align::new(4).expect("align 4"),
+    );
+    let ld = b.build_int_load_atomic::<i32, _, _>(word, cfg, "ld.1")?;
+    b.build_ret(ld)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%ld.1 = load atomic i32, ptr %0 monotonic, align 4\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 904:
 /// `%ld.2 = load atomic volatile i32, ptr %word acquire, align 8`.
 #[test]
 fn load_atomic_volatile_acquire_align8() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i32_ty = m.i32_type();
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-        let cfg = AtomicLoadConfig::new(
-            AtomicOrdering::Acquire,
-            SyncScope::System,
-            Align::new(8).expect("align 8"),
-        )
-        .volatile();
-        let ld = b.build_int_load_atomic::<i32, _, _>(word, cfg, "ld.2")?;
-        b.build_ret(ld)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("%ld.2 = load atomic volatile i32, ptr %0 acquire, align 8\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let cfg = AtomicLoadConfig::new(
+        AtomicOrdering::Acquire,
+        SyncScope::System,
+        Align::new(8).expect("align 8"),
+    )
+    .volatile();
+    let ld = b.build_int_load_atomic::<i32, _, _>(word, cfg, "ld.2")?;
+    b.build_ret(ld)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%ld.2 = load atomic volatile i32, ptr %0 acquire, align 8\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 906:
 /// `%ld.3 = load atomic volatile i32, ptr %word syncscope("singlethread") seq_cst, align 16`.
 #[test]
 fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i32_ty = m.i32_type();
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-        let cfg = AtomicLoadConfig::new(
-            AtomicOrdering::SequentiallyConsistent,
-            SyncScope::SingleThread,
-            Align::new(16).expect("align 16"),
-        )
-        .volatile();
-        let ld = b.build_int_load_atomic::<i32, _, _>(word, cfg, "ld.3")?;
-        b.build_ret(ld)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains(
-                "%ld.3 = load atomic volatile i32, ptr %0 syncscope(\"singlethread\") seq_cst, align 16\n"
-            ),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let cfg = AtomicLoadConfig::new(
+        AtomicOrdering::SequentiallyConsistent,
+        SyncScope::SingleThread,
+        Align::new(16).expect("align 16"),
+    )
+    .volatile();
+    let ld = b.build_int_load_atomic::<i32, _, _>(word, cfg, "ld.3")?;
+    b.build_ret(ld)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains(
+            "%ld.3 = load atomic volatile i32, ptr %0 syncscope(\"singlethread\") seq_cst, align 16\n"
+        ),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 // --- Atomic store shapes (compatibility.ll lines 909-913) --------------
@@ -107,91 +104,88 @@ fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
 /// `store atomic i32 23, ptr %word monotonic, align 4`.
 #[test]
 fn store_atomic_monotonic_align4() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i32_ty = m.i32_type();
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-        let val = i32_ty.const_int(23_i32);
-        let cfg = AtomicStoreConfig::new(
-            AtomicOrdering::Monotonic,
-            SyncScope::System,
-            Align::new(4).expect("align 4"),
-        );
-        b.build_store_atomic(val, word, cfg)?;
-        b.build_ret_void()?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("store atomic i32 23, ptr %0 monotonic, align 4\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let val = i32_ty.const_int(23_i32);
+    let cfg = AtomicStoreConfig::new(
+        AtomicOrdering::Monotonic,
+        SyncScope::System,
+        Align::new(4).expect("align 4"),
+    );
+    b.build_store_atomic(val, word, cfg)?;
+    b.build_ret_void()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("store atomic i32 23, ptr %0 monotonic, align 4\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 911:
 /// `store atomic volatile i32 24, ptr %word monotonic, align 4`.
 #[test]
 fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i32_ty = m.i32_type();
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-        let val = i32_ty.const_int(24_i32);
-        let cfg = AtomicStoreConfig::new(
-            AtomicOrdering::Monotonic,
-            SyncScope::System,
-            Align::new(4).expect("align 4"),
-        )
-        .volatile();
-        b.build_store_atomic(val, word, cfg)?;
-        b.build_ret_void()?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("store atomic volatile i32 24, ptr %0 monotonic, align 4\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let val = i32_ty.const_int(24_i32);
+    let cfg = AtomicStoreConfig::new(
+        AtomicOrdering::Monotonic,
+        SyncScope::System,
+        Align::new(4).expect("align 4"),
+    )
+    .volatile();
+    b.build_store_atomic(val, word, cfg)?;
+    b.build_ret_void()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("store atomic volatile i32 24, ptr %0 monotonic, align 4\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 913:
 /// `store atomic volatile i32 25, ptr %word syncscope("singlethread") monotonic, align 4`.
 #[test]
 fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i32_ty = m.i32_type();
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-        let val = i32_ty.const_int(25_i32);
-        let cfg = AtomicStoreConfig::new(
-            AtomicOrdering::Monotonic,
-            SyncScope::SingleThread,
-            Align::new(4).expect("align 4"),
-        )
-        .volatile();
-        b.build_store_atomic(val, word, cfg)?;
-        b.build_ret_void()?;
-        let text = format!("{m}");
-        assert!(
-            text.contains(
-                "store atomic volatile i32 25, ptr %0 syncscope(\"singlethread\") monotonic, align 4\n"
-            ),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let val = i32_ty.const_int(25_i32);
+    let cfg = AtomicStoreConfig::new(
+        AtomicOrdering::Monotonic,
+        SyncScope::SingleThread,
+        Align::new(4).expect("align 4"),
+    )
+    .volatile();
+    b.build_store_atomic(val, word, cfg)?;
+    b.build_ret_void()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains(
+            "store atomic volatile i32 25, ptr %0 syncscope(\"singlethread\") monotonic, align 4\n"
+        ),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 // --- Verifier-rule rejections (Verifier.cpp visit{Load,Store}Inst) -----
@@ -200,60 +194,58 @@ fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
 /// Negative test: builder allows construction; verifier rejects.
 #[test]
 fn verifier_rejects_atomic_load_release_ordering() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i32_ty = m.i32_type();
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-        let cfg = AtomicLoadConfig::new(
-            AtomicOrdering::Release,
-            SyncScope::System,
-            Align::new(4).expect("align 4"),
-        );
-        let ld = b.build_int_load_atomic::<i32, _, _>(word, cfg, "ld")?;
-        b.build_ret(ld)?;
-        let err = m
-            .verify_borrowed()
-            .expect_err("verifier must reject release-ordered atomic load");
-        let IrError::VerifierFailure { rule, .. } = err else {
-            panic!("expected IrError::VerifierFailure, got {err:?}");
-        };
-        assert_eq!(rule, VerifierRule::AtomicLoadInvalidOrdering);
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let cfg = AtomicLoadConfig::new(
+        AtomicOrdering::Release,
+        SyncScope::System,
+        Align::new(4).expect("align 4"),
+    );
+    let ld = b.build_int_load_atomic::<i32, _, _>(word, cfg, "ld")?;
+    b.build_ret(ld)?;
+    let err = m
+        .verify_borrowed()
+        .expect_err("verifier must reject release-ordered atomic load");
+    let IrError::VerifierFailure { rule, .. } = err else {
+        panic!("expected IrError::VerifierFailure, got {err:?}");
+    };
+    assert_eq!(rule, VerifierRule::AtomicLoadInvalidOrdering);
+    Ok(())
 }
 
 /// Mirrors `Verifier::visitStoreInst` ("Store cannot have Acquire ordering").
 #[test]
 fn verifier_rejects_atomic_store_acquire_ordering() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i32_ty = m.i32_type();
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-        let val = i32_ty.const_int(42_i32);
-        let cfg = AtomicStoreConfig::new(
-            AtomicOrdering::Acquire,
-            SyncScope::System,
-            Align::new(4).expect("align 4"),
-        );
-        b.build_store_atomic(val, word, cfg)?;
-        b.build_ret_void()?;
-        let err = m
-            .verify_borrowed()
-            .expect_err("verifier must reject acquire-ordered atomic store");
-        let IrError::VerifierFailure { rule, .. } = err else {
-            panic!("expected IrError::VerifierFailure, got {err:?}");
-        };
-        assert_eq!(rule, VerifierRule::AtomicStoreInvalidOrdering);
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let val = i32_ty.const_int(42_i32);
+    let cfg = AtomicStoreConfig::new(
+        AtomicOrdering::Acquire,
+        SyncScope::System,
+        Align::new(4).expect("align 4"),
+    );
+    b.build_store_atomic(val, word, cfg)?;
+    b.build_ret_void()?;
+    let err = m
+        .verify_borrowed()
+        .expect_err("verifier must reject acquire-ordered atomic store");
+    let IrError::VerifierFailure { rule, .. } = err else {
+        panic!("expected IrError::VerifierFailure, got {err:?}");
+    };
+    assert_eq!(rule, VerifierRule::AtomicStoreInvalidOrdering);
+    Ok(())
 }
 
 /// Mirrors `Verifier::checkAtomicMemAccessSize` ("atomic memory access'
@@ -261,32 +253,31 @@ fn verifier_rejects_atomic_store_acquire_ordering() -> Result<(), IrError> {
 /// neither byte-sized nor a power of two) must be rejected.
 #[test]
 fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        // i17 is intentionally non-power-of-two: the marker `Width<17>` projects
-        // through `StaticIntWidth::ir_type`, no separate type binding is needed.
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-        // i17 → bit width 17, not power-of-two.
-        let cfg = AtomicLoadConfig::new(
-            AtomicOrdering::Monotonic,
-            SyncScope::System,
-            Align::new(4).expect("align 4"),
-        );
-        let _ = b.build_int_load_atomic::<llvmkit_ir::Width<17>, _, _>(word, cfg, "ld")?;
-        b.build_ret_void()?;
-        let err = m
-            .verify_borrowed()
-            .expect_err("verifier must reject non-power-of-two atomic size");
-        let IrError::VerifierFailure { rule, .. } = err else {
-            panic!("expected IrError::VerifierFailure, got {err:?}");
-        };
-        assert_eq!(rule, VerifierRule::AtomicLoadStoreInvalidSize);
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    // i17 is intentionally non-power-of-two: the marker `Width<17>` projects
+    // through `StaticIntWidth::ir_type`, no separate type binding is needed.
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    // i17 → bit width 17, not power-of-two.
+    let cfg = AtomicLoadConfig::new(
+        AtomicOrdering::Monotonic,
+        SyncScope::System,
+        Align::new(4).expect("align 4"),
+    );
+    let _ = b.build_int_load_atomic::<llvmkit_ir::Width<17>, _, _>(word, cfg, "ld")?;
+    b.build_ret_void()?;
+    let err = m
+        .verify_borrowed()
+        .expect_err("verifier must reject non-power-of-two atomic size");
+    let IrError::VerifierFailure { rule, .. } = err else {
+        panic!("expected IrError::VerifierFailure, got {err:?}");
+    };
+    assert_eq!(rule, VerifierRule::AtomicLoadStoreInvalidSize);
+    Ok(())
 }
 
 /// Mirrors `test/Verifier/atomics.ll` (lines 1-15): an atomic load/store of a
@@ -295,31 +286,30 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
 /// upstream `; CHECK:` negative-test fixture.
 #[test]
 fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i32_ty = m.i32_type();
-        let struct_ty = m.struct_type([i32_ty.as_type()], false);
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let ptr: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-        let cfg = AtomicLoadConfig::new(
-            AtomicOrdering::Unordered,
-            SyncScope::System,
-            Align::new(8).expect("align 8"),
-        );
-        let _ = b.build_load_atomic(struct_ty, ptr, cfg, "v")?;
-        b.build_ret_void()?;
-        let err = m
-            .verify_borrowed()
-            .expect_err("verifier must reject atomic load of struct type");
-        let IrError::VerifierFailure { rule, .. } = err else {
-            panic!("expected IrError::VerifierFailure, got {err:?}");
-        };
-        assert_eq!(rule, VerifierRule::AtomicLoadStoreInvalidType);
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let struct_ty = m.struct_type([i32_ty.as_type()], false);
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let ptr: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let cfg = AtomicLoadConfig::new(
+        AtomicOrdering::Unordered,
+        SyncScope::System,
+        Align::new(8).expect("align 8"),
+    );
+    let _ = b.build_load_atomic(struct_ty, ptr, cfg, "v")?;
+    b.build_ret_void()?;
+    let err = m
+        .verify_borrowed()
+        .expect_err("verifier must reject atomic load of struct type");
+    let IrError::VerifierFailure { rule, .. } = err else {
+        panic!("expected IrError::VerifierFailure, got {err:?}");
+    };
+    assert_eq!(rule, VerifierRule::AtomicLoadStoreInvalidType);
+    Ok(())
 }
 
 // --- bitcast methods ---------------------------------------------------
@@ -331,23 +321,22 @@ fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
 /// the `int -> fp` arm of `Instruction::BitCast` (`lib/IR/Instructions.cpp`).
 #[test]
 fn bitcast_int_to_fp_emits_text() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i32_ty = m.i32_type();
-        let f32_ty = m.f32_type();
-        let fn_ty = m.fn_type(f32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let bc = b.build_bitcast_int_to_fp(n, f32_ty, "bc")?;
-        b.build_ret(bc)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("%bc = bitcast i32 %0 to float\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let f32_ty = m.f32_type();
+    let fn_ty = m.fn_type(f32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let bc = b.build_bitcast_int_to_fp(n, f32_ty, "bc")?;
+    b.build_ret(bc)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%bc = bitcast i32 %0 to float\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// llvmkit-specific regression for
@@ -356,22 +345,20 @@ fn bitcast_int_to_fp_emits_text() -> Result<(), IrError> {
 /// folder.
 #[test]
 fn default_constant_folder_folds_bitcast_int_to_fp() -> Result<(), IrError> {
-    Module::with_new("bitcast-fold", |m| {
-        let i32_ty = m.i32_type();
-        let f32_ty = m.f32_type();
-        let fn_ty = m.fn_type(f32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let one_bits: IntValue<'_, i32, _> =
-            i32_ty.const_int(0x3f80_0000_i32).into_erased().try_into()?;
-        let result = b.build_bitcast_int_to_fp(one_bits, f32_ty, "bc")?;
-        let folded = ConstantFloatValue::<f32, _>::try_from(Constant::try_from(
-            b.view(result).into_erased(),
-        )?)?;
-        assert!(folded.ap_float().is_exactly_value_f64(1.0));
-        Ok(())
-    })
+    let m = module_new!("bitcast-fold")?;
+    let i32_ty = m.i32_type();
+    let f32_ty = m.f32_type();
+    let fn_ty = m.fn_type(f32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let one_bits: IntValue<'_, i32, _> =
+        i32_ty.const_int(0x3f80_0000_i32).into_erased().try_into()?;
+    let result = b.build_bitcast_int_to_fp(one_bits, f32_ty, "bc")?;
+    let folded =
+        ConstantFloatValue::<f32, _>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
+    assert!(folded.ap_float().is_exactly_value_f64(1.0));
+    Ok(())
 }
 
 /// Mirrors `unittests/IR/PatternMatch.cpp::TEST_F(PatternMatchTest, BitCast)`
@@ -379,21 +366,20 @@ fn default_constant_folder_folds_bitcast_int_to_fp() -> Result<(), IrError> {
 /// IRB.getInt64Ty())` upstream (line 643).
 #[test]
 fn bitcast_fp_to_int_emits_text() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i64_ty = m.i64_type();
-        let f64_ty = m.f64_type();
-        let fn_ty = m.fn_type(i64_ty, [f64_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let n: llvmkit_ir::FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
-        let bc = b.build_bitcast_fp_to_int(n, i64_ty, "bc")?;
-        b.build_ret(bc)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("%bc = bitcast double %0 to i64\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i64_ty = m.i64_type();
+    let f64_ty = m.f64_type();
+    let fn_ty = m.fn_type(i64_ty, [f64_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let n: llvmkit_ir::FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
+    let bc = b.build_bitcast_fp_to_int(n, i64_ty, "bc")?;
+    b.build_ret(bc)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%bc = bitcast double %0 to i64\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }

@@ -10,22 +10,21 @@
 
 use llvmkit_ir::{
     Constant, ConstantIntValue, Dyn, ICmpFlags, IRBuilder, IntPredicate, IntValue, IntValueId,
-    IrError, Linkage, Module,
+    IrError, Linkage, Module, module_new,
 };
 
 fn build_eq_module() -> Result<String, IrError> {
-    Module::with_new("c", |m| {
-        let bool_ty = m.bool_type();
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type()], false);
-        let f = m.add_function_dyn("is_zero", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "r")?;
-        b.build_ret(r)?;
-        Ok(format!("{m}"))
-    })
+    let m = Module::dynamic("c");
+    let bool_ty = m.bool_type();
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type()], false);
+    let f = m.add_function_dyn("is_zero", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "r")?;
+    b.build_ret(r)?;
+    Ok(format!("{m}"))
 }
 
 /// Mirrors `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CmpPredicate)`
@@ -41,21 +40,20 @@ fn build_int_cmp_eq_emits_icmp_eq() -> Result<(), IrError> {
 /// (`ICMP_SLT` arm) plus the AsmWriter rendering `icmp slt i32 ...`.
 #[test]
 fn build_int_cmp_slt_emits_icmp_slt() -> Result<(), IrError> {
-    Module::with_new("c", |m| {
-        let bool_ty = m.bool_type();
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let f = m.add_function_dyn("lt", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-        let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Slt, a, bv, "r")?;
-        b.build_ret(r)?;
-        let text = format!("{m}");
-        assert!(text.contains("%r = icmp slt i32 %0, %1"), "got:\n{text}");
-        Ok(())
-    })
+    let m = module_new!("c")?;
+    let bool_ty = m.bool_type();
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let f = m.add_function_dyn("lt", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
+    let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Slt, a, bv, "r")?;
+    b.build_ret(r)?;
+    let text = format!("{m}");
+    assert!(text.contains("%r = icmp slt i32 %0, %1"), "got:\n{text}");
+    Ok(())
 }
 
 /// llvmkit-specific: typed-result invariant -- `build_int_cmp` returns
@@ -67,40 +65,38 @@ fn build_int_cmp_returns_i1_for_chaining() -> Result<(), IrError> {
     // The result of `build_int_cmp` is `IntValue<bool>`, suitable for
     // `build_cond_br` and other `i1` consumers without further
     // narrowing.
-    Module::with_new("c", |m| {
-        let bool_ty = m.bool_type();
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type()], false);
-        let f = m.add_function_dyn("ne", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let r: IntValueId<bool, _> =
-            b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ne, n, 1_i32, "r")?;
-        b.build_ret(r)?;
-        Ok(())
-    })
+    let m = module_new!("c")?;
+    let bool_ty = m.bool_type();
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type()], false);
+    let f = m.add_function_dyn("ne", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let r: IntValueId<bool, _> =
+        b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ne, n, 1_i32, "r")?;
+    b.build_ret(r)?;
+    Ok(())
 }
 
 /// Mirrors `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CmpPredicate)`
 /// (`ICMP_ULE` arm) plus the AsmWriter rendering `icmp ule i32 ...`.
 #[test]
 fn build_int_cmp_ule_emits_icmp_ule() -> Result<(), IrError> {
-    Module::with_new("c", |m| {
-        let bool_ty = m.bool_type();
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let f = m.add_function_dyn("ule", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-        let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ule, a, bv, "r")?;
-        b.build_ret(r)?;
-        let text = format!("{m}");
-        assert!(text.contains("%r = icmp ule i32 %0, %1"), "got:\n{text}");
-        Ok(())
-    })
+    let m = module_new!("c")?;
+    let bool_ty = m.bool_type();
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let f = m.add_function_dyn("ule", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
+    let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ule, a, bv, "r")?;
+    b.build_ret(r)?;
+    let text = format!("{m}");
+    assert!(text.contains("%r = icmp ule i32 %0, %1"), "got:\n{text}");
+    Ok(())
 }
 
 /// llvmkit-specific regression for
@@ -108,19 +104,17 @@ fn build_int_cmp_ule_emits_icmp_ule() -> Result<(), IrError> {
 /// folder must fold all-constant compares to an `i1` constant.
 #[test]
 fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
-    Module::with_new("cmp-fold", |m| {
-        let bool_ty = m.bool_type();
-        let fn_ty = m.fn_type_no_params(bool_ty, false);
-        let f = m.add_function_dyn("cmp", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let result = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ugt, 9_i32, 3_i32, "is_gt")?;
-        let folded = ConstantIntValue::<bool, _>::try_from(Constant::try_from(
-            b.view(result).into_erased(),
-        )?)?;
-        assert!(folded.ap_int().try_zext_u64() == Some(1));
-        Ok(())
-    })
+    let m = module_new!("cmp-fold")?;
+    let bool_ty = m.bool_type();
+    let fn_ty = m.fn_type_no_params(bool_ty, false);
+    let f = m.add_function_dyn("cmp", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let result = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ugt, 9_i32, 3_i32, "is_gt")?;
+    let folded =
+        ConstantIntValue::<bool, _>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
+    assert!(folded.ap_int().try_zext_u64() == Some(1));
+    Ok(())
 }
 
 /// Mirrors `test/Assembler/flags.ll:290-292` (`test_icmp_samesign`):
@@ -134,28 +128,27 @@ fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
 /// construction-time flag is the deliberate Rust-side improvement.
 #[test]
 fn typed_icmp_samesign_prints_flag() -> Result<(), IrError> {
-    Module::with_new("c", |m| {
-        let bool_ty = m.bool_type();
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let f = m.add_function_dyn("test_icmp_samesign", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-        let r = b.build_int_cmp_with_flags::<i32, _, _, _>(
-            IntPredicate::Ult,
-            a,
-            bv,
-            ICmpFlags::new().samesign(),
-            "res",
-        )?;
-        b.build_ret(r)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("%res = icmp samesign ult i32 %0, %1"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("c")?;
+    let bool_ty = m.bool_type();
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let f = m.add_function_dyn("test_icmp_samesign", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
+    let r = b.build_int_cmp_with_flags::<i32, _, _, _>(
+        IntPredicate::Ult,
+        a,
+        bv,
+        ICmpFlags::new().samesign(),
+        "res",
+    )?;
+    b.build_ret(r)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%res = icmp samesign ult i32 %0, %1"),
+        "got:\n{text}"
+    );
+    Ok(())
 }

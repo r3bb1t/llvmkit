@@ -22,7 +22,7 @@ use llvmkit_ir::{
     Analyses, DominatorTreeAnalysis, Dyn, FnCx, FnPatch, FnReport, FunctionId, FunctionPass,
     IRBuilder, InstructionView, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
     ModulePass, NoFolder, PatchBody, RewriteModule, Unverified, Verified, function_pass,
-    module_pass, run_function_pass, run_module_pass,
+    module_new, module_pass, run_function_pass, run_module_pass,
 };
 
 // ==========================================================================
@@ -150,7 +150,8 @@ impl<B: ModuleBrand> FunctionPass<B> for HandEraser {
 fn macro_function_pass_matches_handwritten() -> Result<(), IrError> {
     // Macro-authored pass: the `PatchBody` rung downgrades the module, so the
     // explicit `Unverified` binding is the compile-time half of the lock.
-    let macro_ir: String = Module::with_new("macro-fn", |m| {
+    let macro_ir: String = {
+        let m = module_new!("macro-fn")?;
         let f = build_dead_add(&m)?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
@@ -164,18 +165,19 @@ fn macro_function_pass_matches_handwritten() -> Result<(), IrError> {
 
         let out: Module<'_, _, Unverified> =
             run_function_pass(MacroEraser, verified, f, &mut analyses)?;
-        Ok(format!("{}", out.verify()?))
-    })?;
+        format!("{}", out.verify()?)
+    };
 
     // Hand-written twin over an identical module.
-    let hand_ir: String = Module::with_new("hand-fn", |m| {
+    let hand_ir: String = {
+        let m = module_new!("hand-fn")?;
         let f = build_dead_add(&m)?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         let out: Module<'_, _, Unverified> =
             run_function_pass(HandEraser, verified, f, &mut analyses)?;
-        Ok(format!("{}", out.verify()?))
-    })?;
+        format!("{}", out.verify()?)
+    };
 
     // Same erase, and (module name aside) byte-identical IR.
     assert!(
@@ -217,34 +219,33 @@ impl MacroAnalysisReader {
 
 #[test]
 fn macro_function_pass_with_requires_reads_analysis_and_stays_verified() -> Result<(), IrError> {
-    Module::with_new("macro-requires", |m| {
-        let f = build_ret_i32(&m)?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
+    let m = module_new!("macro-requires")?;
+    let f = build_ret_i32(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
 
-        let reachable = Rc::new(Cell::new(false));
-        let pass = MacroAnalysisReader {
-            reachable: reachable.clone(),
-        };
+    let reachable = Rc::new(Cell::new(false));
+    let pass = MacroAnalysisReader {
+        reachable: reachable.clone(),
+    };
 
-        let (name, required) = fn_pass_meta(&verified, &pass);
-        assert_eq!(name, "macro-dt-reader");
-        assert!(!required);
+    let (name, required) = fn_pass_meta(&verified, &pass);
+    assert_eq!(name, "macro-dt-reader");
+    assert!(!required);
 
-        // The `Inspect` rung keeps the module verified: the explicit `Verified`
-        // annotation is the compile-time half of the lock.
-        let out: Module<'_, _, Verified> = run_function_pass(pass, verified, f, &mut analyses)?;
+    // The `Inspect` rung keeps the module verified: the explicit `Verified`
+    // annotation is the compile-time half of the lock.
+    let out: Module<'_, _, Verified> = run_function_pass(pass, verified, f, &mut analyses)?;
 
-        assert!(
-            reachable.get(),
-            "the required DominatorTreeAnalysis was prefetched and read through cx.analysis()"
-        );
-        assert!(
-            format!("{out}").contains("ret i32 1"),
-            "a read-only pass leaves the IR untouched"
-        );
-        Ok(())
-    })
+    assert!(
+        reachable.get(),
+        "the required DominatorTreeAnalysis was prefetched and read through cx.analysis()"
+    );
+    assert!(
+        format!("{out}").contains("ret i32 1"),
+        "a read-only pass leaves the IR untouched"
+    );
+    Ok(())
 }
 
 // ==========================================================================
@@ -290,7 +291,8 @@ impl<B: ModuleBrand> ModulePass<B> for HandAddGlobal {
 
 #[test]
 fn macro_module_pass_matches_handwritten() -> Result<(), IrError> {
-    let macro_ir: String = Module::with_new("macro-mod", |m| {
+    let macro_ir: String = {
+        let m = module_new!("macro-mod")?;
         let _f = build_ret_i32(&m)?;
         let verified = m.verify()?;
         assert_eq!(verified.globals().len(), 0);
@@ -308,17 +310,18 @@ fn macro_module_pass_matches_handwritten() -> Result<(), IrError> {
         let out: Module<'_, _, Unverified> =
             run_module_pass(MacroAddGlobal, verified, &mut analyses)?;
         assert_eq!(out.globals().len(), 1, "the macro pass added the global");
-        Ok(format!("{}", out.verify()?))
-    })?;
+        format!("{}", out.verify()?)
+    };
 
-    let hand_ir: String = Module::with_new("hand-mod", |m| {
+    let hand_ir: String = {
+        let m = module_new!("hand-mod")?;
         let _f = build_ret_i32(&m)?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         let out: Module<'_, _, Unverified> =
             run_module_pass(HandAddGlobal, verified, &mut analyses)?;
-        Ok(format!("{}", out.verify()?))
-    })?;
+        format!("{}", out.verify()?)
+    };
 
     assert_eq!(
         macro_ir.replace("macro-mod", "MOD"),

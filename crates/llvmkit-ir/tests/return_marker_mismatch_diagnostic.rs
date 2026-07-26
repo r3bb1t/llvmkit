@@ -15,38 +15,37 @@
 //! chosen `R` still meet (`add_typed_function` derives its signature from the
 //! markers, so it cannot mismatch by construction).
 
-use llvmkit_ir::{IrError, Linkage, Module, Ptr, TypeKindLabel};
+use llvmkit_ir::{IrError, Linkage, Ptr, TypeKindLabel, module_new};
 
 #[test]
 fn return_marker_mismatch_reports_distinct_expected_and_got() -> Result<(), IrError> {
-    Module::with_new("m", |m| {
-        // A function that genuinely returns `i32`.
-        m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
+    let m = module_new!("m")?;
+    // A function that genuinely returns `i32`.
+    m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
 
-        // Look it up demanding a *pointer* return marker: a real kind mismatch,
-        // so the two diagnostic fields must differ.
-        let err = m
-            .function_by_name::<Ptr>("f")
-            .expect_err("an i32 function looked up as `Ptr` must mismatch");
+    // Look it up demanding a *pointer* return marker: a real kind mismatch,
+    // so the two diagnostic fields must differ.
+    let err = m
+        .function_by_name::<Ptr>("f")
+        .expect_err("an i32 function looked up as `Ptr` must mismatch");
 
-        match err {
-            IrError::ReturnTypeMismatch { expected, got } => {
-                assert_ne!(
-                    expected, got,
-                    "expected and got must differ — the degenerate same-expression bug"
-                );
-                assert_eq!(expected, TypeKindLabel::Pointer, "demanded marker R = Ptr");
-                assert_eq!(
-                    got,
-                    TypeKindLabel::Integer,
-                    "signature actually returns i32"
-                );
-            }
-            other => panic!("expected ReturnTypeMismatch, got {other:?}"),
+    match err {
+        IrError::ReturnTypeMismatch { expected, got } => {
+            assert_ne!(
+                expected, got,
+                "expected and got must differ — the degenerate same-expression bug"
+            );
+            assert_eq!(expected, TypeKindLabel::Pointer, "demanded marker R = Ptr");
+            assert_eq!(
+                got,
+                TypeKindLabel::Integer,
+                "signature actually returns i32"
+            );
         }
+        other => panic!("expected ReturnTypeMismatch, got {other:?}"),
+    }
 
-        Ok(())
-    })
+    Ok(())
 }
 
 /// `FunctionBuilder::build` keeps the `signature_matches_marker` gate: an
@@ -56,26 +55,25 @@ fn return_marker_mismatch_reports_distinct_expected_and_got() -> Result<(), IrEr
 /// (`ModuleCore::add_function_checked`).
 #[test]
 fn function_builder_rejects_mismatched_return_marker() -> Result<(), IrError> {
-    Module::with_new("m", |m| {
-        let void_ty = m.void_type();
-        let fn_ty = m.fn_type(
-            void_ty.as_type(),
-            Vec::<llvmkit_ir::Type<'_, _>>::new(),
-            false,
-        );
-        let err = m
-            .function_builder::<i32, _>("bad", fn_ty)
-            .build()
-            .expect_err("i32 marker over a void signature must mismatch");
+    let m = module_new!("m")?;
+    let void_ty = m.void_type();
+    let fn_ty = m.fn_type(
+        void_ty.as_type(),
+        Vec::<llvmkit_ir::Type<'_, _>>::new(),
+        false,
+    );
+    let err = m
+        .function_builder::<i32, _>("bad", fn_ty)
+        .build()
+        .expect_err("i32 marker over a void signature must mismatch");
 
-        match err {
-            IrError::ReturnTypeMismatch { expected, got } => {
-                assert_eq!(expected, TypeKindLabel::Integer, "demanded marker R = i32");
-                assert_eq!(got, TypeKindLabel::Void, "signature actually returns void");
-            }
-            other => panic!("expected ReturnTypeMismatch, got {other:?}"),
+    match err {
+        IrError::ReturnTypeMismatch { expected, got } => {
+            assert_eq!(expected, TypeKindLabel::Integer, "demanded marker R = i32");
+            assert_eq!(got, TypeKindLabel::Void, "signature actually returns void");
         }
+        other => panic!("expected ReturnTypeMismatch, got {other:?}"),
+    }
 
-        Ok(())
-    })
+    Ok(())
 }

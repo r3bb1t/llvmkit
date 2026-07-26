@@ -5,7 +5,7 @@
 //! the field-GEP form (`getelementptr_struct.ll` is a negative fixture and
 //! is not an accurate print-form anchor).
 
-use llvmkit_ir::{IrResult, IrStruct, Linkage, Module};
+use llvmkit_ir::{IrResult, IrStruct, Linkage, module_new};
 
 #[derive(IrStruct)]
 struct CpuState {
@@ -21,7 +21,8 @@ struct CpuState {
 /// same alloca/load/store forms as `tests/medium_builder_int.rs`.
 #[test]
 fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult<()> {
-    let typed = Module::with_new("m", |m| {
+    let typed = {
+        let m = module_new!("m")?;
         let f = m.add_typed_function::<i32, (i32,), _>("f", Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = m.view(f).builder(&m).position_at_end(entry);
@@ -30,9 +31,10 @@ fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult
         b.build_typed_store(x, slot)?;
         let v = b.build_typed_load(slot, "v")?; // IntValue<'_, i32, _> -- no try_into
         b.build_ret(v)?;
-        Ok(format!("{m}"))
-    })?;
-    let erased = Module::with_new("m", |m| {
+        format!("{m}")
+    };
+    let erased = {
+        let m = module_new!("m")?;
         let f = m.add_typed_function::<i32, (i32,), _>("f", Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = m.view(f).builder(&m).position_at_end(entry);
@@ -41,8 +43,8 @@ fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult
         b.build_store(x, slot)?;
         let v = b.build_int_load::<i32, _, _>(slot, "v")?;
         b.build_ret(v)?;
-        Ok(format!("{m}"))
-    })?;
+        format!("{m}")
+    };
     assert_eq!(typed, erased, "typed overlay must not change printed IR");
     Ok(())
 }
@@ -65,19 +67,18 @@ fn field_gep_projects_field_type_at_compile_time() -> IrResult<()> {
     assert_eq!(cpu_state.flags, 0);
     assert_eq!(cpu_state.pc, 0);
 
-    Module::with_new("m", |m| {
-        let f = m.add_typed_function::<i64, (), _>("f", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = m.view(f).builder(&m).position_at_end(entry);
-        let cpu = b.build_typed_alloca::<CpuState, _>("cpu")?;
-        let pc_ptr = b.build_field_gep::<CpuState, 1, _>(cpu, "pc.ptr")?; // TypedPointerValue<i64>
-        let pc = b.build_typed_load(pc_ptr, "pc")?; // IntValue<'_, i64, _>
-        b.build_ret(pc)?;
-        let printed = format!("{m}");
-        assert!(
-            printed.contains("getelementptr inbounds nuw %CpuState, ptr %cpu, i32 0, i32 1"),
-            "got:\n{printed}"
-        );
-        Ok(())
-    })
+    let m = module_new!("m")?;
+    let f = m.add_typed_function::<i64, (), _>("f", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = m.view(f).builder(&m).position_at_end(entry);
+    let cpu = b.build_typed_alloca::<CpuState, _>("cpu")?;
+    let pc_ptr = b.build_field_gep::<CpuState, 1, _>(cpu, "pc.ptr")?; // TypedPointerValue<i64>
+    let pc = b.build_typed_load(pc_ptr, "pc")?; // IntValue<'_, i64, _>
+    b.build_ret(pc)?;
+    let printed = format!("{m}");
+    assert!(
+        printed.contains("getelementptr inbounds nuw %CpuState, ptr %cpu, i32 0, i32 1"),
+        "got:\n{printed}"
+    );
+    Ok(())
 }

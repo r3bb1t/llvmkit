@@ -305,8 +305,8 @@ fn module_new_in_a_loop_succeeds_when_each_module_is_dropped() {
 // The brand does not reach the output
 // --------------------------------------------------------------------------
 
-/// A named brand is a compile-time device only: the same construction under a
-/// named brand and under the legacy lifetime brand prints byte-identical IR.
+/// A brand is a compile-time device only: the same construction under a *named*
+/// brand and under a macro-generated one prints byte-identical IR.
 #[test]
 fn a_named_brand_emits_byte_identical_ir() -> Result<(), IrError> {
     brand!(Emitting);
@@ -325,12 +325,13 @@ fn a_named_brand_emits_byte_identical_ir() -> Result<(), IrError> {
         Ok(format!("{module}"))
     }
 
-    let via_lifetime_brand = Module::with_new("same", |m| build(&m))?;
+    let generated = module_new!("same")?;
+    let via_generated_brand = build(&generated)?;
 
     let named = Module::branded::<Emitting>("same")?;
     let via_named_brand = build(&named)?;
 
-    assert_eq!(via_named_brand, via_lifetime_brand);
+    assert_eq!(via_named_brand, via_generated_brand);
     assert!(
         via_named_brand.contains("%sum = add i32 %0, 1"),
         "{via_named_brand}"

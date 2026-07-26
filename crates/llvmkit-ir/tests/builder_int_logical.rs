@@ -12,23 +12,22 @@
 use llvmkit_ir::{Dyn, IRBuilder, IntValue, IrError, Linkage, Module};
 
 fn module_with(op: &str) -> Result<String, IrError> {
-    Module::with_new("logical", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
-        let f = m.add_function_dyn(op, fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-        let r = match op {
-            "and" => b.build_int_and(x, y, "z")?,
-            "or" => b.build_int_or(x, y, "z")?,
-            "xor" => b.build_int_xor(x, y, "z")?,
-            _ => unreachable!(),
-        };
-        b.build_ret(r)?;
-        Ok(format!("{m}"))
-    })
+    let m = Module::dynamic("logical");
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let f = m.add_function_dyn(op, fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
+    let r = match op {
+        "and" => b.build_int_and(x, y, "z")?,
+        "or" => b.build_int_or(x, y, "z")?,
+        "xor" => b.build_int_xor(x, y, "z")?,
+        _ => unreachable!(),
+    };
+    b.build_ret(r)?;
+    Ok(format!("{m}"))
 }
 
 /// Mirrors `test/Assembler/flags.ll` for `and` print form.

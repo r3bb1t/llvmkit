@@ -11,7 +11,7 @@
 use llvmkit_ir::{
     Analyses, BasicBlockLabel, BlockId, Dyn, FnCx, FnReport, FunctionId, FunctionPass, IRBuilder,
     IntPredicate, IntValue, IrError, IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, TermEdit,
-    Value, ValueId, run_function_pass,
+    Value, ValueId, module_new, run_function_pass,
 };
 
 // Fixture return-type aliases. These keep the `build_*` helper signatures under
@@ -122,45 +122,43 @@ fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
 /// the unwind edge is untouched, and the output re-verifies.
 #[test]
 fn invoke_redirect_normal_retargets_normal_edge() -> Result<(), IrError> {
-    Module::with_new("invoke-redirect-normal", |m| {
-        let (caller, new_dyn) = build_invoke_caller(&m)?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = RedirectInvokeEdge {
-            which: InvokeArm::Normal,
-            new_to: new_dyn,
-        };
-        let out = run_function_pass(pass, verified, caller, &mut analyses)?;
-        let reverified = out.verify().expect("invoke redirect output must re-verify");
-        let printed = format!("{reverified}");
-        assert!(
-            printed.contains("to label %new unwind label %unwind"),
-            "normal edge must now target %new, unwind untouched, got:\n{printed}"
-        );
-        Ok(())
-    })
+    let m = module_new!("invoke-redirect-normal")?;
+    let (caller, new_dyn) = build_invoke_caller(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = RedirectInvokeEdge {
+        which: InvokeArm::Normal,
+        new_to: new_dyn,
+    };
+    let out = run_function_pass(pass, verified, caller, &mut analyses)?;
+    let reverified = out.verify().expect("invoke redirect output must re-verify");
+    let printed = format!("{reverified}");
+    assert!(
+        printed.contains("to label %new unwind label %unwind"),
+        "normal edge must now target %new, unwind untouched, got:\n{printed}"
+    );
+    Ok(())
 }
 
 /// `edit_invoke(..).redirect_unwind(new, [])` retargets ONLY the unwind edge.
 #[test]
 fn invoke_redirect_unwind_retargets_unwind_edge() -> Result<(), IrError> {
-    Module::with_new("invoke-redirect-unwind", |m| {
-        let (caller, new_dyn) = build_invoke_caller(&m)?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = RedirectInvokeEdge {
-            which: InvokeArm::Unwind,
-            new_to: new_dyn,
-        };
-        let out = run_function_pass(pass, verified, caller, &mut analyses)?;
-        let reverified = out.verify().expect("invoke redirect output must re-verify");
-        let printed = format!("{reverified}");
-        assert!(
-            printed.contains("to label %normal unwind label %new"),
-            "unwind edge must now target %new, normal untouched, got:\n{printed}"
-        );
-        Ok(())
-    })
+    let m = module_new!("invoke-redirect-unwind")?;
+    let (caller, new_dyn) = build_invoke_caller(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = RedirectInvokeEdge {
+        which: InvokeArm::Unwind,
+        new_to: new_dyn,
+    };
+    let out = run_function_pass(pass, verified, caller, &mut analyses)?;
+    let reverified = out.verify().expect("invoke redirect output must re-verify");
+    let printed = format!("{reverified}");
+    assert!(
+        printed.contains("to label %normal unwind label %new"),
+        "unwind edge must now target %new, normal untouched, got:\n{printed}"
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -236,45 +234,43 @@ fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
 /// `edit_callbr(..).redirect_default(new, [])` retargets the fallthrough edge.
 #[test]
 fn callbr_redirect_default_retargets_default_edge() -> Result<(), IrError> {
-    Module::with_new("callbr-redirect-default", |m| {
-        let (caller, new_dyn) = build_callbr_caller(&m)?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = RedirectCallBrEdge {
-            default_edge: true,
-            new_to: new_dyn,
-        };
-        let out = run_function_pass(pass, verified, caller, &mut analyses)?;
-        let reverified = out.verify().expect("callbr redirect output must re-verify");
-        let printed = format!("{reverified}");
-        assert!(
-            printed.contains("to label %new [label %ind]"),
-            "default edge must now target %new, indirect untouched, got:\n{printed}"
-        );
-        Ok(())
-    })
+    let m = module_new!("callbr-redirect-default")?;
+    let (caller, new_dyn) = build_callbr_caller(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = RedirectCallBrEdge {
+        default_edge: true,
+        new_to: new_dyn,
+    };
+    let out = run_function_pass(pass, verified, caller, &mut analyses)?;
+    let reverified = out.verify().expect("callbr redirect output must re-verify");
+    let printed = format!("{reverified}");
+    assert!(
+        printed.contains("to label %new [label %ind]"),
+        "default edge must now target %new, indirect untouched, got:\n{printed}"
+    );
+    Ok(())
 }
 
 /// `edit_callbr(..).redirect_indirect(0, new, [])` retargets indirect edge 0.
 #[test]
 fn callbr_redirect_indirect_retargets_indirect_edge() -> Result<(), IrError> {
-    Module::with_new("callbr-redirect-indirect", |m| {
-        let (caller, new_dyn) = build_callbr_caller(&m)?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = RedirectCallBrEdge {
-            default_edge: false,
-            new_to: new_dyn,
-        };
-        let out = run_function_pass(pass, verified, caller, &mut analyses)?;
-        let reverified = out.verify().expect("callbr redirect output must re-verify");
-        let printed = format!("{reverified}");
-        assert!(
-            printed.contains("to label %cont [label %new]"),
-            "indirect edge 0 must now target %new, default untouched, got:\n{printed}"
-        );
-        Ok(())
-    })
+    let m = module_new!("callbr-redirect-indirect")?;
+    let (caller, new_dyn) = build_callbr_caller(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = RedirectCallBrEdge {
+        default_edge: false,
+        new_to: new_dyn,
+    };
+    let out = run_function_pass(pass, verified, caller, &mut analyses)?;
+    let reverified = out.verify().expect("callbr redirect output must re-verify");
+    let printed = format!("{reverified}");
+    assert!(
+        printed.contains("to label %cont [label %new]"),
+        "indirect edge 0 must now target %new, default untouched, got:\n{printed}"
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -343,48 +339,46 @@ fn build_cond_br_fn<'ctx, B: ModuleBrand + 'ctx>(
 /// %else` (the survivor), and the output re-verifies.
 #[test]
 fn cond_br_remove_then_collapses_to_br() -> Result<(), IrError> {
-    Module::with_new("condbr-remove-then", |m| {
-        let f = build_cond_br_fn(&m)?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = RemoveCondBrArm { remove_then: true };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
-        let reverified = out.verify().expect("cond_br collapse must re-verify");
-        let printed = format!("{reverified}");
-        assert!(
-            printed.contains("br label %else"),
-            "removing the then arm must leave `br label %else`, got:\n{printed}"
-        );
-        assert!(
-            !printed.contains("br i1 %c"),
-            "the cond_br must be gone (no conditional branch left), got:\n{printed}"
-        );
-        Ok(())
-    })
+    let m = module_new!("condbr-remove-then")?;
+    let f = build_cond_br_fn(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = RemoveCondBrArm { remove_then: true };
+    let out = run_function_pass(pass, verified, f, &mut analyses)?;
+    let reverified = out.verify().expect("cond_br collapse must re-verify");
+    let printed = format!("{reverified}");
+    assert!(
+        printed.contains("br label %else"),
+        "removing the then arm must leave `br label %else`, got:\n{printed}"
+    );
+    assert!(
+        !printed.contains("br i1 %c"),
+        "the cond_br must be gone (no conditional branch left), got:\n{printed}"
+    );
+    Ok(())
 }
 
 /// `edit_cond_br(..).remove_else()` collapses the `cond_br` to `br label
 /// %then` (the survivor).
 #[test]
 fn cond_br_remove_else_collapses_to_br() -> Result<(), IrError> {
-    Module::with_new("condbr-remove-else", |m| {
-        let f = build_cond_br_fn(&m)?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = RemoveCondBrArm { remove_then: false };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
-        let reverified = out.verify().expect("cond_br collapse must re-verify");
-        let printed = format!("{reverified}");
-        assert!(
-            printed.contains("br label %then"),
-            "removing the else arm must leave `br label %then`, got:\n{printed}"
-        );
-        assert!(
-            !printed.contains("br i1 %c"),
-            "the cond_br must be gone (no conditional branch left), got:\n{printed}"
-        );
-        Ok(())
-    })
+    let m = module_new!("condbr-remove-else")?;
+    let f = build_cond_br_fn(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = RemoveCondBrArm { remove_then: false };
+    let out = run_function_pass(pass, verified, f, &mut analyses)?;
+    let reverified = out.verify().expect("cond_br collapse must re-verify");
+    let printed = format!("{reverified}");
+    assert!(
+        printed.contains("br label %then"),
+        "removing the else arm must leave `br label %then`, got:\n{printed}"
+    );
+    assert!(
+        !printed.contains("br i1 %c"),
+        "the cond_br must be gone (no conditional branch left), got:\n{printed}"
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -465,60 +459,58 @@ fn build_switch_fn<'ctx, B: ModuleBrand + 'ctx>(
 /// edge onto `%new`, and the output re-verifies.
 #[test]
 fn switch_redirect_successor_retargets_case() -> Result<(), IrError> {
-    Module::with_new("switch-redirect-succ", |m| {
-        let (f, case0_dyn, new_dyn) = build_switch_fn(&m)?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = SwitchCaseOp {
-            remove: false,
-            case0: case0_dyn,
-            new_to: new_dyn,
-        };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
-        let reverified = out.verify().expect("switch redirect must re-verify");
-        let printed = format!("{reverified}");
-        assert!(
-            printed.contains("i32 0, label %new"),
-            "case 0 must now target %new, got:\n{printed}"
-        );
-        assert!(
-            !printed.contains("i32 0, label %case0"),
-            "case 0 must no longer target %case0, got:\n{printed}"
-        );
-        Ok(())
-    })
+    let m = module_new!("switch-redirect-succ")?;
+    let (f, case0_dyn, new_dyn) = build_switch_fn(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = SwitchCaseOp {
+        remove: false,
+        case0: case0_dyn,
+        new_to: new_dyn,
+    };
+    let out = run_function_pass(pass, verified, f, &mut analyses)?;
+    let reverified = out.verify().expect("switch redirect must re-verify");
+    let printed = format!("{reverified}");
+    assert!(
+        printed.contains("i32 0, label %new"),
+        "case 0 must now target %new, got:\n{printed}"
+    );
+    assert!(
+        !printed.contains("i32 0, label %case0"),
+        "case 0 must no longer target %case0, got:\n{printed}"
+    );
+    Ok(())
 }
 
 /// `edit_switch(..).remove_successor(case0)` drops the case-0 edge; case 1 and
 /// the default survive, and the output re-verifies.
 #[test]
 fn switch_remove_successor_drops_case() -> Result<(), IrError> {
-    Module::with_new("switch-remove-succ", |m| {
-        let (f, case0_dyn, new_dyn) = build_switch_fn(&m)?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = SwitchCaseOp {
-            remove: true,
-            case0: case0_dyn,
-            new_to: new_dyn,
-        };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
-        let reverified = out.verify().expect("switch remove must re-verify");
-        let printed = format!("{reverified}");
-        assert!(
-            !printed.contains("i32 0, label %case0"),
-            "the case-0 edge must be gone, got:\n{printed}"
-        );
-        assert!(
-            printed.contains("i32 1, label %case1"),
-            "case 1 must survive, got:\n{printed}"
-        );
-        assert!(
-            printed.contains("label %dflt ["),
-            "the default must survive, got:\n{printed}"
-        );
-        Ok(())
-    })
+    let m = module_new!("switch-remove-succ")?;
+    let (f, case0_dyn, new_dyn) = build_switch_fn(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = SwitchCaseOp {
+        remove: true,
+        case0: case0_dyn,
+        new_to: new_dyn,
+    };
+    let out = run_function_pass(pass, verified, f, &mut analyses)?;
+    let reverified = out.verify().expect("switch remove must re-verify");
+    let printed = format!("{reverified}");
+    assert!(
+        !printed.contains("i32 0, label %case0"),
+        "the case-0 edge must be gone, got:\n{printed}"
+    );
+    assert!(
+        printed.contains("i32 1, label %case1"),
+        "case 1 must survive, got:\n{printed}"
+    );
+    assert!(
+        printed.contains("label %dflt ["),
+        "the default must survive, got:\n{printed}"
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -631,24 +623,23 @@ fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
 /// the missing target-liveness check.
 #[test]
 fn switch_redirect_successor_rejects_non_case_target() -> Result<(), IrError> {
-    Module::with_new("switch-redirect-bogus", |m| {
-        let (f, bogus_dyn, new_dyn, ev) = build_switch_bogus_fn(&m)?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = RedirectSwitchSuccessor {
-            old_to: bogus_dyn,
-            new_to: new_dyn,
-            phi_values: vec![ev],
-        };
-        let err = run_function_pass(pass, verified, f, &mut analyses)
-            .err()
-            .expect("a non-case `old_to` must be rejected");
-        assert!(
-            matches!(err, IrError::InvalidOperation { message } if message.contains("not a case successor")),
-            "expected InvalidOperation about a non-case successor, got: {err:?}"
-        );
-        Ok(())
-    })
+    let m = module_new!("switch-redirect-bogus")?;
+    let (f, bogus_dyn, new_dyn, ev) = build_switch_bogus_fn(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = RedirectSwitchSuccessor {
+        old_to: bogus_dyn,
+        new_to: new_dyn,
+        phi_values: vec![ev],
+    };
+    let err = run_function_pass(pass, verified, f, &mut analyses)
+        .err()
+        .expect("a non-case `old_to` must be rejected");
+    assert!(
+        matches!(err, IrError::InvalidOperation { message } if message.contains("not a case successor")),
+        "expected InvalidOperation about a non-case successor, got: {err:?}"
+    );
+    Ok(())
 }
 
 /// `remove_successor` rejects an `old_to` that is not a case successor (and is
@@ -657,24 +648,23 @@ fn switch_redirect_successor_rejects_non_case_target() -> Result<(), IrError> {
 /// missing target-liveness check.
 #[test]
 fn switch_remove_successor_rejects_non_case_target() -> Result<(), IrError> {
-    Module::with_new("switch-remove-bogus", |m| {
-        let (f, bogus_dyn, new_dyn, _ev) = build_switch_bogus_fn(&m)?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = SwitchCaseOp {
-            remove: true,
-            case0: bogus_dyn,
-            new_to: new_dyn,
-        };
-        let err = run_function_pass(pass, verified, f, &mut analyses)
-            .err()
-            .expect("a non-case `old_to` must be rejected");
-        assert!(
-            matches!(err, IrError::InvalidOperation { message } if message.contains("not a case successor")),
-            "expected InvalidOperation about a non-case successor, got: {err:?}"
-        );
-        Ok(())
-    })
+    let m = module_new!("switch-remove-bogus")?;
+    let (f, bogus_dyn, new_dyn, _ev) = build_switch_bogus_fn(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = SwitchCaseOp {
+        remove: true,
+        case0: bogus_dyn,
+        new_to: new_dyn,
+    };
+    let err = run_function_pass(pass, verified, f, &mut analyses)
+        .err()
+        .expect("a non-case `old_to` must be rejected");
+    assert!(
+        matches!(err, IrError::InvalidOperation { message } if message.contains("not a case successor")),
+        "expected InvalidOperation about a non-case successor, got: {err:?}"
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -712,19 +702,18 @@ impl<B: ModuleBrand> FunctionPass<B> for AssertUneditable {
 /// `edit_terminator` on a `ret`-terminated block yields `TermEdit::Uneditable`.
 #[test]
 fn edit_terminator_ret_is_uneditable() -> Result<(), IrError> {
-    Module::with_new("uneditable-ret", |m| {
-        let i32_ty = m.i32_type();
-        let f = m
-            .add_typed_function::<i32, (), _>("f", Linkage::External)?
-            .as_function();
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        b.build_ret(i32_ty.const_int(0_u32))?;
+    let m = module_new!("uneditable-ret")?;
+    let i32_ty = m.i32_type();
+    let f = m
+        .add_typed_function::<i32, (), _>("f", Linkage::External)?
+        .as_function();
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    b.build_ret(i32_ty.const_int(0_u32))?;
 
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        // The pass's internal assertion is the test; a clean run means it held.
-        let _ = run_function_pass(AssertUneditable, verified, f, &mut analyses)?;
-        Ok(())
-    })
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    // The pass's internal assertion is the test; a clean run means it held.
+    let _ = run_function_pass(AssertUneditable, verified, f, &mut analyses)?;
+    Ok(())
 }

@@ -23,7 +23,7 @@ use llvmkit_ir::{
     Analyses, DCE, DcePass, Dyn, DynFunctionPipeline, DynModulePipeline,
     DynReadOnlyFunctionPipeline, DynReadOnlyModulePipeline, FnCx, FnReport, FunctionId,
     FunctionPass, FunctionView, IRBuilder, Inspect, IrError, IrResult, Linkage, ModCx, ModReport,
-    Module, ModuleBrand, ModulePass, NoFolder, RewriteModule, Unverified, Verified,
+    Module, ModuleBrand, ModulePass, NoFolder, RewriteModule, Unverified, Verified, module_new,
 };
 
 // ==========================================================================
@@ -202,53 +202,52 @@ impl<B: ModuleBrand> ModulePass<B> for AddNamedGlobalPass {
 
 #[test]
 fn transform_dyn_function_pipeline_downgrades_mutates_and_orders() -> Result<(), IrError> {
-    Module::with_new("dyn-fn-transform", |m| {
-        let f = build_dead_add_named(&m, "f")?;
-        // Entry starts with `dead` + `ret`.
-        assert_eq!(
-            FunctionView::from(m.view(f))
-                .entry_block()
-                .expect("def")
-                .instruction_count(),
-            2
-        );
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let log = Rc::new(RefCell::new(Vec::new()));
-        let seen = Rc::new(Cell::new(0usize));
+    let m = module_new!("dyn-fn-transform")?;
+    let f = build_dead_add_named(&m, "f")?;
+    // Entry starts with `dead` + `ret`.
+    assert_eq!(
+        FunctionView::from(m.view(f))
+            .entry_block()
+            .expect("def")
+            .instruction_count(),
+        2
+    );
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::new(Cell::new(0usize));
 
-        // Assemble a MIXED pipeline (read-only + mutating) by pushing boxed passes.
-        let mut pipe = DynFunctionPipeline::new();
-        pipe.push(LogFnPass {
-            log: log.clone(),
-            tag: "pre",
-        });
-        pipe.push(DcePass);
-        pipe.push(ObserveEntryCount { seen: seen.clone() });
+    // Assemble a MIXED pipeline (read-only + mutating) by pushing boxed passes.
+    let mut pipe = DynFunctionPipeline::new();
+    pipe.push(LogFnPass {
+        log: log.clone(),
+        tag: "pre",
+    });
+    pipe.push(DcePass);
+    pipe.push(ObserveEntryCount { seen: seen.clone() });
 
-        // Push order is preserved in the boxed vec.
-        let names: Vec<&str> = pipe.pass_names().collect();
-        assert_eq!(names, vec!["log-fn", DCE.as_str(), "observe-count"]);
-        assert!(!pipe.has_required_pass());
+    // Push order is preserved in the boxed vec.
+    let names: Vec<&str> = pipe.pass_names().collect();
+    assert_eq!(names, vec!["log-fn", DCE.as_str(), "observe-count"]);
+    assert!(!pipe.has_required_pass());
 
-        // A transform container ALWAYS yields `Unverified` — the explicit
-        // annotation is the compile-time half of the lock (a `DcePass` member
-        // means at least one mutating rung; the container downgrades regardless).
-        let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut analyses)?;
-        let reverified = unverified.verify()?;
+    // A transform container ALWAYS yields `Unverified` — the explicit
+    // annotation is the compile-time half of the lock (a `DcePass` member
+    // means at least one mutating rung; the container downgrades regardless).
+    let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut analyses)?;
+    let reverified = unverified.verify()?;
 
-        // Member 1 ran; members 2/3 don't log.
-        assert_eq!(*log.borrow(), vec!["pre"]);
-        // Member 3 saw only `ret` — proving member 2 (`DcePass`) ran first and its
-        // erase was visible to a later member (order + real mutation).
-        assert_eq!(
-            seen.get(),
-            1,
-            "observer must see only `ret` after DcePass erased the dead add"
-        );
-        assert!(!format!("{reverified}").contains("%dead"));
-        Ok(())
-    })
+    // Member 1 ran; members 2/3 don't log.
+    assert_eq!(*log.borrow(), vec!["pre"]);
+    // Member 3 saw only `ret` — proving member 2 (`DcePass`) ran first and its
+    // erase was visible to a later member (order + real mutation).
+    assert_eq!(
+        seen.get(),
+        1,
+        "observer must see only `ret` after DcePass erased the dead add"
+    );
+    assert!(!format!("{reverified}").contains("%dead"));
+    Ok(())
 }
 
 // ==========================================================================
@@ -257,33 +256,32 @@ fn transform_dyn_function_pipeline_downgrades_mutates_and_orders() -> Result<(),
 
 #[test]
 fn read_only_dyn_function_pipeline_stays_verified_and_runs() -> Result<(), IrError> {
-    Module::with_new("dyn-fn-readonly", |m| {
-        let f = build_ret_i32_named(&m, "f")?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let log = Rc::new(RefCell::new(Vec::new()));
+    let m = module_new!("dyn-fn-readonly")?;
+    let f = build_ret_i32_named(&m, "f")?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let log = Rc::new(RefCell::new(Vec::new()));
 
-        // Only `Inspect` passes are admissible — a mutating pass would not compile
-        // at `push` (that missing bound is the type-level `Verified` guarantee).
-        let mut pipe = DynReadOnlyFunctionPipeline::new();
-        pipe.push(LogFnPass {
-            log: log.clone(),
-            tag: "a",
-        });
-        pipe.push(LogFnPass {
-            log: log.clone(),
-            tag: "b",
-        });
+    // Only `Inspect` passes are admissible — a mutating pass would not compile
+    // at `push` (that missing bound is the type-level `Verified` guarantee).
+    let mut pipe = DynReadOnlyFunctionPipeline::new();
+    pipe.push(LogFnPass {
+        log: log.clone(),
+        tag: "a",
+    });
+    pipe.push(LogFnPass {
+        log: log.clone(),
+        tag: "b",
+    });
 
-        // A read-only container ALWAYS yields `Verified`, threading the original
-        // module through untouched — the explicit annotation is the lock.
-        let still_verified: Module<'_, _, Verified> = pipe.run(verified, f, &mut analyses)?;
+    // A read-only container ALWAYS yields `Verified`, threading the original
+    // module through untouched — the explicit annotation is the lock.
+    let still_verified: Module<'_, _, Verified> = pipe.run(verified, f, &mut analyses)?;
 
-        assert_eq!(*log.borrow(), vec!["a", "b"]);
-        // Read-only: the IR is untouched.
-        assert!(format!("{still_verified}").contains("ret i32 1"));
-        Ok(())
-    })
+    assert_eq!(*log.borrow(), vec!["a", "b"]);
+    // Read-only: the IR is untouched.
+    assert!(format!("{still_verified}").contains("ret i32 1"));
+    Ok(())
 }
 
 // ==========================================================================
@@ -292,45 +290,43 @@ fn read_only_dyn_function_pipeline_stays_verified_and_runs() -> Result<(), IrErr
 
 #[test]
 fn transform_dyn_module_pipeline_downgrades_and_mutates() -> Result<(), IrError> {
-    Module::with_new("dyn-mod-transform", |m| {
-        let _f = build_ret_i32_named(&m, "f")?;
-        let verified = m.verify()?;
-        assert_eq!(verified.globals().len(), 0);
-        let mut analyses = Analyses::new();
-        let ran = Rc::new(Cell::new(false));
+    let m = module_new!("dyn-mod-transform")?;
+    let _f = build_ret_i32_named(&m, "f")?;
+    let verified = m.verify()?;
+    assert_eq!(verified.globals().len(), 0);
+    let mut analyses = Analyses::new();
+    let ran = Rc::new(Cell::new(false));
 
-        let mut pipe = DynModulePipeline::new();
-        pipe.push(AddGlobalPass { ran: ran.clone() });
+    let mut pipe = DynModulePipeline::new();
+    pipe.push(AddGlobalPass { ran: ran.clone() });
 
-        // A `RewriteModule` member downgrades the module; the transform container's
-        // output is unconditionally `Unverified`.
-        let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut analyses)?;
+    // A `RewriteModule` member downgrades the module; the transform container's
+    // output is unconditionally `Unverified`.
+    let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut analyses)?;
 
-        assert!(ran.get(), "RewriteModule pass must run");
-        // The real mutation landed on the returned module.
-        assert_eq!(unverified.globals().len(), 1);
-        unverified.verify()?;
-        Ok(())
-    })
+    assert!(ran.get(), "RewriteModule pass must run");
+    // The real mutation landed on the returned module.
+    assert_eq!(unverified.globals().len(), 1);
+    unverified.verify()?;
+    Ok(())
 }
 
 #[test]
 fn read_only_dyn_module_pipeline_stays_verified_and_runs() -> Result<(), IrError> {
-    Module::with_new("dyn-mod-readonly", |m| {
-        let _f = build_ret_i32_named(&m, "f")?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let ran = Rc::new(Cell::new(false));
+    let m = module_new!("dyn-mod-readonly")?;
+    let _f = build_ret_i32_named(&m, "f")?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let ran = Rc::new(Cell::new(false));
 
-        let mut pipe = DynReadOnlyModulePipeline::new();
-        pipe.push(CountFunctionsPass { ran: ran.clone() });
+    let mut pipe = DynReadOnlyModulePipeline::new();
+    pipe.push(CountFunctionsPass { ran: ran.clone() });
 
-        let still_verified: Module<'_, _, Verified> = pipe.run(verified, &mut analyses)?;
+    let still_verified: Module<'_, _, Verified> = pipe.run(verified, &mut analyses)?;
 
-        assert!(ran.get(), "Inspect module pass must run");
-        assert_eq!(still_verified.as_view().functions().count(), 1);
-        Ok(())
-    })
+    assert!(ran.get(), "Inspect module pass must run");
+    assert_eq!(still_verified.as_view().functions().count(), 1);
+    Ok(())
 }
 
 // ==========================================================================
@@ -339,32 +335,31 @@ fn read_only_dyn_module_pipeline_stays_verified_and_runs() -> Result<(), IrError
 
 #[test]
 fn runtime_assembly_variable_length_pipeline() -> Result<(), IrError> {
-    Module::with_new("dyn-fn-runtime-assembly", |m| {
-        let f = build_ret_i32_named(&m, "f")?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let log = Rc::new(RefCell::new(Vec::new()));
+    let m = module_new!("dyn-fn-runtime-assembly")?;
+    let f = build_ret_i32_named(&m, "f")?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let log = Rc::new(RefCell::new(Vec::new()));
 
-        // The count comes from a runtime value: each distinct tuple arity is a
-        // DISTINCT type, so no single tuple pipeline can be this length-generic.
-        let tags: Vec<&'static str> = vec!["p0", "p1", "p2", "p3", "p4"];
-        let mut pipe = DynReadOnlyFunctionPipeline::new();
-        for &tag in &tags {
-            pipe.push(LogFnPass {
-                log: log.clone(),
-                tag,
-            });
-        }
-        assert_eq!(pipe.len(), tags.len());
-        assert_eq!(pipe.pass_names().count(), tags.len());
+    // The count comes from a runtime value: each distinct tuple arity is a
+    // DISTINCT type, so no single tuple pipeline can be this length-generic.
+    let tags: Vec<&'static str> = vec!["p0", "p1", "p2", "p3", "p4"];
+    let mut pipe = DynReadOnlyFunctionPipeline::new();
+    for &tag in &tags {
+        pipe.push(LogFnPass {
+            log: log.clone(),
+            tag,
+        });
+    }
+    assert_eq!(pipe.len(), tags.len());
+    assert_eq!(pipe.pass_names().count(), tags.len());
 
-        let still_verified: Module<'_, _, Verified> = pipe.run(verified, f, &mut analyses)?;
+    let still_verified: Module<'_, _, Verified> = pipe.run(verified, f, &mut analyses)?;
 
-        // Every pushed pass ran, in push order.
-        assert_eq!(*log.borrow(), tags);
-        assert_eq!(still_verified.as_view().functions().count(), 1);
-        Ok(())
-    })
+    // Every pushed pass ran, in push order.
+    assert_eq!(*log.borrow(), tags);
+    assert_eq!(still_verified.as_view().functions().count(), 1);
+    Ok(())
 }
 
 // ==========================================================================
@@ -373,31 +368,30 @@ fn runtime_assembly_variable_length_pipeline() -> Result<(), IrError> {
 
 #[test]
 fn runtime_assembly_module_transform_variable_length() -> Result<(), IrError> {
-    Module::with_new("dyn-mod-runtime-assembly", |m| {
-        let _f = build_ret_i32_named(&m, "f")?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
+    let m = module_new!("dyn-mod-runtime-assembly")?;
+    let _f = build_ret_i32_named(&m, "f")?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
 
-        // Push a runtime-chosen number of `RewriteModule` passes; each adds one
-        // uniquely-named global. The pipeline length is a runtime `count`, not a
-        // tuple arity.
-        let names: Vec<&'static str> = vec!["g0", "g1", "g2"];
-        let count = names.len();
-        let flags: Vec<Rc<Cell<bool>>> = (0..count).map(|_| Rc::new(Cell::new(false))).collect();
-        let mut pipe = DynModulePipeline::new();
-        for (name, flag) in names.iter().zip(&flags) {
-            pipe.push(AddNamedGlobalPass {
-                name,
-                ran: flag.clone(),
-            });
-        }
-        assert_eq!(pipe.len(), count);
+    // Push a runtime-chosen number of `RewriteModule` passes; each adds one
+    // uniquely-named global. The pipeline length is a runtime `count`, not a
+    // tuple arity.
+    let names: Vec<&'static str> = vec!["g0", "g1", "g2"];
+    let count = names.len();
+    let flags: Vec<Rc<Cell<bool>>> = (0..count).map(|_| Rc::new(Cell::new(false))).collect();
+    let mut pipe = DynModulePipeline::new();
+    for (name, flag) in names.iter().zip(&flags) {
+        pipe.push(AddNamedGlobalPass {
+            name,
+            ran: flag.clone(),
+        });
+    }
+    assert_eq!(pipe.len(), count);
 
-        let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut analyses)?;
+    let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut analyses)?;
 
-        assert!(flags.iter().all(|f| f.get()), "every pushed pass must run");
-        // Each `AddGlobalPass` inserts a global named "g"; three members ⇒ three.
-        assert_eq!(unverified.globals().len(), count);
-        Ok(())
-    })
+    assert!(flags.iter().all(|f| f.get()), "every pushed pass must run");
+    // Each `AddGlobalPass` inserts a global named "g"; three members ⇒ three.
+    assert_eq!(unverified.globals().len(), count);
+    Ok(())
 }

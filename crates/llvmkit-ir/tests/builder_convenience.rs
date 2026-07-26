@@ -2,7 +2,7 @@
 //! Each `#[test]` cites its upstream source (Doctrine D11). All three
 //! tests are direct ports of upstream usage sites.
 
-use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, Module, PointerValue};
+use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, PointerValue, module_new};
 
 /// Mirrors `unittests/Analysis/VectorUtilsTest.cpp::TEST_F(BasicTest, ...)`
 /// (line 92): `IRB.CreateVectorSplat(5, ScalarC)`. The upstream call splats
@@ -12,30 +12,29 @@ use llvmkit_ir::{IRBuilder, IntValue, IrError, Linkage, Module, PointerValue};
 /// (insertelement-into-poison + zero-mask shufflevector).
 #[test]
 fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i8_ty = m.i8_type();
-        let v_ty = m.vector_type(i8_ty, 5, false);
-        let fn_ty = m.fn_type(v_ty, [i8_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
-        let scalar: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
-        let splat = b.build_vector_splat(5, scalar, "v")?;
-        b.build_ret(splat.into_erased())?;
-        let text = format!("{m}");
-        // The two-step expansion that upstream emits, mirrored byte-for-byte:
-        // %v.splatinsert = insertelement <5 x i8> poison, i8 %0, i64 0
-        // %v.splat = shufflevector <5 x i8> %v.splatinsert, <5 x i8> poison, <5 x i32> zeroinitializer
-        assert!(
-            text.contains("%v.splatinsert = insertelement <5 x i8> poison, i8 %0, i64 0\n"),
-            "splatinsert missing; got:\n{text}"
-        );
-        assert!(
-            text.contains("%v.splat = shufflevector <5 x i8> %v.splatinsert, <5 x i8> poison, <5 x i32> zeroinitializer\n"),
-            "splat shufflevector missing; got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i8_ty = m.i8_type();
+    let v_ty = m.vector_type(i8_ty, 5, false);
+    let fn_ty = m.fn_type(v_ty, [i8_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let scalar: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
+    let splat = b.build_vector_splat(5, scalar, "v")?;
+    b.build_ret(splat.into_erased())?;
+    let text = format!("{m}");
+    // The two-step expansion that upstream emits, mirrored byte-for-byte:
+    // %v.splatinsert = insertelement <5 x i8> poison, i8 %0, i64 0
+    // %v.splat = shufflevector <5 x i8> %v.splatinsert, <5 x i8> poison, <5 x i32> zeroinitializer
+    assert!(
+        text.contains("%v.splatinsert = insertelement <5 x i8> poison, i8 %0, i64 0\n"),
+        "splatinsert missing; got:\n{text}"
+    );
+    assert!(
+        text.contains("%v.splat = shufflevector <5 x i8> %v.splatinsert, <5 x i8> poison, <5 x i32> zeroinitializer\n"),
+        "splat shufflevector missing; got:\n{text}"
+    );
+    Ok(())
 }
 
 /// Mirrors `unittests/Analysis/MemorySSATest.cpp` line 1117-1118:
@@ -45,24 +44,23 @@ fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrEr
 /// `; CHECK:` directive for `getelementptr i8, ptr ..., <offset>`.
 #[test]
 fn build_ptr_add_emits_gep_i8() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
-        let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-        let i64_ty = m.i64_type();
-        let one = i64_ty.const_int(1_i64);
-        let q = b.build_ptr_add::<_, _, i64, _>(p, one, "bar")?;
-        b.build_ret(q)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("%bar = getelementptr i8, ptr %0, i64 1\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let i64_ty = m.i64_type();
+    let one = i64_ty.const_int(1_i64);
+    let q = b.build_ptr_add::<_, _, i64, _>(p, one, "bar")?;
+    b.build_ret(q)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%bar = getelementptr i8, ptr %0, i64 1\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// Mirrors `test/Assembler/flags.ll` line 322:
@@ -71,22 +69,21 @@ fn build_ptr_add_emits_gep_i8() -> Result<(), IrError> {
 /// `IRBuilder::CreateInBoundsPtrAdd`.
 #[test]
 fn build_inbounds_ptr_add_emits_gep_inbounds_i8() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let ptr_ty = m.ptr_type(0);
-        let i64_ty = m.i64_type();
-        let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type(), i64_ty.as_type()], false);
-        let f = m.add_function_dyn("gep_inbounds", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
-        let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-        let idx: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
-        let q = b.build_inbounds_ptr_add::<_, _, i64, _>(p, idx, "gep")?;
-        b.build_ret(q)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("%gep = getelementptr inbounds i8, ptr %0, i64 %1\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let ptr_ty = m.ptr_type(0);
+    let i64_ty = m.i64_type();
+    let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type(), i64_ty.as_type()], false);
+    let f = m.add_function_dyn("gep_inbounds", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    let idx: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
+    let q = b.build_inbounds_ptr_add::<_, _, i64, _>(p, idx, "gep")?;
+    b.build_ret(q)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%gep = getelementptr inbounds i8, ptr %0, i64 %1\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }

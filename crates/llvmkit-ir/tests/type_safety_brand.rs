@@ -6,10 +6,12 @@ use std::collections::HashMap;
 
 use llvmkit_ir::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, FunctionValue, IRBuilder, IntValue,
-    IrResult, Linkage, Module, ModuleBrand, Value,
+    IrResult, Linkage, Module, ModuleBrand, Unverified, Value, module_new,
 };
 
-fn exercise_tables<'ctx>(module: Module<'ctx>) -> IrResult<()> {
+fn exercise_tables<'ctx, B: ModuleBrand + 'ctx>(
+    module: Module<'ctx, B, Unverified>,
+) -> IrResult<()> {
     let i64_ty = module.i64_type();
     let fn_ty = module.fn_type(i64_ty.as_type(), [i64_ty.as_type()], false);
     let function = module.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -37,7 +39,7 @@ fn exercise_tables<'ctx>(module: Module<'ctx>) -> IrResult<()> {
 /// module-id checks.
 #[test]
 fn user_owned_value_tables_remain_usable() -> IrResult<()> {
-    Module::with_new::<_, _, _>("brand-tables", exercise_tables)
+    exercise_tables(module_new!("brand-tables")?)
 }
 
 fn format_generic_function<'ctx, B: ModuleBrand + 'ctx>(
@@ -50,17 +52,16 @@ fn format_generic_function<'ctx, B: ModuleBrand + 'ctx>(
 /// module brand instead of requiring the default `Brand<'ctx>`.
 #[test]
 fn generic_function_display_preserves_brand() -> IrResult<()> {
-    Module::with_new::<_, _, _>("function-display-brand", |module| {
-        let function = module
-            .add_typed_function::<(), (), _>("f", Linkage::External)?
-            .as_function();
-        let entry = module.view(function).append_basic_block(&module, "entry");
-        IRBuilder::new_for::<()>(&module)
-            .position_at_end(entry)
-            .build_ret_void();
-        assert!(format_generic_function(module.view(function)).contains("define void @f()"));
-        Ok(())
-    })
+    let module = module_new!("function-display-brand")?;
+    let function = module
+        .add_typed_function::<(), (), _>("f", Linkage::External)?
+        .as_function();
+    let entry = module.view(function).append_basic_block(&module, "entry");
+    IRBuilder::new_for::<()>(&module)
+        .position_at_end(entry)
+        .build_ret_void();
+    assert!(format_generic_function(module.view(function)).contains("define void @f()"));
+    Ok(())
 }
 
 /// `llvmkit-specific D7`: brandless attribute constructors stay ergonomic for

@@ -16,6 +16,7 @@ use llvmkit_ir::{
     IrError, IrResult, Linkage, Module, ModuleAnalysis, ModuleAnalysisManager,
     ModuleAnalysisResult, ModuleBrand, ModuleView, PreservedAnalyses, Value,
 };
+use llvmkit_ir::{DynBrand, Unverified};
 
 #[derive(Clone)]
 struct CountFunctionAnalysis {
@@ -142,35 +143,38 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B>
     }
 }
 
+/// The shared fixture is a helper, not a `#[test]` body: the harness runs
+/// tests in parallel, so a `module_new!` brand minted here would be claimed by
+/// several threads at once. [`DynBrand`] is registry-exempt and admits any
+/// number of live modules, which is exactly what a reusable fixture needs.
 fn with_sample_module<R, F>(run: F) -> Result<R, IrError>
 where
-    F: for<'ctx> FnOnce(Module<'ctx>) -> Result<R, IrError>,
+    F: FnOnce(Module<'static, DynBrand, Unverified>) -> Result<R, IrError>,
 {
-    Module::with_new("analysis", |module| {
-        let f = module
-            .add_typed_function::<(), (), _>("f", Linkage::External)?
-            .as_function();
-        let g = module
-            .add_typed_function::<(), (), _>("g", Linkage::External)?
-            .as_function();
-        let h = module
-            .add_typed_function::<(), (), _>("h", Linkage::External)?
-            .as_function();
+    let module = Module::dynamic("analysis");
+    let f = module
+        .add_typed_function::<(), (), _>("f", Linkage::External)?
+        .as_function();
+    let g = module
+        .add_typed_function::<(), (), _>("g", Linkage::External)?
+        .as_function();
+    let h = module
+        .add_typed_function::<(), (), _>("h", Linkage::External)?
+        .as_function();
 
-        let entry = module.view(f).append_basic_block(&module, "entry");
-        let b = IRBuilder::new_for::<()>(&module).position_at_end(entry);
-        b.build_call_dyn(g, Vec::<Value<'_, _>>::new(), "")?;
-        b.build_call_dyn(h, Vec::<Value<'_, _>>::new(), "")?;
-        b.build_ret_void();
+    let entry = module.view(f).append_basic_block(&module, "entry");
+    let b = IRBuilder::new_for::<()>(&module).position_at_end(entry);
+    b.build_call_dyn(g, Vec::<Value<'_, _>>::new(), "")?;
+    b.build_call_dyn(h, Vec::<Value<'_, _>>::new(), "")?;
+    b.build_ret_void();
 
-        for function in [g, h] {
-            let entry = module.view(function).append_basic_block(&module, "entry");
-            IRBuilder::new_for::<()>(&module)
-                .position_at_end(entry)
-                .build_ret_void();
-        }
-        run(module)
-    })
+    for function in [g, h] {
+        let entry = module.view(function).append_basic_block(&module, "entry");
+        IRBuilder::new_for::<()>(&module)
+            .position_at_end(entry)
+            .build_ret_void();
+    }
+    run(module)
 }
 
 /// `llvmkit-specific subset`: ports the API-supported assertions from
