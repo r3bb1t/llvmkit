@@ -179,16 +179,40 @@ fn position_at_end_dyn_rejects_a_terminated_block() -> Result<(), IrError> {
     })
 }
 
-/// The other `position_at_end_dyn` rejection — a [`llvmkit_ir::BlockId`] minted
-/// in a different module, reported as `IrError::ForeignValueId` — is deferred
-/// for the same reason as `id_roundtrip.rs`'s
-/// `foreign_tag_rejection_is_deferred_to_cycle_c`: two `Module::with_new`
-/// closures carry distinct lifetime brands, so a cross-module id is rejected at
-/// *compile* time and never reaches the runtime tag comparison. A genuine
-/// runtime foreign-tag test needs two modules sharing a brand *type*.
+/// The other `position_at_end_dyn` rejection: a [`llvmkit_ir::BlockId`] minted
+/// in a different module is `IrError::ForeignValueId`, checked before the arena
+/// is touched.
+///
+/// Two `Module::with_new` closures cannot express this — their distinct
+/// lifetime brands make the cross-module call a compile error, so the runtime
+/// check is unreachable. Two [`llvmkit_ir::DynBrand`] modules share one brand
+/// type, which is precisely why the tag has to hold the line here.
 #[test]
-fn position_at_end_dyn_foreign_id_rejection_is_deferred_to_cycle_c() {
-    // Intentionally empty: see the doc comment.
+fn position_at_end_dyn_rejects_a_block_from_another_module() -> Result<(), IrError> {
+    let a = Module::dynamic("block-a");
+    let b = Module::dynamic("block-b");
+
+    let a_i32 = a.i32_type();
+    let a_fn_ty = a.fn_type(a_i32, [a_i32.as_type()], false);
+    let a_f = a.add_function_dyn("f", a_fn_ty, Linkage::External)?;
+    let foreign_block = a.view(a_f).append_basic_block(&a, "entry").id();
+
+    let b_i32 = b.i32_type();
+    let b_fn_ty = b.fn_type(b_i32, [b_i32.as_type()], false);
+    let b_f = b.add_function_dyn("f", b_fn_ty, Linkage::External)?;
+    let b_entry = b.view(b_f).append_basic_block(&b, "entry").id();
+
+    let err = match IRBuilder::new_for::<Dyn>(&b).position_at_end_dyn(foreign_block) {
+        Ok(_) => panic!("a block from another module must not be an insertion point"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, IrError::ForeignValueId), "got {err:?}");
+
+    // B's own block is accepted at the same call, so only the tag differed.
+    IRBuilder::new_for::<Dyn>(&b)
+        .position_at_end_dyn(b_entry)
+        .expect("an owned block id must position");
+    Ok(())
 }
 
 // --- Unary integer helpers --------------------------------------------

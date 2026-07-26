@@ -6,8 +6,10 @@
 //! llvmkit-specific: LLVM's C++ has no split between a borrowing handle and a
 //! storable id — a `Value *` is both. These tests lock the round-trip
 //! (`handle -> id -> handle`) for each id in the family, the `Copy + Send`
-//! storability of the ids, and document the one branch that cannot be
-//! exercised until cycle C.
+//! storability of the ids, and the runtime foreign-tag rejection — which needs
+//! two modules sharing one brand *type* ([`llvmkit_ir::DynBrand`]), because
+//! under the generative lifetime brand the mistake is a compile error and the
+//! runtime check is unreachable.
 
 use llvmkit_ir::{
     BasicBlockLabel, BlockId, Dyn, FloatValue, FloatValueId, FunctionId, GlobalAliasId,
@@ -76,8 +78,8 @@ fn handles_round_trip_through_to_id_and_view() -> Result<(), IrError> {
 }
 
 /// `try_view` returns `Some` for an id that genuinely belongs to the module
-/// (the tag-check-passes branch). The foreign-tag `None` branch is exercised
-/// in cycle C — see [`foreign_tag_rejection_is_deferred_to_cycle_c`].
+/// (the tag-check-passes branch). The foreign-tag `None` branch is
+/// [`try_view_returns_none_for_a_foreign_tag`].
 #[test]
 fn try_view_returns_some_for_owned_ids() -> Result<(), IrError> {
     Module::with_new("id-try-view", |m| {
@@ -160,20 +162,59 @@ fn id_debug_prints_tag_and_slot() -> Result<(), IrError> {
     })
 }
 
-/// The foreign-tag rejection path of `view`/`try_view` (an id minted in module
-/// A, resolved against module B, whose different [`ModuleId`](llvmkit_ir::ModuleId)
-/// makes the tag check fail) cannot be exercised in cycle A: two `Module::with_new`
-/// closures have *distinct* lifetime brands `Brand<'a>` / `Brand<'b>`, so an id
-/// from one is a different type than `ViewIn<'_, Brand<'other>>` expects and the
-/// cross-module call is rejected at **compile** time (the desired safety), never
-/// reaching the runtime tag comparison. A genuine runtime foreign-tag test needs
-/// two modules that share a brand *type* — available in cycle C when brands stop
-/// being lifetimes. Documented here rather than forced with an unsound cast.
+/// The foreign-tag rejection path of `try_view`: an id minted in module A,
+/// resolved against module B, whose different
+/// [`ModuleId`](llvmkit_ir::ModuleId) makes the tag check fail.
+///
+/// Two `Module::with_new` closures cannot express this — their distinct
+/// lifetime brands `Brand<'a>` / `Brand<'b>` make the cross-module call a
+/// *compile* error, so it never reaches the runtime comparison. Two
+/// [`llvmkit_ir::DynBrand`] modules share one brand type by design, which is
+/// exactly what leaves the runtime tag as the only line of defence, so this is
+/// where that line gets tested.
 #[test]
-fn foreign_tag_rejection_is_deferred_to_cycle_c() {
-    // Intentionally empty: see the doc comment. The tag-check-passes branch is
-    // covered by `try_view_returns_some_for_owned_ids`; the tag-check-fails
-    // branch lands in cycle C.
+fn try_view_returns_none_for_a_foreign_tag() -> Result<(), IrError> {
+    let a = Module::dynamic("tag-a");
+    let b = Module::dynamic("tag-b");
+    assert_ne!(a.id(), b.id());
+
+    let i32_ty = a.i32_type();
+    let fn_ty = a.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = a.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let x: IntValue<'_, i32, _> = a.view(f).param(0)?.try_into()?;
+    let x_id: IntValueId<i32, _> = x.id();
+
+    // Compiles — same brand type on both sides — and is refused anyway.
+    assert_eq!(b.try_view(x_id), None, "a foreign tag must not resolve");
+    assert_eq!(
+        a.try_view(x_id),
+        Some(x),
+        "the owning module still resolves"
+    );
+    Ok(())
+}
+
+/// The infallible twin, [`Module::view`], turns the same foreign tag into a
+/// panic — its documented contract, like indexing a slice out of bounds.
+#[test]
+#[should_panic(expected = "does not resolve in this module")]
+fn view_panics_on_a_foreign_tag() {
+    let a = Module::dynamic("panic-a");
+    let b = Module::dynamic("panic-b");
+
+    let i32_ty = a.i32_type();
+    let fn_ty = a.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = a
+        .add_function_dyn("f", fn_ty, Linkage::External)
+        .expect("add");
+    let x: IntValue<'_, i32, _> = a
+        .view(f)
+        .param(0)
+        .expect("param")
+        .try_into()
+        .expect("narrow");
+
+    let _ = b.view(x.id());
 }
 
 /// B1a: [`IRBuilder::view`] / [`IRBuilder::try_view`] are the builder-side
@@ -309,18 +350,42 @@ fn typed_ids_are_call_args() -> Result<(), IrError> {
     })
 }
 
-/// A4: the foreign-tag rejection branch of the operand lifts (an id minted in
-/// module A, lifted against module B -> `Err(IrError::ForeignValueId)`) is
-/// deferred to cycle C for the same reason as
-/// [`foreign_tag_rejection_is_deferred_to_cycle_c`]: two `Module::with_new`
-/// closures carry distinct lifetime brands, so a cross-module lift is rejected
-/// at compile time and never reaches the runtime tag comparison. A genuine
-/// runtime foreign-tag test needs two modules sharing a brand *type*, available
-/// in cycle C.
+/// A4: the foreign-tag rejection branch of the operand lifts — an id minted in
+/// module A, lifted at an operand slot of module B, is
+/// [`IrError::ForeignValueId`].
+///
+/// Same setup as [`try_view_returns_none_for_a_foreign_tag`], and same reason
+/// it needs [`llvmkit_ir::DynBrand`]: under lifetime brands the mistake is a
+/// compile error and the runtime check is unreachable.
 #[test]
-fn foreign_tag_operand_rejection_is_deferred_to_cycle_c() {
-    // Intentionally empty: see the doc comment. The tag-check-passes branch is
-    // covered by `typed_ids_lift_at_operand_positions`.
+fn operand_lifts_reject_a_foreign_tag() -> Result<(), IrError> {
+    let a = Module::dynamic("operand-a");
+    let b = Module::dynamic("operand-b");
+
+    // An `i32` value that belongs to module A.
+    let a_i32 = a.i32_type();
+    let a_fn_ty = a.fn_type(a_i32, [a_i32.as_type()], false);
+    let a_f = a.add_function_dyn("f", a_fn_ty, Linkage::External)?;
+    let a_param: IntValue<'_, i32, _> = a.view(a_f).param(0)?.try_into()?;
+    let foreign: IntValueId<i32, _> = a_param.id();
+
+    // A build site inside module B.
+    let b_i32 = b.i32_type();
+    let b_fn_ty = b.fn_type(b_i32, [b_i32.as_type()], false);
+    let b_f = b.add_function_dyn("f", b_fn_ty, Linkage::External)?;
+    let b_entry = b.view(b_f).append_basic_block(&b, "entry");
+    let builder = IRBuilder::new_for::<Dyn>(&b).position_at_end(b_entry);
+
+    let err = builder
+        .build_int_add(foreign, 1_i32, "bad")
+        .expect_err("an operand from another module must not lift");
+    assert!(matches!(err, IrError::ForeignValueId), "got {err:?}");
+
+    // The same slot accepts B's own id, so the rejection is about the tag and
+    // nothing else.
+    let b_param: IntValue<'_, i32, _> = b.view(b_f).param(0)?.try_into()?;
+    builder.build_int_add(b_param.id(), 1_i32, "good")?;
+    Ok(())
 }
 
 // --------------------------------------------------------------------------

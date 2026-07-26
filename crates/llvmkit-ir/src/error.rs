@@ -969,6 +969,33 @@ pub enum IrError {
         /// Rendered coherence-failure description.
         message: String,
     },
+
+    /// [`Module::branded`](crate::Module::branded) /
+    /// [`branded_once`](crate::Module::branded_once) was asked for a brand type
+    /// that a **live** module already holds. At most one module may carry a
+    /// given brand at a time, which is what lets the brand stand in for module
+    /// identity at compile time. Drop the incumbent module to free the brand,
+    /// pick a different brand type, or use
+    /// [`Module::dynamic`](crate::Module::dynamic) when the module count is not
+    /// statically known.
+    ///
+    /// Note that leaking a module (e.g. [`core::mem::forget`]) never releases
+    /// its brand — see [`Module::branded`](crate::Module::branded).
+    #[error("module brand `{brand}` is already held by a live module")]
+    BrandInUse {
+        /// Rendered name of the brand type, from [`core::any::type_name`].
+        brand: &'static str,
+    },
+
+    /// A brand retired by [`Module::branded_once`](crate::Module::branded_once)
+    /// was claimed again. Retirement is permanent by design: a brand whose
+    /// module is gone must never name a *successor*, or handles minted from two
+    /// different generations of storage would share one static type.
+    #[error("module brand `{brand}` was permanently retired by a `branded_once` module")]
+    BrandRetired {
+        /// Rendered name of the brand type, from [`core::any::type_name`].
+        brand: &'static str,
+    },
 }
 
 /// Crate-wide `Result` alias.

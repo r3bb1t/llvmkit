@@ -9,23 +9,40 @@
 //!
 //! ## Identity and verification model
 //!
-//! A [`Module`] is a linear token over crate-private `ModuleCore` storage.
-//! The token carries a generative [`ModuleBrand`] and a verification state:
-//! [`Unverified`] while IR is still being built and [`Verified`] after
-//! structural verification succeeds. Handles store a state-erased
-//! [`ModuleRef`] with the same brand, so same-brand APIs reject cross-module
-//! values statically and erased/parser paths can still fall back to
-//! [`ModuleId`] checks.
+//! A [`Module`] is a linear token that **owns** its `ModuleCore` storage. The
+//! token carries a [`ModuleBrand`] and a verification state: [`Unverified`]
+//! while IR is still being built and [`Verified`] after structural verification
+//! succeeds. Handles store a state-erased [`ModuleRef`] with the same brand, so
+//! same-brand APIs reject cross-module values statically and erased/parser
+//! paths can still fall back to [`ModuleId`] checks.
+//!
+//! ## Choosing a brand
+//!
+//! | Constructor | Brand | Live modules per brand |
+//! |---|---|---|
+//! | [`Module::branded::<B>`](Module::branded) | a type you name | one at a time |
+//! | [`Module::branded_once::<B>`](Module::branded_once) | a type you name | one, ever |
+//! | [`module_new!`](crate::module_new) | fresh, unnameable, per expansion site | one at a time |
+//! | [`Module::dynamic`] | [`DynBrand`] | unlimited (registry-exempt) |
+//! | [`Module::with_new`] | [`Brand<'id>`] (legacy) | scoped to the callback |
+//!
+//! The first three are kept distinct by a process-global registry; see
+//! [`ModuleBrand`]. [`DynBrand`] opts out of the compile-time half of identity
+//! and relies on the [`ModuleId`] tag alone.
 //!
 //! Public handle accessors expose [`ModuleView`], a read-only branded view of
 //! the storage. Construction and mutation require the unverified [`Module`]
 //! token instead of a raw storage reference.
 
+use core::any::TypeId;
 use core::hash::{Hash, Hasher};
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
 use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
 use super::align::MaybeAlign;
 use super::array_len::{ArrLen, ArrLenDyn};
@@ -73,6 +90,9 @@ use super::unnamed_addr::UnnamedAddr;
 use super::value::{Value, ValueData, ValueKindData, ValueSlot, ValueUse};
 use super::value_id::{FunctionId, GlobalId, TypedFunctionId, TypedVarArgsFunctionId, ViewIn};
 use super::vec_len::{Len, LenDyn};
+
+#[cfg(test)]
+mod brand_registry_tests;
 
 fn reject_reserved_intrinsic_name(name: &str) -> IrResult<()> {
     match resolve_intrinsic_name(name) {
@@ -123,18 +143,82 @@ impl ModuleId {
 // Module brands and verification state
 // --------------------------------------------------------------------------
 
-pub(super) mod brand_sealed {
-    pub trait Sealed {}
-}
-
-/// Sealed marker for a generative module identity brand.
-pub trait ModuleBrand: brand_sealed::Sealed + Copy + core::fmt::Debug + Eq + Hash {}
+/// Marker for a module identity brand.
+///
+/// A brand is the *compile-time* half of module identity: handles minted by a
+/// [`Module`] carry its brand, so an API that takes two same-brand handles
+/// rejects a cross-module mix-up at type-check time. The *runtime* half is the
+/// [`ModuleId`] tag every stored id also carries, and it is checked
+/// independently. A brand is therefore a **hygiene device, not a soundness
+/// boundary**: the worst a strange brand type can do is collapse a compile-time
+/// rejection into the runtime [`ModuleId`] check, which still refuses the
+/// operation.
+///
+/// The trait is deliberately **empty and unsealed** — any type may be a brand:
+///
+/// - a *named* brand for a module a program builds exactly once
+///   ([`Module::branded`]);
+/// - a fresh unnameable brand per expansion site
+///   ([`module_new!`](crate::module_new));
+/// - [`DynBrand`] when a program needs many modules of the same static shape
+///   and is content with the runtime tag alone;
+/// - the legacy lifetime brand [`Brand<'id>`] minted by [`Module::with_new`].
+///
+/// No code path in this crate ever constructs a `B` or calls a method on one:
+/// every occurrence of the brand in a data structure is
+/// `Invariant<B>` = `PhantomData<fn(B) -> B>`, which is inhabited-free,
+/// invariant in `B`, and `Send + Sync` whatever `B` is.
+///
+/// # The supertraits, and why they are not decorative
+///
+/// A brand type must be `Copy + Debug + Eq + Hash`. Nothing in the crate calls
+/// those methods *on a brand* — they exist because roughly a hundred
+/// brand-generic containers (`Argument<'ctx, B>`, every instruction handle,
+/// every view, …) use `#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]`, and
+/// a `derive` on a generic type emits a `where B: Clone` / `B: Debug` / … bound
+/// whether or not `B` appears in a position that needs it. Dropping the
+/// supertraits would mean replacing every one of those derives with a manual
+/// impl. Satisfying them costs a user one line:
+///
+/// ```
+/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// struct LiftedBin;
+/// impl llvmkit_ir::ModuleBrand for LiftedBin {}
+/// ```
+///
+/// [`module_new!`](crate::module_new) emits that line for you.
+///
+/// # Why `'static` is not a supertrait
+///
+/// The uniqueness registry behind [`Module::branded`] keys brands by
+/// [`TypeId`], which requires `'static`. That bound sits on the registering
+/// constructors instead of on this trait, because [`Brand<'id>`] is a
+/// lifetime-parameterised type and therefore *cannot* be `'static` while
+/// [`Module::with_new`] still exists. Once the lifetime brand is removed the
+/// bound can be hoisted onto the trait.
+pub trait ModuleBrand: Copy + core::fmt::Debug + Eq + Hash {}
 
 /// Concrete lifetime-generated module brand used by [`Module::with_new`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Brand<'id>(PhantomData<fn(&'id ()) -> &'id ()>);
-impl<'id> brand_sealed::Sealed for Brand<'id> {}
 impl<'id> ModuleBrand for Brand<'id> {}
+
+/// Brand for modules that opt out of compile-time identity separation.
+///
+/// `DynBrand` is **exempt from the uniqueness registry**: arbitrarily many
+/// `Module<'_, DynBrand>` values may be live at once, they may be collected in
+/// a `Vec`, and they are separated from one another only by the runtime
+/// [`ModuleId`] tag. Reach for it when the module count is dynamic — a loop
+/// over translation units, a worker pool, a `Vec` of modules — where no single
+/// static type could name each module individually.
+///
+/// The trade is exactly the compile-time half of identity: a handle from one
+/// `DynBrand` module and a handle from another have the *same* type, so a
+/// mix-up surfaces as an [`IrError::ForeignValueId`] at run time instead of a
+/// type error at compile time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct DynBrand;
+impl ModuleBrand for DynBrand {}
 
 /// Module state before successful structural verification.
 #[derive(Debug)]
@@ -145,6 +229,179 @@ pub enum Unverified {}
 pub enum Verified {}
 
 pub(super) type Invariant<T> = PhantomData<fn(T) -> T>;
+
+// --------------------------------------------------------------------------
+// Brand uniqueness registry
+// --------------------------------------------------------------------------
+
+/// Liveness of one registered brand type.
+enum BrandState {
+    /// A live [`Module`] holds this brand right now.
+    InUse,
+    /// A [`Module::branded_once`] module held this brand and has been dropped.
+    /// Permanent: no successor may ever claim the brand again, so a `'static`
+    /// id minted by the dead module can never be replayed against a live one.
+    Retired,
+}
+
+/// Process-global brand registry: at most one live [`Module`] per brand type.
+///
+/// [`DynBrand`] never appears here — it is registry-exempt by construction,
+/// because [`Module::dynamic`] does not call [`BrandGuard::claim`].
+static BRANDS: LazyLock<Mutex<HashMap<TypeId, BrandState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Lock the registry, recovering from poisoning.
+///
+/// Recovery is sound here because every critical section is a *single* map
+/// operation: there is no intermediate state in which the map could be
+/// observed, so a panic elsewhere in the process cannot have left the map
+/// half-updated. (In practice the sections cannot panic at all — hashing a
+/// [`TypeId`] and inserting into a `HashMap` are infallible — but recovering
+/// keeps a poisoned mutex from bricking every later module construction.)
+fn lock_brands() -> MutexGuard<'static, HashMap<TypeId, BrandState>> {
+    BRANDS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// RAII claim on one brand type, held by the [`Module`] that owns the brand.
+///
+/// The guard is created by [`claim`](Self::claim) and immediately **defused
+/// into the module** — moved into `Module::registration`, so the module's own
+/// storage is what keeps the claim alive. Releasing is therefore driven by the
+/// guard's [`Drop`], which runs on a normal drop *and* on unwind.
+///
+/// `Drop` lives here rather than on [`Module`] on purpose: the typestate
+/// transitions ([`Module::verify`], [`Module::unverify`]) move fields out of
+/// `self`, and moving out of a type that implements `Drop` is `E0509`. A
+/// `Drop` field is fine — only a `Drop` *impl on the outer struct* forbids the
+/// move — so the guard rides along through every transition untouched.
+///
+/// Storing the brand as [`Invariant<B>`] (never `PhantomData<B>`) is what keeps
+/// the guard — and hence [`Module`] — `Send` and `Sync` no matter what type the
+/// user picked for `B`, while leaving `B` invariant.
+struct BrandGuard<B> {
+    /// The claimed key. Captured at claim time, so `Drop` needs no `B: 'static`.
+    brand: TypeId,
+    /// `true` for [`Module::branded_once`]: retire instead of releasing.
+    retire_on_drop: bool,
+    _brand: Invariant<B>,
+}
+
+impl<B> BrandGuard<B> {
+    /// Claim `B`, or fail if it is already live or permanently retired.
+    ///
+    /// The critical section is exactly **one** map operation. The `entry`
+    /// lookup *is* the check-and-set — there is no `contains_key` followed by a
+    /// second `insert`, and therefore no window in which two threads could both
+    /// observe the brand as free.
+    ///
+    /// No user code runs inside the section: `B` is only ever fed to
+    /// [`TypeId::of`] and [`core::any::type_name`], both of which are compiler
+    /// intrinsics, and both are evaluated *before* the lock is taken.
+    fn claim(retire_on_drop: bool) -> IrResult<Self>
+    where
+        B: ModuleBrand + 'static,
+    {
+        let brand = TypeId::of::<B>();
+        let name = core::any::type_name::<B>();
+        match lock_brands().entry(brand) {
+            Entry::Occupied(slot) => match slot.get() {
+                BrandState::InUse => Err(IrError::BrandInUse { brand: name }),
+                BrandState::Retired => Err(IrError::BrandRetired { brand: name }),
+            },
+            Entry::Vacant(slot) => {
+                slot.insert(BrandState::InUse);
+                Ok(Self {
+                    brand,
+                    retire_on_drop,
+                    _brand: PhantomData,
+                })
+            }
+        }
+    }
+}
+
+impl<B> Drop for BrandGuard<B> {
+    /// Release the claim — one map operation, same as [`claim`](Self::claim).
+    ///
+    /// There is deliberately **no** way to release a claim without dropping the
+    /// guard. A force-unregister API would let a fresh module take a brand
+    /// whose predecessor is still alive, so `'static` handles of two different
+    /// generations would share one type — demoting the compile-time guarantee
+    /// to the runtime [`ModuleId`] check. Correspondingly,
+    /// [`core::mem::forget`]ting or otherwise leaking a module skips this
+    /// `Drop` and leaves the brand `InUse` forever: leaking is an implicit
+    /// [`Module::branded_once`], which is deterministic and safe.
+    fn drop(&mut self) {
+        let mut brands = lock_brands();
+        if self.retire_on_drop {
+            brands.insert(self.brand, BrandState::Retired);
+        } else {
+            brands.remove(&self.brand);
+        }
+    }
+}
+
+/// Construct a module under a brand type **generated at this expansion site**.
+///
+/// The macro expands to a block that declares a fresh `struct`, implements
+/// [`ModuleBrand`] for it, and hands it to [`Module::branded`]. Because the
+/// struct is declared *inside* the block it is unnameable from anywhere else,
+/// so no other code can spell the brand — the ergonomic equivalent of the
+/// generative lifetime brand, but on an owned, movable token.
+///
+/// ```
+/// use llvmkit_ir::{IrError, module_new};
+///
+/// let m = module_new!("lifted")?;
+/// assert_eq!(m.name(), "lifted");
+///
+/// // A second expansion site is a *different* brand, so both are live at once.
+/// let other = module_new!("other")?;
+/// assert_ne!(m.id(), other.id());
+/// # Ok::<(), IrError>(())
+/// ```
+///
+/// # One brand per expansion *site*, not per evaluation
+///
+/// The brand is minted where the macro is *written*, not each time control
+/// reaches it. A `module_new!` inside a loop therefore asks for the same brand
+/// on every iteration, and the second iteration fails with
+/// [`IrError::BrandInUse`] while the first module is still alive:
+///
+/// ```
+/// use llvmkit_ir::{IrError, Module, module_new};
+///
+/// let mut held = Vec::new();
+/// for i in 0..2 {
+///     match module_new!(format!("m{i}")) {
+///         Ok(m) => held.push(m),
+///         Err(e) => assert!(matches!(e, IrError::BrandInUse { .. })),
+///     }
+/// }
+/// assert_eq!(held.len(), 1);
+///
+/// // For a dynamic number of modules, use the registry-exempt brand instead.
+/// let all: Vec<_> = (0..2).map(|i| Module::dynamic(format!("m{i}"))).collect();
+/// assert_eq!(all.len(), 2);
+/// ```
+///
+/// (Dropping each module before the next iteration also works, since a
+/// non-retired brand is released on drop — but a `Vec` of them cannot.)
+#[macro_export]
+macro_rules! module_new {
+    ($name:expr $(,)?) => {{
+        // The doubled braces are load-bearing. `macro_rules!` hygiene protects
+        // local *variables*, not *item* names, so this `struct` would otherwise
+        // land in the caller's scope under a nameable, collision-prone name.
+        // The block scope is the whole mechanism that makes the brand unnameable
+        // and distinct per expansion site.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        struct __LlvmkitGeneratedBrand;
+        impl $crate::ModuleBrand for __LlvmkitGeneratedBrand {}
+        $crate::Module::branded::<__LlvmkitGeneratedBrand>($name)
+    }};
+}
 
 // --------------------------------------------------------------------------
 // ModuleRef helper
@@ -1264,8 +1521,21 @@ impl CoreStore<'_> {
 /// `Module` deliberately has **no** `Drop` impl: the typestate transitions
 /// ([`verify`](Self::verify), [`unverify`](Self::unverify)) move the owned core
 /// out of `self` into the new-state token, which `Drop` would forbid (E0509).
+/// The brand registration still has to be released when the token dies — that
+/// `Drop` lives on the brand-registration *field* instead, which is legal
+/// precisely because a `Drop` field does not block moving fields out of a
+/// non-`Drop` struct.
 pub struct Module<'ctx, B: ModuleBrand = Brand<'ctx>, S = Unverified> {
     store: CoreStore<'ctx>,
+    /// Live claim on `B` in the process-global registry, for the tokens that
+    /// hold one. `None` for registry-exempt tokens: [`Module::dynamic`]
+    /// ([`DynBrand`]), [`Module::with_new`] (the lifetime brand is generative
+    /// on its own, and is not `'static` so it cannot be a registry key), and
+    /// the crate-private `from_core` alias.
+    ///
+    /// Moved along by every typestate transition, so a claim is released
+    /// exactly once — when the last token over this module is dropped.
+    registration: Option<BrandGuard<B>>,
     _brand: Invariant<B>,
     _state: PhantomData<S>,
 }
@@ -2197,6 +2467,12 @@ impl<'ctx> ModuleCore {
 
 impl Module<'static, Brand<'static>, Unverified> {
     /// Construct a fresh module under a generative brand closure.
+    ///
+    /// The brand is the lifetime [`Brand<'id>`], which is generative *because*
+    /// the callback is higher-ranked — and consequently the module cannot
+    /// outlive the call. Prefer [`branded`](Self::branded),
+    /// [`module_new!`](crate::module_new) or [`dynamic`](Self::dynamic), which
+    /// return an owned, movable token instead.
     pub fn with_new<N, R, F>(name: N, f: F) -> R
     where
         N: Into<String>,
@@ -2204,10 +2480,144 @@ impl Module<'static, Brand<'static>, Unverified> {
     {
         let module = Module {
             store: CoreStore::Owned(Box::new(ModuleCore::new(name))),
+            registration: None,
             _brand: PhantomData,
             _state: PhantomData,
         };
         f(module)
+    }
+
+    /// Construct a fresh module under the **named** brand `B`.
+    ///
+    /// At most one live module may hold a given brand type. A second call for a
+    /// brand whose module is still alive fails with [`IrError::BrandInUse`];
+    /// once that module is dropped the brand is free again.
+    ///
+    /// ```
+    /// use llvmkit_ir::{IrError, Module};
+    ///
+    /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// struct LiftedBin;
+    /// impl llvmkit_ir::ModuleBrand for LiftedBin {}
+    ///
+    /// let m = Module::branded::<LiftedBin>("lifted")?;
+    /// assert!(matches!(
+    ///     Module::branded::<LiftedBin>("again"),
+    ///     Err(IrError::BrandInUse { .. })
+    /// ));
+    ///
+    /// drop(m);
+    /// let _reused = Module::branded::<LiftedBin>("again")?;
+    /// # Ok::<(), IrError>(())
+    /// ```
+    ///
+    /// # Leaking
+    ///
+    /// The claim is released by the module's `Drop`. [`core::mem::forget`]ting
+    /// a module (or leaking it any other way) therefore keeps the brand claimed
+    /// for the rest of the process: leaking is an implicit
+    /// [`branded_once`](Self::branded_once). There is deliberately no API to
+    /// release a claim without dropping the module: one that existed would let
+    /// a fresh module take a brand whose predecessor is still alive, so
+    /// `'static` handles of two generations would share a single type.
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::BrandInUse`] if a live module already holds `B`;
+    /// [`IrError::BrandRetired`] if `B` was retired by
+    /// [`branded_once`](Self::branded_once).
+    pub fn branded<B: ModuleBrand + 'static>(
+        name: impl Into<String>,
+    ) -> IrResult<Module<'static, B, Unverified>> {
+        Self::registered::<B>(name, false)
+    }
+
+    /// Construct a fresh module under the named brand `B`, **retiring `B`
+    /// permanently** when the module is dropped.
+    ///
+    /// Where [`branded`](Self::branded) frees the brand for reuse, this marks it
+    /// dead: every later claim fails with [`IrError::BrandRetired`], forever.
+    /// Use it when handles minted from the module may outlive it — a retired
+    /// brand can never name a *successor* module, so a stale handle can never be
+    /// replayed against fresh storage even if the runtime [`ModuleId`] check
+    /// were bypassed.
+    ///
+    /// ```
+    /// use llvmkit_ir::{IrError, Module};
+    ///
+    /// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    /// struct BuiltOnce;
+    /// impl llvmkit_ir::ModuleBrand for BuiltOnce {}
+    ///
+    /// drop(Module::branded_once::<BuiltOnce>("once")?);
+    /// assert!(matches!(
+    ///     Module::branded_once::<BuiltOnce>("twice"),
+    ///     Err(IrError::BrandRetired { .. })
+    /// ));
+    /// # Ok::<(), IrError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`IrError::BrandInUse`] if a live module already holds `B`;
+    /// [`IrError::BrandRetired`] if `B` has already been retired.
+    pub fn branded_once<B: ModuleBrand + 'static>(
+        name: impl Into<String>,
+    ) -> IrResult<Module<'static, B, Unverified>> {
+        Self::registered::<B>(name, true)
+    }
+
+    /// Shared body of [`branded`](Self::branded) and
+    /// [`branded_once`](Self::branded_once).
+    ///
+    /// The step order is load-bearing:
+    ///
+    /// 1. **user conversions first.** `name.into()` is arbitrary user code. If
+    ///    it ran while the registry lock was held and re-entered `branded`, the
+    ///    non-reentrant `Mutex` would deadlock. Running it here means the lock
+    ///    is not yet taken.
+    /// 2. **build the storage.** Also outside the lock, so a long or
+    ///    allocation-heavy construction never blocks another thread's claim.
+    /// 3. **register last.** Nothing after the claim can fail or panic, so a
+    ///    partially-constructed module can never strand a brand as `InUse`. (If
+    ///    it could, the guard's `Drop` would still release it on unwind — but
+    ///    the ordering means that never has to happen.)
+    fn registered<B: ModuleBrand + 'static>(
+        name: impl Into<String>,
+        retire_on_drop: bool,
+    ) -> IrResult<Module<'static, B, Unverified>> {
+        let name: String = name.into();
+        let core = Box::new(ModuleCore::new(name));
+        let registration = BrandGuard::<B>::claim(retire_on_drop)?;
+        Ok(Module {
+            store: CoreStore::Owned(core),
+            registration: Some(registration),
+            _brand: PhantomData,
+            _state: PhantomData,
+        })
+    }
+
+    /// Construct a fresh module under [`DynBrand`], the registry-exempt brand.
+    ///
+    /// Infallible, and arbitrarily many may be live at once — which is the
+    /// point: use it when the number of modules is decided at run time.
+    /// Distinct `DynBrand` modules share one static type, so handles are
+    /// separated only by the runtime [`ModuleId`] tag.
+    ///
+    /// ```
+    /// use llvmkit_ir::Module;
+    ///
+    /// let modules: Vec<_> = (0..4).map(|i| Module::dynamic(format!("m{i}"))).collect();
+    /// assert_eq!(modules.len(), 4);
+    /// ```
+    pub fn dynamic(name: impl Into<String>) -> Module<'static, DynBrand, Unverified> {
+        let name: String = name.into();
+        Module {
+            store: CoreStore::Owned(Box::new(ModuleCore::new(name))),
+            registration: None,
+            _brand: PhantomData,
+            _state: PhantomData,
+        }
     }
 }
 
@@ -2540,6 +2950,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     pub(crate) fn from_core(core: &'ctx ModuleCore) -> Self {
         Self {
             store: CoreStore::Borrowed(core),
+            // An alias, not an owner: the real token still holds the claim, and
+            // this ephemeral one must not release it when it drops.
+            registration: None,
             _brand: PhantomData,
             _state: PhantomData,
         }
@@ -3566,6 +3979,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         crate::verifier::Verifier::new(ModuleView::<B>::new(self.core())).run()?;
         Ok(Module {
             store: self.store,
+            registration: self.registration,
             _brand: PhantomData,
             _state: PhantomData,
         })
@@ -3578,6 +3992,7 @@ impl<'ctx, B: ModuleBrand> Module<'ctx, B, Verified> {
     pub fn unverify(self) -> Module<'ctx, B, Unverified> {
         Module {
             store: self.store,
+            registration: self.registration,
             _brand: PhantomData,
             _state: PhantomData,
         }
@@ -3604,6 +4019,7 @@ impl<'ctx, B: ModuleBrand> Module<'ctx, B, Unverified> {
     pub(crate) fn assume_verified(self) -> Module<'ctx, B, Verified> {
         Module {
             store: self.store,
+            registration: self.registration,
             _brand: PhantomData,
             _state: PhantomData,
         }

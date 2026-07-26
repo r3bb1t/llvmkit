@@ -273,9 +273,9 @@ pub use metadata::{
     MetadataRef, MetadataSlot, SpecializedMetadataKind, SpecializedMetadataNode,
 };
 pub use module::{
-    Brand, ComdatView, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module, ModuleBrand,
-    ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord, UseListOrderRecord,
-    Verified,
+    Brand, ComdatView, DynBrand, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module,
+    ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord,
+    UseListOrderRecord, Verified,
 };
 pub use operator::{OverflowingBinaryOperator, PossiblyExactOperator};
 pub use optimization_level::{
