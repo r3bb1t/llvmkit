@@ -46,6 +46,20 @@ around a speculative branch, and drives one step at a time.
   `id`, `block_count`, `variable_count`.
 - `SsaBuilder::is_positioned` / `clear_position` / `state`.
 - `IrError::SsaUnpositioned`, `IrError::SsaForeignFunction`.
+- **`Module::instruction_count()`** — total instructions across every block of
+  every function. The module-size probe a transform driven to a fixpoint
+  watches for a plateau.
+- **`examples/lifter_session.rs`** — the consumer proof. A binary lifter as a
+  plain struct owning its `Module`, an address→block `HashMap`, its `SsaState`
+  and its cursor, driven by a suspend/resume `step()` loop, moved to a worker
+  thread mid-function, and finished there. No closure, no borrow held across a
+  step. Emits real, verified IR.
+- **`examples/module_per_batch.rs`** — the JIT/batch shape: build a module,
+  hand it away *by value* to a consumer, build the next one, all under one
+  named brand the registry re-issues each round.
+- `tests/block_id_stability.rs` — a `BlockId` minted before a block
+  replace-all-uses still resolves *and still drives the mutation API*
+  afterwards, so an address→block side map needs no hand-migration.
 
 ### llvmkit 2.0 — owned modules, branded by type (cycle C)
 
