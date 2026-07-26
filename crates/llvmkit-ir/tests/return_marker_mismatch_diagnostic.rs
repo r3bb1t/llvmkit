@@ -58,7 +58,11 @@ fn return_marker_mismatch_reports_distinct_expected_and_got() -> Result<(), IrEr
 fn function_builder_rejects_mismatched_return_marker() -> Result<(), IrError> {
     Module::with_new("m", |m| {
         let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let err = m
             .function_builder::<i32, _>("bad", fn_ty)
             .build()

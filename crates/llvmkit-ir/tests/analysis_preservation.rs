@@ -129,13 +129,13 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
         // Saved while `entry` is genuinely open (before-of-none == end of
         // block) so the pass can reopen `entry` after the split empties it.
         let ip = b.save_insert_point();
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let x = b.build_int_add(a, 1_i32, "x")?;
         b.build_br_with_args(merge_label, &[m.view(x).into_erased()])?;
 
         // merge: ret %p (the head-phi param carrying the branch argument).
         let b2 = IRBuilder::new(&m).position_at_end(merge);
-        let p: IntValue<i32> = merge_params[0].try_into()?;
+        let p: IntValue<'_, i32, _> = merge_params[0].try_into()?;
         b2.build_ret(p)?;
 
         /// Splits `entry` at its terminator, then reopens `entry` (through the
@@ -243,14 +243,14 @@ impl<'s, B: ModuleBrand> FunctionPass<B> for InsertMergePhi<'s, B> {
 /// function plus the two arm values and the two arm labels the pass will feed as
 /// phi incomings.
 #[allow(clippy::type_complexity)]
-fn build_diamond<'ctx>(
-    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
+fn build_diamond<'ctx, B: ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
 ) -> IrResult<(
-    llvmkit_ir::FunctionValue<'ctx, Dyn>,
-    ValueId<llvmkit_ir::Brand<'ctx>>,
-    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
-    ValueId<llvmkit_ir::Brand<'ctx>>,
-    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
+    llvmkit_ir::FunctionValue<'ctx, Dyn, B>,
+    ValueId<B>,
+    BlockId<Dyn, B>,
+    ValueId<B>,
+    BlockId<Dyn, B>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -267,19 +267,19 @@ fn build_diamond<'ctx>(
 
     // entry: br (%a == 0) ? left : right
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     b.build_cond_br(cond, &left, &right)?;
 
     // left: %lv = add %a, 10 ; br merge
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(left);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let lv = b.build_int_add(a, 10_i32, "lv")?;
     b.build_br(merge.id())?;
 
     // right: %rv = add %a, 20 ; br merge
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(right);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rv = b.build_int_add(a, 20_i32, "rv")?;
     b.build_br(merge.id())?;
 
@@ -380,8 +380,8 @@ fn insert_phi_typed_into_merge_block_verifies() -> Result<(), IrError> {
         // Narrow the arm value ids to the typed ids the twin takes. Erased ->
         // typed stays a *spelled* narrowing (the no-silent-erasure law), here
         // through `try_view` + `.id()`.
-        let lv: IntValue<i32> = m.view(lv).try_into()?;
-        let rv: IntValue<i32> = m.view(rv).try_into()?;
+        let lv: IntValue<'_, i32, _> = m.view(lv).try_into()?;
+        let rv: IntValue<'_, i32, _> = m.view(rv).try_into()?;
         let (lv, rv) = (lv.id(), rv.id());
 
         let verified = m.verify()?;
@@ -560,13 +560,13 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchCase<B> {
 /// `redirect_edge(entry, old, new, [%ev])` retargets the case-0 edge onto `new`
 /// and adds `[ %ev, %entry ]` to `new`'s phi.
 #[allow(clippy::type_complexity)]
-fn build_switch_redirect<'ctx>(
-    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
+fn build_switch_redirect<'ctx, B: ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
 ) -> IrResult<(
-    llvmkit_ir::FunctionValue<'ctx, Dyn>,
-    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
-    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
-    ValueId<llvmkit_ir::Brand<'ctx>>,
+    llvmkit_ir::FunctionValue<'ctx, Dyn, B>,
+    BlockId<Dyn, B>,
+    BlockId<Dyn, B>,
+    ValueId<B>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -590,14 +590,14 @@ fn build_switch_redirect<'ctx>(
 
     // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> old ]
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let ev = b.build_int_add(a, 3_i32, "ev")?;
     let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), old_lbl)?.finish();
 
     // dflt: %nd = add %a, 5 ; br new(%nd)
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(dflt);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let nd = b.build_int_add(a, 5_i32, "nd")?;
     b.build_br_with_args(new_lbl, &[m.view(nd).into_erased()])?;
 
@@ -607,7 +607,7 @@ fn build_switch_redirect<'ctx>(
 
     // new: ret %np (the head-phi param carrying the dflt branch argument).
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
-    let np: IntValue<i32> = new_params[0].try_into()?;
+    let np: IntValue<'_, i32, _> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
     Ok((m.view(f), old_dyn, new_dyn, m.view(ev).into_erased().id()))
@@ -868,7 +868,7 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
 
         // entry: %ev = add %a, 3 ; cond_br (%a == 0) ? old : other
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let ev = b.build_int_add(a, 3_i32, "ev")?;
         let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
         b.build_cond_br(c, old_lbl, other_lbl)?;
@@ -878,7 +878,7 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
         b.build_ret(i32_ty.const_int(1_u32))?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(new);
-        let np: IntValue<i32> = new_params[0].try_into()?;
+        let np: IntValue<'_, i32, _> = new_params[0].try_into()?;
         b.build_ret(np)?;
 
         let verified = m.verify()?;
@@ -946,20 +946,20 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
 
         // entry: %ev = add %a, 3 ; br (%a == 0) ? keep() : drop(%ev)
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let ev = b.build_int_add(a, 3_i32, "ev")?;
         let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
         b.build_cond_br_with_args(c, keep_lbl, &[], drop_lbl, &[m.view(ev).into_erased()])?;
 
         // keep: %kv = add %a, 7 ; br drop(%kv)
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(keep);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let kv = b.build_int_add(a, 7_i32, "kv")?;
         b.build_br_with_args(drop_lbl, &[m.view(kv).into_erased()])?;
 
         // drop: ret %dp
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(drop_bb);
-        let dp: IntValue<i32> = drop_params[0].try_into()?;
+        let dp: IntValue<'_, i32, _> = drop_params[0].try_into()?;
         b.build_ret(dp)?;
 
         let verified = m.verify()?;
@@ -1018,13 +1018,13 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
 
         // entry: %ev = add %a, 3 ; br old
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let ev = b.build_int_add(a, 3_i32, "ev")?;
         b.build_br(old_lbl)?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(old);
         b.build_ret(i32_ty.const_int(0_u32))?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(new);
-        let np: IntValue<i32> = new_params[0].try_into()?;
+        let np: IntValue<'_, i32, _> = new_params[0].try_into()?;
         b.build_ret(np)?;
 
         let verified = m.verify()?;
@@ -1061,13 +1061,13 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
 /// plus a spare `new` block — the shared skeleton for the branch-edge rejection
 /// guards below. Returns the function and the `Dyn` labels for `old`/`new`.
 #[allow(clippy::type_complexity)]
-fn build_cond_br_pair<'ctx>(
-    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
+fn build_cond_br_pair<'ctx, B: ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
     then_is_new: bool,
 ) -> IrResult<(
-    llvmkit_ir::FunctionValue<'ctx, Dyn>,
-    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
-    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
+    llvmkit_ir::FunctionValue<'ctx, Dyn, B>,
+    BlockId<Dyn, B>,
+    BlockId<Dyn, B>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -1081,7 +1081,7 @@ fn build_cond_br_pair<'ctx>(
     let new_dyn = new_lbl;
 
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     if then_is_new {
         // entry: br %c ? old : new  — the else-arm ALREADY reaches `new`.
@@ -1210,12 +1210,9 @@ fn redirect_edge_rejects_cond_br_already_reaching_new() -> Result<(), IrError> {
 /// Returns the function plus `new`'s `Dyn` label (a spare, phi-less block for the
 /// redirect test — a redirect onto it seeds an empty `phi_values`).
 #[allow(clippy::type_complexity)]
-fn build_cond_br_both_arms_phi<'ctx>(
-    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
-) -> IrResult<(
-    llvmkit_ir::FunctionValue<'ctx, Dyn>,
-    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
-)> {
+fn build_cond_br_both_arms_phi<'ctx, B: ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> IrResult<(llvmkit_ir::FunctionValue<'ctx, Dyn, B>, BlockId<Dyn, B>)> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -1236,13 +1233,13 @@ fn build_cond_br_both_arms_phi<'ctx>(
 
     // entry: cond_br (%a == 0) ? src : keep
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let c0 = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c0")?;
     b.build_cond_br(c0, src_lbl, keep_lbl)?;
 
     // src: %sv = add %a, 3 ; cond_br (%a == 1) ? shared(%sv) : shared(%sv)
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(src);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let sv = b.build_int_add(a, 3_i32, "sv")?;
     let c1 = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 1_i32, "c1")?;
     b.build_cond_br_with_args(
@@ -1255,13 +1252,13 @@ fn build_cond_br_both_arms_phi<'ctx>(
 
     // keep: %kv = add %a, 7 ; br shared(%kv)
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(keep);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let kv = b.build_int_add(a, 7_i32, "kv")?;
     b.build_br_with_args(shared_lbl, &[m.view(kv).into_erased()])?;
 
     // shared: ret %sp
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(shared);
-    let sp: IntValue<i32> = shared_params[0].try_into()?;
+    let sp: IntValue<'_, i32, _> = shared_params[0].try_into()?;
     b.build_ret(sp)?;
 
     // new: ret 1  (no phi — a redirect onto it seeds an empty phi_values)

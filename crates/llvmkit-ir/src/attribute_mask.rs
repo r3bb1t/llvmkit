@@ -108,7 +108,7 @@ mod tests {
     /// attributes from a set).
     #[test]
     fn add_set_collects_kinds_and_strings() {
-        let mut s = AttributeSet::<'_>::new();
+        let mut s = AttributeSet::<'_, _>::new();
         s.add(Attribute::Enum(AttrKind::NoReturn));
         s.add(Attribute::Int(AttrKind::Alignment, 8));
         s.add(Attribute::string("target-features", "+sse2"));
@@ -126,8 +126,8 @@ mod tests {
         let mut m = AttributeMask::new();
         m.add_kind(AttrKind::NoReturn);
         m.add_string("frame-pointer");
-        assert!(m.contains(&Attribute::<'_>::Enum(AttrKind::NoReturn)));
-        assert!(!m.contains(&Attribute::<'_>::Enum(AttrKind::Cold)));
-        assert!(m.contains(&Attribute::<'_>::string("frame-pointer", "all")));
+        assert!(m.contains(&Attribute::<'_, _>::Enum(AttrKind::NoReturn)));
+        assert!(!m.contains(&Attribute::<'_, _>::Enum(AttrKind::Cold)));
+        assert!(m.contains(&Attribute::<'_, _>::string("frame-pointer", "all")));
     }
 }

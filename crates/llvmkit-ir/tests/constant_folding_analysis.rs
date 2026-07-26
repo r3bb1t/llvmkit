@@ -32,7 +32,7 @@ fn load_from_const_ptr_uses_little_endian_layout() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let i16_ty = m.i16_type();
         let arr_ty = m.array_type(i8_ty.as_type(), 2);
-        let init = arr_ty.const_array::<ConstantIntValue<'_, i8>, _>([
+        let init = arr_ty.const_array::<ConstantIntValue<'_, i8, _>, _>([
             i8_ty.const_int(0x34_i8),
             i8_ty.const_int(0x12_i8),
         ])?;
@@ -45,7 +45,7 @@ fn load_from_const_ptr_uses_little_endian_layout() -> Result<(), IrError> {
             &dl,
         )?
         .expect("constant load folds");
-        let int = ConstantIntValue::<IntDyn>::try_from(folded)?;
+        let int = ConstantIntValue::<IntDyn, _>::try_from(folded)?;
 
         assert_eq!(int.ap_int(), ApInt::from_words(16, &[0x1234]));
         Ok(())
@@ -61,7 +61,7 @@ fn load_from_const_ptr_oob_returns_poison() -> Result<(), IrError> {
         let i8_ty = m.i8_type();
         let i32_ty = m.i32_type();
         let arr_ty = m.array_type(i8_ty.as_type(), 1);
-        let init = arr_ty.const_array::<ConstantIntValue<'_, i8>, _>([i8_ty.const_int(7_i8)])?;
+        let init = arr_ty.const_array::<ConstantIntValue<'_, i8, _>, _>([i8_ty.const_int(7_i8)])?;
         let g = m.add_global_constant("one", init)?;
 
         let folded = constant_fold_load_from_const_ptr(
@@ -154,7 +154,7 @@ fn ppc_fp128_bitcast_requires_datalayout_path() -> Result<(), IrError> {
 
         let folded = constant_fold_cast_operand(CastOpcode::BitCast, ppc, i128_ty.as_type(), &dl)?
             .expect("DataLayout-aware PPC bitcast folds");
-        let int = ConstantIntValue::<IntDyn>::try_from(folded)?;
+        let int = ConstantIntValue::<IntDyn, _>::try_from(folded)?;
 
         assert_eq!(int.ap_int(), bits);
         Ok(())
@@ -196,13 +196,13 @@ fn fp_vector_fadd_folds_elementwise_through_analysis_path() -> Result<(), IrErro
         let vec_ty = m.vector_type(f32_ty.as_type(), 2, false);
 
         let lhs = vec_ty
-            .const_vector::<ConstantFloatValue<'_, f32>, _>([
+            .const_vector::<ConstantFloatValue<'_, f32, _>, _>([
                 f32_ty.const_float(1.0),
                 f32_ty.const_float(2.0),
             ])?
             .as_constant();
         let rhs = vec_ty
-            .const_vector::<ConstantFloatValue<'_, f32>, _>([
+            .const_vector::<ConstantFloatValue<'_, f32, _>, _>([
                 f32_ty.const_float(3.0),
                 f32_ty.const_float(4.0),
             ])?
@@ -225,7 +225,7 @@ fn fp_vector_fadd_folds_elementwise_through_analysis_path() -> Result<(), IrErro
                 i64_ty.const_int(index).as_constant(),
             )?
             .expect("lane extracts from the folded vector");
-            let fp = ConstantFloatValue::<f32>::try_from(element)?;
+            let fp = ConstantFloatValue::<f32, _>::try_from(element)?;
             assert!(fp.ap_float().is_exactly_value_f64(expected));
         }
         Ok(())
@@ -294,7 +294,7 @@ fn foldable_libcall_sqrt_folds_constant() -> Result<(), IrError> {
             FoldNonDeterminism::Allow,
         )?
         .expect("sqrt(4.0) folds");
-        let fp = ConstantFloatValue::<f64>::try_from(folded)?;
+        let fp = ConstantFloatValue::<f64, _>::try_from(folded)?;
 
         assert!(fp.ap_float().is_exactly_value_f64(2.0));
         Ok(())
@@ -478,7 +478,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
         let i32_ty = m.i32_type();
         let f32_ty = m.f32_type();
         let arr_ty = m.array_type(i8_ty.as_type(), 1);
-        let init = arr_ty.const_array::<ConstantIntValue<'_, i8>, _>([i8_ty.const_int(0_i8)])?;
+        let init = arr_ty.const_array::<ConstantIntValue<'_, i8, _>, _>([i8_ty.const_int(0_i8)])?;
         let g = m.add_global_constant("api_bytes", init)?;
         let c2_i = i32_ty.const_int(2_i32);
         let c5_i = i32_ty.const_int(5_i32);
@@ -560,7 +560,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
         let bitcast = constant_fold_load_through_bitcast(one_bits, f32_ty.as_type(), &dl)?
             .expect("equal-width integer to float load-through-bitcast folds");
         assert!(
-            ConstantFloatValue::<f32>::try_from(bitcast)?
+            ConstantFloatValue::<f32, _>::try_from(bitcast)?
                 .ap_float()
                 .is_exactly_value_f64(1.0)
         );
@@ -663,7 +663,7 @@ fn recursive_gep_load_through_bitcast_from_global_folds() -> Result<(), IrError>
         let i64_ty = m.i64_type();
         let f32_ty = m.f32_type();
         let arr_ty = m.array_type(i32_ty.as_type(), 2);
-        let init = arr_ty.const_array::<ConstantIntValue<'_, i32>, _>([
+        let init = arr_ty.const_array::<ConstantIntValue<'_, i32, _>, _>([
             i32_ty.const_int(0x3f80_0000_i32),
             i32_ty.const_int(0x4000_0000_i32),
         ])?;
@@ -691,7 +691,7 @@ fn recursive_gep_load_through_bitcast_from_global_folds() -> Result<(), IrError>
         let folded =
             constant_fold_load_from_const_ptr(gep, f32_ty.as_type(), ApInt::zero(64), &dl)?
                 .expect("GEP to i32 bits folds as a load-through-bitcast to f32");
-        let fp = ConstantFloatValue::<f32>::try_from(folded)?;
+        let fp = ConstantFloatValue::<f32, _>::try_from(folded)?;
 
         assert!(fp.ap_float().is_exactly_value_f64(2.0));
         Ok(())
@@ -766,7 +766,7 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
 
         let folded = constant_fold_instruction(&instruction, &dl, None)?
             .expect("f32 denormal inputs fold after f32 attribute flush");
-        let fp = ConstantFloatValue::<f32>::try_from(folded)?;
+        let fp = ConstantFloatValue::<f32, _>::try_from(folded)?;
 
         assert!(fp.ap_float().is_pos_zero());
         Ok(())
@@ -808,7 +808,7 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
 
         let folded = constant_fold_instruction(&instruction, &dl, None)?
             .expect("f32 denormal inputs fold after attribute-group f32 flush");
-        let fp = ConstantFloatValue::<f32>::try_from(folded)?;
+        let fp = ConstantFloatValue::<f32, _>::try_from(folded)?;
 
         assert!(fp.ap_float().is_pos_zero());
         Ok(())
@@ -864,7 +864,7 @@ fn determinism_deny_declines_host_libm_but_keeps_apfloat_sqrt() -> Result<(), Ir
             FoldNonDeterminism::Deny,
         )?
         .expect("APFloat-native sqrt folds even when host libm folds are denied");
-        let fp = ConstantFloatValue::<f64>::try_from(folded)?;
+        let fp = ConstantFloatValue::<f64, _>::try_from(folded)?;
 
         assert!(fp.ap_float().is_exactly_value_f64(2.0));
         Ok(())
@@ -915,7 +915,7 @@ fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
             FoldNonDeterminism::Allow,
         )?
         .expect("the same nsz FP op still folds when non-determinism is allowed");
-        let fp = ConstantFloatValue::<f32>::try_from(folded)?;
+        let fp = ConstantFloatValue::<f32, _>::try_from(folded)?;
 
         assert!(fp.ap_float().is_exactly_value_f64(3.0));
         Ok(())

@@ -3197,8 +3197,8 @@ mod tests {
 
     /// Append a fabricated instruction to a block, bypassing the
     /// IRBuilder's typestate. Returns the new instruction's value id.
-    fn fabricate_instruction(
-        m: &Module<'_>,
+    fn fabricate_instruction<B: crate::ModuleBrand>(
+        m: &Module<'_, B>,
         bb_id: ValueSlot,
         result_ty: TypeSlot,
         kind: InstructionKindData,
@@ -3215,7 +3215,11 @@ mod tests {
     }
 
     /// Push a fresh constant-int value of the given type.
-    fn fab_const_int_id(m: &Module<'_>, ty: TypeSlot, value: u64) -> ValueSlot {
+    fn fab_const_int_id<B: crate::ModuleBrand>(
+        m: &Module<'_, B>,
+        ty: TypeSlot,
+        value: u64,
+    ) -> ValueSlot {
         let m = m.core_ref();
         m.context().push_value(ValueData {
             ty,
@@ -3227,7 +3231,7 @@ mod tests {
     }
 
     /// Push a fresh `ptr null` value.
-    fn fab_null_ptr_id(m: &Module<'_>, ptr_ty: TypeSlot) -> ValueSlot {
+    fn fab_null_ptr_id<B: crate::ModuleBrand>(m: &Module<'_, B>, ptr_ty: TypeSlot) -> ValueSlot {
         let m = m.core_ref();
         m.context().push_value(ValueData {
             ty: ptr_ty,
@@ -3237,10 +3241,10 @@ mod tests {
             use_list: core::cell::RefCell::new(Vec::new()),
         })
     }
-    fn skeleton<'ctx>(
-        m: &Module<'ctx>,
-        ret_ty: crate::Type<'ctx>,
-        params: &[crate::Type<'ctx>],
+    fn skeleton<'ctx, B: crate::ModuleBrand + 'ctx>(
+        m: &Module<'ctx, B>,
+        ret_ty: crate::Type<'ctx, B>,
+        params: &[crate::Type<'ctx, B>],
         name: &str,
     ) -> (ValueSlot, ValueSlot) {
         let fn_ty = m.fn_type(ret_ty, params.iter().copied(), false);
@@ -3256,7 +3260,7 @@ mod tests {
     }
 
     /// Append a `ret void` to a block via direct fabrication.
-    fn append_ret_void(m: &Module<'_>, bb_id: ValueSlot) {
+    fn append_ret_void<B: crate::ModuleBrand>(m: &Module<'_, B>, bb_id: ValueSlot) {
         fabricate_instruction(
             m,
             bb_id,
@@ -3363,7 +3367,7 @@ mod tests {
             let i64_ty = m.i64_type().as_type();
             let void_ty = m.void_type().as_type();
             let (f_id, bb_id) = skeleton(&m, void_ty, &[i32_ty, i64_ty], "f");
-            let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
+            let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
             let p0 = f.param(0).unwrap();
             let p1 = f.param(1).unwrap();
             fabricate_instruction(
@@ -3386,7 +3390,7 @@ mod tests {
             let void_ty = m.void_type().as_type();
             let i32_ty = m.i32_type().as_type();
             let (f_id, entry_id) = skeleton(&m, void_ty, &[i32_ty], "f");
-            let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
+            let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
             let then_bb = f.append_basic_block(&m, "then");
             let else_bb = f.append_basic_block(&m, "else");
             append_ret_void(&m, then_bb.slot());
@@ -3431,7 +3435,7 @@ mod tests {
             let i32_ty = m.i32_type().as_type();
             let void_ty = m.void_type().as_type();
             let (f_id, entry_id) = skeleton(&m, void_ty, &[i32_ty, i32_ty], "f");
-            let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
+            let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
             let p0 = f.param(0).unwrap();
             let p1 = f.param(1).unwrap();
             fabricate_instruction(
@@ -3537,7 +3541,7 @@ mod tests {
             let void_ty = m.void_type().as_type();
             let tptr_ty = m.typed_pointer_type(i32_ty, 0).as_type();
             let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
-            let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
+            let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
             let dead = f.append_basic_block(&m, "dead");
             let dead_id = dead.slot();
             fabricate_instruction(
@@ -3562,7 +3566,7 @@ mod tests {
             let i32_ty = m.i32_type().as_type();
             let void_ty = m.void_type().as_type();
             let (f_id, entry_id) = skeleton(&m, void_ty, &[i1_ty], "f");
-            let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
+            let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
             let target = f.append_basic_block(&m, "target");
             let cond_id = IsValue::slot(f.param(0).unwrap());
             fabricate_instruction(
@@ -3605,7 +3609,7 @@ mod tests {
             let i32_ty = m.i32_type().as_type();
             let void_ty = m.void_type().as_type();
             let (f_id, entry_id) = skeleton(&m, void_ty, &[], "f");
-            let f = FunctionValue::<'_, Dyn>::from_parts_unchecked(f_id, m.as_view());
+            let f = FunctionValue::<'_, Dyn, _>::from_parts_unchecked(f_id, m.as_view());
             let target = f.append_basic_block(&m, "target");
             let unrelated = f.append_basic_block(&m, "unrelated");
             fabricate_instruction(

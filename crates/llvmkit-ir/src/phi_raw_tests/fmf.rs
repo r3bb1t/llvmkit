@@ -148,8 +148,8 @@ fn pointer_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError>
         let a_label = a.id();
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let phi = b.view(b.build_pointer_phi("p")?);
-        let p1: PointerValue = m.view(f).param(0)?.try_into()?;
-        let p2: PointerValue = m.view(f).param(1)?.try_into()?;
+        let p1: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+        let p2: PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
         // Two distinct params are two distinct SSA values, so the two edges
         // from block `a` differ: the guard fires.
         let err = phi

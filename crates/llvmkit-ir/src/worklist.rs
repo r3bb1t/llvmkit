@@ -152,7 +152,7 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
             let a = b.build_int_add(x, 1_i32, "a")?;
             let c = b.build_int_add(x, 2_i32, "c")?;
             b.build_ret(x)?;
@@ -188,7 +188,7 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
             let a = b.build_int_add(x, 1_i32, "a")?;
             let c = b.build_int_add(x, 2_i32, "c")?;
             b.build_ret(x)?;
@@ -218,7 +218,7 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
             let a = b.build_int_add(x, 1_i32, "a")?;
             b.build_ret(x)?;
 
@@ -264,7 +264,7 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
             let a = b.build_int_add(x, 1_i32, "a")?;
             b.build_ret(x)?;
 

@@ -2515,7 +2515,7 @@ mod tests {
                     )
                 });
                 if !id.is_overloaded() {
-                    let descriptor = IntrinsicDescriptor::new(id, Vec::<Type>::new())
+                    let descriptor = IntrinsicDescriptor::new(id, Vec::<Type<'_, _>>::new())
                         .unwrap_or_else(|err| {
                             panic!("{}#{} descriptor failed: {err}", id.enum_name(), id.raw())
                         });
@@ -2553,7 +2553,7 @@ mod tests {
                 );
 
                 if !id.is_overloaded() {
-                    let descriptor = IntrinsicDescriptor::new(id, Vec::<Type>::new())
+                    let descriptor = IntrinsicDescriptor::new(id, Vec::<Type<'_, _>>::new())
                         .unwrap_or_else(|err| {
                             panic!("{}#{} descriptor failed: {err}", id.enum_name(), id.raw())
                         });

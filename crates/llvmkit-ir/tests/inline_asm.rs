@@ -127,7 +127,7 @@ fn inline_asm_multiline_escapes_newline() -> Result<(), IrError> {
             llvmkit_ir::InlineAsmOptions::new().side_effects(true),
         );
 
-        b.build_inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value>::new(), "")?;
+        b.build_inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value<'_, _>>::new(), "")?;
         b.build_ret_void()?;
 
         let text = format!("{m}");
@@ -162,12 +162,16 @@ fn indirect_call_rejects_wrong_return_marker() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let callee_ptr =
             llvmkit_ir::PointerValue::try_from(m.view(host).param(0).expect("callee ptr"))?;
-        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let callee_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let err = b
             .build_indirect_call_dyn::<i64, _, _, _, _>(
                 callee_ty,
                 callee_ptr,
-                Vec::<llvmkit_ir::Value>::new(),
+                Vec::<llvmkit_ir::Value<'_, _>>::new(),
                 "bad",
             )
             .expect_err("void function type cannot produce i64 call marker");
@@ -191,7 +195,7 @@ fn inline_asm_call_rejects_label_constraint() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let asm_ty = m.fn_type_no_params(void_ty.as_type(), false);
         let asm = m.inline_asm(asm_ty, "", "!i", llvmkit_ir::InlineAsmOptions::new());
-        b.build_inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value>::new(), "")?;
+        b.build_inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value<'_, _>>::new(), "")?;
         b.build_ret_void()?;
         let err = m
             .verify_borrowed()

@@ -273,11 +273,12 @@ fn try_from_narrows_correctly() {
     Module::with_new("t", |m| {
         let i32_handle = m.i32_type();
         let erased = i32_handle.as_type();
-        let narrowed: IntType<IntDyn> = IntType::try_from(erased).expect("i32 narrows to IntType");
+        let narrowed: IntType<'_, IntDyn, _> =
+            IntType::try_from(erased).expect("i32 narrows to IntType");
         assert_eq!(narrowed.bit_width(), 32);
 
         let void = m.void_type().as_type();
-        let err = IntType::<IntDyn>::try_from(void).expect_err("void must not narrow");
+        let err = IntType::<IntDyn, _>::try_from(void).expect_err("void must not narrow");
         assert!(matches!(
             err,
             IrError::TypeMismatch {
@@ -330,9 +331,9 @@ fn any_type_enum_widens_every_kind() {
         let i32 = m.i32_type();
         let arr = m.array_type(i32, 2);
 
-        let any: AnyTypeEnum = m.void_type().as_type().into();
+        let any: AnyTypeEnum<'_, _> = m.void_type().as_type().into();
         assert!(matches!(any, AnyTypeEnum::Void(_)));
-        let any: AnyTypeEnum = arr.as_type().into();
+        let any: AnyTypeEnum<'_, _> = arr.as_type().into();
         assert!(matches!(any, AnyTypeEnum::Array(_)));
     })
 }
@@ -353,7 +354,7 @@ fn handles_implement_hash_and_eq_via_derive() {
         let a = m.i32_type();
         let b = m.i32_type();
         assert_eq!(a, b);
-        let hash = |t: IntType<i32>| {
+        let hash = |t: IntType<'_, i32, _>| {
             let mut h = DefaultHasher::new();
             t.hash(&mut h);
             h.finish()
@@ -388,7 +389,9 @@ fn ir_type_trait_unifies_handles() {
         fn name<T>(_: T) -> &'static str {
             std::any::type_name::<T>()
         }
-        fn _accepts_any<'ctx, T: IrType<'ctx>>(t: T) -> Type<'ctx> {
+        fn _accepts_any<'ctx, B: llvmkit_ir::ModuleBrand, T: IrType<'ctx, B>>(
+            t: T,
+        ) -> Type<'ctx, B> {
             t.as_type()
         }
 

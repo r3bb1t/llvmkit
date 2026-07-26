@@ -1921,8 +1921,8 @@ mod tests {
     use crate::module::Module;
     use crate::value::IsValue;
 
-    fn fabricate_instruction(
-        m: &Module<'_>,
+    fn fabricate_instruction<B: ModuleBrand>(
+        m: &Module<'_, B>,
         bb_id: ValueSlot,
         result_ty: TypeSlot,
         kind: InstructionKindData,
@@ -1937,7 +1937,11 @@ mod tests {
         id
     }
 
-    fn fabricated_value<'ctx>(m: &Module<'ctx>, id: ValueSlot, ty: TypeSlot) -> Value<'ctx> {
+    fn fabricated_value<'ctx, B: ModuleBrand + 'ctx>(
+        m: &Module<'ctx, B>,
+        id: ValueSlot,
+        ty: TypeSlot,
+    ) -> Value<'ctx, B> {
         Value::from_parts(id, ModuleRef::new(m.core_ref()), ty)
     }
 

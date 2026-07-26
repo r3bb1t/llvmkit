@@ -20,10 +20,18 @@ use llvmkit_ir::{
 fn invoke_void_to_unwind() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
-        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let callee_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let callee = m.add_function_dyn("f.fastcc", callee_ty, Linkage::External)?;
         m.view(callee).set_calling_conv(&m, CallingConv::FAST);
-        let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let caller_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let caller =
             m.add_function_dyn("instructions.terminators", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
@@ -42,7 +50,7 @@ fn invoke_void_to_unwind() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let _ = b.build_invoke_dyn_with_config(
             m.view(callee),
-            Vec::<llvmkit_ir::Value>::new(),
+            Vec::<llvmkit_ir::Value<'_, _>>::new(),
             normal_label,
             unwind_label,
             CallSiteConfig::new("").calling_conv(CallingConv::FAST),
@@ -85,7 +93,7 @@ fn typed_invoke_derives_return_marker_from_callee() -> Result<(), IrError> {
             b.build_invoke(m.view(callee), (), normal_label, unwind_label, "iv")?;
         // The invoke's marker is already `i32` (derived from the callee),
         // so this infallible-in-practice narrowing never errors.
-        let result: IntValue<i32> = invoke.to_erased().try_into()?;
+        let result: IntValue<'_, i32, _> = invoke.to_erased().try_into()?;
         let bn = IRBuilder::new_for::<i32>(&m).position_at_end(normal);
         bn.build_ret(result)?;
         let text = format!("{m}");
@@ -128,7 +136,7 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
             bb_b.build_ret_void()?;
         }
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let c: llvmkit_ir::IntValue<bool> = m.view(caller).param(0)?.try_into()?;
+        let c: llvmkit_ir::IntValue<'_, bool, _> = m.view(caller).param(0)?.try_into()?;
         let _ = b.build_callbr(callee, [c.into_erased()], cont_label, [kill_label], "")?;
         let text = format!("{m}");
         assert!(
@@ -153,14 +161,22 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
 fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
-        let asm_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let asm_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let asm = m.inline_asm(
             asm_ty,
             "",
             "~{flags},!i",
             InlineAsmOptions::new().side_effects(true),
         );
-        let caller_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let caller_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let caller = m.add_function_dyn("foo", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let bb1 = m.view(caller).append_basic_block(&m, "1");
@@ -174,7 +190,7 @@ fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let _ = b.build_inline_asm_callbr::<(), _, _, _, _, _, _>(
             asm,
-            Vec::<llvmkit_ir::Value>::new(),
+            Vec::<llvmkit_ir::Value<'_, _>>::new(),
             bb1_label,
             [bb2_label],
             "",

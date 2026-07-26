@@ -9,7 +9,7 @@
 //! from vectors only in the `u64` length and the `ArrLen`/`ArrLenDyn` markers;
 //! unlike vectors, a zero-length array `[0 x T]` is legal.
 
-use llvmkit_ir::{ArrLen, ArrayType, ArrayValue, IrError, Module};
+use llvmkit_ir::{ArrLen, ArrLenDyn, ArrayType, ArrayValue, ElemDyn, IrError, Module};
 
 /// `array_type_n::<i32, 4>()` prints as the canonical `[4 x i32]`, its
 /// type-level `static_len()` reports the const-generic parameter, and the
@@ -25,7 +25,8 @@ fn array_type_n_constructor_prints_and_round_trips() {
         assert!(!at.is_empty());
 
         // Erased `TryFrom<Type>` still yields the fully dynamic form.
-        let erased: ArrayType<'_> = ArrayType::try_from(at.as_type()).unwrap();
+        let erased: ArrayType<'_, ElemDyn, ArrLenDyn, _> =
+            ArrayType::try_from(at.as_type()).unwrap();
         assert_eq!(erased.static_len(), None);
         assert_eq!(erased.len(), 4);
     })
@@ -52,12 +53,12 @@ fn value_narrows_to_matching_typed_array() {
         let at = m.array_type_n::<i32, 4>();
         let v = at.as_type().get_poison().into_erased();
 
-        let typed: ArrayValue<'_, i32, ArrLen<4>> = v.try_into().expect("[4 x i32] narrows");
+        let typed: ArrayValue<'_, i32, ArrLen<4>, _> = v.try_into().expect("[4 x i32] narrows");
         assert_eq!(format!("{}", typed.ty().as_type()), "[4 x i32]");
         assert_eq!(typed.ty().static_len(), Some(4));
 
         // Static -> Dyn widening.
-        let erased: ArrayValue<'_> = typed.into();
+        let erased: ArrayValue<'_, ElemDyn, ArrLenDyn, _> = typed.into();
         assert_eq!(erased.ty().len(), 4);
     })
 }
@@ -70,7 +71,7 @@ fn wrong_element_count_is_rejected() {
         let i32_ty = m.i32_type();
         let v = m.array_type(i32_ty, 2).as_type().get_poison().into_erased();
 
-        let err = ArrayValue::<i32, ArrLen<4>>::try_from(v)
+        let err = ArrayValue::<i32, ArrLen<4>, _>::try_from(v)
             .expect_err("[2 x i32] must not narrow to ArrLen<4>");
         assert_eq!(
             err,
@@ -90,7 +91,7 @@ fn wrong_element_type_is_rejected() {
         let i64_ty = m.i64_type();
         let v = m.array_type(i64_ty, 4).as_type().get_poison().into_erased();
 
-        let err = ArrayValue::<i32, ArrLen<4>>::try_from(v)
+        let err = ArrayValue::<i32, ArrLen<4>, _>::try_from(v)
             .expect_err("[4 x i64] must not narrow to <i32, ArrLen<4>>");
         assert!(
             matches!(err, IrError::TypeMismatch { .. }),
@@ -107,7 +108,8 @@ fn erased_narrowing_accepts_any_array() {
         let i64_ty = m.i64_type();
         let v = m.array_type(i64_ty, 3).as_type().get_poison().into_erased();
 
-        let erased: ArrayValue<'_> = v.try_into().expect("any array narrows to the dyn form");
+        let erased: ArrayValue<'_, ElemDyn, ArrLenDyn, _> =
+            v.try_into().expect("any array narrows to the dyn form");
         assert_eq!(erased.ty().len(), 3);
         assert_eq!(erased.ty().static_len(), None);
     })

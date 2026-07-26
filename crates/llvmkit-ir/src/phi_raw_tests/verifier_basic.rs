@@ -26,7 +26,7 @@ fn verify_phi_predecessors_through_switch_passes() -> Result<(), IrError> {
         let entry_label = entry.id();
         let join_label = join.id();
 
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let (_sealed, switch) = IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_switch_dyn(x, join_label, "")?;
@@ -59,7 +59,7 @@ fn verify_phi_predecessors_through_switch_rejects_missing_edge() -> Result<(), I
         let entry_label = entry.id();
         let join_label = join.id();
 
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let (_sealed, switch) = IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_switch_dyn(x, join_label, "")?;
@@ -97,7 +97,7 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
     Module::with_new::<_, _, _>("phi_invoke_ok", |m| {
         let i32_ty = m.i32_type();
         let void_ty = m.void_type();
-        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<crate::Type>::new(), false);
+        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new(), false);
         let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
@@ -107,13 +107,13 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
         let entry_label = entry.id();
         let join_label = join.id();
         let unwind_label = unwind.id();
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_invoke_dyn(
                 m.view(callee),
-                Vec::<crate::Value>::new(),
+                Vec::<crate::Value<'_, _>>::new(),
                 join_label,
                 unwind_label,
                 "",
@@ -140,7 +140,7 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
     Module::with_new::<_, _, _>("phi_invoke_bad", |m| {
         let i32_ty = m.i32_type();
         let void_ty = m.void_type();
-        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<crate::Type>::new(), false);
+        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new(), false);
         let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
@@ -151,13 +151,13 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
         let join_label = join.id();
         let unwind_label = unwind.id();
         let other_label = other.id();
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_invoke_dyn(
                 m.view(callee),
-                Vec::<crate::Value>::new(),
+                Vec::<crate::Value<'_, _>>::new(),
                 join_label,
                 unwind_label,
                 "",
@@ -199,7 +199,7 @@ fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
     Module::with_new::<_, _, _>("phi_callbr_ok", |m| {
         let i32_ty = m.i32_type();
         let void_ty = m.void_type();
-        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<crate::Type>::new(), false);
+        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new(), false);
         let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
@@ -207,13 +207,13 @@ fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
         let join = m.view(f).append_basic_block(&m, "join");
         let entry_label = entry.id();
         let join_label = join.id();
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_callbr(
                 callee,
-                Vec::<crate::Value>::new(),
+                Vec::<crate::Value<'_, _>>::new(),
                 join_label,
                 [join_label],
                 "",
@@ -238,7 +238,7 @@ fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), I
     Module::with_new::<_, _, _>("phi_callbr_bad", |m| {
         let i32_ty = m.i32_type();
         let void_ty = m.void_type();
-        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<crate::Type>::new(), false);
+        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new(), false);
         let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
@@ -246,13 +246,13 @@ fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), I
         let join = m.view(f).append_basic_block(&m, "join");
         let entry_label = entry.id();
         let join_label = join.id();
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_callbr(
                 callee,
-                Vec::<crate::Value>::new(),
+                Vec::<crate::Value<'_, _>>::new(),
                 join_label,
                 [join_label],
                 "",
@@ -298,8 +298,8 @@ fn verify_phi_incoming_edge_dominance_fails() -> Result<(), IrError> {
         let then_label = then_bb.id();
         let else_label = else_bb.id();
         let join_label = join.id();
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let cond: IntValue<bool> = m.view(f).param(1)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let cond: IntValue<'_, bool, _> = m.view(f).param(1)?.try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)

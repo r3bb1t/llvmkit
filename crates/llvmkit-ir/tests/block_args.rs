@@ -92,13 +92,13 @@ fn block_args_br_round_trips_and_verifies() -> Result<(), IrError> {
 
         // entry: %x = add i32 %a, 1 ; br %hdr(%x)
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let x = b.build_int_add(a, 1_i32, "x")?;
         b.build_br_with_args(hdr_label, &[m.view(x).into_erased()])?;
 
         // hdr: ret %p (the head-phi param carrying the branch argument).
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(hdr);
-        let p: IntValue<i32> = params[0].try_into()?;
+        let p: IntValue<'_, i32, _> = params[0].try_into()?;
         b.build_ret(p)?;
 
         // The head-phi records `[ %x, %entry ]`. The param-phi is unnamed
@@ -139,25 +139,25 @@ fn block_args_cond_br_diamond_verifies() -> Result<(), IrError> {
 
         // entry: br (%a == 0) ? then : else
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
         b.build_cond_br(cond, &then_bb, &else_bb)?;
 
         // then: %vt = add %a, 10 ; br merge(%vt)
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let vt = b.build_int_add(a, 10_i32, "vt")?;
         b.build_br_with_args(merge_label, &[m.view(vt).into_erased()])?;
 
         // else: %ve = add %a, 20 ; br merge(%ve)
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let ve = b.build_int_add(a, 20_i32, "ve")?;
         b.build_br_with_args(merge_label, &[m.view(ve).into_erased()])?;
 
         // merge: ret %p
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(merge);
-        let p: IntValue<i32> = params[0].try_into()?;
+        let p: IntValue<'_, i32, _> = params[0].try_into()?;
         b.build_ret(p)?;
 
         // Both incomings are present on the merge head-phi.
@@ -200,7 +200,7 @@ fn block_args_cond_br_with_args_carries_both_edges() -> Result<(), IrError> {
         // entry: %x = add %a, 1 ; %y = add %a, 2 ;
         //        br (%a == 0) ? then(%x) : else(%y)
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let x = b.build_int_add(a, 1_i32, "x")?;
         let y = b.build_int_add(a, 2_i32, "y")?;
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
@@ -214,12 +214,12 @@ fn block_args_cond_br_with_args_carries_both_edges() -> Result<(), IrError> {
 
         // then: ret %pt
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
-        let pt: IntValue<i32> = then_params[0].try_into()?;
+        let pt: IntValue<'_, i32, _> = then_params[0].try_into()?;
         b.build_ret(pt)?;
 
         // else: ret %pe
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
-        let pe: IntValue<i32> = else_params[0].try_into()?;
+        let pe: IntValue<'_, i32, _> = else_params[0].try_into()?;
         b.build_ret(pe)?;
 
         let text = format!("{m}");
@@ -330,7 +330,7 @@ fn append_block_with_named_params_names_head_phis() -> Result<(), IrError> {
 
         // hdr: ret %acc.
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(hdr);
-        let acc: IntValue<i32> = params[0].try_into()?;
+        let acc: IntValue<'_, i32, _> = params[0].try_into()?;
         b.build_ret(acc)?;
 
         let text = format!("{m}");

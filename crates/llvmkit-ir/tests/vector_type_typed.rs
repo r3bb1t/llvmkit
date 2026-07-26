@@ -8,7 +8,7 @@
 //! lane count both agree. The erased `VectorType<'ctx>` / `VectorValue<'ctx>`
 //! forms keep working via the `Dyn` defaults.
 
-use llvmkit_ir::{IrError, Len, Module, VectorType, VectorValue};
+use llvmkit_ir::{ElemDyn, IrError, Len, LenDyn, Module, VectorType, VectorValue};
 
 /// `vector_type_n::<i32, 4>()` prints as the canonical `<4 x i32>`, its
 /// type-level `static_len()` reports the const-generic parameter, and the
@@ -24,7 +24,8 @@ fn vector_type_n_constructor_prints_and_round_trips() {
         assert!(!vt.is_scalable());
 
         // Erased `TryFrom<Type>` still yields the fully dynamic form.
-        let erased: VectorType<'_> = VectorType::try_from(vt.as_type()).unwrap();
+        let erased: VectorType<'_, ElemDyn, LenDyn, _> =
+            VectorType::try_from(vt.as_type()).unwrap();
         assert_eq!(erased.static_len(), None);
         assert_eq!(erased.min_len(), 4);
     })
@@ -39,12 +40,12 @@ fn value_narrows_to_matching_typed_vector() {
         let vt = m.vector_type_n::<i32, 4>();
         let v = vt.as_type().get_poison().into_erased();
 
-        let typed: VectorValue<'_, i32, Len<4>> = v.try_into().expect("<4 x i32> narrows");
+        let typed: VectorValue<'_, i32, Len<4>, _> = v.try_into().expect("<4 x i32> narrows");
         assert_eq!(format!("{}", typed.ty().as_type()), "<4 x i32>");
         assert_eq!(typed.ty().static_len(), Some(4));
 
         // Static -> Dyn widening.
-        let erased: VectorValue<'_> = typed.into();
+        let erased: VectorValue<'_, ElemDyn, LenDyn, _> = typed.into();
         assert_eq!(erased.ty().min_len(), 4);
     })
 }
@@ -61,7 +62,7 @@ fn wrong_lane_count_is_rejected() {
             .get_poison()
             .into_erased();
 
-        let err = VectorValue::<i32, Len<4>>::try_from(v)
+        let err = VectorValue::<i32, Len<4>, _>::try_from(v)
             .expect_err("<2 x i32> must not narrow to Len<4>");
         assert_eq!(err, IrError::OperandWidthMismatch { lhs: 4, rhs: 2 });
     })
@@ -79,7 +80,7 @@ fn wrong_element_type_is_rejected() {
             .get_poison()
             .into_erased();
 
-        let err = VectorValue::<i32, Len<4>>::try_from(v)
+        let err = VectorValue::<i32, Len<4>, _>::try_from(v)
             .expect_err("<4 x i64> must not narrow to <i32, Len<4>>");
         assert!(
             matches!(err, IrError::TypeMismatch { .. }),
@@ -100,7 +101,8 @@ fn erased_narrowing_accepts_any_vector() {
             .get_poison()
             .into_erased();
 
-        let erased: VectorValue<'_> = v.try_into().expect("any vector narrows to the dyn form");
+        let erased: VectorValue<'_, ElemDyn, LenDyn, _> =
+            v.try_into().expect("any vector narrows to the dyn form");
         assert_eq!(erased.ty().min_len(), 3);
         assert_eq!(erased.ty().static_len(), None);
     })

@@ -62,13 +62,13 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
         let write = m.get_or_insert_intrinsic_declaration_by_name("llvm.write_register.i64")?;
 
         // define i64 @get_sp() { %rsp = call ...; call void ...; ret i64 %rsp }
-        let host_ty = m.fn_type(i64_ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let host_ty = m.fn_type(i64_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
         let host = m.add_function_dyn("get_sp", host_ty, Linkage::External)?;
         let entry = m.view(host).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let rsp = b.build_call_dyn(read, [md], "rsp")?;
-        let rsp_val: llvmkit_ir::IntValue<i64> = b
+        let rsp_val: llvmkit_ir::IntValue<'_, i64, _> = b
             .view(rsp)
             .return_value()
             .expect("read_register returns value")
@@ -122,7 +122,11 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
 fn post_construction_function_attributes() -> Result<(), IrError> {
     Module::with_new("attrs", |m| {
         let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
 
         // Forward declaration via `add_function_dyn` (no builder).
         let f = m.add_function_dyn("trampoline", fn_ty, Linkage::External)?;
@@ -183,7 +187,11 @@ fn metadata_string_as_value_prints_inline() -> Result<(), IrError> {
         let md_ty = m.metadata_type();
         let fn_ty = m.fn_type(void_ty.as_type(), [md_ty.as_type()], false);
         let g = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let host_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let host_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let f = m.add_function_dyn("f", host_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -246,7 +254,7 @@ fn range_metadata_on_load_verifies_and_prints() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: llvmkit_ir::PointerValue = m.view(f).param(0)?.try_into()?;
+        let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
         let ld = b.build_int_load::<i8, _, _>(p, "v")?;
         let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
         let hi = m.metadata_constant(i8_ty.const_int(0x20_u8));
@@ -274,7 +282,7 @@ fn range_metadata_rejects_odd_operand_count() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: llvmkit_ir::PointerValue = m.view(f).param(0)?.try_into()?;
+        let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
         let ld = b.build_int_load::<i8, _, _>(p, "v")?;
         let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
         let range = m.metadata_tuple([MetadataRef(lo)]);
@@ -314,7 +322,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
         let call_host = m.add_function_dyn("call_host", call_host_ty, Linkage::External)?;
         let call_entry = m.view(call_host).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(call_entry);
-        let p: llvmkit_ir::PointerValue = m.view(call_host).param(0)?.try_into()?;
+        let p: llvmkit_ir::PointerValue<'_, _> = m.view(call_host).param(0)?.try_into()?;
         let call = b.view(b.build_call_dyn(callee, [p.into_erased()], "v")?);
         call.as_view()
             .set_metadata(MetadataAttachmentKind::Range, range);
@@ -328,7 +336,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
         let unwind = m.view(invoke_host).append_basic_block(&m, "unwind");
         let normal_label = normal.id();
         let unwind_label = unwind.id();
-        let p: llvmkit_ir::PointerValue = m.view(invoke_host).param(0)?.try_into()?;
+        let p: llvmkit_ir::PointerValue<'_, _> = m.view(invoke_host).param(0)?.try_into()?;
         let (_entry, invoke) = IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_invoke_dyn(
@@ -341,7 +349,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
         invoke
             .as_view()
             .set_metadata(MetadataAttachmentKind::Range, range);
-        let invoke_value: llvmkit_ir::IntValue<i8> = invoke.to_erased().try_into()?;
+        let invoke_value: llvmkit_ir::IntValue<'_, i8, _> = invoke.to_erased().try_into()?;
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(normal)
             .build_ret(invoke_value)?;
@@ -359,7 +367,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
 fn range_metadata_rejects_non_load_call_invoke_user() -> Result<(), IrError> {
     Module::with_new("range_bad_user", |m| {
         let i8_ty = m.i8_type();
-        let fn_ty = m.fn_type(i8_ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(i8_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);

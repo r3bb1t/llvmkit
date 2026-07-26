@@ -89,7 +89,7 @@ impl<B: ModuleBrand> FunctionPass<B> for ReportFunctionPass {
     }
 }
 
-pub fn build(m: &Module<'_>) -> Result<(), IrError> {
+pub fn build<B: ModuleBrand>(m: &Module<'_, B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let f = m.add_typed_function::<i32, (bool, i32, i32), _>("select_or_add", Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
@@ -119,14 +119,14 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let bm = IRBuilder::at_end(merge);
     // `params[0]` is `merge`'s head-phi, seeded with `[ %add_xy, %then ]` and
     // `[ %sub_xy, %else ]` by the two block-argument branches above.
-    let result: IntValue<i32> = params[0].try_into()?;
+    let result: IntValue<'_, i32, _> = params[0].try_into()?;
     let is_zero = bm.build_int_cmp(IntPredicate::Eq, result, 0_i32, "is_zero")?;
     let selected = bm.build_select(is_zero, x, result, "selected")?;
     bm.build_ret(selected)?;
     Ok(())
 }
 
-pub fn run_demo(m: Module<'_>) -> Result<(String, String, String), IrError> {
+pub fn run_demo<B: ModuleBrand>(m: Module<'_, B>) -> Result<(String, String, String), IrError> {
     let function = m
         .function_by_name_dyn("select_or_add")
         .expect("demo function is present");

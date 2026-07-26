@@ -41,8 +41,8 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let lhs: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let rhs: IntValue<i32> = m.view(f).param(1)?.try_into()?;
+        let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
         let sum = b.build_int_add(lhs, rhs, "sum")?;
         let (entry, _) = b.build_ret(sum)?;
 
@@ -67,8 +67,8 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
         assert_eq!(returned.ty(), m.view(sum).ty().as_type());
 
         // The `add` instruction's operands are the function's two args.
-        let arg0: Argument = m.view(f).param(0)?;
-        let arg1: Argument = m.view(f).param(1)?;
+        let arg0: Argument<'_, _> = m.view(f).param(0)?;
+        let arg1: Argument<'_, _> = m.view(f).param(1)?;
         let add_kind = m.view(sum).into_erased().name();
         assert_eq!(add_kind.as_deref(), Some("sum"));
         let _ = arg0;
@@ -93,8 +93,8 @@ fn mismatched_widths_error_at_runtime_when_dyn() -> Result<(), IrError> {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         // Static narrowing rejects the i64 arg as an i32-typed IntValue.
-        let _a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let err: Result<IntValue<i32>, IrError> = m.view(f).param(1)?.try_into();
+        let _a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let err: Result<IntValue<'_, i32, _>, IrError> = m.view(f).param(1)?.try_into();
         assert!(matches!(
             err,
             Err(IrError::OperandWidthMismatch { lhs: 32, rhs: 64 })
@@ -123,7 +123,7 @@ fn const_int_interns() -> Result<(), IrError> {
 
         // Same value, different type: distinct handles.
         let i64_ty = m.i64_type();
-        let d: llvmkit_ir::ConstantIntValue<i64> = i64_ty.const_int(42_i64);
+        let d: llvmkit_ir::ConstantIntValue<'_, i64, _> = i64_ty.const_int(42_i64);
         assert_ne!(a.into_erased().ty(), d.into_erased().ty());
         Ok(())
     })
@@ -140,7 +140,7 @@ fn argument_to_int_value_narrowing_validates_type() -> Result<(), IrError> {
         let fn_ty = m.fn_type(void.as_type(), [f64_ty.as_type()], false);
         let f = m.add_function_dyn("takes_double", fn_ty, Linkage::External)?;
         let arg = m.view(f).param(0)?;
-        let err: Result<IntValue<i32>, IrError> = IntValue::try_from(arg);
+        let err: Result<IntValue<'_, i32, _>, IrError> = IntValue::try_from(arg);
         assert!(matches!(err, Err(IrError::TypeMismatch { .. })));
         Ok(())
     })
@@ -153,7 +153,7 @@ fn argument_to_int_value_narrowing_validates_type() -> Result<(), IrError> {
 fn duplicate_function_name_errors() -> Result<(), IrError> {
     Module::with_new("demo", |m| {
         let void = m.void_type();
-        let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
         let _ = m.add_function_dyn("once", fn_ty, Linkage::External)?;
         let err = m
             .add_function_dyn("once", fn_ty, Linkage::External)
@@ -171,7 +171,7 @@ fn function_builder_chains_options() -> Result<(), IrError> {
     Module::with_new("demo", |m| {
         use llvmkit_ir::{AttrIndex, AttrKind, Attribute, CallingConv};
         let void = m.void_type();
-        let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
         let f = m
             .function_builder::<(), _>("worker", fn_ty)
             .linkage(Linkage::Internal)

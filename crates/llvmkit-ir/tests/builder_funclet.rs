@@ -17,7 +17,11 @@ use llvmkit_ir::{Dyn, IRBuilder, IrError, Linkage, Module};
 fn catchswitch_within_none_unwind_to_caller() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let f = m.add_function_dyn("instructions.funclets", fn_ty, Linkage::External)?;
         let cs1_block = m.view(f).append_basic_block(&m, "catchswitch1");
         let cp1_block = m.view(f).append_basic_block(&m, "catchpad1");
@@ -45,7 +49,11 @@ fn catchswitch_within_none_unwind_to_caller() -> Result<(), IrError> {
 fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let cs_block = m.view(f).append_basic_block(&m, "cs");
         let cp_block = m.view(f).append_basic_block(&m, "cp");
@@ -60,7 +68,8 @@ fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
         let cs_closed = cs.add_handler(cp_label)?.finish();
         let cs_value = cs_closed.to_erased();
         let b_cp = IRBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
-        let _cp = b_cp.build_catch_pad(cs_value, Vec::<llvmkit_ir::value::Value>::new(), "")?;
+        let _cp =
+            b_cp.build_catch_pad(cs_value, Vec::<llvmkit_ir::value::Value<'_, _>>::new(), "")?;
         b_cp.build_unreachable();
         let text = format!("{m}");
         assert!(text.contains("catchpad within %cs1 []"), "got:\n{text}");
@@ -78,12 +87,18 @@ fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
 fn cleanuppad_within_none_empty_args() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let _ =
-            b.build_cleanup_pad_within_none(Vec::<llvmkit_ir::value::Value>::new(), "clean.1")?;
+        let _ = b.build_cleanup_pad_within_none(
+            Vec::<llvmkit_ir::value::Value<'_, _>>::new(),
+            "clean.1",
+        )?;
         b.build_unreachable();
         let text = format!("{m}");
         assert!(
@@ -101,12 +116,18 @@ fn cleanuppad_within_none_empty_args() -> Result<(), IrError> {
 fn cleanupret_unwind_to_caller() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let cp =
-            b.build_cleanup_pad_within_none(Vec::<llvmkit_ir::value::Value>::new(), "clean")?;
+        let cp = b.build_cleanup_pad_within_none(
+            Vec::<llvmkit_ir::value::Value<'_, _>>::new(),
+            "clean",
+        )?;
         let _ = b.build_cleanup_ret_to_caller(cp.to_erased(), "")?;
         let text = format!("{m}");
         assert!(
@@ -129,7 +150,11 @@ fn cleanupret_unwind_to_caller() -> Result<(), IrError> {
 fn catchret_to_label() -> Result<(), IrError> {
     Module::with_new("a", |m| {
         let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let cs_block = m.view(f).append_basic_block(&m, "cs_block");
         let cp_block = m.view(f).append_basic_block(&m, "cp_block");
@@ -145,7 +170,11 @@ fn catchret_to_label() -> Result<(), IrError> {
         let cs_closed = cs.add_handler(cp_label)?.finish();
         let cs_value = cs_closed.to_erased();
         let b_cp = IRBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
-        let cp = b_cp.build_catch_pad(cs_value, Vec::<llvmkit_ir::value::Value>::new(), "catch")?;
+        let cp = b_cp.build_catch_pad(
+            cs_value,
+            Vec::<llvmkit_ir::value::Value<'_, _>>::new(),
+            "catch",
+        )?;
         let _ = b_cp.build_catch_ret(cp.to_erased(), return_label, "")?;
         let text = format!("{m}");
         assert!(

@@ -4,10 +4,12 @@
 
 use llvmkit_ir::{
     BasicBlockEdge, DominatorTree, Dyn, FunctionCfg, IRBuilder, InstructionView, IntPredicate,
-    IntValue, IrError, Linkage, Module, User,
+    IntValue, IrError, Linkage, Module, ModuleBrand, User,
 };
 
-fn inst<'ctx>(v: llvmkit_ir::Value<'ctx>) -> Result<InstructionView<'ctx>, IrError> {
+fn inst<'ctx, B: ModuleBrand + 'ctx>(
+    v: llvmkit_ir::Value<'ctx, B>,
+) -> Result<InstructionView<'ctx, B>, IrError> {
     InstructionView::try_from(v)
 }
 
@@ -29,7 +31,7 @@ fn reachable_and_unreachable_block_dominance() -> Result<(), IrError> {
         let else_label = else_bb.id();
         let join_label = join.id();
         let dead_label = dead.id();
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let cond = b.build_int_cmp(IntPredicate::Eq, x, 0_i32, "cond")?;
@@ -81,7 +83,7 @@ fn same_block_instruction_order_and_unreachable_use_semantics() -> Result<(), Ir
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let dead = m.view(f).append_basic_block(&m, "dead");
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let y1 = b.build_int_add(x, 1_i32, "y1")?;
@@ -126,8 +128,8 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
         let else_bb = m.view(f).append_basic_block(&m, "else");
         let then_label = then_bb.id();
         let else_label = else_bb.id();
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let cond: IntValue<bool> = m.view(f).param(1)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let cond: IntValue<'_, bool, _> = m.view(f).param(1)?.try_into()?;
 
         // join(%p: i32): the merge head-phi. Its incomings arrive in branch
         // order — `then` carries `%y` first, then `else` carries `%x` — so the
@@ -147,7 +149,7 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(else_bb)
             .build_br_with_args(join_label, &[x.into_erased()])?;
-        let p: IntValue<i32> = params[0].try_into()?;
+        let p: IntValue<'_, i32, _> = params[0].try_into()?;
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(join)
             .build_ret(p)?;
@@ -174,7 +176,7 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
 fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrError> {
     Module::with_new("dt_invoke", |m| {
         let i32_ty = m.i32_type();
-        let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
         let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
@@ -183,18 +185,18 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
         let unwind = m.view(f).append_basic_block(&m, "unwind");
         let normal_label = normal.id();
         let unwind_label = unwind.id();
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
         let (_sealed, invoke) = IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_invoke_dyn(
                 m.view(callee),
-                Vec::<llvmkit_ir::Value>::new(),
+                Vec::<llvmkit_ir::Value<'_, _>>::new(),
                 normal_label,
                 unwind_label,
                 "iv",
             )?;
-        let invoke_value: IntValue<i32> = invoke.to_erased().try_into()?;
+        let invoke_value: IntValue<'_, i32, _> = invoke.to_erased().try_into()?;
 
         let bn = IRBuilder::new_for::<Dyn>(&m).position_at_end(normal);
         let normal_use = bn.build_int_add(invoke_value, 1_i32, "normal_use")?;
@@ -225,8 +227,8 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let cond: IntValue<bool> = m.view(f).param(1)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let cond: IntValue<'_, bool, _> = m.view(f).param(1)?.try_into()?;
 
         // join(%p: i32): both arms of the conditional branch target join (a
         // duplicate edge), each carrying the same `%x`. The head-phi therefore
@@ -246,7 +248,7 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
                 join_label,
                 &[x.into_erased()],
             )?;
-        let p: IntValue<i32> = params[0].try_into()?;
+        let p: IntValue<'_, i32, _> = params[0].try_into()?;
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(join)
             .build_ret(p)?;

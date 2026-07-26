@@ -74,13 +74,13 @@ fn build_and_empty_phi() -> IrResult<String> {
 
         // entry: %c = icmp eq %a, 0 ; br %c ? to(%a) : other()
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let c = b.build_icmp_eq(a, 0_i32, "c")?;
         b.build_cond_br_with_args(c, to_lbl, &[a.into_erased()], other_lbl, &[])?;
 
         // to: ret %p
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(to_bb);
-        let p: IntValue<i32> = to_params[0].try_into()?;
+        let p: IntValue<'_, i32, _> = to_params[0].try_into()?;
         b.build_ret(p)?;
 
         // other: ret 0

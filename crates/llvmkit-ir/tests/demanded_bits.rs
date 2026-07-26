@@ -20,8 +20,8 @@ fn demanded_bits_basic_trunc_zext_chain() -> Result<(), IrError> {
         let f = m.add_function_dyn("test_mul", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let b_arg: IntValue<i32> = m.view(f).param(1)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let b_arg: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
 
         let add = b.build_int_add::<i32, _, _, _>(a, i32_ty.const_int(5_u32), "add")?;
         let mul = b.build_int_mul::<i32, _, _, _>(add, b_arg, "mul")?;
@@ -85,10 +85,10 @@ fn demanded_bits_add_and_or_carry_propagation() -> Result<(), IrError> {
         let f = m.add_function_dyn("test_add", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let b_arg: IntValue<i32> = m.view(f).param(1)?.try_into()?;
-        let c: IntValue<i32> = m.view(f).param(2)?.try_into()?;
-        let d: IntValue<i32> = m.view(f).param(3)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let b_arg: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
+        let c: IntValue<'_, i32, _> = m.view(f).param(2)?.try_into()?;
+        let d: IntValue<'_, i32, _> = m.view(f).param(3)?.try_into()?;
 
         let and_a = b.build_int_and::<i32, _, _, _>(a, i32_ty.const_int(9_u32), "and.a")?;
         let and_b = b.build_int_and::<i32, _, _, _>(b_arg, i32_ty.const_int(9_u32), "and.b")?;
@@ -160,13 +160,13 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let rev_host = m.add_function_dyn("rev_host", rev_host_ty, Linkage::External)?;
         let rev_entry = m.view(rev_host).append_basic_block(&m, "entry");
         let rev_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(rev_entry);
-        let rev_x: IntValue<i8> = m.view(rev_host).param(0)?.try_into()?;
+        let rev_x: IntValue<'_, i8, _> = m.view(rev_host).param(0)?.try_into()?;
         let rev_call = rev_b
             .call_builder(m.view(rev_fn))
             .arg(rev_x)
             .name("rev")
             .build()?;
-        let rev: IntValue<i8> = rev_b
+        let rev: IntValue<'_, i8, _> = rev_b
             .view(rev_call)
             .return_value()
             .expect("bitreverse returns value")
@@ -179,13 +179,13 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let swap_host = m.add_function_dyn("swap_host", swap_host_ty, Linkage::External)?;
         let swap_entry = m.view(swap_host).append_basic_block(&m, "entry");
         let swap_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(swap_entry);
-        let swap_x: IntValue<i16> = m.view(swap_host).param(0)?.try_into()?;
+        let swap_x: IntValue<'_, i16, _> = m.view(swap_host).param(0)?.try_into()?;
         let swap_call = swap_b
             .call_builder(m.view(swap_fn))
             .arg(swap_x)
             .name("swap")
             .build()?;
-        let swap: IntValue<i16> = swap_b
+        let swap: IntValue<'_, i16, _> = swap_b
             .view(swap_call)
             .return_value()
             .expect("bswap returns value")
@@ -199,8 +199,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let fshl_host = m.add_function_dyn("fshl_host", fshl_host_ty, Linkage::External)?;
         let fshl_entry = m.view(fshl_host).append_basic_block(&m, "entry");
         let fshl_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(fshl_entry);
-        let fshl_x: IntValue<i8> = m.view(fshl_host).param(0)?.try_into()?;
-        let fshl_y: IntValue<i8> = m.view(fshl_host).param(1)?.try_into()?;
+        let fshl_x: IntValue<'_, i8, _> = m.view(fshl_host).param(0)?.try_into()?;
+        let fshl_y: IntValue<'_, i8, _> = m.view(fshl_host).param(1)?.try_into()?;
         let fshl_call = fshl_b
             .call_builder(m.view(fshl_fn))
             .arg(fshl_x)
@@ -208,7 +208,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             .arg(i8_ty.const_int(4_u8))
             .name("fshl")
             .build()?;
-        let fshl: IntValue<i8> = fshl_b
+        let fshl: IntValue<'_, i8, _> = fshl_b
             .view(fshl_call)
             .return_value()
             .expect("fshl returns value")
@@ -222,8 +222,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let fshr_host = m.add_function_dyn("fshr_host", fshr_host_ty, Linkage::External)?;
         let fshr_entry = m.view(fshr_host).append_basic_block(&m, "entry");
         let fshr_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(fshr_entry);
-        let fshr_x: IntValue<i8> = m.view(fshr_host).param(0)?.try_into()?;
-        let fshr_y: IntValue<i8> = m.view(fshr_host).param(1)?.try_into()?;
+        let fshr_x: IntValue<'_, i8, _> = m.view(fshr_host).param(0)?.try_into()?;
+        let fshr_y: IntValue<'_, i8, _> = m.view(fshr_host).param(1)?.try_into()?;
         let fshr_call = fshr_b
             .call_builder(m.view(fshr_fn))
             .arg(fshr_x)
@@ -231,7 +231,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             .arg(i8_ty.const_int(2_u8))
             .name("fshr")
             .build()?;
-        let fshr: IntValue<i8> = fshr_b
+        let fshr: IntValue<'_, i8, _> = fshr_b
             .view(fshr_call)
             .return_value()
             .expect("fshr returns value")
@@ -245,8 +245,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             m.add_function_dyn("fshr_zero_host", fshr_zero_host_ty, Linkage::External)?;
         let fshr_zero_entry = m.view(fshr_zero_host).append_basic_block(&m, "entry");
         let fshr_zero_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(fshr_zero_entry);
-        let fshr_zero_x: IntValue<i8> = m.view(fshr_zero_host).param(0)?.try_into()?;
-        let fshr_zero_y: IntValue<i8> = m.view(fshr_zero_host).param(1)?.try_into()?;
+        let fshr_zero_x: IntValue<'_, i8, _> = m.view(fshr_zero_host).param(0)?.try_into()?;
+        let fshr_zero_y: IntValue<'_, i8, _> = m.view(fshr_zero_host).param(1)?.try_into()?;
         let fshr_zero_call = fshr_zero_b
             .call_builder(m.view(fshr_fn))
             .arg(fshr_zero_x)
@@ -254,7 +254,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             .arg(i8_ty.const_int(8_u8))
             .name("fshr.zero")
             .build()?;
-        let fshr_zero: IntValue<i8> = fshr_zero_b
+        let fshr_zero: IntValue<'_, i8, _> = fshr_zero_b
             .view(fshr_zero_call)
             .return_value()
             .expect("fshr returns value")
@@ -272,8 +272,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             m.add_function_dyn("wide_fshl_host", wide_fshl_host_ty, Linkage::External)?;
         let wide_fshl_entry = m.view(wide_fshl_host).append_basic_block(&m, "entry");
         let wide_fshl_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(wide_fshl_entry);
-        let wide_fshl_x: IntValue<i128> = m.view(wide_fshl_host).param(0)?.try_into()?;
-        let wide_fshl_y: IntValue<i128> = m.view(wide_fshl_host).param(1)?.try_into()?;
+        let wide_fshl_x: IntValue<'_, i128, _> = m.view(wide_fshl_host).param(0)?.try_into()?;
+        let wide_fshl_y: IntValue<'_, i128, _> = m.view(wide_fshl_host).param(1)?.try_into()?;
         let wide_fshl_amount = i128_ty.const_ap_int(&ApInt::from_words(128, &[1, 1]))?;
         let wide_fshl_call = wide_fshl_b
             .call_builder(m.view(wide_fshl_fn))
@@ -282,7 +282,7 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
             .arg(wide_fshl_amount)
             .name("wide.fshl")
             .build()?;
-        let wide_fshl: IntValue<i128> = wide_fshl_b
+        let wide_fshl: IntValue<'_, i128, _> = wide_fshl_b
             .view(wide_fshl_call)
             .return_value()
             .expect("fshl returns value")
@@ -297,15 +297,15 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let umax_host = m.add_function_dyn("umax_host", umax_host_ty, Linkage::External)?;
         let umax_entry = m.view(umax_host).append_basic_block(&m, "entry");
         let umax_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(umax_entry);
-        let umax_x: IntValue<i8> = m.view(umax_host).param(0)?.try_into()?;
-        let umax_y: IntValue<i8> = m.view(umax_host).param(1)?.try_into()?;
+        let umax_x: IntValue<'_, i8, _> = m.view(umax_host).param(0)?.try_into()?;
+        let umax_y: IntValue<'_, i8, _> = m.view(umax_host).param(1)?.try_into()?;
         let umax_call = umax_b
             .call_builder(m.view(umax_fn))
             .arg(umax_x)
             .arg(umax_y)
             .name("umax")
             .build()?;
-        let umax: IntValue<i8> = umax_b
+        let umax: IntValue<'_, i8, _> = umax_b
             .view(umax_call)
             .return_value()
             .expect("umax returns value")
@@ -319,15 +319,15 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let umin_host = m.add_function_dyn("umin_host", umin_host_ty, Linkage::External)?;
         let umin_entry = m.view(umin_host).append_basic_block(&m, "entry");
         let umin_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(umin_entry);
-        let umin_x: IntValue<i8> = m.view(umin_host).param(0)?.try_into()?;
-        let umin_y: IntValue<i8> = m.view(umin_host).param(1)?.try_into()?;
+        let umin_x: IntValue<'_, i8, _> = m.view(umin_host).param(0)?.try_into()?;
+        let umin_y: IntValue<'_, i8, _> = m.view(umin_host).param(1)?.try_into()?;
         let umin_call = umin_b
             .call_builder(m.view(umin_fn))
             .arg(umin_x)
             .arg(umin_y)
             .name("umin")
             .build()?;
-        let umin: IntValue<i8> = umin_b
+        let umin: IntValue<'_, i8, _> = umin_b
             .view(umin_call)
             .return_value()
             .expect("umin returns value")
@@ -341,15 +341,15 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let smax_host = m.add_function_dyn("smax_host", smax_host_ty, Linkage::External)?;
         let smax_entry = m.view(smax_host).append_basic_block(&m, "entry");
         let smax_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(smax_entry);
-        let smax_x: IntValue<i8> = m.view(smax_host).param(0)?.try_into()?;
-        let smax_y: IntValue<i8> = m.view(smax_host).param(1)?.try_into()?;
+        let smax_x: IntValue<'_, i8, _> = m.view(smax_host).param(0)?.try_into()?;
+        let smax_y: IntValue<'_, i8, _> = m.view(smax_host).param(1)?.try_into()?;
         let smax_call = smax_b
             .call_builder(m.view(smax_fn))
             .arg(smax_x)
             .arg(smax_y)
             .name("smax")
             .build()?;
-        let smax: IntValue<i8> = smax_b
+        let smax: IntValue<'_, i8, _> = smax_b
             .view(smax_call)
             .return_value()
             .expect("smax returns value")
@@ -363,15 +363,15 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         let smin_host = m.add_function_dyn("smin_host", smin_host_ty, Linkage::External)?;
         let smin_entry = m.view(smin_host).append_basic_block(&m, "entry");
         let smin_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(smin_entry);
-        let smin_x: IntValue<i8> = m.view(smin_host).param(0)?.try_into()?;
-        let smin_y: IntValue<i8> = m.view(smin_host).param(1)?.try_into()?;
+        let smin_x: IntValue<'_, i8, _> = m.view(smin_host).param(0)?.try_into()?;
+        let smin_y: IntValue<'_, i8, _> = m.view(smin_host).param(1)?.try_into()?;
         let smin_call = smin_b
             .call_builder(m.view(smin_fn))
             .arg(smin_x)
             .arg(smin_y)
             .name("smin")
             .build()?;
-        let smin: IntValue<i8> = smin_b
+        let smin: IntValue<'_, i8, _> = smin_b
             .view(smin_call)
             .return_value()
             .expect("smin returns value")
@@ -510,13 +510,13 @@ fn demanded_bits_ignore_mismatched_intrinsic_declarations() -> Result<(), IrErro
         let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
         let entry = m.view(host).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let x: IntValue<i16> = m.view(host).param(0)?.try_into()?;
+        let x: IntValue<'_, i16, _> = m.view(host).param(0)?.try_into()?;
         let call_call = b
             .call_builder(m.view(malformed))
             .arg(x)
             .name("rev")
             .build()?;
-        let call: IntValue<i16> = b
+        let call: IntValue<'_, i16, _> = b
             .view(call_call)
             .return_value()
             .expect("lookalike returns value")
@@ -545,7 +545,7 @@ fn operands_of_dead_integer_instruction_are_dead() -> Result<(), IrError> {
         let f = m.add_function_dyn("dead", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let dead = b.build_int_and::<i32, _, _, _>(a, i32_ty.const_int(15_u32), "dead")?;
         b.build_ret(i32_ty.const_int(0_u32))?;
 
@@ -597,12 +597,12 @@ fn simplify_demanded_bits_replaces_known_demanded_low_bits() -> Result<(), IrErr
         let replacement = simplified.replacement().expect("replacement");
         // The result hands back a storable id; view + narrow it to read the
         // constant's bits.
-        let replacement: Constant<'_> = m
+        let replacement: Constant<'_, _> = m
             .view(replacement)
             .into_erased()
             .try_into()
             .expect("the replacement is a constant");
-        let replacement: ConstantIntValue<'_, IntDyn> = replacement
+        let replacement: ConstantIntValue<'_, IntDyn, _> = replacement
             .try_into()
             .expect("the replacement is an integer constant");
         assert_eq!(
@@ -657,7 +657,7 @@ fn simplify_demanded_bits_pass_ports_and_zext_and() -> Result<(), IrError> {
         let f = m.add_function_dyn("AndZextAnd", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let a: IntValue<Width<3>> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, Width<3>, _> = m.view(f).param(0)?.try_into()?;
         let op1_rhs = i3_ty.const_ap_int(&ApInt::from_words(3, &[3]))?;
         let op2_rhs = i5_ty.const_ap_int(&ApInt::from_words(5, &[14]))?;
         let op1 = b.build_int_and::<Width<3>, _, _, _>(a, op1_rhs, "op1")?;
@@ -707,7 +707,7 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
         let f = m.add_function_dyn("DropStaleZextNNeg", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let a: IntValue<Width<3>> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, Width<3>, _> = m.view(f).param(0)?.try_into()?;
         let proof_mask = i3_ty.const_ap_int(&ApInt::from_words(3, &[3]))?;
         let proof = b.build_int_and::<Width<3>, _, _, _>(a, proof_mask, "proof")?;
         let cast = b.build_zext_with_flags_dyn(
@@ -725,7 +725,7 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
             m.add_function_dyn("DropStaleZextNNegMutate", mutate_fn_ty, Linkage::External)?;
         let mutate_entry = m.view(mutate_f).append_basic_block(&m, "entry");
         let mutate_b = IRBuilder::with_folder(&m, NoFolder).position_at_end(mutate_entry);
-        let mutate_arg: IntValue<Width<3>> = m.view(mutate_f).param(0)?.try_into()?;
+        let mutate_arg: IntValue<'_, Width<3>, _> = m.view(mutate_f).param(0)?.try_into()?;
         let sign_bit = i3_ty.const_ap_int(&ApInt::from_words(3, &[4]))?;
         let sign_mut =
             mutate_b.build_int_or::<Width<3>, _, _, _>(mutate_arg, sign_bit, "sign.mut")?;
@@ -802,7 +802,7 @@ fn simplify_demanded_bits_pass_erases_dead_integer_chain() -> Result<(), IrError
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let dead0 = b.build_int_and::<i32, _, _, _>(x, i32_ty.const_int(15_u32), "dead0")?;
         let _dead1 = b.build_int_xor::<i32, _, _, _>(dead0, i32_ty.const_int(3_u32), "dead1")?;
         b.build_ret(i32_ty.const_int(0_u32))?;
@@ -833,8 +833,8 @@ fn variable_lshr_demands_source_bits_that_can_reach_low_result() -> Result<(), I
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let amount: IntValue<i32> = m.view(f).param(1)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let amount: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
         let masked = b.build_int_and::<i32, _, _, _>(a, i32_ty.const_int(256_u32), "masked")?;
         let shifted = b.build_int_lshr::<i32, _, _, _>(masked, amount, "shifted")?;
         let lo = b.build_trunc(shifted, i1_ty, "lo")?;
@@ -874,8 +874,8 @@ fn variable_lshr_with_known_amount_range_demands_reachable_source_bits() -> Resu
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let amount: IntValue<i32> = m.view(f).param(1)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let amount: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
         let amount_range =
             b.build_int_and::<i32, _, _, _>(amount, i32_ty.const_int(3_u32), "amount.range")?;
         let shifted = b.build_int_lshr::<i32, _, _, _>(a, amount_range, "shifted")?;

@@ -16,7 +16,7 @@ use llvmkit_ir::{
 fn build_br_emits_unconditional() -> Result<(), IrError> {
     Module::with_new("br", |m| {
         let void = m.void_type();
-        let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let exit = m.view(f).append_basic_block(&m, "exit");
@@ -44,7 +44,7 @@ fn build_cond_br_branches_on_i1() -> Result<(), IrError> {
         let then_bb = m.view(f).append_basic_block(&m, "then");
         let else_bb = m.view(f).append_basic_block(&m, "else");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
         b.build_cond_br(cond, &then_bb, &else_bb)?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
@@ -68,7 +68,7 @@ fn build_cond_br_branches_on_i1() -> Result<(), IrError> {
 fn build_unreachable_terminator() -> Result<(), IrError> {
     Module::with_new("u", |m| {
         let void = m.void_type();
-        let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
         let f = m.add_function_dyn("dead", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);

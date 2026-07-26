@@ -18,9 +18,18 @@ use crate::{
     Linkage, Module, ModuleBrand, ReshapeCfg, VerifierRule, run_function_pass,
 };
 
-/// `Dyn`-marked block id in the default brand: the storable branch-target
+/// `Dyn`-marked block id in the fixture's brand: the storable branch-target
 /// currency these fixtures hand back for the pass-side redirect surface.
-type DynBlockId<'ctx> = BlockId<Dyn, crate::Brand<'ctx>>;
+type DynBlockId<B> = BlockId<Dyn, B>;
+
+/// Return of `build_redirect_single_pred_phi`: the function plus the `to` and
+/// `new_to` `Dyn` labels. Named so the signature stays under clippy's
+/// `type_complexity` threshold without an `#[allow]` (the repo bans them).
+type RedirectFixture<'ctx, B> = (
+    crate::FunctionValue<'ctx, Dyn, B>,
+    DynBlockId<B>,
+    DynBlockId<B>,
+);
 
 /// A `ReshapeCfg` pass that removes the `from_name` block's `cond_br` then-edge
 /// (its target `to` is the then-arm by construction), collapsing the `cond_br`
@@ -95,12 +104,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectEmptyEdge<B> {
 ///           %u = add %p, 1 ; ret %u
 /// other:    ret 0
 /// ```
-fn build_single_pred_phi<'ctx>(
-    m: &Module<'ctx, crate::Brand<'ctx>, crate::Unverified>,
-) -> IrResult<(
-    crate::FunctionValue<'ctx, Dyn>,
-    BlockId<Dyn, crate::Brand<'ctx>>,
-)> {
+fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, crate::Unverified>,
+) -> IrResult<(crate::FunctionValue<'ctx, Dyn, B>, BlockId<Dyn, B>)> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -114,7 +120,7 @@ fn build_single_pred_phi<'ctx>(
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, to, other
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.build_int_add(a, 7_i32, "x")?;
     let c = b.build_icmp_slt(a, 5_i32, "c")?;
     b.build_cond_br(c, to_lbl, other_lbl)?;
@@ -188,13 +194,9 @@ fn remove_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
 /// other:    ret 0
 /// new_to:   ret 1   ; no leading phi -> redirect's `phi_values` slice is empty
 /// ```
-fn build_redirect_single_pred_phi<'ctx>(
-    m: &Module<'ctx, crate::Brand<'ctx>, crate::Unverified>,
-) -> IrResult<(
-    crate::FunctionValue<'ctx, Dyn>,
-    DynBlockId<'ctx>,
-    DynBlockId<'ctx>,
-)> {
+fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, crate::Unverified>,
+) -> IrResult<RedirectFixture<'ctx, B>> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -210,7 +212,7 @@ fn build_redirect_single_pred_phi<'ctx>(
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, old_to, other
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.build_int_add(a, 7_i32, "x")?;
     let c = b.build_icmp_slt(a, 5_i32, "c")?;
     b.build_cond_br(c, old_to_lbl, other_lbl)?;

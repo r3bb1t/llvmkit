@@ -3232,7 +3232,7 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
             // `%dead` has no uses — a non-terminator we can erase.
             let dead = b.build_int_add(x, 1_i32, "dead")?;
             b.build_ret(x)?;
@@ -3343,7 +3343,7 @@ mod tests {
             // restores successfully (the terminated-block guard rejects only an
             // end-of-block ip whose block has since grown a terminator).
             let scratch = m.view(f).append_basic_block(&m, "scratch");
-            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
             IRBuilder::new_for::<Dyn>(&m)
                 .position_at_end(entry)
                 .build_ret(x)?;
@@ -3384,7 +3384,7 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
             b.build_ret(x)?;
 
             let function = FunctionView::from(m.view(f));
@@ -3412,7 +3412,7 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
             b.build_ret(x)?;
 
             let function = FunctionView::from(m.view(f));
@@ -3445,7 +3445,7 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
             let _d1 = b.build_int_add(x, 1_i32, "d1")?;
             let _d2 = b.build_int_add(x, 2_i32, "d2")?;
             b.build_ret(x)?;
@@ -3777,7 +3777,7 @@ mod tests {
             let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
             let e1 = m.view(f1).append_basic_block(&m, "entry");
             let b1 = IRBuilder::new_for::<Dyn>(&m).position_at_end(e1);
-            let x1: IntValue<i32> = m.view(f1).param(0)?.try_into()?;
+            let x1: IntValue<'_, i32, _> = m.view(f1).param(0)?.try_into()?;
             let dead1 = b1.build_int_add(x1, 1_i32, "dead")?;
             b1.build_ret(x1)?;
 
@@ -3785,7 +3785,7 @@ mod tests {
             let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
             let e2 = m.view(f2).append_basic_block(&m, "entry");
             let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(e2);
-            let x2: IntValue<i32> = m.view(f2).param(0)?.try_into()?;
+            let x2: IntValue<'_, i32, _> = m.view(f2).param(0)?.try_into()?;
             let dead2 = b2.build_int_add(x2, 1_i32, "dead")?;
             b2.build_ret(x2)?;
 
@@ -3859,7 +3859,7 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
             // a = x+1 (used by b), b = a+1 (used by c), c = b+1 (unused/dead).
             let a = b.build_int_add(x, 1_i32, "a")?;
             let bb = b.build_int_add(a, 1_i32, "b")?;
@@ -3902,7 +3902,7 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
             // a = x+1 ; b = a+1 (so b's operand `a` IS an instruction) ; ret x.
             let a = b.build_int_add(x, 1_i32, "a")?;
             let bb = b.build_int_add(a, 1_i32, "b")?;
@@ -3958,7 +3958,7 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
             let _a = b.build_int_add(x, 1_i32, "a")?;
             b.build_ret(x)?;
 
@@ -4041,7 +4041,7 @@ mod tests {
             let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
             let entry = m.view(f).append_basic_block(&m, "entry");
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-            let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+            let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
             let sum = b.build_int_add(x, 1_i32, "sum")?;
             b.build_ret(sum)?;
 

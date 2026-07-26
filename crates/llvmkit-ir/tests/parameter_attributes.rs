@@ -27,7 +27,7 @@ fn function_with_noundef_param_and_return() -> Result<(), IrError> {
             .build()?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         b.build_ret(x)?;
 
         let text = format!("{m}");
@@ -59,7 +59,7 @@ fn attribute_added_via_attribute_method_path() -> Result<(), IrError> {
             .build()?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         b.build_ret(n)?;
 
         let text = format!("{m}");

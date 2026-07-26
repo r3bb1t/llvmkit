@@ -235,7 +235,7 @@ fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), 
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let p: PointerValue = m.view(f).param(0)?.try_into()?;
+        let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
         let unordered =
             AtomicLoadConfig::new(AtomicOrdering::Unordered, SyncScope::System, Align::new(4)?);
         let _u = b.build_int_load_atomic::<i32, _, _>(p, unordered, "u")?;
@@ -281,14 +281,14 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let p: PointerValue = m.view(f).param(0)?.try_into()?;
+        let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
         b.build_store(i32_ty.const_int(1_u32), p)?;
         b.build_fence(
             AtomicOrdering::SequentiallyConsistent,
             SyncScope::System,
             "",
         )?;
-        b.build_call_dyn::<Dyn, _, _, _, _>(sink, Vec::<Value>::new(), "")?;
+        b.build_call_dyn::<Dyn, _, _, _, _>(sink, Vec::<Value<'_, _>>::new(), "")?;
         b.build_ret_void()?;
 
         let verified = m.verify()?;
@@ -369,7 +369,7 @@ fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
         let join_label = join.id();
 
         m.view(f).param(0)?.set_name(&m, "c");
-        let c: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let c: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
         // entry: cond_br -> l, r
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -383,7 +383,7 @@ fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
         b.build_br_with_args(join_label, &[c.into_erased()])?;
         // m: ret %p (the head-phi param merges %c down both edges -> uniform)
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
-        let p: IntValue<i32> = params[0].try_into()?;
+        let p: IntValue<'_, i32, _> = params[0].try_into()?;
         b.build_ret(p)?;
 
         let verified = m.verify()?;
@@ -429,7 +429,7 @@ fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
         let exit_label = exit.id();
 
         m.view(f).param(0)?.set_name(&m, "v0");
-        let v0: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let v0: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
         // entry: br loop(%v0)
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -437,7 +437,7 @@ fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
         // loop: body; cond_br exit / loop(%p). The self-edge carries the loop
         // param itself back, reproducing `[ %v0, %entry ], [ %p, %loop ]`.
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(loop_bb);
-        let p: IntValue<i32> = params[0].try_into()?;
+        let p: IntValue<'_, i32, _> = params[0].try_into()?;
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, p, 0_i32, "cond")?;
         b.build_cond_br_with_args(cond, exit_label, &[], loop_label, &[params[0]])?;
         // exit: ret %p (the loop param dominates exit)
@@ -487,8 +487,8 @@ fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
 
         m.view(f).param(0)?.set_name(&m, "a");
         m.view(f).param(1)?.set_name(&m, "b");
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let bparam: IntValue<i32> = m.view(f).param(1)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let bparam: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "cond")?;
@@ -501,7 +501,7 @@ fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
         b.build_br_with_args(join_label, &[bparam.into_erased()])?;
         // m: ret %p -- distinct incomings %a / %b keep the phi non-uniform.
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
-        let p: IntValue<i32> = params[0].try_into()?;
+        let p: IntValue<'_, i32, _> = params[0].try_into()?;
         b.build_ret(p)?;
 
         let verified = m.verify()?;
@@ -542,7 +542,7 @@ fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
         let r_label = r.id();
         let join_label = join.id();
 
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, x, 0_i32, "cond")?;
@@ -555,7 +555,7 @@ fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
         b.build_br_with_args(join_label, &[i32_ty.const_int(3_i32).into_erased()])?;
         // m: %q = add %p, 4 ; ret %q -- the user reads the head-phi param.
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
-        let p: IntValue<i32> = params[0].try_into()?;
+        let p: IntValue<'_, i32, _> = params[0].try_into()?;
         let q = b.build_int_add::<i32, _, _, _>(p, 4_i32, "q")?;
         b.build_ret(q)?;
 

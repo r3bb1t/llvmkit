@@ -20,27 +20,24 @@ use llvmkit_ir::{
 
 /// Return of `build_invoke_caller`/`build_callbr_caller`: the caller function
 /// and the `%new` `Dyn` label a redirect can aim at.
-type CallerFixture<'ctx> = (
-    FunctionValue<'ctx, ()>,
-    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
-);
+type CallerFixture<'ctx, B> = (FunctionValue<'ctx, (), B>, BlockId<Dyn, B>);
 
 /// Return of `build_switch_fn`: the function plus the `case0` and `new` `Dyn`
 /// labels.
-type SwitchFixture<'ctx> = (
-    FunctionValue<'ctx, i32>,
-    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
-    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
+type SwitchFixture<'ctx, B> = (
+    FunctionValue<'ctx, i32, B>,
+    BlockId<Dyn, B>,
+    BlockId<Dyn, B>,
 );
 
 /// Return of `build_switch_bogus_fn`: the function, a non-case (`bogus`) `Dyn`
 /// label, the `new` `Dyn` label (which carries a head-phi), and a valid phi
 /// seed value id for `new`.
-type SwitchBogusFixture<'ctx> = (
-    FunctionValue<'ctx, i32>,
-    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
-    BlockId<Dyn, llvmkit_ir::Brand<'ctx>>,
-    ValueId<llvmkit_ir::Brand<'ctx>>,
+type SwitchBogusFixture<'ctx, B> = (
+    FunctionValue<'ctx, i32, B>,
+    BlockId<Dyn, B>,
+    BlockId<Dyn, B>,
+    ValueId<B>,
 );
 
 // ---------------------------------------------------------------------------
@@ -87,9 +84,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectInvokeEdge<B> {
 /// Build `void @caller()` with an `invoke void @callee() to label %normal
 /// unwind label %unwind`, plus an unreferenced `%new` block that a redirect can
 /// aim at. Returns the caller and the `%new` `Dyn` label.
-fn build_invoke_caller<'ctx>(
-    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
-) -> IrResult<CallerFixture<'ctx>> {
+fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> IrResult<CallerFixture<'ctx, B>> {
     let callee = m
         .add_typed_function::<(), (), _>("callee", Linkage::External)?
         .as_function();
@@ -104,7 +101,7 @@ fn build_invoke_caller<'ctx>(
     // Capture the labels before `position_at_end` consumes the block handles.
     let normal_lbl = normal.id();
     let unwind_lbl = unwind.id();
-    let new_dyn: BasicBlockLabel<Dyn> = new.to_erased().try_into()?;
+    let new_dyn: BasicBlockLabel<'_, Dyn, _> = new.to_erased().try_into()?;
     let new_dyn = new_dyn.id();
 
     let bn = IRBuilder::new_for::<()>(m).position_at_end(normal);
@@ -117,7 +114,7 @@ fn build_invoke_caller<'ctx>(
     let b = IRBuilder::new_for::<()>(m).position_at_end(entry);
     let _ = b.build_invoke_dyn(
         m.view(callee),
-        Vec::<Value>::new(),
+        Vec::<Value<'_, _>>::new(),
         normal_lbl,
         unwind_lbl,
         "",
@@ -208,9 +205,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectCallBrEdge<B> {
 
 /// Build `void @caller()` with a `callbr void @callee() to label %cont
 /// [label %ind]`, plus an unreferenced `%new` block a redirect can aim at.
-fn build_callbr_caller<'ctx>(
-    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
-) -> IrResult<CallerFixture<'ctx>> {
+fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> IrResult<CallerFixture<'ctx, B>> {
     let callee = m
         .add_typed_function::<(), (), _>("callee", Linkage::External)?
         .as_function();
@@ -225,7 +222,7 @@ fn build_callbr_caller<'ctx>(
     // Capture the labels before `position_at_end` consumes the block handles.
     let cont_lbl = cont.id();
     let ind_lbl = ind.id();
-    let new_dyn: BasicBlockLabel<Dyn> = new.to_erased().try_into()?;
+    let new_dyn: BasicBlockLabel<'_, Dyn, _> = new.to_erased().try_into()?;
     let new_dyn = new_dyn.id();
 
     let bc = IRBuilder::new_for::<()>(m).position_at_end(cont);
@@ -236,7 +233,7 @@ fn build_callbr_caller<'ctx>(
     bnew.build_ret_void();
 
     let b = IRBuilder::new_for::<()>(m).position_at_end(entry);
-    let _ = b.build_callbr(callee, Vec::<Value>::new(), cont_lbl, [ind_lbl], "")?;
+    let _ = b.build_callbr(callee, Vec::<Value<'_, _>>::new(), cont_lbl, [ind_lbl], "")?;
     Ok((m.view(caller), new_dyn))
 }
 
@@ -320,9 +317,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RemoveCondBrArm {
 }
 
 /// Build `i32 @f(i32 %a)` whose entry is `cond_br (%a == 0) ? then : else`.
-fn build_cond_br_fn<'ctx>(
-    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
-) -> IrResult<FunctionValue<'ctx, i32>> {
+fn build_cond_br_fn<'ctx, B: ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> IrResult<FunctionValue<'ctx, i32, B>> {
     let i32_ty = m.i32_type();
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
@@ -340,7 +337,7 @@ fn build_cond_br_fn<'ctx>(
     be.build_ret(i32_ty.const_int(1_u32))?;
 
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     b.build_cond_br(c, then_lbl, else_lbl)?;
     Ok(m.view(f))
@@ -434,9 +431,9 @@ impl<B: ModuleBrand> FunctionPass<B> for SwitchCaseOp<B> {
 /// Build `i32 @f(i32 %a)` whose entry is `switch %a, default %dflt [ 0 ->
 /// case0, 1 -> case1 ]`, plus an unreferenced `%new` block. Returns the
 /// function and the `case0`/`new` `Dyn` labels.
-fn build_switch_fn<'ctx>(
-    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
-) -> IrResult<SwitchFixture<'ctx>> {
+fn build_switch_fn<'ctx, B: ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> IrResult<SwitchFixture<'ctx, B>> {
     let i32_ty = m.i32_type();
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
@@ -450,9 +447,9 @@ fn build_switch_fn<'ctx>(
     let dflt_lbl = dflt.id();
     let case0_lbl = case0.id();
     let case1_lbl = case1.id();
-    let case0_dyn: BasicBlockLabel<Dyn> = case0.to_erased().try_into()?;
+    let case0_dyn: BasicBlockLabel<'_, Dyn, _> = case0.to_erased().try_into()?;
     let case0_dyn = case0_dyn.id();
-    let new_dyn: BasicBlockLabel<Dyn> = new.to_erased().try_into()?;
+    let new_dyn: BasicBlockLabel<'_, Dyn, _> = new.to_erased().try_into()?;
     let new_dyn = new_dyn.id();
 
     for (bb, k) in [(dflt, 0_u32), (case0, 1), (case1, 2), (new, 3)] {
@@ -461,7 +458,7 @@ fn build_switch_fn<'ctx>(
     }
 
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     let sw = sw.add_case(i32_ty.const_int(0_u32), case0_lbl)?;
     sw.add_case(i32_ty.const_int(1_u32), case1_lbl)?.finish();
@@ -576,9 +573,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchSuccessor<B> {
 /// naming it must be rejected. `new` carries a head-phi (arity 1) so a pre-fix
 /// `redirect_successor(bogus, new, [ev])` would pass phi validation and corrupt
 /// `new`'s phi; `%ev` (defined in `entry`) is a valid seed for it.
-fn build_switch_bogus_fn<'ctx>(
-    m: &Module<'ctx, llvmkit_ir::Brand<'ctx>, llvmkit_ir::Unverified>,
-) -> IrResult<SwitchBogusFixture<'ctx>> {
+fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> IrResult<SwitchBogusFixture<'ctx, B>> {
     let i32_ty = m.i32_type();
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
@@ -597,21 +594,21 @@ fn build_switch_bogus_fn<'ctx>(
     let dflt_lbl = dflt.id();
     let case0_lbl = case0.id();
     let new_lbl = new.id();
-    let bogus_dyn: BasicBlockLabel<Dyn> = bogus.to_erased().try_into()?;
+    let bogus_dyn: BasicBlockLabel<'_, Dyn, _> = bogus.to_erased().try_into()?;
     let bogus_dyn = bogus_dyn.id();
-    let new_dyn: BasicBlockLabel<Dyn> = new.to_erased().try_into()?;
+    let new_dyn: BasicBlockLabel<'_, Dyn, _> = new.to_erased().try_into()?;
     let new_dyn = new_dyn.id();
 
     // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> case0 ]
     let b = IRBuilder::new_for::<i32>(m).position_at_end(entry);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let ev = b.build_int_add(a, 3_i32, "ev")?;
     let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), case0_lbl)?.finish();
 
     // dflt: %nd = add %a, 5 ; br new(%nd)
     let b = IRBuilder::new_for::<i32>(m).position_at_end(dflt);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let nd = b.build_int_add(a, 5_i32, "nd")?;
     b.build_br_with_args(new_lbl, &[m.view(nd).into_erased()])?;
 
@@ -625,7 +622,7 @@ fn build_switch_bogus_fn<'ctx>(
 
     // new: ret %np (the head-phi param carrying dflt's branch argument).
     let b = IRBuilder::new_for::<i32>(m).position_at_end(new);
-    let np: IntValue<i32> = new_params[0].try_into()?;
+    let np: IntValue<'_, i32, _> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
     Ok((m.view(f), bogus_dyn, new_dyn, m.view(ev).into_erased().id()))

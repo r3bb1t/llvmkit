@@ -96,13 +96,13 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchEdge<B> {
 /// `dflt` is the switch default and ends in a plain `br` (a non-switch `from`);
 /// `other` is the case-1 target — both feed the edge-op guard negatives below.
 #[allow(clippy::type_complexity)]
-fn build_switch_merge<'ctx>(
-    m: &Module<'ctx, crate::Brand<'ctx>, crate::Unverified>,
+fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, crate::Unverified>,
 ) -> IrResult<(
-    crate::FunctionValue<'ctx, Dyn>,
-    BlockId<Dyn, crate::Brand<'ctx>>,
-    BlockId<Dyn, crate::Brand<'ctx>>,
-    BlockId<Dyn, crate::Brand<'ctx>>,
+    crate::FunctionValue<'ctx, Dyn, B>,
+    BlockId<Dyn, B>,
+    BlockId<Dyn, B>,
+    BlockId<Dyn, B>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -119,7 +119,7 @@ fn build_switch_merge<'ctx>(
 
     // entry: %e = add %a, 7 ; switch %a, default %dflt [ 0 -> merge, 1 -> other ]
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let e = b.build_int_add(a, 7_i32, "e")?;
     let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), merge_lbl)?
@@ -128,7 +128,7 @@ fn build_switch_merge<'ctx>(
 
     // dflt: %d = add %a, 9 ; br merge
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(dflt);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let d = b.build_int_add(a, 9_i32, "d")?;
     b.build_br(merge_lbl)?;
 
@@ -280,12 +280,12 @@ fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
 /// DEFAULT still targeting `shared`, so `entry` survives as a predecessor of
 /// `shared` through the default — `shared`'s phi must keep one `entry` incoming.
 #[allow(clippy::type_complexity)]
-fn build_switch_default_parallel<'ctx>(
-    m: &Module<'ctx, crate::Brand<'ctx>, crate::Unverified>,
+fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
+    m: &Module<'ctx, B, crate::Unverified>,
 ) -> IrResult<(
-    crate::FunctionValue<'ctx, Dyn>,
-    BlockId<Dyn, crate::Brand<'ctx>>,
-    BlockId<Dyn, crate::Brand<'ctx>>,
+    crate::FunctionValue<'ctx, Dyn, B>,
+    BlockId<Dyn, B>,
+    BlockId<Dyn, B>,
 )> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -302,7 +302,7 @@ fn build_switch_default_parallel<'ctx>(
 
     // entry: %e = add %a, 7 ; switch %a, default %shared [ 0 -> shared, 1 -> mid ]
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let e = b.build_int_add(a, 7_i32, "e")?;
     let (_sealed, sw) = b.build_switch_dyn(a, shared_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), shared_lbl)?
@@ -311,7 +311,7 @@ fn build_switch_default_parallel<'ctx>(
 
     // mid: %mv = add %a, 3 ; br shared
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(mid);
-    let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let mv = b.build_int_add(a, 3_i32, "mv")?;
     b.build_br(shared_lbl)?;
 

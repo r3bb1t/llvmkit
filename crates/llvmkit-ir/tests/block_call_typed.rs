@@ -29,7 +29,7 @@ fn build_br_call_seeds_typed_head_phi_and_verifies() -> Result<(), IrError> {
 
         // entry: %x = add i32 %a, 1 ; br head(%x)
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let x = b.build_int_add(a, 1_i32, "x")?;
         // `.call((x,))` is compile-checked against the block's `(i32,)` schema.
         b.build_br_call(head.call((x,)))?;
@@ -70,8 +70,8 @@ fn block_call_convenience_two_params_verifies() -> Result<(), IrError> {
 
         // entry: br head(%a, %ptr) — seed both head-phis, in schema order.
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let ptr: PointerValue = m.view(f).param(1)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let ptr: PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
         // `block.call((..))` borrows `head`, so it stays usable below.
         b.build_br_call(head.call((a, ptr)))?;
 
@@ -112,7 +112,7 @@ fn build_cond_br_call_two_targets_verify() -> Result<(), IrError> {
         // entry: %x = add %a, 1 ; %y = add %a, 2 ;
         //        br (%a == 0) ? then(%x) : else(%y)
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let x = b.build_int_add(a, 1_i32, "x")?;
         let y = b.build_int_add(a, 2_i32, "y")?;
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
@@ -157,7 +157,7 @@ fn build_cond_br_call_distinct_schemas_per_edge() -> Result<(), IrError> {
 
         // entry: br (%a == 0) ? then(%a) : join()
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
         b.build_cond_br_call(cond, then_bb.call((a,)), join_bb.call(()))?;
 
@@ -195,12 +195,12 @@ fn erased_build_br_with_args_still_works() -> Result<(), IrError> {
         let hdr_label = hdr.id();
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let x = b.build_int_add(a, 1_i32, "x")?;
         b.build_br_with_args(hdr_label, &[m.view(x).into_erased()])?;
 
         let b = IRBuilder::new_for::<i32>(&m).position_at_end(hdr);
-        let p: IntValue<i32> = params[0].try_into()?;
+        let p: IntValue<'_, i32, _> = params[0].try_into()?;
         b.build_ret(p)?;
 
         let text = format!("{m}");

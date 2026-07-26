@@ -6,9 +6,9 @@
 //! for. Each `#[test]` cites the upstream anchor it ports.
 
 use llvmkit_asmparser::ll_parser::Parser;
-use llvmkit_ir::{AnyTypeEnum, Module};
+use llvmkit_ir::{AnyTypeEnum, Module, ModuleBrand};
 
-fn parse_into(src: &str, m: &Module<'_>) {
+fn parse_into<B: ModuleBrand>(src: &str, m: &Module<'_, B>) {
     Parser::new(src.as_bytes(), m)
         .expect("lexer primes")
         .parse_module()

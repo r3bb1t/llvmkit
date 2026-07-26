@@ -9,28 +9,28 @@ use llvmkit_ir::{
     BinaryIntrinsic, BinaryOpcode, CastKind, Constant, ConstantFloatValue, ConstantFolder,
     ConstantIntValue, Dyn, GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind,
     InstructionView, IntDyn, IntPredicate, IntValue, IntValueId, IntWidth, IrError, IrResult,
-    Linkage, Module, MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type, UDivFlags,
-    Value, constant_fold_binary_instruction,
+    Linkage, Module, ModuleBrand, MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type,
+    UDivFlags, Value, constant_fold_binary_instruction,
 };
 
 #[derive(Debug, Clone, Copy)]
-enum FolderReturn<'ctx> {
-    Value(Value<'ctx>),
+enum FolderReturn<'ctx, B: ModuleBrand> {
+    Value(Value<'ctx, B>),
     NoWrapCall {
         opcode: BinaryOpcode,
         has_nuw: bool,
         has_nsw: bool,
-        value: Value<'ctx>,
+        value: Value<'ctx, B>,
     },
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ReturningFolder<'ctx> {
-    result: FolderReturn<'ctx>,
+struct ReturningFolder<'ctx, B: ModuleBrand> {
+    result: FolderReturn<'ctx, B>,
 }
 
-impl<'ctx> ReturningFolder<'ctx> {
-    fn fold(&self) -> IrResult<Option<Value<'ctx>>> {
+impl<'ctx, B: ModuleBrand> ReturningFolder<'ctx, B> {
+    fn fold(&self) -> IrResult<Option<Value<'ctx, B>>> {
         match self.result {
             FolderReturn::Value(value) => Ok(Some(value)),
             FolderReturn::NoWrapCall { .. } => Ok(None),
@@ -43,23 +43,23 @@ impl<'ctx> ReturningFolder<'ctx> {
 /// erased `*_dyn` hooks all default to `Ok(None)`, and the typed hooks
 /// default-delegate to them), matching upstream `IRBuilderFolder.h`'s
 /// posture that a custom folder overrides only what it cares about.
-impl<'ctx> IRBuilderFolder<'ctx> for ReturningFolder<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ReturningFolder<'ctx, B> {
     fn fold_bin_op_dyn(
         &self,
         _opcode: BinaryOpcode,
-        _lhs: Value<'ctx>,
-        _rhs: Value<'ctx>,
-    ) -> IrResult<Option<Value<'ctx>>> {
+        _lhs: Value<'ctx, B>,
+        _rhs: Value<'ctx, B>,
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         self.fold()
     }
 
     fn fold_no_wrap_bin_op_dyn(
         &self,
         opcode: BinaryOpcode,
-        _lhs: Value<'ctx>,
-        _rhs: Value<'ctx>,
+        _lhs: Value<'ctx, B>,
+        _rhs: Value<'ctx, B>,
         flags: OverflowFlags,
-    ) -> IrResult<Option<Value<'ctx>>> {
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         match self.result {
             FolderReturn::NoWrapCall {
                 opcode: expected_opcode,
@@ -90,8 +90,9 @@ fn constant_folder_folds_fneg_constant_without_instruction() -> Result<(), IrErr
 
         let result = b.build_float_neg::<f32, _, _>(f32_ty.const_float(1.0), "n")?;
 
-        let folded =
-            ConstantFloatValue::<f32>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
+        let folded = ConstantFloatValue::<f32, _>::try_from(Constant::try_from(
+            b.view(result).into_erased(),
+        )?)?;
         assert!(folded.ap_float().is_exactly_value_f64(-1.0));
         assert_eq!(b.insert_block().instructions().len(), 0);
         Ok(())
@@ -226,7 +227,7 @@ fn constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and() -> Res
                 OverflowFlags::new().nuw(),
             )?
             .expect("all-constant xor folds through direct no-wrap hook");
-        let xor = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(xor)?)?;
+        let xor = ConstantIntValue::<IntDyn, _>::try_from(Constant::try_from(xor)?)?;
         assert_eq!(xor.ap_int(), i32_ty.const_int(6_i32).ap_int());
 
         let and = ConstantFolder
@@ -237,7 +238,7 @@ fn constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and() -> Res
                 OverflowFlags::new().nuw().nsw(),
             )?
             .expect("all-constant and folds through direct no-wrap hook");
-        let and = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(and)?)?;
+        let and = ConstantIntValue::<IntDyn, _>::try_from(Constant::try_from(and)?)?;
         assert_eq!(and.ap_int(), i32_ty.const_zero().ap_int());
         Ok(())
     })
@@ -275,7 +276,7 @@ fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), I
         let ptr_vec_ty = m.vector_type(m.ptr_type(0).as_type(), 2, false);
         let index_ty = m.vector_type(i64_ty.as_type(), 2, false);
         let g = m.add_global("g", i32_ty.const_zero())?;
-        let index = index_ty.const_vector::<ConstantIntValue<'_, i64>, _>([
+        let index = index_ty.const_vector::<ConstantIntValue<'_, i64, _>, _>([
             i64_ty.const_int(1_i64),
             i64_ty.const_int(2_i64),
         ])?;
@@ -308,7 +309,11 @@ fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), I
 #[test]
 fn constant_folder_gep_declines_scalable_target_ext_source_type() -> Result<(), IrError> {
     Module::with_new("folder-gep-scalable-target-ext", |m| {
-        let source_ty = m.target_ext_type("aarch64.svcount", Vec::<Type>::new(), Vec::<u32>::new());
+        let source_ty = m.target_ext_type(
+            "aarch64.svcount",
+            Vec::<Type<'_, _>>::new(),
+            Vec::<u32>::new(),
+        );
         let ptr = m.ptr_type(0).const_null().as_constant();
 
         assert_eq!(
@@ -333,11 +338,11 @@ fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), Ir
     Module::with_new("folder-scalable-shuffle", |m| {
         let i32_ty = m.i32_type();
         let vec_ty = m.vector_type(i32_ty.as_type(), 2, true);
-        let lhs = vec_ty.const_vector::<ConstantIntValue<'_, i32>, _>([
+        let lhs = vec_ty.const_vector::<ConstantIntValue<'_, i32, _>, _>([
             i32_ty.const_int(1_i32),
             i32_ty.const_int(2_i32),
         ])?;
-        let rhs = vec_ty.const_vector::<ConstantIntValue<'_, i32>, _>([
+        let rhs = vec_ty.const_vector::<ConstantIntValue<'_, i32, _>, _>([
             i32_ty.const_int(3_i32),
             i32_ty.const_int(4_i32),
         ])?;
@@ -379,7 +384,7 @@ fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Res
             .create_pointer_cast(scalar, vec_ptr_ty.as_type())?
             .expect("pointer cast helper uses bitcast for one-lane vector destination");
 
-        let vector = vec_ptr_ty.const_vector::<Constant<'_>, _>([scalar])?;
+        let vector = vec_ptr_ty.const_vector::<Constant<'_, _>, _>([scalar])?;
         let to_scalar = ConstantFolder
             .create_pointer_bitcast_or_addrspace_cast(vector.as_constant(), ptr_ty.as_type())?
             .expect("one-lane pointer vector to scalar pointer folds");
@@ -678,7 +683,7 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let ptr: PointerValue = m.view(f).param(0)?.try_into()?;
+        let ptr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
 
         let result = b.build_ptr_to_addr(ptr, "addr")?;
         let instruction = InstructionView::try_from(b.view(result).into_erased())?;
@@ -689,7 +694,7 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
         };
 
         assert_eq!(cast.opcode(), CastOpcode::PtrToAddr);
-        let src: PointerValue = cast.src();
+        let src: PointerValue<'_, _> = cast.src();
         assert_eq!(src.into_erased(), ptr.into_erased());
         let typed_result: IntValueId<IntDyn, _> = result;
         assert_eq!(b.view(typed_result).ty().bit_width(), 32);
@@ -740,7 +745,7 @@ fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrErro
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
         let result = b.build_int_add(x, i32_ty.const_zero(), "sum")?;
 

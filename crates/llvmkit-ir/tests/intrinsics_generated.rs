@@ -233,8 +233,8 @@ fn verifier_rejects_nonconstant_immarg_operand() -> Result<(), IrError> {
         let abs = m.get_or_insert_intrinsic_declaration(&descriptor)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = m.view(caller).param(0)?.try_into()?;
-        let is_poison: IntValue<bool> = m.view(caller).param(1)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
+        let is_poison: IntValue<'_, bool, _> = m.view(caller).param(1)?.try_into()?;
         b.call_builder(m.view(abs))
             .arg(x)
             .arg(is_poison)
@@ -266,7 +266,7 @@ fn descriptor_call_builder_returns_intrinsic_view() -> Result<(), IrError> {
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = m.view(caller).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
         let view = b
             .intrinsic_call_builder(&descriptor)?
             .arg(x)
@@ -276,7 +276,8 @@ fn descriptor_call_builder_returns_intrinsic_view() -> Result<(), IrError> {
         let view = b.view(view);
         assert_eq!(view.intrinsic_id(), IntrinsicId::ABS);
         assert_eq!(view.descriptor()?, descriptor);
-        let ret: IntValue<i32> = view.return_value().expect("abs returns value").try_into()?;
+        let ret: IntValue<'_, i32, _> =
+            view.return_value().expect("abs returns value").try_into()?;
         b.build_ret(ret)?;
         m.verify_borrowed()?;
         Ok(())
@@ -303,9 +304,9 @@ fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> 
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let dst: PointerValue = m.view(caller).param(0)?.try_into()?;
-        let src: PointerValue = m.view(caller).param(1)?.try_into()?;
-        let len: IntValue<i64> = m.view(caller).param(2)?.try_into()?;
+        let dst: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
+        let src: PointerValue<'_, _> = m.view(caller).param(1)?.try_into()?;
+        let len: IntValue<'_, i64, _> = m.view(caller).param(2)?.try_into()?;
         let view = b.build_intrinsic_call(
             &descriptor,
             &[
@@ -344,9 +345,9 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let dst: PointerValue = m.view(caller).param(0)?.try_into()?;
-        let src: PointerValue = m.view(caller).param(1)?.try_into()?;
-        let len: IntValue<i64> = m.view(caller).param(2)?.try_into()?;
+        let dst: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
+        let src: PointerValue<'_, _> = m.view(caller).param(1)?.try_into()?;
+        let len: IntValue<'_, i64, _> = m.view(caller).param(2)?.try_into()?;
 
         let memcpy_inline =
             IntrinsicId::lookup("llvm.memcpy.inline.p0.p0.i64").expect("memcpy.inline intrinsic");
@@ -399,7 +400,7 @@ fn lifetime_intrinsic_wrapper_narrows_generated_lifetime_call() -> Result<(), Ir
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let ptr: PointerValue = m.view(caller).param(0)?.try_into()?;
+        let ptr: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
         let view = b.build_intrinsic_call(&descriptor, &[ptr.into_erased()], "")?;
 
         let view = b.view(view);
@@ -423,7 +424,7 @@ fn descriptor_call_builder_rejects_wrong_argument_count() -> Result<(), IrError>
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = m.view(caller).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
         let err = b
             .build_intrinsic_call(&descriptor, &[x.into_erased()], "bad")
             .expect_err("missing immarg is rejected before call emission");
@@ -479,7 +480,7 @@ fn primitive_and_target_extension_types_widen_to_distinct_type_enum_variants() -
         ));
 
         let target_ext = m
-            .target_ext_type("dx.Resource", Vec::<Type>::new(), Vec::<u32>::new())
+            .target_ext_type("dx.Resource", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())
             .as_type();
         assert!(matches!(
             AnyTypeEnum::from(target_ext),
@@ -495,7 +496,7 @@ fn primitive_and_target_extension_types_widen_to_distinct_type_enum_variants() -
 fn target_extension_overload_name_round_trips() -> Result<(), IrError> {
     Module::with_new("intrinsic-target-ext", |m| {
         let handle = m
-            .target_ext_type("dx.Resource", Vec::<Type>::new(), Vec::<u32>::new())
+            .target_ext_type("dx.Resource", Vec::<Type<'_, _>>::new(), Vec::<u32>::new())
             .as_type();
         let id = IntrinsicId::lookup("llvm.dx.resource.handlefrombinding.tdx.Resourcet")
             .expect("dx handle intrinsic");
@@ -663,7 +664,7 @@ fn asm_writer_prints_generated_intrinsic_immediate_argument_comments() -> Result
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let ptr: PointerValue = m.view(caller).param(0)?.try_into()?;
+        let ptr: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
         b.build_intrinsic_call(
             &descriptor,
             &[ptr.into_erased(), i32_ty.const_int(1_i32).into_erased()],

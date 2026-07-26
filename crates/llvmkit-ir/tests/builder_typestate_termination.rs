@@ -25,7 +25,7 @@ fn cond_br_terminator_terminates_block() -> Result<(), IrError> {
         let else_bb = m.view(f).append_basic_block(&m, "else");
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let cond: llvmkit_ir::IntValueId<bool, _> =
             b.build_int_cmp(llvmkit_ir::IntPredicate::Eq, lhs, 0_i32, "cond")?;
         let (terminated_entry, term) = b.build_cond_br(cond, &then_bb, &else_bb)?;
@@ -63,7 +63,7 @@ fn cond_br_terminator_terminates_block() -> Result<(), IrError> {
 fn termination_typestate_does_not_change_asm_output() -> Result<(), IrError> {
     Module::with_new("termination_asm", |m| {
         let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
         let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let exit = m.view(f).append_basic_block(&m, "exit");

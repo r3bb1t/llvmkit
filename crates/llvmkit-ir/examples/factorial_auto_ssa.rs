@@ -55,9 +55,9 @@
 //! cargo run -p llvmkit-ir --example factorial_auto_ssa
 //! ```
 
-use llvmkit_ir::{IntPredicate, IrError, Linkage, Module, SsaBuilder};
+use llvmkit_ir::{IntPredicate, IrError, Linkage, Module, ModuleBrand, SsaBuilder};
 
-pub fn build(m: &Module<'_>) -> Result<(), IrError> {
+pub fn build<B: ModuleBrand>(m: &Module<'_, B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m

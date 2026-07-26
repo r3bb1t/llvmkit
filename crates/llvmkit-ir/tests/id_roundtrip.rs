@@ -29,12 +29,12 @@ fn handles_round_trip_through_to_id_and_view() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
         // Int value (a function argument narrowed to its static width).
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let a_id: IntValueId<i32, _> = a.id();
         assert_eq!(m.view(a_id), a, "IntValue did not survive id/view");
 
         // Pointer value (the second argument).
-        let p: PointerValue = m.view(f).param(1)?.try_into()?;
+        let p: PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
         let p_id: PointerValueId<_> = p.id();
         assert_eq!(m.view(p_id), p, "PointerValue did not survive id/view");
 
@@ -47,7 +47,7 @@ fn handles_round_trip_through_to_id_and_view() -> Result<(), IrError> {
         );
 
         // Global variable.
-        let g: GlobalVariable = m.view(m.add_global("g", i32_ty.const_int(0_u32))?);
+        let g: GlobalVariable<'_, _> = m.view(m.add_global("g", i32_ty.const_int(0_u32))?);
         let g_id: GlobalId<_> = g.id();
         assert_eq!(m.view(g_id), g, "GlobalVariable did not survive id/view");
 
@@ -67,7 +67,7 @@ fn handles_round_trip_through_to_id_and_view() -> Result<(), IrError> {
         );
 
         // Erased value id.
-        let v: Value = a.into_erased();
+        let v: Value<'_, _> = a.into_erased();
         let v_id: ValueId<_> = v.id();
         assert_eq!(m.view(v_id), v, "erased Value did not survive id/view");
 
@@ -84,7 +84,7 @@ fn try_view_returns_some_for_owned_ids() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
         assert_eq!(m.try_view(a.id()), Some(a));
         assert_eq!(m.try_view(m.view(f).id()), Some(m.view(f)));
@@ -103,7 +103,7 @@ fn view_works_on_verified_module() -> Result<(), IrError> {
     Module::with_new("id-verified-view", |m| {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let g: GlobalVariable = m.view(m.add_global("g", i32_ty.const_int(7_u32))?);
+        let g: GlobalVariable<'_, _> = m.view(m.add_global("g", i32_ty.const_int(7_u32))?);
         let g_id = g.id();
 
         let f = m.function_builder::<i32, _>("f", fn_ty).build()?;
@@ -148,7 +148,7 @@ fn id_debug_prints_tag_and_slot() -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let rendered = format!("{:?}", a.id());
         assert!(rendered.contains("IntValueId"), "{rendered}");
         assert!(rendered.contains("tag"), "{rendered}");
@@ -187,9 +187,9 @@ fn builder_view_agrees_with_module_view() -> Result<(), IrError> {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), ptr_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let p: PointerValue = m.view(f).param(1)?.try_into()?;
-        let v: Value = a.into_erased();
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let p: PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
+        let v: Value<'_, _> = a.into_erased();
 
         let b = IRBuilder::new(&m);
 
@@ -234,9 +234,9 @@ fn typed_ids_lift_at_operand_positions() -> Result<(), IrError> {
         );
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let x: FloatValue<f32> = m.view(f).param(1)?.try_into()?;
-        let p: PointerValue = m.view(f).param(2)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let x: FloatValue<'_, f32, _> = m.view(f).param(1)?.try_into()?;
+        let p: PointerValue<'_, _> = m.view(f).param(2)?.try_into()?;
 
         let mref = ModuleRef::from(m.as_view());
 
@@ -296,9 +296,9 @@ fn typed_ids_are_call_args() -> Result<(), IrError> {
             false,
         );
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let x: FloatValue<f32> = m.view(f).param(1)?.try_into()?;
-        let p: PointerValue = m.view(f).param(2)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let x: FloatValue<'_, f32, _> = m.view(f).param(1)?.try_into()?;
+        let p: PointerValue<'_, _> = m.view(f).param(2)?.try_into()?;
         assert_int_call_arg(&a.id());
         assert_float_call_arg(&x.id());
         assert_ptr_call_arg(&p.id());
@@ -352,11 +352,11 @@ fn every_id_is_an_erased_operand() {
             false,
         );
         let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-        let g: GlobalVariable = m.view(m.add_global("g", i32_ty.const_int(0_u32)).unwrap());
+        let g: GlobalVariable<'_, _> = m.view(m.add_global("g", i32_ty.const_int(0_u32)).unwrap());
 
-        let a: IntValue<i32> = m.view(f).param(0).unwrap().try_into().unwrap();
-        let x: FloatValue<f32> = m.view(f).param(1).unwrap().try_into().unwrap();
-        let p: PointerValue = m.view(f).param(2).unwrap().try_into().unwrap();
+        let a: IntValue<'_, i32, _> = m.view(f).param(0).unwrap().try_into().unwrap();
+        let x: FloatValue<'_, f32, _> = m.view(f).param(1).unwrap().try_into().unwrap();
+        let p: PointerValue<'_, _> = m.view(f).param(2).unwrap().try_into().unwrap();
 
         assert_erased_operand(&a.into_erased().id());
         assert_erased_operand(&a.id());
@@ -393,7 +393,7 @@ fn ids_drive_erased_operand_slots_without_a_view() -> Result<(), IrError> {
         let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: PointerValue = m.view(f).param(0)?.try_into()?;
+        let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
 
         let v = b.build_int_load::<i32, _, _>(p, "v")?;
         // `build_int_add` already hands back a storable id (cycle B1a).

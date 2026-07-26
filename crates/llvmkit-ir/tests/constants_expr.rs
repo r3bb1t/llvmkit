@@ -78,7 +78,11 @@ fn constant_expr_ptrtoaddr_round_trips() -> Result<(), IrError> {
 fn blockaddress_constant_round_trips() -> Result<(), IrError> {
     Module::with_new("blockaddress_const", |m| {
         let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let addr = m.block_address(m.view(f), &entry)?;
@@ -100,7 +104,11 @@ fn blockaddress_constant_round_trips() -> Result<(), IrError> {
 fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
     Module::with_new("blockaddress_addrspace_const", |m| {
         let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let f = m
             .function_builder::<(), _>("f", fn_ty)
             .linkage(Linkage::External)
@@ -212,7 +220,7 @@ fn bitcast_scalar_pointer_and_one_lane_pointer_vector_round_trip() -> Result<(),
             [],
             ConstantExprFlags::none(),
         )?;
-        let vector = vec_ptr_ty.const_vector::<llvmkit_ir::Constant<'_>, _>([scalar])?;
+        let vector = vec_ptr_ty.const_vector::<llvmkit_ir::Constant<'_, _>, _>([scalar])?;
         let to_scalar = m.constant_expr(
             ptr_ty.as_type(),
             ConstantExprOpcode::BitCast,
@@ -327,13 +335,13 @@ fn invalid_shufflevector_constant_expr_non_i32_mask_is_rejected() -> Result<(), 
         let three = i32_ty.const_int(3i32);
         let four = i32_ty.const_int(4i32);
         let lhs =
-            vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([one, two])?;
-        let rhs =
-            vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([three, four])?;
+            vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([one, two])?;
+        let rhs = vec_i32_ty
+            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([three, four])?;
         let zero64 = i64_ty.const_zero();
         let one64 = i64_ty.const_int(1i64);
-        let mask =
-            vec_i64_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i64>, _>([zero64, one64])?;
+        let mask = vec_i64_ty
+            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i64, _>, _>([zero64, one64])?;
 
         let err = m
             .constant_expr(
@@ -367,13 +375,13 @@ fn invalid_shufflevector_constant_expr_out_of_range_mask_is_rejected() -> Result
         let three = i32_ty.const_int(3i32);
         let four = i32_ty.const_int(4i32);
         let lhs =
-            vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([one, two])?;
-        let rhs =
-            vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([three, four])?;
+            vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([one, two])?;
+        let rhs = vec_i32_ty
+            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([three, four])?;
         let zero = i32_ty.const_zero();
         let out_of_range = i32_ty.const_int(4i32);
         let mask = vec_i32_ty
-            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([zero, out_of_range])?;
+            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([zero, out_of_range])?;
 
         let err = m
             .constant_expr(
@@ -407,12 +415,13 @@ fn shufflevector_constant_expr_uses_mask_operand_when_folding() -> Result<(), Ir
         let two = i32_ty.const_int(2_i32);
         let three = i32_ty.const_int(3_i32);
         let four = i32_ty.const_int(4_i32);
-        let lhs = src_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([one, two])?;
-        let rhs = src_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([three, four])?;
+        let lhs = src_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([one, two])?;
+        let rhs =
+            src_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([three, four])?;
         let zero = i32_ty.const_zero();
         let rhs_lane_one = i32_ty.const_int(3_i32);
         let lhs_lane_one = i32_ty.const_int(1_i32);
-        let mask = result_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+        let mask = result_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([
             zero,
             rhs_lane_one,
             lhs_lane_one,
@@ -443,8 +452,10 @@ fn shufflevector_constant_expr_poison_and_scalable_undef_masks_fold() -> Result<
         let fixed_ty = m.vector_type(i32_ty.as_type(), 2, false);
         let one = i32_ty.const_int(1_i32);
         let two = i32_ty.const_int(2_i32);
-        let lhs = fixed_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([one, two])?;
-        let rhs = fixed_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([one, two])?;
+        let lhs =
+            fixed_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([one, two])?;
+        let rhs =
+            fixed_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([one, two])?;
         let fixed_mask = fixed_ty.as_type().get_poison().as_constant();
         let folded = m.constant_expr(
             fixed_ty.as_type(),
@@ -461,11 +472,11 @@ fn shufflevector_constant_expr_poison_and_scalable_undef_masks_fold() -> Result<
         assert_eq!(folded, fixed_ty.as_type().get_poison().as_constant());
 
         let scalable_ty = m.vector_type(i32_ty.as_type(), 2, true);
-        let lhs = scalable_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+        let lhs = scalable_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([
             i32_ty.const_int(1_i32),
             i32_ty.const_int(1_i32),
         ])?;
-        let rhs = scalable_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+        let rhs = scalable_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([
             i32_ty.const_int(2_i32),
             i32_ty.const_int(2_i32),
         ])?;
@@ -495,15 +506,15 @@ fn shufflevector_constant_expr_rejects_extra_raw_mask_payload() -> Result<(), Ir
     Module::with_new("constexpr_shuffle_extra_mask", |m| {
         let i32_ty = m.i32_type();
         let vec_ty = m.vector_type(i32_ty.as_type(), 2, false);
-        let lhs = vec_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+        let lhs = vec_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([
             i32_ty.const_int(1_i32),
             i32_ty.const_int(2_i32),
         ])?;
-        let rhs = vec_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+        let rhs = vec_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([
             i32_ty.const_int(3_i32),
             i32_ty.const_int(4_i32),
         ])?;
-        let mask = vec_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+        let mask = vec_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([
             i32_ty.const_zero(),
             i32_ty.const_int(1_i32),
         ])?;
@@ -536,17 +547,17 @@ fn scalable_shufflevector_zero_mask_is_accepted() -> Result<(), IrError> {
     Module::with_new("constexpr_scalable_shuffle_zero_mask", |m| {
         let i32_ty = m.i32_type();
         let vec_i32_ty = m.vector_type(i32_ty.as_type(), 2, true);
-        let lhs = vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+        let lhs = vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([
             i32_ty.const_int(1i32),
             i32_ty.const_int(2i32),
         ])?;
-        let rhs = vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([
+        let rhs = vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([
             i32_ty.const_int(3i32),
             i32_ty.const_int(4i32),
         ])?;
         let zero = i32_ty.const_zero();
         let mask =
-            vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([zero, zero])?;
+            vec_i32_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([zero, zero])?;
 
         let expr = m.constant_expr(
             vec_i32_ty.as_type(),
@@ -638,7 +649,7 @@ fn vector_gep_scalar_sequential_indices_are_splatted_before_interning() -> Resul
         let one = i64_ty.const_int(1i64);
         let vec_i64_ty = m.vector_type(i64_ty.as_type(), 2, false);
         let vector_index =
-            vec_i64_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i64>, _>([zero, one])?;
+            vec_i64_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i64, _>, _>([zero, one])?;
         let result_ty = m.vector_type(m.ptr_type(0).as_type(), 2, false);
 
         let gep = m.constant_expr_with_options(
@@ -681,7 +692,7 @@ fn vector_gep_struct_index_width_mismatch_is_rejected() -> Result<(), IrError> {
         let zero32 = i32_ty.const_zero();
         let wrong_index_ty = m.vector_type(i32_ty.as_type(), 2, false);
         let wrong_struct_index = wrong_index_ty
-            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([zero32, zero32])?;
+            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([zero32, zero32])?;
 
         let err = m
             .constant_expr_with_options(
@@ -810,7 +821,7 @@ fn invalid_gep_constant_expr_address_space_mismatch_is_rejected() -> Result<(), 
         let zero = i64_ty.const_zero();
         let one = i64_ty.const_int(1i64);
         let vector_index =
-            vec_i64_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i64>, _>([zero, one])?;
+            vec_i64_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i64, _>, _>([zero, one])?;
         let wrong_result_ty = m.vector_type(m.ptr_type(0).as_type(), 2, false);
 
         let err = m

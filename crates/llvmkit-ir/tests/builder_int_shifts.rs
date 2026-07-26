@@ -20,8 +20,8 @@ fn shl_plain() -> Result<(), IrError> {
         let f = m.add_function_dyn("shl_plain", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i64> = m.view(f).param(0)?.try_into()?;
-        let rhs: IntValue<i64> = m.view(f).param(1)?.try_into()?;
+        let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
+        let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
         let r = b.build_int_shl(lhs, rhs, "z")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -39,8 +39,8 @@ fn lshr_plain() -> Result<(), IrError> {
         let f = m.add_function_dyn("lshr_plain", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i64> = m.view(f).param(0)?.try_into()?;
-        let rhs: IntValue<i64> = m.view(f).param(1)?.try_into()?;
+        let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
+        let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
         let r = b.build_int_lshr(lhs, rhs, "z")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -58,8 +58,8 @@ fn ashr_plain() -> Result<(), IrError> {
         let f = m.add_function_dyn("ashr_plain", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i64> = m.view(f).param(0)?.try_into()?;
-        let rhs: IntValue<i64> = m.view(f).param(1)?.try_into()?;
+        let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
+        let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
         let r = b.build_int_ashr(lhs, rhs, "z")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -78,8 +78,8 @@ fn shl_nuw_nsw() -> Result<(), IrError> {
         let f = m.add_function_dyn("shl_both", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i64> = m.view(f).param(0)?.try_into()?;
-        let rhs: IntValue<i64> = m.view(f).param(1)?.try_into()?;
+        let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
+        let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
         let r = b.build_int_shl_with_flags(lhs, rhs, ShlFlags::new().nuw().nsw(), "z")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -97,8 +97,8 @@ fn lshr_exact() -> Result<(), IrError> {
         let f = m.add_function_dyn("lshr_exact", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i64> = m.view(f).param(0)?.try_into()?;
-        let rhs: IntValue<i64> = m.view(f).param(1)?.try_into()?;
+        let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
+        let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
         let r = b.build_int_lshr_with_flags(lhs, rhs, LShrFlags::new().exact(), "z")?;
         b.build_ret(r)?;
         let text = format!("{m}");
@@ -116,8 +116,8 @@ fn ashr_exact() -> Result<(), IrError> {
         let f = m.add_function_dyn("ashr_exact", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i64> = m.view(f).param(0)?.try_into()?;
-        let rhs: IntValue<i64> = m.view(f).param(1)?.try_into()?;
+        let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
+        let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
         let r = b.build_int_ashr_with_flags(lhs, rhs, AShrFlags::new().exact(), "z")?;
         b.build_ret(r)?;
         let text = format!("{m}");

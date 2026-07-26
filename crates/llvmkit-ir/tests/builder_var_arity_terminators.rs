@@ -33,7 +33,7 @@ fn switch_three_cases_print_form() -> Result<(), IrError> {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
             bb_b.build_ret_void()?;
         }
-        let val: IntValue<i8> = m.view(f).param(0)?.try_into()?;
+        let val: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let (_sealed, switch) = b.build_switch_dyn(val, default_label, "")?;
         let _closed = switch
@@ -85,7 +85,7 @@ fn switch_cases_reader_round_trips() -> Result<(), IrError> {
                 .position_at_end(block)
                 .build_ret_void()?;
         }
-        let val: IntValue<i8> = m.view(f).param(0)?.try_into()?;
+        let val: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
         let builder = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let (_sealed, switch) = builder.build_switch_dyn(val, default_label, "")?;
         let closed = switch
@@ -131,7 +131,7 @@ fn switch_no_cases_only_default() -> Result<(), IrError> {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(dest);
             bb_b.build_ret_void()?;
         }
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let (_sealed, switch) = b.build_switch_dyn(x, dest_label, "")?;
         let _closed = switch.finish();
@@ -169,7 +169,7 @@ fn switch_typed_i32_matching_cases() -> Result<(), IrError> {
                 .position_at_end(block)
                 .build_ret_void()?;
         }
-        let val: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let val: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let builder = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         // `W` is inferred as `i32` from `val: IntValue<i32>`.
         let (_sealed, switch) = builder.build_switch(val, default_label, "")?;
@@ -259,7 +259,7 @@ fn indirectbr_single_destination() -> Result<(), IrError> {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(dest);
             bb_b.build_ret_void()?;
         }
-        let addr: PointerValue = m.view(f).param(0)?.try_into()?;
+        let addr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
         let _closed = ibr.add_destination(dest_label)?.finish();
@@ -292,7 +292,7 @@ fn indirectbr_multiple_destinations() -> Result<(), IrError> {
             let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
             bb_b.build_ret_void()?;
         }
-        let addr: PointerValue = m.view(f).param(0)?.try_into()?;
+        let addr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
         let _closed = ibr
@@ -326,7 +326,7 @@ fn indirectbr_typed_pointer_address_builds_and_verifies() -> Result<(), IrError>
             bb_b.build_ret_void()?;
         }
         // A typed pointer handle: accepted by the identity `IntoPointerValue`.
-        let addr: PointerValue = m.view(f).param(0)?.try_into()?;
+        let addr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
         let _closed = ibr.add_destination(dest_label)?.finish();
@@ -363,7 +363,7 @@ fn indirectbr_erased_value_pointer_address_builds_and_verifies() -> Result<(), I
         // lift, so an erased param must be narrowed to `PointerValue`
         // explicitly (a runtime-checked `try_into`) before it can fill the
         // pointer-typed `build_indirectbr` operand.
-        let addr: PointerValue = m.view(f).param(0)?.into_erased().try_into()?;
+        let addr: PointerValue<'_, _> = m.view(f).param(0)?.into_erased().try_into()?;
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
         let _closed = ibr.add_destination(dest_label)?.finish();

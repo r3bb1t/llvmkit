@@ -159,8 +159,8 @@ where
 
         let entry = module.view(f).append_basic_block(&module, "entry");
         let b = IRBuilder::new_for::<()>(&module).position_at_end(entry);
-        b.build_call_dyn(g, Vec::<Value>::new(), "")?;
-        b.build_call_dyn(h, Vec::<Value>::new(), "")?;
+        b.build_call_dyn(g, Vec::<Value<'_, _>>::new(), "")?;
+        b.build_call_dyn(h, Vec::<Value<'_, _>>::new(), "")?;
         b.build_ret_void();
 
         for function in [g, h] {

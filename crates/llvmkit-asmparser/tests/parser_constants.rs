@@ -508,7 +508,7 @@ fn none_is_token_only() {
         let target_ty = module
             .target_ext_type(
                 "spirv.Image",
-                Vec::<llvmkit_ir::Type>::new(),
+                Vec::<llvmkit_ir::Type<'_, _>>::new(),
                 Vec::<u32>::new(),
             )
             .as_type();
@@ -532,7 +532,7 @@ fn target_ext_zeroinitializer_requires_zero_init_property() {
         let zero_ty = module
             .target_ext_type(
                 "spirv.foo",
-                Vec::<llvmkit_ir::Type>::new(),
+                Vec::<llvmkit_ir::Type<'_, _>>::new(),
                 Vec::<u32>::new(),
             )
             .as_type();
@@ -546,7 +546,7 @@ fn target_ext_zeroinitializer_requires_zero_init_property() {
         let image_ty = module
             .target_ext_type(
                 "spirv.Image",
-                Vec::<llvmkit_ir::Type>::new(),
+                Vec::<llvmkit_ir::Type<'_, _>>::new(),
                 Vec::<u32>::new(),
             )
             .as_type();

@@ -21,7 +21,7 @@ fn load_pointer_operand_is_typed() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let p: PointerValue = m.view(f).param(0)?.try_into()?;
+        let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
         let loaded = b.build_load(i32_ty, p, "v")?;
 
         let view = InstructionView::try_from(b.view(loaded))?;
@@ -29,7 +29,7 @@ fn load_pointer_operand_is_typed() -> Result<(), IrError> {
             panic!("expected a load instruction");
         };
         // `pointer()` returns `PointerValue`, not an erased `Value`.
-        let ptr: PointerValue = load.pointer();
+        let ptr: PointerValue<'_, _> = load.pointer();
         assert_eq!(ptr.into_erased(), p.into_erased());
         Ok(())
     })
@@ -46,7 +46,7 @@ fn direct_call_callee_is_direct() -> Result<(), IrError> {
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = m.view(caller).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
         let call = b.build_call_dyn(callee, [x.into_erased()], "r")?;
 
         match b.view(call).classify_callee() {
@@ -69,8 +69,8 @@ fn classify_is_total() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let y: IntValue<i32> = m.view(f).param(1)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
         let sum = b.build_int_add::<i32, _, _, _>(x, y, "s")?;
         b.build_ret(sum)?;
 
@@ -108,8 +108,8 @@ fn binop_and_cmp_groupings() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         // Non-constant operands so the folder leaves real instructions.
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let y: IntValue<i32> = m.view(f).param(1)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
         let sum = b.build_int_add::<i32, _, _, _>(x, y, "s")?;
         let cmp = b.build_icmp_slt::<i32, _, _, _>(x, y, "c")?;
 
@@ -147,12 +147,12 @@ fn indirect_call_callee_is_indirect() -> Result<(), IrError> {
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let fp: PointerValue = m.view(caller).param(0)?.try_into()?;
-        let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let call = b.build_indirect_call_dyn::<i32, _, Value, _, _>(
+        let fp: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
+        let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+        let call = b.build_indirect_call_dyn::<i32, _, Value<'_, _>, _, _>(
             callee_ty,
             fp,
-            Vec::<Value>::new(),
+            Vec::<Value<'_, _>>::new(),
             "r",
         )?;
 

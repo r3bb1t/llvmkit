@@ -31,7 +31,7 @@ use llvmkit_ir::{
 fn function_value_prints_declare_line() -> Result<(), IrError> {
     Module::with_new("declare_display", |m| {
         let void = m.void_type();
-        let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
         let f = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
 
         assert_eq!(format!("{}", m.view(f)), "declare void @ext()\n");
@@ -50,8 +50,8 @@ fn function_value_define_matches_module_output() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let rhs: IntValue<i32> = m.view(f).param(1)?.try_into()?;
+        let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
         let sum = b.build_int_add(lhs, rhs, "sum")?;
         b.build_ret(sum)?;
 
@@ -117,7 +117,7 @@ fn typed_handles_agree_with_erased_value() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let doubled = b.build_int_add(x, x, "doubled")?;
         b.build_ret(doubled)?;
 

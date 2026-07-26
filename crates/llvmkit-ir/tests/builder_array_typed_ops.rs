@@ -34,7 +34,7 @@ fn typed_arr_extract_returns_typed_element() {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         // Narrow the erased `[4 x i32]` param into the statically typed handle.
-        let a: ArrayValue<'_, i32, ArrLen<4>> = m
+        let a: ArrayValue<'_, i32, ArrLen<4>, _> = m
             .view(f)
             .param(0)
             .expect("p0")
@@ -43,7 +43,7 @@ fn typed_arr_extract_returns_typed_element() {
             .expect("narrow p0");
 
         // Return type inferred from `a`'s element marker: `IntValue<'_, i32>`.
-        let e: IntValue<'_, i32> = b.build_arr_extract(a, 2, "e").expect("extract");
+        let e: IntValue<'_, i32, _> = b.build_arr_extract(a, 2, "e").expect("extract");
         assert_eq!(e.ty(), i32_ty, "extracted element must be i32-typed");
 
         b.build_ret(e).expect("ret");
@@ -75,7 +75,7 @@ fn typed_arr_insert_round_trips() {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let a: ArrayValue<'_, i32, ArrLen<4>> = m
+        let a: ArrayValue<'_, i32, ArrLen<4>, _> = m
             .view(f)
             .param(0)
             .expect("p0")
@@ -83,7 +83,7 @@ fn typed_arr_insert_round_trips() {
             .try_into()
             .expect("narrow p0");
 
-        let seven: IntValue<'_, i32> = i32_ty
+        let seven: IntValue<'_, i32, _> = i32_ty
             .const_int(7_i32)
             .into_erased()
             .try_into()
@@ -91,9 +91,9 @@ fn typed_arr_insert_round_trips() {
 
         // Result keeps the `i32` / `ArrLen<4>` markers, so it feeds straight
         // back into another typed array op.
-        let updated: ArrayValue<'_, i32, ArrLen<4>> =
+        let updated: ArrayValue<'_, i32, ArrLen<4>, _> =
             b.build_arr_insert(a, seven, 1, "u").expect("insert");
-        let back: IntValue<'_, i32> = b.build_arr_extract(updated, 1, "back").expect("extract");
+        let back: IntValue<'_, i32, _> = b.build_arr_extract(updated, 1, "back").expect("extract");
         assert_eq!(back.ty(), i32_ty, "round-tripped element must be i32-typed");
 
         b.build_ret_void().expect("ret void");

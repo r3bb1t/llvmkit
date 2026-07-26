@@ -36,14 +36,14 @@ fn typed_vector_binops_match_dyn_golden() {
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         // Narrow the erased `<2 x i64>` params into the statically typed handle.
-        let a: VectorValue<'_, i64, Len<2>> = m
+        let a: VectorValue<'_, i64, Len<2>, _> = m
             .view(f)
             .param(0)
             .expect("p0")
             .into_erased()
             .try_into()
             .expect("narrow p0");
-        let c: VectorValue<'_, i64, Len<2>> = m
+        let c: VectorValue<'_, i64, Len<2>, _> = m
             .view(f)
             .param(1)
             .expect("p1")
@@ -58,9 +58,9 @@ fn typed_vector_binops_match_dyn_golden() {
 
         let two = i64_ty.const_int(2i64);
         let shamt_const = vec_ty
-            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i64>, _>([two, two])
+            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i64, _>, _>([two, two])
             .expect("shamt vec");
-        let shamt: VectorValue<'_, i64, Len<2>> =
+        let shamt: VectorValue<'_, i64, Len<2>, _> =
             shamt_const.into_erased().try_into().expect("narrow shamt");
         let _sh = b.build_vec_int_shl(s, shamt, "sh").expect("shl vec");
 
@@ -99,7 +99,7 @@ fn typed_extract_returns_typed_element() {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let a: VectorValue<'_, i64, Len<2>> = m
+        let a: VectorValue<'_, i64, Len<2>, _> = m
             .view(f)
             .param(0)
             .expect("p0")
@@ -108,7 +108,7 @@ fn typed_extract_returns_typed_element() {
             .expect("narrow p0");
 
         // Return type inferred from `a`'s element marker: `IntValue<'_, i64>`.
-        let e: IntValue<'_, i64> = b
+        let e: IntValue<'_, i64, _> = b
             .build_vec_extract(a, i64_ty.const_int(0_i64), "e")
             .expect("extract");
         assert_eq!(e.ty(), i64_ty, "extracted element must be i64-typed");
@@ -139,7 +139,7 @@ fn typed_splat_element_from_scalar_length_free() {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let scalar: IntValue<'_, i32> = m
+        let scalar: IntValue<'_, i32, _> = m
             .view(f)
             .param(0)
             .expect("p0")
@@ -148,7 +148,7 @@ fn typed_splat_element_from_scalar_length_free() {
 
         // Element `i32` and length `Len<4>` come from the result annotation;
         // `scalar: E::Value` then checks the scalar is an `IntValue<i32>`.
-        let sp: VectorValue<'_, i32, Len<4>> = b.build_vec_splat(scalar, "sp").expect("splat");
+        let sp: VectorValue<'_, i32, Len<4>, _> = b.build_vec_splat(scalar, "sp").expect("splat");
         let _ = sp.into_erased();
 
         b.build_ret_void().expect("ret void");

@@ -1782,7 +1782,7 @@ mod tests {
             b.build_ret(i32_ty.const_int(0_u32))?;
             m.verify_borrowed()?;
 
-            let function: FunctionView<'_> = m.view(f).into();
+            let function: FunctionView<'_, _> = m.view(f).into();
             let mut fam = FunctionAnalysisManager::new();
             type Reqs = (DominatorTreeAnalysis,);
             <Reqs as FunctionAnalysisList<'_, _>>::prefetch(&mut fam, function)?;
@@ -1828,7 +1828,7 @@ mod tests {
             let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
             b2.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function: FunctionView<'_> = m.view(f).into();
+            let function: FunctionView<'_, _> = m.view(f).into();
 
             // Cache a dom tree while `next` is still reachable.
             let mut dt = DominatorTree::new(function.as_function());
@@ -1910,7 +1910,7 @@ mod tests {
             let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
             b.build_ret(i32_ty.const_int(0_u32))?;
 
-            let function: FunctionView<'_> = m.view(f).into();
+            let function: FunctionView<'_, _> = m.view(f).into();
             type Reqs = (ThresholdAnalysis,);
 
             // Without pre-registration, prefetch fails: the no-op

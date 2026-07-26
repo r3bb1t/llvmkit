@@ -572,7 +572,7 @@ fn const_struct_initializer() {
         let undef_i8 = i8_ty.as_type().get_undef();
         let poison_i64 = i64_ty.as_type().get_poison();
         let s = st
-            .const_struct::<llvmkit_ir::Constant<'_>, _>([
+            .const_struct::<llvmkit_ir::Constant<'_, _>, _>([
                 neg_one.as_constant(),
                 undef_i8.into(),
                 poison_i64.into(),
@@ -597,7 +597,7 @@ fn const_array_i32_initializer() {
         let zero = i32_ty.const_int(0i32);
         let one = i32_ty.const_int(1i32);
         let a = arr
-            .const_array::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([zero, one, zero])
+            .const_array::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([zero, one, zero])
             .expect("array");
         m.add_global_constant("constant.array.i32", a).expect("add");
         let text = module_text(&m);
@@ -619,7 +619,7 @@ fn const_array_i8_prints_as_cstring() {
         let zero = i8_ty.const_int(0i8);
         let one = i8_ty.const_int(1i8);
         let a = arr
-            .const_array::<llvmkit_ir::ConstantIntValue<'_, i8>, _>([zero, one, zero])
+            .const_array::<llvmkit_ir::ConstantIntValue<'_, i8, _>, _>([zero, one, zero])
             .expect("array");
         m.add_global_constant("constant.array.i8", a).expect("add");
         let text = module_text(&m);
@@ -638,14 +638,14 @@ fn appending_global_cstring() {
     Module::with_new("m", |m| {
         let i8_ty = m.i8_type();
         let arr = m.array_type(i8_ty.as_type(), 4);
-        let bytes: [llvmkit_ir::ConstantIntValue<'_, i8>; 4] = [
+        let bytes: [llvmkit_ir::ConstantIntValue<'_, i8, _>; 4] = [
             i8_ty.const_int(b't' as i8),
             i8_ty.const_int(b'e' as i8),
             i8_ty.const_int(b's' as i8),
             i8_ty.const_int(b't' as i8),
         ];
         let a = arr
-            .const_array::<llvmkit_ir::ConstantIntValue<'_, i8>, _>(bytes)
+            .const_array::<llvmkit_ir::ConstantIntValue<'_, i8, _>, _>(bytes)
             .expect("array");
         m.global_builder("g.appending", arr.as_type())
             .linkage(Linkage::Appending)
@@ -670,7 +670,7 @@ fn const_vector_initializer() {
         let zero = i32_ty.const_int(0i32);
         let one = i32_ty.const_int(1i32);
         let v = vec_ty
-            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([zero, one, zero])
+            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([zero, one, zero])
             .expect("vector");
         m.add_global_constant("constant.vector.i32", v)
             .expect("add");
@@ -689,7 +689,11 @@ fn const_vector_initializer() {
 fn function_pointer_global_initializer_verifies() -> Result<(), IrError> {
     Module::with_new("fnptr_init", |m| {
         let void_ty = m.void_type();
-        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let callee_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let init = m.view(callee).as_global_constant_ptr();
         m.add_global_constant("slot", init)?;
@@ -711,7 +715,11 @@ fn function_pointer_aggregate_initializer_prints_ptr_base() -> Result<(), IrErro
     Module::with_new("fnptr_agg", |m| {
         let void_ty = m.void_type();
         let ptr_ty = m.ptr_type(0);
-        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let callee_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
         let arr_ty = m.array_type(ptr_ty.as_type(), 1);
         let elem = m.view(callee).as_aggregate_ptr(0);

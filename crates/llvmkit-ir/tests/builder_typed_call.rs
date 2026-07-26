@@ -107,7 +107,7 @@ fn typed_call_pointer_result_feeds_ret() -> Result<(), IrError> {
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Ptr>(&m).position_at_end(entry);
         let call = b.build_call(callee, (), "p")?;
-        let p: PointerValue = b.view(call).result();
+        let p: PointerValue<'_, _> = b.view(call).result();
         b.build_ret(p)?;
         let text = format!("{m}");
         assert!(text.contains("%p = call ptr @alloc_ptr()"), "got:\n{text}");
@@ -184,7 +184,7 @@ fn typed_invoke_wires_multiple_argument_operands_in_order() -> Result<(), IrErro
             unwind_label,
             "iv",
         )?;
-        let result: IntValue<i32> = invoke.to_erased().try_into()?;
+        let result: IntValue<'_, i32, _> = invoke.to_erased().try_into()?;
         let bn = IRBuilder::new_for::<i32>(&m).position_at_end(normal);
         bn.build_ret(result)?;
         let text = format!("{m}");
@@ -283,8 +283,8 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(m, "entry");
         let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
-        let x: IntValue<i32> = m.view(caller).param(0)?.try_into()?;
-        let y: IntValue<i32> = m.view(caller).param(1)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
+        let y: IntValue<'_, i32, _> = m.view(caller).param(1)?.try_into()?;
         let inst = b.build_call_dyn(
             callee.as_function(),
             [x.into_erased(), y.into_erased()],
@@ -400,7 +400,7 @@ fn build_call_dyn_rejects_wrong_argument_count() -> Result<(), IrError> {
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = m.view(caller).param(0)?.try_into()?;
+        let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
         let err = b
             .build_call_dyn(callee, [x.into_erased()], "bad")
             .expect_err("one argument against a two-parameter callee must be rejected");
@@ -433,7 +433,7 @@ fn build_call_dyn_rejects_wrong_argument_type() -> Result<(), IrError> {
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: llvmkit_ir::FloatValue<f64> = m.view(caller).param(0)?.try_into()?;
+        let x: llvmkit_ir::FloatValue<'_, f64, _> = m.view(caller).param(0)?.try_into()?;
         let err = b
             .build_call_dyn(callee, [x.into_erased()], "bad")
             .expect_err("an f64 argument against an i32 parameter must be rejected");
@@ -480,12 +480,16 @@ fn build_indirect_call_dyn_int_marker_against_void_fn_type_reports_asymmetric_mi
         let callee_ptr = PointerValue::try_from(m.view(host).param(0)?)?;
         // The asserted callee function type returns `void`, but `R2 =
         // i32` asserts an integer result -- a mismatch.
-        let void_fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
+        let void_fn_ty = m.fn_type(
+            void_ty.as_type(),
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            false,
+        );
         let err = b
             .build_indirect_call_dyn::<i32, _, _, _, _>(
                 void_fn_ty,
                 callee_ptr,
-                Vec::<llvmkit_ir::Value>::new(),
+                Vec::<llvmkit_ir::Value<'_, _>>::new(),
                 "bad",
             )
             .expect_err("asserting i32 against a void callee must be rejected");

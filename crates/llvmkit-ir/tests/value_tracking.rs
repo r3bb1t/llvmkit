@@ -2,16 +2,19 @@ use llvmkit_ir::{
     Align, ApInt, AttrIndex, AttrKind, Attribute, AttributeStorage, Brand, CFGAnalyses,
     CallAttributeData, ConstantExprOpcode, ConstantExprOptions, DominatorTreeAnalysis, Dyn,
     FunctionAnalysisManager, IRBuilder, InstructionView, IntValue, IrError, KnownBits,
-    KnownBitsAnalysis, LShrFlags, Linkage, MetadataAttachmentKind, MetadataRef, Module, MulFlags,
-    NoFolder, PointerValue, PreservedAnalyses, Value, ValueTrackingQuery, Width,
-    compute_known_bits, is_known_non_zero, is_known_one, is_known_zero,
+    KnownBitsAnalysis, LShrFlags, Linkage, MetadataAttachmentKind, MetadataRef, Module,
+    ModuleBrand, MulFlags, NoFolder, PointerValue, PreservedAnalyses, Value, ValueTrackingQuery,
+    Width, compute_known_bits, is_known_non_zero, is_known_one, is_known_zero,
 };
 
 fn zeros(width: usize) -> String {
     "0".repeat(width)
 }
 
-fn known<'a>(value: Value<'a>, query: &ValueTrackingQuery<'_, 'a>) -> Result<KnownBits, IrError> {
+fn known<'a, B: ModuleBrand + 'a>(
+    value: Value<'a, B>,
+    query: &ValueTrackingQuery<'_, 'a, B>,
+) -> Result<KnownBits, IrError> {
     compute_known_bits(value, query)
 }
 
@@ -129,11 +132,11 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
         let join_label = join.id();
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let cond: IntValue<bool> = m.view(f).param(0)?.try_into()?;
+        let cond: IntValue<'_, bool, _> = m.view(f).param(0)?.try_into()?;
         let c_aa = i8_ty.const_int(0xaa_u8);
         let c_ae = i8_ty.const_int(0xae_u8);
-        let c_aa_val: IntValue<i8> = c_aa.as_constant().try_into()?;
-        let c_ae_val: IntValue<i8> = c_ae.as_constant().try_into()?;
+        let c_aa_val: IntValue<'_, i8, _> = c_aa.as_constant().try_into()?;
+        let c_ae_val: IntValue<'_, i8, _> = c_ae.as_constant().try_into()?;
         let select = b.build_select(cond, c_aa_val, c_ae_val, "sel")?;
         b.build_br_with_args(join_label, &[i8_ty.const_int(0x03_u8).into_erased()])?;
 
@@ -142,10 +145,11 @@ fn casts_select_phi_freeze_and_icmp_compute_known_bits() -> Result<(), IrError> 
 
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(join);
         let phi = params[0];
-        let trunc_src: IntValue<i16> = i16_ty.const_int(0x00f0_u16).as_constant().try_into()?;
-        let zext_src: IntValue<i8> = c_aa.as_constant().try_into()?;
-        let sext_src: IntValue<i8> = c_aa.as_constant().try_into()?;
-        let bitcast_src: IntValue<i8> = i8_ty.const_int(0x5a_u8).as_constant().try_into()?;
+        let trunc_src: IntValue<'_, i16, _> =
+            i16_ty.const_int(0x00f0_u16).as_constant().try_into()?;
+        let zext_src: IntValue<'_, i8, _> = c_aa.as_constant().try_into()?;
+        let sext_src: IntValue<'_, i8, _> = c_aa.as_constant().try_into()?;
+        let bitcast_src: IntValue<'_, i8, _> = i8_ty.const_int(0x5a_u8).as_constant().try_into()?;
         let trunc = b.build_trunc::<i16, i8, _, _>(trunc_src, i8_ty, "tr")?;
         let zext = b.build_zext::<i8, i16, _, _>(zext_src, i16_ty, "zext")?;
         let sext = b.build_sext::<i8, i16, _, _>(sext_src, i16_ty, "sext")?;
@@ -196,7 +200,7 @@ fn bitwise_with_self_plus_odd_refines_low_bit() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let x: IntValue<i8> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
         let x_plus_one = b.build_int_add::<i8, _, _, _>(x, i8_ty.const_int(1_u8), "x1")?;
         let and_v = b.build_int_and::<i8, _, _, _>(x, x_plus_one, "and")?;
         let or_v = b.build_int_or::<i8, _, _, _>(x, x_plus_one, "or")?;
@@ -221,7 +225,7 @@ fn mul_nsw_self_product_is_non_negative() -> Result<(), IrError> {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let x: IntValue<i8> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
         let square = b.build_int_mul_with_flags(x, x, MulFlags::new().nsw(), "square")?;
 
         let dl = m.data_layout();
@@ -275,7 +279,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let f0 = m.add_function_dyn("test0", fn_ty, Linkage::External)?;
         let entry0 = m.view(f0).append_basic_block(&m, "entry");
         let b0 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry0);
-        let p0: PointerValue = m.view(f0).param(0)?.try_into()?;
+        let p0: PointerValue<'_, _> = m.view(f0).param(0)?.try_into()?;
         let val0 = b0.build_int_load::<i8, _, _>(p0, "val")?;
         let lo0 = m.metadata_constant(i8_ty.const_int(-50_i8));
         let hi0 = m.metadata_constant(i8_ty.const_int(0_i8));
@@ -290,7 +294,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let f1 = m.add_function_dyn("test1", fn_ty, Linkage::External)?;
         let entry1 = m.view(f1).append_basic_block(&m, "entry");
         let b1 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry1);
-        let p1: PointerValue = m.view(f1).param(0)?.try_into()?;
+        let p1: PointerValue<'_, _> = m.view(f1).param(0)?.try_into()?;
         let val1 = b1.build_int_load::<i8, _, _>(p1, "val")?;
         let lo1 = m.metadata_constant(i8_ty.const_int(64_i8));
         let hi1 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?);
@@ -305,7 +309,7 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
         let f2 = m.add_function_dyn("test2", fn_ty, Linkage::External)?;
         let entry2 = m.view(f2).append_basic_block(&m, "entry");
         let b2 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry2);
-        let p2: PointerValue = m.view(f2).param(0)?.try_into()?;
+        let p2: PointerValue<'_, _> = m.view(f2).param(0)?.try_into()?;
         let val2 = b2.build_int_load::<i8, _, _>(p2, "val")?;
         let lo2 = m.metadata_constant(i8_ty.const_int(64_i8));
         let hi2 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[129]))?);
@@ -422,7 +426,7 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
                 invoke_unwind_label,
                 llvmkit_ir::CallSiteConfig::new("invoke").attrs(attrs),
             )?;
-        let invoke_value: IntValue<i8> = invoke.to_erased().try_into()?;
+        let invoke_value: IntValue<'_, i8, _> = invoke.to_erased().try_into()?;
 
         IRBuilder::new_for::<Dyn>(&m)
             .position_at_end(invoke_unwind)
@@ -464,7 +468,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
             .arg(i1_ty.const_int(true))
             .name("abs")
             .build()?;
-        let abs: IntValue<i8> = b
+        let abs: IntValue<'_, i8, _> = b
             .view(abs_call)
             .return_value()
             .expect("abs returns value")
@@ -476,7 +480,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
             .arg(i8_ty.const_int(0x10_u8))
             .name("rev")
             .build()?;
-        let bitreverse: IntValue<i8> = b
+        let bitreverse: IntValue<'_, i8, _> = b
             .view(bitreverse_call)
             .return_value()
             .expect("bitreverse returns value")
@@ -489,7 +493,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
             .arg(i1_ty.const_int(true))
             .name("ctlz")
             .build()?;
-        let ctlz: IntValue<i8> = b
+        let ctlz: IntValue<'_, i8, _> = b
             .view(ctlz_call)
             .return_value()
             .expect("ctlz returns value")
@@ -501,7 +505,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
             .arg(i8_ty.const_int(0x0f_u8))
             .name("pop")
             .build()?;
-        let ctpop: IntValue<i8> = b
+        let ctpop: IntValue<'_, i8, _> = b
             .view(ctpop_call)
             .return_value()
             .expect("ctpop returns value")
@@ -514,7 +518,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
             .arg(i8_ty.const_int(10_u8))
             .name("usat")
             .build()?;
-        let uadd_sat: IntValue<i8> = b
+        let uadd_sat: IntValue<'_, i8, _> = b
             .view(uadd_sat_call)
             .return_value()
             .expect("uadd.sat returns value")
@@ -527,7 +531,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
             .arg(i8_ty.const_int(7_i8))
             .name("smax")
             .build()?;
-        let smax: IntValue<i8> = b
+        let smax: IntValue<'_, i8, _> = b
             .view(smax_call)
             .return_value()
             .expect("smax returns value")
@@ -539,7 +543,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
             .arg(i16_ty.const_int(0x1234_u16))
             .name("swap")
             .build()?;
-        let bswap: IntValue<i16> = b
+        let bswap: IntValue<'_, i16, _> = b
             .view(bswap_call)
             .return_value()
             .expect("bswap returns value")
@@ -553,7 +557,7 @@ fn intrinsic_calls_compute_known_bits() -> Result<(), IrError> {
             .arg(i8_ty.const_int(4_u8))
             .name("fshl")
             .build()?;
-        let fshl: IntValue<i8> = b
+        let fshl: IntValue<'_, i8, _> = b
             .view(fshl_call)
             .return_value()
             .expect("fshl returns value")
@@ -604,7 +608,7 @@ fn intrinsic_known_bits_ignore_mismatched_declarations() -> Result<(), IrError> 
             .arg(i1_ty.const_int(true))
             .name("abs")
             .build()?;
-        let call: IntValue<i16> = b
+        let call: IntValue<'_, i16, _> = b
             .view(call_call)
             .return_value()
             .expect("lookalike returns value")
@@ -632,7 +636,7 @@ fn query_carries_context_demanded_elements_and_instr_info_policy() -> Result<(),
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let p: PointerValue = m.view(f).param(0)?.try_into()?;
+        let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
         let load = b.build_int_load::<i8, _, _>(p, "load")?;
         let load_inst = InstructionView::try_from(b.view(load).into_erased())?;
         let demanded = ApInt::from_words(1, &[1]);
@@ -745,7 +749,7 @@ fn shift_with_possible_invalid_amount_is_unknown_after_freeze() -> Result<(), Ir
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let x: IntValue<Width<4>> = m.view(f).param(0)?.try_into()?;
+        let x: IntValue<'_, Width<4>, _> = m.view(f).param(0)?.try_into()?;
         let one = i4_ty.const_ap_int(&ApInt::from_words(4, &[1]))?;
         let eight = i4_ty.const_ap_int(&ApInt::from_words(4, &[8]))?;
         let shift = b.build_int_and::<Width<4>, _, _, _>(x, eight, "shift")?;
@@ -844,7 +848,7 @@ fn gep_and_vector_lane_operations_compute_known_bits() -> Result<(), IrError> {
         )?;
         let extract = b.build_extract_element(lane01, i8_ty.const_int(1_u8), "extract")?;
 
-        let rhs = vec_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i8>, _>([
+        let rhs = vec_ty.const_vector::<llvmkit_ir::ConstantIntValue<'_, i8, _>, _>([
             i8_ty.const_int(0x55_u8),
             i8_ty.const_int(0xaa_u8),
         ])?;
@@ -884,7 +888,7 @@ fn vector_gep_known_bits_use_element_pointer_address_space_index_width() -> Resu
         let base = ptr_vec_ty.const_vector([ptr1_ty.const_null(); 2])?;
         let minus_one = i32_ty.const_int(-1_i32);
         let index = i32_vec_ty
-            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([minus_one, minus_one])?;
+            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([minus_one, minus_one])?;
         let gep = m.constant_expr_with_options(
             ptr_vec_ty.as_type(),
             ConstantExprOpcode::GetElementPtr,

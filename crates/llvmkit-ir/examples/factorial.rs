@@ -49,9 +49,9 @@
 //! cargo run -p llvmkit-ir --example factorial
 //! ```
 
-use llvmkit_ir::{IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module};
+use llvmkit_ir::{IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module, ModuleBrand};
 
-pub fn build(m: &Module<'_>) -> Result<(), IrError> {
+pub fn build<B: ModuleBrand>(m: &Module<'_, B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m
@@ -103,8 +103,8 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     // `[ next_acc, next_i ]`. Those values are defined before the latch
     // terminator, so they dominate the branch that carries them.
     let b = IRBuilder::at_end(loop_bb);
-    let acc: IntValue<i32> = params[0].try_into()?;
-    let i: IntValue<i32> = params[1].try_into()?;
+    let acc: IntValue<'_, i32, _> = params[0].try_into()?;
+    let i: IntValue<'_, i32, _> = params[1].try_into()?;
     let next_acc = b.build_int_mul(acc, i, "next_acc")?;
     let next_i = b.build_int_sub(i, 1_i32, "next_i")?;
     let done = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;

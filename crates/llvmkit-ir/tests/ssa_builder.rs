@@ -20,8 +20,8 @@
 //! convention unless noted otherwise.
 
 use llvmkit_ir::{
-    FloatValue, IntPredicate, IntValue, IrError, Linkage, Module, NoFolder, PointerValue, Ptr,
-    SsaBuilder,
+    FloatValue, IntPredicate, IntValue, IrError, Linkage, Module, ModuleBrand, NoFolder,
+    PointerValue, Ptr, SsaBuilder,
 };
 use proptest::prelude::*;
 
@@ -278,7 +278,7 @@ fn diamond_merge_places_single_phi_at_join() -> Result<(), IrError> {
         let x = b.declare_int_var::<i32, _>("x");
 
         let b = b.switch_to_block(entry)?;
-        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let cond = b
             .ins()
             .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "cond")?;
@@ -335,7 +335,7 @@ fn loop_backedge_completes_incomplete_phi_on_seal() -> Result<(), IrError> {
         let i_var = b.declare_int_var::<i32, _>("i");
 
         let mut b = b.switch_to_block(entry)?;
-        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let is_zero =
             b.ins()
                 .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
@@ -784,7 +784,7 @@ fn pointer_var_wrong_addrspace_def_rejected() -> Result<(), IrError> {
         // The parameter is a pointer in addrspace 1; `px` was declared
         // in addrspace 0. Narrowing to `PointerValue` succeeds (it is a
         // pointer); the address-space mismatch is caught by `def_pointer_var`.
-        let wrong_addrspace_ptr: PointerValue = m.view(f).param(0)?.try_into()?;
+        let wrong_addrspace_ptr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
         let err = b
             .def_pointer_var(px, wrong_addrspace_ptr)
             .expect_err("a wrong-address-space def must be rejected");
@@ -840,7 +840,7 @@ fn switch_records_one_edge_per_case_occurrence() -> Result<(), IrError> {
         let x = b.declare_int_var::<i32, _>("x");
 
         let b = b.switch_to_block(entry)?;
-        let mode: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let mode: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let take_pre =
             b.ins()
                 .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, mode, 0_i32, "take_pre")?;
@@ -853,7 +853,7 @@ fn switch_records_one_edge_per_case_occurrence() -> Result<(), IrError> {
         let b = b.br(shared)?;
 
         let mut b = b.switch_to_block(switch_source)?;
-        let n: IntValue<i32> = m.view(f).param(1)?.try_into()?;
+        let n: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
         b.def_int_var(x, 100_i32)?;
         let case0 = 0_i32;
         let case1 = 1_i32;
@@ -934,7 +934,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
         let x = b.declare_int_var::<i32, _>("x");
 
         let b = b.switch_to_block(entry)?;
-        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let cond = b
             .ins()
             .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "cond")?;
@@ -973,7 +973,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
         let i_var = b.declare_int_var::<i32, _>("i");
 
         let mut b = b.switch_to_block(entry)?;
-        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let is_zero =
             b.ins()
                 .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
@@ -1024,9 +1024,9 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
         let px = b.declare_pointer_var("px");
 
         let mut b = b.switch_to_block(entry)?;
-        let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
-        let fparam: FloatValue<f64> = m.view(f).param(1)?.try_into()?;
-        let pparam: PointerValue = m.view(f).param(2)?.try_into()?;
+        let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+        let fparam: FloatValue<'_, f64, _> = m.view(f).param(1)?.try_into()?;
+        let pparam: PointerValue<'_, _> = m.view(f).param(2)?.try_into()?;
         b.def_float_var(fx, fparam)?;
         b.def_pointer_var(px, pparam)?;
         let case0 = 0_i32;
@@ -1233,7 +1233,10 @@ where
 /// `undef_var = Some(idx)`, variable `idx`'s def in `entry` is skipped, so
 /// `exit`'s read of it chases back through `mid` to the sealed,
 /// predecessor-less function entry and must error.
-fn build_straight_line(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
+fn build_straight_line<B: ModuleBrand>(
+    m: &Module<'_, B>,
+    case: &GeneratedCase,
+) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -1275,7 +1278,10 @@ fn build_straight_line(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutc
 /// `idx`'s def on the `right` arm is skipped, so `join`'s read chases a
 /// phi operand back through the sealed `right` block to function entry and
 /// must error.
-fn build_diamond(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
+fn build_diamond<B: ModuleBrand>(
+    m: &Module<'_, B>,
+    case: &GeneratedCase,
+) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -1290,7 +1296,7 @@ fn build_diamond(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, I
         .collect();
 
     let b = b.switch_to_block(entry)?;
-    let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let cond = b
         .ins()
         .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "cond")?;
@@ -1340,7 +1346,10 @@ fn build_diamond(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, I
 /// phi via `add_phi_operands`, which chases the entry-edge operand back
 /// to the sealed, predecessor-less function entry) -- i.e. at
 /// `seal_block(loop_bb)`, not at `use_int_var`.
-fn build_loop(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
+fn build_loop<B: ModuleBrand>(
+    m: &Module<'_, B>,
+    case: &GeneratedCase,
+) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("factorial", fn_ty, Linkage::External)?;
@@ -1355,7 +1364,7 @@ fn build_loop(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrEr
         .collect();
 
     let mut b = b.switch_to_block(entry)?;
-    let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let is_zero = b
         .ins()
         .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
@@ -1411,7 +1420,10 @@ fn build_loop(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrEr
 /// multi-pred join fed by a `switch` terminator, the third CFG-edge kind
 /// alongside `br`/`cond_br`). With `undef_var = Some(idx)`, variable
 /// `idx`'s def before the switch is skipped, so `shared`'s read must error.
-fn build_switch_shared(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
+fn build_switch_shared<B: ModuleBrand>(
+    m: &Module<'_, B>,
+    case: &GeneratedCase,
+) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -1425,7 +1437,7 @@ fn build_switch_shared(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutc
         .collect();
 
     let mut b = b.switch_to_block(entry)?;
-    let n: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+    let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     for (i, var) in vars.iter().enumerate() {
         if case.undef_var != Some(i) {
             b.def_int_var(*var, case.literals[i])?;
@@ -1448,7 +1460,10 @@ fn build_switch_shared(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutc
     Ok(BuildOutcome::Finished)
 }
 
-fn build_case(m: &Module<'_>, case: &GeneratedCase) -> Result<BuildOutcome, IrError> {
+fn build_case<B: ModuleBrand>(
+    m: &Module<'_, B>,
+    case: &GeneratedCase,
+) -> Result<BuildOutcome, IrError> {
     match case.shape {
         ShapeKind::StraightLine => build_straight_line(m, case),
         ShapeKind::Diamond => build_diamond(m, case),

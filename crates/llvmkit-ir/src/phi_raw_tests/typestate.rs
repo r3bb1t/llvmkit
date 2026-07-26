@@ -115,7 +115,7 @@ fn rediscovered_phi_narrows_to_result_type() -> Result<(), IrError> {
         let Some(InstructionKind::Phi(PhiKind::Fp(fp))) = fp_phi.as_view().kind() else {
             panic!("expected float phi to rediscover as PhiKind::Fp");
         };
-        let _fp_result: FloatValue<FloatDyn> = fp.as_float_value();
+        let _fp_result: FloatValue<'_, FloatDyn, _> = fp.as_float_value();
 
         assert!(matches!(
             ptr_phi.as_view().kind(),
@@ -153,7 +153,7 @@ fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
         // while the cursor sits at the end of the block. The phi must still
         // land at the block's phi head, ahead of the add.
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let _x = b.build_int_add(a, 1_i32, "x")?;
         let i32_dyn = m.custom_width_int_type(32)?;
         let _phi = b
@@ -202,7 +202,7 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
         b.build_br(join_label)?;
 
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
-        let a: IntValue<i32> = m.view(f).param(0)?.try_into()?;
+        let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let _x = b.build_int_add(a, 1_i32, "x")?;
         // p1 then p2, both after the add. Head placement must not reverse
         // them: p1 stays ahead of p2.
@@ -248,7 +248,7 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
 fn phi_range_iterates_three_phis() -> Result<(), IrError> {
     Module::with_new("p", |m| {
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<crate::Type>::new(), false);
+        let fn_ty = m.fn_type(i32_ty, Vec::<crate::Type<'_, _>>::new(), false);
         let f = m.add_function_dyn("p", fn_ty, Linkage::External)?;
         let bb = m.view(f).append_basic_block(&m, "bb");
         let bb_label = bb.id();
