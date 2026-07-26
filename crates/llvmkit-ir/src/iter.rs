@@ -22,7 +22,7 @@ use super::basic_block::BasicBlock;
 use super::block_state::{BlockTerminationState, Unterminated};
 use super::instruction::{Instruction, state};
 use super::marker::ReturnMarker;
-use super::module::{Brand, ModuleBrand};
+use super::module::ModuleBrand;
 use super::value::ValueSlot;
 
 /// Single-pass cursor over an instruction list. Each [`Self::next`]
@@ -33,12 +33,7 @@ use super::value::ValueSlot;
 /// invalidate the cursor.
 ///
 /// Mirrors LLVM's `auto Next = std::next(I);` idiom.
-pub struct BlockCursor<
-    'ctx,
-    R: ReturnMarker,
-    S: BlockTerminationState = Unterminated,
-    B: ModuleBrand = Brand<'ctx>,
-> {
+pub struct BlockCursor<'ctx, R: ReturnMarker, S: BlockTerminationState, B: ModuleBrand> {
     block: BasicBlock<'ctx, R, S, B>,
     /// Snapshot of the block's instruction list at cursor creation.
     /// We snapshot once and walk by index so subsequent mutations to
@@ -51,7 +46,7 @@ pub struct BlockCursor<
 }
 
 /// Result item yielded by [`BlockCursor::next`].
-pub type BlockCursorStep<'ctx, R, S, B = Brand<'ctx>> = (
+pub type BlockCursorStep<'ctx, R, S, B> = (
     Instruction<'ctx, state::Attached, B>,
     BlockCursor<'ctx, R, S, B>,
 );

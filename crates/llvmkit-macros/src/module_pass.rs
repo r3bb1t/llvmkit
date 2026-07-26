@@ -41,16 +41,19 @@ fn try_expand(attr: TokenStream, item: TokenStream) -> Result<TokenStream2> {
     let inherent = pass.inherent();
 
     Ok(quote! {
-        impl<'ctx, B: #ir::ModuleBrand + 'ctx> #ir::ModulePass<'ctx, B> for #self_ty {
+        impl<B: #ir::ModuleBrand> #ir::ModulePass<B> for #self_ty {
             type Access = #ir::#access;
             type Requires = #requires_ty;
             const NAME: &'static str = #name;
             #required_item
 
-            fn run(
+            fn run<'m, 'ctx>(
                 &mut self,
-                #cx_ident: #ir::ModCx<'_, '_, '_, 'ctx, B, #ir::#access, #requires_ty>,
+                #cx_ident: #ir::ModCx<'m, '_, '_, 'ctx, B, #ir::#access, #requires_ty>,
             ) -> #ir::IrResult<#ir::ModReport>
+            where
+                'ctx: 'm,
+                Self: 'ctx,
             #body
         }
 

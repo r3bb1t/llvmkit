@@ -19,17 +19,16 @@
 use llvmkit_ir::{IRBuilder, Linkage, Module, Type};
 
 fn main() {
-    Module::with_new("c", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, Vec::<Type>::new(), false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
+    let m = Module::dynamic("c");
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, Vec::<Type<_>>::new(), false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
 
-        let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m);
-        // `head`'s single parameter schema is `i32`.
-        let (head, _params) = b.append_block_typed::<(i32,), _>(m.view(f), "head").unwrap();
+    let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m);
+    // `head`'s single parameter schema is `i32`.
+    let (head, _params) = b.append_block_typed::<(i32,), _>(m.view(f), "head").unwrap();
 
-        // `1.0_f64` does not implement `IntoIntValue<'_, i32, _>`, so it cannot
-        // fill the `i32` block-parameter slot: `.call` does not type-check.
-        let _ = head.call((1.0_f64,));
-    });
+    // `1.0_f64` does not implement `IntoIntValue<'_, i32, _>`, so it cannot
+    // fill the `i32` block-parameter slot: `.call` does not type-check.
+    let _ = head.call((1.0_f64,));
 }

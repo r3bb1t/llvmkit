@@ -37,7 +37,7 @@ use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IRBuilderFolder;
 use super::ir_builder::{BuilderPositionState, IntoReturnValue, Positioned, Unpositioned};
 use super::marker::{Dyn, ReturnMarker};
-use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeSlot;
 use super::value::{
     FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Typed, Value, ValueSlot,
@@ -55,9 +55,9 @@ use super::{FloatType, IntType, IrError, IrResult, PointerType};
 /// A crate-wide `impl From<Infallible> for IrError` would let `?` do
 /// this instead, but it also gives `IrError: From<E>` a second solution
 /// (`E = Infallible`, alongside the reflexive `E = IrError`) everywhere
-/// a closure's error type is inferred purely from an outer
+/// a `?`-chain's error type is inferred purely from an outer
 /// `IrError: From<E>` constraint -- `examples/derived_struct_function.rs`'s
-/// `Module::with_new` closure hits exactly that ambiguity. Converting on
+/// module-building block hits exactly that ambiguity. Converting on
 /// the CONCRETE `Result<T, Infallible>` / `Result<T, IrError>` types
 /// instead of adding an impl to `IrError` itself means this cannot
 /// perturb inference anywhere else in the crate.
@@ -100,7 +100,7 @@ pub struct SsaBuilderId(u32);
 /// Typed SSA variable of integer width `W`. Cranelift analogue:
 /// `cranelift_frontend::Variable`, specialised per category per llvmkit
 /// convention (cf. `PhiInst` / `FpPhiInst` / `PointerPhiInst`).
-pub struct IntVariable<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
+pub struct IntVariable<'ctx, W: IntWidth, B: ModuleBrand> {
     index: u32,
     owner: SsaBuilderId,
     ty: TypeSlot,
@@ -155,7 +155,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntVariable<'ctx, W, B> {
 }
 
 /// Typed SSA variable of float kind `K`.
-pub struct FloatVariable<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
+pub struct FloatVariable<'ctx, K: FloatKind, B: ModuleBrand> {
     index: u32,
     owner: SsaBuilderId,
     ty: TypeSlot,
@@ -208,7 +208,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatVariable<'ctx, K, B> {
 }
 
 /// Typed SSA variable of pointer category (any address space).
-pub struct PointerVariable<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct PointerVariable<'ctx, B: ModuleBrand> {
     index: u32,
     owner: SsaBuilderId,
     ty: TypeSlot,
@@ -328,7 +328,7 @@ fn block_name<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleRef<'ctx, B>,
     block_id: ValueSlot,
 ) -> String {
-    let label_ty = module.module().label_type().as_type().id();
+    let label_ty = module.module().label_type::<B>().as_type().id();
     let label = BasicBlock::<Dyn, Unterminated, B>::from_parts(block_id, module, label_ty).label();
     label
         .to_erased()
@@ -418,7 +418,7 @@ where
     S: BuilderPositionState,
     R: ReturnMarker,
 {
-    module: &'m Module<'ctx, B, Unverified>,
+    module: &'ctx Module<B, Unverified>,
     function: FunctionValue<'ctx, R, B>,
     id: SsaBuilderId,
     folder: F,
@@ -435,7 +435,7 @@ impl<'m, 'ctx, B: ModuleBrand + 'ctx> SsaBuilder<'m, 'ctx, B, ConstantFolder, Un
     /// if `function` already has a body -- the layer must observe every
     /// CFG edge from birth.
     pub fn for_function<R: ReturnMarker>(
-        module: &'m Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         function: FunctionValue<'ctx, R, B>,
     ) -> IrResult<SsaBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, R>> {
         Self::with_folder_for_function(module, function, ConstantFolder)
@@ -448,7 +448,7 @@ impl<'m, 'ctx, B: ModuleBrand + 'ctx, F: IRBuilderFolder<'ctx, B> + Clone>
     /// Construct an `SsaBuilder` for `function` using a caller-supplied
     /// folder.
     pub fn with_folder_for_function<R>(
-        module: &'m Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         function: FunctionValue<'ctx, R, B>,
         folder: F,
     ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>>
@@ -1593,7 +1593,7 @@ where
         let var_category = self.state.vars[idx].category;
         let var_name = self.state.vars[idx].name.clone();
         let module = self.module_ref();
-        let label_ty = module.module().label_type().as_type().id();
+        let label_ty = module.module().label_type::<B>().as_type().id();
 
         // Read-only peek at the block's current first instruction,
         // independent of which state (open/current/filled) it is in --
@@ -1665,7 +1665,7 @@ where
         let module = self.module_ref();
         let phi_value = Value::from_parts(phi, module, module.value_data(phi).ty);
         let operand_value = Value::from_parts(operand, module, module.value_data(operand).ty);
-        let label_ty = module.module().label_type().as_type().id();
+        let label_ty = module.module().label_type::<B>().as_type().id();
         let pred_block = BasicBlock::<Dyn, Unterminated, B>::from_parts(pred, module, label_ty);
         let ib: super::ir_builder::IRBuilder<'_, 'ctx, B, F, super::ir_builder::Unpositioned, Dyn> =
             super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone());
@@ -1811,20 +1811,19 @@ mod tests {
     /// predecessors.
     #[test]
     fn first_created_block_is_auto_sealed() -> Result<(), IrError> {
-        Module::with_new("ssa-entry-seal", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
-            let entry = b.create_block("entry");
-            let entry_id = entry.id.slot();
-            assert!(b.state.sealed.contains(&entry_id));
+        let m = crate::module_new!("ssa-entry-seal")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let entry = b.create_block("entry");
+        let entry_id = entry.id.slot();
+        assert!(b.state.sealed.contains(&entry_id));
 
-            // A second block is NOT auto-sealed.
-            let second = b.create_block("second");
-            let second_id = second.id.slot();
-            assert!(!b.state.sealed.contains(&second_id));
-            Ok(())
-        })
+        // A second block is NOT auto-sealed.
+        let second = b.create_block("second");
+        let second_id = second.id.slot();
+        assert!(!b.state.sealed.contains(&second_id));
+        Ok(())
     }
 
     /// llvmkit-specific: locks `seal_block`'s double-seal rejection
@@ -1832,19 +1831,18 @@ mod tests {
     /// after which its predecessor set is considered final).
     #[test]
     fn seal_block_twice_errors() -> Result<(), IrError> {
-        Module::with_new("ssa-double-seal", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
-            let _entry = b.create_block("entry");
-            let second = b.create_block("second"); // not entry -- unsealed
-            b.seal_block(second)?;
-            match b.seal_block(second) {
-                Err(IrError::SsaBlockAlreadySealed { .. }) => {}
-                other => panic!("expected SsaBlockAlreadySealed, got {other:?}"),
-            }
-            Ok(())
-        })
+        let m = crate::module_new!("ssa-double-seal")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let _entry = b.create_block("entry");
+        let second = b.create_block("second"); // not entry -- unsealed
+        b.seal_block(second)?;
+        match b.seal_block(second) {
+            Err(IrError::SsaBlockAlreadySealed { .. }) => {}
+            other => panic!("expected SsaBlockAlreadySealed, got {other:?}"),
+        }
+        Ok(())
     }
 
     /// llvmkit-specific: locks `SsaFunctionHasBlocks` -- the layer must
@@ -1853,62 +1851,59 @@ mod tests {
     /// the pre-existing blocks' edges.
     #[test]
     fn for_function_rejects_function_with_existing_blocks() -> Result<(), IrError> {
-        Module::with_new("ssa-nonempty-fn", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let _entry = m.view(f).append_basic_block(&m, "entry");
-            match SsaBuilder::for_function(&m, m.view(f)) {
-                Err(IrError::SsaFunctionHasBlocks) => {}
-                Ok(_) => panic!("expected SsaFunctionHasBlocks, got Ok"),
-                Err(other) => panic!("expected SsaFunctionHasBlocks, got {other:?}"),
-            }
-            Ok(())
-        })
+        let m = crate::module_new!("ssa-nonempty-fn")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let _entry = m.view(f).append_basic_block(&m, "entry");
+        match SsaBuilder::for_function(&m, m.view(f)) {
+            Err(IrError::SsaFunctionHasBlocks) => {}
+            Ok(_) => panic!("expected SsaFunctionHasBlocks, got Ok"),
+            Err(other) => panic!("expected SsaFunctionHasBlocks, got {other:?}"),
+        }
+        Ok(())
     }
 
     /// llvmkit-specific: locks `SsaForeignBlock` -- a block handle from a
     /// different `SsaBuilder` is a typed runtime error at `seal_block`.
     #[test]
     fn seal_block_rejects_foreign_block() -> Result<(), IrError> {
-        Module::with_new("ssa-foreign-block", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
-            let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
-            let mut b1 = SsaBuilder::for_function(&m, m.view(f1))?;
-            let _entry1 = b1.create_block("entry");
-            let other1 = b1.create_block("other");
+        let m = crate::module_new!("ssa-foreign-block")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
+        let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
+        let mut b1 = SsaBuilder::for_function(&m, m.view(f1))?;
+        let _entry1 = b1.create_block("entry");
+        let other1 = b1.create_block("other");
 
-            let mut b2 = SsaBuilder::for_function(&m, m.view(f2))?;
-            let _entry2 = b2.create_block("entry");
+        let mut b2 = SsaBuilder::for_function(&m, m.view(f2))?;
+        let _entry2 = b2.create_block("entry");
 
-            match b2.seal_block(other1) {
-                Err(IrError::SsaForeignBlock) => {}
-                other => panic!("expected SsaForeignBlock, got {other:?}"),
-            }
-            Ok(())
-        })
+        match b2.seal_block(other1) {
+            Err(IrError::SsaForeignBlock) => {}
+            other => panic!("expected SsaForeignBlock, got {other:?}"),
+        }
+        Ok(())
     }
 
     /// llvmkit-specific: locks the declared-variable handle shape
     /// (`owner`/`module` accessors) across all three categories.
     #[test]
     fn declare_var_family_reports_owner_and_module() -> Result<(), IrError> {
-        Module::with_new("ssa-declare", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
-            let int_var = b.declare_int_var::<i32, _>("x");
-            let float_var = b.declare_float_var::<f64, _>("y");
-            let ptr_var = b.declare_pointer_var("z");
-            assert_eq!(int_var.owner(), b.id());
-            assert_eq!(float_var.owner(), b.id());
-            assert_eq!(ptr_var.owner(), b.id());
-            assert_eq!(int_var.module().id(), m.id());
-            assert_eq!(float_var.module().id(), m.id());
-            assert_eq!(ptr_var.module().id(), m.id());
-            assert_eq!(b.state.vars.len(), 3);
-            Ok(())
-        })
+        let m = crate::module_new!("ssa-declare")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let int_var = b.declare_int_var::<i32, _>("x");
+        let float_var = b.declare_float_var::<f64, _>("y");
+        let ptr_var = b.declare_pointer_var("z");
+        assert_eq!(int_var.owner(), b.id());
+        assert_eq!(float_var.owner(), b.id());
+        assert_eq!(ptr_var.owner(), b.id());
+        assert_eq!(int_var.module().id(), m.id());
+        assert_eq!(float_var.module().id(), m.id());
+        assert_eq!(ptr_var.module().id(), m.id());
+        assert_eq!(b.state.vars.len(), 3);
+        Ok(())
     }
 
     /// Ports the paper's central example (Braun et al. 2013, Fig. 2/4):
@@ -1920,21 +1915,20 @@ mod tests {
     /// predecessor fast path (no PHI insertion needed).
     #[test]
     fn read_after_write_same_block_needs_no_phi() -> Result<(), IrError> {
-        Module::with_new("ssa-straight-line", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
-            let entry = b.create_block("entry");
-            let entry_id = entry.id.slot();
+        let m = crate::module_new!("ssa-straight-line")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let entry = b.create_block("entry");
+        let entry_id = entry.id.slot();
 
-            let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let one = m.i32_type().const_int(1_i32).slot();
-            b.write_variable(var.index, entry_id, one);
-            let read = b.read_variable_in(var.index, entry_id)?;
-            assert_eq!(read, one);
-            assert!(b.state.created_phis.is_empty());
-            Ok(())
-        })
+        let var: IntVariable<i32, _> = b.declare_int_var("x");
+        let one = m.i32_type().const_int(1_i32).slot();
+        b.write_variable(var.index, entry_id, one);
+        let read = b.read_variable_in(var.index, entry_id)?;
+        assert_eq!(read, one);
+        assert!(b.state.created_phis.is_empty());
+        Ok(())
     }
 
     /// Ports Braun et al. 2013's incomplete-phi + completion flow: a
@@ -1948,53 +1942,52 @@ mod tests {
     /// is the same idea).
     #[test]
     fn incomplete_phi_completes_on_seal() -> Result<(), IrError> {
-        Module::with_new("ssa-incomplete-phi", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
-            let _entry = b.create_block("entry");
-            let entry_id = _entry.id.slot();
-            let loop_bb = b.create_block("loop");
-            let loop_id = loop_bb.id.slot();
+        let m = crate::module_new!("ssa-incomplete-phi")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let _entry = b.create_block("entry");
+        let entry_id = _entry.id.slot();
+        let loop_bb = b.create_block("loop");
+        let loop_id = loop_bb.id.slot();
 
-            // Record edges: entry -> loop, loop -> loop (self back-edge).
-            b.state.preds.entry(loop_id).or_default().push(entry_id);
-            b.state.preds.entry(loop_id).or_default().push(loop_id);
+        // Record edges: entry -> loop, loop -> loop (self back-edge).
+        b.state.preds.entry(loop_id).or_default().push(entry_id);
+        b.state.preds.entry(loop_id).or_default().push(loop_id);
 
-            let var: IntVariable<i32, _> = b.declare_int_var("i");
-            let zero = m.i32_type().const_int(0_i32).slot();
-            b.write_variable(var.index, entry_id, zero);
+        let var: IntVariable<i32, _> = b.declare_int_var("i");
+        let zero = m.i32_type().const_int(0_i32).slot();
+        b.write_variable(var.index, entry_id, zero);
 
-            // Read inside the not-yet-sealed loop block: creates an
-            // incomplete (operandless) phi and records it for later
-            // completion.
-            let read_before_seal = b.read_variable_in(var.index, loop_id)?;
-            assert_eq!(b.state.incomplete_phis.get(&loop_id).map(Vec::len), Some(1));
-            assert!(b.state.created_phis.contains_key(&read_before_seal));
+        // Read inside the not-yet-sealed loop block: creates an
+        // incomplete (operandless) phi and records it for later
+        // completion.
+        let read_before_seal = b.read_variable_in(var.index, loop_id)?;
+        assert_eq!(b.state.incomplete_phis.get(&loop_id).map(Vec::len), Some(1));
+        assert!(b.state.created_phis.contains_key(&read_before_seal));
 
-            // Record the loop body's own write (e.g. `i + 1`, modeled
-            // here as reusing a fresh constant is fine -- the engine
-            // does not care what the value IS, only that a def exists).
-            let one = m.i32_type().const_int(1_i32).slot();
-            b.write_variable(var.index, loop_id, one);
+        // Record the loop body's own write (e.g. `i + 1`, modeled
+        // here as reusing a fresh constant is fine -- the engine
+        // does not care what the value IS, only that a def exists).
+        let one = m.i32_type().const_int(1_i32).slot();
+        b.write_variable(var.index, loop_id, one);
 
-            // Sealing completes the incomplete phi: two distinct incoming
-            // values (`zero` from entry, `one` from the loop back-edge),
-            // so it is NOT trivial and survives as a real phi.
-            b.seal_block(loop_bb)?;
-            assert!(
-                b.state
-                    .incomplete_phis
-                    .get(&loop_id)
-                    .is_none_or(Vec::is_empty)
-            );
-            let text = format!("{m}");
-            assert!(
-                text.contains("phi i32"),
-                "expected a real phi, got:\n{text}"
-            );
-            Ok(())
-        })
+        // Sealing completes the incomplete phi: two distinct incoming
+        // values (`zero` from entry, `one` from the loop back-edge),
+        // so it is NOT trivial and survives as a real phi.
+        b.seal_block(loop_bb)?;
+        assert!(
+            b.state
+                .incomplete_phis
+                .get(&loop_id)
+                .is_none_or(Vec::is_empty)
+        );
+        let text = format!("{m}");
+        assert!(
+            text.contains("phi i32"),
+            "expected a real phi, got:\n{text}"
+        );
+        Ok(())
     }
 
     /// Ports Braun et al. 2013's trivial-phi elimination (Fig. 3,
@@ -2006,46 +1999,45 @@ mod tests {
     /// short-circuit (LLVM's own trivial-phi-avoidance heuristic).
     #[test]
     fn trivial_phi_is_eliminated() -> Result<(), IrError> {
-        Module::with_new("ssa-trivial-join", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
-            let _entry = b.create_block("entry");
-            let entry_id = _entry.id.slot();
-            let left = b.create_block("left");
-            let left_id = left.id.slot();
-            let right = b.create_block("right");
-            let right_id = right.id.slot();
-            let join = b.create_block("join");
-            let join_id = join.id.slot();
+        let m = crate::module_new!("ssa-trivial-join")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let _entry = b.create_block("entry");
+        let entry_id = _entry.id.slot();
+        let left = b.create_block("left");
+        let left_id = left.id.slot();
+        let right = b.create_block("right");
+        let right_id = right.id.slot();
+        let join = b.create_block("join");
+        let join_id = join.id.slot();
 
-            b.state.preds.entry(left_id).or_default().push(entry_id);
-            b.state.preds.entry(right_id).or_default().push(entry_id);
-            b.state.preds.entry(join_id).or_default().push(left_id);
-            b.state.preds.entry(join_id).or_default().push(right_id);
-            b.seal_block(left)?;
-            b.seal_block(right)?;
+        b.state.preds.entry(left_id).or_default().push(entry_id);
+        b.state.preds.entry(right_id).or_default().push(entry_id);
+        b.state.preds.entry(join_id).or_default().push(left_id);
+        b.state.preds.entry(join_id).or_default().push(right_id);
+        b.seal_block(left)?;
+        b.seal_block(right)?;
 
-            let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let same_value = m.i32_type().const_int(7_i32).slot();
-            // Both predecessors write the SAME value.
-            b.write_variable(var.index, left_id, same_value);
-            b.write_variable(var.index, right_id, same_value);
+        let var: IntVariable<i32, _> = b.declare_int_var("x");
+        let same_value = m.i32_type().const_int(7_i32).slot();
+        // Both predecessors write the SAME value.
+        b.write_variable(var.index, left_id, same_value);
+        b.write_variable(var.index, right_id, same_value);
 
-            b.seal_block(join)?;
-            let read = b.read_variable_in(var.index, join_id)?;
-            assert_eq!(
-                read, same_value,
-                "trivial phi should resolve to the shared value"
-            );
-            assert!(
-                b.state.created_phis.is_empty(),
-                "the trivial join phi should have been erased"
-            );
-            let text = format!("{m}");
-            assert!(!text.contains("phi"), "no phi should remain, got:\n{text}");
-            Ok(())
-        })
+        b.seal_block(join)?;
+        let read = b.read_variable_in(var.index, join_id)?;
+        assert_eq!(
+            read, same_value,
+            "trivial phi should resolve to the shared value"
+        );
+        assert!(
+            b.state.created_phis.is_empty(),
+            "the trivial join phi should have been erased"
+        );
+        let text = format!("{m}");
+        assert!(!text.contains("phi"), "no phi should remain, got:\n{text}");
+        Ok(())
     }
 
     /// Locks the strict-variable undefined-read error: a read that
@@ -2059,20 +2051,19 @@ mod tests {
     /// IR into existence and must reject the same case itself).
     #[test]
     fn strict_variable_undefined_read_errors() -> Result<(), IrError> {
-        Module::with_new("ssa-undefined-strict", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
-            let entry = b.create_block("entry");
-            let entry_id = entry.id.slot();
+        let m = crate::module_new!("ssa-undefined-strict")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let entry = b.create_block("entry");
+        let entry_id = entry.id.slot();
 
-            let var: IntVariable<i32, _> = b.declare_int_var("x");
-            match b.read_variable_in(var.index, entry_id) {
-                Err(IrError::SsaUseOfUndefinedVariable { .. }) => {}
-                other => panic!("expected SsaUseOfUndefinedVariable, got {other:?}"),
-            }
-            Ok(())
-        })
+        let var: IntVariable<i32, _> = b.declare_int_var("x");
+        match b.read_variable_in(var.index, entry_id) {
+            Err(IrError::SsaUseOfUndefinedVariable { .. }) => {}
+            other => panic!("expected SsaUseOfUndefinedVariable, got {other:?}"),
+        }
+        Ok(())
     }
 
     /// Poison twin of [`strict_variable_undefined_read_errors`]: a
@@ -2084,20 +2075,19 @@ mod tests {
     /// uninitialized `undef`/zero-init rather than `poison`).
     #[test]
     fn poison_variable_undefined_read_yields_poison() -> Result<(), IrError> {
-        Module::with_new("ssa-undefined-poison", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
-            let entry = b.create_block("entry");
-            let entry_id = entry.id.slot();
+        let m = crate::module_new!("ssa-undefined-poison")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let entry = b.create_block("entry");
+        let entry_id = entry.id.slot();
 
-            let var: IntVariable<i32, _> = b.declare_int_var_poison("x");
-            let read = b.read_variable_in(var.index, entry_id)?;
-            let i32_ty = m.i32_type();
-            let poison_id = i32_ty.as_type().get_poison().slot();
-            assert_eq!(read, poison_id);
-            Ok(())
-        })
+        let var: IntVariable<i32, _> = b.declare_int_var_poison("x");
+        let read = b.read_variable_in(var.index, entry_id)?;
+        let i32_ty = m.i32_type();
+        let poison_id = i32_ty.as_type().get_poison().slot();
+        assert_eq!(read, poison_id);
+        Ok(())
     }
 
     /// Review follow-up (D11): Braun et al. 2013 SS2's `readVariableRecursive`
@@ -2117,57 +2107,56 @@ mod tests {
     /// llvmkit-specific white-box check.
     #[test]
     fn read_variable_in_memoizes_single_pred_chase() -> Result<(), IrError> {
-        Module::with_new("ssa-chase-memoization", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
-            let entry = b.create_block("entry");
-            let entry_id = entry.id.slot();
-            let b1 = b.create_block("b1");
-            let b1_id = b1.id.slot();
-            let b2 = b.create_block("b2");
-            let b2_id = b2.id.slot();
-            let b3 = b.create_block("b3");
-            let b3_id = b3.id.slot();
+        let m = crate::module_new!("ssa-chase-memoization")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let entry = b.create_block("entry");
+        let entry_id = entry.id.slot();
+        let b1 = b.create_block("b1");
+        let b1_id = b1.id.slot();
+        let b2 = b.create_block("b2");
+        let b2_id = b2.id.slot();
+        let b3 = b.create_block("b3");
+        let b3_id = b3.id.slot();
 
-            // Straight-line chain: entry -> b1 -> b2 -> b3, each with a
-            // single predecessor, all sealed as soon as their one edge is
-            // known (Braun requires the full predecessor set before seal).
-            b.state.preds.entry(b1_id).or_default().push(entry_id);
-            b.seal_block(b1)?;
-            b.state.preds.entry(b2_id).or_default().push(b1_id);
-            b.seal_block(b2)?;
-            b.state.preds.entry(b3_id).or_default().push(b2_id);
-            b.seal_block(b3)?;
+        // Straight-line chain: entry -> b1 -> b2 -> b3, each with a
+        // single predecessor, all sealed as soon as their one edge is
+        // known (Braun requires the full predecessor set before seal).
+        b.state.preds.entry(b1_id).or_default().push(entry_id);
+        b.seal_block(b1)?;
+        b.state.preds.entry(b2_id).or_default().push(b1_id);
+        b.seal_block(b2)?;
+        b.state.preds.entry(b3_id).or_default().push(b2_id);
+        b.seal_block(b3)?;
 
-            let var: IntVariable<i32, _> = b.declare_int_var("x");
-            let one = m.i32_type().const_int(1_i32).slot();
-            b.write_variable(var.index, entry_id, one);
+        let var: IntVariable<i32, _> = b.declare_int_var("x");
+        let one = m.i32_type().const_int(1_i32).slot();
+        b.write_variable(var.index, entry_id, one);
 
-            // Before the read: only entry has a current_def entry.
-            assert!(b.state.current_def.contains_key(&(entry_id, var.index)));
-            assert!(!b.state.current_def.contains_key(&(b1_id, var.index)));
-            assert!(!b.state.current_def.contains_key(&(b2_id, var.index)));
+        // Before the read: only entry has a current_def entry.
+        assert!(b.state.current_def.contains_key(&(entry_id, var.index)));
+        assert!(!b.state.current_def.contains_key(&(b1_id, var.index)));
+        assert!(!b.state.current_def.contains_key(&(b2_id, var.index)));
 
-            let read = b.read_variable_in(var.index, b3_id)?;
-            assert_eq!(read, one);
+        let read = b.read_variable_in(var.index, b3_id)?;
+        assert_eq!(read, one);
 
-            // After the read: the intermediate blocks the chase passed
-            // through (b1, b2) must now be memoized too, per the paper's
-            // writeVariable postcondition at the end of every
-            // readVariableRecursive branch.
-            assert_eq!(
-                b.state.current_def.get(&(b1_id, var.index)),
-                Some(&one),
-                "b1 should be memoized after the chase resolves through it"
-            );
-            assert_eq!(
-                b.state.current_def.get(&(b2_id, var.index)),
-                Some(&one),
-                "b2 should be memoized after the chase resolves through it"
-            );
-            Ok(())
-        })
+        // After the read: the intermediate blocks the chase passed
+        // through (b1, b2) must now be memoized too, per the paper's
+        // writeVariable postcondition at the end of every
+        // readVariableRecursive branch.
+        assert_eq!(
+            b.state.current_def.get(&(b1_id, var.index)),
+            Some(&one),
+            "b1 should be memoized after the chase resolves through it"
+        );
+        assert_eq!(
+            b.state.current_def.get(&(b2_id, var.index)),
+            Some(&one),
+            "b2 should be memoized after the chase resolves through it"
+        );
+        Ok(())
     }
 
     /// llvmkit-specific: no upstream C++ equivalent. LLVM's `SSAUpdater`
@@ -2198,27 +2187,26 @@ mod tests {
     /// would hand back an `IntValue<'_, i32>` that is really an `i64`.
     #[test]
     fn def_int_var_rejects_forged_static_width_handle() -> Result<(), IrError> {
-        Module::with_new("ssa-forged-static-width", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
-            let entry = b.create_block("entry");
-            let x = b.declare_int_var::<i32, _>("x");
+        let m = crate::module_new!("ssa-forged-static-width")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let entry = b.create_block("entry");
+        let x = b.declare_int_var::<i32, _>("x");
 
-            let mut b = b.switch_to_block(entry)?;
-            let forged: IntValue<'_, i32, _> =
-                IntValue::from_value_unchecked(m.i64_type().const_zero().into_erased());
+        let mut b = b.switch_to_block(entry)?;
+        let forged: IntValue<'_, i32, _> =
+            IntValue::from_value_unchecked(m.i64_type().const_zero().into_erased());
 
-            let err = b
-                .def_int_var(x, forged)
-                .expect_err("a forged static-width handle must be rejected");
+        let err = b
+            .def_int_var(x, forged)
+            .expect_err("a forged static-width handle must be rejected");
 
-            // Both sides are integers, so the widths are reported rather than a
-            // `TypeMismatch { expected: Integer, got: Integer }` that could not
-            // say which width was wrong (`Type::require_match`).
-            assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
-            Ok(())
-        })
+        // Both sides are integers, so the widths are reported rather than a
+        // `TypeMismatch { expected: Integer, got: Integer }` that could not
+        // say which width was wrong (`Type::require_match`).
+        assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+        Ok(())
     }
 
     /// Float twin of [`def_int_var_rejects_forged_static_width_handle`],
@@ -2236,30 +2224,29 @@ mod tests {
     /// (`Type::require_match`).
     #[test]
     fn def_float_var_rejects_forged_static_kind_handle() -> Result<(), IrError> {
-        Module::with_new("ssa-forged-static-kind", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
-            let entry = b.create_block("entry");
-            let x = b.declare_float_var::<f32, _>("x");
+        let m = crate::module_new!("ssa-forged-static-kind")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let entry = b.create_block("entry");
+        let x = b.declare_float_var::<f32, _>("x");
 
-            let mut b = b.switch_to_block(entry)?;
-            let forged: FloatValue<'_, f32, _> =
-                FloatValue::from_value_unchecked(m.f64_type().const_from_bits(0).into_erased());
+        let mut b = b.switch_to_block(entry)?;
+        let forged: FloatValue<'_, f32, _> =
+            FloatValue::from_value_unchecked(m.f64_type().const_from_bits(0).into_erased());
 
-            let err = b
-                .def_float_var(x, forged)
-                .expect_err("a forged static-kind handle must be rejected");
+        let err = b
+            .def_float_var(x, forged)
+            .expect_err("a forged static-kind handle must be rejected");
 
-            assert_eq!(
-                err,
-                IrError::TypeMismatch {
-                    expected: crate::TypeKindLabel::Float,
-                    got: crate::TypeKindLabel::Double,
-                }
-            );
-            Ok(())
-        })
+        assert_eq!(
+            err,
+            IrError::TypeMismatch {
+                expected: crate::TypeKindLabel::Float,
+                got: crate::TypeKindLabel::Double,
+            }
+        );
+        Ok(())
     }
 
     /// Pointer twin of [`def_int_var_rejects_forged_static_width_handle`],
@@ -2281,29 +2268,28 @@ mod tests {
     /// int twin: `SSAUpdater` carries no per-variable type to contradict.
     #[test]
     fn def_pointer_var_rejects_forged_non_pointer_handle() -> Result<(), IrError> {
-        Module::with_new("ssa-forged-pointer", |m| {
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-            let mut b = SsaBuilder::for_function(&m, m.view(f))?;
-            let entry = b.create_block("entry");
-            let p = b.declare_pointer_var("p");
+        let m = crate::module_new!("ssa-forged-pointer")?;
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let entry = b.create_block("entry");
+        let p = b.declare_pointer_var("p");
 
-            let mut b = b.switch_to_block(entry)?;
-            let forged: PointerValue<'_, _> =
-                PointerValue::from_value_unchecked(m.i32_type().const_zero().into_erased());
+        let mut b = b.switch_to_block(entry)?;
+        let forged: PointerValue<'_, _> =
+            PointerValue::from_value_unchecked(m.i32_type().const_zero().into_erased());
 
-            let err = b
-                .def_pointer_var(p, forged)
-                .expect_err("a forged non-pointer handle must be rejected");
+        let err = b
+            .def_pointer_var(p, forged)
+            .expect_err("a forged non-pointer handle must be rejected");
 
-            assert_eq!(
-                err,
-                IrError::TypeMismatch {
-                    expected: crate::TypeKindLabel::Pointer,
-                    got: crate::TypeKindLabel::Integer,
-                }
-            );
-            Ok(())
-        })
+        assert_eq!(
+            err,
+            IrError::TypeMismatch {
+                expected: crate::TypeKindLabel::Pointer,
+                got: crate::TypeKindLabel::Integer,
+            }
+        );
+        Ok(())
     }
 }

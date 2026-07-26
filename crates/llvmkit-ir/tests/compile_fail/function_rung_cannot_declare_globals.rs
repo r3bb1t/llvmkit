@@ -26,12 +26,16 @@ use llvmkit_ir::{FnCx, FnReport, FunctionPass, IrResult, ModuleBrand, PatchBody}
 
 struct DeclareGlobalFromPatchBody;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for DeclareGlobalFromPatchBody {
+impl<B: ModuleBrand> FunctionPass<B> for DeclareGlobalFromPatchBody {
     type Access = PatchBody;
     type Requires = ();
     const NAME: &'static str = "declare-global-from-patch-body";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let patch = cx.mutate();
         // The neutral half compiles: a type comes off the read-only view.
         let i32_ty = patch.module().i32_type();

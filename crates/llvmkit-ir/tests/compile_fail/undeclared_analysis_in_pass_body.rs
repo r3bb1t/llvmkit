@@ -17,12 +17,16 @@ use llvmkit_ir::{DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, Inspect, I
 
 struct UndeclaredAnalysis;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for UndeclaredAnalysis {
+impl<B: ModuleBrand> FunctionPass<B> for UndeclaredAnalysis {
     type Access = Inspect;
     type Requires = ();
     const NAME: &'static str = "undeclared-analysis";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         // `Requires = ()` has no `AnalysisSelector<DominatorTreeAnalysis, _>`
         // impl, so this access is unspellable at compile time.
         let _dt = cx.analysis::<DominatorTreeAnalysis, _>();

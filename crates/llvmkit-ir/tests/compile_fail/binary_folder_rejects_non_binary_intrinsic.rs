@@ -8,16 +8,15 @@
 use llvmkit_ir::{IntrinsicId, Module, constant_fold_binary_intrinsic};
 
 fn main() {
-    let _ = Module::with_new("bad", |m| {
-        let i32_ty = m.i32_type();
-        let one = i32_ty.const_int(1_i32).as_constant();
-        let dl = m.data_layout();
-        constant_fold_binary_intrinsic(
-            IntrinsicId::EXPECT,
-            one,
-            one,
-            i32_ty.as_type(),
-            &dl,
-        )
-    });
+    let m = Module::dynamic("bad");
+    let i32_ty = m.i32_type();
+    let one = i32_ty.const_int(1_i32).as_constant();
+    let dl = m.data_layout();
+    constant_fold_binary_intrinsic(
+        IntrinsicId::EXPECT,
+        one,
+        one,
+        i32_ty.as_type(),
+        &dl,
+    )
 }

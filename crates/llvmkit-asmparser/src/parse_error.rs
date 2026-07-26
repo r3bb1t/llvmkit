@@ -148,6 +148,20 @@ pub enum ParseError {
     /// which the rest of [`ParseError`] derives.
     #[error("I/O error reading source: {0}")]
     Io(String),
+
+    /// A live module already holds the brand requested by
+    /// [`crate::parse_branded`] / [`crate::parse_file_branded`]. Mirrors
+    /// [`llvmkit_ir::IrError::BrandInUse`]; the registry-exempt
+    /// [`crate::parse_dynamic`] entry points can never produce it.
+    #[error("module brand `{brand}` is already held by a live module")]
+    BrandInUse { brand: &'static str },
+
+    /// The brand requested by [`crate::parse_branded`] /
+    /// [`crate::parse_file_branded`] was permanently retired by a
+    /// [`llvmkit_ir::Module::branded_once`] module. Mirrors
+    /// [`llvmkit_ir::IrError::BrandRetired`].
+    #[error("module brand `{brand}` was permanently retired")]
+    BrandRetired { brand: &'static str },
 }
 
 impl From<std::io::Error> for ParseError {
@@ -167,7 +181,9 @@ impl ParseError {
             | ParseError::UndefinedSymbol { loc, .. }
             | ParseError::InvalidSlotId { loc, .. }
             | ParseError::IntegerWidthOutOfRange { loc, .. } => Some(*loc),
-            ParseError::Io(_) => None,
+            ParseError::Io(_) | ParseError::BrandInUse { .. } | ParseError::BrandRetired { .. } => {
+                None
+            }
         }
     }
 }

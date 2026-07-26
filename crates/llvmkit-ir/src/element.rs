@@ -153,20 +153,18 @@ mod sealed {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Module;
 
     #[test]
     fn static_vec_elem_projects_scalar_element_types() {
-        Module::with_new("element-marker", |m| {
-            let module = m.module_ref();
-            assert_eq!(
-                <i32 as StaticVecElem<'_, _>>::element_ir_type(module),
-                m.i32_type().as_type(),
-            );
-            assert_eq!(
-                <f32 as StaticVecElem<'_, _>>::element_ir_type(module),
-                m.f32_type().as_type(),
-            );
-        });
+        let m = crate::module_new!("element-marker").expect("fresh module");
+        let module = m.module_ref();
+        assert_eq!(
+            <i32 as StaticVecElem<'_, _>>::element_ir_type(module),
+            m.i32_type().as_type(),
+        );
+        assert_eq!(
+            <f32 as StaticVecElem<'_, _>>::element_ir_type(module),
+            m.f32_type().as_type(),
+        );
     }
 }

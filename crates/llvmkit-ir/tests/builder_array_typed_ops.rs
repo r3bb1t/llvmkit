@@ -12,7 +12,7 @@
 //! fixture (`tests/compile_fail/array_insert_wrong_element`); here we only
 //! exercise the well-typed happy path.
 
-use llvmkit_ir::{ArrLen, ArrayValue, Dyn, IRBuilder, IntValue, Linkage, Module};
+use llvmkit_ir::{ArrLen, ArrayValue, Dyn, IRBuilder, IntValue, Linkage, module_new};
 
 /// `build_arr_extract` at index 2 on a `[4 x i32]` typed `ArrayValue` returns
 /// the element as its statically typed scalar handle — `IntValue<'_, i32>`,
@@ -22,38 +22,37 @@ use llvmkit_ir::{ArrLen, ArrayValue, Dyn, IRBuilder, IntValue, Linkage, Module};
 /// produces.
 #[test]
 fn typed_arr_extract_returns_typed_element() {
-    Module::with_new("aextract", |m| {
-        let i32_ty = m.i32_type();
-        let arr_ty = m.array_type_n::<i32, 4>();
+    let m = module_new!("aextract").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let arr_ty = m.array_type_n::<i32, 4>();
 
-        let fn_ty = m.fn_type(i32_ty.as_type(), [arr_ty.as_type()], false);
-        let f = m
-            .add_function_dyn("g", fn_ty, Linkage::External)
-            .expect("g");
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let fn_ty = m.fn_type(i32_ty.as_type(), [arr_ty.as_type()], false);
+    let f = m
+        .add_function_dyn("g", fn_ty, Linkage::External)
+        .expect("g");
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        // Narrow the erased `[4 x i32]` param into the statically typed handle.
-        let a: ArrayValue<'_, i32, ArrLen<4>> = m
-            .view(f)
-            .param(0)
-            .expect("p0")
-            .into_erased()
-            .try_into()
-            .expect("narrow p0");
+    // Narrow the erased `[4 x i32]` param into the statically typed handle.
+    let a: ArrayValue<'_, i32, ArrLen<4>, _> = m
+        .view(f)
+        .param(0)
+        .expect("p0")
+        .into_erased()
+        .try_into()
+        .expect("narrow p0");
 
-        // Return type inferred from `a`'s element marker: `IntValue<'_, i32>`.
-        let e: IntValue<'_, i32> = b.build_arr_extract(a, 2, "e").expect("extract");
-        assert_eq!(e.ty(), i32_ty, "extracted element must be i32-typed");
+    // Return type inferred from `a`'s element marker: `IntValue<'_, i32>`.
+    let e: IntValue<'_, i32, _> = b.build_arr_extract(a, 2, "e").expect("extract");
+    assert_eq!(e.ty(), i32_ty, "extracted element must be i32-typed");
 
-        b.build_ret(e).expect("ret");
+    b.build_ret(e).expect("ret");
 
-        let txt = format!("{m}");
-        assert!(
-            txt.contains("%e = extractvalue [4 x i32] %0, 2\n"),
-            "expected typed extractvalue, got:\n{txt}"
-        );
-    })
+    let txt = format!("{m}");
+    assert!(
+        txt.contains("%e = extractvalue [4 x i32] %0, 2\n"),
+        "expected typed extractvalue, got:\n{txt}"
+    );
 }
 
 /// `build_arr_insert` writes a typed `IntValue<i32>` into a `[4 x i32]` typed
@@ -63,51 +62,50 @@ fn typed_arr_extract_returns_typed_element() {
 /// produces.
 #[test]
 fn typed_arr_insert_round_trips() {
-    Module::with_new("ainsert", |m| {
-        let i32_ty = m.i32_type();
-        let arr_ty = m.array_type_n::<i32, 4>();
-        let void_ty = m.void_type();
+    let m = module_new!("ainsert").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let arr_ty = m.array_type_n::<i32, 4>();
+    let void_ty = m.void_type();
 
-        let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
-        let f = m
-            .add_function_dyn("g", fn_ty, Linkage::External)
-            .expect("g");
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
+    let f = m
+        .add_function_dyn("g", fn_ty, Linkage::External)
+        .expect("g");
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let a: ArrayValue<'_, i32, ArrLen<4>> = m
-            .view(f)
-            .param(0)
-            .expect("p0")
-            .into_erased()
-            .try_into()
-            .expect("narrow p0");
+    let a: ArrayValue<'_, i32, ArrLen<4>, _> = m
+        .view(f)
+        .param(0)
+        .expect("p0")
+        .into_erased()
+        .try_into()
+        .expect("narrow p0");
 
-        let seven: IntValue<'_, i32> = i32_ty
-            .const_int(7_i32)
-            .into_erased()
-            .try_into()
-            .expect("i32 const");
+    let seven: IntValue<'_, i32, _> = i32_ty
+        .const_int(7_i32)
+        .into_erased()
+        .try_into()
+        .expect("i32 const");
 
-        // Result keeps the `i32` / `ArrLen<4>` markers, so it feeds straight
-        // back into another typed array op.
-        let updated: ArrayValue<'_, i32, ArrLen<4>> =
-            b.build_arr_insert(a, seven, 1, "u").expect("insert");
-        let back: IntValue<'_, i32> = b.build_arr_extract(updated, 1, "back").expect("extract");
-        assert_eq!(back.ty(), i32_ty, "round-tripped element must be i32-typed");
+    // Result keeps the `i32` / `ArrLen<4>` markers, so it feeds straight
+    // back into another typed array op.
+    let updated: ArrayValue<'_, i32, ArrLen<4>, _> =
+        b.build_arr_insert(a, seven, 1, "u").expect("insert");
+    let back: IntValue<'_, i32, _> = b.build_arr_extract(updated, 1, "back").expect("extract");
+    assert_eq!(back.ty(), i32_ty, "round-tripped element must be i32-typed");
 
-        b.build_ret_void().expect("ret void");
+    b.build_ret_void().expect("ret void");
 
-        let txt = format!("{m}");
-        assert!(
-            txt.contains("%u = insertvalue [4 x i32] %0, i32 7, 1\n"),
-            "expected typed insertvalue, got:\n{txt}"
-        );
-        assert!(
-            txt.contains("%back = extractvalue [4 x i32] %u, 1\n"),
-            "expected round-trip extractvalue, got:\n{txt}"
-        );
-    })
+    let txt = format!("{m}");
+    assert!(
+        txt.contains("%u = insertvalue [4 x i32] %0, i32 7, 1\n"),
+        "expected typed insertvalue, got:\n{txt}"
+    );
+    assert!(
+        txt.contains("%back = extractvalue [4 x i32] %u, 1\n"),
+        "expected round-trip extractvalue, got:\n{txt}"
+    );
 }
 
 /// `build_alloca` accepts a statically-typed `[4 x i32]` array type directly —
@@ -117,27 +115,26 @@ fn typed_arr_insert_round_trips() {
 /// and the emitted IR is the canonical `alloca [4 x i32]`.
 #[test]
 fn typed_array_type_allocas() {
-    Module::with_new("aalloca", |m| {
-        let arr_ty = m.array_type_n::<i32, 4>();
-        let void_ty = m.void_type();
+    let m = module_new!("aalloca").expect("fresh module");
+    let arr_ty = m.array_type_n::<i32, 4>();
+    let void_ty = m.void_type();
 
-        let fn_ty = m.fn_type_no_params(void_ty.as_type(), false);
-        let f = m
-            .add_function_dyn("g", fn_ty, Linkage::External)
-            .expect("g");
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let fn_ty = m.fn_type_no_params(void_ty.as_type(), false);
+    let f = m
+        .add_function_dyn("g", fn_ty, Linkage::External)
+        .expect("g");
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        // `build_alloca` takes any `IrType`; the typed array handle qualifies.
-        let slot = b.build_alloca(arr_ty, "slot").expect("alloca");
-        let _ = b.view(slot).into_erased();
+    // `build_alloca` takes any `IrType`; the typed array handle qualifies.
+    let slot = b.build_alloca(arr_ty, "slot").expect("alloca");
+    let _ = b.view(slot).into_erased();
 
-        b.build_ret_void().expect("ret void");
+    b.build_ret_void().expect("ret void");
 
-        let txt = format!("{m}");
-        assert!(
-            txt.contains("%slot = alloca [4 x i32]"),
-            "expected typed-array alloca, got:\n{txt}"
-        );
-    })
+    let txt = format!("{m}");
+    assert!(
+        txt.contains("%slot = alloca [4 x i32]"),
+        "expected typed-array alloca, got:\n{txt}"
+    );
 }

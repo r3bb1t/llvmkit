@@ -5,26 +5,26 @@ use super::error::{IrError, IrResult};
 use super::instructions::CallInst;
 use super::intrinsics::{IntrinsicDescriptor, IntrinsicId, descriptor_for_callee};
 use super::marker::{Dyn, ReturnMarker};
-use super::module::{Brand, ModuleBrand};
+use super::module::ModuleBrand;
 use super::value::Value;
 use super::value_id::IntrinsicInstId;
 
 /// A call whose callee is a generated LLVM intrinsic declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct IntrinsicInst<'ctx, R: ReturnMarker = Dyn, B: ModuleBrand = Brand<'ctx>> {
+pub struct IntrinsicInst<'ctx, R: ReturnMarker, B: ModuleBrand> {
     call: CallInst<'ctx, R, B>,
     id: IntrinsicId,
 }
 
 /// Memory intrinsic call wrapper for `llvm.memcpy`, `llvm.memmove`, and `llvm.memset`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct MemIntrinsic<'ctx, B: ModuleBrand = Brand<'ctx>, R: ReturnMarker = Dyn> {
+pub struct MemIntrinsic<'ctx, B: ModuleBrand, R: ReturnMarker = Dyn> {
     inner: IntrinsicInst<'ctx, R, B>,
 }
 
 /// Lifetime intrinsic call wrapper for `llvm.lifetime.start/end`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct LifetimeIntrinsic<'ctx, B: ModuleBrand = Brand<'ctx>, R: ReturnMarker = Dyn> {
+pub struct LifetimeIntrinsic<'ctx, B: ModuleBrand, R: ReturnMarker = Dyn> {
     inner: IntrinsicInst<'ctx, R, B>,
 }
 

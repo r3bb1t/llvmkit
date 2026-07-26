@@ -44,7 +44,7 @@ use super::instructions::{
 use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataSlot};
-use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
+use super::module::{Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
 use super::term_open_state::Closed as TermClosed;
 use super::r#type::TypeSlot;
 use super::r#use::Use;
@@ -322,11 +322,7 @@ pub mod state {
 /// and the compiler then prevents use-after-erase. Per-opcode handles expose
 /// [`InstructionView`] for read-only inspection; lifecycle mutation requires
 /// a builder-produced [`Instruction`] or [`crate::iter::BlockCursor`].
-pub struct Instruction<
-    'ctx,
-    S: state::InstructionState = state::Attached,
-    B: ModuleBrand = Brand<'ctx>,
-> {
+pub struct Instruction<'ctx, S: state::InstructionState, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -337,7 +333,7 @@ pub struct Instruction<
 /// inspection, metadata, naming, and operand access without lifecycle
 /// mutation capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InstructionView<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct InstructionView<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -451,7 +447,7 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
 
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
@@ -460,7 +456,7 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(&self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn clear_name(&self, module_token: &'ctx Module<B, Unverified>) {
         self.as_view().clear_name(module_token);
     }
 
@@ -567,7 +563,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
 
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
@@ -576,7 +572,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(&self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn clear_name(&self, module_token: &'ctx Module<B, Unverified>) {
         self.to_erased().clear_name(module_token);
     }
 
@@ -893,7 +889,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// `I->replaceAllUsesWith(V); I->eraseFromParent();`.
     pub fn replace_all_uses_with<V: IsValue<'ctx, B>>(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         replacement: V,
     ) -> IrResult<()> {
         let new_value = replacement.into_erased();
@@ -956,16 +952,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// `Instruction::eraseFromParent` in `lib/IR/Instruction.cpp`.
     ///
     /// Consumes `self`: use-after-erase is a *compile* error.
-    pub fn erase_from_parent(self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn erase_from_parent(self, module_token: &'ctx Module<B, Unverified>) {
         let self_id = self.id;
         let module = module_token.core_ref();
         remove_local_name_from_parent(self.to_erased());
         deregister_operand_uses(self_id, &self.data().kind, module);
         let parent_block_id = self.data().parent.get();
-        let bb = BasicBlock::<Dyn>::from_parts(
+        let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
             module,
-            module.label_type().as_type().id(),
+            module.label_type::<B>().as_type().id(),
         );
         bb.remove_instruction(self_id);
     }
@@ -977,16 +973,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// Mirrors `Instruction::removeFromParent` in `lib/IR/Instruction.cpp`.
     pub fn detach_from_parent(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
     ) -> Instruction<'ctx, state::Detached, B> {
         let module = module_token.core_ref();
         let self_id = self.id;
         remove_local_name_from_parent(self.to_erased());
         let parent_block_id = self.data().parent.get();
-        let bb = BasicBlock::<Dyn>::from_parts(
+        let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
             module,
-            module.label_type().as_type().id(),
+            module.label_type::<B>().as_type().id(),
         );
         bb.remove_instruction(self_id);
         // Clear the parent pointer so iteration over orphan instructions
@@ -1004,7 +1000,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// `lib/IR/Instruction.cpp`.
     pub fn move_before(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<()> {
         let module = module_token.core_ref();
@@ -1020,13 +1016,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         }
         // Remove from current parent.
         let cur_parent = self.data().parent.get();
-        let cur_bb =
-            BasicBlock::<Dyn>::from_parts(cur_parent, module, module.label_type().as_type().id());
+        let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            cur_parent,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         cur_bb.remove_instruction(self_id);
         // Insert before other in other's parent.
         let new_parent = other.data().parent.get();
-        let new_bb =
-            BasicBlock::<Dyn>::from_parts(new_parent, module, module.label_type().as_type().id());
+        let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            new_parent,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         new_bb.insert_instruction_before(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
         if old_parent_fn != new_parent_fn
@@ -1041,7 +1043,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// `other`'s parent block. Mirrors `Instruction::moveAfter`.
     pub fn move_after(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<()> {
         let module = module_token.core_ref();
@@ -1056,12 +1058,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
             remove_local_name_from_parent(self.to_erased());
         }
         let cur_parent = self.data().parent.get();
-        let cur_bb =
-            BasicBlock::<Dyn>::from_parts(cur_parent, module, module.label_type().as_type().id());
+        let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            cur_parent,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         cur_bb.remove_instruction(self_id);
         let new_parent = other.data().parent.get();
-        let new_bb =
-            BasicBlock::<Dyn>::from_parts(new_parent, module, module.label_type().as_type().id());
+        let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            new_parent,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         new_bb.insert_instruction_after(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
         if old_parent_fn != new_parent_fn
@@ -1079,14 +1087,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// `lib/IR/Instruction.cpp`.
     pub fn insert_before(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let parent_fn_id = other.to_erased().local_parent_function_id();
-        let bb =
-            BasicBlock::<Dyn>::from_parts(parent_id, module, module.label_type().as_type().id());
+        let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            parent_id,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         bb.insert_instruction_before(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
@@ -1099,14 +1110,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// `other`'s parent block. Mirrors `Instruction::insertAfter`.
     pub fn insert_after(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let parent_fn_id = other.to_erased().local_parent_function_id();
-        let bb =
-            BasicBlock::<Dyn>::from_parts(parent_id, module, module.label_type().as_type().id());
+        let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            parent_id,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         bb.insert_instruction_after(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
@@ -1119,7 +1133,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// instruction list. Mirrors `Instruction::insertInto(BB, BB->end())`.
     pub fn append_to<R: ReturnMarker>(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         block: &BasicBlock<'ctx, R, Unterminated, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
@@ -1138,7 +1152,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// the value-arena slot tombstoned (still occupied for id-stability,
     /// but unreferenced by any block). Mirrors `Instruction::deleteValue`
     /// in `lib/IR/Instruction.cpp`.
-    pub fn drop_detached(self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn drop_detached(self, module_token: &'ctx Module<B, Unverified>) {
         let self_id = self.id;
         let module = module_token.core_ref();
         deregister_operand_uses(self_id, &self.data().kind, module);
@@ -1444,14 +1458,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for InstructionView<'ctx, B> 
         InstructionView::name(&self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         InstructionView::set_name(&self, module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         InstructionView::clear_name(&self, module_token);
     }
 }
@@ -1501,14 +1515,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Instruction<'ctx, state::
         Instruction::name(&self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         Instruction::set_name(&self, module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         Instruction::clear_name(&self, module_token);
     }
 }
@@ -1570,7 +1584,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<Instruction<'ctx, state::Attached, B>> fo
 ///
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
 #[derive(Debug)]
-pub enum CastKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum CastKind<'ctx, B: ModuleBrand> {
     Trunc(TruncInst<'ctx, B>),
     ZExt(ZExtInst<'ctx, B>),
     SExt(SExtInst<'ctx, B>),
@@ -1684,7 +1698,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
 ///
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
 #[derive(Debug)]
-pub enum PhiKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum PhiKind<'ctx, B: ModuleBrand> {
     Int(PhiInst<'ctx, IntDyn, B>),
     Fp(FpPhiInst<'ctx, FloatDyn, B>),
     Ptr(PointerPhiInst<'ctx, B>),
@@ -1747,7 +1761,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
     /// empty-phi contract.
     pub fn remove_incoming(
         &self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         index: u32,
     ) -> IrResult<Value<'ctx, B>> {
         match self {
@@ -1789,7 +1803,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
 /// is the safety feature (a silent `_` fallthrough would let a new opcode
 /// take whatever behavior the wildcard happens to have).
 #[derive(Debug)]
-pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum InstructionKind<'ctx, B: ModuleBrand> {
     Add(AddInst<'ctx, B>),
     Sub(SubInst<'ctx, B>),
     Mul(MulInst<'ctx, B>),
@@ -1881,7 +1895,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionKind<'ctx, B> {
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`]:
 /// a new terminator opcode must break every downstream `match`.
 #[derive(Debug)]
-pub enum TerminatorKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum TerminatorKind<'ctx, B: ModuleBrand> {
     Ret(RetInst<'ctx, B>),
     Br(BranchInst<'ctx, B>),
     Switch(SwitchInst<'ctx, TermClosed, B>),
@@ -1903,7 +1917,7 @@ pub enum TerminatorKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
 /// [`InstructionView::classify`] is total: it always names the category, so
 /// a forgotten `is_terminator()` guard cannot mis-handle a terminator.
 #[derive(Debug)]
-pub enum Classified<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum Classified<'ctx, B: ModuleBrand> {
     /// A non-terminator instruction.
     Inst(InstructionKind<'ctx, B>),
     /// A block terminator.
@@ -1917,7 +1931,7 @@ pub enum Classified<'ctx, B: ModuleBrand = Brand<'ctx>> {
 /// rejection — a terminator-erase that would break a `PatchBody` pass's
 /// "CFG preserved" floor is unrepresentable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NonTerminator<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct NonTerminator<'ctx, B: ModuleBrand> {
     view: InstructionView<'ctx, B>,
 }
 
@@ -1975,7 +1989,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for InstructionView<'ctx, B
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let module = self.module.module();
         let parent_id = self.data().parent.get();
-        let label_ty = module.label_type().as_type().id();
+        let label_ty = module.label_type::<B>().as_type().id();
         let parent =
             BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(parent_id, self.module, label_ty);
         let slots = match parent.parent_id() {

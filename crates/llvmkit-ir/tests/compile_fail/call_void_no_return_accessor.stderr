@@ -1,11 +1,11 @@
-error[E0599]: no method named `return_int_value` found for struct `CallInst<'_, (), Brand<'_>>` in the current scope
-  --> tests/compile_fail/call_void_no_return_accessor.rs:27:30
+error[E0599]: no method named `return_int_value` found for struct `CallInst<'_, (), DynBrand>` in the current scope
+  --> tests/compile_fail/call_void_no_return_accessor.rs:27:26
    |
-27 |         let _ = b.view(inst).return_int_value();
-   |                              ^^^^^^^^^^^^^^^^
+27 |     let _ = b.view(inst).return_int_value();
+   |                          ^^^^^^^^^^^^^^^^
    |
 help: there is a method `return_value` with a similar name
    |
-27 -         let _ = b.view(inst).return_int_value();
-27 +         let _ = b.view(inst).return_value();
+27 -     let _ = b.view(inst).return_int_value();
+27 +     let _ = b.view(inst).return_value();
    |

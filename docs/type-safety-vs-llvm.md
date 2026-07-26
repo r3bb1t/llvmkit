@@ -8,8 +8,8 @@ often lets callers build malformed IR and asks a later verifier pass to reject i
 This is not a claim that LLVM C++ is poorly designed. LLVM is a mature C++
 compiler infrastructure optimized around pointer identity, intrusive lists,
 mutation-heavy passes, and late verification. `llvmkit` has a different advantage:
-its API can use Rust ownership, typestate, sealed traits, and generative lifetimes
-to make many invalid states unspellable.
+its API can use Rust ownership, typestate, sealed traits, and per-module brand
+types to make many invalid states unspellable.
 
 ## The short version
 
@@ -19,7 +19,7 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 
 | Problem shape | Doctrine anchor | Upstream LLVM C++ | llvmkit |
 | --- | --- | --- | --- |
-| Value from another module used as an operand | D7 | Builder accepts `Value *`; verifier later reports `"Referencing ... in another module!"` | Operand type carries a generative module brand; wrong module is a compile error |
+| Value from another module used as an operand | D7 | Builder accepts `Value *`; verifier later reports `"Referencing ... in another module!"` | Operand type carries the owning module's brand type; wrong module is a compile error |
 | Branch to a block from another module | D7 | Builder accepts `BasicBlock *`; verifier later rejects malformed control flow | Branch target carries the builder module's brand |
 | Global initializer expression tied to another module | D7 | Constructor accepts `Constant *`; type is asserted, module provenance is not statically represented | `add_global` requires `Type<'ctx, B>` and `IsConstant<'ctx, B>` with the same `B` |
 | Custom folder returns a value from the wrong module | D7 | Folder hooks return raw `Value *` | Folder hooks return `IrResult<Option<Value<'ctx, B>>>` |
@@ -106,28 +106,42 @@ Check(OpInst->getFunction() == BB->getParent(),
       "Referring to an instruction in another function!", &I);
 ```
 
-`llvmkit` gives each `Module::with_new` session a fresh brand:
+In `llvmkit` a module's identity is a **type**. Any `'static` type may be a
+brand, and a process-global registry keeps at most one live module per brand,
+so a brand names one module unambiguously:
 
 ```rust
-pub trait ModuleBrand: brand_sealed::Sealed + Copy + core::fmt::Debug + Eq + Hash {}
+pub trait ModuleBrand: Copy + core::fmt::Debug + Eq + Hash + 'static {}
 
-pub struct Brand<'id>(PhantomData<fn(&'id ()) -> &'id ()>);
-
-pub fn with_new<N, R, F>(name: N, f: F) -> R
-where
-    N: Into<String>,
-    F: for<'brand> FnOnce(Module<'brand, Brand<'brand>, Unverified>) -> R,
+impl Module<DynBrand, Unverified> {
+    // At most one live module per brand; the brand is freed on drop.
+    pub fn branded<B: ModuleBrand>(name: impl Into<String>) -> IrResult<Module<B, Unverified>>;
+    // ...or retired permanently on drop, so no successor can ever claim it.
+    pub fn branded_once<B: ModuleBrand>(name: impl Into<String>) -> IrResult<Module<B, Unverified>>;
+    // Registry-exempt: arbitrarily many live at once, separated by the runtime tag alone.
+    pub fn dynamic(name: impl Into<String>) -> Module<DynBrand, Unverified>;
+}
 ```
+
+`module_new!("name")` wraps `branded` with a brand declared at the macro's
+expansion site, so the brand is unnameable from anywhere else — the ergonomic
+descendant of the generative lifetime brand this crate used to mint, but on an
+owned, movable token rather than one pinned to a callback's frame.
 
 Values carry that brand:
 
 ```rust
-pub struct Value<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    id: ValueId,
+pub struct Value<'ctx, B: ModuleBrand> {
+    id: ValueSlot,
     module: ModuleRef<'ctx, B>,
-    ty: TypeId,
+    ty: TypeSlot,
 }
 ```
+
+The `'ctx` is the borrow of the module the handle came from; the brand `B` is
+what separates modules. Storable ids (`ValueId`, `FunctionId`, `BlockId`, …)
+carry the brand *without* the borrow, so they outlive their module — which is
+why they also carry the runtime `ModuleId` tag.
 
 The integer-add builder requires both operands to match the builder's brand `B`:
 
@@ -147,21 +161,21 @@ where
 Bad Rust program from the compile-fail suite:
 
 ```rust
-Module::with_new::<_, _, _>("left", |left| {
-    let left_value = left.i64_type().const_int(1_i64);
+let left = Module::branded::<Left>("left").unwrap();
+let left_value = left.i64_type().const_int(1_i64);
 
-    Module::with_new::<_, _, _>("right", |right| {
-        let function = right.add_typed_function::<i64, (), _>("f", Linkage::External).unwrap();
-        let entry = function.append_basic_block(&right, "entry");
-        let builder = IRBuilder::new_for::<i64>(&right).position_at_end(entry);
+let right = Module::branded::<Right>("right").unwrap();
+let function = right.add_typed_function::<i64, (), _>("f", Linkage::External).unwrap();
+let entry = right.view(function).append_basic_block(&right, "entry");
+let builder = IRBuilder::new_for::<i64>(&right).position_at_end(entry);
 
-        let _ = builder.build_int_add(left_value, left_value, "bad");
-    });
-});
+let _ = builder.build_int_add(left_value, left_value, "bad");
 ```
 
-Result: compile error. The value from `left` cannot satisfy an operand bound for
-`right`'s brand. No verifier pass, no fatal abort, no delayed broken module.
+Result: compile error — `ConstantIntValue<'_, i64, Left>` does not implement
+`IntoIntValue<'_, _, Right>`, and rustc says so in as many words: *for that
+trait implementation, expected `Left`, found `Right`*. No verifier pass, no
+fatal abort, no delayed broken module.
 
 ## 2. Cross-module branch targets
 
@@ -197,18 +211,16 @@ brand has no impl to satisfy this bound at all.
 Bad Rust program:
 
 ```rust
-Module::with_new::<_, _, _>("left", |left| {
-    let f = left.add_typed_function::<(), (), _>("left_f", Linkage::External).unwrap();
-    let left_target = f.append_basic_block(&left, "target");
+let left = Module::branded::<Left>("left").unwrap();
+let f = left.add_typed_function::<(), (), _>("left_f", Linkage::External).unwrap();
+let left_target = left.view(f.as_function()).append_basic_block(&left, "target");
 
-    Module::with_new::<_, _, _>("right", |right| {
-        let f = right.add_typed_function::<(), (), _>("right_f", Linkage::External).unwrap();
-        let entry = f.append_basic_block(&right, "entry");
-        let builder = IRBuilder::new_for::<()>(&right).position_at_end(entry);
+let right = Module::branded::<Right>("right").unwrap();
+let f = right.add_typed_function::<(), (), _>("right_f", Linkage::External).unwrap();
+let entry = right.view(f.as_function()).append_basic_block(&right, "entry");
+let builder = IRBuilder::new_for::<()>(&right).position_at_end(entry);
 
-        let _ = builder.build_br(left_target);
-    });
-});
+let _ = builder.build_br(left_target);
 ```
 
 Result: compile error. The branch target is not from the same branded module.
@@ -264,13 +276,11 @@ where
 Bad Rust program:
 
 ```rust
-Module::with_new::<_, _, _>("left", |left| {
-    let left_init = left.i32_type().const_int(1_i32);
+let left = Module::branded::<Left>("left").unwrap();
+let left_init = left.i32_type().const_int(1_i32);
 
-    Module::with_new::<_, _, _>("right", |right| {
-        let _ = right.add_global("g", left_init);
-    });
-});
+let right = Module::branded::<Right>("right").unwrap();
+let _ = right.add_global("g", left_init);
 ```
 
 Result: compile error. A constant produced by `left` cannot initialize a global
@@ -293,7 +303,7 @@ only catch the resulting broken IR later.
 `llvmkit` folders are branded:
 
 ```rust
-pub trait IRBuilderFolder<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub trait IRBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
     fn fold_bin_op_dyn(
         &self,
         opcode: BinaryOpcode,
@@ -474,7 +484,7 @@ The caller must inspect types to know whether a usable result exists.
 `llvmkit` carries the callee return marker into the instruction handle:
 
 ```rust
-pub struct CallInst<'ctx, R: ReturnMarker = Dyn, B: ModuleBrand = Brand<'ctx>> {
+pub struct CallInst<'ctx, R: ReturnMarker, B: ModuleBrand> {
     /* fields omitted */
 }
 ```
@@ -519,7 +529,7 @@ assert(New->getType() == getType() &&
 `llvmkit` makes irreversible operations consume a linear handle:
 
 ```rust
-pub struct Instruction<'ctx, S: InstructionState = state::Attached, B: ModuleBrand = Brand<'ctx>> {
+pub struct Instruction<'ctx, S: state::InstructionState, B: ModuleBrand> {
     /* fields omitted */
 }
 ```
@@ -608,7 +618,7 @@ That **visibility** is what keeps a phi unobservable mid-construction from
 outside the crate:
 
 ```rust
-pub struct PhiInst<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
+pub struct PhiInst<'ctx, W: IntWidth, B: ModuleBrand> {
     /* fields omitted */
 }
 ```
@@ -704,7 +714,7 @@ rung* — how much it may mutate — and the driver *derives* the preservation s
 from that rung. The author never writes a `PreservedAnalyses` value:
 
 ```rust
-pub trait FunctionPass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub trait FunctionPass<B: ModuleBrand> {
     type Access: FnAccess; // Inspect | PatchBody | ReshapeCfg
     type Requires: FunctionAnalysisList<'ctx, B>;
     const NAME: &'static str;

@@ -1,34 +1,26 @@
-error[E0521]: borrowed data escapes outside of closure
-  --> tests/compile_fail/typed_call_cross_module_arg.rs:33:21
+error[E0277]: the trait bound `ConstantIntValue<'_, i32, Left>: IntoIntValue<'_, i32, Right>` is not satisfied
+  --> tests/compile_fail/typed_call_cross_module_arg.rs:42:41
    |
-18 |         let left_value = i32_ty.const_int(1_i32);
-   |             ---------- `left_value` declared here, outside of the closure body
-19 |         Module::with_new::<_, _, _>("right", |right| {
-   |                                               ----- `right` is a reference that is only valid in the closure body
+42 |     let _ = builder.build_call(callee, (left_value,), "bad");
+   |                     ----------          ^^^^^^^^^^ the trait `IntoIntValue<'_, i32, Right>` is not implemented for `ConstantIntValue<'_, i32, Left>`
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+help: the trait `IntoIntValue<'_, i32, Right>` is not implemented for `ConstantIntValue<'_, i32, Left>`
+      but trait `IntoIntValue<'_, i32, Left>` is implemented for it
+  --> src/int_width.rs
+   |
+   | / impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B>
+   | |     for ConstantIntValue<'ctx, W, B>
+   | |____________________________________^
+   = help: for that trait implementation, expected `Left`, found `Right`
+   = note: required for `ConstantIntValue<'_, i32, Left>` to implement `IntoCallArg<'_, i32, Right>`
+   = note: required for `(ConstantIntValue<'_, i32, Left>,)` to implement `CallArgs<'_, (i32,), Right>`
+note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_call`
+  --> src/ir_builder.rs
+   |
+   |     pub fn build_call<Ret, Params, A, Callee, Name>(
+   |            ---------- required by a bound in this associated function
 ...
-33 |             let _ = builder.build_call(callee, (left_value,), "bad");
-   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `right` escapes the closure body here
-   |
-   = note: requirement occurs because of the type `ConstantIntValue<'_, i32, Brand<'_>>`, which makes the generic argument `Brand<'_>` invariant
-   = note: the struct `ConstantIntValue<'ctx, W, B>` is invariant over the parameter `B`
-   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
-
-error[E0521]: borrowed data escapes outside of closure
-  --> tests/compile_fail/typed_call_cross_module_arg.rs:20:26
-   |
-16 |       Module::with_new::<_, _, _>("left", |left| {
-   |                                            ----
-   |                                            |
-   |                                            `left` is a reference that is only valid in the closure body
-   |                                            has type `Module<'1>`
-...
-20 |               let callee = right.view(
-   |  __________________________^
-21 | |                 right
-22 | |                     .add_typed_function::<i32, (i32,), _>("callee", Linkage::External)
-23 | |                     .unwrap(),
-24 | |             );
-   | |             ^
-   | |             |
-   | |_____________`left` escapes the closure body here
-   |               argument requires that `'1` must outlive `'static`
+   |         A: CallArgs<'ctx, Params, B>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_call`

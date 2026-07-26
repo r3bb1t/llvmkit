@@ -18,9 +18,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, Brand, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, IRBuilder,
-    Inspect, InstSimplifyPass, IntPredicate, IntValue, IrError, Linkage, ModCx, ModReport, Module,
-    ModulePass, run_function_pass, run_module_pass,
+    Analyses, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, IRBuilder, Inspect,
+    InstSimplifyPass, IntPredicate, IntValue, IrError, Linkage, ModCx, ModReport, Module,
+    ModuleBrand, ModulePass, module_new, run_function_pass, run_module_pass,
 };
 
 /// Read-only module pass: reports how many functions the module holds. Declares
@@ -30,15 +30,19 @@ struct ReportModulePass {
     out: Rc<RefCell<Vec<String>>>,
 }
 
-impl<'ctx> ModulePass<'ctx> for ReportModulePass {
+impl<B: ModuleBrand> ModulePass<B> for ReportModulePass {
     type Access = Inspect;
     type Requires = ();
     const NAME: &'static str = "report-module";
 
-    fn run(
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: ModCx<'_, '_, '_, 'ctx, Brand<'ctx>, Inspect, ()>,
-    ) -> Result<ModReport, IrError> {
+        cx: ModCx<'m, '_, '_, 'ctx, B, Inspect, ()>,
+    ) -> Result<ModReport, IrError>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         self.out.borrow_mut().push(format!(
             "module_pass functions={}",
             cx.module().functions().len()
@@ -54,15 +58,19 @@ struct ReportFunctionPass {
     out: Rc<RefCell<Vec<String>>>,
 }
 
-impl<'ctx> FunctionPass<'ctx> for ReportFunctionPass {
+impl<B: ModuleBrand> FunctionPass<B> for ReportFunctionPass {
     type Access = Inspect;
     type Requires = (DominatorTreeAnalysis,);
     const NAME: &'static str = "report-function";
 
-    fn run(
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: FnCx<'_, '_, 'ctx, Brand<'ctx>, Inspect, (DominatorTreeAnalysis,)>,
-    ) -> Result<FnReport, IrError> {
+        cx: FnCx<'m, '_, 'ctx, B, Inspect, (DominatorTreeAnalysis,)>,
+    ) -> Result<FnReport, IrError>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let function = cx.function();
         let dt = cx.analysis::<DominatorTreeAnalysis, _>();
         let entry = function
@@ -81,7 +89,7 @@ impl<'ctx> FunctionPass<'ctx> for ReportFunctionPass {
     }
 }
 
-pub fn build(m: &Module<'_>) -> Result<(), IrError> {
+pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let f = m.add_typed_function::<i32, (bool, i32, i32), _>("select_or_add", Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
@@ -111,24 +119,33 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let bm = IRBuilder::at_end(merge);
     // `params[0]` is `merge`'s head-phi, seeded with `[ %add_xy, %then ]` and
     // `[ %sub_xy, %else ]` by the two block-argument branches above.
-    let result: IntValue<i32> = params[0].try_into()?;
+    let result: IntValue<'_, i32, _> = params[0].try_into()?;
     let is_zero = bm.build_int_cmp(IntPredicate::Eq, result, 0_i32, "is_zero")?;
     let selected = bm.build_select(is_zero, x, result, "selected")?;
     bm.build_ret(selected)?;
     Ok(())
 }
 
-pub fn run_demo(m: Module<'_>) -> Result<(String, String, String), IrError> {
+pub fn run_demo<B: ModuleBrand>(m: Module<B>) -> Result<(String, String, String), IrError> {
+    // Everything the drivers below are handed is an **id**: each `run_*_pass`
+    // consumes the module token, so a handle minted here would be a borrow of a
+    // token that is about to move. Ids survive the move; views are re-minted on
+    // the far side against whichever module the run produced.
     let function = m
         .function_by_name_dyn("select_or_add")
-        .expect("demo function is present");
-    let entry = function
+        .expect("demo function is present")
+        .id();
+    let entry = m
+        .view(function)
         .entry_block()
-        .expect("demo function has an entry block");
-    let merge = function
+        .expect("demo function has an entry block")
+        .id();
+    let merge = m
+        .view(function)
         .basic_blocks()
         .find(|bb| bb.name().as_deref() == Some("merge"))
-        .expect("demo function has a merge block");
+        .expect("demo function has a merge block")
+        .id();
 
     // Mutating cleanup: `InstSimplifyPass` and `DcePass` each declare the
     // `PatchBody` rung, so `run_function_pass` downgrades the module to
@@ -146,7 +163,7 @@ pub fn run_demo(m: Module<'_>) -> Result<(String, String, String), IrError> {
     analyses.register_function_analysis(DominatorTreeAnalysis);
     let dt = analyses
         .function_manager_mut()
-        .get_result::<DominatorTreeAnalysis, _>(function)?;
+        .get_result::<DominatorTreeAnalysis, _>(module.view(function))?;
 
     let lines = Rc::new(RefCell::new(vec![format!(
         "analysis entry_dominates_merge={}",
@@ -172,18 +189,23 @@ pub fn run_demo(m: Module<'_>) -> Result<(String, String, String), IrError> {
     Ok((cleaned_module_text, report, module_text))
 }
 
+/// The module is minted here rather than in `main` so `?` has a `Result` to
+/// return to: `module_new!` is fallible (its brand is a registry key) and
+/// `main` reports errors by hand.
+fn emit() -> Result<(String, String, String), IrError> {
+    let m = module_new!("pass_manager_demo")?;
+    build(&m)?;
+    run_demo(m)
+}
+
 pub fn main() {
-    let (cleaned_module_text, report, module_text) =
-        match Module::with_new("pass_manager_demo", |m| {
-            build(&m)?;
-            run_demo(m)
-        }) {
-            Ok(output) => output,
-            Err(err) => {
-                eprintln!("error: {err:?}");
-                std::process::exit(1);
-            }
-        };
+    let (cleaned_module_text, report, module_text) = match emit() {
+        Ok(output) => output,
+        Err(err) => {
+            eprintln!("error: {err:?}");
+            std::process::exit(1);
+        }
+    };
 
     println!("after scalar cleanup passes:");
     print!("{cleaned_module_text}");

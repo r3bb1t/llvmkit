@@ -1,10 +1,13 @@
 error[E0308]: mismatched types
-  --> tests/compile_fail/custom_folder_wrong_brand.rs:12:5
+  --> tests/compile_fail/custom_folder_wrong_brand.rs:22:5
    |
-11 | fn return_foreign_folder_value<'ctx, B: ModuleBrand>(foreign: Value<'ctx>) -> Value<'ctx, B> {
-   |                                      - expected this type parameter           -------------- expected `llvmkit_ir::Value<'ctx, B>` because of return type
-12 |     foreign
-   |     ^^^^^^^ expected `Value<'_, B>`, found `Value<'_>`
+19 | fn return_foreign_folder_value<'ctx, B: ModuleBrand>(
+   |                                      - expected this type parameter
+20 |     foreign: Value<'ctx, Foreign>,
+21 | ) -> Value<'ctx, B> {
+   |      -------------- expected `llvmkit_ir::Value<'ctx, B>` because of return type
+22 |     foreign
+   |     ^^^^^^^ expected `Value<'_, B>`, found `Value<'_, Foreign>`
    |
    = note: expected struct `llvmkit_ir::Value<'ctx, B>`
-              found struct `llvmkit_ir::Value<'ctx, Brand<'ctx>>`
+              found struct `llvmkit_ir::Value<'ctx, Foreign>`

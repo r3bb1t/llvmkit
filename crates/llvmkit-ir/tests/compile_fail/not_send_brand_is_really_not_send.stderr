@@ -1,0 +1,17 @@
+error[E0277]: `*const ()` cannot be sent between threads safely
+  --> tests/compile_fail/not_send_brand_is_really_not_send.rs:30:19
+   |
+30 |     assert_send::<NotSendBrand>();
+   |                   ^^^^^^^^^^^^ `*const ()` cannot be sent between threads safely
+   |
+   = help: within `NotSendBrand`, the trait `Send` is not implemented for `*const ()`
+note: required because it appears within the type `NotSendBrand`
+  --> tests/compile_fail/not_send_brand_is_really_not_send.rs:24:8
+   |
+24 | struct NotSendBrand(*const ());
+   |        ^^^^^^^^^^^^
+note: required by a bound in `assert_send`
+  --> tests/compile_fail/not_send_brand_is_really_not_send.rs:27:19
+   |
+27 | fn assert_send<T: Send>() {}
+   |                   ^^^^ required by this bound in `assert_send`

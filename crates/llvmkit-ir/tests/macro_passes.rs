@@ -19,10 +19,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, DominatorTreeAnalysis, Dyn, FnCx, FnPatch, FnReport, FunctionPass, FunctionView,
+    Analyses, DominatorTreeAnalysis, Dyn, FnCx, FnPatch, FnReport, FunctionId, FunctionPass,
     IRBuilder, InstructionView, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
     ModulePass, NoFolder, PatchBody, RewriteModule, Unverified, Verified, function_pass,
-    module_pass, run_function_pass, run_module_pass,
+    module_new, module_pass, run_function_pass, run_module_pass,
 };
 
 // ==========================================================================
@@ -33,8 +33,8 @@ use llvmkit_ir::{
 /// with [`NoFolder`] so the constant add survives to be a real trivially-dead
 /// instruction (mirrors `tests/pipeline_basic.rs`).
 fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, Unverified>,
-) -> Result<FunctionView<'ctx, B>, IrError> {
+    m: &'ctx Module<B, Unverified>,
+) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -46,30 +46,30 @@ fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
         "dead",
     )?;
     b.build_ret(i32_ty.const_int(1_u32))?;
-    Ok(m.view(f).into())
+    Ok(f)
 }
 
 /// `i32 @f()` whose entry just returns a constant — no dead instruction.
 fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, Unverified>,
-) -> Result<FunctionView<'ctx, B>, IrError> {
+    m: &'ctx Module<B, Unverified>,
+) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     b.build_ret(i32_ty.const_int(1_u32))?;
-    Ok(m.view(f).into())
+    Ok(f)
 }
 
 /// The single mutating body shared by the macro pass and its hand-written twin:
 /// erase every use-less non-terminator in the function. Both passes delegate
 /// here, so the *only* difference between them is the impl header the macro
 /// hides.
-fn erase_dead_instructions<'ctx, B: ModuleBrand + 'ctx>(
-    patch: &mut FnPatch<'_, '_, 'ctx, B, ()>,
+fn erase_dead_instructions<'m, 'ctx, B: ModuleBrand + 'ctx>(
+    patch: &mut FnPatch<'m, '_, 'ctx, B, ()>,
 ) -> IrResult<()> {
-    let mut dead: Vec<InstructionView<'ctx, B>> = Vec::new();
+    let mut dead: Vec<InstructionView<'m, B>> = Vec::new();
     for block in patch.function_mut().basic_blocks() {
         for view in block.instructions() {
             if !view.to_erased().has_uses() && !view.is_terminator() {
@@ -90,22 +90,19 @@ fn erase_dead_instructions<'ctx, B: ModuleBrand + 'ctx>(
 /// Meta reader: yields a function pass's `NAME`/`REQUIRED` consts. The `witness`
 /// module fixes `'ctx`/`B` and `_pass` fixes `P` by inference, so no un-nameable
 /// brand has to be spelled.
-fn fn_pass_meta<'ctx, B, P>(_witness: &Module<'ctx, B, Verified>, _pass: &P) -> (&'static str, bool)
+fn fn_pass_meta<'ctx, B, P>(_witness: &Module<B, Verified>, _pass: &P) -> (&'static str, bool)
 where
     B: ModuleBrand + 'ctx,
-    P: FunctionPass<'ctx, B>,
+    P: FunctionPass<B>,
 {
     (P::NAME, P::REQUIRED)
 }
 
 /// Meta reader for a module pass — the module-level mirror of [`fn_pass_meta`].
-fn mod_pass_meta<'ctx, B, P>(
-    _witness: &Module<'ctx, B, Verified>,
-    _pass: &P,
-) -> (&'static str, bool)
+fn mod_pass_meta<'ctx, B, P>(_witness: &Module<B, Verified>, _pass: &P) -> (&'static str, bool)
 where
     B: ModuleBrand + 'ctx,
-    P: ModulePass<'ctx, B>,
+    P: ModulePass<B>,
 {
     (P::NAME, P::REQUIRED)
 }
@@ -130,12 +127,16 @@ impl MacroEraser {
 /// Hand-written twin implementing the raw trait — identical body.
 struct HandEraser;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for HandEraser {
+impl<B: ModuleBrand> FunctionPass<B> for HandEraser {
     type Access = PatchBody;
     type Requires = ();
     const NAME: &'static str = "macro-dce";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let mut patch = cx.mutate();
         erase_dead_instructions(&mut patch)?;
         Ok(patch.done())
@@ -146,7 +147,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for HandEraser {
 fn macro_function_pass_matches_handwritten() -> Result<(), IrError> {
     // Macro-authored pass: the `PatchBody` rung downgrades the module, so the
     // explicit `Unverified` binding is the compile-time half of the lock.
-    let macro_ir: String = Module::with_new("macro-fn", |m| {
+    let macro_ir: String = {
+        let m = module_new!("macro-fn")?;
         let f = build_dead_add(&m)?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
@@ -158,20 +160,20 @@ fn macro_function_pass_matches_handwritten() -> Result<(), IrError> {
             "no `required` flag ⇒ REQUIRED stays the false default"
         );
 
-        let out: Module<'_, _, Unverified> =
+        let out: Module<_, Unverified> =
             run_function_pass(MacroEraser, verified, f, &mut analyses)?;
-        Ok(format!("{}", out.verify()?))
-    })?;
+        format!("{}", out.verify()?)
+    };
 
     // Hand-written twin over an identical module.
-    let hand_ir: String = Module::with_new("hand-fn", |m| {
+    let hand_ir: String = {
+        let m = module_new!("hand-fn")?;
         let f = build_dead_add(&m)?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let out: Module<'_, _, Unverified> =
-            run_function_pass(HandEraser, verified, f, &mut analyses)?;
-        Ok(format!("{}", out.verify()?))
-    })?;
+        let out: Module<_, Unverified> = run_function_pass(HandEraser, verified, f, &mut analyses)?;
+        format!("{}", out.verify()?)
+    };
 
     // Same erase, and (module name aside) byte-identical IR.
     assert!(
@@ -213,34 +215,33 @@ impl MacroAnalysisReader {
 
 #[test]
 fn macro_function_pass_with_requires_reads_analysis_and_stays_verified() -> Result<(), IrError> {
-    Module::with_new("macro-requires", |m| {
-        let f = build_ret_i32(&m)?;
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
+    let m = module_new!("macro-requires")?;
+    let f = build_ret_i32(&m)?;
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
 
-        let reachable = Rc::new(Cell::new(false));
-        let pass = MacroAnalysisReader {
-            reachable: reachable.clone(),
-        };
+    let reachable = Rc::new(Cell::new(false));
+    let pass = MacroAnalysisReader {
+        reachable: reachable.clone(),
+    };
 
-        let (name, required) = fn_pass_meta(&verified, &pass);
-        assert_eq!(name, "macro-dt-reader");
-        assert!(!required);
+    let (name, required) = fn_pass_meta(&verified, &pass);
+    assert_eq!(name, "macro-dt-reader");
+    assert!(!required);
 
-        // The `Inspect` rung keeps the module verified: the explicit `Verified`
-        // annotation is the compile-time half of the lock.
-        let out: Module<'_, _, Verified> = run_function_pass(pass, verified, f, &mut analyses)?;
+    // The `Inspect` rung keeps the module verified: the explicit `Verified`
+    // annotation is the compile-time half of the lock.
+    let out: Module<_, Verified> = run_function_pass(pass, verified, f, &mut analyses)?;
 
-        assert!(
-            reachable.get(),
-            "the required DominatorTreeAnalysis was prefetched and read through cx.analysis()"
-        );
-        assert!(
-            format!("{out}").contains("ret i32 1"),
-            "a read-only pass leaves the IR untouched"
-        );
-        Ok(())
-    })
+    assert!(
+        reachable.get(),
+        "the required DominatorTreeAnalysis was prefetched and read through cx.analysis()"
+    );
+    assert!(
+        format!("{out}").contains("ret i32 1"),
+        "a read-only pass leaves the IR untouched"
+    );
+    Ok(())
 }
 
 // ==========================================================================
@@ -263,13 +264,20 @@ impl MacroAddGlobal {
 /// Hand-written twin — identical body, raw trait impl.
 struct HandAddGlobal;
 
-impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for HandAddGlobal {
+impl<B: ModuleBrand> ModulePass<B> for HandAddGlobal {
     type Access = RewriteModule;
     type Requires = ();
     const NAME: &'static str = "macro-add-global";
     const REQUIRED: bool = true;
 
-    fn run(&mut self, cx: ModCx<'_, '_, '_, 'ctx, B, RewriteModule, ()>) -> IrResult<ModReport> {
+    fn run<'m, 'ctx>(
+        &mut self,
+        cx: ModCx<'m, '_, '_, 'ctx, B, RewriteModule, ()>,
+    ) -> IrResult<ModReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let rewrite = cx.mutate();
         let i32_ty = rewrite.module_mut().i32_type();
         rewrite.module_mut().add_global("g", i32_ty.const_zero())?;
@@ -279,7 +287,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for HandAddGlobal {
 
 #[test]
 fn macro_module_pass_matches_handwritten() -> Result<(), IrError> {
-    let macro_ir: String = Module::with_new("macro-mod", |m| {
+    let macro_ir: String = {
+        let m = module_new!("macro-mod")?;
         let _f = build_ret_i32(&m)?;
         let verified = m.verify()?;
         assert_eq!(verified.globals().len(), 0);
@@ -294,20 +303,19 @@ fn macro_module_pass_matches_handwritten() -> Result<(), IrError> {
 
         // `RewriteModule` downgrades: the explicit `Unverified` binding is the
         // compile-time half of the lock.
-        let out: Module<'_, _, Unverified> =
-            run_module_pass(MacroAddGlobal, verified, &mut analyses)?;
+        let out: Module<_, Unverified> = run_module_pass(MacroAddGlobal, verified, &mut analyses)?;
         assert_eq!(out.globals().len(), 1, "the macro pass added the global");
-        Ok(format!("{}", out.verify()?))
-    })?;
+        format!("{}", out.verify()?)
+    };
 
-    let hand_ir: String = Module::with_new("hand-mod", |m| {
+    let hand_ir: String = {
+        let m = module_new!("hand-mod")?;
         let _f = build_ret_i32(&m)?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let out: Module<'_, _, Unverified> =
-            run_module_pass(HandAddGlobal, verified, &mut analyses)?;
-        Ok(format!("{}", out.verify()?))
-    })?;
+        let out: Module<_, Unverified> = run_module_pass(HandAddGlobal, verified, &mut analyses)?;
+        format!("{}", out.verify()?)
+    };
 
     assert_eq!(
         macro_ir.replace("macro-mod", "MOD"),

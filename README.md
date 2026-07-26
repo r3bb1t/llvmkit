@@ -129,21 +129,20 @@ while let Some(tok) = lex.next() {
 Build IR programmatically:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
+use llvmkit_ir::{IRBuilder, IrError, Linkage, module_new};
 
 fn build() -> Result<(), IrError> {
-    Module::with_new("demo", |m| {
-        let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
+    let m = module_new!("demo")?;
+    let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
 
-        let b = IRBuilder::at_end(entry);
-        let (lhs, rhs) = m.view(f).params();
-        let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
-        b.build_ret(sum)?;
+    let b = IRBuilder::at_end(entry);
+    let (lhs, rhs) = m.view(f).params();
+    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    b.build_ret(sum)?;
 
-        print!("{m}");
-        Ok(())
-    })
+    print!("{m}");
+    Ok(())
 }
 ```
 
@@ -165,29 +164,28 @@ or misusing a void call's result are all compile errors instead of runtime
 return type with no `try_into`:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
+use llvmkit_ir::{IRBuilder, IrError, Linkage, module_new};
 
 fn build_typed_call() -> Result<(), IrError> {
-    Module::with_new("demo", |m| {
-        let callee = m.add_typed_function::<i32, (i32, i32), _>("add_inner", Linkage::External)?;
-        let entry = m.view(callee).append_basic_block(&m, "entry");
-        let b = IRBuilder::at_end(entry);
-        let (lhs, rhs) = m.view(callee).params();
-        let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
-        b.build_ret(sum)?;
+    let m = module_new!("demo")?;
+    let callee = m.add_typed_function::<i32, (i32, i32), _>("add_inner", Linkage::External)?;
+    let entry = m.view(callee).append_basic_block(&m, "entry");
+    let b = IRBuilder::at_end(entry);
+    let (lhs, rhs) = m.view(callee).params();
+    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    b.build_ret(sum)?;
 
-        let caller = m.add_typed_function::<i32, (i32, i32), _>("caller", Linkage::External)?;
-        let entry = m.view(caller).append_basic_block(&m, "entry");
-        let b = IRBuilder::at_end(entry);
-        let (x, y) = m.view(caller).params();
+    let caller = m.add_typed_function::<i32, (i32, i32), _>("caller", Linkage::External)?;
+    let entry = m.view(caller).append_basic_block(&m, "entry");
+    let b = IRBuilder::at_end(entry);
+    let (x, y) = m.view(caller).params();
 
-        // `call.result()` is already `IntValue<i32>` -- no `try_into`.
-        let call = b.build_call(m.view(callee), (x, y), "r")?;
-        b.build_ret(call.result())?;
+    // `call.result()` is already `IntValue<i32>` -- no `try_into`.
+    let call = b.build_call(m.view(callee), (x, y), "r")?;
+    b.build_ret(call.result())?;
 
-        print!("{m}");
-        Ok(())
-    })
+    print!("{m}");
+    Ok(())
 }
 ```
 
@@ -230,17 +228,15 @@ struct WindowPlacement {
 
 type Normalize = fn(WindowPlacement) -> WindowPlacement;
 
-Module::with_new("window", |m| {
-    let f = m.add_typed_function_of::<Normalize, _>("normalize", Linkage::External)?;
-    let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for_return::<Normalize>(&m).position_at_end(entry);
-    let (placement,) = m.view(f).params();
-    // `normal_position` returns `RectValue<'ctx, B>`, and `min` returns
-    // `PointValue<'ctx, B>`; nested structs keep their generated wrapper type.
-    let rect = placement.normal_position(&b)?;
-    let _min = rect.min(&b)?;
-    Ok(())
-})?;
+let m = module_new!("window")?;
+let f = m.add_typed_function_of::<Normalize, _>("normalize", Linkage::External)?;
+let entry = m.view(f).append_basic_block(&m, "entry");
+let b = IRBuilder::new_for_return::<Normalize>(&m).position_at_end(entry);
+let (placement,) = m.view(f).params();
+// `normal_position` returns `RectValue<'ctx, B>`, and `min` returns
+// `PointValue<'ctx, B>`; nested structs keep their generated wrapper type.
+let rect = placement.normal_position(&b)?;
+let _min = rect.min(&b)?;
 ```
 
 Existing IR can be checked back into a generated wrapper with
@@ -283,29 +279,28 @@ land in; it narrows to the typed form with `TryFrom`, which checks both element
 and length.
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, Len, Linkage, Module, VectorValue};
+use llvmkit_ir::{IRBuilder, IrError, Len, Linkage, VectorValue, module_new};
 
 fn typed_vec() -> Result<(), IrError> {
-    Module::with_new("demo", |m| {
-        let v4i32 = m.vector_type_n::<i32, 4>(); // VectorType<'_, i32, Len<4>>
-        let fn_ty = m.fn_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()], false);
-        let f = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::at_end(entry);
+    let m = module_new!("demo")?;
+    let v4i32 = m.vector_type_n::<i32, 4>(); // VectorType<'_, i32, Len<4>>
+    let fn_ty = m.fn_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()], false);
+    let f = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::at_end(entry);
 
-        // `try_into` checks element (i32) AND lane count (4) before stamping the markers.
-        let a: VectorValue<'_, i32, Len<4>> =
-            m.view(f).param(0).unwrap().into_erased().try_into().unwrap();
-        let c: VectorValue<'_, i32, Len<4>> =
-            m.view(f).param(1).unwrap().into_erased().try_into().unwrap();
+    // `try_into` checks element (i32) AND lane count (4) before stamping the markers.
+    let a: VectorValue<'_, i32, Len<4>> =
+        m.view(f).param(0).unwrap().into_erased().try_into().unwrap();
+    let c: VectorValue<'_, i32, Len<4>> =
+        m.view(f).param(1).unwrap().into_erased().try_into().unwrap();
 
-        // Both operands are pinned to `<4 x i32>`; a length/element mismatch would not compile.
-        let sum = b.build_vec_int_add(a, c, "sum")?;
-        // Extract returns the element as its typed scalar handle -- `IntValue<i32>`, inferred.
-        let lane0 = b.build_vec_extract(sum, m.i32_type().const_int(0_i32), "lane0")?;
-        b.build_ret(lane0)?;
-        Ok(())
-    })
+    // Both operands are pinned to `<4 x i32>`; a length/element mismatch would not compile.
+    let sum = b.build_vec_int_add(a, c, "sum")?;
+    // Extract returns the element as its typed scalar handle -- `IntValue<i32>`, inferred.
+    let lane0 = b.build_vec_extract(sum, m.i32_type().const_int(0_i32), "lane0")?;
+    b.build_ret(lane0)?;
+    Ok(())
 }
 ```
 
@@ -404,14 +399,15 @@ having `libLLVM`'s full backend behind it.
 
 ### Same-module safety
 
-`Module::with_new` gives every module construction session a fresh compile-time
-brand. Normal code does not name that brand: values, constants, basic blocks,
-globals, and builders infer it from the `Module` or type receiver used to
-create them. Builder and mutation APIs therefore reject cross-module operands at
-compile time instead of returning a runtime "foreign value" error. Generic
-extension code may name `B: ModuleBrand` explicitly when it needs to accept any
-module brand; ordinary examples should stay inside the `with_new` closure and
-let the receiver drive inference.
+Every module carries a compile-time brand type. `module_new!("name")` mints a
+fresh one per expansion site, `Module::branded::<B>("name")` takes a brand you
+name yourself (at most one live module per brand), and `Module::dynamic("name")`
+opts out of the registry when the number of modules is a run-time decision.
+Normal code does not name the brand: values, constants, basic blocks, globals,
+and builders infer it from the `Module` or type receiver used to create them.
+Builder and mutation APIs therefore reject cross-module operands at compile time
+instead of returning a runtime "foreign value" error. Generic extension code may
+name `B: ModuleBrand` explicitly when it needs to accept any module brand.
 
 ### Instruction lifecycle safety
 
@@ -716,9 +712,9 @@ locks.
 - **D6. Aggregate types preserve element shape.** Aggregate typing is modeled
   directly rather than flattened into weak runtime predicates.
 - **D7. Cross-module mixing is rejected.** Public construction and mutation
-  APIs carry a generative module brand, so values from one `Module::with_new`
-  closure cannot be passed to another module's builders or mutators. This is a
-  type error, not a runtime same-module check.
+  APIs carry a module brand type, so values minted under one brand cannot be
+  passed to another module's builders or mutators. This is a type error, not a
+  runtime same-module check.
 - **D8. Verified guarantees are explicit.** Verification consumes an
   unverified token and produces `Module<'ctx, B, Verified>`. A pass pipeline's
   output typestate is *derived* from its members' capability rungs: an

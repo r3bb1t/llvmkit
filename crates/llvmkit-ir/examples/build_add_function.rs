@@ -17,21 +17,20 @@
 //! Prints real `.ll` thanks to the [`Display`](core::fmt::Display) impl
 //! on [`Module`].
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
+use llvmkit_ir::{IRBuilder, IrError, Linkage, module_new};
 
 fn build() -> Result<(), IrError> {
-    Module::with_new("demo", |m| {
-        let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
+    let m = module_new!("demo")?;
+    let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
 
-        let b = IRBuilder::at_end(entry);
-        let (lhs, rhs) = m.view(f).params();
-        let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
-        b.build_ret(sum)?;
+    let b = IRBuilder::at_end(entry);
+    let (lhs, rhs) = m.view(f).params();
+    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    b.build_ret(sum)?;
 
-        print!("{m}");
-        Ok(())
-    })
+    print!("{m}");
+    Ok(())
 }
 
 pub fn main() {

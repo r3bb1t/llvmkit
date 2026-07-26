@@ -30,17 +30,16 @@ where
 }
 
 fn main() {
-    Module::with_new("c", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
+    let m = Module::dynamic("c");
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
 
-        // Mint an *erased* id from a typed handle.
-        let a: IntValue<i32> = m.view(f).param(0).unwrap().try_into().unwrap();
-        let erased: ValueId<_> = a.into_erased().id();
+    // Mint an *erased* id from a typed handle.
+    let a: IntValue<i32, _> = m.view(f).param(0).unwrap().try_into().unwrap();
+    let erased: ValueId<_> = a.into_erased().id();
 
-        // `ValueId<B>` has no `IntoIntValue` impl: erased -> typed must be
-        // spelled with `try_view`, never lifted as an operand.
-        needs_int_operand(erased, ModuleRef::from(m.as_view()));
-    });
+    // `ValueId<B>` has no `IntoIntValue` impl: erased -> typed must be
+    // spelled with `try_view`, never lifted as an operand.
+    needs_int_operand(erased, ModuleRef::from(m.as_view()));
 }

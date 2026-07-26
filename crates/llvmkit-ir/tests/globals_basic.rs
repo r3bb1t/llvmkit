@@ -11,10 +11,10 @@
 use llvmkit_ir::comdat::SelectionKind;
 use llvmkit_ir::global_value::{DllStorageClass, ThreadLocalMode, Visibility};
 use llvmkit_ir::{
-    Align, IrError, Linkage, MaybeAlign, Module, ModuleBrand, UnnamedAddr, VerifierRule,
+    Align, IrError, Linkage, MaybeAlign, Module, ModuleBrand, UnnamedAddr, VerifierRule, module_new,
 };
 
-fn module_text<'ctx, B: ModuleBrand, S>(m: &Module<'ctx, B, S>) -> String {
+fn module_text<B: ModuleBrand, S>(m: &Module<B, S>) -> String {
     format!("{m}")
 }
 
@@ -27,32 +27,30 @@ fn module_text<'ctx, B: ModuleBrand, S>(m: &Module<'ctx, B, S>) -> String {
 /// initializer.
 #[test]
 fn simple_global_i32_zero() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.add_global("g1", zero).expect("add");
-        assert!(
-            module_text(&m).contains("@g1 = global i32 0\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.add_global("g1", zero).expect("add");
+    assert!(
+        module_text(&m).contains("@g1 = global i32 0\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 90-91:
 /// `@g2 = constant i32 0` -- a `constant` (immutable) global.
 #[test]
 fn simple_global_constant_i32_zero() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.add_global_constant("g2", zero).expect("add");
-        assert!(
-            module_text(&m).contains("@g2 = constant i32 0\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.add_global_constant("g2", zero).expect("add");
+    assert!(
+        module_text(&m).contains("@g2 = constant i32 0\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 114-115:
@@ -60,16 +58,15 @@ fn simple_global_constant_i32_zero() {
 /// with explicit `external` keyword.
 #[test]
 fn external_declaration_global() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        m.add_external_global("g.external", i32_ty.as_type())
-            .expect("add");
-        assert!(
-            module_text(&m).contains("@g.external = external global i32\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    m.add_external_global("g.external", i32_ty.as_type())
+        .expect("add");
+    assert!(
+        module_text(&m).contains("@g.external = external global i32\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -77,16 +74,15 @@ fn external_declaration_global() {
 // ---------------------------------------------------------------------------
 
 fn linkage_text(linkage: Linkage) -> String {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.global_builder("g", i32_ty.as_type())
-            .linkage(linkage)
-            .initializer(zero)
-            .build()
-            .expect("build");
-        module_text(&m)
-    })
+    let m = Module::dynamic("m");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.global_builder("g", i32_ty.as_type())
+        .linkage(linkage)
+        .initializer(zero)
+        .build()
+        .expect("build");
+    module_text(&m)
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 94-95.
@@ -142,18 +138,17 @@ fn linkage_weak_odr() {
 /// `@g.extern_weak = extern_weak global i32` -- declaration-only.
 #[test]
 fn linkage_extern_weak_declaration() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        m.global_builder("g.extern_weak", i32_ty.as_type())
-            .linkage(Linkage::ExternalWeak)
-            .build()
-            .expect("build");
-        assert!(
-            module_text(&m).contains("@g.extern_weak = extern_weak global i32\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    m.global_builder("g.extern_weak", i32_ty.as_type())
+        .linkage(Linkage::ExternalWeak)
+        .build()
+        .expect("build");
+    assert!(
+        module_text(&m).contains("@g.extern_weak = extern_weak global i32\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 104-105:
@@ -173,16 +168,15 @@ fn linkage_common_zero_init() {
 // ---------------------------------------------------------------------------
 
 fn visibility_text(vis: Visibility) -> String {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.global_builder("g", i32_ty.as_type())
-            .visibility(vis)
-            .initializer(zero)
-            .build()
-            .expect("build");
-        module_text(&m)
-    })
+    let m = Module::dynamic("m");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.global_builder("g", i32_ty.as_type())
+        .visibility(vis)
+        .initializer(zero)
+        .build()
+        .expect("build");
+    module_text(&m)
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 120-121.
@@ -208,38 +202,36 @@ fn visibility_protected() {
 /// Mirrors `test/Bitcode/compatibility.ll` line 130-131.
 #[test]
 fn dll_export() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.global_builder("g.dllexport", i32_ty.as_type())
-            .dll_storage_class(DllStorageClass::DllExport)
-            .initializer(zero)
-            .build()
-            .expect("build");
-        assert!(
-            module_text(&m).contains("@g.dllexport = dllexport global i32 0\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.global_builder("g.dllexport", i32_ty.as_type())
+        .dll_storage_class(DllStorageClass::DllExport)
+        .initializer(zero)
+        .build()
+        .expect("build");
+    assert!(
+        module_text(&m).contains("@g.dllexport = dllexport global i32 0\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 128-129:
 /// `@g.dllimport = external dllimport global i32`.
 #[test]
 fn dll_import_declaration() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        m.global_builder("g.dllimport", i32_ty.as_type())
-            .dll_storage_class(DllStorageClass::DllImport)
-            .build()
-            .expect("build");
-        assert!(
-            module_text(&m).contains("@g.dllimport = external dllimport global i32\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    m.global_builder("g.dllimport", i32_ty.as_type())
+        .dll_storage_class(DllStorageClass::DllImport)
+        .build()
+        .expect("build");
+    assert!(
+        module_text(&m).contains("@g.dllimport = external dllimport global i32\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -247,16 +239,15 @@ fn dll_import_declaration() {
 // ---------------------------------------------------------------------------
 
 fn tls_text(mode: ThreadLocalMode) -> String {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.global_builder("g", i32_ty.as_type())
-            .thread_local_mode(mode)
-            .initializer(zero)
-            .build()
-            .expect("build");
-        module_text(&m)
-    })
+    let m = Module::dynamic("m");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.global_builder("g", i32_ty.as_type())
+        .thread_local_mode(mode)
+        .initializer(zero)
+        .build()
+        .expect("build");
+    module_text(&m)
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 136-137:
@@ -304,40 +295,38 @@ fn tls_local_exec() {
 /// `@g.unnamed_addr = unnamed_addr global i32 0`.
 #[test]
 fn unnamed_addr_global() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.global_builder("g.unnamed_addr", i32_ty.as_type())
-            .unnamed_addr(UnnamedAddr::Global)
-            .initializer(zero)
-            .build()
-            .expect("build");
-        assert!(
-            module_text(&m).contains("@g.unnamed_addr = unnamed_addr global i32 0\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.global_builder("g.unnamed_addr", i32_ty.as_type())
+        .unnamed_addr(UnnamedAddr::Global)
+        .initializer(zero)
+        .build()
+        .expect("build");
+    assert!(
+        module_text(&m).contains("@g.unnamed_addr = unnamed_addr global i32 0\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 148-149:
 /// `@g.local_unnamed_addr = local_unnamed_addr global i32 0`.
 #[test]
 fn unnamed_addr_local() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.global_builder("g.local_unnamed_addr", i32_ty.as_type())
-            .unnamed_addr(UnnamedAddr::Local)
-            .initializer(zero)
-            .build()
-            .expect("build");
-        assert!(
-            module_text(&m).contains("@g.local_unnamed_addr = local_unnamed_addr global i32 0\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.global_builder("g.local_unnamed_addr", i32_ty.as_type())
+        .unnamed_addr(UnnamedAddr::Local)
+        .initializer(zero)
+        .build()
+        .expect("build");
+    assert!(
+        module_text(&m).contains("@g.local_unnamed_addr = local_unnamed_addr global i32 0\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -348,20 +337,19 @@ fn unnamed_addr_local() {
 /// `@g.addrspace = addrspace(1) global i32 0`.
 #[test]
 fn address_space_one() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.global_builder("g.addrspace", i32_ty.as_type())
-            .address_space(1)
-            .initializer(zero)
-            .build()
-            .expect("build");
-        assert!(
-            module_text(&m).contains("@g.addrspace = addrspace(1) global i32 0\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.global_builder("g.addrspace", i32_ty.as_type())
+        .address_space(1)
+        .initializer(zero)
+        .build()
+        .expect("build");
+    assert!(
+        module_text(&m).contains("@g.addrspace = addrspace(1) global i32 0\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -372,20 +360,18 @@ fn address_space_one() {
 /// `@g.externally_initialized = external externally_initialized global i32`.
 #[test]
 fn externally_initialized_declaration() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        m.global_builder("g.externally_initialized", i32_ty.as_type())
-            .externally_initialized(true)
-            .build()
-            .expect("build");
-        assert!(
-            module_text(&m).contains(
-                "@g.externally_initialized = external externally_initialized global i32\n"
-            ),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    m.global_builder("g.externally_initialized", i32_ty.as_type())
+        .externally_initialized(true)
+        .build()
+        .expect("build");
+    assert!(
+        module_text(&m)
+            .contains("@g.externally_initialized = external externally_initialized global i32\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -396,60 +382,57 @@ fn externally_initialized_declaration() {
 /// `@g.section = global i32 0, section "_DATA"`.
 #[test]
 fn section_attribute() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.global_builder("g.section", i32_ty.as_type())
-            .section("_DATA")
-            .initializer(zero)
-            .build()
-            .expect("build");
-        assert!(
-            module_text(&m).contains("@g.section = global i32 0, section \"_DATA\"\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.global_builder("g.section", i32_ty.as_type())
+        .section("_DATA")
+        .initializer(zero)
+        .build()
+        .expect("build");
+    assert!(
+        module_text(&m).contains("@g.section = global i32 0, section \"_DATA\"\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 164-165:
 /// `@g.partition = global i32 0, partition "part"`.
 #[test]
 fn partition_attribute() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.global_builder("g.partition", i32_ty.as_type())
-            .partition("part")
-            .initializer(zero)
-            .build()
-            .expect("build");
-        assert!(
-            module_text(&m).contains("@g.partition = global i32 0, partition \"part\"\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.global_builder("g.partition", i32_ty.as_type())
+        .partition("part")
+        .initializer(zero)
+        .build()
+        .expect("build");
+    assert!(
+        module_text(&m).contains("@g.partition = global i32 0, partition \"part\"\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 188-189:
 /// `@g.align = global i32 0, align 4`.
 #[test]
 fn align_attribute() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.global_builder("g.align", i32_ty.as_type())
-            .align(MaybeAlign::from(Align::new(4).expect("align")))
-            .initializer(zero)
-            .build()
-            .expect("build");
-        assert!(
-            module_text(&m).contains("@g.align = global i32 0, align 4\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.global_builder("g.align", i32_ty.as_type())
+        .align(MaybeAlign::from(Align::new(4).expect("align")))
+        .initializer(zero)
+        .build()
+        .expect("build");
+    assert!(
+        module_text(&m).contains("@g.align = global i32 0, align 4\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -460,49 +443,47 @@ fn align_attribute() {
 /// `$comdat.any = comdat any`.
 #[test]
 fn comdat_any_emission() {
-    Module::with_new("m", |m| {
-        m.get_or_insert_comdat("comdat.any");
-        assert!(
-            module_text(&m).contains("$comdat.any = comdat any\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    m.get_or_insert_comdat("comdat.any");
+    assert!(
+        module_text(&m).contains("$comdat.any = comdat any\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 24-25 / 26-27 / 28-29 / 30-31:
 /// every selection kind round-trips.
 #[test]
 fn comdat_all_selection_kinds() {
-    Module::with_new("m", |m| {
-        m.get_or_insert_comdat("comdat.any");
-        m.get_or_insert_comdat("comdat.exactmatch")
-            .set_selection_kind(SelectionKind::ExactMatch);
-        m.get_or_insert_comdat("comdat.largest")
-            .set_selection_kind(SelectionKind::Largest);
-        m.get_or_insert_comdat("comdat.noduplicates")
-            .set_selection_kind(SelectionKind::NoDeduplicate);
-        m.get_or_insert_comdat("comdat.samesize")
-            .set_selection_kind(SelectionKind::SameSize);
-        let text = module_text(&m);
-        assert!(text.contains("$comdat.any = comdat any\n"), "got:\n{text}");
-        assert!(
-            text.contains("$comdat.exactmatch = comdat exactmatch\n"),
-            "got:\n{text}"
-        );
-        assert!(
-            text.contains("$comdat.largest = comdat largest\n"),
-            "got:\n{text}"
-        );
-        assert!(
-            text.contains("$comdat.noduplicates = comdat nodeduplicate\n"),
-            "got:\n{text}"
-        );
-        assert!(
-            text.contains("$comdat.samesize = comdat samesize\n"),
-            "got:\n{text}"
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    m.get_or_insert_comdat("comdat.any");
+    m.get_or_insert_comdat("comdat.exactmatch")
+        .set_selection_kind(SelectionKind::ExactMatch);
+    m.get_or_insert_comdat("comdat.largest")
+        .set_selection_kind(SelectionKind::Largest);
+    m.get_or_insert_comdat("comdat.noduplicates")
+        .set_selection_kind(SelectionKind::NoDeduplicate);
+    m.get_or_insert_comdat("comdat.samesize")
+        .set_selection_kind(SelectionKind::SameSize);
+    let text = module_text(&m);
+    assert!(text.contains("$comdat.any = comdat any\n"), "got:\n{text}");
+    assert!(
+        text.contains("$comdat.exactmatch = comdat exactmatch\n"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("$comdat.largest = comdat largest\n"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("$comdat.noduplicates = comdat nodeduplicate\n"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("$comdat.samesize = comdat samesize\n"),
+        "got:\n{text}"
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 168-169:
@@ -510,21 +491,20 @@ fn comdat_all_selection_kinds() {
 /// (matches the global's name).
 #[test]
 fn comdat_attached_implicit_name() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        let c = m.get_or_insert_comdat("comdat.any");
-        m.global_builder("comdat.any", i32_ty.as_type())
-            .initializer(zero)
-            .comdat(c)
-            .build()
-            .expect("build");
-        assert!(
-            module_text(&m).contains("@comdat.any = global i32 0, comdat\n"),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    let c = m.get_or_insert_comdat("comdat.any");
+    m.global_builder("comdat.any", i32_ty.as_type())
+        .initializer(zero)
+        .comdat(c)
+        .build()
+        .expect("build");
+    assert!(
+        module_text(&m).contains("@comdat.any = global i32 0, comdat\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 182-185:
@@ -532,24 +512,22 @@ fn comdat_attached_implicit_name() {
 /// -- comdat name explicit (differs from the global's name).
 #[test]
 fn comdat_attached_explicit_name_with_section() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        let c = m.get_or_insert_comdat("comdat1");
-        m.global_builder("g.comdat1", i32_ty.as_type())
-            .initializer(zero)
-            .section("SharedSection")
-            .comdat(c)
-            .build()
-            .expect("build");
-        assert!(
-            module_text(&m).contains(
-                "@g.comdat1 = global i32 0, section \"SharedSection\", comdat($comdat1)\n"
-            ),
-            "got:\n{}",
-            module_text(&m)
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    let c = m.get_or_insert_comdat("comdat1");
+    m.global_builder("g.comdat1", i32_ty.as_type())
+        .initializer(zero)
+        .section("SharedSection")
+        .comdat(c)
+        .build()
+        .expect("build");
+    assert!(
+        module_text(&m)
+            .contains("@g.comdat1 = global i32 0, section \"SharedSection\", comdat($comdat1)\n"),
+        "got:\n{}",
+        module_text(&m)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -563,49 +541,47 @@ fn comdat_attached_explicit_name_with_section() {
 /// `@const.struct = constant %const.struct.type { i32 -1, i8 undef, i64 poison }`.
 #[test]
 fn const_struct_initializer() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let i8_ty = m.i8_type();
-        let i64_ty = m.i64_type();
-        let st = m.struct_type([i32_ty.as_type(), i8_ty.as_type(), i64_ty.as_type()], false);
-        let neg_one = i32_ty.const_int(-1i32);
-        let undef_i8 = i8_ty.as_type().get_undef();
-        let poison_i64 = i64_ty.as_type().get_poison();
-        let s = st
-            .const_struct::<llvmkit_ir::Constant<'_>, _>([
-                neg_one.as_constant(),
-                undef_i8.into(),
-                poison_i64.into(),
-            ])
-            .expect("struct");
-        m.add_global_constant("c", s).expect("add");
-        let text = module_text(&m);
-        assert!(
-            text.contains("@c = constant { i32, i8, i64 } { i32 -1, i8 undef, i64 poison }\n"),
-            "got:\n{text}"
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let i8_ty = m.i8_type();
+    let i64_ty = m.i64_type();
+    let st = m.struct_type([i32_ty.as_type(), i8_ty.as_type(), i64_ty.as_type()], false);
+    let neg_one = i32_ty.const_int(-1i32);
+    let undef_i8 = i8_ty.as_type().get_undef();
+    let poison_i64 = i64_ty.as_type().get_poison();
+    let s = st
+        .const_struct::<llvmkit_ir::Constant<'_, _>, _>([
+            neg_one.as_constant(),
+            undef_i8.into(),
+            poison_i64.into(),
+        ])
+        .expect("struct");
+    m.add_global_constant("c", s).expect("add");
+    let text = module_text(&m);
+    assert!(
+        text.contains("@c = constant { i32, i8, i64 } { i32 -1, i8 undef, i64 poison }\n"),
+        "got:\n{text}"
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 53-58: `[3 x i16]` /
 /// `[3 x i32]` / `[3 x i64]` -- non-i8 array elements print element-wise.
 #[test]
 fn const_array_i32_initializer() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let arr = m.array_type(i32_ty.as_type(), 3);
-        let zero = i32_ty.const_int(0i32);
-        let one = i32_ty.const_int(1i32);
-        let a = arr
-            .const_array::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([zero, one, zero])
-            .expect("array");
-        m.add_global_constant("constant.array.i32", a).expect("add");
-        let text = module_text(&m);
-        assert!(
-            text.contains("@constant.array.i32 = constant [3 x i32] [i32 0, i32 1, i32 0]\n"),
-            "got:\n{text}"
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let arr = m.array_type(i32_ty.as_type(), 3);
+    let zero = i32_ty.const_int(0i32);
+    let one = i32_ty.const_int(1i32);
+    let a = arr
+        .const_array::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([zero, one, zero])
+        .expect("array");
+    m.add_global_constant("constant.array.i32", a).expect("add");
+    let text = module_text(&m);
+    assert!(
+        text.contains("@constant.array.i32 = constant [3 x i32] [i32 0, i32 1, i32 0]\n"),
+        "got:\n{text}"
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 51:
@@ -613,21 +589,20 @@ fn const_array_i32_initializer() {
 /// `ConstantDataArray::isString` in `lib/IR/AsmWriter.cpp`.
 #[test]
 fn const_array_i8_prints_as_cstring() {
-    Module::with_new("m", |m| {
-        let i8_ty = m.i8_type();
-        let arr = m.array_type(i8_ty.as_type(), 3);
-        let zero = i8_ty.const_int(0i8);
-        let one = i8_ty.const_int(1i8);
-        let a = arr
-            .const_array::<llvmkit_ir::ConstantIntValue<'_, i8>, _>([zero, one, zero])
-            .expect("array");
-        m.add_global_constant("constant.array.i8", a).expect("add");
-        let text = module_text(&m);
-        assert!(
-            text.contains("@constant.array.i8 = constant [3 x i8] c\"\\00\\01\\00\"\n"),
-            "got:\n{text}"
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i8_ty = m.i8_type();
+    let arr = m.array_type(i8_ty.as_type(), 3);
+    let zero = i8_ty.const_int(0i8);
+    let one = i8_ty.const_int(1i8);
+    let a = arr
+        .const_array::<llvmkit_ir::ConstantIntValue<'_, i8, _>, _>([zero, one, zero])
+        .expect("array");
+    m.add_global_constant("constant.array.i8", a).expect("add");
+    let text = module_text(&m);
+    assert!(
+        text.contains("@constant.array.i8 = constant [3 x i8] c\"\\00\\01\\00\"\n"),
+        "got:\n{text}"
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 106-107:
@@ -635,51 +610,49 @@ fn const_array_i8_prints_as_cstring() {
 /// linkage with an i8-array initializer using the c-string form.
 #[test]
 fn appending_global_cstring() {
-    Module::with_new("m", |m| {
-        let i8_ty = m.i8_type();
-        let arr = m.array_type(i8_ty.as_type(), 4);
-        let bytes: [llvmkit_ir::ConstantIntValue<'_, i8>; 4] = [
-            i8_ty.const_int(b't' as i8),
-            i8_ty.const_int(b'e' as i8),
-            i8_ty.const_int(b's' as i8),
-            i8_ty.const_int(b't' as i8),
-        ];
-        let a = arr
-            .const_array::<llvmkit_ir::ConstantIntValue<'_, i8>, _>(bytes)
-            .expect("array");
-        m.global_builder("g.appending", arr.as_type())
-            .linkage(Linkage::Appending)
-            .initializer(a)
-            .build()
-            .expect("build");
-        let text = module_text(&m);
-        assert!(
-            text.contains("@g.appending = appending global [4 x i8] c\"test\"\n"),
-            "got:\n{text}"
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i8_ty = m.i8_type();
+    let arr = m.array_type(i8_ty.as_type(), 4);
+    let bytes: [llvmkit_ir::ConstantIntValue<'_, i8, _>; 4] = [
+        i8_ty.const_int(b't' as i8),
+        i8_ty.const_int(b'e' as i8),
+        i8_ty.const_int(b's' as i8),
+        i8_ty.const_int(b't' as i8),
+    ];
+    let a = arr
+        .const_array::<llvmkit_ir::ConstantIntValue<'_, i8, _>, _>(bytes)
+        .expect("array");
+    m.global_builder("g.appending", arr.as_type())
+        .linkage(Linkage::Appending)
+        .initializer(a)
+        .build()
+        .expect("build");
+    let text = module_text(&m);
+    assert!(
+        text.contains("@g.appending = appending global [4 x i8] c\"test\"\n"),
+        "got:\n{text}"
+    );
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 70-71: `<3 x i32>`
 /// vector constant prints with angle-bracket syntax.
 #[test]
 fn const_vector_initializer() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let vec_ty = m.vector_type(i32_ty.as_type(), 3, false);
-        let zero = i32_ty.const_int(0i32);
-        let one = i32_ty.const_int(1i32);
-        let v = vec_ty
-            .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32>, _>([zero, one, zero])
-            .expect("vector");
-        m.add_global_constant("constant.vector.i32", v)
-            .expect("add");
-        let text = module_text(&m);
-        assert!(
-            text.contains("@constant.vector.i32 = constant <3 x i32> <i32 0, i32 1, i32 0>\n"),
-            "got:\n{text}"
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let vec_ty = m.vector_type(i32_ty.as_type(), 3, false);
+    let zero = i32_ty.const_int(0i32);
+    let one = i32_ty.const_int(1i32);
+    let v = vec_ty
+        .const_vector::<llvmkit_ir::ConstantIntValue<'_, i32, _>, _>([zero, one, zero])
+        .expect("vector");
+    m.add_global_constant("constant.vector.i32", v)
+        .expect("add");
+    let text = module_text(&m);
+    assert!(
+        text.contains("@constant.vector.i32 = constant <3 x i32> <i32 0, i32 1, i32 0>\n"),
+        "got:\n{text}"
+    );
 }
 
 /// Function values are pointer-typed constants when used as global initializers.
@@ -687,20 +660,23 @@ fn const_vector_initializer() {
 /// signature lives separately as `getValueType`.
 #[test]
 fn function_pointer_global_initializer_verifies() -> Result<(), IrError> {
-    Module::with_new("fnptr_init", |m| {
-        let void_ty = m.void_type();
-        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-        let init = m.view(callee).as_global_constant_ptr();
-        m.add_global_constant("slot", init)?;
-        m.verify_borrowed()?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("@slot = constant ptr @callee"),
-            "output:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("fnptr_init")?;
+    let void_ty = m.void_type();
+    let callee_ty = m.fn_type(
+        void_ty.as_type(),
+        Vec::<llvmkit_ir::Type<'_, _>>::new(),
+        false,
+    );
+    let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
+    let init = m.view(callee).as_global_constant_ptr();
+    m.add_global_constant("slot", init)?;
+    m.verify_borrowed()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("@slot = constant ptr @callee"),
+        "output:\n{text}"
+    );
+    Ok(())
 }
 
 /// Function-address GEP constants keep a pointer-typed base operand when used
@@ -708,44 +684,46 @@ fn function_pointer_global_initializer_verifies() -> Result<(), IrError> {
 /// Mirrors `GlobalValue::getType` and `ConstantExpr::getGetElementPtr`.
 #[test]
 fn function_pointer_aggregate_initializer_prints_ptr_base() -> Result<(), IrError> {
-    Module::with_new("fnptr_agg", |m| {
-        let void_ty = m.void_type();
-        let ptr_ty = m.ptr_type(0);
-        let callee_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-        let arr_ty = m.array_type(ptr_ty.as_type(), 1);
-        let elem = m.view(callee).as_aggregate_ptr(0);
-        let init = arr_ty.const_array([elem])?;
-        m.add_global_constant("table", init)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains(
-                "@table = constant [1 x ptr] [ptr getelementptr inbounds (i8, ptr @callee, i64 0)]"
-            ),
-            "output:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("fnptr_agg")?;
+    let void_ty = m.void_type();
+    let ptr_ty = m.ptr_type(0);
+    let callee_ty = m.fn_type(
+        void_ty.as_type(),
+        Vec::<llvmkit_ir::Type<'_, _>>::new(),
+        false,
+    );
+    let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
+    let arr_ty = m.array_type(ptr_ty.as_type(), 1);
+    let elem = m.view(callee).as_aggregate_ptr(0);
+    let init = arr_ty.const_array([elem])?;
+    m.add_global_constant("table", init)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains(
+            "@table = constant [1 x ptr] [ptr getelementptr inbounds (i8, ptr @callee, i64 0)]"
+        ),
+        "output:\n{text}"
+    );
+    Ok(())
 }
 
 /// Global variables are pointer-typed constants when used as initializers.
 /// Mirrors `GlobalValue::getType` for globals.
 #[test]
 fn global_pointer_global_initializer_verifies() -> Result<(), IrError> {
-    Module::with_new("gptr_init", |m| {
-        let i8_ty = m.i8_type();
-        let zero = i8_ty.const_int(0i8);
-        let target = m.add_global_constant("target", zero)?;
-        let init = m.view(target).as_global_constant_ptr();
-        m.add_global_constant("slot", init)?;
-        m.verify_borrowed()?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("@slot = constant ptr @target"),
-            "output:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("gptr_init")?;
+    let i8_ty = m.i8_type();
+    let zero = i8_ty.const_int(0i8);
+    let target = m.add_global_constant("target", zero)?;
+    let init = m.view(target).as_global_constant_ptr();
+    m.add_global_constant("slot", init)?;
+    m.verify_borrowed()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("@slot = constant ptr @target"),
+        "output:\n{text}"
+    );
+    Ok(())
 }
 
 /// `ptr_offset` preserves the global's pointer address space in the printed
@@ -753,24 +731,23 @@ fn global_pointer_global_initializer_verifies() -> Result<(), IrError> {
 /// Mirrors `ConstantExpr::getGetElementPtr` deriving result type from pointer operand.
 #[test]
 fn ptr_offset_preserves_global_address_space() -> Result<(), IrError> {
-    Module::with_new("gptr_addrspace", |m| {
-        let i8_ty = m.i8_type();
-        let zero = i8_ty.const_int(0i8);
-        let target = m
-            .global_builder("target", i8_ty.as_type())
-            .address_space(1)
-            .initializer(zero)
-            .build()?;
-        let init = m.view(target).ptr_offset(4);
-        m.add_global_constant("slot", init)?;
-        m.verify_borrowed()?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("@slot = constant ptr addrspace(1) getelementptr inbounds (i8, ptr addrspace(1) @target, i64 4)"),
-            "output:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("gptr_addrspace")?;
+    let i8_ty = m.i8_type();
+    let zero = i8_ty.const_int(0i8);
+    let target = m
+        .global_builder("target", i8_ty.as_type())
+        .address_space(1)
+        .initializer(zero)
+        .build()?;
+    let init = m.view(target).ptr_offset(4);
+    m.add_global_constant("slot", init)?;
+    m.verify_borrowed()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("@slot = constant ptr addrspace(1) getelementptr inbounds (i8, ptr addrspace(1) @target, i64 4)"),
+        "output:\n{text}"
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -784,24 +761,23 @@ fn ptr_offset_preserves_global_address_space() -> Result<(), IrError> {
 /// const-expr serialization.
 #[test]
 fn symbol_delta_constexpr_initializer() {
-    Module::with_new("m", |m| {
-        let i8_ty = m.i8_type();
-        let zero8 = i8_ty.const_int(0i8);
-        // Two real defined symbols: a "real" target and an "anchor".
-        let real = m.add_global_constant("real", zero8).expect("real");
-        let anchor = m.add_global_constant("anchor", zero8).expect("anchor");
-        // @delta = constant i64 sub(ptrtoint(@real), ptrtoint(@anchor)).
-        let delta = m.view(real).try_delta_from(m.view(anchor)).expect("delta");
-        m.add_global_constant("delta", delta).expect("delta");
-        let text = module_text(&m);
-        assert!(
-            text.contains(
-                "@delta = constant i64 sub (i64 ptrtoint (ptr @real to i64), \
-                 i64 ptrtoint (ptr @anchor to i64))\n"
-            ),
-            "got:\n{text}"
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i8_ty = m.i8_type();
+    let zero8 = i8_ty.const_int(0i8);
+    // Two real defined symbols: a "real" target and an "anchor".
+    let real = m.add_global_constant("real", zero8).expect("real");
+    let anchor = m.add_global_constant("anchor", zero8).expect("anchor");
+    // @delta = constant i64 sub(ptrtoint(@real), ptrtoint(@anchor)).
+    let delta = m.view(real).try_delta_from(m.view(anchor)).expect("delta");
+    m.add_global_constant("delta", delta).expect("delta");
+    let text = module_text(&m);
+    assert!(
+        text.contains(
+            "@delta = constant i64 sub (i64 ptrtoint (ptr @real to i64), \
+             i64 ptrtoint (ptr @anchor to i64))\n"
+        ),
+        "got:\n{text}"
+    );
 }
 
 /// `GlobalVariable::delta_from_plus` materialises the symbol difference with a
@@ -809,35 +785,34 @@ fn symbol_delta_constexpr_initializer() {
 /// i64 K)` — the encrypted-delta form. Asserts the exact const-expr.
 #[test]
 fn symbol_delta_plus_constexpr_initializer() {
-    Module::with_new("m", |m| {
-        let i8_ty = m.i8_type();
-        let zero8 = i8_ty.const_int(0i8);
-        let real = m.add_global_constant("real", zero8).expect("real");
-        let anchor = m.add_global_constant("anchor", zero8).expect("anchor");
-        // @enc = constant i64 (sub(ptrtoint(@real), ptrtoint(@anchor)) + 12345).
-        let enc = m
-            .view(real)
-            .try_delta_from_plus(m.view(anchor), 12345)
-            .expect("delta plus");
-        m.add_global_constant("enc", enc).expect("enc");
-        let text = module_text(&m);
-        assert!(
-            text.contains(
-                "@enc = constant i64 add (i64 sub (i64 ptrtoint (ptr @real to i64), \
-                 i64 ptrtoint (ptr @anchor to i64)), i64 12345)\n"
-            ),
-            "got:\n{text}"
-        );
+    let m = module_new!("m").expect("fresh module");
+    let i8_ty = m.i8_type();
+    let zero8 = i8_ty.const_int(0i8);
+    let real = m.add_global_constant("real", zero8).expect("real");
+    let anchor = m.add_global_constant("anchor", zero8).expect("anchor");
+    // @enc = constant i64 (sub(ptrtoint(@real), ptrtoint(@anchor)) + 12345).
+    let enc = m
+        .view(real)
+        .try_delta_from_plus(m.view(anchor), 12345)
+        .expect("delta plus");
+    m.add_global_constant("enc", enc).expect("enc");
+    let text = module_text(&m);
+    assert!(
+        text.contains(
+            "@enc = constant i64 add (i64 sub (i64 ptrtoint (ptr @real to i64), \
+             i64 ptrtoint (ptr @anchor to i64)), i64 12345)\n"
+        ),
+        "got:\n{text}"
+    );
 
-        // A negative addend prints with a leading minus.
-        let enc2 = m
-            .view(real)
-            .try_delta_from_plus(m.view(anchor), -7)
-            .expect("delta plus");
-        m.add_global_constant("enc2", enc2).expect("enc2");
-        let text2 = module_text(&m);
-        assert!(text2.contains(", i64 -7)\n"), "got:\n{text2}");
-    })
+    // A negative addend prints with a leading minus.
+    let enc2 = m
+        .view(real)
+        .try_delta_from_plus(m.view(anchor), -7)
+        .expect("delta plus");
+    m.add_global_constant("enc2", enc2).expect("enc2");
+    let text2 = module_text(&m);
+    assert!(text2.contains(", i64 -7)\n"), "got:\n{text2}");
 }
 
 // ---------------------------------------------------------------------------
@@ -854,21 +829,20 @@ fn symbol_delta_plus_constexpr_initializer() {
 /// that path.
 #[test]
 fn set_initializer_type_mismatch_rejected() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let i64_ty = m.i64_type();
-        // A global frozen at `i32`...
-        let g = m
-            .add_global_uninitialized("g", i32_ty)
-            .expect("declare i32 global");
-        // ...rejects an `i64` replacement initializer.
-        let zero64 = i64_ty.const_int(0i64);
-        let err = m
-            .view(g)
-            .set_initializer(&m, zero64)
-            .expect_err("expected mismatch");
-        assert!(matches!(err, IrError::TypeMismatch { .. }), "got: {err:?}");
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    // A global frozen at `i32`...
+    let g = m
+        .add_global_uninitialized("g", i32_ty)
+        .expect("declare i32 global");
+    // ...rejects an `i64` replacement initializer.
+    let zero64 = i64_ty.const_int(0i64);
+    let err = m
+        .view(g)
+        .set_initializer(&m, zero64)
+        .expect_err("expected mismatch");
+    assert!(matches!(err, IrError::TypeMismatch { .. }), "got: {err:?}");
 }
 
 /// Mirrors `Verifier::visitGlobalVariable` -- the `hasCommonLinkage`
@@ -876,77 +850,74 @@ fn set_initializer_type_mismatch_rejected() {
 /// invalid.
 #[test]
 fn common_linkage_nonzero_initializer_rejected() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let one = i32_ty.const_int(1i32);
-        m.global_builder("c", i32_ty.as_type())
-            .linkage(Linkage::Common)
-            .initializer(one)
-            .build()
-            .expect("build accepts at construction time");
-        let err = m.verify_borrowed().expect_err("verifier rejects");
-        assert!(
-            matches!(
-                err,
-                IrError::VerifierFailure {
-                    rule: VerifierRule::CommonLinkageInvariantViolated,
-                    ..
-                }
-            ),
-            "got: {err:?}"
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let one = i32_ty.const_int(1i32);
+    m.global_builder("c", i32_ty.as_type())
+        .linkage(Linkage::Common)
+        .initializer(one)
+        .build()
+        .expect("build accepts at construction time");
+    let err = m.verify_borrowed().expect_err("verifier rejects");
+    assert!(
+        matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::CommonLinkageInvariantViolated,
+                ..
+            }
+        ),
+        "got: {err:?}"
+    );
 }
 
 /// Mirrors `Verifier::visitGlobalVariable` -- the `hasCommonLinkage`
 /// arm: a common-linkage `constant` is invalid.
 #[test]
 fn common_linkage_constant_rejected() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.global_builder("c", i32_ty.as_type())
-            .linkage(Linkage::Common)
-            .constant(true)
-            .initializer(zero)
-            .build()
-            .expect("build");
-        let err = m.verify_borrowed().expect_err("verifier rejects");
-        assert!(
-            matches!(
-                err,
-                IrError::VerifierFailure {
-                    rule: VerifierRule::CommonLinkageInvariantViolated,
-                    ..
-                }
-            ),
-            "got: {err:?}"
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.global_builder("c", i32_ty.as_type())
+        .linkage(Linkage::Common)
+        .constant(true)
+        .initializer(zero)
+        .build()
+        .expect("build");
+    let err = m.verify_borrowed().expect_err("verifier rejects");
+    assert!(
+        matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::CommonLinkageInvariantViolated,
+                ..
+            }
+        ),
+        "got: {err:?}"
+    );
 }
 
 /// Mirrors `Verifier::visitGlobalVariable` -- the
 /// "Globals cannot contain scalable types" check.
 #[test]
 fn scalable_vector_global_rejected() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let scalable = m.vector_type(i32_ty.as_type(), 4, true);
-        m.global_builder("s", scalable.as_type())
-            .build()
-            .expect("build");
-        let err = m.verify_borrowed().expect_err("verifier rejects");
-        assert!(
-            matches!(
-                err,
-                IrError::VerifierFailure {
-                    rule: VerifierRule::GlobalScalableType,
-                    ..
-                }
-            ),
-            "got: {err:?}"
-        );
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let scalable = m.vector_type(i32_ty.as_type(), 4, true);
+    m.global_builder("s", scalable.as_type())
+        .build()
+        .expect("build");
+    let err = m.verify_borrowed().expect_err("verifier rejects");
+    assert!(
+        matches!(
+            err,
+            IrError::VerifierFailure {
+                rule: VerifierRule::GlobalScalableType,
+                ..
+            }
+        ),
+        "got: {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -959,14 +930,13 @@ fn scalable_vector_global_rejected() {
 /// API is `Module::get_global(name)`.
 #[test]
 fn module_named_global_lookup_round_trip() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        let g = m.add_global("foo", zero).expect("add");
-        let looked_up = m.get_global("foo").expect("found");
-        assert_eq!(m.view(g), looked_up);
-        assert!(m.get_global("missing").is_none());
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    let g = m.add_global("foo", zero).expect("add");
+    let looked_up = m.get_global("foo").expect("found");
+    assert_eq!(m.view(g), looked_up);
+    assert!(m.get_global("missing").is_none());
 }
 
 /// Mirrors `unittests/IR/ModuleTest.cpp::TEST(ModuleTest, GlobalList)`
@@ -974,15 +944,14 @@ fn module_named_global_lookup_round_trip() {
 /// asserts globals iterate in declaration order).
 #[test]
 fn module_iter_globals_preserves_order() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        m.add_global("a", zero).expect("a");
-        m.add_global("b", zero).expect("b");
-        m.add_global("c", zero).expect("c");
-        let names: Vec<&str> = m.globals().map(|g| g.name()).collect();
-        assert_eq!(names, vec!["a", "b", "c"]);
-    })
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    m.add_global("a", zero).expect("a");
+    m.add_global("b", zero).expect("b");
+    m.add_global("c", zero).expect("c");
+    let names: Vec<&str> = m.globals().map(|g| g.name()).collect();
+    assert_eq!(names, vec!["a", "b", "c"]);
 }
 
 /// Mirrors `unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, ComdatUserTracking)`
@@ -991,13 +960,12 @@ fn module_iter_globals_preserves_order() {
 /// observing duplicates).
 #[test]
 fn comdat_get_or_insert_is_idempotent() {
-    Module::with_new("m", |m| {
-        let a = m.get_or_insert_comdat("c1");
-        let b = m.get_or_insert_comdat("c1");
-        assert_eq!(a.id(), b.id());
-        let c = m.get_or_insert_comdat("c2");
-        assert_ne!(a.id(), c.id());
-    })
+    let m = module_new!("m").expect("fresh module");
+    let a = m.get_or_insert_comdat("c1");
+    let b = m.get_or_insert_comdat("c1");
+    assert_eq!(a.id(), b.id());
+    let c = m.get_or_insert_comdat("c2");
+    assert_ne!(a.id(), c.id());
 }
 
 /// `llvmkit-specific`: ports the explicit Rust API split for global
@@ -1006,27 +974,26 @@ fn comdat_get_or_insert_is_idempotent() {
 /// partition accessors.
 #[test]
 fn alias_ifunc_partition_clear_apis() {
-    Module::with_new("m", |m| {
-        let i32_ty = m.i32_type();
-        let zero = i32_ty.const_int(0i32);
-        let target = m.add_global("target", zero).expect("target");
-        let alias = m
-            .alias_builder("alias", i32_ty.as_type(), m.view(target))
-            .partition("part")
-            .build()
-            .expect("alias");
-        assert_eq!(m.view(alias).partition().as_deref(), Some("part"));
-        m.view(alias).clear_partition(&m);
-        assert!(m.view(alias).partition().is_none());
+    let m = module_new!("m").expect("fresh module");
+    let i32_ty = m.i32_type();
+    let zero = i32_ty.const_int(0i32);
+    let target = m.add_global("target", zero).expect("target");
+    let alias = m
+        .alias_builder("alias", i32_ty.as_type(), m.view(target))
+        .partition("part")
+        .build()
+        .expect("alias");
+    assert_eq!(m.view(alias).partition().as_deref(), Some("part"));
+    m.view(alias).clear_partition(&m);
+    assert!(m.view(alias).partition().is_none());
 
-        let resolver = m.add_global("resolver", zero).expect("resolver");
-        let ifunc = m
-            .ifunc_builder("ifunc", i32_ty.as_type(), m.view(resolver))
-            .partition("part")
-            .build()
-            .expect("ifunc");
-        assert_eq!(m.view(ifunc).partition().as_deref(), Some("part"));
-        m.view(ifunc).clear_partition(&m);
-        assert!(m.view(ifunc).partition().is_none());
-    })
+    let resolver = m.add_global("resolver", zero).expect("resolver");
+    let ifunc = m
+        .ifunc_builder("ifunc", i32_ty.as_type(), m.view(resolver))
+        .partition("part")
+        .build()
+        .expect("ifunc");
+    assert_eq!(m.view(ifunc).partition().as_deref(), Some("part"));
+    m.view(ifunc).clear_partition(&m);
+    assert!(m.view(ifunc).partition().is_none());
 }

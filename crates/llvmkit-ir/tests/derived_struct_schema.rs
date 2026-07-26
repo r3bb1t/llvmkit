@@ -1,5 +1,5 @@
 use llvmkit_ir::{
-    CallArgs, IRBuilder, IntValue, IrError, IrStruct, Linkage, Module, NoFolder, StructFields,
+    CallArgs, IRBuilder, IntValue, IrError, IrStruct, Linkage, NoFolder, StructFields, module_new,
 };
 
 #[derive(IrStruct)]
@@ -42,82 +42,85 @@ fn derive_builds_nested_named_structs_and_accessors() -> Result<(), IrError> {
         + rust_window.normal_position.min.x
         + rust_window.normal_position.max.y;
 
-    Module::with_new("derived", |m| {
-        let f = m.add_typed_function::<WindowPlacement, (WindowPlacement,), _>(
-            "normalize",
-            Linkage::External,
-        )?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let (placement,) = m.view(f).params();
-        let rect = placement.normal_position(&b)?;
-        let min = rect.min(&b)?;
-        let max = rect.max(&b)?;
-        let x = min.x(&b)?;
-        let adjusted_min = PointValue::build(&m, &b, x, max.y(&b)?, "adjusted_min")?;
-        let adjusted_rect = RectValue::build(&m, &b, adjusted_min, max, "adjusted_rect")?;
-        let rebuilt =
-            WindowPlacementValue::build(&m, &b, placement.show_cmd(&b)?, adjusted_rect, "rebuilt")?;
-        b.build_ret(rebuilt)?;
+    let m = module_new!("derived")?;
+    let f = m.add_typed_function::<WindowPlacement, (WindowPlacement,), _>(
+        "normalize",
+        Linkage::External,
+    )?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let (placement,) = m.view(f).params();
+    let rect = placement.normal_position(&b)?;
+    let min = rect.min(&b)?;
+    let max = rect.max(&b)?;
+    let x = min.x(&b)?;
+    let adjusted_min = PointValue::build(m.as_view(), &b, x, max.y(&b)?, "adjusted_min")?;
+    let adjusted_rect = RectValue::build(m.as_view(), &b, adjusted_min, max, "adjusted_rect")?;
+    let rebuilt = WindowPlacementValue::build(
+        m.as_view(),
+        &b,
+        placement.show_cmd(&b)?,
+        adjusted_rect,
+        "rebuilt",
+    )?;
+    b.build_ret(rebuilt)?;
 
-        let text = format!("{m}");
-        assert!(text.contains("%Point = type { i32, i32 }"), "got:\n{text}");
-        assert!(
-            text.contains("%Rect = type { %Point, %Point }"),
-            "got:\n{text}"
-        );
-        assert!(
-            text.contains("%WindowPlacement = type { i32, %Rect }"),
-            "got:\n{text}"
-        );
-        assert!(
-            text.contains("define %WindowPlacement @normalize(%WindowPlacement %0)"),
-            "got:\n{text}"
-        );
-        assert!(
-            text.contains("extractvalue %WindowPlacement %0, 1"),
-            "got:\n{text}"
-        );
-        assert!(
-            text.contains("extractvalue %Rect %normal_position, 0"),
-            "got:\n{text}"
-        );
-        assert!(text.contains("extractvalue %Point %min, 0"), "got:\n{text}");
-        assert!(
-            text.contains("insertvalue %Point poison, i32 %x, 0"),
-            "got:\n{text}"
-        );
-        assert!(
-            text.contains("insertvalue %Rect poison, %Point %adjusted_min.y, 0"),
-            "got:\n{text}"
-        );
-        assert!(
-            text.contains("insertvalue %WindowPlacement poison, i32 %show_cmd, 0"),
-            "got:\n{text}"
-        );
-        assert!(
-            text.contains("ret %WindowPlacement %rebuilt.normal_position"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let text = format!("{m}");
+    assert!(text.contains("%Point = type { i32, i32 }"), "got:\n{text}");
+    assert!(
+        text.contains("%Rect = type { %Point, %Point }"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("%WindowPlacement = type { i32, %Rect }"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("define %WindowPlacement @normalize(%WindowPlacement %0)"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("extractvalue %WindowPlacement %0, 1"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("extractvalue %Rect %normal_position, 0"),
+        "got:\n{text}"
+    );
+    assert!(text.contains("extractvalue %Point %min, 0"), "got:\n{text}");
+    assert!(
+        text.contains("insertvalue %Point poison, i32 %x, 0"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("insertvalue %Rect poison, %Point %adjusted_min.y, 0"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("insertvalue %WindowPlacement poison, i32 %show_cmd, 0"),
+        "got:\n{text}"
+    );
+    assert!(
+        text.contains("ret %WindowPlacement %rebuilt.normal_position"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// llvmkit-specific checked wrapper for derive-generated struct values; closest
 /// upstream coverage is `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`.
 #[test]
 fn derive_try_from_raw_ir_values() -> Result<(), IrError> {
-    Module::with_new("derived_try_from", |m| {
-        let f = m.add_typed_function::<(), (WindowPlacement,), _>("read_raw", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let arg = m.view(f).as_function().param(0)?;
-        let placement = WindowPlacementValue::try_from(arg)?;
-        let normal_position = placement.normal_position(&b)?;
-        let _: RectValue<'_, _> = normal_position;
-        b.build_ret_void();
-        Ok(())
-    })
+    let m = module_new!("derived_try_from")?;
+    let f = m.add_typed_function::<(), (WindowPlacement,), _>("read_raw", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let arg = m.view(f).as_function().param(0)?;
+    let placement = WindowPlacementValue::try_from(arg)?;
+    let normal_position = placement.normal_position(&b)?;
+    let _: RectValue<'_, _> = normal_position;
+    b.build_ret_void();
+    Ok(())
 }
 
 /// llvmkit-specific flattened schema-parameter facade over LLVM function
@@ -125,26 +128,26 @@ fn derive_try_from_raw_ir_values() -> Result<(), IrError> {
 /// `extractvalue` / `insertvalue` forms.
 #[test]
 fn derive_struct_fields_unpacks_top_level_fields() -> Result<(), IrError> {
-    Module::with_new("derived_fields", |m| {
-        let f = m.add_typed_function::<WindowPlacement, StructFields<WindowPlacement>, _>(
-            "normalize_fields",
-            Linkage::External,
-        )?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let (show_cmd, normal_position) = m.view(f).params();
-        let _: IntValue<'_, i32, _> = show_cmd;
-        let _: RectValue<'_, _> = normal_position;
-        let rebuilt = WindowPlacementValue::build(&m, &b, show_cmd, normal_position, "rebuilt")?;
-        b.build_ret(rebuilt)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("define %WindowPlacement @normalize_fields(i32 %0, %Rect %1)"),
-            "got:\n{text}"
-        );
-        assert!(text.contains("ret %WindowPlacement"), "got:\n{text}");
-        Ok(())
-    })
+    let m = module_new!("derived_fields")?;
+    let f = m.add_typed_function::<WindowPlacement, StructFields<WindowPlacement>, _>(
+        "normalize_fields",
+        Linkage::External,
+    )?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let (show_cmd, normal_position) = m.view(f).params();
+    let _: IntValue<'_, i32, _> = show_cmd;
+    let _: RectValue<'_, _> = normal_position;
+    let rebuilt =
+        WindowPlacementValue::build(m.as_view(), &b, show_cmd, normal_position, "rebuilt")?;
+    b.build_ret(rebuilt)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("define %WindowPlacement @normalize_fields(i32 %0, %Rect %1)"),
+        "got:\n{text}"
+    );
+    assert!(text.contains("ret %WindowPlacement"), "got:\n{text}");
+    Ok(())
 }
 
 /// llvmkit-specific derive hygiene regression: Rust field names may collide
@@ -165,19 +168,18 @@ fn derive_build_accepts_fields_named_like_helper_parameters() -> Result<(), IrEr
     };
     let _ = rust_value.module + rust_value.builder + rust_value.name;
 
-    Module::with_new("collision", |m| {
-        let f = m.add_typed_function::<CollisionNames, (), _>("collision", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let value = CollisionNamesValue::build(&m, &b, 1_i32, 2_i32, 3_i32, "collision")?;
-        b.build_ret(value)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("ret %CollisionNames %collision.name"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("collision")?;
+    let f = m.add_typed_function::<CollisionNames, (), _>("collision", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let value = CollisionNamesValue::build(m.as_view(), &b, 1_i32, 2_i32, 3_i32, "collision")?;
+    b.build_ret(value)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("ret %CollisionNames %collision.name"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// llvmkit-specific derive-emitted `IntoCallArg` impl; closest upstream
@@ -186,18 +188,17 @@ fn derive_build_accepts_fields_named_like_helper_parameters() -> Result<(), IrEr
 /// `CallArgs` seam as any other typed call argument.
 #[test]
 fn derive_emits_into_call_arg_for_struct_schema() -> Result<(), IrError> {
-    Module::with_new("derived_call_arg", |m| {
-        let f = m.add_typed_function::<i32, (Point,), _>("consume_point", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let point = PointValue::build(&m, &b, 1_i32, 2_i32, "point")?;
+    let m = module_new!("derived_call_arg")?;
+    let f = m.add_typed_function::<i32, (Point,), _>("consume_point", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let point = PointValue::build(m.as_view(), &b, 1_i32, 2_i32, "point")?;
 
-        let ids = <(_,) as CallArgs<'_, (Point,), _>>::lower((point,), (&m).into())?;
+    let ids = <(_,) as CallArgs<'_, (Point,), _>>::lower((point,), (&m).into())?;
 
-        assert_eq!(ids.len(), 1, "expected one lowered call-argument id");
-        b.build_ret(0_i32)?;
-        Ok(())
-    })
+    assert_eq!(ids.len(), 1, "expected one lowered call-argument id");
+    b.build_ret(0_i32)?;
+    Ok(())
 }
 
 /// llvmkit-specific helper attributes; closest upstream coverage is the same
@@ -214,13 +215,12 @@ fn derive_supports_name_override_and_packed() -> Result<(), IrError> {
     let rust_pair = Pair { a: 1, b: 2 };
     let _ = rust_pair.a + rust_pair.b;
 
-    Module::with_new("attrs", |m| {
-        let _ = <Pair as llvmkit_ir::StructSchema>::ir_type(&m)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("%Renamed = type <{ i32, i32 }>"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("attrs")?;
+    let _ = <Pair as llvmkit_ir::StructSchema>::ir_type(m.as_view())?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("%Renamed = type <{ i32, i32 }>"),
+        "got:\n{text}"
+    );
+    Ok(())
 }

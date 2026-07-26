@@ -10,7 +10,7 @@ use super::block_state::{BlockTerminationState, Unterminated};
 use super::function::FunctionValue;
 use super::instruction::{InstructionKindData, InstructionView};
 use super::marker::{Dyn, ReturnMarker};
-use super::module::{Brand, ModuleBrand, ModuleRef};
+use super::module::{ModuleBrand, ModuleRef};
 use super::value::{ValueKindData, ValueSlot};
 use super::value_id::{BlockId, FunctionId};
 
@@ -48,7 +48,7 @@ impl<B: ModuleBrand> BasicBlockEdge<B> {
 /// Recomputed CFG view for one function. Successor/predecessor lists
 /// preserve duplicate edges, matching LLVM's CFG iterators.
 #[derive(Debug, Clone)]
-pub struct FunctionCfg<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub struct FunctionCfg<'ctx, B: ModuleBrand + 'ctx> {
     function: FunctionValue<'ctx, Dyn, B>,
     successors: HashMap<ValueSlot, Vec<ValueSlot>>,
     predecessors: HashMap<ValueSlot, Vec<ValueSlot>>,

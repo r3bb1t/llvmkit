@@ -41,10 +41,10 @@
 //!
 //! The `_brand` phantom is always `Invariant<B>` (`PhantomData<fn(B) -> B>`):
 //! `Send`-neutral and invariant in `B`, exactly like the borrowing handles.
-//! During cycle A `B` is the generative lifetime brand `Brand<'brand>`, so
-//! the ids are storable *within* the `with_new` closure; they become `'static`
-//! automatically in cycle C when brands become types (hence no `'static` bound
-//! is imposed here).
+//! Every brand is a `'static` type — a named brand, a
+//! [`module_new!`](crate::module_new) brand, or [`DynBrand`](crate::DynBrand) —
+//! so an id is `'static` automatically and can be stored anywhere, including
+//! across a thread boundary. That is why no `'static` bound is imposed here.
 
 use core::marker::PhantomData;
 

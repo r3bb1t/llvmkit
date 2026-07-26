@@ -20,7 +20,7 @@ use crate::function::FunctionValue;
 use crate::int_width::{IntoIntValue, Width};
 use crate::ir_builder::{IRBuilder, Unpositioned, constant_folder::ConstantFolder};
 use crate::marker::{Ptr, ReturnMarker};
-use crate::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
+use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use crate::r#type::{Type, TypeKind};
 use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueSlot};
 use crate::value_id::{TypedFunctionId, TypedVarArgsFunctionId};
@@ -69,7 +69,7 @@ pub trait FunctionReturn: Sized + 'static {
     type Marker: ReturnMarker;
 
     /// Construct this schema's LLVM IR return type in `module`.
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx;
 
@@ -104,7 +104,7 @@ pub trait FunctionParam: Sized + 'static {
     type Value<'ctx, B: ModuleBrand + 'ctx>;
 
     /// Construct this schema's LLVM IR parameter type in `module`.
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx;
 
@@ -160,7 +160,7 @@ pub trait FunctionParamList: Sized + 'static {
     type Values<'ctx, B: ModuleBrand + 'ctx>;
 
     /// Construct the LLVM IR parameter type list in tuple order.
-    fn ir_types<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
+    fn ir_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B>>>
     where
         B: ModuleBrand + 'ctx;
 
@@ -204,7 +204,7 @@ pub trait FunctionSignature: Sized + 'static {
 }
 
 /// Function handle whose return and parameter schema are both known at compile time.
-pub struct TypedFunctionValue<'ctx, Ret, Params, B: ModuleBrand = Brand<'ctx>>
+pub struct TypedFunctionValue<'ctx, Ret, Params, B: ModuleBrand>
 where
     Ret: FunctionReturn,
     Params: FunctionParamList,
@@ -340,7 +340,7 @@ where
     #[inline]
     pub fn append_basic_block<Name>(
         self,
-        module: &Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         name: Name,
     ) -> BasicBlock<'ctx, Ret::Marker, Unterminated, B>
     where
@@ -353,7 +353,7 @@ where
     #[inline]
     pub fn builder<'m>(
         self,
-        module: &'m Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
     ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker> {
         IRBuilder::new_for::<Ret::Marker>(module)
     }
@@ -368,7 +368,7 @@ where
 /// [`TypedFunctionValue`] and this facade are mutually exclusive —
 /// each requires the opposite of [`crate::derived_types::FunctionType::is_var_arg`]
 /// at construction time.
-pub struct TypedVarArgsFunctionValue<'ctx, Ret, Params, B: ModuleBrand = Brand<'ctx>>
+pub struct TypedVarArgsFunctionValue<'ctx, Ret, Params, B: ModuleBrand>
 where
     Ret: FunctionReturn,
     Params: FunctionParamList,
@@ -505,7 +505,7 @@ where
     #[inline]
     pub fn append_basic_block<Name>(
         self,
-        module: &Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         name: Name,
     ) -> BasicBlock<'ctx, Ret::Marker, Unterminated, B>
     where
@@ -518,7 +518,7 @@ where
     #[inline]
     pub fn builder<'m>(
         self,
-        module: &'m Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
     ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker> {
         IRBuilder::new_for::<Ret::Marker>(module)
     }
@@ -649,7 +649,7 @@ impl FunctionReturn for () {
     type Marker = ();
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -687,7 +687,7 @@ impl FunctionReturn for Ptr {
     type Marker = Ptr;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -725,7 +725,7 @@ impl FunctionParam for Ptr {
     type Value<'ctx, B: ModuleBrand + 'ctx> = PointerValue<'ctx, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -782,7 +782,7 @@ macro_rules! impl_int_signature_marker {
             type Marker = $marker;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -820,7 +820,7 @@ macro_rules! impl_int_signature_marker {
             type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, $marker, B>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -884,7 +884,7 @@ impl<const N: u32> FunctionReturn for Width<N> {
     type Marker = Width<N>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -922,7 +922,7 @@ impl<const N: u32> FunctionParam for Width<N> {
     type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, Width<N>, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -979,7 +979,7 @@ macro_rules! impl_float_signature_marker {
             type Marker = $marker;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -1017,7 +1017,7 @@ macro_rules! impl_float_signature_marker {
             type Value<'ctx, B: ModuleBrand + 'ctx> = FloatValue<'ctx, $marker, B>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -1096,7 +1096,7 @@ impl FunctionParamList for () {
     type Values<'ctx, B: ModuleBrand + 'ctx> = ();
 
     #[inline]
-    fn ir_types<'ctx, B>(_module: &Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
+    fn ir_types<'ctx, B>(_module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B>>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -1144,7 +1144,7 @@ macro_rules! impl_param_list_tuple {
             type Values<'ctx, B: ModuleBrand + 'ctx> = ($($param::Value<'ctx, B>,)+);
 
             #[inline]
-            fn ir_types<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
+            fn ir_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B>>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -1320,7 +1320,7 @@ impl_function_signature!(
     message = "`{Self}` cannot fill a call-argument slot of schema `{P}`",
     label = "wrong argument type for this parameter position"
 )]
-pub trait IntoCallArg<'ctx, P: FunctionParam, B: ModuleBrand = Brand<'ctx>>: Sized {
+pub trait IntoCallArg<'ctx, P: FunctionParam, B: ModuleBrand>: Sized {
     #[doc(hidden)]
     fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
 }
@@ -1391,7 +1391,7 @@ mod call_args_sealed {
     message = "argument tuple `{Self}` does not match the callee's parameter schema `{Params}`",
     note = "argument count and per-position types must match the callee's typed signature"
 )]
-pub trait CallArgs<'ctx, Params: FunctionParamList, B: ModuleBrand = Brand<'ctx>>:
+pub trait CallArgs<'ctx, Params: FunctionParamList, B: ModuleBrand>:
     Sized + call_args_sealed::Sealed
 {
     #[doc(hidden)]

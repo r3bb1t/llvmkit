@@ -396,8 +396,7 @@ impl ConstantData {
 ///
 /// The erased [`Constant`] view may be embedded in parsed constants and
 /// instructions, but only this parser-only handle can resolve the placeholder.
-pub struct BlockAddressPlaceholder<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>>
-{
+pub struct BlockAddressPlaceholder<'ctx, B: crate::module::ModuleBrand> {
     constant: Constant<'ctx, B>,
 }
 
@@ -429,7 +428,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> BlockAddressPlaceholder<'ctx, B
 ///
 /// [`ConstantIntValue`]: crate::constants::ConstantIntValue
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Constant<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct Constant<'ctx, B: crate::module::ModuleBrand> {
     pub(crate) id: ValueSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeSlot,
@@ -492,14 +491,14 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'
         self.into_erased().name()
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         self.into_erased().set_name(module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
 }
@@ -539,7 +538,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Con
 /// (`ConstantIntValue`, `ConstantFloatValue`, ...) plus the erased
 /// [`Constant`] itself. Bound generic code with this trait when a
 /// function should accept any constant.
-pub trait IsConstant<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>>:
+pub trait IsConstant<'ctx, B: crate::module::ModuleBrand>:
     sealed::Sealed + IsValue<'ctx, B>
 {
     /// Widen to the erased [`Constant`] handle.
@@ -569,7 +568,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constan
 /// an `i32`, `0i64` an `i64`. Ints route through
 /// [`IntoConstantInt`](crate::IntoConstantInt), floats through
 /// [`IntoConstantFloat`](crate::IntoConstantFloat).
-pub trait IntoConstantValue<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
+pub trait IntoConstantValue<'ctx, B: crate::module::ModuleBrand> {
     /// Materialize `self` as an erased [`Constant`] owned by `module`.
     fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B>;
 }
@@ -589,7 +588,7 @@ macro_rules! impl_into_constant_value_int {
             #[inline]
             fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
                 let ty = crate::derived_types::IntType::<$marker, B>::new(
-                    module.module().$ty_method().as_type().id(),
+                    module.module().$ty_method::<B>().as_type().id(),
                     module,
                 );
                 crate::int_width::IntoConstantInt::into_constant_int(self, ty)
@@ -621,7 +620,7 @@ macro_rules! impl_into_constant_value_float {
             #[inline]
             fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
                 let ty = crate::derived_types::FloatType::<$marker, B>::new(
-                    module.module().$ty_method().as_type().id(),
+                    module.module().$ty_method::<B>().as_type().id(),
                     module,
                 );
                 crate::float_kind::IntoConstantFloat::into_constant_float(self, ty)

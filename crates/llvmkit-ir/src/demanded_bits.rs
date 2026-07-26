@@ -14,7 +14,7 @@ use super::instr_types::{BinaryOpData, CallInstData, CastOpData, CastOpcode, Inv
 use super::instruction::{Instruction, InstructionData, InstructionKindData, state};
 use super::int_width::IntDyn;
 use super::intrinsics::{IntrinsicSemantic, semantic_for_callee};
-use super::module::{Brand, ModuleBrand, ModuleRef};
+use super::module::{DynBrand, ModuleBrand, ModuleRef};
 use super::pass_access::PatchBody;
 use super::pass_context::{FnCx, FnPatch, FnReport, FunctionView};
 use super::pass_manager::FunctionPass;
@@ -720,7 +720,7 @@ impl DemandedBits {
     }
 }
 
-impl<'ctx> FunctionPass<'ctx> for SimplifyDemandedBitsPass {
+impl<B: ModuleBrand> FunctionPass<B> for SimplifyDemandedBitsPass {
     // Instruction-level rewrites only (RAUW + erase, operand shrinking, poison
     // flag drops); the CFG is never touched, so the `PatchBody` floor's
     // "CFG analyses preserved" is correct.
@@ -731,7 +731,11 @@ impl<'ctx> FunctionPass<'ctx> for SimplifyDemandedBitsPass {
     type Requires = ();
     const NAME: &'static str = "simplify-demanded-bits";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, Brand<'ctx>, PatchBody, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         // The transform recomputes demanded bits from the *current* IR on every
         // iteration (each mutation invalidates them), so — unlike `DcePass` and
         // `InstSimplifyPass` — a faithful read-only "will it change?" pre-scan
@@ -749,11 +753,14 @@ impl<'ctx> FunctionPass<'ctx> for SimplifyDemandedBitsPass {
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DemandedBitsAnalysis {
     type Result = DemandedBits;
 
-    fn run(
+    fn run<'v>(
         &self,
-        function: FunctionView<'ctx, B>,
+        function: FunctionView<'v, B>,
         _am: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Self::Result> {
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
         let mut result = DemandedBits::new(function.module().data_layout().clone());
         result.perform_analysis(function)?;
         Ok(result)
@@ -768,12 +775,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> PrefetchableAnalysis<'ctx, B> for DemandedBits
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for DemandedBits {
-    fn invalidate(
+    fn invalidate<'v>(
         &mut self,
-        _function: FunctionView<'ctx, B>,
+        _function: FunctionView<'v, B>,
         pa: &PreservedAnalyses,
         _inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
-    ) -> IrResult<bool> {
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
         let checker = pa.checker::<DemandedBitsAnalysis>();
         Ok(!(checker.preserved() || checker.preserved_set::<AllAnalysesOnFunction>()))
     }
@@ -943,8 +953,8 @@ fn operand_value<'ctx, B: ModuleBrand + 'ctx>(
     Ok(value_from_id(user, id))
 }
 
-fn simplify_demanded_bits_iteration<'ctx>(
-    patch: &FnPatch<'_, '_, 'ctx, Brand<'ctx>, ()>,
+fn simplify_demanded_bits_iteration<'ctx, B: ModuleBrand + 'ctx>(
+    patch: &FnPatch<'_, '_, 'ctx, B, ()>,
 ) -> IrResult<bool> {
     let data_layout = patch.function().module().data_layout().clone();
     let mut demanded = DemandedBits::new(data_layout.clone());
@@ -956,7 +966,7 @@ fn simplify_demanded_bits_iteration<'ctx>(
     for block in patch.function_mut().basic_blocks() {
         let instruction_ids = block.instruction_ids();
         for id in instruction_ids {
-            let inst = Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
+            let inst = Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
             let value = inst.to_erased();
             if !is_simplify_candidate(value) {
                 continue;
@@ -973,7 +983,7 @@ fn simplify_demanded_bits_iteration<'ctx>(
                 // takes an ephemeral handle.
                 inst.replace_all_uses_with(module_token, module_token.view(replacement))?;
                 let erased =
-                    Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
+                    Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
                 erased.erase_from_parent(module_token);
                 return Ok(true);
             }
@@ -982,7 +992,7 @@ fn simplify_demanded_bits_iteration<'ctx>(
                 drop_zext_nneg_for_replaced_uses(value);
                 inst.replace_all_uses_with(module_token, replacement)?;
                 let erased =
-                    Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
+                    Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
                 erased.erase_from_parent(module_token);
                 return Ok(true);
             }
@@ -996,7 +1006,7 @@ fn simplify_demanded_bits_iteration<'ctx>(
     }
 
     for id in dead_to_erase.into_iter().rev() {
-        let erased = Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
+        let erased = Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
         if erased.to_erased().has_uses() {
             continue;
         }
@@ -1400,6 +1410,6 @@ fn value_scalar_size_in_bits<'ctx, B: ModuleBrand + 'ctx>(
     u32::try_from(dl.type_size_in_bits(erase_type(value.ty()))).unwrap_or(0)
 }
 
-fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx> {
+fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
     Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
 }

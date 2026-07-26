@@ -21,7 +21,7 @@ use crate::instr_types::{
 use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicSemantic, semantic_for_callee};
 use crate::metadata::MetadataAttachmentKind;
-use crate::module::{Brand, ModuleBrand, ModuleCore, ModuleRef};
+use crate::module::{DynBrand, ModuleBrand, ModuleCore, ModuleRef};
 use crate::pass_context::FunctionView;
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
 use crate::value::{Value, ValueKindData, ValueSlot};
@@ -153,11 +153,14 @@ impl KnownBitsAnalysisResult {
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for KnownBitsAnalysis {
     type Result = KnownBitsAnalysisResult;
 
-    fn run(
+    fn run<'v>(
         &self,
-        function: FunctionView<'ctx, B>,
+        function: FunctionView<'v, B>,
         am: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Self::Result> {
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
         let dominator_tree = am
             .get_cached_result_by_type::<DominatorTreeAnalysis, DominatorTree, _>(function)
             .cloned();
@@ -178,12 +181,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> PrefetchableAnalysis<'ctx, B> for KnownBitsAna
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for KnownBitsAnalysisResult {
-    fn invalidate(
+    fn invalidate<'v>(
         &mut self,
-        _function: FunctionView<'ctx, B>,
+        _function: FunctionView<'v, B>,
         pa: &PreservedAnalyses,
         _inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
-    ) -> IrResult<bool> {
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
         let checker = pa.checker::<KnownBitsAnalysis>();
         if !(checker.preserved() || checker.preserved_set::<AllAnalysesOnFunction>()) {
             return Ok(true);
@@ -199,7 +205,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for KnownBitsA
 }
 
 /// Per-query state for known-bits computations.
-pub struct ValueTrackingQuery<'a, 'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ValueTrackingQuery<'a, 'ctx, B: ModuleBrand> {
     data_layout: &'a DataLayout,
     max_depth: u32,
     dominator_tree: Option<&'a DominatorTree>,
@@ -1904,7 +1910,7 @@ fn module_ref_from_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Modul
     ModuleRef::new(ty.module().core_ref())
 }
 
-fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx> {
+fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
     Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
 }
 
@@ -1915,8 +1921,8 @@ mod tests {
     use crate::module::Module;
     use crate::value::IsValue;
 
-    fn fabricate_instruction(
-        m: &Module<'_>,
+    fn fabricate_instruction<B: ModuleBrand>(
+        m: &Module<B>,
         bb_id: ValueSlot,
         result_ty: TypeSlot,
         kind: InstructionKindData,
@@ -1931,7 +1937,11 @@ mod tests {
         id
     }
 
-    fn fabricated_value<'ctx>(m: &Module<'ctx>, id: ValueSlot, ty: TypeSlot) -> Value<'ctx> {
+    fn fabricated_value<'ctx, B: ModuleBrand + 'ctx>(
+        m: &'ctx Module<B>,
+        id: ValueSlot,
+        ty: TypeSlot,
+    ) -> Value<'ctx, B> {
         Value::from_parts(id, ModuleRef::new(m.core_ref()), ty)
     }
 
@@ -1941,39 +1951,38 @@ mod tests {
     /// selects the index width.
     #[test]
     fn vector_gep_uses_element_pointer_address_space_for_index_width() -> crate::IrResult<()> {
-        Module::with_new("vt-vector-gep-as", |m| {
-            m.set_data_layout("p1:64:64:64:32")?;
-            let i8_ty = m.i8_type();
-            let i32_ty = m.i32_type();
-            let ptr1_ty = m.ptr_type(1);
-            let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2, false);
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, crate::Linkage::External)?;
-            let entry = m.view(f).append_basic_block(&m, "entry");
+        let m = crate::module_new!("vt-vector-gep-as")?;
+        m.set_data_layout("p1:64:64:64:32")?;
+        let i8_ty = m.i8_type();
+        let i32_ty = m.i32_type();
+        let ptr1_ty = m.ptr_type(1);
+        let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2, false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, crate::Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
-            let base = ptr_vec_ty.const_vector([ptr1_ty.const_null(); 2])?;
-            let minus_one = i32_ty.const_int(-1_i32);
-            let gep_ty = ptr_vec_ty.as_type();
-            let gep_id = fabricate_instruction(
-                &m,
-                entry.slot(),
-                gep_ty.id(),
-                InstructionKindData::Gep(GepInstData::new(
-                    i8_ty.as_type().id(),
-                    base.slot(),
-                    [minus_one.slot()],
-                    crate::GepNoWrapFlags::empty(),
-                )),
-            );
-            let gep = fabricated_value(&m, gep_id, gep_ty.id());
-            let dl = m.data_layout();
-            let query = ValueTrackingQuery::new(&dl);
+        let base = ptr_vec_ty.const_vector([ptr1_ty.const_null(); 2])?;
+        let minus_one = i32_ty.const_int(-1_i32);
+        let gep_ty = ptr_vec_ty.as_type();
+        let gep_id = fabricate_instruction(
+            &m,
+            entry.slot(),
+            gep_ty.id(),
+            InstructionKindData::Gep(GepInstData::new(
+                i8_ty.as_type().id(),
+                base.slot(),
+                [minus_one.slot()],
+                crate::GepNoWrapFlags::empty(),
+            )),
+        );
+        let gep = fabricated_value(&m, gep_id, gep_ty.id());
+        let dl = m.data_layout();
+        let query = ValueTrackingQuery::new(&dl);
 
-            assert_eq!(
-                compute_known_bits(gep, &query)?.to_string(),
-                "0000000000000000000000000000000011111111111111111111111111111111"
-            );
-            Ok(())
-        })
+        assert_eq!(
+            compute_known_bits(gep, &query)?.to_string(),
+            "0000000000000000000000000000000011111111111111111111111111111111"
+        );
+        Ok(())
     }
 }

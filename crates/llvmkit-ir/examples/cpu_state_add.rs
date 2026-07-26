@@ -34,9 +34,11 @@
 //! cargo run -p llvmkit-ir --example cpu_state_add
 //! ```
 
-use llvmkit_ir::{AttrKind, IRBuilder, IntValue, IrError, Linkage, Module, UnnamedAddr};
+use llvmkit_ir::{
+    AttrKind, IRBuilder, IntValue, IrError, Linkage, Module, ModuleBrand, UnnamedAddr, module_new,
+};
 
-pub fn build(m: &Module<'_>) -> Result<(), IrError> {
+pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
 
@@ -64,12 +66,12 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let entry = m.view(add_fn).append_basic_block(m, "entry");
     let b = IRBuilder::at_end(entry);
 
-    let rax: IntValue<i64> = m.view(add_fn).param(0)?.try_into()?;
-    let rbx: IntValue<i64> = m.view(add_fn).param(1)?.try_into()?;
-    let rcx: IntValue<i64> = m.view(add_fn).param(2)?.try_into()?;
+    let rax: IntValue<'_, i64, _> = m.view(add_fn).param(0)?.try_into()?;
+    let rbx: IntValue<'_, i64, _> = m.view(add_fn).param(1)?.try_into()?;
+    let rcx: IntValue<'_, i64, _> = m.view(add_fn).param(2)?.try_into()?;
     // `rdx` is part of the signature but unused in the priorities-section
     // body; touch the slot so the lifetime brand keeps it live.
-    let _rdx: IntValue<i64> = m.view(add_fn).param(3)?.try_into()?;
+    let _rdx: IntValue<'_, i64, _> = m.view(add_fn).param(3)?.try_into()?;
 
     let t0 = b.build_trunc(rax, i32_ty, "")?;
     let t1 = b.build_trunc(rbx, i32_ty, "")?;
@@ -79,7 +81,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     b.build_ret(s2)?;
 
     // ---- `main`: no params, returns i32, ret-attr `noundef`. ----
-    let main_sig = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type>::new(), false);
+    let main_sig = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
     let main_fn = m
         .function_builder::<i32, _>("main", main_sig)
         .linkage(Linkage::External)
@@ -89,18 +91,24 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let entry = m.view(main_fn).append_basic_block(m, "entry");
     let b = IRBuilder::at_end(entry);
     let one = i32_ty.const_int(1_i32);
-    let one_v = IntValue::<i32>::try_from(one.into_erased())?;
+    let one_v = IntValue::<i32, _>::try_from(one.into_erased())?;
     b.build_ret(one_v)?;
 
     Ok(())
 }
 
+/// The module is minted here rather than in `main` so `?` has a `Result` to
+/// return to: `module_new!` is fallible (its brand is a registry key) and
+/// `main` reports errors by hand.
+fn emit() -> Result<(), IrError> {
+    let m = module_new!("cpu_state_add")?;
+    build(&m)?;
+    print!("{m}");
+    Ok(())
+}
+
 pub fn main() {
-    if let Err(e) = Module::with_new("cpu_state_add", |m| {
-        build(&m)?;
-        print!("{m}");
-        Ok::<(), IrError>(())
-    }) {
+    if let Err(e) = emit() {
         eprintln!("error: {e:?}");
         std::process::exit(1);
     }

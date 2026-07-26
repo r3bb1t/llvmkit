@@ -5,15 +5,15 @@
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::Module;
+use llvmkit_ir::module_new;
 
 fn parse_module(src: &str) -> String {
-    Module::with_new("parser_module_headers", |module| {
-        Parser::new(src.as_bytes(), &module)
-            .expect("parser constructs")
-            .parse_module()
-            .expect("module parses");
-        format!("{module}")
-    })
+    let module = Module::dynamic("parser_module_headers");
+    Parser::new(src.as_bytes(), &module)
+        .expect("parser constructs")
+        .parse_module()
+        .expect("module parses");
+    format!("{module}")
 }
 
 /// Mirrors `LLParser.cpp::parseFunctionHeader`: function definitions accept
@@ -52,12 +52,13 @@ fn global_alias_round_trips() {
 /// and `appending` are global-variable linkages, not function linkages.
 #[test]
 fn common_function_linkage_is_rejected() {
-    let err = Module::with_new("parser_module_headers_invalid", |module| {
+    let err = {
+        let module = module_new!("parser_module_headers_invalid").expect("fresh module");
         Parser::new(b"define common void @f() { ret void }\n", &module)
             .expect("parser constructs")
             .parse_module()
             .expect_err("common function linkage rejected")
-    });
+    };
     match err {
         ParseError::Expected { expected, .. } => {
             assert_eq!(expected, "invalid function linkage type")

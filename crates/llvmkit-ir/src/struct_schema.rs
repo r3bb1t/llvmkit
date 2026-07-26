@@ -16,7 +16,7 @@ use crate::function_signature::{
 use crate::instruction::{Instruction, state::Attached};
 use crate::int_width::{IntDyn, IntoIntValue, Width};
 use crate::marker::{Dyn, Ptr, ReturnMarker};
-use crate::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
+use crate::module::{ModuleBrand, ModuleRef, ModuleView};
 use crate::r#type::{Type, TypeData};
 use crate::value::{
     FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value, ValueSlot,
@@ -51,7 +51,7 @@ pub trait IrField: Sized + 'static {
     type Value<'ctx, B: ModuleBrand + 'ctx>;
 
     /// Construct this field's LLVM IR type in `module`.
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx;
 
@@ -71,12 +71,12 @@ pub trait IrField: Sized + 'static {
 }
 
 /// Inputs that can be lifted into a field value of schema `F`.
-pub trait IntoIrField<'ctx, F: IrField, B: ModuleBrand = Brand<'ctx>>: Sized {
+pub trait IntoIrField<'ctx, F: IrField, B: ModuleBrand>: Sized {
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
 }
 
 #[doc(hidden)]
-pub trait TryIntoStructValue<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized {
+pub trait TryIntoStructValue<'ctx, B: ModuleBrand>: Sized {
     fn try_into_struct_value(self) -> IrResult<StructValue<'ctx, B>>;
 }
 
@@ -110,9 +110,7 @@ impl_try_into_struct_value!(Constant<'ctx, B>);
 impl_try_into_struct_value!(Instruction<'ctx, Attached, B>);
 
 /// Branded wrapper value generated for a [`StructSchema`].
-pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand = Brand<'ctx>>:
-    Sized + Copy
-{
+pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand>: Sized + Copy {
     fn as_struct_value(self) -> StructValue<'ctx, B>;
 
     fn from_struct_value(raw: StructValue<'ctx, B>, validated: &ValidatedStructValue<'_>) -> Self;
@@ -145,7 +143,7 @@ pub trait StructSchema: Sized + 'static {
     const PACKED: bool = false;
 
     /// Construct this schema's field types in source-layout order.
-    fn field_types<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
+    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B>>>
     where
         B: ModuleBrand + 'ctx;
 
@@ -157,7 +155,7 @@ pub trait StructSchema: Sized + 'static {
     /// Return the idempotent named LLVM struct type for this schema.
     #[inline]
     fn ir_type<'ctx, B>(
-        module: &Module<'ctx, B, Unverified>,
+        module: ModuleView<'ctx, B>,
     ) -> IrResult<crate::StructType<'ctx, crate::BodySet, B>>
     where
         B: ModuleBrand + 'ctx,
@@ -184,7 +182,7 @@ where
     type Value<'ctx, B: ModuleBrand + 'ctx> = S::Value<'ctx, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -236,7 +234,7 @@ macro_rules! impl_int_field {
             type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, $w, B>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -291,7 +289,7 @@ impl IrField for IntDyn {
     type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, IntDyn, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(_module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(_module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -337,7 +335,7 @@ impl<const N: u32> IrField for Width<N> {
     type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, Width<N>, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -383,7 +381,7 @@ macro_rules! impl_float_field {
             type Value<'ctx, B: ModuleBrand + 'ctx> = FloatValue<'ctx, $k, B>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -439,7 +437,7 @@ impl IrField for Ptr {
     type Value<'ctx, B: ModuleBrand + 'ctx> = PointerValue<'ctx, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -589,7 +587,7 @@ where
         <S::FieldParams as FunctionParamList>::Values<'ctx, B>;
 
     #[inline]
-    fn ir_types<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
+    fn ir_types<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Vec<Type<'ctx, B>>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -647,7 +645,7 @@ where
     type Marker = Dyn;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -688,7 +686,7 @@ where
     type Value<'ctx, B: ModuleBrand + 'ctx> = S::Value<'ctx, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {

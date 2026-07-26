@@ -12,18 +12,17 @@
 use llvmkit_ir::{IRBuilder, Linkage, Module};
 
 fn main() {
-    Module::with_new("c", |m| {
-        let void_callee = m
-            .add_typed_function::<(), (), _>("sink", Linkage::External)
-            .unwrap();
-        let caller = m
-            .add_typed_function::<i32, (i32,), _>("caller", Linkage::External)
-            .unwrap();
-        let entry = m.view(caller).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let (n,) = m.view(caller).params();
-        let void_call = b.build_call(void_callee, (), "").unwrap();
-        // `b.view(void_call).result()` is `()`, not an `IntoIntValue<'_, i32, _>`.
-        let _ = b.build_int_add::<i32, _, _, _>(b.view(void_call).result(), n, "x");
-    });
+    let m = Module::dynamic("c");
+    let void_callee = m
+        .add_typed_function::<(), (), _>("sink", Linkage::External)
+        .unwrap();
+    let caller = m
+        .add_typed_function::<i32, (i32,), _>("caller", Linkage::External)
+        .unwrap();
+    let entry = m.view(caller).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let (n,) = m.view(caller).params();
+    let void_call = b.build_call(void_callee, (), "").unwrap();
+    // `b.view(void_call).result()` is `()`, not an `IntoIntValue<'_, i32, _>`.
+    let _ = b.build_int_add::<i32, _, _, _>(b.view(void_call).result(), n, "x");
 }

@@ -747,7 +747,7 @@ fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
     mask: &[i32],
     scalable: bool,
 ) -> IrResult<Constant<'ctx, B>> {
-    let i32_ty = IntType::<i32, B>::new(module.module().i32_type().as_type().id(), module);
+    let i32_ty = IntType::<i32, B>::new(module.module().i32_type::<B>().as_type().id(), module);
     let mut elements = Vec::with_capacity(mask.len());
     for element in mask {
         if *element == POISON_MASK_ELEM {

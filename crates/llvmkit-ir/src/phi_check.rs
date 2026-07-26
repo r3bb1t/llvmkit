@@ -127,10 +127,10 @@ pub struct PhiCoherenceError {
 /// parser's end-of-function coherence check and the pass-side
 /// [`FnReshape::insert_phi`](crate::FnReshape::insert_phi), so the two report
 /// the same diagnostic for the same failure and cannot drift.
-pub(crate) fn render_phi_violation<'ctx, B: ModuleBrand>(
+pub(crate) fn render_phi_violation<B: ModuleBrand>(
     violation: &PhiViolation,
     result_ty: TypeSlot,
-    module: &Module<'ctx, B, Unverified>,
+    module: &Module<B, Unverified>,
 ) -> String {
     let ctx = module.core_ref().context();
     match violation {
@@ -168,7 +168,7 @@ pub(crate) fn render_phi_violation<'ctx, B: ModuleBrand>(
 /// the first violation encountered (block order, then phi order).
 #[doc(hidden)]
 pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
-    module: &Module<'ctx, B, Unverified>,
+    module: &'ctx Module<B, Unverified>,
     function: FunctionValue<'ctx, Dyn, B>,
 ) -> Result<(), PhiCoherenceError> {
     let ctx = module.core_ref().context();

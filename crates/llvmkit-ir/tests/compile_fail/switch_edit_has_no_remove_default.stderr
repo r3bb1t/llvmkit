@@ -1,7 +1,7 @@
 error[E0599]: no method named `remove_default` found for struct `SwitchEdit<'e, 'm, 'r, 'ctx, B, R>` in the current scope
-  --> tests/compile_fail/switch_edit_has_no_remove_default.rs:22:39
+  --> tests/compile_fail/switch_edit_has_no_remove_default.rs:26:39
    |
-22 |         reshape.edit_switch(bb.id())?.remove_default();
+26 |         reshape.edit_switch(bb.id())?.remove_default();
    |                                       ^^^^^^^^^^^^^^
    |
 help: there is a method `redirect_default` with a similar name, but with different arguments

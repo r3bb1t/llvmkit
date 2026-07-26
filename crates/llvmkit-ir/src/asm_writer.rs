@@ -37,7 +37,7 @@ use super::instruction::{InstructionKindData, InstructionView};
 use super::intrinsics::{PrettyPrintArg, descriptor_for_callee};
 use super::marker::Dyn;
 use super::module::{
-    ModuleBrand, ModuleCore, ModuleView, UseListOrderBBRecord, UseListOrderRecord,
+    DynBrand, ModuleBrand, ModuleCore, ModuleView, UseListOrderBBRecord, UseListOrderRecord,
 };
 use super::r#type::{StructBody, Type, TypeData, TypeSlot};
 use super::value::{IsValue, Value, ValueKindData, ValueSlot};
@@ -254,8 +254,8 @@ fn fmt_use_list_order(
     slots: Option<&SlotTracker>,
 ) -> fmt::Result {
     let value_ty = record.value_type();
-    write!(f, "uselistorder {} ", Type::new(value_ty, m))?;
-    let value = Value::from_parts(record.value(), m, value_ty);
+    write!(f, "uselistorder {} ", Type::<DynBrand>::new(value_ty, m))?;
+    let value = Value::<DynBrand>::from_parts(record.value(), m, value_ty);
     fmt_operand_ref(f, value, slots)?;
     f.write_str(", ")?;
     fmt_indexes(f, record.indexes())
@@ -269,12 +269,12 @@ fn fmt_use_list_order_bb(
     let function_id = record.function();
     let function_data = m.context().value_data(function_id);
     let function_ty = function_data.ty;
-    let block_ty = m.label_type().as_type().id();
-    let function = Value::from_parts(function_id, m, function_ty);
-    let block = Value::from_parts(record.block(), m, block_ty);
+    let block_ty = m.label_type::<DynBrand>().as_type().id();
+    let function = Value::<DynBrand>::from_parts(function_id, m, function_ty);
+    let block = Value::<DynBrand>::from_parts(record.block(), m, block_ty);
     let slots = match &function_data.kind {
         ValueKindData::Function(_) => Some(SlotTracker::for_function(
-            FunctionValue::<Dyn>::from_parts_unchecked(function_id, m),
+            FunctionValue::<Dyn, DynBrand>::from_parts_unchecked(function_id, m),
         )),
         _ => None,
     };
@@ -339,9 +339,13 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
         ConstantData::Aggregate(elems) => fmt_aggregate_constant(f, host, elems),
         ConstantData::BlockAddress { function, block } => {
             let module = host.module.module();
-            let fval =
-                Value::from_parts(*function, module, module.context().value_data(*function).ty);
-            let bval = Value::from_parts(*block, module, module.context().value_data(*block).ty);
+            let fval = Value::<B>::from_parts(
+                *function,
+                module,
+                module.context().value_data(*function).ty,
+            );
+            let bval =
+                Value::<B>::from_parts(*block, module, module.context().value_data(*block).ty);
             f.write_str("blockaddress(")?;
             fmt_operand_ref(f, fval, None)?;
             f.write_str(", ")?;
@@ -350,15 +354,21 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
         }
         ConstantData::DSOLocalEquivalent { function } => {
             let module = host.module.module();
-            let fval =
-                Value::from_parts(*function, module, module.context().value_data(*function).ty);
+            let fval = Value::<B>::from_parts(
+                *function,
+                module,
+                module.context().value_data(*function).ty,
+            );
             f.write_str("dso_local_equivalent ")?;
             fmt_operand_ref(f, fval, None)
         }
         ConstantData::NoCfi { function } => {
             let module = host.module.module();
-            let fval =
-                Value::from_parts(*function, module, module.context().value_data(*function).ty);
+            let fval = Value::<B>::from_parts(
+                *function,
+                module,
+                module.context().value_data(*function).ty,
+            );
             f.write_str("no_cfi ")?;
             fmt_operand_ref(f, fval, None)
         }
@@ -397,7 +407,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
                     f.write_str(", ")?;
                 }
                 let data = module.context().value_data(*id);
-                let value = Value::from_parts(*id, module, data.ty);
+                let value = Value::<B>::from_parts(*id, module, data.ty);
                 fmt_operand(f, value, None)?;
             }
             f.write_str(")")
@@ -408,7 +418,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
             // operand with its true type.
             let module = host.module.module();
             let base =
-                Value::from_parts(*base_id, module, module.context().value_data(*base_id).ty);
+                Value::<B>::from_parts(*base_id, module, module.context().value_data(*base_id).ty);
             write!(
                 f,
                 "getelementptr inbounds (i8, {} ",
@@ -419,8 +429,8 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
         }
         ConstantData::SymbolDelta { hi_id, lo_id } => {
             let module = host.module.module();
-            let hi = Value::from_parts(*hi_id, module, module.context().value_data(*hi_id).ty);
-            let lo = Value::from_parts(*lo_id, module, module.context().value_data(*lo_id).ty);
+            let hi = Value::<B>::from_parts(*hi_id, module, module.context().value_data(*hi_id).ty);
+            let lo = Value::<B>::from_parts(*lo_id, module, module.context().value_data(*lo_id).ty);
             write!(f, "sub (i64 ptrtoint ({} ", constant_ptr_operand_type(hi))?;
             fmt_operand_ref(f, hi, None)?;
             write!(
@@ -437,8 +447,8 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
             addend,
         } => {
             let module = host.module.module();
-            let hi = Value::from_parts(*hi_id, module, module.context().value_data(*hi_id).ty);
-            let lo = Value::from_parts(*lo_id, module, module.context().value_data(*lo_id).ty);
+            let hi = Value::<B>::from_parts(*hi_id, module, module.context().value_data(*hi_id).ty);
+            let lo = Value::<B>::from_parts(*lo_id, module, module.context().value_data(*lo_id).ty);
             write!(
                 f,
                 "add (i64 sub (i64 ptrtoint ({} ",
@@ -767,7 +777,7 @@ fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx>(
 
 fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     let mut next = 0_u32;
-    for global in module.iter_globals::<crate::module::Brand<'_>>() {
+    for global in module.iter_globals::<crate::module::DynBrand>() {
         if global.into_erased().name().is_none() {
             if global.slot() == id {
                 return Some(next);
@@ -775,7 +785,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
             next = next.saturating_add(1);
         }
     }
-    for alias in module.iter_aliases::<crate::module::Brand<'_>>() {
+    for alias in module.iter_aliases::<crate::module::DynBrand>() {
         if alias.into_erased().name().is_none() {
             if alias.slot() == id {
                 return Some(next);
@@ -783,7 +793,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
             next = next.saturating_add(1);
         }
     }
-    for ifunc in module.iter_ifuncs::<crate::module::Brand<'_>>() {
+    for ifunc in module.iter_ifuncs::<crate::module::DynBrand>() {
         if ifunc.into_erased().name().is_none() {
             if ifunc.slot() == id {
                 return Some(next);
@@ -791,7 +801,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
             next = next.saturating_add(1);
         }
     }
-    for function in module.iter_functions::<crate::module::Brand<'_>>() {
+    for function in module.iter_functions::<crate::module::DynBrand>() {
         if function.into_erased().name().is_none() {
             if function.slot() == id {
                 return Some(next);
@@ -1833,7 +1843,7 @@ fn fmt_operand_bundles(
                 f.write_str(", ")?;
             }
             let data = module.context().value_data(id);
-            let value = Value::from_parts(id, module, data.ty);
+            let value = Value::<DynBrand>::from_parts(id, module, data.ty);
             fmt_operand(f, value, Some(slots))?;
         }
         f.write_str(")")?;
@@ -2389,7 +2399,11 @@ fn fmt_debug_metadata_operand(
         }
         crate::metadata::DebugMetadataOperand::Value(id) => {
             let data = module.context().value_data(id);
-            fmt_operand(f, Value::from_parts(id, module, data.ty), Some(slots))
+            fmt_operand(
+                f,
+                Value::<DynBrand>::from_parts(id, module, data.ty),
+                Some(slots),
+            )
         }
     }
 }
@@ -2631,7 +2645,7 @@ fn fmt_struct_body(f: &mut fmt::Formatter<'_>, body: &StructBody, m: &ModuleCore
             f.write_str(", ")?;
         }
         first = false;
-        write!(f, "{}", Type::new(*e, m))?;
+        write!(f, "{}", Type::<DynBrand>::new(*e, m))?;
     }
     if body.packed {
         f.write_str(" }>")
@@ -2724,7 +2738,7 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
     // M->globals())` loop in `printModule`.
     if !m.global_empty() {
         f.write_str("\n")?;
-        for g in m.iter_globals::<crate::module::Brand<'_>>() {
+        for g in m.iter_globals::<crate::module::DynBrand>() {
             fmt_global(f, g)?;
             f.write_str("\n")?;
         }
@@ -2732,20 +2746,20 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
 
     if !m.alias_empty() {
         f.write_str("\n")?;
-        for a in m.iter_aliases::<crate::module::Brand<'_>>() {
+        for a in m.iter_aliases::<crate::module::DynBrand>() {
             fmt_alias(f, a)?;
         }
     }
 
     if !m.ifunc_empty() {
         f.write_str("\n")?;
-        for i in m.iter_ifuncs::<crate::module::Brand<'_>>() {
+        for i in m.iter_ifuncs::<crate::module::DynBrand>() {
             fmt_ifunc(f, i)?;
         }
     }
 
     let mut first = true;
-    for func in m.iter_functions::<crate::module::Brand<'_>>() {
+    for func in m.iter_functions::<crate::module::DynBrand>() {
         if !first || !m.global_empty() || !m.alias_empty() || !m.ifunc_empty() || has_named_structs
         {
             f.write_str("\n")?;
@@ -2872,7 +2886,7 @@ fn fmt_metadata_node(
         }
         MetadataKind::Constant(id) => {
             let data = module.context().value_data(*id);
-            let value = Value::from_parts(*id, module, data.ty);
+            let value = Value::<DynBrand>::from_parts(*id, module, data.ty);
             fmt_operand(f, value, None)
         }
     }
@@ -2985,7 +2999,10 @@ fn metadata_slot_map(nodes: &[crate::metadata::MetadataKind]) -> Vec<Option<usiz
     slots
 }
 
-fn fmt_comdat(f: &mut fmt::Formatter<'_>, c: crate::comdat::ComdatRef<'_>) -> fmt::Result {
+fn fmt_comdat(
+    f: &mut fmt::Formatter<'_>,
+    c: crate::comdat::ComdatRef<'_, DynBrand>,
+) -> fmt::Result {
     // `$<name> = comdat <kind>\n`. Mirrors
     // `Comdat::print` in `lib/IR/AsmWriter.cpp`.
     fmt_llvm_name(f, "$", c.name())?;

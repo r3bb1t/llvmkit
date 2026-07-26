@@ -17,14 +17,18 @@ use super::pass_pipeline::DCE;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct DcePass;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for DcePass {
+impl<B: ModuleBrand> FunctionPass<B> for DcePass {
     // In-block instruction erasure only; the CFG is untouched, so the
     // `PatchBody` floor's "CFG analyses preserved" is exactly right.
     type Access = PatchBody;
     type Requires = ();
     const NAME: &'static str = DCE.as_str();
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         // Enter the mutator and erase dead instructions. No read-only
         // pre-scan is needed: `FnPatch::done` reports everything-preserved if
         // nothing was erased (the mutator's dirty flag *witnesses* that), and

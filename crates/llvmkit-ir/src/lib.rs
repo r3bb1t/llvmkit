@@ -273,9 +273,9 @@ pub use metadata::{
     MetadataRef, MetadataSlot, SpecializedMetadataKind, SpecializedMetadataNode,
 };
 pub use module::{
-    Brand, ComdatView, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module, ModuleBrand,
-    ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord, UseListOrderRecord,
-    Verified,
+    ComdatView, DynBrand, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module,
+    ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord,
+    UseListOrderRecord, Verified,
 };
 pub use operator::{OverflowingBinaryOperator, PossiblyExactOperator};
 pub use optimization_level::{
@@ -288,8 +288,9 @@ pub use pass_access::{
 };
 pub use pass_context::{
     BasicBlockView, BlockInstructionViews, BrEdit, CallBrEdit, CondBrEdit, FnCx, FnPatch, FnReport,
-    FnReshape, FunctionBasicBlockViews, FunctionBody, FunctionView, InvokeEdit, ModCx, ModReport,
-    ModRewrite, ModuleFunctionViews, PatchFunctions, ReshapeFunctions, SwitchEdit, TermEdit,
+    FnReshape, FunctionBasicBlockViews, FunctionBody, FunctionView, IntoFunctionId, InvokeEdit,
+    ModCx, ModReport, ModRewrite, ModuleFunctionViews, PatchFunctions, ReshapeFunctions,
+    SwitchEdit, TermEdit,
 };
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{

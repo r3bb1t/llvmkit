@@ -14,17 +14,16 @@
 use llvmkit_ir::{Linkage, Module};
 
 fn main() {
-    Module::with_new("ssa-def-unpositioned", |m| {
-        let f = m
-            .add_typed_function::<(), (), _>("f", Linkage::External)
-            .unwrap()
-            .as_function();
-        let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f)).unwrap();
-        let _entry = b.create_block("entry");
-        let x = b.declare_int_var::<i32, _>("x");
+    let m = Module::dynamic("ssa-def-unpositioned");
+    let f = m
+        .add_typed_function::<(), (), _>("f", Linkage::External)
+        .unwrap()
+        .as_function();
+    let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f)).unwrap();
+    let _entry = b.create_block("entry");
+    let x = b.declare_int_var::<i32, _>("x");
 
-        // `b` is `Unpositioned` here -- `def_int_var` does not exist on
-        // this state, only on `Positioned`.
-        b.def_int_var(x, 1_i32).unwrap();
-    });
+    // `b` is `Unpositioned` here -- `def_int_var` does not exist on
+    // this state, only on `Positioned`.
+    b.def_int_var(x, 1_i32).unwrap();
 }

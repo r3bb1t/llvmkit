@@ -24,7 +24,7 @@ use crate::r#type::{Type, TypeData, TypeSlot};
 
 /// Typed pointer (`<elem>*`, `<elem> addrspace(N)*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TypedPointerType<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct TypedPointerType<'ctx, B: crate::module::ModuleBrand> {
     pub(crate) id: TypeSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
 }

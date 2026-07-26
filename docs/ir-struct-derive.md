@@ -9,7 +9,7 @@ Use it when the LLVM aggregate you want to construct already has a natural Rust
 shape:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, IrStruct, Linkage, Module, NoFolder};
+use llvmkit_ir::{IRBuilder, IrError, IrStruct, Linkage, NoFolder, module_new};
 
 #[derive(IrStruct)]
 struct Point {
@@ -32,34 +32,33 @@ struct WindowPlacement {
 type NormalizePlacement = fn(WindowPlacement) -> WindowPlacement;
 
 fn build() -> Result<String, IrError> {
-    Module::with_new("window", |m| {
-        let f = m.add_typed_function_of::<NormalizePlacement, _>(
-            "normalize_window_placement",
-            Linkage::External,
-        )?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let (placement,) = f.params();
+    let m = module_new!("window")?;
+    let f = m.add_typed_function_of::<NormalizePlacement, _>(
+        "normalize_window_placement",
+        Linkage::External,
+    )?;
+    let entry = f.append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let (placement,) = f.params();
 
-        let normal_position = placement.normal_position(&b)?;
-        let min = normal_position.min(&b)?;
-        let max = normal_position.max(&b)?;
-        let min_x = min.x(&b)?;
-        let max_y = max.y(&b)?;
+    let normal_position = placement.normal_position(&b)?;
+    let min = normal_position.min(&b)?;
+    let max = normal_position.max(&b)?;
+    let min_x = min.x(&b)?;
+    let max_y = max.y(&b)?;
 
-        let rebuilt_min = PointValue::build(&m, &b, min_x, max_y, "normal_position.min")?;
-        let rebuilt_rect = RectValue::build(&m, &b, rebuilt_min, max, "normal_position")?;
-        let rebuilt = WindowPlacementValue::build(
-            &m,
-            &b,
-            placement.show_cmd(&b)?,
-            rebuilt_rect,
-            "placement",
-        )?;
-        b.build_ret(rebuilt)?;
+    let rebuilt_min = PointValue::build(&m, &b, min_x, max_y, "normal_position.min")?;
+    let rebuilt_rect = RectValue::build(&m, &b, rebuilt_min, max, "normal_position")?;
+    let rebuilt = WindowPlacementValue::build(
+        &m,
+        &b,
+        placement.show_cmd(&b)?,
+        rebuilt_rect,
+        "placement",
+    )?;
+    b.build_ret(rebuilt)?;
 
-        Ok(format!("{m}"))
-    })
+    Ok(format!("{m}"))
 }
 ```
 

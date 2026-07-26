@@ -45,18 +45,17 @@
 
 use llvmkit_ir::{
     AtomicOrdering, AtomicRMWBinOp, AtomicRMWConfig, IRBuilder, IntValue, IrError, Linkage, Module,
-    Ptr, SyncScope,
+    ModuleBrand, Ptr, SyncScope, module_new,
 };
 
 pub fn main() -> Result<(), IrError> {
-    Module::with_new("concurrent_counter", |m| {
-        build_atomic_inc(&m)?;
-        build_dispatch(&m)?;
+    let m = module_new!("concurrent_counter")?;
+    build_atomic_inc(&m)?;
+    build_dispatch(&m)?;
 
-        let text = format!("{m}");
-        print!("{text}");
-        Ok(())
-    })
+    let text = format!("{m}");
+    print!("{text}");
+    Ok(())
 }
 
 /// `atomic_inc` --- a fence-bracketed `monotonic` atomic counter
@@ -73,7 +72,7 @@ pub fn main() -> Result<(), IrError> {
 ///    returns the old value.
 /// 3. `fence acquire` --- ensures subsequent reads observe other
 ///    threads' releases.
-pub fn build_atomic_inc<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
+pub fn build_atomic_inc<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     // `add_typed_function::<i32, (Ptr,)>` is the typed primary: the turbofish
     // is the whole schema (returns `i32`, takes one pointer), so there is no
@@ -102,7 +101,7 @@ pub fn build_atomic_inc<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
     let _ = b.build_fence(AtomicOrdering::Acquire, SyncScope::System, "")?;
 
     // ret i32 %old
-    let result: IntValue<i32> = b.view(old).to_erased().try_into()?;
+    let result: IntValue<'_, i32, _> = b.view(old).to_erased().try_into()?;
     b.build_ret(result)?;
     Ok(())
 }
@@ -112,7 +111,7 @@ pub fn build_atomic_inc<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
 /// `Open` / `Closed` typestate on `SwitchInst`: cases are added
 /// through the chainable `add_case` API and the case list is sealed
 /// with `finish()`.
-pub fn build_dispatch<'ctx>(m: &Module<'ctx>) -> Result<(), IrError> {
+pub fn build_dispatch<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     // `add_typed_function::<i32, (i32, i32, i32)>` is the typed primary: the
     // turbofish *is* the signature, so no separate `FunctionType` is built.

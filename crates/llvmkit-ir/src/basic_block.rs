@@ -26,7 +26,7 @@ use super::instruction::{InstructionKindData, InstructionView};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::{IRBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
-use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeSlot;
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
 use super::value_id::BlockId;
@@ -88,8 +88,8 @@ impl BasicBlockData {
 pub struct BasicBlock<
     'ctx,
     R: ReturnMarker,
-    Term: BlockTerminationState = Unterminated,
-    B: ModuleBrand = Brand<'ctx>,
+    Term: BlockTerminationState,
+    B: ModuleBrand,
     Params: BlockParams = BlockParamsDyn,
 > {
     pub(super) id: ValueSlot,
@@ -148,7 +148,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand, Params:
 pub struct BasicBlockLabel<
     'ctx,
     R: ReturnMarker,
-    B: ModuleBrand = Brand<'ctx>,
+    B: ModuleBrand,
     Params: BlockParams = BlockParamsDyn,
 > {
     pub(super) id: ValueSlot,
@@ -661,7 +661,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// Set or clear the textual name.
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
@@ -670,7 +670,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(&self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn clear_name(&self, module_token: &'ctx Module<B, Unverified>) {
         self.to_erased().clear_name(module_token);
     }
 
@@ -845,7 +845,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// `BasicBlock::splice` in `lib/IR/BasicBlock.cpp`.
     pub fn splice_into<R2: ReturnMarker, S2: BlockTerminationState>(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         dest: BasicBlock<'ctx, R2, S2, B>,
     ) -> IrResult<()> {
         let _ = module_token;
@@ -894,7 +894,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// block. Mirrors `BasicBlock::splitBasicBlock` in `lib/IR/BasicBlock.cpp`.
     pub fn split_at<Name>(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         before: &InstructionView<'ctx, B>,
         name: Name,
     ) -> IrResult<BasicBlock<'ctx, R, Unterminated, B>>
@@ -956,14 +956,14 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         BasicBlock::name(&self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         BasicBlock::set_name(&self, module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         BasicBlock::clear_name(&self, module_token);
     }
 }
@@ -1046,51 +1046,48 @@ mod tests {
 
     #[test]
     fn erased_block_value_narrows_to_dyn_params_label() {
-        Module::with_new("bp-slice1-narrow", |m| {
-            let void_ty = m.void_type().as_type();
-            let fn_ty = m.fn_type_no_params(void_ty, false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-            let bb = m.view(f).append_basic_block(&m, "entry");
+        let m = crate::module_new!("bp-slice1-narrow").expect("fresh module");
+        let void_ty = m.void_type().as_type();
+        let fn_ty = m.fn_type_no_params(void_ty, false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
+        let bb = m.view(f).append_basic_block(&m, "entry");
 
-            // A label recovered from an untyped `Value` carries no static
-            // parameter promise, so it must land in the `BlockParamsDyn`
-            // form (proved at compile time by `assert_dyn_params`).
-            let v: Value<'_, _> = bb.to_erased();
-            let recovered: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = v
-                .try_into()
-                .expect("a basic-block value narrows to a label");
-            assert_eq!(recovered.slot(), bb.slot());
-            assert_dyn_params(recovered);
-        });
+        // A label recovered from an untyped `Value` carries no static
+        // parameter promise, so it must land in the `BlockParamsDyn`
+        // form (proved at compile time by `assert_dyn_params`).
+        let v: Value<'_, _> = bb.to_erased();
+        let recovered: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = v
+            .try_into()
+            .expect("a basic-block value narrows to a label");
+        assert_eq!(recovered.slot(), bb.slot());
+        assert_dyn_params(recovered);
     }
 
     #[test]
     fn label_to_erased_round_trips_to_dyn_params() {
-        Module::with_new("bp-slice1-roundtrip", |m| {
-            let void_ty = m.void_type().as_type();
-            let fn_ty = m.fn_type_no_params(void_ty, false);
-            let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-            let bb = m.view(f).append_basic_block(&m, "entry");
-            let label = bb.label();
+        let m = crate::module_new!("bp-slice1-roundtrip").expect("fresh module");
+        let void_ty = m.void_type().as_type();
+        let fn_ty = m.fn_type_no_params(void_ty, false);
+        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
+        let bb = m.view(f).append_basic_block(&m, "entry");
+        let label = bb.label();
 
-            let round: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = label
-                .to_erased()
-                .try_into()
-                .expect("a label's value round-trips to a label");
-            assert_eq!(round.slot(), label.slot());
-            assert_dyn_params(round);
-        });
+        let round: BasicBlockLabel<'_, Dyn, _, BlockParamsDyn> = label
+            .to_erased()
+            .try_into()
+            .expect("a label's value round-trips to a label");
+        assert_eq!(round.slot(), label.slot());
+        assert_dyn_params(round);
     }
 
     #[test]
     fn non_block_value_is_rejected() {
-        Module::with_new("bp-slice1-reject", |m| {
-            let v = m.i32_type().const_zero().into_erased();
-            let narrowed: IrResult<BasicBlockLabel<'_, Dyn, _, BlockParamsDyn>> = v.try_into();
-            assert!(
-                narrowed.is_err(),
-                "a non-block value must not narrow to a label"
-            );
-        });
+        let m = crate::module_new!("bp-slice1-reject").expect("fresh module");
+        let v = m.i32_type().const_zero().into_erased();
+        let narrowed: IrResult<BasicBlockLabel<'_, Dyn, _, BlockParamsDyn>> = v.try_into();
+        assert!(
+            narrowed.is_err(),
+            "a non-block value must not narrow to a label"
+        );
     }
 }

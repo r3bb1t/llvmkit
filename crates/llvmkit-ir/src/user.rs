@@ -7,14 +7,14 @@
 //!
 //! [`Instruction`]: crate::instruction::Instruction
 
-use super::module::{Brand, ModuleBrand};
+use super::module::ModuleBrand;
 use super::r#use::Use;
 use super::value::{Value, sealed};
 
 /// Trait implemented by values that have operand edges. Inherits
 /// the same `Sealed` bound used by every value-side trait so external
 /// crates cannot widen the closed user set.
-pub trait User<'ctx, B: ModuleBrand = Brand<'ctx>>: sealed::Sealed {
+pub trait User<'ctx, B: ModuleBrand>: sealed::Sealed {
     /// Number of operand edges. Mirrors `User::getNumOperands`.
     fn operand_count(self) -> u32;
 

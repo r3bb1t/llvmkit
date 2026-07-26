@@ -18,18 +18,17 @@
 use llvmkit_ir::{Linkage, Module};
 
 fn main() {
-    Module::with_new("ssa-finish-positioned", |m| {
-        let f = m
-            .add_typed_function::<(), (), _>("f", Linkage::External)
-            .unwrap()
-            .as_function();
-        let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f)).unwrap();
-        let entry = b.create_block("entry");
+    let m = Module::dynamic("ssa-finish-positioned");
+    let f = m
+        .add_typed_function::<(), (), _>("f", Linkage::External)
+        .unwrap()
+        .as_function();
+    let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f)).unwrap();
+    let entry = b.create_block("entry");
 
-        let b = b.switch_to_block(entry).unwrap();
-        // `b` is `Positioned` here (no terminator emitted yet on
-        // `entry`) -- `finish` does not exist on this state, only on
-        // `Unpositioned`.
-        b.finish().unwrap();
-    });
+    let b = b.switch_to_block(entry).unwrap();
+    // `b` is `Positioned` here (no terminator emitted yet on
+    // `entry`) -- `finish` does not exist on this state, only on
+    // `Unpositioned`.
+    b.finish().unwrap();
 }

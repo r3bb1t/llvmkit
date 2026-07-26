@@ -1,10 +1,10 @@
-error[E0277]: the trait bound `IntValue<'_, i32, Brand<'_>>: IntoPointerValue<'_, Brand<'_>>` is not satisfied
-  --> tests/compile_fail/indirectbr_non_pointer_address.rs:37:36
+error[E0277]: the trait bound `IntValue<'_, i32, DynBrand>: IntoPointerValue<'_, DynBrand>` is not satisfied
+  --> tests/compile_fail/indirectbr_non_pointer_address.rs:37:32
    |
-37 |         let _ = b.build_indirectbr(addr, "");
-   |                   ---------------- ^^^^ the trait `IntoPointerValue<'_, Brand<'_>>` is not implemented for `IntValue<'_, i32, Brand<'_>>`
-   |                   |
-   |                   required by a bound introduced by this call
+37 |     let _ = b.build_indirectbr(addr, "");
+   |               ---------------- ^^^^ the trait `IntoPointerValue<'_, DynBrand>` is not implemented for `IntValue<'_, i32, DynBrand>`
+   |               |
+   |               required by a bound introduced by this call
    |
 help: the following other types implement trait `IntoPointerValue<'ctx, B>`
   --> src/value.rs

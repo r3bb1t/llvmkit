@@ -1,6 +1,6 @@
 use llvmkit_ir::{
-    CallArgs, FloatValue, IRBuilder, IntValue, IrError, Linkage, Module, ModuleBrand, PointerValue,
-    Ptr, TypeKindLabel, TypedFunctionValue, Width,
+    CallArgs, FloatValue, IRBuilder, IntValue, IrError, Linkage, ModuleBrand, PointerValue, Ptr,
+    TypeKindLabel, TypedFunctionValue, Width, module_new,
 };
 
 /// Closest upstream coverage:
@@ -9,25 +9,24 @@ use llvmkit_ir::{
 /// `unittests/IR/AsmWriterTest.cpp` for add+ret printing.
 #[test]
 fn typed_function_facade_builds_signature_and_params() -> Result<(), IrError> {
-    Module::with_new("demo", |m| {
-        let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
+    let m = module_new!("demo")?;
+    let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let (lhs, rhs) = m.view(f).params();
-        let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
-        b.build_ret(sum)?;
+    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let (lhs, rhs) = m.view(f).params();
+    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    b.build_ret(sum)?;
 
-        let text = format!("{m}");
-        let expected = "; ModuleID = 'demo'\n\
-            define i32 @add(i32 %0, i32 %1) {\n\
-            entry:\n\
-            \x20\x20%sum = add i32 %0, %1\n\
-            \x20\x20ret i32 %sum\n\
-            }\n";
-        assert_eq!(text, expected, "got:\n{text}");
-        Ok(())
-    })
+    let text = format!("{m}");
+    let expected = "; ModuleID = 'demo'\n\
+        define i32 @add(i32 %0, i32 %1) {\n\
+        entry:\n\
+        \x20\x20%sum = add i32 %0, %1\n\
+        \x20\x20ret i32 %sum\n\
+        }\n";
+    assert_eq!(text, expected, "got:\n{text}");
+    Ok(())
 }
 
 fn expect_pointer<'ctx, B: ModuleBrand + 'ctx>(v: PointerValue<'ctx, B>) -> PointerValue<'ctx, B> {
@@ -52,23 +51,21 @@ fn expect_int17<'ctx, B: ModuleBrand + 'ctx>(
 /// checks.
 #[test]
 fn typed_function_facade_supports_pointer_and_float_params() -> Result<(), IrError> {
-    Module::with_new("mixed", |m| {
-        let f =
-            m.add_typed_function::<i32, (Ptr, f32, Width<17>), _>("mixed", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let (p, x, bits) = m.view(f).params();
-        let p = expect_pointer(p);
-        let x = expect_float(x);
-        let bits = expect_int17(bits);
+    let m = module_new!("mixed")?;
+    let f = m.add_typed_function::<i32, (Ptr, f32, Width<17>), _>("mixed", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let (p, x, bits) = m.view(f).params();
+    let p = expect_pointer(p);
+    let x = expect_float(x);
+    let bits = expect_int17(bits);
 
-        assert_eq!(p.into_erased().ty().kind_label(), TypeKindLabel::Pointer);
-        assert_eq!(x.into_erased().ty().kind_label(), TypeKindLabel::Float);
-        assert_eq!(bits.into_erased().ty().kind_label(), TypeKindLabel::Integer);
+    assert_eq!(p.into_erased().ty().kind_label(), TypeKindLabel::Pointer);
+    assert_eq!(x.into_erased().ty().kind_label(), TypeKindLabel::Float);
+    assert_eq!(bits.into_erased().ty().kind_label(), TypeKindLabel::Integer);
 
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        b.build_ret(0_i32)?;
-        Ok(())
-    })
+    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    b.build_ret(0_i32)?;
+    Ok(())
 }
 
 /// Closest upstream coverage:
@@ -76,22 +73,21 @@ fn typed_function_facade_supports_pointer_and_float_params() -> Result<(), IrErr
 /// for raw function argument counts.
 #[test]
 fn typed_function_facade_rejects_wrong_arity_when_wrapping_raw_function() -> Result<(), IrError> {
-    Module::with_new("arity", |m| {
-        let raw = m
-            .add_typed_function::<i32, (i32,), _>("one", Linkage::External)?
-            .as_function();
+    let m = module_new!("arity")?;
+    let raw = m
+        .add_typed_function::<i32, (i32,), _>("one", Linkage::External)?
+        .as_function();
 
-        let err = TypedFunctionValue::<i32, (i32, i32), _>::try_from_function(m.view(raw))
-            .expect_err("wrong arity must be rejected");
-        assert_eq!(
-            err,
-            IrError::FunctionParameterCountMismatch {
-                expected: 2,
-                got: 1,
-            }
-        );
-        Ok(())
-    })
+    let err = TypedFunctionValue::<i32, (i32, i32), _>::try_from_function(m.view(raw))
+        .expect_err("wrong arity must be rejected");
+    assert_eq!(
+        err,
+        IrError::FunctionParameterCountMismatch {
+            expected: 2,
+            got: 1,
+        }
+    );
+    Ok(())
 }
 
 /// Closest upstream coverage:
@@ -100,22 +96,21 @@ fn typed_function_facade_rejects_wrong_arity_when_wrapping_raw_function() -> Res
 /// narrowing paths.
 #[test]
 fn typed_function_facade_rejects_wrong_raw_param_type() -> Result<(), IrError> {
-    Module::with_new("wrong_param", |m| {
-        let raw = m
-            .add_typed_function::<i32, (f64,), _>("double_param", Linkage::External)?
-            .as_function();
+    let m = module_new!("wrong_param")?;
+    let raw = m
+        .add_typed_function::<i32, (f64,), _>("double_param", Linkage::External)?
+        .as_function();
 
-        let err = TypedFunctionValue::<i32, (i32,), _>::try_from_function(m.view(raw))
-            .expect_err("wrong parameter kind must be rejected");
-        assert_eq!(
-            err,
-            IrError::TypeMismatch {
-                expected: TypeKindLabel::Integer,
-                got: TypeKindLabel::Double,
-            }
-        );
-        Ok(())
-    })
+    let err = TypedFunctionValue::<i32, (i32,), _>::try_from_function(m.view(raw))
+        .expect_err("wrong parameter kind must be rejected");
+    assert_eq!(
+        err,
+        IrError::TypeMismatch {
+            expected: TypeKindLabel::Integer,
+            got: TypeKindLabel::Double,
+        }
+    );
+    Ok(())
 }
 
 type AddSig = fn(i32, i32) -> i32;
@@ -125,25 +120,24 @@ type WinApiSig = unsafe extern "system" fn(Ptr, i32, f32) -> Ptr;
 /// upstream coverage is `unittests/IR/FunctionTest.cpp::TEST(FunctionTest, hasLazyArguments)`.
 #[test]
 fn function_pointer_alias_builds_typed_function_and_params() -> Result<(), IrError> {
-    Module::with_new("alias", |m| {
-        let fn_ty = m.typed_function_type_of::<AddSig>()?;
-        assert_eq!(format!("{fn_ty}"), "i32 (i32, i32)");
-        let f = m.add_typed_function_of::<AddSig, _>("add", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let (lhs, rhs) = m.view(f).params();
-        let _: IntValue<'_, i32, _> = lhs;
-        let _: IntValue<'_, i32, _> = rhs;
-        let b = m.view(f).builder(&m).position_at_end(entry);
-        let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
-        b.build_ret(sum)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("define i32 @add(i32 %0, i32 %1)"),
-            "got:\n{text}"
-        );
-        assert!(text.contains("ret i32 %sum\n"), "got:\n{text}");
-        Ok(())
-    })
+    let m = module_new!("alias")?;
+    let fn_ty = m.typed_function_type_of::<AddSig>()?;
+    assert_eq!(format!("{fn_ty}"), "i32 (i32, i32)");
+    let f = m.add_typed_function_of::<AddSig, _>("add", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let (lhs, rhs) = m.view(f).params();
+    let _: IntValue<'_, i32, _> = lhs;
+    let _: IntValue<'_, i32, _> = rhs;
+    let b = m.view(f).builder(&m).position_at_end(entry);
+    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    b.build_ret(sum)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("define i32 @add(i32 %0, i32 %1)"),
+        "got:\n{text}"
+    );
+    assert!(text.contains("ret i32 %sum\n"), "got:\n{text}");
+    Ok(())
 }
 
 /// llvmkit-specific Rust-signature facade for platform ABI-shaped function
@@ -151,18 +145,17 @@ fn function_pointer_alias_builds_typed_function_and_params() -> Result<(), IrErr
 /// `unittests/IR/AsmWriterTest.cpp`.
 #[test]
 fn extern_system_signature_alias_builds_pointer_return_function() -> Result<(), IrError> {
-    Module::with_new("winapi", |m| {
-        let f = m.add_typed_function_of::<WinApiSig, _>("call_window_proc", Linkage::External)?;
-        let (hwnd, code, scale) = m.view(f).params();
-        let _: PointerValue<'_, _> = hwnd;
-        let _: IntValue<'_, i32, _> = code;
-        let _: FloatValue<'_, f32, _> = scale;
-        assert_eq!(
-            format!("{}", m.view(f).as_function().signature()),
-            "ptr (ptr, i32, float)"
-        );
-        Ok(())
-    })
+    let m = module_new!("winapi")?;
+    let f = m.add_typed_function_of::<WinApiSig, _>("call_window_proc", Linkage::External)?;
+    let (hwnd, code, scale) = m.view(f).params();
+    let _: PointerValue<'_, _> = hwnd;
+    let _: IntValue<'_, i32, _> = code;
+    let _: FloatValue<'_, f32, _> = scale;
+    assert_eq!(
+        format!("{}", m.view(f).as_function().signature()),
+        "ptr (ptr, i32, float)"
+    );
+    Ok(())
 }
 
 /// llvmkit-specific raw-wrapper validation; closest upstream coverage is
@@ -170,31 +163,29 @@ fn extern_system_signature_alias_builds_pointer_return_function() -> Result<(), 
 /// raw argument counts and order.
 #[test]
 fn raw_function_can_be_wrapped_with_function_pointer_signature() -> Result<(), IrError> {
-    Module::with_new("raw", |m| {
-        let raw = m
-            .add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?
-            .as_function();
-        let typed = m.view(raw).with_typed_signature::<AddSig>()?;
-        let (lhs, rhs) = m.view(typed).params();
-        let _: IntValue<'_, i32, _> = lhs;
-        let _: IntValue<'_, i32, _> = rhs;
-        Ok(())
-    })
+    let m = module_new!("raw")?;
+    let raw = m
+        .add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?
+        .as_function();
+    let typed = m.view(raw).with_typed_signature::<AddSig>()?;
+    let (lhs, rhs) = m.view(typed).params();
+    let _: IntValue<'_, i32, _> = lhs;
+    let _: IntValue<'_, i32, _> = rhs;
+    Ok(())
 }
 
 /// llvmkit-specific typed-builder return schema; closest upstream coverage is
 /// `unittests/IR/AsmWriterTest.cpp` for return instruction printing.
 #[test]
 fn builder_can_be_created_from_function_pointer_return_schema() -> Result<(), IrError> {
-    Module::with_new("builder", |m| {
-        let f = m.add_typed_function_of::<AddSig, _>("zero", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for_return::<AddSig>(&m).position_at_end(entry);
-        b.build_ret(0_i32)?;
-        let text = format!("{m}");
-        assert!(text.contains("ret i32 0\n"), "got:\n{text}");
-        Ok(())
-    })
+    let m = module_new!("builder")?;
+    let f = m.add_typed_function_of::<AddSig, _>("zero", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for_return::<AddSig>(&m).position_at_end(entry);
+    b.build_ret(0_i32)?;
+    let text = format!("{m}");
+    assert!(text.contains("ret i32 0\n"), "got:\n{text}");
+    Ok(())
 }
 
 /// llvmkit-specific typed-call argument lowering; closest upstream coverage is
@@ -203,16 +194,15 @@ fn builder_can_be_created_from_function_pointer_return_schema() -> Result<(), Ir
 /// to the underlying `CallInst` builder.
 #[test]
 fn call_args_lowers_tuple_to_value_ids() -> Result<(), IrError> {
-    Module::with_new("call_args", |m| {
-        let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let (x, _rhs) = m.view(f).params();
+    let m = module_new!("call_args")?;
+    let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let (x, _rhs) = m.view(f).params();
 
-        let ids = <(_, _) as CallArgs<'_, (i32, i32), _>>::lower((5_i32, x), (&m).into())?;
+    let ids = <(_, _) as CallArgs<'_, (i32, i32), _>>::lower((5_i32, x), (&m).into())?;
 
-        assert_eq!(ids.len(), 2, "expected two lowered call-argument ids");
-        b.build_ret(0_i32)?;
-        Ok(())
-    })
+    assert_eq!(ids.len(), 2, "expected two lowered call-argument ids");
+    b.build_ret(0_i32)?;
+    Ok(())
 }
