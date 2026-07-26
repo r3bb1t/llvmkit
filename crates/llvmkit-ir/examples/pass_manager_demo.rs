@@ -18,9 +18,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, Brand, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, IRBuilder,
-    Inspect, InstSimplifyPass, IntPredicate, IntValue, IrError, Linkage, ModCx, ModReport, Module,
-    ModulePass, run_function_pass, run_module_pass,
+    Analyses, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, IRBuilder, Inspect,
+    InstSimplifyPass, IntPredicate, IntValue, IrError, Linkage, ModCx, ModReport, Module,
+    ModuleBrand, ModulePass, run_function_pass, run_module_pass,
 };
 
 /// Read-only module pass: reports how many functions the module holds. Declares
@@ -30,15 +30,19 @@ struct ReportModulePass {
     out: Rc<RefCell<Vec<String>>>,
 }
 
-impl<'ctx> ModulePass<'ctx> for ReportModulePass {
+impl<B: ModuleBrand> ModulePass<B> for ReportModulePass {
     type Access = Inspect;
     type Requires = ();
     const NAME: &'static str = "report-module";
 
-    fn run(
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: ModCx<'_, '_, '_, 'ctx, Brand<'ctx>, Inspect, ()>,
-    ) -> Result<ModReport, IrError> {
+        cx: ModCx<'m, '_, '_, 'ctx, B, Inspect, ()>,
+    ) -> Result<ModReport, IrError>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         self.out.borrow_mut().push(format!(
             "module_pass functions={}",
             cx.module().functions().len()
@@ -54,15 +58,19 @@ struct ReportFunctionPass {
     out: Rc<RefCell<Vec<String>>>,
 }
 
-impl<'ctx> FunctionPass<'ctx> for ReportFunctionPass {
+impl<B: ModuleBrand> FunctionPass<B> for ReportFunctionPass {
     type Access = Inspect;
     type Requires = (DominatorTreeAnalysis,);
     const NAME: &'static str = "report-function";
 
-    fn run(
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: FnCx<'_, '_, 'ctx, Brand<'ctx>, Inspect, (DominatorTreeAnalysis,)>,
-    ) -> Result<FnReport, IrError> {
+        cx: FnCx<'m, '_, 'ctx, B, Inspect, (DominatorTreeAnalysis,)>,
+    ) -> Result<FnReport, IrError>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let function = cx.function();
         let dt = cx.analysis::<DominatorTreeAnalysis, _>();
         let entry = function

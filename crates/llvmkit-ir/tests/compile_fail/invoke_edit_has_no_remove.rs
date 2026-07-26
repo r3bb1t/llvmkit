@@ -11,12 +11,16 @@ use llvmkit_ir::{FnCx, FnReport, FunctionPass, IrResult, ModuleBrand, ReshapeCfg
 
 struct InvokeNoRemove;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InvokeNoRemove {
+impl<B: ModuleBrand> FunctionPass<B> for InvokeNoRemove {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "invoke-no-remove";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let bb = reshape.function().entry_block().expect("entry");
         // `InvokeEdit` has no `remove_*`: an invoke edge is not removable.

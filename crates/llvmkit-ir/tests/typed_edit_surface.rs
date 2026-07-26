@@ -60,12 +60,16 @@ enum InvokeArm {
     Unwind,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectInvokeEdge<B> {
+impl<B: ModuleBrand> FunctionPass<B> for RedirectInvokeEdge<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-invoke-edge";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let entry = reshape
             .function()
@@ -177,12 +181,16 @@ struct RedirectCallBrEdge<B: ModuleBrand> {
     new_to: BlockId<Dyn, B>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCallBrEdge<B> {
+impl<B: ModuleBrand> FunctionPass<B> for RedirectCallBrEdge<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-callbr-edge";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let entry = reshape
             .function()
@@ -286,12 +294,16 @@ struct RemoveCondBrArm {
     remove_then: bool,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveCondBrArm {
+impl<B: ModuleBrand> FunctionPass<B> for RemoveCondBrArm {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "remove-condbr-arm";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let entry = reshape
             .function()
@@ -394,12 +406,16 @@ struct SwitchCaseOp<B: ModuleBrand> {
     new_to: BlockId<Dyn, B>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for SwitchCaseOp<B> {
+impl<B: ModuleBrand> FunctionPass<B> for SwitchCaseOp<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "switch-case-op";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let entry = reshape
             .function()
@@ -527,12 +543,16 @@ struct RedirectSwitchSuccessor<B: ModuleBrand> {
     phi_values: Vec<ValueId<B>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchSuccessor<B> {
+impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchSuccessor<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-switch-successor";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let entry = reshape
             .function()
@@ -672,12 +692,16 @@ fn switch_remove_successor_rejects_non_case_target() -> Result<(), IrError> {
 /// entry returns [`TermEdit::Uneditable`].
 struct AssertUneditable;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for AssertUneditable {
+impl<B: ModuleBrand> FunctionPass<B> for AssertUneditable {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "assert-uneditable";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let entry = reshape
             .function()

@@ -80,7 +80,9 @@ use super::intrinsics::{BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IRBuilderFolder;
 use super::marker::{Dyn, Ptr, ReturnMarker};
-use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
+use super::module::{
+    Brand, Invariant, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified,
+};
 use super::struct_body_state::StructBodyDyn;
 use super::struct_schema::{FieldOf, IntoIrField, IrField, StructFieldAt, StructSchema};
 use super::sync_scope::SyncScope;
@@ -206,7 +208,13 @@ impl BuilderPositionState for Positioned {}
 pub struct InsertPoint<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
     pub(super) block_id: Option<ValueSlot>,
     pub(super) before: Option<ValueSlot>,
-    pub(super) _marker: PhantomData<fn(&'ctx (), R, B)>,
+    /// Variance matches every other handle in the crate (see [`FunctionValue`]):
+    /// covariant in `'ctx` and `R`, **invariant** in the brand `B` (next field).
+    /// The snapshot stores arena slots only, so shortening the `'ctx` tag is
+    /// always sound — and a pass that stashes an insert point across a
+    /// higher-ranked `FunctionPass::run` needs exactly that covariance.
+    pub(super) _marker: PhantomData<(&'ctx (), R)>,
+    pub(super) _brand: Invariant<B>,
 }
 
 #[derive(Debug, Clone)]
@@ -639,6 +647,7 @@ where
             block_id: self.insert_block.as_ref().map(|bb| bb.slot()),
             before: self.insert_before,
             _marker: PhantomData,
+            _brand: PhantomData,
         }
     }
 

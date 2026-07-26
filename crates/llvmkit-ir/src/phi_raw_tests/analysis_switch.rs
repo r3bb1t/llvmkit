@@ -23,12 +23,16 @@ struct RemoveSwitchEdge<B: ModuleBrand> {
     to: BlockId<Dyn, B>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveSwitchEdge<B> {
+impl<B: ModuleBrand> FunctionPass<B> for RemoveSwitchEdge<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "remove-switch-edge";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let from = reshape
             .function()
@@ -51,12 +55,16 @@ struct RedirectSwitchEdge<B: ModuleBrand> {
     phi_values: Vec<ValueId<B>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchEdge<B> {
+impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchEdge<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-switch-edge";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let from = reshape
             .function()

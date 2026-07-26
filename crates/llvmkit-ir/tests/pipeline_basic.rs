@@ -73,12 +73,16 @@ struct LogFnPass {
     tag: &'static str,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for LogFnPass {
+impl<B: ModuleBrand> FunctionPass<B> for LogFnPass {
     type Access = Inspect;
     type Requires = ();
     const NAME: &'static str = "log-fn";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         self.log.borrow_mut().push(self.tag);
         Ok(cx.done())
     }
@@ -91,12 +95,16 @@ struct ObserveEntryCount {
     seen: Rc<Cell<usize>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for ObserveEntryCount {
+impl<B: ModuleBrand> FunctionPass<B> for ObserveEntryCount {
     type Access = Inspect;
     type Requires = ();
     const NAME: &'static str = "observe-count";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let count = cx
             .function()
             .entry_block()
@@ -114,12 +122,16 @@ struct LoggingMutator {
     visited: Rc<RefCell<Vec<String>>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for LoggingMutator {
+impl<B: ModuleBrand> FunctionPass<B> for LoggingMutator {
     type Access = PatchBody;
     type Requires = ();
     const NAME: &'static str = "logging-mutator";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         self.visited
             .borrow_mut()
             .push(cx.function().name().to_owned());
@@ -133,12 +145,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for LoggingMutator {
 /// analysis (including the CFG-shaped [`DominatorTreeAnalysis`]) is invalidated.
 struct NoOpReshape;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for NoOpReshape {
+impl<B: ModuleBrand> FunctionPass<B> for NoOpReshape {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "noop-reshape";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         Ok(reshape.done())
     }
@@ -149,12 +165,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for NoOpReshape {
 /// set and `done()` reports the `none()` floor (invalidating everything).
 struct MutatingReshape;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for MutatingReshape {
+impl<B: ModuleBrand> FunctionPass<B> for MutatingReshape {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "mutating-reshape";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let dead: Vec<_> = reshape
             .function()
@@ -179,12 +199,16 @@ struct CountFunctionsPass {
     ran: Rc<Cell<bool>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for CountFunctionsPass {
+impl<B: ModuleBrand> ModulePass<B> for CountFunctionsPass {
     type Access = Inspect;
     type Requires = ();
     const NAME: &'static str = "count-functions";
 
-    fn run(&mut self, cx: ModCx<'_, '_, '_, 'ctx, B, Inspect, ()>) -> IrResult<ModReport> {
+    fn run<'m, 'ctx>(&mut self, cx: ModCx<'m, '_, '_, 'ctx, B, Inspect, ()>) -> IrResult<ModReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         assert!(
             cx.functions().count() >= 1,
             "module pass must see a function"
@@ -200,12 +224,19 @@ struct AddGlobalPass {
     ran: Rc<Cell<bool>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for AddGlobalPass {
+impl<B: ModuleBrand> ModulePass<B> for AddGlobalPass {
     type Access = RewriteModule;
     type Requires = ();
     const NAME: &'static str = "add-global";
 
-    fn run(&mut self, cx: ModCx<'_, '_, '_, 'ctx, B, RewriteModule, ()>) -> IrResult<ModReport> {
+    fn run<'m, 'ctx>(
+        &mut self,
+        cx: ModCx<'m, '_, '_, 'ctx, B, RewriteModule, ()>,
+    ) -> IrResult<ModReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let rewrite = cx.mutate();
         let i32_ty = rewrite.module_mut().i32_type();
         rewrite.module_mut().add_global("g", i32_ty.const_zero())?;

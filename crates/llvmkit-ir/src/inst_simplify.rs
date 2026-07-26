@@ -18,14 +18,18 @@ use super::pass_pipeline::INSTSIMPLIFY;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct InstSimplifyPass;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InstSimplifyPass {
+impl<B: ModuleBrand> FunctionPass<B> for InstSimplifyPass {
     // Folding replaces uses and erases the folded instruction in place; the CFG
     // is untouched, so the `PatchBody` floor is exactly right.
     type Access = PatchBody;
     type Requires = ();
     const NAME: &'static str = INSTSIMPLIFY.as_str();
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         // As in `DcePass`: no read-only pre-scan. Enter the mutator and fold;
         // `FnPatch::done` reports everything-preserved if nothing changed (the
         // dirty flag witnesses it) and the CFG-preserved floor otherwise.

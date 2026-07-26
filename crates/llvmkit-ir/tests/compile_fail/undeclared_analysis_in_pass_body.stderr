@@ -1,7 +1,7 @@
 error[E0277]: analysis `DominatorTreeAnalysis` is not in this pass's `Requires` list `()`
-  --> tests/compile_fail/undeclared_analysis_in_pass_body.rs:28:22
+  --> tests/compile_fail/undeclared_analysis_in_pass_body.rs:32:22
    |
-28 |         let _dt = cx.analysis::<DominatorTreeAnalysis, _>();
+32 |         let _dt = cx.analysis::<DominatorTreeAnalysis, _>();
    |                      ^^^^^^^^ the trait `AnalysisSelector<'_, B, DominatorTreeAnalysis, _>` is not implemented for `()`
    |
    = note: add the analysis marker to `type Requires` on the pass, or use the erased pass path for ad-hoc queries

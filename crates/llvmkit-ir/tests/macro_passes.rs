@@ -93,7 +93,7 @@ fn erase_dead_instructions<'ctx, B: ModuleBrand + 'ctx>(
 fn fn_pass_meta<'ctx, B, P>(_witness: &Module<'ctx, B, Verified>, _pass: &P) -> (&'static str, bool)
 where
     B: ModuleBrand + 'ctx,
-    P: FunctionPass<'ctx, B>,
+    P: FunctionPass<B>,
 {
     (P::NAME, P::REQUIRED)
 }
@@ -105,7 +105,7 @@ fn mod_pass_meta<'ctx, B, P>(
 ) -> (&'static str, bool)
 where
     B: ModuleBrand + 'ctx,
-    P: ModulePass<'ctx, B>,
+    P: ModulePass<B>,
 {
     (P::NAME, P::REQUIRED)
 }
@@ -130,12 +130,16 @@ impl MacroEraser {
 /// Hand-written twin implementing the raw trait — identical body.
 struct HandEraser;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for HandEraser {
+impl<B: ModuleBrand> FunctionPass<B> for HandEraser {
     type Access = PatchBody;
     type Requires = ();
     const NAME: &'static str = "macro-dce";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let mut patch = cx.mutate();
         erase_dead_instructions(&mut patch)?;
         Ok(patch.done())
@@ -263,13 +267,20 @@ impl MacroAddGlobal {
 /// Hand-written twin — identical body, raw trait impl.
 struct HandAddGlobal;
 
-impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for HandAddGlobal {
+impl<B: ModuleBrand> ModulePass<B> for HandAddGlobal {
     type Access = RewriteModule;
     type Requires = ();
     const NAME: &'static str = "macro-add-global";
     const REQUIRED: bool = true;
 
-    fn run(&mut self, cx: ModCx<'_, '_, '_, 'ctx, B, RewriteModule, ()>) -> IrResult<ModReport> {
+    fn run<'m, 'ctx>(
+        &mut self,
+        cx: ModCx<'m, '_, '_, 'ctx, B, RewriteModule, ()>,
+    ) -> IrResult<ModReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let rewrite = cx.mutate();
         let i32_ty = rewrite.module_mut().i32_type();
         rewrite.module_mut().add_global("g", i32_ty.const_zero())?;

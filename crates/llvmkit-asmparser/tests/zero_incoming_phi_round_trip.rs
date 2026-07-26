@@ -25,12 +25,16 @@ struct RemoveEdge {
     from_name: &'static str,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdge {
+impl<B: ModuleBrand> FunctionPass<B> for RemoveEdge {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "remove-edge-empty-phi-rt";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let from = reshape
             .function()

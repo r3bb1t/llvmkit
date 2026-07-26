@@ -22,12 +22,16 @@ use llvmkit_ir::{FnCx, FnReport, FunctionPass, IrResult, ModuleBrand, PatchBody}
 
 struct ClaimPreservedAfterMutate;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for ClaimPreservedAfterMutate {
+impl<B: ModuleBrand> FunctionPass<B> for ClaimPreservedAfterMutate {
     type Access = PatchBody;
     type Requires = ();
     const NAME: &'static str = "claim-preserved-after-mutate";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         // `mutate()` consumes `cx` by value and moves it into the mutator, so the
         // all-preserved `done()` on the moved `cx` is unspellable: a mutating
         // pass cannot claim it preserved everything.

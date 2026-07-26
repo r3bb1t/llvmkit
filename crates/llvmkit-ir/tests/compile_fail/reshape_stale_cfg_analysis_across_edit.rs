@@ -16,15 +16,19 @@ use llvmkit_ir::{
 
 struct StaleRead;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for StaleRead {
+impl<B: ModuleBrand> FunctionPass<B> for StaleRead {
     type Access = ReshapeCfg;
     type Requires = (DominatorTreeAnalysis,);
     const NAME: &'static str = "stale-read";
 
-    fn run(
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport> {
+        cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
+    ) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let mut reshape = cx.mutate();
         let entry = reshape.function().entry_block().expect("definition");
         let before = entry.instructions().next().expect("an instruction");

@@ -49,11 +49,11 @@ note: required by a bound in `FnCx`
    |        ^^^^^^^^ required by this bound in `FnCx`
    = note: this error originates in the attribute macro `function_pass` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0599]: the method `done` exists for struct `FnCx<'_, '_, 'ctx, B, RewriteModule, ()>`, but its trait bounds were not satisfied
+error[E0599]: the method `done` exists for struct `FnCx<'m, '_, 'ctx, B, RewriteModule, ()>`, but its trait bounds were not satisfied
   --> tests/compile_fail/function_pass_wrong_level_access.rs:28:15
    |
 28 |         Ok(cx.done())
-   |               ^^^^ method cannot be called on `FnCx<'_, '_, 'ctx, B, RewriteModule, ()>` due to unsatisfied trait bounds
+   |               ^^^^ method cannot be called on `FnCx<'m, '_, 'ctx, B, RewriteModule, ()>` due to unsatisfied trait bounds
    |
   ::: src/pass_access.rs
    |

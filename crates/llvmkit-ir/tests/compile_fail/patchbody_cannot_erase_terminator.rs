@@ -12,12 +12,16 @@ use llvmkit_ir::{FnCx, FnReport, FunctionPass, IrResult, ModuleBrand, PatchBody}
 
 struct EraseTerminator;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for EraseTerminator {
+impl<B: ModuleBrand> FunctionPass<B> for EraseTerminator {
     type Access = PatchBody;
     type Requires = ();
     const NAME: &'static str = "erase-terminator";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let patch = cx.mutate();
         let terminator = patch
             .function()

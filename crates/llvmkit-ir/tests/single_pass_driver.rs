@@ -35,12 +35,16 @@ struct CountFunctionsPass {
     ran: Rc<Cell<bool>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for CountFunctionsPass {
+impl<B: ModuleBrand> ModulePass<B> for CountFunctionsPass {
     type Access = Inspect;
     type Requires = ();
     const NAME: &'static str = "count-functions-probe";
 
-    fn run(&mut self, cx: ModCx<'_, '_, '_, 'ctx, B, Inspect, ()>) -> IrResult<ModReport> {
+    fn run<'m, 'ctx>(&mut self, cx: ModCx<'m, '_, '_, 'ctx, B, Inspect, ()>) -> IrResult<ModReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         assert_eq!(
             cx.functions().count(),
             1,
@@ -88,12 +92,19 @@ struct AddGlobalPass {
     ran: Rc<Cell<bool>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for AddGlobalPass {
+impl<B: ModuleBrand> ModulePass<B> for AddGlobalPass {
     type Access = RewriteModule;
     type Requires = ();
     const NAME: &'static str = "add-global-probe";
 
-    fn run(&mut self, cx: ModCx<'_, '_, '_, 'ctx, B, RewriteModule, ()>) -> IrResult<ModReport> {
+    fn run<'m, 'ctx>(
+        &mut self,
+        cx: ModCx<'m, '_, '_, 'ctx, B, RewriteModule, ()>,
+    ) -> IrResult<ModReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let rewrite = cx.mutate();
         let i32_ty = rewrite.module_mut().i32_type();
         rewrite.module_mut().add_global("g", i32_ty.const_zero())?;
@@ -148,12 +159,16 @@ struct InspectFnPass {
     ran: Rc<Cell<bool>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InspectFnPass {
+impl<B: ModuleBrand> FunctionPass<B> for InspectFnPass {
     type Access = Inspect;
     type Requires = ();
     const NAME: &'static str = "inspect-fn-probe";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         assert_eq!(
             cx.function().basic_blocks().count(),
             1,

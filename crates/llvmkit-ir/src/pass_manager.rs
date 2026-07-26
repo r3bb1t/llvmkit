@@ -26,8 +26,8 @@
 //!
 //! ```
 //! use llvmkit_ir::{
-//!     Analyses, Brand, DcePass, DynReadOnlyFunctionPipeline, FnCx, FnReport, FunctionPass,
-//!     IRBuilder, Inspect, InstSimplifyPass, IrError, IrResult, Linkage, Module, Unverified,
+//!     Analyses, DcePass, DynReadOnlyFunctionPipeline, FnCx, FnReport, FunctionPass, IRBuilder,
+//!     Inspect, InstSimplifyPass, IrError, IrResult, Linkage, Module, ModuleBrand, Unverified,
 //!     Verified, function_pipeline, run_function_pass,
 //! };
 //!
@@ -36,12 +36,18 @@
 //! // only report it can build is all-preserved and the module stays `Verified`.
 //! struct CountBlocks;
 //!
-//! impl<'ctx> FunctionPass<'ctx> for CountBlocks {
+//! // The pass fixes neither the brand nor either context region: `run` is
+//! // higher-ranked over both, so the DRIVER picks them.
+//! impl<B: ModuleBrand> FunctionPass<B> for CountBlocks {
 //!     type Access = Inspect;
 //!     type Requires = ();
 //!     const NAME: &'static str = "count-blocks";
 //!
-//!     fn run(&mut self, cx: FnCx<'_, '_, 'ctx, Brand<'ctx>, Inspect, ()>) -> IrResult<FnReport> {
+//!     fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport>
+//!     where
+//!         'ctx: 'm,
+//!         Self: 'ctx,
+//!     {
 //!         let _blocks = cx.function().basic_blocks().count();
 //!         Ok(cx.done())
 //!     }
@@ -59,18 +65,21 @@
 //!
 //!         let verified = m.verify()?;
 //!         let mut analyses = Analyses::new();
+//!         // The drivers take anything `Into<FunctionView>`; `f` is the
+//!         // lifetime-free id `add_function_dyn` handed back, so view it once.
+//!         let f_view = verified.view(f);
 //!
 //!         // 1. Single-pass driver. `CountBlocks` is `Inspect`, so the module is
 //!         //    still `Verified` on the way out (the explicit binding proves it).
 //!         let verified: Module<'_, _, Verified> =
-//!             run_function_pass(CountBlocks, verified, f, &mut analyses)?;
+//!             run_function_pass(CountBlocks, verified, f_view, &mut analyses)?;
 //!
 //!         // 2. A compile-time tuple pipeline of two `PatchBody` passes, run in
 //!         //    written order. The output typestate folds the members' rungs: any
 //!         //    mutator ⇒ `Module<Unverified>`, so re-verifying is enforced by the
 //!         //    type system, not by convention.
 //!         let cleaned: Module<'_, _, Unverified> =
-//!             function_pipeline((InstSimplifyPass, DcePass)).run(verified, f, &mut analyses)?;
+//!             function_pipeline((InstSimplifyPass, DcePass)).run(verified, f_view, &mut analyses)?;
 //!         let reverified = cleaned.verify()?;
 //!
 //!         // 3. A runtime-assembled read-only pipeline (opt-style CLIs). `push` is
@@ -78,7 +87,7 @@
 //!         //    module threads through `Verified`.
 //!         let mut read_only = DynReadOnlyFunctionPipeline::new();
 //!         read_only.push(CountBlocks);
-//!         let _final: Module<'_, _, Verified> = read_only.run(reverified, f, &mut analyses)?;
+//!         let _final: Module<'_, _, Verified> = read_only.run(reverified, f_view, &mut analyses)?;
 //!         Ok(())
 //!     })
 //! }
@@ -106,6 +115,29 @@ use crate::pass_context::{FnCx, FnReport, FunctionView, ModCx, ModReport};
 /// `run` method takes its [`FnCx`] **by value**: the consuming transition into a
 /// mutator is what makes over-claiming preservation unspellable (D1/D8).
 ///
+/// # Why the pass names neither the brand nor a context region
+///
+/// The trait is generic over the brand `B` only; **both** context regions live on
+/// [`run`](Self::run) itself, quantified per call. A pass impl therefore cannot
+/// pin the region its module borrow comes from — the *driver* chooses it, and can
+/// point it at a module value living in the driver's own frame. That is the
+/// property the whole single-pass/pipeline surface is built on, and the one an
+/// `impl<'ctx> FunctionPass<'ctx>`-shaped trait could not offer.
+///
+/// The two `run` bounds pay for it:
+///
+/// * `'ctx: 'm` — the analyses were collected at `'ctx`; the module borrow `'m`
+///   nests inside it.
+/// * `Self: 'ctx` — the pass value outlives that region, which is what lets a
+///   pass legitimately *stash* a `'ctx`-bound handle (an `InsertPoint`, a `Type`)
+///   in its own fields and still use it from a per-call `run`.
+///
+/// [`Self::Requires`] carries no trait bound here for the same reason: it can
+/// only be a [`FunctionAnalysisList`] *at a region*, and no region is in scope at
+/// the trait level, so the bound sits on `run` where `'ctx` exists. Drivers
+/// restate it (`P::Requires: FunctionAnalysisList<'ctx, B>`) at the region they
+/// pick; impls may omit it, since a concrete `Requires` discharges it directly.
+///
 /// The `#[function_pass]` macro is zero-cost sugar for this trait — it expands a
 /// plain inherent `impl` into exactly the impl below. `FnCx<Self>` / `FnReport`
 /// in the macro form are readability sentinels the macro rewrites, so they are
@@ -128,11 +160,13 @@ use crate::pass_context::{FnCx, FnReport, FunctionView, ModCx, ModReport};
 ///     }
 /// }
 /// ```
-pub trait FunctionPass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub trait FunctionPass<B: ModuleBrand> {
     /// Capability rung: how much of the function body this pass may touch.
     type Access: FnAccess;
     /// Analyses prefetched before `run`; the context accessor is infallible.
-    type Requires: FunctionAnalysisList<'ctx, B>;
+    /// Bounded on [`FunctionAnalysisList`] at `run`'s `'ctx`, not here — see the
+    /// trait docs.
+    type Requires;
     /// Instrumentation-facing name (unused by the bare driver; part of the API).
     const NAME: &'static str;
     /// Whether the pass must always run. Replaces the old runtime `is_required()`
@@ -140,10 +174,19 @@ pub trait FunctionPass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
     const REQUIRED: bool = false;
 
     /// Run the pass over one function, consuming its capability context.
-    fn run(
+    ///
+    /// Higher-ranked over **both** context regions: `'m` (the driver's borrow of
+    /// the module and everything minted from it) and `'ctx` (the region the
+    /// prefetched analyses were collected at). The driver picks both, so it may
+    /// hand the pass a module borrow rooted in the driver's own frame.
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: FnCx<'_, '_, 'ctx, B, Self::Access, Self::Requires>,
-    ) -> IrResult<FnReport>;
+        cx: FnCx<'m, '_, 'ctx, B, Self::Access, Self::Requires>,
+    ) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+        Self::Requires: FunctionAnalysisList<'ctx, B>;
 }
 
 /// A pass over one module at capability rung [`Self::Access`]. The module-level
@@ -151,21 +194,28 @@ pub trait FunctionPass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
 /// iterating `rewrite.patch_functions()` / `rewrite.reshape_functions()` inline,
 /// so there is no `FnAccess`/`FnRequires` associated type here — the function
 /// rung is the method name, chosen at the call site.
-pub trait ModulePass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub trait ModulePass<B: ModuleBrand> {
     /// Capability rung: how much of the module this pass may rewrite.
     type Access: ModAccess;
-    /// Module analyses prefetched before `run`; the context accessor is infallible.
-    type Requires: ModuleAnalysisList<'ctx, B>;
+    /// Module analyses prefetched before `run`; the context accessor is
+    /// infallible. Bounded on [`ModuleAnalysisList`] at `run`'s `'ctx`, mirroring
+    /// [`FunctionPass::Requires`].
+    type Requires;
     /// Instrumentation-facing name (unused by the bare driver; part of the API).
     const NAME: &'static str;
     /// Whether the pass must always run. See [`FunctionPass::REQUIRED`].
     const REQUIRED: bool = false;
 
     /// Run the pass over one module, consuming its capability context.
-    fn run(
+    /// Higher-ranked over both context regions — see [`FunctionPass::run`].
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: ModCx<'_, '_, '_, 'ctx, B, Self::Access, Self::Requires>,
-    ) -> IrResult<ModReport>;
+        cx: ModCx<'m, '_, '_, 'ctx, B, Self::Access, Self::Requires>,
+    ) -> IrResult<ModReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+        Self::Requires: ModuleAnalysisList<'ctx, B>;
 }
 
 mod pass_execution_sealed {
@@ -228,7 +278,7 @@ pub trait FnRungExecute: FnAccess + fn_rung_sealed::Sealed {
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = Self, Requires = R>,
+        P: FunctionPass<B, Access = Self, Requires = R> + 'ctx,
         Self::Verdict: PassExecution;
 }
 
@@ -242,7 +292,7 @@ impl FnRungExecute for Inspect {
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = Inspect, Requires = R>,
+        P: FunctionPass<B, Access = Inspect, Requires = R> + 'ctx,
     {
         // Read-only: no unverify, the token is `()`, the module flows out verified.
         let cx = FnCx::new((), function, results);
@@ -261,7 +311,7 @@ impl FnRungExecute for PatchBody {
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = PatchBody, Requires = R>,
+        P: FunctionPass<B, Access = PatchBody, Requires = R> + 'ctx,
     {
         let unverified = module.unverify();
         let cx = FnCx::new(&unverified, function, results);
@@ -280,7 +330,7 @@ impl FnRungExecute for ReshapeCfg {
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = ReshapeCfg, Requires = R>,
+        P: FunctionPass<B, Access = ReshapeCfg, Requires = R> + 'ctx,
     {
         let unverified = module.unverify();
         let cx = FnCx::new(&unverified, function, results);
@@ -313,7 +363,7 @@ pub trait ModRungExecute: ModAccess + mod_rung_sealed::Sealed {
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
-        P: ModulePass<'ctx, B, Access = Self, Requires = R>,
+        P: ModulePass<B, Access = Self, Requires = R> + 'ctx,
         Self::Verdict: PassExecution;
 }
 
@@ -328,7 +378,7 @@ impl ModRungExecute for Inspect {
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
-        P: ModulePass<'ctx, B, Access = Inspect, Requires = R>,
+        P: ModulePass<B, Access = Inspect, Requires = R> + 'ctx,
     {
         let view = module.as_view();
         let cx = ModCx::new(view, (), results, mam, fam);
@@ -348,7 +398,7 @@ impl ModRungExecute for RewriteModule {
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
-        P: ModulePass<'ctx, B, Access = RewriteModule, Requires = R>,
+        P: ModulePass<B, Access = RewriteModule, Requires = R> + 'ctx,
     {
         let unverified = module.unverify();
         let view = unverified.as_view();
@@ -372,7 +422,8 @@ pub fn run_function_pass<'ctx, B, P, F>(
 ) -> IrResult<<<P::Access as FnAccess>::Verdict as PassExecution>::OutModule<'ctx, B>>
 where
     B: ModuleBrand + 'ctx,
-    P: FunctionPass<'ctx, B>,
+    P: FunctionPass<B> + 'ctx,
+    P::Requires: FunctionAnalysisList<'ctx, B>,
     P::Access: FnRungExecute,
     <P::Access as FnAccess>::Verdict: PassExecution,
     F: Into<FunctionView<'ctx, B>>,
@@ -410,7 +461,8 @@ pub fn run_module_pass<'ctx, B, P>(
 ) -> IrResult<<<P::Access as ModAccess>::Verdict as PassExecution>::OutModule<'ctx, B>>
 where
     B: ModuleBrand + 'ctx,
-    P: ModulePass<'ctx, B>,
+    P: ModulePass<B> + 'ctx,
+    P::Requires: ModuleAnalysisList<'ctx, B>,
     P::Access: ModRungExecute,
     <P::Access as ModAccess>::Verdict: PassExecution,
 {
@@ -560,7 +612,7 @@ where
     B: ModuleBrand + 'ctx,
     A: FnAccess,
     R: FunctionAnalysisList<'ctx, B>,
-    P: FunctionPass<'ctx, B, Access = A, Requires = R>,
+    P: FunctionPass<B, Access = A, Requires = R> + 'ctx,
     'ctx: 'pm,
 {
     R::prefetch(fam, function)?;
@@ -608,7 +660,7 @@ pub trait FnMemberExec: FnAccess + fn_member_sealed::Sealed {
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = Self, Requires = R>,
+        P: FunctionPass<B, Access = Self, Requires = R> + 'ctx,
         Self::Verdict: VerdictCarry,
         'ctx: 'pm;
 }
@@ -623,7 +675,7 @@ impl FnMemberExec for Inspect {
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = Inspect, Requires = R>,
+        P: FunctionPass<B, Access = Inspect, Requires = R> + 'ctx,
         'ctx: 'pm,
     {
         run_function_member::<B, Inspect, R, P>(pass, token, function, fam)
@@ -640,7 +692,7 @@ impl FnMemberExec for PatchBody {
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = PatchBody, Requires = R>,
+        P: FunctionPass<B, Access = PatchBody, Requires = R> + 'ctx,
         'ctx: 'pm,
     {
         run_function_member::<B, PatchBody, R, P>(pass, token, function, fam)
@@ -657,7 +709,7 @@ impl FnMemberExec for ReshapeCfg {
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = ReshapeCfg, Requires = R>,
+        P: FunctionPass<B, Access = ReshapeCfg, Requires = R> + 'ctx,
         'ctx: 'pm,
     {
         run_function_member::<B, ReshapeCfg, R, P>(pass, token, function, fam)
@@ -700,7 +752,8 @@ pub trait FunctionPipelineMember<'ctx, B: ModuleBrand + 'ctx, Kind> {
 impl<'ctx, B, T> FunctionPipelineMember<'ctx, B, LeafMember> for T
 where
     B: ModuleBrand + 'ctx,
-    T: FunctionPass<'ctx, B>,
+    T: FunctionPass<B> + 'ctx,
+    T::Requires: FunctionAnalysisList<'ctx, B>,
     T::Access: FnMemberExec,
     <T::Access as FnAccess>::Verdict: VerdictCarry,
 {
@@ -947,7 +1000,7 @@ where
     B: ModuleBrand + 'ctx,
     A: ModAccess,
     R: ModuleAnalysisList<'ctx, B>,
-    P: ModulePass<'ctx, B, Access = A, Requires = R>,
+    P: ModulePass<B, Access = A, Requires = R> + 'ctx,
     'ctx: 'pm,
 {
     R::prefetch(mam, module)?;
@@ -984,7 +1037,7 @@ pub trait ModMemberExec: ModAccess + mod_member_sealed::Sealed {
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
-        P: ModulePass<'ctx, B, Access = Self, Requires = R>,
+        P: ModulePass<B, Access = Self, Requires = R> + 'ctx,
         Self::Verdict: VerdictCarry,
         'ctx: 'pm;
 }
@@ -1000,7 +1053,7 @@ impl ModMemberExec for Inspect {
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
-        P: ModulePass<'ctx, B, Access = Inspect, Requires = R>,
+        P: ModulePass<B, Access = Inspect, Requires = R> + 'ctx,
         'ctx: 'pm,
     {
         run_module_member::<B, Inspect, R, P>(pass, token, module, mam, fam)
@@ -1018,7 +1071,7 @@ impl ModMemberExec for RewriteModule {
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
-        P: ModulePass<'ctx, B, Access = RewriteModule, Requires = R>,
+        P: ModulePass<B, Access = RewriteModule, Requires = R> + 'ctx,
         'ctx: 'pm,
     {
         run_module_member::<B, RewriteModule, R, P>(pass, token, module, mam, fam)
@@ -1049,7 +1102,8 @@ pub trait ModulePipelineMember<'ctx, B: ModuleBrand + 'ctx, Kind> {
 impl<'ctx, B, T> ModulePipelineMember<'ctx, B, LeafMember> for T
 where
     B: ModuleBrand + 'ctx,
-    T: ModulePass<'ctx, B>,
+    T: ModulePass<B> + 'ctx,
+    T::Requires: ModuleAnalysisList<'ctx, B>,
     T::Access: ModMemberExec,
     <T::Access as ModAccess>::Verdict: VerdictCarry,
 {
@@ -1370,7 +1424,10 @@ mod erased {
         ProvidesToken, VerdictCarry,
     };
     use crate::IrResult;
-    use crate::analysis::{FunctionAnalysisManager, ModuleAnalysisManager, PreservedAnalyses};
+    use crate::analysis::{
+        FunctionAnalysisList, FunctionAnalysisManager, ModuleAnalysisList, ModuleAnalysisManager,
+        PreservedAnalyses,
+    };
     use crate::module::{Module, ModuleBrand, ModuleView, Unverified};
     use crate::pass_context::FunctionView;
 
@@ -1414,7 +1471,8 @@ mod erased {
     impl<'ctx, B, P> ErasedFunctionPass<'ctx, B> for P
     where
         B: ModuleBrand + 'ctx,
-        P: FunctionPass<'ctx, B>,
+        P: FunctionPass<B> + 'ctx,
+        P::Requires: FunctionAnalysisList<'ctx, B>,
         P::Access: FnMemberExec,
         <P::Access as FnAccess>::Verdict: VerdictCarry,
         Downgrades: ProvidesToken<<P::Access as FnAccess>::Verdict>,
@@ -1475,7 +1533,8 @@ mod erased {
     impl<'ctx, B, P> ErasedModulePass<'ctx, B> for P
     where
         B: ModuleBrand + 'ctx,
-        P: ModulePass<'ctx, B>,
+        P: ModulePass<B> + 'ctx,
+        P::Requires: ModuleAnalysisList<'ctx, B>,
         P::Access: ModMemberExec,
         <P::Access as ModAccess>::Verdict: VerdictCarry,
         Downgrades: ProvidesToken<<P::Access as ModAccess>::Verdict>,
@@ -1570,7 +1629,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynFunctionPipeline<'ctx, B> {
     /// on CLI flags, etc. — the runtime-composition property tuples cannot express.
     pub fn push<P>(&mut self, pass: P)
     where
-        P: FunctionPass<'ctx, B> + 'ctx,
+        P: FunctionPass<B> + 'ctx,
+        P::Requires: FunctionAnalysisList<'ctx, B>,
         P::Access: FnMemberExec,
         <P::Access as FnAccess>::Verdict: VerdictCarry,
         Downgrades: ProvidesToken<<P::Access as FnAccess>::Verdict>,
@@ -1651,7 +1711,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynReadOnlyFunctionPipeline<'ctx, B> {
     /// enter the container).
     pub fn push<P>(&mut self, pass: P)
     where
-        P: FunctionPass<'ctx, B> + 'ctx,
+        P: FunctionPass<B> + 'ctx,
+        P::Requires: FunctionAnalysisList<'ctx, B>,
         P::Access: ReadOnlyFn,
     {
         self.passes.push(Box::new(pass));
@@ -1728,7 +1789,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
     /// Append a pass to the end of the pipeline (usable in a loop).
     pub fn push<P>(&mut self, pass: P)
     where
-        P: ModulePass<'ctx, B> + 'ctx,
+        P: ModulePass<B> + 'ctx,
+        P::Requires: ModuleAnalysisList<'ctx, B>,
         P::Access: ModMemberExec,
         <P::Access as ModAccess>::Verdict: VerdictCarry,
         Downgrades: ProvidesToken<<P::Access as ModAccess>::Verdict>,
@@ -1800,7 +1862,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynReadOnlyModulePipeline<'ctx, B> {
     /// only [`Inspect`] passes; a mutating pass fails to compile here.
     pub fn push<P>(&mut self, pass: P)
     where
-        P: ModulePass<'ctx, B> + 'ctx,
+        P: ModulePass<B> + 'ctx,
+        P::Requires: ModuleAnalysisList<'ctx, B>,
         P::Access: ReadOnlyMod,
     {
         self.passes.push(Box::new(pass));

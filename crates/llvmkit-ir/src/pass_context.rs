@@ -500,7 +500,9 @@ impl FnReport {
 /// Parameterized by the access marker `A` (which rung) and the `Requires` list
 /// `R` (which analyses were prefetched) rather than by a pass trait, so the
 /// context type stands alone. The `FunctionPass` trait spells its `run` signature
-/// as `FnCx<'_, '_, 'ctx, B, Self::Access, Self::Requires>`.
+/// as `FnCx<'m, '_, 'ctx, B, Self::Access, Self::Requires>`, with **both** `'m`
+/// and `'ctx` bound by `run` itself — the driver, not the pass impl, picks the
+/// region it borrows the module for.
 ///
 /// The typestate that makes a preservation lie unspellable: to change the IR a
 /// pass must call [`FnCx::mutate`], which **consumes** the context and returns a
@@ -2756,7 +2758,8 @@ impl ModReport {
 /// Parameterized by the access marker `A` (which rung) and the module `Requires`
 /// list `R` rather than by a pass trait, so the context type stands alone. The
 /// `ModulePass` trait spells its `run` signature as
-/// `ModCx<'_, '_, '_, 'ctx, B, Self::Access, Self::Requires>`.
+/// `ModCx<'m, '_, '_, 'ctx, B, Self::Access, Self::Requires>`, with both `'m` and
+/// `'ctx` bound by `run` itself (see [`FnCx`]).
 ///
 /// The typestate that makes a preservation lie unspellable: to change the module
 /// a pass must call [`ModCx::mutate`], which **consumes** the context and returns

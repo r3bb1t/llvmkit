@@ -18,15 +18,19 @@ use llvmkit_ir::{
 /// block before its terminator — a genuine CFG edit that records `CfgUpdate`s.
 struct SplitEntryPass;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for SplitEntryPass {
+impl<B: ModuleBrand> FunctionPass<B> for SplitEntryPass {
     type Access = ReshapeCfg;
     type Requires = (DominatorTreeAnalysis,);
     const NAME: &'static str = "split-entry";
 
-    fn run(
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport> {
+        cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
+    ) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let entry = reshape
             .function()
@@ -137,16 +141,26 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
         /// Splits `entry` at its terminator, then reopens `entry` (through the
         /// pre-saved `ip`) to wire a fresh `br %entry.split` terminator — the
         /// caller-side half of `split_block`'s documented contract.
-        struct SplitAtAdd<'ctx, B: ModuleBrand + 'ctx> {
-            ip: Option<InsertPoint<'ctx, Dyn, B>>,
+        struct SplitAtAdd<'s, B: ModuleBrand + 's> {
+            ip: Option<InsertPoint<'s, Dyn, B>>,
         }
 
-        impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for SplitAtAdd<'ctx, B> {
+        // The stash names the region its `InsertPoint` was minted at. `Self: 'm`
+        // on `FunctionPass::run` is what relates that region to the driver-chosen
+        // run region, so a stashing pass survives the higher-ranked `run`.
+        impl<'s, B: ModuleBrand> FunctionPass<B> for SplitAtAdd<'s, B> {
             type Access = ReshapeCfg;
             type Requires = ();
             const NAME: &'static str = "split-at-add";
 
-            fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+            fn run<'m, 'ctx>(
+                &mut self,
+                cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>,
+            ) -> IrResult<FnReport>
+            where
+                'ctx: 'm,
+                Self: 'ctx,
+            {
                 let reshape = cx.mutate();
                 let entry = reshape
                     .function()
@@ -192,21 +206,26 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
 /// value's dominance over its edge through `analysis_repaired` before creating
 /// the phi. The incomings/labels are stashed at build time (arena ids are stable
 /// across `verify()`), mirroring how `SplitAtAdd` stashes its `InsertPoint`.
-struct InsertMergePhi<'ctx, B: ModuleBrand + 'ctx> {
+struct InsertMergePhi<'s, B: ModuleBrand + 's> {
     merge_name: &'static str,
-    ty: Type<'ctx, B>,
+    ty: Type<'s, B>,
     incomings: Vec<(ValueId<B>, BlockId<Dyn, B>)>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InsertMergePhi<'ctx, B> {
+// Stashes a `'s`-bound `Type`; see `SplitAtAdd` for why `Self: 'm` makes that work.
+impl<'s, B: ModuleBrand> FunctionPass<B> for InsertMergePhi<'s, B> {
     type Access = ReshapeCfg;
     type Requires = (DominatorTreeAnalysis,);
     const NAME: &'static str = "insert-merge-phi";
 
-    fn run(
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport> {
+        cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
+    ) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let mut reshape = cx.mutate();
         let merge = reshape
             .function()
@@ -323,15 +342,19 @@ struct InsertMergePhiTyped<B: ModuleBrand> {
     incomings: Vec<(IntValueId<i32, B>, BlockId<Dyn, B>)>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InsertMergePhiTyped<B> {
+impl<B: ModuleBrand> FunctionPass<B> for InsertMergePhiTyped<B> {
     type Access = ReshapeCfg;
     type Requires = (DominatorTreeAnalysis,);
     const NAME: &'static str = "insert-merge-phi-typed";
 
-    fn run(
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport> {
+        cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
+    ) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let mut reshape = cx.mutate();
         let merge = reshape
             .function()
@@ -497,12 +520,16 @@ struct RedirectSwitchCase<B: ModuleBrand> {
     phi_values: Vec<ValueId<B>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectSwitchCase<B> {
+impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchCase<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-switch-case";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let from = reshape
             .function()
@@ -707,12 +734,16 @@ struct RedirectCondBrThen<B: ModuleBrand> {
     phi_values: Vec<ValueId<B>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectCondBrThen<B> {
+impl<B: ModuleBrand> FunctionPass<B> for RedirectCondBrThen<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-condbr-then";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let from = reshape
             .function()
@@ -735,12 +766,16 @@ struct RedirectBr<B: ModuleBrand> {
     phi_values: Vec<ValueId<B>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RedirectBr<B> {
+impl<B: ModuleBrand> FunctionPass<B> for RedirectBr<B> {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "redirect-br";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let from = reshape
             .function()
@@ -761,12 +796,16 @@ struct RemoveCondBrElse {
     from_name: &'static str,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveCondBrElse {
+impl<B: ModuleBrand> FunctionPass<B> for RemoveCondBrElse {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "remove-condbr-else";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let from = reshape
             .function()
@@ -785,12 +824,16 @@ struct RemoveCondBrThen {
     from_name: &'static str,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveCondBrThen {
+impl<B: ModuleBrand> FunctionPass<B> for RemoveCondBrThen {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "remove-condbr-then";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let from = reshape
             .function()
