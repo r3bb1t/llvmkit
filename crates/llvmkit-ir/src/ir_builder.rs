@@ -8770,7 +8770,7 @@ pub use select_narrow_token::SelectNarrow;
 /// [`IrError::ForeignValueId`] for an id minted elsewhere — which is why
 /// [`arm_value`](Self::arm_value) takes a [`ModuleRef`] and returns
 /// [`IrResult`], exactly as
-/// [`IntoBasicBlockLabel`](crate::IntoBasicBlockLabel) does at branch targets.
+/// [`IntoBasicBlockLabel`] does at branch targets.
 /// `Output` is unchanged by that: an `IntValueId<W, B>` arm yields the same
 /// `IntValueId<W, B>` its handle does, so the two spellings are
 /// interchangeable at the call site *and* at the binding.

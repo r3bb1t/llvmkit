@@ -62,15 +62,17 @@
 //!
 //!         // 1. Single-pass driver. `CountBlocks` is `Inspect`, so the module is
 //!         //    still `Verified` on the way out (the explicit binding proves it).
+//!         let f_view = verified.view(f);
 //!         let verified: Module<'_, _, Verified> =
-//!             run_function_pass(CountBlocks, verified, f, &mut analyses)?;
+//!             run_function_pass(CountBlocks, verified, f_view, &mut analyses)?;
 //!
 //!         // 2. A compile-time tuple pipeline of two `PatchBody` passes, run in
 //!         //    written order. The output typestate folds the members' rungs: any
 //!         //    mutator ⇒ `Module<Unverified>`, so re-verifying is enforced by the
 //!         //    type system, not by convention.
+//!         let f_view = verified.view(f);
 //!         let cleaned: Module<'_, _, Unverified> =
-//!             function_pipeline((InstSimplifyPass, DcePass)).run(verified, f, &mut analyses)?;
+//!             function_pipeline((InstSimplifyPass, DcePass)).run(verified, f_view, &mut analyses)?;
 //!         let reverified = cleaned.verify()?;
 //!
 //!         // 3. A runtime-assembled read-only pipeline (opt-style CLIs). `push` is
@@ -78,7 +80,8 @@
 //!         //    module threads through `Verified`.
 //!         let mut read_only = DynReadOnlyFunctionPipeline::new();
 //!         read_only.push(CountBlocks);
-//!         let _final: Module<'_, _, Verified> = read_only.run(reverified, f, &mut analyses)?;
+//!         let f_view = reverified.view(f);
+//!         let _final: Module<'_, _, Verified> = read_only.run(reverified, f_view, &mut analyses)?;
 //!         Ok(())
 //!     })
 //! }
