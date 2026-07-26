@@ -12,12 +12,12 @@ use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
 use crate::error::IrResult;
-use crate::module::{Brand, ModuleBrand, ModuleRef};
+use crate::module::{ModuleBrand, ModuleRef};
 use crate::struct_schema::IrField;
 use crate::value::{IntoPointerValue, PointerValue, Value};
 
 /// Opaque `ptr` value plus a phantom pointee schema `T`.
-pub struct TypedPointerValue<'ctx, T: IrField, B: ModuleBrand = Brand<'ctx>> {
+pub struct TypedPointerValue<'ctx, T: IrField, B: ModuleBrand> {
     ptr: PointerValue<'ctx, B>,
     _pointee: PhantomData<fn() -> T>,
 }

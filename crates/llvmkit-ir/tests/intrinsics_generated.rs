@@ -203,7 +203,7 @@ fn verifier_accepts_extra_valid_intrinsic_declaration_attribute() -> Result<(), 
     m.view(abs).add_attribute(
         &m,
         AttrIndex::Function,
-        Attribute::enum_attr_for_brand(AttrKind::NoInline).expect("enum attribute"),
+        Attribute::enum_attr(AttrKind::NoInline).expect("enum attribute"),
     );
     m.verify_borrowed()?;
     Ok(())

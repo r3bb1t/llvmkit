@@ -26,7 +26,7 @@ use super::instruction::{InstructionKindData, InstructionView};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::{IRBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
-use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeSlot;
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
 use super::value_id::BlockId;
@@ -88,8 +88,8 @@ impl BasicBlockData {
 pub struct BasicBlock<
     'ctx,
     R: ReturnMarker,
-    Term: BlockTerminationState = Unterminated,
-    B: ModuleBrand = Brand<'ctx>,
+    Term: BlockTerminationState,
+    B: ModuleBrand,
     Params: BlockParams = BlockParamsDyn,
 > {
     pub(super) id: ValueSlot,
@@ -148,7 +148,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand, Params:
 pub struct BasicBlockLabel<
     'ctx,
     R: ReturnMarker,
-    B: ModuleBrand = Brand<'ctx>,
+    B: ModuleBrand,
     Params: BlockParams = BlockParamsDyn,
 > {
     pub(super) id: ValueSlot,

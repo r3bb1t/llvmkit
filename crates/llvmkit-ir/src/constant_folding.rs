@@ -32,7 +32,7 @@ use super::instr_types::{BinaryOpcode, CastOpcode, PhiData, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
 use super::intrinsics::BinaryIntrinsic;
-use super::module::{Brand, ModuleBrand, ModuleRef, ModuleView};
+use super::module::{DynBrand, ModuleBrand, ModuleRef, ModuleView};
 use super::target_library_info::{LibFunc, TargetLibraryInfo};
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData};
 use super::value::{IsValue, Value, ValueKindData, ValueSlot};
@@ -100,7 +100,7 @@ impl PreservedCastFlags {
 
 /// Constant pointer offset relative to one global object.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ConstantOffsetFromGlobal<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ConstantOffsetFromGlobal<'ctx, B: ModuleBrand> {
     global: GlobalVariable<'ctx, B>,
     offset: ApInt,
 }
@@ -2813,11 +2813,11 @@ fn constant_id_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>
     )))
 }
 
-fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx> {
+fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
     Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
 }
 
-fn erase_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx> {
+fn erase_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx, DynBrand> {
     Value::from_parts(
         value.id,
         ModuleView::new(value.module().core_ref()),
@@ -2826,7 +2826,7 @@ fn erase_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx
 }
 
 fn rebrand_constant<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx>,
+    constant: Constant<'ctx, DynBrand>,
     module: ModuleView<'ctx, B>,
 ) -> Constant<'ctx, B> {
     Constant::from_parts(Value::from_parts(

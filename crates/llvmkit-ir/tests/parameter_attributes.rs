@@ -54,7 +54,7 @@ fn attribute_added_via_attribute_method_path() -> Result<(), IrError> {
         .function_builder::<i32, _>("zext_arg", fn_ty)
         .attribute(
             AttrIndex::Param(0),
-            Attribute::enum_attr_for_brand(AttrKind::ZExt).expect("enum"),
+            Attribute::enum_attr(AttrKind::ZExt).expect("enum"),
         )
         .param_name(0, "n")
         .build()?;

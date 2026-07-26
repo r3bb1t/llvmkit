@@ -11,11 +11,11 @@ use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     ApFloat, ApFloatSemantics, ApInt, AttrIndex, Attribute, BinaryIntrinsic, BinaryOpcode,
     CmpPredicate, ConstantExprFlags, ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue,
-    ConstantIntValue, DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, FastMathFlags,
-    FoldNonDeterminism, GepNoWrapFlags, IRBuilder, InstructionView, IntDyn, IntPredicate, IrError,
-    LibFunc, Linkage, NoFolder, PreservedCastFlags, RoundingMode, TargetLibraryInfo, UnaryOpcode,
-    attributes::AttributeStorage, constant_fold_binary_intrinsic, constant_fold_binary_op_operands,
-    constant_fold_compare_inst_operands, constant_fold_constant,
+    ConstantIntValue, DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, DynBrand,
+    FastMathFlags, FoldNonDeterminism, GepNoWrapFlags, IRBuilder, InstructionView, IntDyn,
+    IntPredicate, IrError, LibFunc, Linkage, NoFolder, PreservedCastFlags, RoundingMode,
+    TargetLibraryInfo, UnaryOpcode, attributes::AttributeStorage, constant_fold_binary_intrinsic,
+    constant_fold_binary_op_operands, constant_fold_compare_inst_operands, constant_fold_constant,
     constant_fold_extract_element_instruction, constant_fold_fp_inst_operands,
     constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_uniform_value,
     constant_fold_load_through_bitcast, constant_fold_unary_op_operand,
@@ -760,11 +760,11 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
     let mut group = AttributeStorage::new();
     group.add(
         AttrIndex::Function,
-        Attribute::string("denormal-fp-math", "ieee,ieee"),
+        Attribute::<DynBrand>::string("denormal-fp-math", "ieee,ieee"),
     );
     group.add(
         AttrIndex::Function,
-        Attribute::string("denormal-fp-math-f32", "positive-zero,positive-zero"),
+        Attribute::<DynBrand>::string("denormal-fp-math-f32", "positive-zero,positive-zero"),
     );
     m.set_attribute_group(0, group);
     let f = m

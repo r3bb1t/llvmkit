@@ -1,29 +1,49 @@
-error[E0521]: borrowed data escapes outside of closure
-  --> tests/compile_fail/cross_module_value_brand.rs:21:21
+error[E0277]: the trait bound `ConstantIntValue<'_, i64, Left>: IntoIntValue<'_, _, Right>` is not satisfied
+  --> tests/compile_fail/cross_module_value_brand.rs:33:35
    |
-13 |         let left_value = left.i64_type().const_int(1_i64);
-   |             ---------- `left_value` declared here, outside of the closure body
-14 |         Module::with_new::<_, _, _>("right", |right| {
-   |                                               ----- `right` is a reference that is only valid in the closure body
+33 |     let _ = builder.build_int_add(left_value, left_value, "bad");
+   |                     ------------- ^^^^^^^^^^ the trait `IntoIntValue<'_, _, Right>` is not implemented for `ConstantIntValue<'_, i64, Left>`
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+help: the trait `IntoIntValue<'_, _, Right>` is not implemented for `ConstantIntValue<'_, i64, Left>`
+      but trait `IntoIntValue<'_, i64, Left>` is implemented for it
+  --> src/int_width.rs
+   |
+   | / impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B>
+   | |     for ConstantIntValue<'ctx, W, B>
+   | |____________________________________^
+   = help: for that trait implementation, expected `Left`, found `Right`
+note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_int_add`
+  --> src/ir_builder.rs
+   |
+   |     pub fn build_int_add<W, Lhs, Rhs, Name>(
+   |            ------------- required by a bound in this associated function
 ...
-21 |             let _ = builder.build_int_add(left_value, left_value, "bad");
-   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `right` escapes the closure body here
-   |
-   = note: requirement occurs because of the type `ConstantIntValue<'_, i64, Brand<'_>>`, which makes the generic argument `Brand<'_>` invariant
-   = note: the struct `ConstantIntValue<'ctx, W, B>` is invariant over the parameter `B`
-   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+   |         Lhs: IntoIntValue<'ctx, W, B>,
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_int_add`
 
-error[E0521]: borrowed data escapes outside of closure
-  --> tests/compile_fail/cross_module_value_brand.rs:20:27
+error[E0277]: the trait bound `ConstantIntValue<'_, i64, Left>: IntoIntValue<'_, _, Right>` is not satisfied
+  --> tests/compile_fail/cross_module_value_brand.rs:33:47
    |
-12 |     Module::with_new::<_, _, _>("left", |left| {
-   |                                          ----
-   |                                          |
-   |                                          `left` is a reference that is only valid in the closure body
-   |                                          has type `Module<'1>`
+33 |     let _ = builder.build_int_add(left_value, left_value, "bad");
+   |                     -------------             ^^^^^^^^^^ the trait `IntoIntValue<'_, _, Right>` is not implemented for `ConstantIntValue<'_, i64, Left>`
+   |                     |
+   |                     required by a bound introduced by this call
+   |
+help: the trait `IntoIntValue<'_, _, Right>` is not implemented for `ConstantIntValue<'_, i64, Left>`
+      but trait `IntoIntValue<'_, i64, Left>` is implemented for it
+  --> src/int_width.rs
+   |
+   | / impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B>
+   | |     for ConstantIntValue<'ctx, W, B>
+   | |____________________________________^
+   = help: for that trait implementation, expected `Left`, found `Right`
+note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_int_add`
+  --> src/ir_builder.rs
+   |
+   |     pub fn build_int_add<W, Lhs, Rhs, Name>(
+   |            ------------- required by a bound in this associated function
 ...
-20 |             let builder = IRBuilder::new_for::<i64>(&right).position_at_end(entry);
-   |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |                           |
-   |                           `left` escapes the closure body here
-   |                           argument requires that `'1` must outlive `'static`
+   |         Rhs: IntoIntValue<'ctx, W, B>,
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_int_add`

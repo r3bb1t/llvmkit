@@ -11,8 +11,8 @@
 //! are tagged `llvmkit-specific:` with the closest functional reference.
 
 use llvmkit_ir::{
-    AggregateType, AnyTypeEnum, BasicTypeEnum, IntDyn, IntType, IrError, IrType, MAX_INT_BITS,
-    MIN_INT_BITS, SizedType, Type, TypeKind, TypeKindLabel, module_new,
+    AggregateType, AnyTypeEnum, BasicTypeEnum, DynBrand, IntDyn, IntType, IrError, IrType,
+    MAX_INT_BITS, MIN_INT_BITS, SizedType, Type, TypeKind, TypeKindLabel, module_new,
 };
 
 /// llvmkit-specific: primitive type interning has no dedicated upstream `TEST`;
@@ -383,5 +383,5 @@ fn ir_type_trait_unifies_handles() {
     let _ = _accepts_any(m.void_type());
     let _ = _accepts_any(m.i32_type().as_type());
     // (smoke test that it compiles; runtime values not checked)
-    let _ = name::<IntType<i32>>;
+    let _ = name::<IntType<'static, i32, DynBrand>>;
 }

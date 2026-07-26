@@ -165,7 +165,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
 
     Ok(quote! {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        #vis struct #value_ident<'ctx, B: #ir::ModuleBrand = #ir::Brand<'ctx>> {
+        #vis struct #value_ident<'ctx, B: #ir::ModuleBrand> {
             raw: #ir::StructValue<'ctx, B>,
         }
 

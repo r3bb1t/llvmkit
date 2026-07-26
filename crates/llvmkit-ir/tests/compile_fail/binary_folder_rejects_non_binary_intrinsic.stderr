@@ -1,13 +1,33 @@
 error[E0308]: mismatched types
-  --> tests/compile_fail/binary_folder_rejects_non_binary_intrinsic.rs:16:13
+  --> tests/compile_fail/binary_folder_rejects_non_binary_intrinsic.rs:16:9
    |
-15 |         constant_fold_binary_intrinsic(
-   |         ------------------------------ arguments to this function are incorrect
-16 |             IntrinsicId::EXPECT,
-   |             ^^^^^^^^^^^^^^^^^^^ expected `BinaryIntrinsic`, found `IntrinsicId`
+15 |     constant_fold_binary_intrinsic(
+   |     ------------------------------ arguments to this function are incorrect
+16 |         IntrinsicId::EXPECT,
+   |         ^^^^^^^^^^^^^^^^^^^ expected `BinaryIntrinsic`, found `IntrinsicId`
    |
 note: function defined here
   --> src/constant_folding.rs
    |
    | pub fn constant_fold_binary_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0308]: mismatched types
+  --> tests/compile_fail/binary_folder_rejects_non_binary_intrinsic.rs:15:5
+   |
+10 |   fn main() {
+   |            - expected `()` because of default return type
+...
+15 | /     constant_fold_binary_intrinsic(
+16 | |         IntrinsicId::EXPECT,
+17 | |         one,
+18 | |         one,
+19 | |         i32_ty.as_type(),
+20 | |         &dl,
+21 | |     )
+   | |     ^- help: consider using a semicolon here: `;`
+   | |_____|
+   |       expected `()`, found `Result<Option<Constant<'_, ...>>, ...>`
+   |
+   = note: expected unit type `()`
+                   found enum `Result<Option<llvmkit_ir::Constant<'_, DynBrand>>, IrError>`

@@ -3,7 +3,7 @@
 //!
 //! Every test cites its upstream source per Doctrine D11.
 
-use llvmkit_ir::{Dyn, IRBuilder, IntValue, IrError, Linkage, module_new};
+use llvmkit_ir::{Dyn, DynBrand, IRBuilder, IntValue, IrError, Linkage, module_new};
 
 // --------------------------------------------------------------------------
 // extractvalue
@@ -393,5 +393,5 @@ fn shuffle_vector_explicit_mask_print() -> Result<(), IrError> {
 
 // Suppress unused-import warning if a marker drifts.
 const _: fn() = || {
-    let _ = std::any::TypeId::of::<IntValue<i32>>();
+    let _ = std::any::TypeId::of::<IntValue<'static, i32, DynBrand>>();
 };

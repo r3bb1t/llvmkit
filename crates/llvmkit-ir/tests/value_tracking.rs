@@ -1,6 +1,6 @@
 use llvmkit_ir::{
-    Align, ApInt, AttrIndex, AttrKind, Attribute, AttributeStorage, Brand, CFGAnalyses,
-    CallAttributeData, ConstantExprOpcode, ConstantExprOptions, DominatorTreeAnalysis, Dyn,
+    Align, ApInt, AttrIndex, AttrKind, Attribute, AttributeStorage, CFGAnalyses, CallAttributeData,
+    ConstantExprOpcode, ConstantExprOptions, DominatorTreeAnalysis, Dyn, DynBrand,
     FunctionAnalysisManager, IRBuilder, InstructionView, IntValue, IrError, KnownBits,
     KnownBitsAnalysis, LShrFlags, Linkage, MetadataAttachmentKind, MetadataRef, ModuleBrand,
     MulFlags, NoFolder, PointerValue, PreservedAnalyses, Value, ValueTrackingQuery, Width,
@@ -379,7 +379,7 @@ fn returned_argument_call_and_invoke_contribute_known_bits() -> Result<(), IrErr
     let mut arg_attr = AttributeStorage::new();
     arg_attr.add(
         AttrIndex::Param(0),
-        Attribute::enum_attr(AttrKind::Returned).expect("returned is enum"),
+        Attribute::<DynBrand>::enum_attr(AttrKind::Returned).expect("returned is enum"),
     );
     let attrs = CallAttributeData::new(
         AttributeStorage::new(),
@@ -700,7 +700,7 @@ fn known_bits_analysis_invalidates_with_dominator_tree_dependency() -> Result<()
     let _ = fam.get_result::<DominatorTreeAnalysis, _>(m.view(f))?;
     {
         let result = fam.get_result::<KnownBitsAnalysis, _>(m.view(f))?;
-        let query: ValueTrackingQuery<'_, '_, Brand<'_>> = result.query();
+        let query: ValueTrackingQuery<'_, '_, DynBrand> = result.query();
         assert!(query.dominator_tree().is_some());
     }
 

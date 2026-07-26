@@ -17,18 +17,17 @@
 use llvmkit_ir::{Linkage, Module};
 
 fn main() {
-    Module::with_new("ssa-ret-value-in-void-fn", |m| {
-        let f = m
-            .add_typed_function::<(), (), _>("f", Linkage::External)
-            .unwrap()
-            .as_function();
-        let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f)).unwrap();
-        let entry = b.create_block("entry");
+    let m = Module::dynamic("ssa-ret-value-in-void-fn");
+    let f = m
+        .add_typed_function::<(), (), _>("f", Linkage::External)
+        .unwrap()
+        .as_function();
+    let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f)).unwrap();
+    let entry = b.create_block("entry");
 
-        let b = b.switch_to_block(entry).unwrap();
-        // `f`'s return marker is `()` (void) -- `ret_void()` is the only
-        // valid terminator here, `ret(1_i32)` has no matching
-        // `IntoReturnValue<'_, (), _>` impl for `i32`.
-        let _oops = b.ret(1_i32).unwrap();
-    });
+    let b = b.switch_to_block(entry).unwrap();
+    // `f`'s return marker is `()` (void) -- `ret_void()` is the only
+    // valid terminator here, `ret(1_i32)` has no matching
+    // `IntoReturnValue<'_, (), _>` impl for `i32`.
+    let _oops = b.ret(1_i32).unwrap();
 }

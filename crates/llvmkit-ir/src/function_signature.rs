@@ -20,7 +20,7 @@ use crate::function::FunctionValue;
 use crate::int_width::{IntoIntValue, Width};
 use crate::ir_builder::{IRBuilder, Unpositioned, constant_folder::ConstantFolder};
 use crate::marker::{Ptr, ReturnMarker};
-use crate::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
+use crate::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeKind};
 use crate::value::{FloatValue, IntValue, IntoPointerValue, PointerValue, Value, ValueSlot};
 use crate::value_id::{TypedFunctionId, TypedVarArgsFunctionId};
@@ -204,7 +204,7 @@ pub trait FunctionSignature: Sized + 'static {
 }
 
 /// Function handle whose return and parameter schema are both known at compile time.
-pub struct TypedFunctionValue<'ctx, Ret, Params, B: ModuleBrand = Brand<'ctx>>
+pub struct TypedFunctionValue<'ctx, Ret, Params, B: ModuleBrand>
 where
     Ret: FunctionReturn,
     Params: FunctionParamList,
@@ -368,7 +368,7 @@ where
 /// [`TypedFunctionValue`] and this facade are mutually exclusive —
 /// each requires the opposite of [`crate::derived_types::FunctionType::is_var_arg`]
 /// at construction time.
-pub struct TypedVarArgsFunctionValue<'ctx, Ret, Params, B: ModuleBrand = Brand<'ctx>>
+pub struct TypedVarArgsFunctionValue<'ctx, Ret, Params, B: ModuleBrand>
 where
     Ret: FunctionReturn,
     Params: FunctionParamList,
@@ -1324,7 +1324,7 @@ impl_function_signature!(
     message = "`{Self}` cannot fill a call-argument slot of schema `{P}`",
     label = "wrong argument type for this parameter position"
 )]
-pub trait IntoCallArg<'ctx, P: FunctionParam, B: ModuleBrand = Brand<'ctx>>: Sized {
+pub trait IntoCallArg<'ctx, P: FunctionParam, B: ModuleBrand>: Sized {
     #[doc(hidden)]
     fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
 }
@@ -1395,7 +1395,7 @@ mod call_args_sealed {
     message = "argument tuple `{Self}` does not match the callee's parameter schema `{Params}`",
     note = "argument count and per-position types must match the callee's typed signature"
 )]
-pub trait CallArgs<'ctx, Params: FunctionParamList, B: ModuleBrand = Brand<'ctx>>:
+pub trait CallArgs<'ctx, Params: FunctionParamList, B: ModuleBrand>:
     Sized + call_args_sealed::Sealed
 {
     #[doc(hidden)]

@@ -16,7 +16,7 @@ use super::{DebugLoc, IrError, IrResult};
 
 /// Typed handle for a function parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Argument<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct Argument<'ctx, B: crate::module::ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,

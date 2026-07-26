@@ -1,5 +1,5 @@
-error[E0614]: type `Module<'_>` cannot be dereferenced
- --> tests/compile_fail/unverified_module_no_deref_core.rs:6:17
+error[E0614]: type `Module<'_, DynBrand>` cannot be dereferenced
+ --> tests/compile_fail/unverified_module_no_deref_core.rs:6:13
   |
-6 |         let _ = (*module).i64_type();
-  |                 ^^^^^^^^^ can't be dereferenced
+6 |     let _ = (*module).i64_type();
+  |             ^^^^^^^^^ can't be dereferenced

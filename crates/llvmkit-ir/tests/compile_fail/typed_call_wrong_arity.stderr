@@ -1,10 +1,10 @@
-error[E0277]: argument tuple `(IntValue<'_, i32, Brand<'_>>,)` does not match the callee's parameter schema `(i32, i32)`
-  --> tests/compile_fail/typed_call_wrong_arity.rs:27:38
+error[E0277]: argument tuple `(IntValue<'_, i32, DynBrand>,)` does not match the callee's parameter schema `(i32, i32)`
+  --> tests/compile_fail/typed_call_wrong_arity.rs:27:34
    |
-27 |         let _ = b.build_call(callee, (x,), "bad");
-   |                   ----------         ^^^^ the trait `CallArgs<'_, (i32, i32), Brand<'_>>` is not implemented for `(IntValue<'_, i32, Brand<'_>>,)`
-   |                   |
-   |                   required by a bound introduced by this call
+27 |     let _ = b.build_call(callee, (x,), "bad");
+   |               ----------         ^^^^ the trait `CallArgs<'_, (i32, i32), DynBrand>` is not implemented for `(IntValue<'_, i32, DynBrand>,)`
+   |               |
+   |               required by a bound introduced by this call
    |
    = note: argument count and per-position types must match the callee's typed signature
    = help: the following other types implement trait `CallArgs<'ctx, Params, B>`:

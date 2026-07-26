@@ -16,7 +16,7 @@ use crate::function_signature::{
 use crate::instruction::{Instruction, state::Attached};
 use crate::int_width::{IntDyn, IntoIntValue, Width};
 use crate::marker::{Dyn, Ptr, ReturnMarker};
-use crate::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
+use crate::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeData};
 use crate::value::{
     FloatValue, IntValue, IntoPointerValue, PointerValue, StructValue, Value, ValueSlot,
@@ -71,12 +71,12 @@ pub trait IrField: Sized + 'static {
 }
 
 /// Inputs that can be lifted into a field value of schema `F`.
-pub trait IntoIrField<'ctx, F: IrField, B: ModuleBrand = Brand<'ctx>>: Sized {
+pub trait IntoIrField<'ctx, F: IrField, B: ModuleBrand>: Sized {
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
 }
 
 #[doc(hidden)]
-pub trait TryIntoStructValue<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized {
+pub trait TryIntoStructValue<'ctx, B: ModuleBrand>: Sized {
     fn try_into_struct_value(self) -> IrResult<StructValue<'ctx, B>>;
 }
 
@@ -110,9 +110,7 @@ impl_try_into_struct_value!(Constant<'ctx, B>);
 impl_try_into_struct_value!(Instruction<'ctx, Attached, B>);
 
 /// Branded wrapper value generated for a [`StructSchema`].
-pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand = Brand<'ctx>>:
-    Sized + Copy
-{
+pub trait StructSchemaValue<'ctx, S: StructSchema, B: ModuleBrand>: Sized + Copy {
     fn as_struct_value(self) -> StructValue<'ctx, B>;
 
     fn from_struct_value(raw: StructValue<'ctx, B>, validated: &ValidatedStructValue<'_>) -> Self;

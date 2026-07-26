@@ -7,7 +7,7 @@ use llvmkit_ir::{
 struct Point;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct PointValue<'ctx, B: ModuleBrand = llvmkit_ir::Brand<'ctx>> {
+struct PointValue<'ctx, B: ModuleBrand> {
     raw: StructValue<'ctx, B>,
 }
 
@@ -198,7 +198,7 @@ impl StructSchema for EmptyName {
 struct Rect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct RectValue<'ctx, B: ModuleBrand = llvmkit_ir::Brand<'ctx>> {
+struct RectValue<'ctx, B: ModuleBrand> {
     raw: StructValue<'ctx, B>,
 }
 

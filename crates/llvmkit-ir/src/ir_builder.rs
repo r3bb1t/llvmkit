@@ -81,7 +81,7 @@ use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IRBuilderFolder;
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{
-    Brand, Invariant, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified,
+    DynBrand, Invariant, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified,
 };
 use super::struct_body_state::StructBodyDyn;
 use super::struct_schema::{FieldOf, IntoIrField, IrField, StructFieldAt, StructSchema};
@@ -102,7 +102,7 @@ use super::vec_len::{LenDyn, StaticVecLen, VecLen};
 
 /// Pair returned by terminator builders: the terminated insertion block and
 /// the emitted terminator instruction.
-pub type TerminatedBlockInst<'ctx, R, B = Brand<'ctx>> = (
+pub type TerminatedBlockInst<'ctx, R, B> = (
     BasicBlock<'ctx, R, Terminated, B>,
     Instruction<'ctx, Attached, B>,
 );
@@ -110,15 +110,14 @@ pub type TerminatedBlockInst<'ctx, R, B = Brand<'ctx>> = (
 /// Pair returned by [`IRBuilder::append_block_with_params`]: the freshly
 /// appended, still-[`Unterminated`] block and one head-phi result [`Value`]
 /// per declared block parameter, in declaration order.
-pub type BlockWithParams<'ctx, R, B = Brand<'ctx>> =
-    (BasicBlock<'ctx, R, Unterminated, B>, Vec<Value<'ctx, B>>);
+pub type BlockWithParams<'ctx, R, B> = (BasicBlock<'ctx, R, Unterminated, B>, Vec<Value<'ctx, B>>);
 
 /// Pair returned by [`IRBuilder::append_block_typed`]: the freshly appended,
 /// still-[`Unterminated`] block stamped with its typed parameter schema
 /// `Params`, and that schema's typed parameter-handle tuple
 /// ([`Params::Values`](FunctionParamList::Values)) sourced from the block's
 /// head-phis. Typed sibling of [`BlockWithParams`].
-pub type TypedBlockWithParams<'ctx, R, Params, B = Brand<'ctx>> = (
+pub type TypedBlockWithParams<'ctx, R, Params, B> = (
     BasicBlock<'ctx, R, Unterminated, B, Params>,
     <Params as FunctionParamList>::Values<'ctx, B>,
 );
@@ -127,7 +126,7 @@ pub type TypedBlockWithParams<'ctx, R, Params, B = Brand<'ctx>> = (
 /// the case list is closed. Erased sibling of
 /// [`TerminatedBlockSwitchTyped`], the way [`TerminatedBlockInvoke`] is of
 /// [`TerminatedBlockTypedInvoke`].
-pub type TerminatedBlockSwitch<'ctx, R, B = Brand<'ctx>> = (
+pub type TerminatedBlockSwitch<'ctx, R, B> = (
     BasicBlock<'ctx, R, Terminated, B>,
     SwitchInst<'ctx, Open, B>,
 );
@@ -137,19 +136,19 @@ pub type TerminatedBlockSwitch<'ctx, R, B = Brand<'ctx>> = (
 /// width-`W` [`SwitchInst`]. Every case added through the returned handle
 /// must share the condition's width `W` — a wrong-width case is a compile
 /// error. Typed sibling of [`TerminatedBlockSwitch`].
-pub type TerminatedBlockSwitchTyped<'ctx, R, W, B = Brand<'ctx>> = (
+pub type TerminatedBlockSwitchTyped<'ctx, R, W, B> = (
     BasicBlock<'ctx, R, Terminated, B>,
     SwitchInst<'ctx, Open, B, W>,
 );
 
 /// Pair returned by `indirectbr` builders before destination insertion closes.
-pub type TerminatedBlockIndirectBr<'ctx, R, B = Brand<'ctx>> = (
+pub type TerminatedBlockIndirectBr<'ctx, R, B> = (
     BasicBlock<'ctx, R, Terminated, B>,
     IndirectBrInst<'ctx, Open, B>,
 );
 
 /// Pair returned by `invoke` builders.
-pub type TerminatedBlockInvoke<'ctx, R, Ret, B = Brand<'ctx>> =
+pub type TerminatedBlockInvoke<'ctx, R, Ret, B> =
     (BasicBlock<'ctx, R, Terminated, B>, InvokeInst<'ctx, Ret, B>);
 
 /// Pair returned by the TYPED `invoke` builders
@@ -158,20 +157,20 @@ pub type TerminatedBlockInvoke<'ctx, R, Ret, B = Brand<'ctx>> =
 /// block's typestate); `Ret` is the invoke instruction's own schema —
 /// the inner [`InvokeInst`] is tagged with `Ret::Marker`, derived from
 /// the callee, matching [`TerminatedBlockInvoke`]'s shape one level up.
-pub type TerminatedBlockTypedInvoke<'ctx, R, Ret, B = Brand<'ctx>> = (
+pub type TerminatedBlockTypedInvoke<'ctx, R, Ret, B> = (
     BasicBlock<'ctx, R, Terminated, B>,
     InvokeInst<'ctx, <Ret as FunctionReturn>::Marker, B>,
 );
 
 /// Pair returned by `catchswitch` builders before handler insertion closes.
-pub type TerminatedBlockCatchSwitch<'ctx, R, B = Brand<'ctx>> = (
+pub type TerminatedBlockCatchSwitch<'ctx, R, B> = (
     BasicBlock<'ctx, R, Terminated, B>,
     CatchSwitchInst<'ctx, Open, B>,
 );
 
 /// Pair returned by `ret void` when the builder's return marker is statically
 /// void.
-pub type VoidReturnInst<'ctx, B = Brand<'ctx>> = TerminatedBlockInst<'ctx, (), B>;
+pub type VoidReturnInst<'ctx, B> = TerminatedBlockInst<'ctx, (), B>;
 
 /// Type-state marker: the builder has no insertion point. None of the
 /// `build_*` methods are reachable in this state.
@@ -205,7 +204,7 @@ impl BuilderPositionState for Positioned {}
 /// when the builder was unpositioned at save time; `before` is `None`
 /// when the saved location was end-of-block.
 #[derive(Debug)]
-pub struct InsertPoint<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
+pub struct InsertPoint<'ctx, R: ReturnMarker, B: ModuleBrand> {
     pub(super) block_id: Option<ValueSlot>,
     pub(super) before: Option<ValueSlot>,
     /// Variance matches every other handle in the crate (see [`FunctionValue`]):
@@ -257,9 +256,9 @@ impl CallSiteConfig {
     /// from the declared callee (opaque-pointer IR, checked by the verifier
     /// against the call's own type, not the declaration). Left unset, the
     /// call site keeps deriving its type from the callee.
-    pub fn call_site_type<'ctx, Brand: ModuleBrand + 'ctx>(
+    pub fn call_site_type<'ctx, B: ModuleBrand + 'ctx>(
         mut self,
-        fn_ty: FunctionType<'ctx, Brand>,
+        fn_ty: FunctionType<'ctx, B>,
     ) -> Self {
         self.call_site_fn_ty = Some(fn_ty.as_type().id());
         self
@@ -644,7 +643,7 @@ where
     ) -> IRBuilder<'m, 'ctx, B, F, Positioned, R> {
         let anchor_id = anchor.slot();
         let parent_block_id = anchor.parent().slot();
-        let label_ty = self.module.label_type().as_type().id();
+        let label_ty = self.module.label_type::<B>().as_type().id();
         let bb = BasicBlock::<R, Unterminated, B>::from_parts(
             parent_block_id,
             ModuleRef::<B>::new(self.module),
@@ -728,7 +727,7 @@ where
                 message: "cannot restore an empty insert point",
             });
         };
-        let label_ty = self.module.label_type().as_type().id();
+        let label_ty = self.module.label_type::<B>().as_type().id();
         let insert_block = BasicBlock::<R, Unterminated, B>::from_parts(
             block_id,
             ModuleRef::<B>::new(self.module),
@@ -894,7 +893,7 @@ where
                 .borrow_mut()
                 .push(ValueUse::Instruction(id));
         }
-        let label_ty = self.module.label_type().as_type().id();
+        let label_ty = self.module.label_type::<B>().as_type().id();
         let bb = BasicBlock::<Dyn, Unterminated, B>::from_parts(
             block_id,
             ModuleRef::<B>::new(self.module),
@@ -2874,7 +2873,7 @@ where
         let leaf_ty = walk_aggregate_for_builder(self.module, agg.ty, indices)?;
         if val.ty != leaf_ty {
             return Err(IrError::TypeMismatch {
-                expected: Type::new(leaf_ty, self.module).kind_label(),
+                expected: Type::<B>::new(leaf_ty, self.module).kind_label(),
                 got: val.ty().kind_label(),
             });
         }
@@ -2903,7 +2902,7 @@ where
         let module = ModuleRef::new(self.module);
         let aggregate = aggregate.into_ir_field(module)?;
         let leaf_ty = walk_aggregate_for_builder(self.module, aggregate.ty, &[index])?;
-        let leaf = Type::new(leaf_ty, self.module);
+        let leaf = Type::<B>::new(leaf_ty, self.module);
         if !Field::matches_ir_type(leaf) {
             return Err(IrError::TypeMismatch {
                 expected: Field::expected_kind_label(),
@@ -3389,12 +3388,12 @@ where
         ordering: AtomicOrdering,
         sync_scope: SyncScope,
         name: Name,
-    ) -> IrResult<crate::instructions::FenceInst<'ctx>>
+    ) -> IrResult<crate::instructions::FenceInst<'ctx, B>>
     where
         Name: AsRef<str>,
     {
         let payload = crate::instr_types::FenceInstData::new(ordering, sync_scope);
-        let void_ty = self.module.void_type().as_type().id();
+        let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Fence(payload), name);
         Ok(crate::instructions::FenceInst::from_raw(
             inst.slot(),
@@ -4417,7 +4416,7 @@ where
     /// the pointer/value modules. Single-arg helper used by the four
     /// public store builders.
     fn build_store_inner(&self, payload: StoreInstData) -> IrResult<StoreInst<'ctx, B>> {
-        let void_ty = self.module.void_type().as_type().id();
+        let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Store(payload), "");
         Ok(StoreInst::from_raw(
             inst.slot(),
@@ -6575,7 +6574,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let ty = self.module.ptr_type(0);
+        let ty = self.module.ptr_type::<B>(0);
         let payload = super::instr_types::PhiData::new();
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
@@ -6661,7 +6660,7 @@ where
                 target.slot(),
             )),
         };
-        let void_ty = self.module.void_type().as_type().id();
+        let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
         let bb = self.into_insert_block();
         Ok((bb.retag_termination::<Terminated>(), inst))
@@ -6692,7 +6691,7 @@ where
                 else_bb: else_bb.slot(),
             }),
         };
-        let void_ty = self.module.void_type().as_type().id();
+        let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
         let bb = self.into_insert_block();
         Ok((bb.retag_termination::<Terminated>(), inst))
@@ -6807,7 +6806,7 @@ where
         args: &[Value<'ctx, B>],
     ) -> IrResult<()> {
         let module_ref = ModuleRef::<B>::new(self.module);
-        let label_ty = self.module.label_type().as_type().id();
+        let label_ty = self.module.label_type::<B>().as_type().id();
         let target = target.into_basic_block_label(module_ref)?;
 
         // The target block's parameters are its leading head-phis, in order.
@@ -6848,8 +6847,8 @@ where
             let phi_ty = self.module.context().value_data(*phi_id).ty;
             if arg.ty != phi_ty {
                 return Err(IrError::TypeMismatch {
-                    expected: Type::new(phi_ty, self.module).kind_label(),
-                    got: Type::new(arg.ty, self.module).kind_label(),
+                    expected: Type::<B>::new(phi_ty, self.module).kind_label(),
+                    got: Type::<B>::new(arg.ty, self.module).kind_label(),
                 });
             }
         }
@@ -6994,7 +6993,7 @@ where
         let module_ref = ModuleRef::<B>::new(self.module);
         let cond_id = cond.into_int_value(module_ref)?.slot();
         let default_target = default_target.into_basic_block_label(ModuleRef::new(self.module))?;
-        let void_ty = self.module.void_type().as_type().id();
+        let void_ty = self.module.void_type::<B>().as_type().id();
         let payload = crate::instr_types::SwitchInstData::new(cond_id, default_target.slot());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
         let bb = self.into_insert_block();
@@ -7033,7 +7032,7 @@ where
     {
         let default_target = default_target.into_basic_block_label(ModuleRef::new(self.module))?;
         let cond_v = cond.into_erased_value(ModuleRef::new(self.module))?;
-        let void_ty = self.module.void_type().as_type().id();
+        let void_ty = self.module.void_type::<B>().as_type().id();
         let payload = crate::instr_types::SwitchInstData::new(cond_v.id, default_target.slot());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
@@ -7069,7 +7068,7 @@ where
         A: IntoPointerValue<'ctx, B>,
     {
         let addr_v = IsValue::into_erased(address.into_pointer_value(ModuleRef::new(self.module))?);
-        let void_ty = self.module.void_type().as_type().id();
+        let void_ty = self.module.void_type::<B>().as_type().id();
         let payload = crate::instr_types::IndirectBrInstData::new(addr_v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::IndirectBr(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
@@ -7587,7 +7586,7 @@ where
         V: IntoErasedValue<'ctx, B>,
     {
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
-        let void_ty = self.module.void_type().as_type().id();
+        let void_ty = self.module.void_type::<B>().as_type().id();
         let payload = crate::instr_types::ResumeInstData::new(v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::Resume(payload), name);
         let bb = self.into_insert_block();
@@ -7646,7 +7645,7 @@ where
             })
             .collect::<IrResult<_>>()?;
         let payload = crate::instr_types::CleanupPadInstData::new(parent_id, arg_ids);
-        let token_ty = self.module.token_type().as_type().id();
+        let token_ty = self.module.token_type::<B>().as_type().id();
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CleanupPad(payload), name);
         Ok(CleanupPadInst::<B>::from_raw(
@@ -7679,7 +7678,7 @@ where
             })
             .collect::<IrResult<_>>()?;
         let payload = crate::instr_types::CatchPadInstData::new(Some(catch_switch.id), arg_ids);
-        let token_ty = self.module.token_type().as_type().id();
+        let token_ty = self.module.token_type::<B>().as_type().id();
         let inst = self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name);
         Ok(CatchPadInst::<B>::from_raw(
             inst.slot(),
@@ -7703,7 +7702,7 @@ where
     {
         let catch_pad = catch_pad.into_erased_value(ModuleRef::new(self.module))?;
         let target = target.into_basic_block_label(ModuleRef::new(self.module))?;
-        let void_ty = self.module.void_type().as_type().id();
+        let void_ty = self.module.void_type::<B>().as_type().id();
         let payload = crate::instr_types::CatchReturnInstData::new(catch_pad.id, target.slot());
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CatchReturn(payload), name);
@@ -7753,7 +7752,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let void_ty = self.module.void_type().as_type().id();
+        let void_ty = self.module.void_type::<B>().as_type().id();
         let payload = crate::instr_types::CleanupReturnInstData::new(cleanup_pad_id, unwind_id);
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CleanupReturn(payload), name);
@@ -7830,7 +7829,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let token_ty = self.module.token_type().as_type().id();
+        let token_ty = self.module.token_type::<B>().as_type().id();
         let payload = crate::instr_types::CatchSwitchInstData::new(parent_id, unwind_id);
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CatchSwitch(payload), name);
@@ -7849,7 +7848,7 @@ where
         Instruction<'ctx, Attached, B>,
     ) {
         let payload = crate::instr_types::UnreachableInstData;
-        let void_ty = self.module.void_type().as_type().id();
+        let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Unreachable(payload), "");
         let bb = self.into_insert_block();
         (bb.retag_termination::<Terminated>(), inst)
@@ -7903,7 +7902,7 @@ where
             None => bb.append_instruction(id),
         }
         if !name.is_empty()
-            && !Type::new(ty, self.module).is_void()
+            && !Type::<B>::new(ty, self.module).is_void()
             && let Some(parent_fn_id) = bb.parent_id()
         {
             let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(
@@ -8078,7 +8077,7 @@ where
         // insert cursor: phis always land at the block's phi head.
         bb.insert_instruction_at_phi_head(id);
         if !name.is_empty()
-            && !Type::new(ty, self.module).is_void()
+            && !Type::<B>::new(ty, self.module).is_void()
             && let Some(parent_fn_id) = bb.parent_id()
         {
             let parent_fn = FunctionValue::<Dyn, B>::from_parts_unchecked(
@@ -8227,7 +8226,7 @@ where
     /// validation. Cannot fail by construction.
     fn append_ret(&self, value: Option<Value<'ctx, B>>) -> Instruction<'ctx, Attached, B> {
         let payload = ReturnOpData::new(value.map(|v| v.id));
-        let void_ty = self.module.void_type().as_type().id();
+        let void_ty = self.module.void_type::<B>().as_type().id();
         self.append_instruction(void_ty, InstructionKindData::Ret(payload), "")
     }
 }
@@ -8253,7 +8252,7 @@ where
 /// sealed with a private supertrait — its extension surface is closed
 /// transitively by those sealed lift-trait bounds plus the sealed
 /// [`IntoErasedValue`].
-pub trait IntoReturnValue<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>>: Sized {
+pub trait IntoReturnValue<'ctx, R: ReturnMarker, B: ModuleBrand>: Sized {
     #[doc(hidden)]
     fn into_return_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
 }
@@ -8850,7 +8849,7 @@ pub use select_narrow_token::SelectNarrow;
 /// `Output` is unchanged by that: an `IntValueId<W, B>` arm yields the same
 /// `IntValueId<W, B>` its handle does, so the two spellings are
 /// interchangeable at the call site *and* at the binding.
-pub trait SelectArm<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized + select_arm_sealed::Sealed {
+pub trait SelectArm<'ctx, B: ModuleBrand>: Sized + select_arm_sealed::Sealed {
     type Output;
     #[doc(hidden)]
     fn from_select_value(v: Value<'ctx, B>, narrow: &SelectNarrow<'_>) -> Self::Output;
@@ -9054,7 +9053,7 @@ fn walk_aggregate_for_builder(
                     None => {
                         return Err(IrError::TypeMismatch {
                             expected: crate::error::TypeKindLabel::Struct,
-                            got: Type::new(cur, m).kind_label(),
+                            got: Type::<DynBrand>::new(cur, m).kind_label(),
                         });
                     }
                 }
@@ -9062,7 +9061,7 @@ fn walk_aggregate_for_builder(
             _ => {
                 return Err(IrError::TypeMismatch {
                     expected: crate::error::TypeKindLabel::Struct,
-                    got: Type::new(cur, m).kind_label(),
+                    got: Type::<DynBrand>::new(cur, m).kind_label(),
                 });
             }
         }

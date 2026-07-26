@@ -44,7 +44,7 @@ use super::instructions::{
 use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataSlot};
-use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
+use super::module::{Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
 use super::term_open_state::Closed as TermClosed;
 use super::r#type::TypeSlot;
 use super::r#use::Use;
@@ -322,11 +322,7 @@ pub mod state {
 /// and the compiler then prevents use-after-erase. Per-opcode handles expose
 /// [`InstructionView`] for read-only inspection; lifecycle mutation requires
 /// a builder-produced [`Instruction`] or [`crate::iter::BlockCursor`].
-pub struct Instruction<
-    'ctx,
-    S: state::InstructionState = state::Attached,
-    B: ModuleBrand = Brand<'ctx>,
-> {
+pub struct Instruction<'ctx, S: state::InstructionState, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -337,7 +333,7 @@ pub struct Instruction<
 /// inspection, metadata, naming, and operand access without lifecycle
 /// mutation capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InstructionView<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct InstructionView<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -962,10 +958,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         remove_local_name_from_parent(self.to_erased());
         deregister_operand_uses(self_id, &self.data().kind, module);
         let parent_block_id = self.data().parent.get();
-        let bb = BasicBlock::<Dyn>::from_parts(
+        let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
             module,
-            module.label_type().as_type().id(),
+            module.label_type::<B>().as_type().id(),
         );
         bb.remove_instruction(self_id);
     }
@@ -983,10 +979,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         let self_id = self.id;
         remove_local_name_from_parent(self.to_erased());
         let parent_block_id = self.data().parent.get();
-        let bb = BasicBlock::<Dyn>::from_parts(
+        let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
             module,
-            module.label_type().as_type().id(),
+            module.label_type::<B>().as_type().id(),
         );
         bb.remove_instruction(self_id);
         // Clear the parent pointer so iteration over orphan instructions
@@ -1020,13 +1016,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         }
         // Remove from current parent.
         let cur_parent = self.data().parent.get();
-        let cur_bb =
-            BasicBlock::<Dyn>::from_parts(cur_parent, module, module.label_type().as_type().id());
+        let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            cur_parent,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         cur_bb.remove_instruction(self_id);
         // Insert before other in other's parent.
         let new_parent = other.data().parent.get();
-        let new_bb =
-            BasicBlock::<Dyn>::from_parts(new_parent, module, module.label_type().as_type().id());
+        let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            new_parent,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         new_bb.insert_instruction_before(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
         if old_parent_fn != new_parent_fn
@@ -1056,12 +1058,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
             remove_local_name_from_parent(self.to_erased());
         }
         let cur_parent = self.data().parent.get();
-        let cur_bb =
-            BasicBlock::<Dyn>::from_parts(cur_parent, module, module.label_type().as_type().id());
+        let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            cur_parent,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         cur_bb.remove_instruction(self_id);
         let new_parent = other.data().parent.get();
-        let new_bb =
-            BasicBlock::<Dyn>::from_parts(new_parent, module, module.label_type().as_type().id());
+        let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            new_parent,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         new_bb.insert_instruction_after(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
         if old_parent_fn != new_parent_fn
@@ -1085,8 +1093,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let parent_fn_id = other.to_erased().local_parent_function_id();
-        let bb =
-            BasicBlock::<Dyn>::from_parts(parent_id, module, module.label_type().as_type().id());
+        let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            parent_id,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         bb.insert_instruction_before(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
@@ -1105,8 +1116,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let parent_fn_id = other.to_erased().local_parent_function_id();
-        let bb =
-            BasicBlock::<Dyn>::from_parts(parent_id, module, module.label_type().as_type().id());
+        let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            parent_id,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         bb.insert_instruction_after(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
@@ -1570,7 +1584,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<Instruction<'ctx, state::Attached, B>> fo
 ///
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
 #[derive(Debug)]
-pub enum CastKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum CastKind<'ctx, B: ModuleBrand> {
     Trunc(TruncInst<'ctx, B>),
     ZExt(ZExtInst<'ctx, B>),
     SExt(SExtInst<'ctx, B>),
@@ -1684,7 +1698,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
 ///
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
 #[derive(Debug)]
-pub enum PhiKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum PhiKind<'ctx, B: ModuleBrand> {
     Int(PhiInst<'ctx, IntDyn, B>),
     Fp(FpPhiInst<'ctx, FloatDyn, B>),
     Ptr(PointerPhiInst<'ctx, B>),
@@ -1789,7 +1803,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
 /// is the safety feature (a silent `_` fallthrough would let a new opcode
 /// take whatever behavior the wildcard happens to have).
 #[derive(Debug)]
-pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum InstructionKind<'ctx, B: ModuleBrand> {
     Add(AddInst<'ctx, B>),
     Sub(SubInst<'ctx, B>),
     Mul(MulInst<'ctx, B>),
@@ -1881,7 +1895,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionKind<'ctx, B> {
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`]:
 /// a new terminator opcode must break every downstream `match`.
 #[derive(Debug)]
-pub enum TerminatorKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum TerminatorKind<'ctx, B: ModuleBrand> {
     Ret(RetInst<'ctx, B>),
     Br(BranchInst<'ctx, B>),
     Switch(SwitchInst<'ctx, TermClosed, B>),
@@ -1903,7 +1917,7 @@ pub enum TerminatorKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
 /// [`InstructionView::classify`] is total: it always names the category, so
 /// a forgotten `is_terminator()` guard cannot mis-handle a terminator.
 #[derive(Debug)]
-pub enum Classified<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum Classified<'ctx, B: ModuleBrand> {
     /// A non-terminator instruction.
     Inst(InstructionKind<'ctx, B>),
     /// A block terminator.
@@ -1917,7 +1931,7 @@ pub enum Classified<'ctx, B: ModuleBrand = Brand<'ctx>> {
 /// rejection — a terminator-erase that would break a `PatchBody` pass's
 /// "CFG preserved" floor is unrepresentable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NonTerminator<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct NonTerminator<'ctx, B: ModuleBrand> {
     view: InstructionView<'ctx, B>,
 }
 
@@ -1975,7 +1989,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for InstructionView<'ctx, B
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let module = self.module.module();
         let parent_id = self.data().parent.get();
-        let label_ty = module.label_type().as_type().id();
+        let label_ty = module.label_type::<B>().as_type().id();
         let parent =
             BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(parent_id, self.module, label_ty);
         let slots = match parent.parent_id() {

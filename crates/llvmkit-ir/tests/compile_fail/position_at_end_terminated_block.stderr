@@ -1,13 +1,13 @@
 error[E0308]: mismatched types
-  --> tests/compile_fail/position_at_end_terminated_block.rs:23:62
+  --> tests/compile_fail/position_at_end_terminated_block.rs:23:58
    |
-23 |         let _ = IRBuilder::new_for::<()>(&m).position_at_end(terminated_bb);
-   |                                              --------------- ^^^^^^^^^^^^^ expected `BasicBlock<'_, (), Unterminated, ..., _>`, found `BasicBlock<'_, (), Terminated>`
-   |                                              |
-   |                                              arguments to this method are incorrect
+23 |     let _ = IRBuilder::new_for::<()>(&m).position_at_end(terminated_bb);
+   |                                          --------------- ^^^^^^^^^^^^^ expected `BasicBlock<'_, (), Unterminated, ..., _>`, found `BasicBlock<'_, (), Terminated, DynBrand>`
+   |                                          |
+   |                                          arguments to this method are incorrect
    |
-   = note: expected struct `llvmkit_ir::BasicBlock<'_, (), Unterminated, Brand<'_>, _>`
-              found struct `llvmkit_ir::BasicBlock<'_, (), Terminated, Brand<'_>, BlockParamsDyn>`
+   = note: expected struct `llvmkit_ir::BasicBlock<'_, (), Unterminated, DynBrand, _>`
+              found struct `llvmkit_ir::BasicBlock<'_, (), Terminated, DynBrand, BlockParamsDyn>`
 note: method defined here
   --> src/ir_builder.rs
    |

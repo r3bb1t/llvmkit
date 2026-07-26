@@ -16,13 +16,12 @@ fn expects_pointer<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(value: PointerValue<
 }
 
 fn main() -> Result<(), IrError> {
-    Module::with_new("m", |m| -> Result<(), IrError> {
-        let f = m.add_typed_function::<(), (Point,), _>("f", Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let (point,) = m.view(f).params();
-        expects_pointer(point.x(&b)?);
-        b.build_ret_void();
-        Ok(())
-    })
+    let m = Module::dynamic("m");
+    let f = m.add_typed_function::<(), (Point,), _>("f", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+    let (point,) = m.view(f).params();
+    expects_pointer(point.x(&b)?);
+    b.build_ret_void();
+    Ok(())
 }

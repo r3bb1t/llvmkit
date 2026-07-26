@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, FunctionValue, IRBuilder, IntValue,
-    IrResult, Linkage, Module, ModuleBrand, Unverified, Value, module_new,
+    AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, DynBrand, FunctionValue, IRBuilder,
+    IntValue, IrResult, Linkage, Module, ModuleBrand, Unverified, Value, module_new,
 };
 
 fn exercise_tables<'ctx, B: ModuleBrand + 'ctx>(
@@ -49,7 +49,7 @@ fn format_generic_function<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// `llvmkit-specific D7`: formatting a function handle preserves a caller's
-/// module brand instead of requiring the default `Brand<'ctx>`.
+/// module brand instead of pinning one of its own.
 #[test]
 fn generic_function_display_preserves_brand() -> IrResult<()> {
     let module = module_new!("function-display-brand")?;
@@ -64,18 +64,20 @@ fn generic_function_display_preserves_brand() -> IrResult<()> {
     Ok(())
 }
 
-/// `llvmkit-specific D7`: brandless attribute constructors stay ergonomic for
-/// ordinary default-branded module code.
+/// `llvmkit-specific D7`: attribute constructors are brand-generic, and the
+/// brand-free `AttributeStorage` accepts a handle of any brand. With the
+/// lifetime brand gone there is no implicit default, so a call site that pins
+/// no brand of its own names one explicitly.
 #[test]
-fn brandless_attribute_constructors_infer_default_brand() {
+fn brand_generic_attribute_constructors_feed_brand_free_storage() {
     let mut storage = AttributeStorage::new();
     storage.add(
         AttrIndex::Function,
-        Attribute::enum_attr(AttrKind::NoReturn).expect("enum attr"),
+        Attribute::<DynBrand>::enum_attr(AttrKind::NoReturn).expect("enum attr"),
     );
     storage.add(
         AttrIndex::Function,
-        Attribute::string("target-features", "+sse2"),
+        Attribute::<DynBrand>::string("target-features", "+sse2"),
     );
     assert!(!storage.is_empty());
 }

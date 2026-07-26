@@ -1,13 +1,13 @@
-error[E0277]: the trait bound `IntValue<'_, i64, Brand<'_>>: IntoIntValue<'_, i32, Brand<'_>>` is not satisfied
-  --> tests/compile_fail/ssa_def_wrong_width.rs:36:28
+error[E0277]: the trait bound `IntValue<'_, i64, DynBrand>: IntoIntValue<'_, i32, DynBrand>` is not satisfied
+  --> tests/compile_fail/ssa_def_wrong_width.rs:36:24
    |
-36 |         b.def_int_var(x32, wide).unwrap();
-   |           -----------      ^^^^ the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `IntValue<'_, i64, Brand<'_>>`
-   |           |
-   |           required by a bound introduced by this call
+36 |     b.def_int_var(x32, wide).unwrap();
+   |       -----------      ^^^^ the trait `IntoIntValue<'_, i32, DynBrand>` is not implemented for `IntValue<'_, i64, DynBrand>`
+   |       |
+   |       required by a bound introduced by this call
    |
-help: the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `IntValue<'_, i64, Brand<'_>>`
-      but trait `IntoIntValue<'_, i64, Brand<'_>>` is implemented for it
+help: the trait `IntoIntValue<'_, i32, DynBrand>` is not implemented for `IntValue<'_, i64, DynBrand>`
+      but trait `IntoIntValue<'_, i64, DynBrand>` is implemented for it
   --> src/int_width.rs
    |
    | impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B> for IntValue<'ctx, W, B> {

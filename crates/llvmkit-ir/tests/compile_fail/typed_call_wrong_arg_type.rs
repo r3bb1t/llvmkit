@@ -45,24 +45,23 @@ struct Point {
 }
 
 fn main() {
-    Module::with_new("c", |m| {
-        let callee = m
-            .add_typed_function::<i32, (Point, i32), _>("callee", Linkage::External)
-            .unwrap();
-        let caller = m
-            .add_typed_function::<i32, (i32,), _>("caller", Linkage::External)
-            .unwrap();
-        let entry = m.view(caller).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
-        let (x,) = m.view(caller).params();
-        // `String` implements neither `IntoIntValue`/`IntoFloatValue`/
-        // `IntoPointerValue` nor is one of the struct-schema blanket's
-        // concrete source types (`Value`/`Argument`/`Constant`/
-        // `Instruction`), so it has zero candidate
-        // `IntoCallArg<'_, Point, _>` impls at all: rustc reports
-        // `IntoCallArg` itself as unsatisfied and its on_unimplemented
-        // message fires.
-        let bogus = String::from("not a value");
-        let _ = b.build_call(callee, (bogus, x), "bad");
-    });
+    let m = Module::dynamic("c");
+    let callee = m
+        .add_typed_function::<i32, (Point, i32), _>("callee", Linkage::External)
+        .unwrap();
+    let caller = m
+        .add_typed_function::<i32, (i32,), _>("caller", Linkage::External)
+        .unwrap();
+    let entry = m.view(caller).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let (x,) = m.view(caller).params();
+    // `String` implements neither `IntoIntValue`/`IntoFloatValue`/
+    // `IntoPointerValue` nor is one of the struct-schema blanket's
+    // concrete source types (`Value`/`Argument`/`Constant`/
+    // `Instruction`), so it has zero candidate
+    // `IntoCallArg<'_, Point, _>` impls at all: rustc reports
+    // `IntoCallArg` itself as unsatisfied and its on_unimplemented
+    // message fires.
+    let bogus = String::from("not a value");
+    let _ = b.build_call(callee, (bogus, x), "bad");
 }

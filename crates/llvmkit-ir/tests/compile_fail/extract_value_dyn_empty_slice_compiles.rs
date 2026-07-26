@@ -11,21 +11,20 @@
 use llvmkit_ir::{IrError, Linkage, Module};
 
 fn main() -> Result<(), IrError> {
-    Module::with_new("m", |m| {
-        let i8_ty = m.i8_type();
-        let i32_ty = m.i32_type();
-        let void_ty = m.void_type();
-        let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
-        let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
-        m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let f = m.function_by_name::<()>("g")?.expect("declared above");
-        let entry = f.append_basic_block(&m, "entry");
-        let b = llvmkit_ir::IRBuilder::new_for::<()>(&m).position_at_end(entry);
-        let up = f.param(0)?;
-        // Compiles fine: the empty-slice rejection is the runtime
-        // `IrError::InvalidOperation` kept by `build_extract_value_dyn`,
-        // not a compile-time error.
-        let _ = b.build_extract_value_dyn(up, &[], "bad");
-        Ok(())
-    })
+    let m = Module::dynamic("m");
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+    m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let f = m.function_by_name::<()>("g")?.expect("declared above");
+    let entry = f.append_basic_block(&m, "entry");
+    let b = llvmkit_ir::IRBuilder::new_for::<()>(&m).position_at_end(entry);
+    let up = f.param(0)?;
+    // Compiles fine: the empty-slice rejection is the runtime
+    // `IrError::InvalidOperation` kept by `build_extract_value_dyn`,
+    // not a compile-time error.
+    let _ = b.build_extract_value_dyn(up, &[], "bad");
+    Ok(())
 }

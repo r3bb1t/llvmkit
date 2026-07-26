@@ -102,7 +102,7 @@ use crate::analysis::{
     ModuleAnalysisManager, PreservedAnalyses,
 };
 use crate::marker::Dyn;
-use crate::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified, Verified};
+use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified, Verified};
 use crate::pass_access::{
     Downgrades, FnAccess, Inspect, ModAccess, PatchBody, PipelineVerdict, ReshapeCfg,
     RewriteModule, StaysVerified, VerdictFold,
@@ -1676,7 +1676,7 @@ impl ReadOnlyMod for Inspect {}
 /// trait — the only place `dyn` appears for pass *dispatch*. (The unrelated
 /// `Box<dyn ExactSizeIterator>` in `ModuleFunctionViews` is plain std iterator
 /// type-erasure, with no bearing on pass coherence.)
-pub struct DynFunctionPipeline<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub struct DynFunctionPipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<Box<dyn ErasedFunctionPass<'ctx, B> + 'ctx>>,
 }
 
@@ -1757,7 +1757,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for DynFunctionPipeline<'ctx, B> {
 /// straight through, with no mutation and no re-verification (D8). A mutating pass
 /// fails to compile at `push` — that missing impl is the type-level guarantee of
 /// the verified output.
-pub struct DynReadOnlyFunctionPipeline<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub struct DynReadOnlyFunctionPipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<Box<dyn ErasedFunctionPass<'ctx, B> + 'ctx>>,
 }
 
@@ -1840,7 +1840,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for DynReadOnlyFunctionPipeline<'ctx, 
 /// [`DynFunctionPipeline`]. `push` any [`ModulePass`], `run` over the whole module;
 /// always yields `Module<Unverified>` (D8). Invalidates both managers after each
 /// member (mirrors [`ModulePassList`]).
-pub struct DynModulePipeline<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub struct DynModulePipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<Box<dyn ErasedModulePass<'ctx, B> + 'ctx>>,
 }
 
@@ -1912,7 +1912,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for DynModulePipeline<'ctx, B> {
 /// [`DynReadOnlyFunctionPipeline`]. `push` is bounded to [`ReadOnlyMod`] (only
 /// [`Inspect`] passes), and `run` threads the original `Module<Verified>` through
 /// untouched (D8).
-pub struct DynReadOnlyModulePipeline<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub struct DynReadOnlyModulePipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<Box<dyn ErasedModulePass<'ctx, B> + 'ctx>>,
 }
 

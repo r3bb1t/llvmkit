@@ -1,26 +1,26 @@
 error[E0505]: cannot move out of `module` because it is borrowed
- --> tests/compile_fail/saved_global_handle_requires_unverified_token.rs:7:25
+ --> tests/compile_fail/saved_global_handle_requires_unverified_token.rs:7:21
   |
-4 |     Module::with_new::<_, _, _>("saved-global", |module| {
-  |                                                  ------ binding `module` declared here
-5 |         let i32_ty = module.i32_type();
-6 |         let global = module.view(module.add_global("g", i32_ty.const_zero())?);
-  |                      ------ borrow of `module` occurs here
-7 |         let _verified = module.verify()?;
-  |                         ^^^^^^ move out of `module` occurs here
-8 |         global.set_linkage(&module, Linkage::Internal);
-  |         ------ borrow later used here
+4 |     let module = Module::dynamic("saved-global");
+  |         ------ binding `module` declared here
+5 |     let i32_ty = module.i32_type();
+6 |     let global = module.view(module.add_global("g", i32_ty.const_zero())?);
+  |                  ------ borrow of `module` occurs here
+7 |     let _verified = module.verify()?;
+  |                     ^^^^^^ move out of `module` occurs here
+8 |     global.set_linkage(&module, Linkage::Internal);
+  |     ------ borrow later used here
 
 error[E0382]: borrow of moved value: `module`
- --> tests/compile_fail/saved_global_handle_requires_unverified_token.rs:8:28
+ --> tests/compile_fail/saved_global_handle_requires_unverified_token.rs:8:24
   |
-4 |     Module::with_new::<_, _, _>("saved-global", |module| {
-  |                                                  ------ move occurs because `module` has type `Module<'_, Brand<'_>>`, which does not implement the `Copy` trait
+4 |     let module = Module::dynamic("saved-global");
+  |         ------ move occurs because `module` has type `Module<'_, DynBrand>`, which does not implement the `Copy` trait
 ...
-7 |         let _verified = module.verify()?;
-  |                                -------- `module` moved due to this method call
-8 |         global.set_linkage(&module, Linkage::Internal);
-  |                            ^^^^^^^ value borrowed here after move
+7 |     let _verified = module.verify()?;
+  |                            -------- `module` moved due to this method call
+8 |     global.set_linkage(&module, Linkage::Internal);
+  |                        ^^^^^^^ value borrowed here after move
   |
 note: `Module::<'ctx, B>::verify` takes ownership of the receiver `self`, which moves `module`
  --> src/module.rs

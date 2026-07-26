@@ -39,7 +39,7 @@ use super::derived_types::{
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::function::FunctionData;
 use super::instruction::{Instruction, InstructionData, InstructionView, state::Attached};
-use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::struct_body_state::StructBodyDyn;
 use super::r#type::{Type, TypeData, TypeSlot};
 use super::value_id::{FloatValueId, IntValueId, PointerValueId, ValueId};
@@ -175,7 +175,7 @@ pub(super) enum ValueKindData {
 ///
 /// Equality and hashing compare the branded module reference by `ModuleId`,
 /// so the handle remains cheap to copy and store in maps.
-pub struct Value<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct Value<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -520,9 +520,7 @@ pub(super) mod sealed {
 ///
 /// Sealed: the closed set of LLVM value categories is part of the IR
 /// spec, not an extension point.
-pub trait IsValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
-    sealed::Sealed + Copy + Sized + core::fmt::Debug
-{
+pub trait IsValue<'ctx, B: ModuleBrand>: sealed::Sealed + Copy + Sized + core::fmt::Debug {
     /// Widen to the erased [`Value`] handle.
     fn into_erased(self) -> Value<'ctx, B>;
 
@@ -537,13 +535,13 @@ pub trait IsValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
 
 /// Sealed accessor trait: anything that has an IR type. Implemented by
 /// every value handle and every type handle.
-pub trait Typed<'ctx, B: ModuleBrand = Brand<'ctx>>: sealed::Sealed {
+pub trait Typed<'ctx, B: ModuleBrand>: sealed::Sealed {
     fn ty(self) -> Type<'ctx, B>;
 }
 
 /// Sealed accessor trait: anything that exposes an optional textual
 /// name. Implemented by every value handle.
-pub trait HasName<'ctx, B: ModuleBrand = Brand<'ctx>>: sealed::Sealed {
+pub trait HasName<'ctx, B: ModuleBrand>: sealed::Sealed {
     fn name(self) -> Option<String>;
     fn set_name<Name>(self, module_token: &'ctx Module<'ctx, B, Unverified>, name: Name)
     where
@@ -628,9 +626,7 @@ impl<B: ModuleBrand> HasDebugLoc for Value<'_, B> {
 /// prove `IntValueId: !IsValue`. Every implementor is therefore spelled out,
 /// mostly by the handle-declaring macros via the crate-internal
 /// `impl_into_erased_value_for_handle!`.
-pub trait IntoErasedValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
-    Sized + into_erased_value_sealed::Sealed
-{
+pub trait IntoErasedValue<'ctx, B: ModuleBrand>: Sized + into_erased_value_sealed::Sealed {
     #[doc(hidden)]
     fn into_erased_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
 }
@@ -695,7 +691,7 @@ macro_rules! decl_value_handle {
     ) => {
         $(#[$attr])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
+        pub struct $name<'ctx, B: ModuleBrand> {
             pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
             pub(super) ty: TypeSlot,
@@ -901,12 +897,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
 /// `ArrLen`/`ArrLenDyn` marker family). `ArrayValue<'ctx>` (both markers
 /// erased) is the dynamic handle; `ArrayValue<'ctx, i32, ArrLen<4>>` is a
 /// statically typed `[4 x i32]`.
-pub struct ArrayValue<
-    'ctx,
-    E: VecElem = ElemDyn,
-    L: ArrayLen = ArrLenDyn,
-    B: ModuleBrand = Brand<'ctx>,
-> {
+pub struct ArrayValue<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -1201,7 +1192,7 @@ impl<'ctx, E: VecElem, const N: u64, B: ModuleBrand + 'ctx> From<ArrayValue<'ctx
 
 /// Value whose type is a struct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct StructValue<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct StructValue<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -1387,8 +1378,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>> for St
 /// [`IntValue`]'s width marker. `VectorValue<'ctx>` (both markers erased)
 /// is the dynamic handle; `VectorValue<'ctx, i32, Len<4>>` is a statically
 /// typed `<4 x i32>`.
-pub struct VectorValue<'ctx, E: VecElem = ElemDyn, L: VecLen = LenDyn, B: ModuleBrand = Brand<'ctx>>
-{
+pub struct VectorValue<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -1701,7 +1691,7 @@ decl_value_handle!(
 /// Value whose IR type is `iN`. The `W: IntWidth` marker pins the
 /// bit-width at the type level, so the IRBuilder can reject mismatched
 /// widths at compile time.
-pub struct IntValue<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
+pub struct IntValue<'ctx, W: IntWidth, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2104,7 +2094,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> From<IntValue<'ctx, Width<N>, B>
 // --------------------------------------------------------------------------
 
 /// Value whose IR type is an IEEE / non-IEEE float.
-pub struct FloatValue<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
+pub struct FloatValue<'ctx, K: FloatKind, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2410,7 +2400,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Value<'ctx, B> {
 /// The trait is **sealed**. An erased [`Value`] / `Argument` /
 /// `Instruction` no longer lifts silently: narrow it explicitly with
 /// [`PointerValue::try_from`] (or [`IsValue`]-erased `_dyn` builders).
-pub trait IntoPointerValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
+pub trait IntoPointerValue<'ctx, B: ModuleBrand>:
     Sized + into_pointer_value_sealed::Sealed
 {
     fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>>;

@@ -19,7 +19,7 @@
 //! intrusive list for compile-time, we can layer it back on without
 //! changing the public [`Use`] surface.
 
-use super::module::{Brand, ModuleBrand};
+use super::module::ModuleBrand;
 use super::value::Value;
 
 /// A read-only view of one operand-edge: "user `U` references value
@@ -29,7 +29,7 @@ use super::value::Value;
 /// The view is `Copy`; mutating the use-graph goes through `User`'s
 /// own (yet-to-land) editing methods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Use<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct Use<'ctx, B: ModuleBrand> {
     user: Value<'ctx, B>,
     operand: Value<'ctx, B>,
     index: u32,

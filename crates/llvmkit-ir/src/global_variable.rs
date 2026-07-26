@@ -20,7 +20,7 @@ use super::constant::{Constant, IsConstant};
 use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, ValueCategoryLabel};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
-use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
@@ -76,7 +76,7 @@ pub(super) struct GlobalVariableData {
 /// of the stored data, and [`Self::initializer`] to read the
 /// initializer when one is present.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GlobalVariable<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct GlobalVariable<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     /// Cached pointer type id (`ptr addrspace(N)`).
@@ -133,7 +133,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     #[inline]
     pub fn as_global_constant_ptr(self) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type(self.address_space()).as_type().id();
+        let ptr_ty = module.ptr_type::<B>(self.address_space()).as_type().id();
         let id = module
             .context()
             .intern_constant_global_value_ref(ptr_ty, self.id);
@@ -155,7 +155,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// `as_constant` for the zero case.
     pub fn as_global_constant_ptr_offset(self, off: i64, addr_space: u32) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type(addr_space).as_type().id();
+        let ptr_ty = module.ptr_type::<B>(addr_space).as_type().id();
         let id = module
             .context()
             .intern_constant_gep_offset(ptr_ty, self.id, off);
@@ -170,7 +170,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// this global's address space in both the GEP result and pointer operand.
     pub fn ptr_offset(self, off: i64) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type(self.address_space()).as_type().id();
+        let ptr_ty = module.ptr_type::<B>(self.address_space()).as_type().id();
         let id = module
             .context()
             .intern_constant_gep_offset(ptr_ty, self.id, off);
@@ -199,7 +199,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         other: GlobalVariable<'ctx, B>,
     ) -> IrResult<ConstantIntValue<'ctx, i64, B>> {
         let module = self.module.module();
-        let i64_ty = module.i64_type().as_type().id();
+        let i64_ty = module.i64_type::<B>().as_type().id();
         let id = module
             .context()
             .intern_constant_symbol_delta(i64_ty, self.id, other.id);
@@ -219,7 +219,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         addend: i64,
     ) -> IrResult<ConstantIntValue<'ctx, i64, B>> {
         let module = self.module.module();
-        let i64_ty = module.i64_type().as_type().id();
+        let i64_ty = module.i64_type::<B>().as_type().id();
         let id = module
             .context()
             .intern_constant_symbol_delta_plus(i64_ty, self.id, other.id, addend);
@@ -606,7 +606,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalVariable<'ct
 ///
 /// Constructed by
 /// [`Module::global_builder`](Module::global_builder).
-pub struct GlobalBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct GlobalBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
     value_type: TypeSlot,

@@ -72,7 +72,7 @@ use super::instruction::{Instruction, InstructionView, NonTerminator, Terminator
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::{IRBuilder, InsertPoint, Positioned};
 use super::marker::{Dyn, ReturnMarker};
-use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
     FnAccess, ModAccess, MutatingFn, MutatingModule, PatchBody, ReshapeCfg, RewriteModule,
 };
@@ -88,7 +88,7 @@ use super::worklist::Worklist;
 /// (which is a deliberately non-`Copy` linear handle), so the read-only view
 /// is `Copy` like its sibling [`FunctionView`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BasicBlockView<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct BasicBlockView<'ctx, B: ModuleBrand> {
     id: ValueSlot,
     module: ModuleRef<'ctx, B>,
     ty: TypeSlot,
@@ -168,7 +168,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
 /// by [`BasicBlockView`]'s `IntoIterator`: it snapshots the block's
 /// instruction ids up front, so IR mutation during the walk does not disturb
 /// it.
-pub struct BlockInstructionViews<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct BlockInstructionViews<'ctx, B: ModuleBrand> {
     ids: std::vec::IntoIter<ValueSlot>,
     module: ModuleRef<'ctx, B>,
 }
@@ -224,7 +224,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for BasicBlockView<'ctx, B> {
 
 /// Read-only view of a function under its owning module brand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FunctionView<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct FunctionView<'ctx, B: ModuleBrand> {
     function: FunctionValue<'ctx, Dyn, B>,
 }
 
@@ -280,7 +280,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionView<'ctx, B> {
 /// Iterator over read-only basic-block views of one function, in insertion
 /// order. The named form of [`FunctionView::basic_blocks`]'s walk, returned
 /// by [`FunctionView`]'s `IntoIterator`.
-pub struct FunctionBasicBlockViews<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct FunctionBasicBlockViews<'ctx, B: ModuleBrand> {
     inner: FunctionBasicBlocks<'ctx, Dyn, B>,
 }
 
@@ -378,7 +378,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoFunctionId<B> for Functio
 
 /// Mutation-capable view of one function body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FunctionBody<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct FunctionBody<'ctx, B: ModuleBrand> {
     function: FunctionValue<'ctx, Dyn, B>,
 }
 
@@ -432,7 +432,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionBody<'ctx, B> {
 }
 
 /// Iterator over read-only function views in module order.
-pub struct ModuleFunctionViews<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ModuleFunctionViews<'ctx, B: ModuleBrand> {
     inner: Box<dyn ExactSizeIterator<Item = FunctionView<'ctx, B>> + 'ctx>,
 }
 
@@ -1204,7 +1204,7 @@ where
     fn resolve_block(&self, block: BlockId<Dyn, B>) -> IrResult<BasicBlockView<'m, B>> {
         let module_ref = self.patch.module_mut().module_ref();
         let slot = block.into_basic_block_label(module_ref)?.slot();
-        let label_ty = module_ref.module().label_type().as_type().id();
+        let label_ty = module_ref.module().label_type::<B>().as_type().id();
         Ok(BasicBlockView::new(BasicBlock::from_parts(
             slot, module_ref, label_ty,
         )))
@@ -1246,7 +1246,7 @@ where
         let source = self.resolve_block(block)?.as_basic_block();
         let source_id = source.slot();
         let module_ref = source.module_ref();
-        let label_ty = module_ref.module().label_type().as_type().id();
+        let label_ty = module_ref.module().label_type::<B>().as_type().id();
         let successors = crate::cfg::block_successors(&source);
 
         let new_block = source.split_at(self.patch.module_mut(), before, name)?;

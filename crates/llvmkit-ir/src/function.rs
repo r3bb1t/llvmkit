@@ -56,7 +56,7 @@ use super::intrinsics::{IntrinsicDescriptor, IntrinsicFunctionData, IntrinsicId}
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::MetadataAttachmentSet;
 use super::module::{
-    Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified, UseListOrderRecord,
+    Module, ModuleBrand, ModuleRef, ModuleView, Unverified, UseListOrderRecord,
     validate_use_list_order_indexes,
 };
 use super::pass_context::FunctionView;
@@ -154,7 +154,7 @@ impl FunctionData {
 /// The `R: ReturnMarker` parameter encodes the return type at compile
 /// time (see [`crate::marker`]). Use [`FunctionValue::as_dyn`]
 /// to widen to the runtime-checked [`Dyn`] form.
-pub struct FunctionValue<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
+pub struct FunctionValue<'ctx, R: ReturnMarker, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     /// Cached signature type id. The value's value-arena type is the
@@ -619,7 +619,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self,
         _module: &'ctx Module<'ctx, B, Unverified>,
         index: AttrIndex,
-        attr: crate::Attribute<'ctx>,
+        attr: crate::Attribute<'ctx, B>,
     ) {
         self.data().attributes.borrow_mut().add(index, attr);
     }
@@ -656,11 +656,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Key: Into<String>,
         ValueText: Into<String>,
     {
-        self.add_attribute(
-            module,
-            index,
-            crate::Attribute::string_for_brand(key, value),
-        );
+        self.add_attribute(module, index, crate::Attribute::string(key, value));
     }
 
     fn string_attribute_in_storage(storage: &AttributeStorage, key: &str) -> Option<String> {
@@ -829,7 +825,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Name: Into<String>,
     {
         let name = name.into();
-        let label_ty = self.module.module().label_type().as_type().id();
+        let label_ty = self.module.module().label_type::<B>().as_type().id();
         let bb_id = self.module.module().context().push_value(ValueData {
             ty: label_ty,
             name: RefCell::new(None),
@@ -887,7 +883,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
+        let label_ty = module.label_type::<B>().as_type().id();
         let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         ids.into_iter()
             .map(move |id| BasicBlock::from_parts(id, self.module, label_ty))
@@ -910,7 +906,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Some(BasicBlock::from_parts(
             id,
             self.module,
-            module.label_type().as_type().id(),
+            module.label_type::<B>().as_type().id(),
         ))
     }
 
@@ -975,7 +971,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     #[inline]
     pub fn as_global_constant_ptr(self) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type(0).as_type().id();
+        let ptr_ty = module.ptr_type::<B>(0).as_type().id();
         let id = module
             .context()
             .intern_constant_global_value_ref(ptr_ty, self.id);
@@ -999,7 +995,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// function entry).
     pub fn as_aggregate_ptr(self, addr_space: u32) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type(addr_space).as_type().id();
+        let ptr_ty = module.ptr_type::<B>(addr_space).as_type().id();
         let id = module
             .context()
             .intern_constant_gep_offset(ptr_ty, self.id, 0);
@@ -1015,7 +1011,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 /// named form of [`FunctionValue::basic_blocks`]'s walk, returned by
 /// [`FunctionValue`]'s `IntoIterator`: it snapshots the function's block ids
 /// up front, so IR mutation during the walk does not disturb it.
-pub struct FunctionBasicBlocks<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
+pub struct FunctionBasicBlocks<'ctx, R: ReturnMarker, B: ModuleBrand> {
     ids: std::vec::IntoIter<ValueSlot>,
     module: ModuleRef<'ctx, B>,
     label_ty: TypeSlot,
@@ -1072,7 +1068,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoIterator for FunctionValu
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
+        let label_ty = module.label_type::<B>().as_type().id();
         let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         FunctionBasicBlocks {
             ids: ids.into_iter(),
@@ -1263,7 +1259,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B> for Fu
 ///     .return_attribute(AttrKind::NoUndef)
 ///     .build()?;
 /// ```
-pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
+pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
     signature: FunctionType<'ctx, B>,
@@ -1439,7 +1435,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     /// Convenience: add an enum-flavored attribute on the function's
     /// return slot. Mirrors `Function::addRetAttr(AttrKind)`.
     pub fn return_attribute(self, kind: AttrKind) -> Self {
-        let attr = crate::Attribute::enum_attr_for_brand(kind)
+        let attr = crate::Attribute::enum_attr(kind)
             .unwrap_or_else(|| unreachable!("return_attribute called with non-enum kind"));
         self.attribute(AttrIndex::Return, attr)
     }
@@ -1447,7 +1443,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     /// Convenience: add an enum-flavored attribute on parameter
     /// `slot`. Mirrors `Function::addParamAttr(slot, AttrKind)`.
     pub fn param_attribute(self, slot: u32, kind: AttrKind) -> Self {
-        let attr = crate::Attribute::enum_attr_for_brand(kind)
+        let attr = crate::Attribute::enum_attr(kind)
             .unwrap_or_else(|| unreachable!("param_attribute called with non-enum kind"));
         self.attribute(AttrIndex::Param(slot), attr)
     }

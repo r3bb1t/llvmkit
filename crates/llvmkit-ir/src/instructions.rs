@@ -45,7 +45,7 @@ use super::instr_types::{
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::marker::{Dyn, Ptr, ReturnMarker};
-use super::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
+use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed as TermClosed, Open as TermOpen, TermOpenState};
 use super::r#type::{Type, TypeData, TypeSlot};
@@ -66,7 +66,7 @@ macro_rules! decl_binop_handle {
     ) => {
         $(#[$attr])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
+        pub struct $name<'ctx, B: ModuleBrand> {
             pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
             pub(super) ty: TypeSlot,
@@ -220,7 +220,7 @@ decl_binop_handle!(
 /// `getOpcode()`. Obtain one via
 /// [`InstructionKind::as_binary_op`](crate::InstructionKind::as_binary_op).
 #[derive(Debug, Clone, Copy)]
-pub struct BinaryOp<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct BinaryOp<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -324,7 +324,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BinaryOp<'ctx, B> {
 /// Obtain one via
 /// [`InstructionKind::as_cmp`](crate::InstructionKind::as_cmp).
 #[derive(Debug, Clone, Copy)]
-pub struct Cmp<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct Cmp<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -476,7 +476,7 @@ decl_instruction_id_accessors!(
 /// `alloca` stack-slot allocation. Mirrors `AllocaInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AllocaInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct AllocaInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -518,7 +518,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AllocaInst<'ctx, B> {
 
 /// `load` instruction. Mirrors `LoadInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LoadInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct LoadInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -581,7 +581,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LoadInst<'ctx, B> {
 
 /// `store` instruction. Mirrors `StoreInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StoreInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct StoreInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -640,7 +640,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> StoreInst<'ctx, B> {
 /// `getelementptr` instruction. Mirrors `GetElementPtrInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GepInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct GepInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -690,7 +690,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
 /// The called operand of a call, split into the direct/indirect cases.
 /// Returned by [`CallInst::classify_callee`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Callee<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum Callee<'ctx, B: ModuleBrand> {
     /// A direct call to a known function global.
     Direct(FunctionValue<'ctx, Dyn, B>),
     /// An indirect call through a function pointer.
@@ -705,7 +705,7 @@ pub enum Callee<'ctx, B: ModuleBrand = Brand<'ctx>> {
 /// `return_int_value()` accessor without a runtime
 /// [`crate::IrError::TypeMismatch`].
 #[derive(Debug)]
-pub struct CallInst<'ctx, R: ReturnMarker = Dyn, B: ModuleBrand = Brand<'ctx>> {
+pub struct CallInst<'ctx, R: ReturnMarker, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -920,7 +920,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallInst<'ctx, Ptr, B> {
 /// Call handle whose full return schema is carried at the type level.
 /// The marker on the inner [`CallInst`] is `Ret::Marker` — derived from
 /// the callee by [`crate::IRBuilder::build_call`], never caller-asserted.
-pub struct TypedCallInst<'ctx, Ret, B: ModuleBrand = Brand<'ctx>>
+pub struct TypedCallInst<'ctx, Ret, B: ModuleBrand>
 where
     Ret: FunctionReturn,
 {
@@ -1015,7 +1015,7 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
 
 /// `select` instruction. Mirrors `SelectInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SelectInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct SelectInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -1057,7 +1057,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> SelectInst<'ctx, B> {
 /// `ret` terminator instruction. Mirrors `ReturnInst` in
 /// `Instructions.h`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RetInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct RetInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -1099,7 +1099,7 @@ macro_rules! decl_cast_handle {
     (@struct $(#[$attr:meta])* $name:ident, $opcode:ident) => {
         $(#[$attr])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
+        pub struct $name<'ctx, B: ModuleBrand> {
             pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
             pub(super) ty: TypeSlot,
@@ -1223,7 +1223,7 @@ decl_cast_handle!(
 
 /// `icmp` integer comparison. Mirrors `ICmpInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ICmpInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ICmpInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -1264,7 +1264,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ICmpInst<'ctx, B> {
 /// `fcmp` floating-point comparison. Mirrors `FCmpInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FCmpInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct FCmpInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -1308,7 +1308,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FCmpInst<'ctx, B> {
 
 /// `br` terminator. Mirrors `BranchInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BranchInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct BranchInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -1367,7 +1367,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BranchInst<'ctx, B> {
 /// `unreachable` terminator. Mirrors `UnreachableInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct UnreachableInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct UnreachableInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -1450,7 +1450,7 @@ fn phi_remove_incoming<'ctx, B: ModuleBrand + 'ctx>(
 /// [`remove_incoming`](Self::remove_incoming) is public for CFG rewriters and
 /// takes an `Unverified` module token as its mutation-capability witness.
 #[derive(Debug)]
-pub struct PhiInst<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
+pub struct PhiInst<'ctx, W: IntWidth, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -1654,7 +1654,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
-                expected: Type::new(self.ty, module).kind_label(),
+                expected: Type::<B>::new(self.ty, module).kind_label(),
                 got: value.into_erased().ty().kind_label(),
             })
         }
@@ -1674,7 +1674,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand> PartialEq for PhiInst<'ctx, W, B> {
     }
 }
 impl<'ctx, W: IntWidth, B: ModuleBrand> Eq for PhiInst<'ctx, W, B> {}
-impl<'ctx, W: IntWidth> core::hash::Hash for PhiInst<'ctx, W> {
+impl<'ctx, W: IntWidth, B: ModuleBrand> core::hash::Hash for PhiInst<'ctx, W, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
@@ -1692,7 +1692,7 @@ impl<'ctx, W: IntWidth> core::hash::Hash for PhiInst<'ctx, W> {
 /// per-opcode handle pattern in this crate (the unified-trait alternative
 /// would force every read accessor through dyn dispatch).
 #[derive(Debug)]
-pub struct FpPhiInst<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
+pub struct FpPhiInst<'ctx, K: FloatKind, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -1872,7 +1872,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
-                expected: Type::new(self.ty, module).kind_label(),
+                expected: Type::<B>::new(self.ty, module).kind_label(),
                 got: value.into_erased().ty().kind_label(),
             })
         }
@@ -1908,7 +1908,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand> core::hash::Hash for FpPhiInst<'ctx, K,
 /// element-kind type parameter (only addrspace, which is encoded in
 /// the type id), so the handle carries no marker beyond the brand.
 #[derive(Debug, Clone, Copy)]
-pub struct PointerPhiInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct PointerPhiInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2080,7 +2080,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
-                expected: Type::new(self.ty, module).kind_label(),
+                expected: Type::<B>::new(self.ty, module).kind_label(),
                 got: IsValue::into_erased(value).ty().kind_label(),
             })
         }
@@ -2093,7 +2093,7 @@ impl<'ctx, B: ModuleBrand> PartialEq for PointerPhiInst<'ctx, B> {
     }
 }
 impl<'ctx, B: ModuleBrand> Eq for PointerPhiInst<'ctx, B> {}
-impl<'ctx> core::hash::Hash for PointerPhiInst<'ctx> {
+impl<'ctx, B: ModuleBrand> core::hash::Hash for PointerPhiInst<'ctx, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
@@ -2111,7 +2111,7 @@ impl<'ctx> core::hash::Hash for PointerPhiInst<'ctx> {
 /// — there is no lying `as_int_value()` narrowing (the bug the split
 /// [`PhiKind`](crate::PhiKind) exists to remove).
 #[derive(Debug, Clone, Copy)]
-pub struct OtherPhiInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct OtherPhiInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2221,7 +2221,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
 /// `InstrTypes.h`. Carries [`crate::FastMathFlags`] like every
 /// `FPMathOperator`-class instruction (`Operator.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FNegInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct FNegInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2256,7 +2256,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FNegInst<'ctx, B> {
 /// `freeze` poison/undef-removing operator. Mirrors `FreezeInst`
 /// (`Instructions.h`). The result type matches the operand type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FreezeInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct FreezeInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2288,7 +2288,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FreezeInst<'ctx, B> {
 /// Loads the next argument from a `va_list` pointer; the destination
 /// type lives on [`Self::result_type`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VAArgInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct VAArgInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2329,7 +2329,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> VAArgInst<'ctx, B> {
 /// `extractvalue` reads a single sub-element of an aggregate by
 /// constant indices. Mirrors `ExtractValueInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ExtractValueInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ExtractValueInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2364,7 +2364,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExtractValueInst<'ctx, B> {
 /// `insertvalue` writes a sub-element back into an aggregate by
 /// constant indices. Mirrors `InsertValueInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InsertValueInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct InsertValueInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2407,7 +2407,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InsertValueInst<'ctx, B> {
 /// `extractelement` reads a single element from a vector. Mirrors
 /// `ExtractElementInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ExtractElementInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ExtractElementInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2443,7 +2443,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExtractElementInst<'ctx, B> {
 /// `insertelement` writes a single element back into a vector.
 /// Mirrors `InsertElementInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InsertElementInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct InsertElementInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2486,7 +2486,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InsertElementInst<'ctx, B> {
 /// input vectors per a constant integer mask. Mirrors
 /// `ShuffleVectorInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ShuffleVectorInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ShuffleVectorInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2531,7 +2531,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
 /// `fence` instruction. Mirrors `FenceInst` (`Instructions.h`).
 /// No SSA operands; carries memory ordering and synchronization scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FenceInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct FenceInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2564,7 +2564,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FenceInst<'ctx, B> {
 /// (`Instructions.h`). Result type is the literal struct
 /// `{ <pointee>, i1 }`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AtomicCmpXchgInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct AtomicCmpXchgInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2626,7 +2626,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicCmpXchgInst<'ctx, B> {
 /// `atomicrmw` read-modify-write. Mirrors `AtomicRMWInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AtomicRMWInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct AtomicRMWInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2741,12 +2741,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
 /// and defaults to `IntDyn`, so width-agnostic `SwitchInst<'ctx, P, B>`
 /// annotations keep resolving to the erased flavour unchanged.
 #[derive(Debug)]
-pub struct SwitchInst<
-    'ctx,
-    P: TermOpenState = TermOpen,
-    B: ModuleBrand = Brand<'ctx>,
-    W: IntWidth = IntDyn,
-> {
+pub struct SwitchInst<'ctx, P: TermOpenState, B: ModuleBrand, W: IntWidth = IntDyn> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -2883,7 +2878,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
         let cond_ty = module.context().value_data(cond_ty).ty;
         if v.ty != cond_ty {
             return Err(crate::IrError::TypeMismatch {
-                expected: Type::new(cond_ty, module).kind_label(),
+                expected: Type::<B>::new(cond_ty, module).kind_label(),
                 got: v.ty().kind_label(),
             });
         }
@@ -2951,7 +2946,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: StaticIntWidth> SwitchInst<'ctx, TermOpen, 
 /// (`Instructions.h`). The address operand selects one of the
 /// declared destination blocks at runtime.
 #[derive(Debug)]
-pub struct IndirectBrInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Brand<'ctx>> {
+pub struct IndirectBrInst<'ctx, P: TermOpenState, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -3069,7 +3064,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
 /// successors (`normal` / `unwind`). The `R` parameter mirrors
 /// [`CallInst`]'s typed-return marker.
 #[derive(Debug)]
-pub struct InvokeInst<'ctx, R: ReturnMarker = Dyn, B: ModuleBrand = Brand<'ctx>> {
+pub struct InvokeInst<'ctx, R: ReturnMarker, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -3185,7 +3180,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
 /// A call-like terminator with one fallthrough destination plus zero
 /// or more indirect destination labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CallBrInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct CallBrInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -3255,7 +3250,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
 /// [`Open`](TermOpen)) tracks whether the clause list is still editable.
 /// Open mutators are gated to `P = Open`; `finish` moves the open handle.
 #[derive(Debug)]
-pub struct LandingPadInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Brand<'ctx>> {
+pub struct LandingPadInst<'ctx, P: TermOpenState, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -3402,7 +3397,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
 /// `resume` terminator. Mirrors `ResumeInst` (`Instructions.h`).
 /// Single value operand (typically a `landingpad` result).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ResumeInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ResumeInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -3436,7 +3431,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ResumeInst<'ctx, B> {
 /// `cleanuppad` instruction. Mirrors `CleanupPadInst` (`Instructions.h`).
 /// Result is a `token`-typed value used as a funclet pad.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CleanupPadInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct CleanupPadInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -3480,7 +3475,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupPadInst<'ctx, B> {
 /// Result is a `token`-typed value used as a funclet pad. Parent must
 /// be a `catchswitch` (verifier rule).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CatchPadInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct CatchPadInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -3520,7 +3515,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchPadInst<'ctx, B> {
 
 /// `catchret` terminator. Mirrors `CatchReturnInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CatchReturnInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct CatchReturnInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -3552,7 +3547,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchReturnInst<'ctx, B> {
 
 /// `cleanupret` terminator. Mirrors `CleanupReturnInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CleanupReturnInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct CleanupReturnInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -3587,7 +3582,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupReturnInst<'ctx, B> {
 /// `catchswitch` terminator. Mirrors `CatchSwitchInst` (`Instructions.h`).
 /// Variable-arity handler list with optional unwind destination.
 #[derive(Debug)]
-pub struct CatchSwitchInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Brand<'ctx>> {
+pub struct CatchSwitchInst<'ctx, P: TermOpenState, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,

@@ -153,7 +153,7 @@ pub(crate) struct InlineAsmData {
 /// / [`FunctionValue`](crate::function::FunctionValue): a `(ValueSlot,
 /// ModuleRef, TypeSlot)` triple plus the cached pointer type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct InlineAsm<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct InlineAsm<'ctx, B: crate::module::ModuleBrand> {
     pub(crate) id: ValueSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
     /// Cached pointer type id (`ptr`). The value's value-arena type is

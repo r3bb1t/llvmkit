@@ -1,10 +1,10 @@
-error[E0277]: argument tuple `(ConstantIntValue<'_, i32, Brand<'_>>,)` does not match the callee's parameter schema `(i32, i32)`
-  --> tests/compile_fail/block_call_wrong_arity.rs:33:27
+error[E0277]: argument tuple `(ConstantIntValue<'_, i32, DynBrand>,)` does not match the callee's parameter schema `(i32, i32)`
+  --> tests/compile_fail/block_call_wrong_arity.rs:33:23
    |
-33 |         let _ = head.call((x,));
-   |                      ---- ^^^^ the trait `CallArgs<'_, (i32, i32), Brand<'_>>` is not implemented for `(ConstantIntValue<'_, i32, Brand<'_>>,)`
-   |                      |
-   |                      required by a bound introduced by this call
+33 |     let _ = head.call((x,));
+   |                  ---- ^^^^ the trait `CallArgs<'_, (i32, i32), DynBrand>` is not implemented for `(ConstantIntValue<'_, i32, DynBrand>,)`
+   |                  |
+   |                  required by a bound introduced by this call
    |
    = note: argument count and per-position types must match the callee's typed signature
    = help: the following other types implement trait `CallArgs<'ctx, Params, B>`:

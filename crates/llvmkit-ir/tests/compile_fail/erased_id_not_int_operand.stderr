@@ -1,10 +1,10 @@
 error[E0277]: the trait bound `ValueId<_>: IntoIntValue<'_, i32, _>` is not satisfied
-  --> tests/compile_fail/erased_id_not_int_operand.rs:44:27
+  --> tests/compile_fail/erased_id_not_int_operand.rs:44:23
    |
-44 |         needs_int_operand(erased, ModuleRef::from(m.as_view()));
-   |         ----------------- ^^^^^^ the trait `IntoIntValue<'_, i32, _>` is not implemented for `ValueId<_>`
-   |         |
-   |         required by a bound introduced by this call
+44 |     needs_int_operand(erased, ModuleRef::from(m.as_view()));
+   |     ----------------- ^^^^^^ the trait `IntoIntValue<'_, i32, _>` is not implemented for `ValueId<_>`
+   |     |
+   |     required by a bound introduced by this call
    |
    = help: the following other types implement trait `IntoIntValue<'ctx, W, B>`:
              `ConstantIntValue<'ctx, W, B>` implements `IntoIntValue<'ctx, W, B>`

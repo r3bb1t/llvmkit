@@ -8,7 +8,7 @@ use core::num::NonZeroU32;
 use crate::attributes::{AttrIndex, AttrKind, Attribute, AttributeStorage, MemoryEffects};
 use crate::derived_types::FunctionType;
 use crate::error::{IrError, IrResult};
-use crate::module::{Brand, Module, ModuleBrand, ModuleRef};
+use crate::module::{Module, ModuleBrand, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeSlot};
 use crate::value::{Value, ValueKindData};
 use std::borrow::Cow;
@@ -17,7 +17,7 @@ use std::borrow::Cow;
 pub struct IntrinsicId(NonZeroU32);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct IntrinsicDescriptor<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct IntrinsicDescriptor<'ctx, B: ModuleBrand> {
     id: IntrinsicId,
     overloads: Box<[Type<'ctx, B>]>,
 }
@@ -610,7 +610,7 @@ fn add_function_attrs<B: ModuleBrand>(storage: &mut AttributeStorage, record: &I
     if record.memory_effects != MemoryEffects::unknown() {
         storage.add(
             AttrIndex::Function,
-            Attribute::<B>::memory_for_brand(record.memory_effects),
+            Attribute::<B>::memory(record.memory_effects),
         );
     }
 }

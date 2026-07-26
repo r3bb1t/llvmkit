@@ -13,20 +13,19 @@
 use llvmkit_ir::{Linkage, Module};
 
 fn main() {
-    Module::with_new("ssa-use-after-terminator", |m| {
-        let f = m
-            .add_typed_function::<(), (), _>("f", Linkage::External)
-            .unwrap()
-            .as_function();
-        let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f)).unwrap();
-        let entry = b.create_block("entry");
-        let second = b.create_block("second");
+    let m = Module::dynamic("ssa-use-after-terminator");
+    let f = m
+        .add_typed_function::<(), (), _>("f", Linkage::External)
+        .unwrap()
+        .as_function();
+    let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f)).unwrap();
+    let entry = b.create_block("entry");
+    let second = b.create_block("second");
 
-        let positioned = b.switch_to_block(entry).unwrap();
-        let _unpositioned = positioned.br(second).unwrap();
+    let positioned = b.switch_to_block(entry).unwrap();
+    let _unpositioned = positioned.br(second).unwrap();
 
-        // `positioned` was moved into `br` above -- using it again is a
-        // compile error, not a second (runtime) terminator on `entry`.
-        let _oops = positioned.br(second);
-    });
+    // `positioned` was moved into `br` above -- using it again is a
+    // compile error, not a second (runtime) terminator on `entry`.
+    let _oops = positioned.br(second);
 }

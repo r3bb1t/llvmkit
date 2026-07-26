@@ -11,15 +11,14 @@
 use llvmkit_ir::{IrError, Linkage, Module};
 
 fn main() -> Result<(), IrError> {
-    Module::with_new("m", |m| {
-        let fp128_ty = m.fp128_type();
-        let ppc_ty = m.ppc_fp128_type();
-        let fn_ty = m.fn_type(ppc_ty, [fp128_ty.as_type()], false);
-        let f = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = llvmkit_ir::IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
-        let arg: llvmkit_ir::FloatValue<llvmkit_ir::Fp128> = m.view(f).param(0)?.try_into()?;
-        let _bad = b.build_fp_ext(arg, ppc_ty, "y")?;
-        Ok(())
-    })
+    let m = Module::dynamic("m");
+    let fp128_ty = m.fp128_type();
+    let ppc_ty = m.ppc_fp128_type();
+    let fn_ty = m.fn_type(ppc_ty, [fp128_ty.as_type()], false);
+    let f = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = llvmkit_ir::IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let arg: llvmkit_ir::FloatValue<llvmkit_ir::Fp128, _> = m.view(f).param(0)?.try_into()?;
+    let _bad = b.build_fp_ext(arg, ppc_ty, "y")?;
+    Ok(())
 }

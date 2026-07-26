@@ -8,7 +8,7 @@ use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
 use super::metadata::MetadataAttachmentSet;
-use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeKind, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
@@ -30,7 +30,7 @@ pub(super) struct GlobalAliasData {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GlobalAlias<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct GlobalAlias<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -303,7 +303,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalAlias<'ctx, 
     }
 }
 
-pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
     value_type: TypeSlot,

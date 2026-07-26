@@ -251,7 +251,7 @@ pub(crate) struct TargetExtTypeData {
 /// reference. Equality and hashing compare the branded module reference by
 /// [`ModuleId`](crate::ModuleId), so the handle remains cheap to copy and
 /// store in maps.
-pub struct Type<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct Type<'ctx, B: ModuleBrand> {
     pub(crate) id: TypeSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
 }
@@ -672,20 +672,20 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
             TypeData::TypedPointer {
                 pointee,
                 addr_space: 0,
-            } => write!(f, "{}*", Type::new(*pointee, self.module.module())),
+            } => write!(f, "{}*", Type::<B>::new(*pointee, self.module.module())),
             TypeData::TypedPointer {
                 pointee,
                 addr_space,
             } => write!(
                 f,
                 "{} addrspace({addr_space})*",
-                Type::new(*pointee, self.module.module())
+                Type::<B>::new(*pointee, self.module.module())
             ),
             TypeData::TargetExt(t) => {
                 write!(f, "target(\"{}\"", t.name)?;
                 let m = self.module.module();
                 for tp in t.type_params.iter() {
-                    write!(f, ", {}", Type::new(*tp, m))?;
+                    write!(f, ", {}", Type::<B>::new(*tp, m))?;
                 }
                 for ip in t.int_params.iter() {
                     write!(f, ", {ip}")?;
@@ -750,9 +750,7 @@ pub(crate) mod sealed {
 /// not an extension point. Bound generic code with `T: IrType<'ctx>`
 /// when a function should accept any type without enumerating every
 /// concrete handle.
-pub trait IrType<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>>:
-    sealed::Sealed + Copy + Sized + core::fmt::Debug
-{
+pub trait IrType<'ctx, B: ModuleBrand>: sealed::Sealed + Copy + Sized + core::fmt::Debug {
     /// Widen to the erased [`Type`] handle.
     fn as_type(self) -> Type<'ctx, B>;
 }

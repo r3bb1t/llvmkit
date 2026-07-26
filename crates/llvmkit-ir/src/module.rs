@@ -24,7 +24,6 @@
 //! | [`Module::branded_once::<B>`](Module::branded_once) | a type you name | one, ever |
 //! | [`module_new!`](crate::module_new) | fresh, unnameable, per expansion site | one at a time |
 //! | [`Module::dynamic`] | [`DynBrand`] | unlimited (registry-exempt) |
-//! | [`Module::with_new`] | [`Brand<'id>`] (legacy) | scoped to the callback |
 //!
 //! The first three are kept distinct by a process-global registry; see
 //! [`ModuleBrand`]. [`DynBrand`] opts out of the compile-time half of identity
@@ -161,8 +160,7 @@ impl ModuleId {
 /// - a fresh unnameable brand per expansion site
 ///   ([`module_new!`](crate::module_new));
 /// - [`DynBrand`] when a program needs many modules of the same static shape
-///   and is content with the runtime tag alone;
-/// - the legacy lifetime brand [`Brand<'id>`] minted by [`Module::with_new`].
+///   and is content with the runtime tag alone.
 ///
 /// No code path in this crate ever constructs a `B` or calls a method on one:
 /// every occurrence of the brand in a data structure is
@@ -188,20 +186,14 @@ impl ModuleId {
 ///
 /// [`module_new!`](crate::module_new) emits that line for you.
 ///
-/// # Why `'static` is not a supertrait
+/// # Why `'static` *is* a supertrait
 ///
 /// The uniqueness registry behind [`Module::branded`] keys brands by
-/// [`TypeId`], which requires `'static`. That bound sits on the registering
-/// constructors instead of on this trait, because [`Brand<'id>`] is a
-/// lifetime-parameterised type and therefore *cannot* be `'static` while
-/// [`Module::with_new`] still exists. Once the lifetime brand is removed the
-/// bound can be hoisted onto the trait.
-pub trait ModuleBrand: Copy + core::fmt::Debug + Eq + Hash {}
-
-/// Concrete lifetime-generated module brand used by [`Module::with_new`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct Brand<'id>(PhantomData<fn(&'id ()) -> &'id ()>);
-impl<'id> ModuleBrand for Brand<'id> {}
+/// [`TypeId`], which requires `'static`. Every brand is therefore `'static`,
+/// and the bound lives here rather than being repeated on each registering
+/// constructor. A brand is a pure marker — it names a module, it does not
+/// borrow one — so `'static` costs a user nothing.
+pub trait ModuleBrand: Copy + core::fmt::Debug + Eq + Hash + 'static {}
 
 /// Brand for modules that opt out of compile-time identity separation.
 ///
@@ -300,7 +292,7 @@ impl<B> BrandGuard<B> {
     /// intrinsics, and both are evaluated *before* the lock is taken.
     fn claim(retire_on_drop: bool) -> IrResult<Self>
     where
-        B: ModuleBrand + 'static,
+        B: ModuleBrand,
     {
         let brand = TypeId::of::<B>();
         let name = core::any::type_name::<B>();
@@ -412,7 +404,7 @@ macro_rules! module_new {
 /// The reference carries the invariant module brand `B`, but it points at
 /// crate-private `ModuleCore` storage rather than a `Module<..., State>` token,
 /// so handles do not borrow the verification state.
-pub struct ModuleRef<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ModuleRef<'ctx, B: ModuleBrand> {
     core: &'ctx ModuleCore,
     _brand: Invariant<B>,
 }
@@ -461,7 +453,7 @@ impl<'ctx, B: ModuleBrand> ModuleRef<'ctx, B> {
     }
 }
 
-impl<'ctx> From<&'ctx ModuleCore> for ModuleRef<'ctx, Brand<'ctx>> {
+impl<'ctx, B: ModuleBrand> From<&'ctx ModuleCore> for ModuleRef<'ctx, B> {
     #[inline]
     fn from(core: &'ctx ModuleCore) -> Self {
         ModuleRef::new(core)
@@ -1525,13 +1517,11 @@ impl CoreStore<'_> {
 /// `Drop` lives on the brand-registration *field* instead, which is legal
 /// precisely because a `Drop` field does not block moving fields out of a
 /// non-`Drop` struct.
-pub struct Module<'ctx, B: ModuleBrand = Brand<'ctx>, S = Unverified> {
+pub struct Module<'ctx, B: ModuleBrand, S = Unverified> {
     store: CoreStore<'ctx>,
     /// Live claim on `B` in the process-global registry, for the tokens that
     /// hold one. `None` for registry-exempt tokens: [`Module::dynamic`]
-    /// ([`DynBrand`]), [`Module::with_new`] (the lifetime brand is generative
-    /// on its own, and is not `'static` so it cannot be a registry key), and
-    /// the crate-private `from_core` alias.
+    /// ([`DynBrand`]) and the crate-private `from_core` alias.
     ///
     /// Moved along by every typestate transition, so a claim is released
     /// exactly once — when the last token over this module is dropped.
@@ -1629,74 +1619,74 @@ impl<'ctx> ModuleCore {
     // ---- Primitive type constructors ----
 
     /// `void`.
-    pub fn void_type(&'ctx self) -> VoidType<'ctx> {
+    pub fn void_type<B: ModuleBrand + 'ctx>(&'ctx self) -> VoidType<'ctx, B> {
         VoidType::new(self.ctx.void(), self)
     }
 
     /// `label`.
-    pub fn label_type(&'ctx self) -> LabelType<'ctx> {
+    pub fn label_type<B: ModuleBrand + 'ctx>(&'ctx self) -> LabelType<'ctx, B> {
         LabelType::new(self.ctx.label(), self)
     }
 
     /// `token`.
-    pub fn token_type(&'ctx self) -> TokenType<'ctx> {
+    pub fn token_type<B: ModuleBrand + 'ctx>(&'ctx self) -> TokenType<'ctx, B> {
         TokenType::new(self.ctx.token(), self)
     }
 
     /// `half`.
-    pub fn half_type(&'ctx self) -> FloatType<'ctx, Half> {
+    pub fn half_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, Half, B> {
         FloatType::new(self.ctx.half(), self)
     }
 
     /// `bfloat`.
-    pub fn bfloat_type(&'ctx self) -> FloatType<'ctx, BFloat> {
+    pub fn bfloat_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, BFloat, B> {
         FloatType::new(self.ctx.bfloat(), self)
     }
 
     /// `float` (32-bit IEEE 754).
-    pub fn f32_type(&'ctx self) -> FloatType<'ctx, f32> {
+    pub fn f32_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, f32, B> {
         FloatType::new(self.ctx.float(), self)
     }
 
     /// `double` (64-bit IEEE 754).
-    pub fn f64_type(&'ctx self) -> FloatType<'ctx, f64> {
+    pub fn f64_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, f64, B> {
         FloatType::new(self.ctx.double(), self)
     }
 
     /// `fp128` (128-bit IEEE 754 binary128).
-    pub fn fp128_type(&'ctx self) -> FloatType<'ctx, Fp128> {
+    pub fn fp128_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, Fp128, B> {
         FloatType::new(self.ctx.fp128(), self)
     }
 
     /// `x86_fp80` (80-bit X87 extended precision).
-    pub fn x86_fp80_type(&'ctx self) -> FloatType<'ctx, X86Fp80> {
+    pub fn x86_fp80_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, X86Fp80, B> {
         FloatType::new(self.ctx.x86_fp80(), self)
     }
 
     /// `ppc_fp128` (PowerPC double-double).
-    pub fn ppc_fp128_type(&'ctx self) -> FloatType<'ctx, PpcFp128> {
+    pub fn ppc_fp128_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, PpcFp128, B> {
         FloatType::new(self.ctx.ppc_fp128(), self)
     }
 
     // ---- Integer types ----
 
     /// `i1`. Convenience for [`Self::custom_width_int_type`] with `bits = 1`.
-    pub fn bool_type(&'ctx self) -> IntType<'ctx, bool> {
+    pub fn bool_type<B: ModuleBrand + 'ctx>(&'ctx self) -> IntType<'ctx, bool, B> {
         IntType::new(self.ctx.int_type(1), self)
     }
-    pub fn i8_type(&'ctx self) -> IntType<'ctx, i8> {
+    pub fn i8_type<B: ModuleBrand + 'ctx>(&'ctx self) -> IntType<'ctx, i8, B> {
         IntType::new(self.ctx.int_type(8), self)
     }
-    pub fn i16_type(&'ctx self) -> IntType<'ctx, i16> {
+    pub fn i16_type<B: ModuleBrand + 'ctx>(&'ctx self) -> IntType<'ctx, i16, B> {
         IntType::new(self.ctx.int_type(16), self)
     }
-    pub fn i32_type(&'ctx self) -> IntType<'ctx, i32> {
+    pub fn i32_type<B: ModuleBrand + 'ctx>(&'ctx self) -> IntType<'ctx, i32, B> {
         IntType::new(self.ctx.int_type(32), self)
     }
-    pub fn i64_type(&'ctx self) -> IntType<'ctx, i64> {
+    pub fn i64_type<B: ModuleBrand + 'ctx>(&'ctx self) -> IntType<'ctx, i64, B> {
         IntType::new(self.ctx.int_type(64), self)
     }
-    pub fn i128_type(&'ctx self) -> IntType<'ctx, i128> {
+    pub fn i128_type<B: ModuleBrand + 'ctx>(&'ctx self) -> IntType<'ctx, i128, B> {
         IntType::new(self.ctx.int_type(128), self)
     }
 
@@ -1704,7 +1694,9 @@ impl<'ctx> ModuleCore {
     /// crate::Width). Const-evaluated range check at monomorphisation:
     /// `N` outside `MIN_INT_BITS..=MAX_INT_BITS` is a compile error.
     /// Mirrors `Type::getIntNTy(C, N)`.
-    pub fn int_type_n<const N: u32>(&'ctx self) -> IntType<'ctx, Width<N>> {
+    pub fn int_type_n<const N: u32, B: ModuleBrand + 'ctx>(
+        &'ctx self,
+    ) -> IntType<'ctx, Width<N>, B> {
         const {
             assert!(
                 N >= MIN_INT_BITS && N <= MAX_INT_BITS,
@@ -1717,19 +1709,19 @@ impl<'ctx> ModuleCore {
     // ---- Pointer / typed-pointer ----
 
     /// Opaque pointer in address space `addr_space` (`0` = default).
-    pub fn ptr_type(&'ctx self, addr_space: u32) -> PointerType<'ctx> {
+    pub fn ptr_type<B: ModuleBrand + 'ctx>(&'ctx self, addr_space: u32) -> PointerType<'ctx, B> {
         PointerType::new(self.ctx.ptr_type(addr_space), self)
     }
 
     // ---- Array / vector ----
 
     /// Fixed `<N x T>` or scalable `<vscale x N x T>` vector.
-    pub fn vector_type(
+    pub fn vector_type<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        elem: impl Into<Type<'ctx>>,
+        elem: impl Into<Type<'ctx, B>>,
         n: u32,
         scalable: bool,
-    ) -> VectorType<'ctx, ElemDyn, LenDyn> {
+    ) -> VectorType<'ctx, ElemDyn, LenDyn, B> {
         let elem_id = elem.into().id();
         let id = if scalable {
             self.ctx.scalable_vector_type(elem_id, n)
@@ -2465,28 +2457,7 @@ impl<'ctx> ModuleCore {
     }
 }
 
-impl Module<'static, Brand<'static>, Unverified> {
-    /// Construct a fresh module under a generative brand closure.
-    ///
-    /// The brand is the lifetime [`Brand<'id>`], which is generative *because*
-    /// the callback is higher-ranked — and consequently the module cannot
-    /// outlive the call. Prefer [`branded`](Self::branded),
-    /// [`module_new!`](crate::module_new) or [`dynamic`](Self::dynamic), which
-    /// return an owned, movable token instead.
-    pub fn with_new<N, R, F>(name: N, f: F) -> R
-    where
-        N: Into<String>,
-        F: for<'brand> FnOnce(Module<'brand, Brand<'brand>, Unverified>) -> R,
-    {
-        let module = Module {
-            store: CoreStore::Owned(Box::new(ModuleCore::new(name))),
-            registration: None,
-            _brand: PhantomData,
-            _state: PhantomData,
-        };
-        f(module)
-    }
-
+impl Module<'static, DynBrand, Unverified> {
     /// Construct a fresh module under the **named** brand `B`.
     ///
     /// At most one live module may hold a given brand type. A second call for a
@@ -2526,7 +2497,7 @@ impl Module<'static, Brand<'static>, Unverified> {
     /// [`IrError::BrandInUse`] if a live module already holds `B`;
     /// [`IrError::BrandRetired`] if `B` was retired by
     /// [`branded_once`](Self::branded_once).
-    pub fn branded<B: ModuleBrand + 'static>(
+    pub fn branded<B: ModuleBrand>(
         name: impl Into<String>,
     ) -> IrResult<Module<'static, B, Unverified>> {
         Self::registered::<B>(name, false)
@@ -2561,7 +2532,7 @@ impl Module<'static, Brand<'static>, Unverified> {
     ///
     /// [`IrError::BrandInUse`] if a live module already holds `B`;
     /// [`IrError::BrandRetired`] if `B` has already been retired.
-    pub fn branded_once<B: ModuleBrand + 'static>(
+    pub fn branded_once<B: ModuleBrand>(
         name: impl Into<String>,
     ) -> IrResult<Module<'static, B, Unverified>> {
         Self::registered::<B>(name, true)
@@ -2582,7 +2553,7 @@ impl Module<'static, Brand<'static>, Unverified> {
     ///    partially-constructed module can never strand a brand as `InUse`. (If
     ///    it could, the guard's `Drop` would still release it on unwind — but
     ///    the ordering means that never has to happen.)
-    fn registered<B: ModuleBrand + 'static>(
+    fn registered<B: ModuleBrand>(
         name: impl Into<String>,
         retire_on_drop: bool,
     ) -> IrResult<Module<'static, B, Unverified>> {

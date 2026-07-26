@@ -21,7 +21,7 @@ use super::global_value::Linkage;
 use super::instr_types::{BinaryOpcode, CastOpcode, POISON_MASK_ELEM, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
-use super::module::{ModuleBrand, ModuleRef, ModuleView};
+use super::module::{DynBrand, ModuleBrand, ModuleRef, ModuleView};
 use super::r#type::{Type, TypeData};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{IsValue, Value, ValueKindData, ValueSlot};
@@ -1386,7 +1386,7 @@ fn type_is_empty<B: ModuleBrand>(ty: Type<'_, B>) -> bool {
     }
 }
 
-fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx> {
+fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
     Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
 }
 

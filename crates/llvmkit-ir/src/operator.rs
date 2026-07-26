@@ -12,6 +12,7 @@
 use crate::instructions::{
     AShrInst, AddInst, LShrInst, MulInst, SDivInst, ShlInst, SubInst, UDivInst,
 };
+use crate::module::ModuleBrand;
 
 /// Common interface for the binary operators that carry `nuw`/`nsw`
 /// flags. Mirrors `OverflowingBinaryOperator`.
@@ -33,7 +34,7 @@ pub trait PossiblyExactOperator<'ctx> {
     fn is_exact(&self) -> bool;
 }
 
-impl<'ctx> OverflowingBinaryOperator<'ctx> for AddInst<'ctx> {
+impl<'ctx, B: ModuleBrand> OverflowingBinaryOperator<'ctx> for AddInst<'ctx, B> {
     #[inline]
     fn has_no_unsigned_wrap(self) -> bool {
         AddInst::has_no_unsigned_wrap(self)
@@ -44,7 +45,7 @@ impl<'ctx> OverflowingBinaryOperator<'ctx> for AddInst<'ctx> {
     }
 }
 
-impl<'ctx> OverflowingBinaryOperator<'ctx> for SubInst<'ctx> {
+impl<'ctx, B: ModuleBrand> OverflowingBinaryOperator<'ctx> for SubInst<'ctx, B> {
     #[inline]
     fn has_no_unsigned_wrap(self) -> bool {
         SubInst::has_no_unsigned_wrap(self)
@@ -55,7 +56,7 @@ impl<'ctx> OverflowingBinaryOperator<'ctx> for SubInst<'ctx> {
     }
 }
 
-impl<'ctx> OverflowingBinaryOperator<'ctx> for MulInst<'ctx> {
+impl<'ctx, B: ModuleBrand> OverflowingBinaryOperator<'ctx> for MulInst<'ctx, B> {
     #[inline]
     fn has_no_unsigned_wrap(self) -> bool {
         MulInst::has_no_unsigned_wrap(self)
@@ -66,7 +67,7 @@ impl<'ctx> OverflowingBinaryOperator<'ctx> for MulInst<'ctx> {
     }
 }
 
-impl<'ctx> OverflowingBinaryOperator<'ctx> for ShlInst<'ctx> {
+impl<'ctx, B: ModuleBrand> OverflowingBinaryOperator<'ctx> for ShlInst<'ctx, B> {
     #[inline]
     fn has_no_unsigned_wrap(self) -> bool {
         ShlInst::has_no_unsigned_wrap(self)
@@ -77,25 +78,25 @@ impl<'ctx> OverflowingBinaryOperator<'ctx> for ShlInst<'ctx> {
     }
 }
 
-impl<'ctx> PossiblyExactOperator<'ctx> for UDivInst<'ctx> {
+impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for UDivInst<'ctx, B> {
     #[inline]
     fn is_exact(&self) -> bool {
         UDivInst::is_exact(*self)
     }
 }
-impl<'ctx> PossiblyExactOperator<'ctx> for SDivInst<'ctx> {
+impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for SDivInst<'ctx, B> {
     #[inline]
     fn is_exact(&self) -> bool {
         SDivInst::is_exact(*self)
     }
 }
-impl<'ctx> PossiblyExactOperator<'ctx> for LShrInst<'ctx> {
+impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for LShrInst<'ctx, B> {
     #[inline]
     fn is_exact(&self) -> bool {
         LShrInst::is_exact(*self)
     }
 }
-impl<'ctx> PossiblyExactOperator<'ctx> for AShrInst<'ctx> {
+impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for AShrInst<'ctx, B> {
     #[inline]
     fn is_exact(&self) -> bool {
         AShrInst::is_exact(*self)

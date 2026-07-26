@@ -21,7 +21,7 @@ use crate::instr_types::{
 use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicSemantic, semantic_for_callee};
 use crate::metadata::MetadataAttachmentKind;
-use crate::module::{Brand, ModuleBrand, ModuleCore, ModuleRef};
+use crate::module::{DynBrand, ModuleBrand, ModuleCore, ModuleRef};
 use crate::pass_context::FunctionView;
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
 use crate::value::{Value, ValueKindData, ValueSlot};
@@ -205,7 +205,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for KnownBitsA
 }
 
 /// Per-query state for known-bits computations.
-pub struct ValueTrackingQuery<'a, 'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ValueTrackingQuery<'a, 'ctx, B: ModuleBrand> {
     data_layout: &'a DataLayout,
     max_depth: u32,
     dominator_tree: Option<&'a DominatorTree>,
@@ -1910,7 +1910,7 @@ fn module_ref_from_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Modul
     ModuleRef::new(ty.module().core_ref())
 }
 
-fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx> {
+fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
     Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
 }
 

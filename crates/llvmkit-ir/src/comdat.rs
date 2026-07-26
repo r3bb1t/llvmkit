@@ -98,7 +98,7 @@ impl ComdatData {
 /// passes `Comdat *` around: cheap, copy-able. Identity is
 /// (module, ComdatId).
 #[derive(Clone, Copy)]
-pub struct ComdatRef<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
+pub struct ComdatRef<'ctx, B: crate::module::ModuleBrand> {
     pub(crate) module: crate::module::ModuleRef<'ctx, B>,
     pub(crate) id: ComdatId,
 }

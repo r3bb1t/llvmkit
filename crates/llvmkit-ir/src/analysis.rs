@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use crate::cfg_update::CfgUpdate;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
-use crate::module::{Brand, ModuleBrand, ModuleId, ModuleView};
+use crate::module::{ModuleBrand, ModuleId, ModuleView};
 use crate::pass_context::FunctionView;
 use crate::pass_instrumentation::PassInstrumentationCallbacks;
 use crate::value::{IsValue, ValueSlot};
@@ -312,7 +312,7 @@ impl PreservedAnalysisChecker<'_> {
 }
 
 /// A module analysis pass.
-pub trait ModuleAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
+pub trait ModuleAnalysis<'ctx, B: ModuleBrand>: 'static {
     /// The cached result value this analysis produces.
     type Result: ModuleAnalysisResult<'ctx, B> + 'static;
 
@@ -333,7 +333,7 @@ pub trait ModuleAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
 }
 
 /// Cached module-analysis result.
-pub trait ModuleAnalysisResult<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
+pub trait ModuleAnalysisResult<'ctx, B: ModuleBrand>: 'static {
     /// Return `true` when this result should be invalidated.
     fn invalidate<'v>(
         &mut self,
@@ -349,7 +349,7 @@ pub trait ModuleAnalysisResult<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
 }
 
 /// A function analysis pass.
-pub trait FunctionAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
+pub trait FunctionAnalysis<'ctx, B: ModuleBrand>: 'static {
     /// The cached result value this analysis produces.
     type Result: FunctionAnalysisResult<'ctx, B> + 'static;
 
@@ -385,16 +385,14 @@ pub trait FunctionAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
 ///
 /// No upstream analog: LLVM registers analyses by runtime
 /// `AnalysisManager::registerPass` calls with no compile-time `Requires` list.
-pub trait PrefetchableAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>:
-    FunctionAnalysis<'ctx, B>
-{
+pub trait PrefetchableAnalysis<'ctx, B: ModuleBrand>: FunctionAnalysis<'ctx, B> {
     /// Ensure this analysis is registered in `fam`, so a following `get_result`
     /// cannot fail with [`IrError::AnalysisNotRegistered`].
     fn ensure_registered(fam: &mut FunctionAnalysisManager<'ctx, B>);
 }
 
 /// Cached function-analysis result.
-pub trait FunctionAnalysisResult<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
+pub trait FunctionAnalysisResult<'ctx, B: ModuleBrand>: 'static {
     /// Return `true` when this result should be invalidated.
     fn invalidate<'v>(
         &mut self,
@@ -441,7 +439,7 @@ pub enum RepairOutcome {
 ///
 /// [`Sized`] because [`Self::recompute`] returns `Self`: this is only ever
 /// implemented on concrete analysis-result types.
-pub trait CfgIncremental<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized {
+pub trait CfgIncremental<'ctx, B: ModuleBrand>: Sized {
     /// Fold the recorded `updates` (in the order they were performed over
     /// `function`) into this cached result. Return [`RepairOutcome::Repaired`]
     /// only if the result is now fully consistent with the edited CFG;
@@ -676,7 +674,7 @@ struct ModuleAnalysisSnapshot {
 /// [`FunctionAnalysisResult::invalidate`] lives at the caller-chosen `'v` (which
 /// an owned module mints at its borrow), while this invalidator stays at the
 /// manager's `'ctx`.
-pub struct FunctionAnalysisInvalidator<'a, 'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct FunctionAnalysisInvalidator<'a, 'ctx, B: ModuleBrand> {
     module_id: ModuleId,
     function_slot: ValueSlot,
     pa: &'a PreservedAnalyses,
@@ -708,7 +706,7 @@ impl<'a, 'ctx, B: ModuleBrand> FunctionAnalysisInvalidator<'a, 'ctx, B> {
 /// Invalidator passed to module-analysis results. Holds the module *key* rather
 /// than a [`ModuleView`], for the same reason as
 /// [`FunctionAnalysisInvalidator`].
-pub struct ModuleAnalysisInvalidator<'a, 'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ModuleAnalysisInvalidator<'a, 'ctx, B: ModuleBrand> {
     module_id: ModuleId,
     pa: &'a PreservedAnalyses,
     snapshot: &'a ModuleAnalysisSnapshot,
@@ -737,7 +735,7 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisInvalidator<'a, 'ctx, B> {
 }
 
 /// Caches function analyses by `(module id, analysis type, function id)`.
-pub struct FunctionAnalysisManager<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct FunctionAnalysisManager<'ctx, B: ModuleBrand> {
     analyses: HashMap<TypeId, FunctionOps<'ctx, B>>,
     results: HashMap<(ModuleId, TypeId, ValueSlot), CachedFunctionResult<'ctx, B>>,
     instrumentation: Option<PassInstrumentationCallbacks>,
@@ -996,7 +994,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for FunctionAnalysisManager<'ctx, B> {
 }
 
 /// Caches module analyses by `(analysis type, module id)`.
-pub struct ModuleAnalysisManager<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ModuleAnalysisManager<'ctx, B: ModuleBrand> {
     analyses: HashMap<TypeId, ModuleOps<'ctx, B>>,
     results: HashMap<(TypeId, ModuleId), CachedModuleResult<'ctx, B>>,
     instrumentation: Option<PassInstrumentationCallbacks>,
@@ -1165,7 +1163,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for ModuleAnalysisManager<'ctx, B> {
 /// One handle bundling the module + function analysis managers a pass driver
 /// needs. Replaces threading `(&mut ModuleAnalysisManager, &mut FunctionAnalysisManager)`
 /// by hand through every `run`.
-pub struct Analyses<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct Analyses<'ctx, B: ModuleBrand> {
     module: ModuleAnalysisManager<'ctx, B>,
     function: FunctionAnalysisManager<'ctx, B>,
 }
@@ -1766,6 +1764,7 @@ impl_module_analysis_list!(8; A0: Idx0 . 0, A1: Idx1 . 1, A2: Idx2 . 2, A3: Idx3
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::module::DynBrand;
     use crate::{Dyn, IRBuilder, Linkage};
 
     /// llvmkit-specific type-machinery lock (no upstream analog): the analysis-list
@@ -1791,7 +1790,7 @@ mod tests {
         // only argument is `Self::ResultRefs<'r>`, whose concrete type
         // (`&DominatorTree`) doesn't mention `B`, so `_` has nothing to infer from.
         let dt: &DominatorTree =
-            <Reqs as AnalysisSelector<'_, Brand<'_>, DominatorTreeAnalysis, Idx0>>::select(&refs);
+            <Reqs as AnalysisSelector<'_, DynBrand, DominatorTreeAnalysis, Idx0>>::select(&refs);
         let entry_view = function
             .entry_block()
             .map(|bb| dt.is_reachable_from_entry(bb));
@@ -1924,7 +1923,7 @@ mod tests {
         <Reqs as FunctionAnalysisList<'_, _>>::prefetch(&mut fam, function)?;
         let refs = <Reqs as FunctionAnalysisList<'_, _>>::collect(&fam, function)?;
         let result: &ThresholdResult =
-            <Reqs as AnalysisSelector<'_, Brand<'_>, ThresholdAnalysis, Idx0>>::select(&refs);
+            <Reqs as AnalysisSelector<'_, DynBrand, ThresholdAnalysis, Idx0>>::select(&refs);
         assert_eq!(result.threshold, 42);
         Ok(())
     }

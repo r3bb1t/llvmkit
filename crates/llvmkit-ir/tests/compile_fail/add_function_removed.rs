@@ -13,10 +13,9 @@
 use llvmkit_ir::{IrError, Linkage, Module};
 
 fn main() -> Result<(), IrError> {
-    Module::with_new("lock", |m| {
-        let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type>::new(), false);
-        let _ = m.add_function::<i32, _>("bad", fn_ty, Linkage::External);
-        Ok(())
-    })
+    let m = Module::dynamic("lock");
+    let void_ty = m.void_type();
+    let fn_ty = m.fn_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<_>>::new(), false);
+    let _ = m.add_function::<i32, _>("bad", fn_ty, Linkage::External);
+    Ok(())
 }

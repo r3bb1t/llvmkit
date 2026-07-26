@@ -18,7 +18,7 @@
 //! marked accordingly.
 
 use llvmkit_ir::{
-    AShrFlags, AddFlags, Align, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn,
+    AShrFlags, AddFlags, Align, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, DynBrand,
     FloatPredicate, FloatValue, FloatValueId, IRBuilder, IntPredicate, IntValue, IntValueId,
     IntrinsicId, IrError, LShrFlags, Linkage, MemoryEffects, MulFlags, PointerValue,
     PointerValueId, SDivFlags, ShlFlags, SubFlags, UDivFlags, VerifierRule, module_new,
@@ -36,12 +36,12 @@ fn abs_function_attrs_without_immarg() -> AttributeStorage {
     ] {
         attrs.add(
             AttrIndex::Function,
-            Attribute::enum_attr(kind).expect("generated enum attribute"),
+            Attribute::<DynBrand>::enum_attr(kind).expect("generated enum attribute"),
         );
     }
     attrs.add(
         AttrIndex::Function,
-        Attribute::memory(MemoryEffects::none()),
+        Attribute::<DynBrand>::memory(MemoryEffects::none()),
     );
     attrs
 }
@@ -135,7 +135,7 @@ fn intrinsic_declaration_missing_generated_function_attrs_is_rejected() -> Resul
     let mut attrs = AttributeStorage::new();
     attrs.add(
         AttrIndex::Param(1),
-        Attribute::enum_attr(AttrKind::ImmArg).expect("generated immarg attribute"),
+        Attribute::<DynBrand>::enum_attr(AttrKind::ImmArg).expect("generated immarg attribute"),
     );
     m.view(abs).set_attributes(&m, attrs);
 

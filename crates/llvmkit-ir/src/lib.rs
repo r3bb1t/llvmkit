@@ -273,7 +273,7 @@ pub use metadata::{
     MetadataRef, MetadataSlot, SpecializedMetadataKind, SpecializedMetadataNode,
 };
 pub use module::{
-    Brand, ComdatView, DynBrand, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module,
+    ComdatView, DynBrand, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module,
     ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord,
     UseListOrderRecord, Verified,
 };

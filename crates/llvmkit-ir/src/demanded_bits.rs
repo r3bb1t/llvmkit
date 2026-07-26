@@ -14,7 +14,7 @@ use super::instr_types::{BinaryOpData, CallInstData, CastOpData, CastOpcode, Inv
 use super::instruction::{Instruction, InstructionData, InstructionKindData, state};
 use super::int_width::IntDyn;
 use super::intrinsics::{IntrinsicSemantic, semantic_for_callee};
-use super::module::{ModuleBrand, ModuleRef};
+use super::module::{DynBrand, ModuleBrand, ModuleRef};
 use super::pass_access::PatchBody;
 use super::pass_context::{FnCx, FnPatch, FnReport, FunctionView};
 use super::pass_manager::FunctionPass;
@@ -1410,6 +1410,6 @@ fn value_scalar_size_in_bits<'ctx, B: ModuleBrand + 'ctx>(
     u32::try_from(dl.type_size_in_bits(erase_type(value.ty()))).unwrap_or(0)
 }
 
-fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx> {
+fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
     Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
 }

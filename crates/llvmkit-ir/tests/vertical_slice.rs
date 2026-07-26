@@ -175,7 +175,7 @@ fn function_builder_chains_options() -> Result<(), IrError> {
         .calling_conv(CallingConv::FAST)
         .attribute(
             AttrIndex::Function,
-            Attribute::enum_attr_for_brand(AttrKind::AlwaysInline).expect("flag attribute"),
+            Attribute::enum_attr(AttrKind::AlwaysInline).expect("flag attribute"),
         )
         .build()?;
     assert_eq!(m.view(f).linkage(), Linkage::Internal);

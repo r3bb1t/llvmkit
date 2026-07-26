@@ -23,7 +23,7 @@ use core::iter::FusedIterator;
 use std::fmt;
 
 use super::ApInt;
-use super::module::{Brand, ModuleBrand};
+use super::module::ModuleBrand;
 use super::r#type::{Type, TypeKind, TypeSlot};
 
 /// Whether an operation references memory, modifies memory, both, or neither.
@@ -480,7 +480,7 @@ impl fmt::Display for AttrKind {
 /// kinds at runtime; in practice consumers should use the convenience
 /// builders instead of constructing variants directly.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Attribute<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum Attribute<'ctx, B: ModuleBrand> {
     /// Flag-only attribute (`AlwaysInline`, `NoReturn`, ...).
     Enum(AttrKind),
     /// Integer-valued attribute (`align(8)`, `dereferenceable(N)`, ...).
@@ -500,39 +500,10 @@ pub enum Attribute<'ctx, B: ModuleBrand = Brand<'ctx>> {
     String { key: String, value: String },
 }
 
-impl<'ctx> Attribute<'ctx> {
-    /// Construct an enum-flavored attribute with the default module brand.
+impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
+    /// Construct an enum-flavored attribute.
     /// Returns `None` if `kind` expects a payload.
     pub fn enum_attr(kind: AttrKind) -> Option<Self> {
-        Self::enum_attr_for_brand(kind)
-    }
-
-    /// Construct an integer-valued attribute with the default module brand.
-    /// Returns `None` if `kind` is not an integer-flavored kind.
-    pub fn int(kind: AttrKind, value: u64) -> Option<Self> {
-        Self::int_for_brand(kind, value)
-    }
-
-    /// Construct a memory-effects attribute with the default module brand.
-    pub fn memory(effects: MemoryEffects) -> Self {
-        Self::memory_for_brand(effects)
-    }
-
-    /// Construct a string key=value attribute with the default module brand.
-    /// Always valid.
-    pub fn string<Key, ValueText>(key: Key, value: ValueText) -> Self
-    where
-        Key: Into<String>,
-        ValueText: Into<String>,
-    {
-        Self::string_for_brand(key, value)
-    }
-}
-
-impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
-    /// Construct an enum-flavored attribute for an explicitly branded module.
-    /// Returns `None` if `kind` expects a payload.
-    pub fn enum_attr_for_brand(kind: AttrKind) -> Option<Self> {
         if kind.is_enum_kind() {
             Some(Self::Enum(kind))
         } else {
@@ -540,9 +511,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
         }
     }
 
-    /// Construct an integer-valued attribute for an explicitly branded module.
+    /// Construct an integer-valued attribute.
     /// Returns `None` if `kind` is not an integer-flavored kind.
-    pub fn int_for_brand(kind: AttrKind, value: u64) -> Option<Self> {
+    pub fn int(kind: AttrKind, value: u64) -> Option<Self> {
         if kind.is_int_kind() {
             Some(Self::Int(kind, value))
         } else {
@@ -550,8 +521,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
         }
     }
 
-    /// Construct a memory-effects attribute for an explicitly branded module.
-    pub fn memory_for_brand(effects: MemoryEffects) -> Self {
+    /// Construct a memory-effects attribute.
+    pub fn memory(effects: MemoryEffects) -> Self {
         Self::Memory(effects)
     }
 
@@ -582,9 +553,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
         Some(Self::Range { ty, lower, upper })
     }
 
-    /// Construct a string key=value attribute for an explicitly branded module.
-    /// Always valid.
-    pub fn string_for_brand<Key, ValueText>(key: Key, value: ValueText) -> Self
+    /// Construct a string key=value attribute. Always valid.
+    pub fn string<Key, ValueText>(key: Key, value: ValueText) -> Self
     where
         Key: Into<String>,
         ValueText: Into<String>,
@@ -662,7 +632,7 @@ impl AttrIndex {
 /// `Vec` rather than the upstream `FoldingSet`-uniqued node, which is
 /// fine for the foundation.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
-pub struct AttributeSet<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct AttributeSet<'ctx, B: ModuleBrand> {
     attrs: Vec<Attribute<'ctx, B>>,
 }
 
@@ -737,7 +707,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FromIterator<Attribute<'ctx, B>> for Attribute
 /// in shape; storage is flat (a small `Vec<(AttrIndex, AttributeSet)>`)
 /// instead of the upstream FoldingSet, which is fine for the foundation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AttributeList<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct AttributeList<'ctx, B: ModuleBrand> {
     entries: Vec<(AttrIndex, AttributeSet<'ctx, B>)>,
 }
 
@@ -967,9 +937,10 @@ impl AttributeStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    type TestAttribute<'ctx> = Attribute<'ctx, Brand<'ctx>>;
-    type TestAttributeSet<'ctx> = AttributeSet<'ctx, Brand<'ctx>>;
-    type TestAttributeList<'ctx> = AttributeList<'ctx, Brand<'ctx>>;
+    use crate::module::DynBrand;
+    type TestAttribute<'ctx> = Attribute<'ctx, DynBrand>;
+    type TestAttributeSet<'ctx> = AttributeSet<'ctx, DynBrand>;
+    type TestAttributeList<'ctx> = AttributeList<'ctx, DynBrand>;
 
     /// Mirrors `Attribute::get(LLVMContext &, AttrKind)` /
     /// `Attribute::get(LLVMContext &, AttrKind, uint64_t)` validation in

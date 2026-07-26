@@ -37,7 +37,7 @@ use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IRBuilderFolder;
 use super::ir_builder::{BuilderPositionState, IntoReturnValue, Positioned, Unpositioned};
 use super::marker::{Dyn, ReturnMarker};
-use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeSlot;
 use super::value::{
     FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Typed, Value, ValueSlot,
@@ -100,7 +100,7 @@ pub struct SsaBuilderId(u32);
 /// Typed SSA variable of integer width `W`. Cranelift analogue:
 /// `cranelift_frontend::Variable`, specialised per category per llvmkit
 /// convention (cf. `PhiInst` / `FpPhiInst` / `PointerPhiInst`).
-pub struct IntVariable<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
+pub struct IntVariable<'ctx, W: IntWidth, B: ModuleBrand> {
     index: u32,
     owner: SsaBuilderId,
     ty: TypeSlot,
@@ -155,7 +155,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntVariable<'ctx, W, B> {
 }
 
 /// Typed SSA variable of float kind `K`.
-pub struct FloatVariable<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
+pub struct FloatVariable<'ctx, K: FloatKind, B: ModuleBrand> {
     index: u32,
     owner: SsaBuilderId,
     ty: TypeSlot,
@@ -208,7 +208,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatVariable<'ctx, K, B> {
 }
 
 /// Typed SSA variable of pointer category (any address space).
-pub struct PointerVariable<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct PointerVariable<'ctx, B: ModuleBrand> {
     index: u32,
     owner: SsaBuilderId,
     ty: TypeSlot,
@@ -328,7 +328,7 @@ fn block_name<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleRef<'ctx, B>,
     block_id: ValueSlot,
 ) -> String {
-    let label_ty = module.module().label_type().as_type().id();
+    let label_ty = module.module().label_type::<B>().as_type().id();
     let label = BasicBlock::<Dyn, Unterminated, B>::from_parts(block_id, module, label_ty).label();
     label
         .to_erased()
@@ -1593,7 +1593,7 @@ where
         let var_category = self.state.vars[idx].category;
         let var_name = self.state.vars[idx].name.clone();
         let module = self.module_ref();
-        let label_ty = module.module().label_type().as_type().id();
+        let label_ty = module.module().label_type::<B>().as_type().id();
 
         // Read-only peek at the block's current first instruction,
         // independent of which state (open/current/filled) it is in --
@@ -1665,7 +1665,7 @@ where
         let module = self.module_ref();
         let phi_value = Value::from_parts(phi, module, module.value_data(phi).ty);
         let operand_value = Value::from_parts(operand, module, module.value_data(operand).ty);
-        let label_ty = module.module().label_type().as_type().id();
+        let label_ty = module.module().label_type::<B>().as_type().id();
         let pred_block = BasicBlock::<Dyn, Unterminated, B>::from_parts(pred, module, label_ty);
         let ib: super::ir_builder::IRBuilder<'_, 'ctx, B, F, super::ir_builder::Unpositioned, Dyn> =
             super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone());

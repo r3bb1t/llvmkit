@@ -36,8 +36,8 @@ use std::collections::HashMap;
 
 use llvmkit_ir::{
     Align, AllocaFlags, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, ApIntSignedness,
-    AtomicLoadConfig, AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, Brand, CallingConv,
-    Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
+    AtomicLoadConfig, AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, CallingConv, Constant,
+    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
     DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FloatValue,
     GepNoWrapFlags, IRBuilder, IntDyn, IntType, IntValue, IntrinsicNameResolution, IrError,
     IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue, Positioned,
@@ -170,7 +170,7 @@ fn keyword_text(k: Keyword) -> &'static str {
 /// most recent forward reference so `validateEndOfModule` can
 /// blame the right span if the definition never lands.
 #[derive(Debug, Clone, Copy)]
-struct TypeEntry<'ctx, B: ModuleBrand = Brand<'ctx>> {
+struct TypeEntry<'ctx, B: ModuleBrand> {
     ty: Type<'ctx, B>,
 }
 
@@ -180,7 +180,7 @@ struct MetadataSlotEntry {
     first_ref: Span,
 }
 
-struct FunctionSuffix<'ctx, B: ModuleBrand = Brand<'ctx>> {
+struct FunctionSuffix<'ctx, B: ModuleBrand> {
     attr_groups: Vec<u32>,
     section: Option<String>,
     partition: Option<String>,
@@ -215,7 +215,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for FunctionSuffix<'ctx, B> {
     }
 }
 
-enum ParsedPersonalityFn<'ctx, B: ModuleBrand = Brand<'ctx>> {
+enum ParsedPersonalityFn<'ctx, B: ModuleBrand> {
     Resolved(llvmkit_ir::Constant<'ctx, B>),
     ForwardName { name: String, loc: Span },
 }
@@ -225,7 +225,7 @@ enum ParsedPersonalityFn<'ctx, B: ModuleBrand = Brand<'ctx>> {
 /// Core parser state. Holds the lexer, a one-token cache, the IR module
 /// being populated, and the slot tables that mirror upstream's
 /// `LLParser::NumberedTypes` / `NamedTypes` / `NumberedVals` fields.
-pub struct Parser<'src, 'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     lex: Lexer<'src>,
     src: &'src [u8],
     /// Most recently produced token. The constructor primes this with the
@@ -263,28 +263,28 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand = Brand<'ctx>> {
 /// `parse_constant_value` / `parse_type` calls (mirrors upstream's
 /// `parseAssemblyString(..., SlotMapping *)` pattern).
 #[derive(Debug, Default)]
-pub struct ParsedModule<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ParsedModule<'ctx, B: ModuleBrand> {
     pub slot_mapping: SlotMapping<'ctx, B>,
     pub summary_index: Option<crate::module_summary::ModuleSummaryIndex>,
 }
 
-enum DeferredConstantKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+enum DeferredConstantKind<'ctx, B: ModuleBrand> {
     RawInitializer { ty: Type<'ctx, B>, span: Span },
 }
 
-struct DeferredGlobalInitializer<'ctx, B: ModuleBrand = Brand<'ctx>> {
+struct DeferredGlobalInitializer<'ctx, B: ModuleBrand> {
     global: llvmkit_ir::GlobalVariable<'ctx, B>,
     value: DeferredConstantKind<'ctx, B>,
 }
 
-struct DeferredBlockAddress<'ctx, B: ModuleBrand = Brand<'ctx>> {
+struct DeferredBlockAddress<'ctx, B: ModuleBrand> {
     placeholder: llvmkit_ir::BlockAddressPlaceholder<'ctx, B>,
     function: NameOrId,
     label: String,
     loc: Span,
 }
 
-struct DeferredPersonalityFn<'ctx, B: ModuleBrand = Brand<'ctx>> {
+struct DeferredPersonalityFn<'ctx, B: ModuleBrand> {
     function: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>,
     name: String,
     loc: Span,
@@ -297,12 +297,12 @@ struct DeferredIntrinsicAttributeCheck {
     loc: Span,
 }
 
-enum ParsedBlockAddressFunction<'ctx, B: ModuleBrand = Brand<'ctx>> {
+enum ParsedBlockAddressFunction<'ctx, B: ModuleBrand> {
     Resolved(llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>),
     Forward { function: NameOrId, loc: Span },
 }
 
-enum ParsedDirectCallee<'ctx, B: ModuleBrand = Brand<'ctx>> {
+enum ParsedDirectCallee<'ctx, B: ModuleBrand> {
     Name {
         name: String,
         loc: Span,
@@ -327,7 +327,7 @@ struct ParsedInlineAsm {
     can_unwind: bool,
 }
 
-enum ParsedCallee<'ctx, B: ModuleBrand = Brand<'ctx>> {
+enum ParsedCallee<'ctx, B: ModuleBrand> {
     Function(llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>),
     InlineAsm(llvmkit_ir::InlineAsm<'ctx, B>),
     Indirect(llvmkit_ir::PointerValue<'ctx, B>),
@@ -358,7 +358,7 @@ enum ExpectedIntWidth {
 }
 
 #[derive(Debug)]
-enum ValId<'ctx, B: ModuleBrand = Brand<'ctx>> {
+enum ValId<'ctx, B: ModuleBrand> {
     LocalId(u32),
     GlobalId(u32),
     LocalName(String),
@@ -4925,7 +4925,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     } else {
                         String::new()
                     };
-                    out.add(index, Attribute::<B>::string_for_brand(key, value));
+                    out.add(index, Attribute::<B>::string(key, value));
                 }
                 Token::Kw(Keyword::Align) if index == AttrIndex::Function && allow_group_refs => {
                     break;
@@ -4933,14 +4933,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Token::Kw(Keyword::Align) => {
                     self.bump()?;
                     let value = self.parse_uint64("align value")?;
-                    let attr = Attribute::<B>::int_for_brand(AttrKind::Alignment, value)
+                    let attr = Attribute::<B>::int(AttrKind::Alignment, value)
                         .ok_or_else(|| self.expected("attribute"))?;
                     out.add(index, attr);
                 }
                 Token::Kw(Keyword::Alignstack) => {
                     self.bump()?;
                     let value = self.parse_uint64("alignstack value")?;
-                    let attr = Attribute::<B>::int_for_brand(AttrKind::StackAlignment, value)
+                    let attr = Attribute::<B>::int(AttrKind::StackAlignment, value)
                         .ok_or_else(|| self.expected("attribute"))?;
                     out.add(index, attr);
                 }
@@ -4955,7 +4955,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let effects = Self::legacy_memory_effects(*keyword)
                         .ok_or_else(|| self.expected("memory attribute"))?;
                     self.bump()?;
-                    out.add(index, Attribute::<B>::memory_for_brand(effects));
+                    out.add(index, Attribute::<B>::memory(effects));
                 }
                 Token::Kw(Keyword::Range) => {
                     let attr = self.parse_range_attribute()?;
@@ -4966,7 +4966,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         break;
                     };
                     self.bump()?;
-                    let attr = Attribute::<B>::enum_attr_for_brand(kind)
+                    let attr = Attribute::<B>::enum_attr(kind)
                         .ok_or_else(|| self.expected("attribute"))?;
                     out.add(index, attr);
                 }
@@ -5004,7 +5004,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         loop {
             if self.eat_punct(PunctKind::RParen)? {
                 if parsed {
-                    return Ok(Attribute::<B>::memory_for_brand(effects));
+                    return Ok(Attribute::<B>::memory(effects));
                 }
                 return Err(self.expected("memory attribute access kind"));
             }
@@ -8816,7 +8816,7 @@ fn parse_hex_apfloat(semantics: ApFloatSemantics, digits: &str) -> IrResult<ApFl
 /// Outgoing reference to an incoming phi value that could not be resolved
 /// immediately (forward reference). Resolved by `PerFunctionState::finish`.
 #[derive(Clone, Debug)]
-enum PhiValRef<'ctx, B: ModuleBrand = Brand<'ctx>> {
+enum PhiValRef<'ctx, B: ModuleBrand> {
     /// Already resolved to a concrete value.
     Resolved(llvmkit_ir::Value<'ctx, B>),
     /// Named local (`%name`) not yet defined.
@@ -8834,7 +8834,7 @@ enum BlockRef {
 }
 
 /// One deferred phi incoming edge. Resolved after all blocks are parsed.
-struct DeferredPhiEdge<'ctx, B: ModuleBrand = Brand<'ctx>> {
+struct DeferredPhiEdge<'ctx, B: ModuleBrand> {
     /// The phi instruction's Value handle. Used by `finish()` with
     /// `phi_add_incoming_from_value` to add the incoming edge.
     phi_val: llvmkit_ir::Value<'ctx, B>,
@@ -8852,7 +8852,7 @@ enum DeferredLocalValueRef {
     Numbered(u32),
 }
 
-struct DeferredAtomicRmwValue<'ctx, B: ModuleBrand = Brand<'ctx>> {
+struct DeferredAtomicRmwValue<'ctx, B: ModuleBrand> {
     inst: llvmkit_ir::AtomicRMWInst<'ctx, B>,
     val_ref: DeferredLocalValueRef,
     loc: Span,
@@ -8860,7 +8860,7 @@ struct DeferredAtomicRmwValue<'ctx, B: ModuleBrand = Brand<'ctx>> {
 
 /// Per-function symbol tables. Mirrors `LLParser::PerFunctionState`'s
 /// named/numbered value tables and the basic-block lookup map.
-struct PerFunctionState<'ctx, B: ModuleBrand = Brand<'ctx>> {
+struct PerFunctionState<'ctx, B: ModuleBrand> {
     func: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>,
     /// `%name` to the bound SSA value.
     local_named: std::collections::HashMap<String, llvmkit_ir::Value<'ctx, B>>,
@@ -9428,7 +9428,7 @@ impl PunctKind {
 /// Lift a [`Type<'ctx, B>`] to the matching [`AnyTypeEnum`] arm. Re-uses the
 /// IR side's `try_into` impl so the parser does not duplicate the kind /
 /// data-arm dispatch table.
-trait IntoTypeEnum<'ctx, B: ModuleBrand = Brand<'ctx>> {
+trait IntoTypeEnum<'ctx, B: ModuleBrand> {
     fn into_type_enum(self) -> AnyTypeEnum<'ctx, B>;
 }
 

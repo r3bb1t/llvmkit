@@ -1,8 +1,8 @@
 error[E0624]: method `build_int_phi` is private
-  --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:28:22
+  --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:28:18
    |
-28 |           let _int = b.build_int_phi::<i32, _>("p");
-   |                        ^^^^^^^^^^^^^ private method
+28 |       let _int = b.build_int_phi::<i32, _>("p");
+   |                    ^^^^^^^^^^^^^ private method
    |
   ::: src/ir_builder.rs
    |
@@ -13,10 +13,10 @@ error[E0624]: method `build_int_phi` is private
    | |____________________________________________- private method defined here
 
 error[E0624]: method `build_fp_phi` is private
-  --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:29:21
+  --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:29:17
    |
-29 |           let _fp = b.build_fp_phi::<f64, _>("q");
-   |                       ^^^^^^^^^^^^ private method
+29 |       let _fp = b.build_fp_phi::<f64, _>("q");
+   |                   ^^^^^^^^^^^^ private method
    |
   ::: src/ir_builder.rs
    |
@@ -27,10 +27,10 @@ error[E0624]: method `build_fp_phi` is private
    | |______________________________________________- private method defined here
 
 error[E0624]: method `build_pointer_phi` is private
-  --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:30:22
+  --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:30:18
    |
-30 |           let _ptr = b.build_pointer_phi("r");
-   |                        ^^^^^^^^^^^^^^^^^ private method
+30 |       let _ptr = b.build_pointer_phi("r");
+   |                    ^^^^^^^^^^^^^^^^^ private method
    |
   ::: src/ir_builder.rs
    |
