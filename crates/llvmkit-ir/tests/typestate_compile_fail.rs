@@ -162,4 +162,14 @@ fn typestate_compile_fail() {
     // versions (`B` is pinned by the argument brand, so no incidental
     // inference failure masks it).
     t.compile_fail("tests/compile_fail/erased_id_not_int_operand.rs");
+    // llvmkit 2.0 cycle C4 (owned modules, branded by type): two *named* brands
+    // separate two modules statically, so a storable id minted by one is not
+    // even the right type to hand to the other's resolver. The compile-time
+    // twin of `module_ownership.rs`'s stale-generation test, which locks the
+    // runtime half for two generations of the *same* brand.
+    t.compile_fail("tests/compile_fail/cross_named_brand_id_view.rs");
+    // Pins the premise of the `Send` compile-assert in `module_ownership.rs`:
+    // the brand type used there really is `!Send`, so asserting that
+    // `Module<NotSendBrand, S>: Send` is not vacuous.
+    t.compile_fail("tests/compile_fail/not_send_brand_is_really_not_send.rs");
 }
