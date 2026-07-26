@@ -1,4 +1,4 @@
-use llvmkit_ir::{IRBuilder, IrError, IrStruct, Linkage, Module, NoFolder};
+use llvmkit_ir::{IRBuilder, IrError, IrStruct, Linkage, NoFolder, module_new};
 
 #[derive(IrStruct)]
 struct Point {
@@ -37,7 +37,8 @@ fn main() -> Result<(), IrError> {
         + rust_window.normal_position.min.x
         + rust_window.normal_position.max.y;
 
-    let ir = Module::with_new("window", |m| {
+    let ir = {
+        let m = module_new!("window")?;
         let f = m.add_typed_function_of::<NormalizePlacement, _>(
             "normalize_window_placement",
             Linkage::External,
@@ -63,8 +64,8 @@ fn main() -> Result<(), IrError> {
         )?;
         b.build_ret(rebuilt)?;
 
-        Ok(format!("{m}"))
-    })?;
+        format!("{m}")
+    };
 
     print!("{ir}");
     Ok(())

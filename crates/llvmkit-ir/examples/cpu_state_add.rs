@@ -35,7 +35,7 @@
 //! ```
 
 use llvmkit_ir::{
-    AttrKind, IRBuilder, IntValue, IrError, Linkage, Module, ModuleBrand, UnnamedAddr,
+    AttrKind, IRBuilder, IntValue, IrError, Linkage, Module, ModuleBrand, UnnamedAddr, module_new,
 };
 
 pub fn build<B: ModuleBrand>(m: &Module<'_, B>) -> Result<(), IrError> {
@@ -97,12 +97,18 @@ pub fn build<B: ModuleBrand>(m: &Module<'_, B>) -> Result<(), IrError> {
     Ok(())
 }
 
+/// The module is minted here rather than in `main` so `?` has a `Result` to
+/// return to: `module_new!` is fallible (its brand is a registry key) and
+/// `main` reports errors by hand.
+fn emit() -> Result<(), IrError> {
+    let m = module_new!("cpu_state_add")?;
+    build(&m)?;
+    print!("{m}");
+    Ok(())
+}
+
 pub fn main() {
-    if let Err(e) = Module::with_new("cpu_state_add", |m| {
-        build(&m)?;
-        print!("{m}");
-        Ok::<(), IrError>(())
-    }) {
+    if let Err(e) = emit() {
         eprintln!("error: {e:?}");
         std::process::exit(1);
     }

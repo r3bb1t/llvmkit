@@ -45,18 +45,17 @@
 
 use llvmkit_ir::{
     AtomicOrdering, AtomicRMWBinOp, AtomicRMWConfig, IRBuilder, IntValue, IrError, Linkage, Module,
-    ModuleBrand, Ptr, SyncScope,
+    ModuleBrand, Ptr, SyncScope, module_new,
 };
 
 pub fn main() -> Result<(), IrError> {
-    Module::with_new("concurrent_counter", |m| {
-        build_atomic_inc(&m)?;
-        build_dispatch(&m)?;
+    let m = module_new!("concurrent_counter")?;
+    build_atomic_inc(&m)?;
+    build_dispatch(&m)?;
 
-        let text = format!("{m}");
-        print!("{text}");
-        Ok(())
-    })
+    let text = format!("{m}");
+    print!("{text}");
+    Ok(())
 }
 
 /// `atomic_inc` --- a fence-bracketed `monotonic` atomic counter

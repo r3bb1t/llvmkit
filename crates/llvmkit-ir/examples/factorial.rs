@@ -49,7 +49,9 @@
 //! cargo run -p llvmkit-ir --example factorial
 //! ```
 
-use llvmkit_ir::{IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module, ModuleBrand};
+use llvmkit_ir::{
+    IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module, ModuleBrand, module_new,
+};
 
 pub fn build<B: ModuleBrand>(m: &Module<'_, B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
@@ -122,12 +124,18 @@ pub fn build<B: ModuleBrand>(m: &Module<'_, B>) -> Result<(), IrError> {
     Ok(())
 }
 
+/// The module is minted here rather than in `main` so `?` has a `Result` to
+/// return to: `module_new!` is fallible (its brand is a registry key) and
+/// `main` reports errors by hand.
+fn emit() -> Result<(), IrError> {
+    let m = module_new!("factorial")?;
+    build(&m)?;
+    print!("{m}");
+    Ok(())
+}
+
 pub fn main() {
-    if let Err(e) = Module::with_new("factorial", |m| {
-        build(&m)?;
-        print!("{m}");
-        Ok::<(), IrError>(())
-    }) {
+    if let Err(e) = emit() {
         eprintln!("error: {e:?}");
         std::process::exit(1);
     }

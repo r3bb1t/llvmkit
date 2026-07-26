@@ -20,7 +20,7 @@ use std::rc::Rc;
 use llvmkit_ir::{
     Analyses, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, IRBuilder, Inspect,
     InstSimplifyPass, IntPredicate, IntValue, IrError, Linkage, ModCx, ModReport, Module,
-    ModuleBrand, ModulePass, run_function_pass, run_module_pass,
+    ModuleBrand, ModulePass, module_new, run_function_pass, run_module_pass,
 };
 
 /// Read-only module pass: reports how many functions the module holds. Declares
@@ -189,18 +189,23 @@ pub fn run_demo<B: ModuleBrand>(m: Module<'_, B>) -> Result<(String, String, Str
     Ok((cleaned_module_text, report, module_text))
 }
 
+/// The module is minted here rather than in `main` so `?` has a `Result` to
+/// return to: `module_new!` is fallible (its brand is a registry key) and
+/// `main` reports errors by hand.
+fn emit() -> Result<(String, String, String), IrError> {
+    let m = module_new!("pass_manager_demo")?;
+    build(&m)?;
+    run_demo(m)
+}
+
 pub fn main() {
-    let (cleaned_module_text, report, module_text) =
-        match Module::with_new("pass_manager_demo", |m| {
-            build(&m)?;
-            run_demo(m)
-        }) {
-            Ok(output) => output,
-            Err(err) => {
-                eprintln!("error: {err:?}");
-                std::process::exit(1);
-            }
-        };
+    let (cleaned_module_text, report, module_text) = match emit() {
+        Ok(output) => output,
+        Err(err) => {
+            eprintln!("error: {err:?}");
+            std::process::exit(1);
+        }
+    };
 
     println!("after scalar cleanup passes:");
     print!("{cleaned_module_text}");
