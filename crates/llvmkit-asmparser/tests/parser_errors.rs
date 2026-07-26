@@ -8,12 +8,11 @@ use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::Module;
 
 fn parse_err(src: &str) -> ParseError {
-    Module::with_new("parser_errors", |module| {
-        Parser::new(src.as_bytes(), &module)
-            .expect("lexer primes")
-            .parse_module()
-            .expect_err("parser rejects malformed input")
-    })
+    let module = Module::dynamic("parser_errors");
+    Parser::new(src.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("parser rejects malformed input")
 }
 
 /// Mirrors `LLParser.cpp::parseType`: integer widths outside LLVM's modeled
@@ -68,12 +67,11 @@ entry:\n\
 
 /// Parse `src` and return `Ok(())` on success, propagating any parse error.
 fn parse_ok(src: &str) -> Result<(), ParseError> {
-    Module::with_new("parser_ok", |module| {
-        Parser::new(src.as_bytes(), &module)
-            .expect("lexer primes")
-            .parse_module()
-            .map(|_| ())
-    })
+    let module = Module::dynamic("parser_ok");
+    Parser::new(src.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .map(|_| ())
 }
 
 /// A `phi` appearing after a non-phi instruction is a parse error.

@@ -5,24 +5,23 @@
 
 use llvmkit_asmparser::{ll_parser::Parser, parse_error::ParseError};
 use llvmkit_ir::Module;
+use llvmkit_ir::module_new;
 
 fn parse_fixture(module_name: &str, src: &[u8]) -> String {
-    Module::with_new(module_name, |module| {
-        Parser::new(src, &module)
-            .expect("parse constructor")
-            .parse_module()
-            .expect("parse succeeded");
-        format!("{module}")
-    })
+    let module = Module::dynamic(module_name);
+    Parser::new(src, &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect("parse succeeded");
+    format!("{module}")
 }
 
 fn parse_err(src: &[u8]) -> ParseError {
-    Module::with_new("parser_modifiers_err", |module| {
-        Parser::new(src, &module)
-            .expect("parse constructor")
-            .parse_module()
-            .expect_err("parse rejected invalid modifier")
-    })
+    let module = Module::dynamic("parser_modifiers_err");
+    Parser::new(src, &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect_err("parse rejected invalid modifier")
 }
 
 fn assert_check_lines(text: &str, check_lines: &[&str]) {
@@ -307,12 +306,13 @@ fn call_parameter_legacy_memory_keywords_remain_parameter_attrs() {
 /// default access kind is not another component.
 #[test]
 fn memory_attribute_rejects_default_access_after_location() {
-    let err = Module::with_new("memory_attribute_error", |module| {
+    let err = {
+        let module = module_new!("memory_attribute_error").expect("fresh module");
         Parser::new(b"declare void @f() memory(argmem: read, write)\n", &module)
             .expect("parse constructor")
             .parse_module()
             .expect_err("memory attribute is malformed")
-    });
+    };
 
     match err {
         llvmkit_asmparser::parse_error::ParseError::Expected { expected, .. } => {

@@ -4,22 +4,20 @@ use llvmkit_asmparser::{ll_parser::Parser, parse_error::ParseError};
 use llvmkit_ir::Module;
 
 fn parse_and_render(src: &str) -> String {
-    Module::with_new("parser_intrinsics", |module| {
-        Parser::new(src.as_bytes(), &module)
-            .expect("lexer primes")
-            .parse_module()
-            .expect("parser succeeds");
-        format!("{module}")
-    })
+    let module = Module::dynamic("parser_intrinsics");
+    Parser::new(src.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    format!("{module}")
 }
 
 fn parse_err(src: &str) -> ParseError {
-    Module::with_new("parser_intrinsics_err", |module| {
-        Parser::new(src.as_bytes(), &module)
-            .expect("lexer primes")
-            .parse_module()
-            .expect_err("parser rejects intrinsic misuse")
-    })
+    let module = Module::dynamic("parser_intrinsics_err");
+    Parser::new(src.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("parser rejects intrinsic misuse")
 }
 
 fn assert_expected_error(src: &str, expected: &str) {

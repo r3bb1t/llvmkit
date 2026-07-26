@@ -272,6 +272,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llvmkit_ir::module_new;
 
     /// Ports the round-trip semantics declared by `addFunctionLocation` /
     /// `getFunctionLocation` in `lib/AsmParser/AsmParserContext.cpp`. The
@@ -281,21 +282,20 @@ mod tests {
     fn locmap_round_trip() {
         // Exercises the inner table directly; the typed wrapper test waits
         // on parser integration.
-        llvmkit_ir::Module::with_new("locmap_round_trip", |m| {
-            let i32_ty = m.i32_type();
-            let g = m
-                .add_external_global("g", i32_ty.as_type())
-                .expect("fresh global");
+        let m = module_new!("locmap_round_trip").expect("fresh module");
+        let i32_ty = m.i32_type();
+        let g = m
+            .add_external_global("g", i32_ty.as_type())
+            .expect("fresh global");
 
-            let mut map: LocMap<'_, _> = LocMap::default();
-            let r = FileLocRange::new(FileLoc::new(2, 0), FileLoc::new(4, 0));
-            map.add(m.view(g).into_erased(), r).unwrap();
-            assert_eq!(map.location_of(m.view(g).into_erased()), Some(r));
-            assert_eq!(
-                map.add(m.view(g).into_erased(), r),
-                Err(LocationError::DuplicateHandle)
-            );
-        });
+        let mut map: LocMap<'_, _> = LocMap::default();
+        let r = FileLocRange::new(FileLoc::new(2, 0), FileLoc::new(4, 0));
+        map.add(m.view(g).into_erased(), r).unwrap();
+        assert_eq!(map.location_of(m.view(g).into_erased()), Some(r));
+        assert_eq!(
+            map.add(m.view(g).into_erased(), r),
+            Err(LocationError::DuplicateHandle)
+        );
     }
 
     /// Ports the half-open semantics of `getXAtLocation(FileLoc)` in
@@ -303,27 +303,26 @@ mod tests {
     /// handle, a query at `End` returns `None`.
     #[test]
     fn locmap_reverse_lookup_is_half_open() {
-        llvmkit_ir::Module::with_new("locmap_reverse_lookup_is_half_open", |m| {
-            let i32_ty = m.i32_type();
-            let g = m
-                .add_external_global("g", i32_ty.as_type())
-                .expect("fresh global");
+        let m = module_new!("locmap_reverse_lookup_is_half_open").expect("fresh module");
+        let i32_ty = m.i32_type();
+        let g = m
+            .add_external_global("g", i32_ty.as_type())
+            .expect("fresh global");
 
-            let mut map: LocMap<'_, _> = LocMap::default();
-            let r = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(1, 5));
-            map.add(m.view(g).into_erased(), r).unwrap();
+        let mut map: LocMap<'_, _> = LocMap::default();
+        let r = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(1, 5));
+        map.add(m.view(g).into_erased(), r).unwrap();
 
-            assert_eq!(
-                map.handle_at(FileLoc::new(1, 0)),
-                Some(m.view(g).into_erased())
-            );
-            assert_eq!(
-                map.handle_at(FileLoc::new(1, 4)),
-                Some(m.view(g).into_erased())
-            );
-            assert_eq!(map.handle_at(FileLoc::new(1, 5)), None);
-            assert_eq!(map.handle_at(FileLoc::new(0, 0)), None);
-        });
+        assert_eq!(
+            map.handle_at(FileLoc::new(1, 0)),
+            Some(m.view(g).into_erased())
+        );
+        assert_eq!(
+            map.handle_at(FileLoc::new(1, 4)),
+            Some(m.view(g).into_erased())
+        );
+        assert_eq!(map.handle_at(FileLoc::new(1, 5)), None);
+        assert_eq!(map.handle_at(FileLoc::new(0, 0)), None);
     }
 
     /// Ports the range-equality semantics of
@@ -331,30 +330,29 @@ mod tests {
     /// `query.start` and ends at-or-before `query.end` match.
     #[test]
     fn locmap_reverse_range_lookup() {
-        llvmkit_ir::Module::with_new("locmap_reverse_range_lookup", |m| {
-            let i32_ty = m.i32_type();
-            let g_inner = m
-                .add_external_global("g_inner", i32_ty.as_type())
-                .expect("fresh global");
-            let g_far = m
-                .add_external_global("g_far", i32_ty.as_type())
-                .expect("fresh global");
+        let m = module_new!("locmap_reverse_range_lookup").expect("fresh module");
+        let i32_ty = m.i32_type();
+        let g_inner = m
+            .add_external_global("g_inner", i32_ty.as_type())
+            .expect("fresh global");
+        let g_far = m
+            .add_external_global("g_far", i32_ty.as_type())
+            .expect("fresh global");
 
-            let mut map: LocMap<'_, _> = LocMap::default();
-            let inner = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(2, 0));
-            let far = FileLocRange::new(FileLoc::new(5, 0), FileLoc::new(6, 0));
-            map.add(m.view(g_inner).into_erased(), inner).unwrap();
-            map.add(m.view(g_far).into_erased(), far).unwrap();
+        let mut map: LocMap<'_, _> = LocMap::default();
+        let inner = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(2, 0));
+        let far = FileLocRange::new(FileLoc::new(5, 0), FileLoc::new(6, 0));
+        map.add(m.view(g_inner).into_erased(), inner).unwrap();
+        map.add(m.view(g_far).into_erased(), far).unwrap();
 
-            let outer = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(3, 0));
-            assert_eq!(
-                map.handle_at_range(outer),
-                Some(m.view(g_inner).into_erased())
-            );
+        let outer = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(3, 0));
+        assert_eq!(
+            map.handle_at_range(outer),
+            Some(m.view(g_inner).into_erased())
+        );
 
-            // Mismatched start — no hit.
-            let shifted = FileLocRange::new(FileLoc::new(1, 1), FileLoc::new(3, 0));
-            assert_eq!(map.handle_at_range(shifted), None);
-        });
+        // Mismatched start — no hit.
+        let shifted = FileLocRange::new(FileLoc::new(1, 1), FileLoc::new(3, 0));
+        assert_eq!(map.handle_at_range(shifted), None);
     }
 }

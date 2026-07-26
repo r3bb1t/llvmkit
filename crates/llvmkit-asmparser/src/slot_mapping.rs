@@ -129,7 +129,7 @@ impl<'ctx, B: ModuleBrand> SlotMapping<'ctx, B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use llvmkit_ir::Module;
+    use llvmkit_ir::module_new;
 
     /// Ports the structural assertions in
     /// `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest,
@@ -153,23 +153,22 @@ mod tests {
     /// caught only by post-hoc lookups.
     #[test]
     fn slot_mapping_records_typed_globals() {
-        Module::with_new("slot_mapping_records_typed_globals", |m| {
-            let i32_ty = m.i32_type();
-            let g = m
-                .add_external_global("g", i32_ty.as_type())
-                .expect("fresh global");
+        let m = module_new!("slot_mapping_records_typed_globals").expect("fresh module");
+        let i32_ty = m.i32_type();
+        let g = m
+            .add_external_global("g", i32_ty.as_type())
+            .expect("fresh global");
 
-            let mut mapping: SlotMapping<'_, _> = SlotMapping::new();
-            mapping
-                .global_values
-                .add(0, GlobalRef::Variable(m.view(g)))
-                .expect("first slot");
+        let mut mapping: SlotMapping<'_, _> = SlotMapping::new();
+        mapping
+            .global_values
+            .add(0, GlobalRef::Variable(m.view(g)))
+            .expect("first slot");
 
-            assert_eq!(mapping.global_values.get_next(), 1);
-            match mapping.global_values.get(0) {
-                Some(GlobalRef::Variable(stored)) => assert_eq!(*stored, m.view(g)),
-                other => panic!("unexpected entry: {other:?}"),
-            }
-        });
+        assert_eq!(mapping.global_values.get_next(), 1);
+        match mapping.global_values.get(0) {
+            Some(GlobalRef::Variable(stored)) => assert_eq!(*stored, m.view(g)),
+            other => panic!("unexpected entry: {other:?}"),
+        }
     }
 }

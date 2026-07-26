@@ -9,7 +9,7 @@ use std::fs::read as read_file;
 use std::path::Path;
 use std::str::from_utf8;
 
-use llvmkit_ir::{Brand, Constant, Module, ModuleBrand, Type, Unverified};
+use llvmkit_ir::{Constant, DynBrand, Module, ModuleBrand, Type, Unverified};
 
 use super::file_loc::{FileLoc, FileLocRange};
 
@@ -19,7 +19,7 @@ use super::module_summary::{self, ModuleSummaryIndex};
 use super::parse_error::{ParseError, ParseResult};
 use super::slot_mapping::SlotMapping;
 
-/// Parse a complete textual IR module from bytes under a fresh module brand.
+/// Parse a complete textual IR module from bytes under a fresh module.
 ///
 /// The closure receives the module **by reference**, not by value. A
 /// [`ParsedModule`] borrows the module token it was parsed against, and a
@@ -27,16 +27,18 @@ use super::slot_mapping::SlotMapping;
 /// that borrows it is not expressible. Inspect the module through `&` (e.g.
 /// [`Module::verify_borrowed`], `format!`) inside the closure.
 ///
-/// The bound is higher-ranked over *two* regions: `'ctx` is the borrow the
-/// closure gets, `'brand` is the generative brand's region. They are separate —
-/// spelling `Brand<'ctx>` would pin the borrow to the brand region, which no
-/// borrow of an owning token can satisfy.
+/// The module carries [`DynBrand`], the registry-exempt brand: a parse can be
+/// re-entered and run concurrently any number of times, so a registry brand
+/// would be claimed once and refused ever after. Distinct parses are therefore
+/// separated by the runtime [`ModuleId`](llvmkit_ir::ModuleId) tag, not by
+/// type. The bound stays higher-ranked over `'ctx` because that borrow is of a
+/// local the caller cannot name.
 pub fn parse_assembly<R, S, F>(src: S, f: F) -> ParseResult<R>
 where
     S: AsRef<[u8]>,
-    F: for<'ctx, 'brand> FnOnce(
-        &'ctx Module<'ctx, Brand<'brand>, Unverified>,
-        ParsedModule<'ctx, Brand<'brand>>,
+    F: for<'ctx> FnOnce(
+        &'ctx Module<'ctx, DynBrand, Unverified>,
+        ParsedModule<'ctx, DynBrand>,
     ) -> R,
 {
     parse_assembly_with_name("asm", src, f)
@@ -45,15 +47,14 @@ where
 fn parse_assembly_with_name<R, S, F>(name: &str, src: S, f: F) -> ParseResult<R>
 where
     S: AsRef<[u8]>,
-    F: for<'ctx, 'brand> FnOnce(
-        &'ctx Module<'ctx, Brand<'brand>, Unverified>,
-        ParsedModule<'ctx, Brand<'brand>>,
+    F: for<'ctx> FnOnce(
+        &'ctx Module<'ctx, DynBrand, Unverified>,
+        ParsedModule<'ctx, DynBrand>,
     ) -> R,
 {
-    Module::with_new::<_, _, _>(name, |module| {
-        let parsed = Parser::new(src.as_ref(), &module)?.parse_module()?;
-        Ok(f(&module, parsed))
-    })
+    let module = Module::dynamic(name);
+    let parsed = Parser::new(src.as_ref(), &module)?.parse_module()?;
+    Ok(f(&module, parsed))
 }
 
 /// Parse a complete textual IR module from a UTF-8 string under a fresh brand.
@@ -61,9 +62,9 @@ where
 /// The closure receives the module by reference; see [`parse_assembly`].
 pub fn parse_assembly_string<R, F>(src: &str, f: F) -> ParseResult<R>
 where
-    F: for<'ctx, 'brand> FnOnce(
-        &'ctx Module<'ctx, Brand<'brand>, Unverified>,
-        ParsedModule<'ctx, Brand<'brand>>,
+    F: for<'ctx> FnOnce(
+        &'ctx Module<'ctx, DynBrand, Unverified>,
+        ParsedModule<'ctx, DynBrand>,
     ) -> R,
 {
     parse_assembly(src.as_bytes(), f)
@@ -75,9 +76,9 @@ where
 pub fn parse_assembly_file<R, P, F>(path: P, f: F) -> ParseResult<R>
 where
     P: AsRef<Path>,
-    F: for<'ctx, 'brand> FnOnce(
-        &'ctx Module<'ctx, Brand<'brand>, Unverified>,
-        ParsedModule<'ctx, Brand<'brand>>,
+    F: for<'ctx> FnOnce(
+        &'ctx Module<'ctx, DynBrand, Unverified>,
+        ParsedModule<'ctx, DynBrand>,
     ) -> R,
 {
     let path = path.as_ref();
@@ -109,19 +110,18 @@ where
 pub fn parse_assembly_with_context<R, S, F>(src: S, f: F) -> ParseResult<R>
 where
     S: AsRef<[u8]>,
-    F: for<'ctx, 'brand> FnOnce(
-        &'ctx Module<'ctx, Brand<'brand>, Unverified>,
-        ParsedModule<'ctx, Brand<'brand>>,
-        AsmParserContext<'ctx, Brand<'brand>>,
+    F: for<'ctx> FnOnce(
+        &'ctx Module<'ctx, DynBrand, Unverified>,
+        ParsedModule<'ctx, DynBrand>,
+        AsmParserContext<'ctx, DynBrand>,
     ) -> R,
 {
-    Module::with_new::<_, _, _>("asm", |module| {
-        let bytes = src.as_ref();
-        let parsed = Parser::new(bytes, &module)?.parse_module()?;
-        let mut context = AsmParserContext::new();
-        record_parser_context(bytes, &module, &mut context)?;
-        Ok(f(&module, parsed, context))
-    })
+    let module = Module::dynamic("asm");
+    let bytes = src.as_ref();
+    let parsed = Parser::new(bytes, &module)?.parse_module()?;
+    let mut context = AsmParserContext::new();
+    record_parser_context(bytes, &module, &mut context)?;
+    Ok(f(&module, parsed, context))
 }
 
 /// Parse a single LLVM type and require end-of-input.

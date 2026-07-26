@@ -6,33 +6,31 @@
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_ir::Module;
+use llvmkit_ir::module_new;
 
 fn parse_and_render(src: &str) -> String {
-    Module::with_new("forward_refs", |module| {
-        Parser::new(src.as_bytes(), &module)
-            .expect("lexer primes")
-            .parse_module()
-            .expect("parser succeeds");
-        format!("{module}")
-    })
+    let module = Module::dynamic("forward_refs");
+    Parser::new(src.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    format!("{module}")
 }
 
 fn parse_err(src: &str) -> ParseError {
-    Module::with_new("forward_refs", |module| {
-        Parser::new(src.as_bytes(), &module)
-            .expect("lexer primes")
-            .parse_module()
-            .expect_err("parser rejects malformed input")
-    })
+    let module = Module::dynamic("forward_refs");
+    Parser::new(src.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("parser rejects malformed input")
 }
 
 fn parse_ok(src: &str) {
-    Module::with_new("forward_refs", |module| {
-        Parser::new(src.as_bytes(), &module)
-            .expect("lexer primes")
-            .parse_module()
-            .expect("parser succeeds");
-    });
+    let module = Module::dynamic("forward_refs");
+    Parser::new(src.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
 }
 
 /// Mirrors `test/Assembler/skip-value-numbers-invalid.ll`: stale numbered
@@ -146,11 +144,10 @@ fn undefined_block_label_is_rejected() {
 /// SlotMappingTest)`: numbered declarations populate global slots.
 #[test]
 fn numbered_declare_records_slot_mapping() {
-    Module::with_new("numbered_declare", |module| {
-        let parsed = Parser::new(b"declare void @0()\n", &module)
-            .expect("lexer primes")
-            .parse_module()
-            .expect("parser succeeds");
-        assert!(parsed.slot_mapping.global_values.get(0).is_some());
-    });
+    let module = module_new!("numbered_declare").expect("fresh module");
+    let parsed = Parser::new(b"declare void @0()\n", &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    assert!(parsed.slot_mapping.global_values.get(0).is_some());
 }

@@ -9441,14 +9441,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoTypeEnum<'ctx, B> for Type<'ctx, B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use llvmkit_ir::Module;
+    use llvmkit_ir::{Module, module_new};
 
     fn parse(src: &str) -> ParseResult<()> {
-        Module::with_new::<_, _, _>("parse_test", |m| {
-            let p = Parser::new(src.as_bytes(), &m)?;
-            let _ = p.parse_module()?;
-            Ok(())
-        })
+        let m = Module::dynamic("parse_test");
+        let p = Parser::new(src.as_bytes(), &m)?;
+        let _ = p.parse_module()?;
+        Ok(())
     }
 
     /// Mirrors `test/Assembler/datalayout.ll` — the parser accepts the
@@ -9456,42 +9455,39 @@ mod tests {
     #[test]
     fn parses_target_datalayout() {
         let src = "target datalayout = \"e-m:e-i64:64\"\n";
-        Module::with_new::<_, _, _>("dl", |m| {
-            Parser::new(src.as_bytes(), &m)
-                .unwrap()
-                .parse_module()
-                .unwrap();
-            let dl = m.data_layout();
-            assert!(dl.is_little_endian());
-        });
+        let m = module_new!("dl").expect("fresh module");
+        Parser::new(src.as_bytes(), &m)
+            .unwrap()
+            .parse_module()
+            .unwrap();
+        let dl = m.data_layout();
+        assert!(dl.is_little_endian());
     }
 
     /// Mirrors `test/Assembler/target-triple.ll` — `target triple = "..."`.
     #[test]
     fn parses_target_triple() {
         let src = "target triple = \"x86_64-pc-linux-gnu\"\n";
-        Module::with_new::<_, _, _>("triple", |m| {
-            Parser::new(src.as_bytes(), &m)
-                .unwrap()
-                .parse_module()
-                .unwrap();
-            assert_eq!(m.target_triple().as_deref(), Some("x86_64-pc-linux-gnu"));
-        });
+        let m = module_new!("triple").expect("fresh module");
+        Parser::new(src.as_bytes(), &m)
+            .unwrap()
+            .parse_module()
+            .unwrap();
+        assert_eq!(m.target_triple().as_deref(), Some("x86_64-pc-linux-gnu"));
     }
 
     /// Mirrors the `module asm` arm of `test/Assembler/module-asm.ll`.
     #[test]
     fn parses_module_asm() {
         let src = "module asm \"hello\"\nmodule asm \"world\"\n";
-        Module::with_new::<_, _, _>("masm", |m| {
-            Parser::new(src.as_bytes(), &m)
-                .unwrap()
-                .parse_module()
-                .unwrap();
-            let asm = m.module_asm();
-            assert!(asm.contains("hello"));
-            assert!(asm.contains("world"));
-        });
+        let m = module_new!("masm").expect("fresh module");
+        Parser::new(src.as_bytes(), &m)
+            .unwrap()
+            .parse_module()
+            .unwrap();
+        let asm = m.module_asm();
+        assert!(asm.contains("hello"));
+        assert!(asm.contains("world"));
     }
 
     /// Mirrors `test/Assembler/named-types.ll` shape: a named struct
