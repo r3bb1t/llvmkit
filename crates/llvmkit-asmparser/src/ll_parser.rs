@@ -233,7 +233,7 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     current: Spanned<Token<'src>>,
 
     /// The module token being populated.
-    module: &'ctx Module<'ctx, B, Unverified>,
+    module: &'ctx Module<B, Unverified>,
 
     /// Named struct-type table (`%foo = type {...}`).
     named_types: HashMap<String, TypeEntry<'ctx, B>>,
@@ -829,7 +829,7 @@ fn map_lex_error(e: LexError) -> ParseError {
 impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// Construct a parser over `src`, populating `module`. Primes the lexer
     /// once (mirrors `LLParser::Run`'s leading `Lex.Lex()`).
-    pub fn new(src: &'src [u8], module: &'ctx Module<'ctx, B, Unverified>) -> ParseResult<Self> {
+    pub fn new(src: &'src [u8], module: &'ctx Module<B, Unverified>) -> ParseResult<Self> {
         let mut lex = Lexer::new(src);
         let current = lex.next_token().map_err(map_lex_error)?;
         Ok(Self {
@@ -854,7 +854,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     pub fn with_slot_mapping(
         src: &'src [u8],
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         slots: &SlotMapping<'ctx, B>,
     ) -> ParseResult<Self> {
         let mut parser = Self::new(src, module)?;
@@ -894,7 +894,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     pub fn with_context(
         src: &'src [u8],
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         _context: &'ctx mut crate::asm_parser_context::AsmParserContext<'ctx, B>,
     ) -> ParseResult<Self> {
         Self::new(src, module)
@@ -8930,7 +8930,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// the block in advance and the label definition later marks it defined.
     fn ensure_block(
         &mut self,
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         name: &str,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
@@ -8945,7 +8945,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
 
     fn ensure_block_label(
         &mut self,
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         name: &str,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
@@ -8960,7 +8960,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// Define a textual basic block label.
     fn define_named_block(
         &mut self,
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         name: String,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
@@ -8973,7 +8973,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// `PerFunctionState::defineBB(Name.empty())`.
     fn define_implicit_block(
         &mut self,
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
     {
@@ -8983,7 +8983,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
 
     fn define_numbered_label(
         &mut self,
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         id: u32,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
@@ -9003,7 +9003,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
 
     fn define_numbered_block(
         &mut self,
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         id: u32,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
@@ -9041,7 +9041,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
 
     fn value_as_block(
         &self,
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         value: llvmkit_ir::Value<'ctx, B>,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
@@ -9078,7 +9078,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
 
     fn get_or_create_numbered_block_label(
         &mut self,
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         id: u32,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> {
@@ -9110,7 +9110,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// targets go through `parse_block_ref`.
     fn resolve_block_ref(
         &mut self,
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         block_ref: &BlockRef,
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Terminated, B>> {
@@ -9169,7 +9169,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     /// been fully parsed. Called by `Parser::parse_define` before `}`.
     fn finish(
         mut self,
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
     ) -> crate::parse_error::ParseResult<()> {
         for (name, loc) in &self.block_refs {
             if !self.defined_blocks.contains(name) {

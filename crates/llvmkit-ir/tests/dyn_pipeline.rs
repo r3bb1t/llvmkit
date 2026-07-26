@@ -8,8 +8,8 @@
 //! container always yields `Module<Unverified>`, a read-only container always
 //! yields `Module<Verified>`, and — crucially — a mutating pass cannot even be
 //! `push`ed into a read-only container (its rung does not implement the read-only
-//! bound). Each test binds the result with an EXPLICIT `Module<'_, _, Verified>` /
-//! `Module<'_, _, Unverified>` annotation (the compile-time half of the lock) and
+//! bound). Each test binds the result with an EXPLICIT `Module<_, Verified>` /
+//! `Module<_, Unverified>` annotation (the compile-time half of the lock) and
 //! asserts the passes genuinely ran, in push order, observing each other's effects.
 //!
 //! D11 provenance: llvmkit-specific runtime-composition escape-hatch lock (no
@@ -32,7 +32,7 @@ use llvmkit_ir::{
 
 /// Single-block `i32 @<name>()` whose entry just returns a constant.
 fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, Unverified>,
+    m: &'ctx Module<B, Unverified>,
     name: &str,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
@@ -47,7 +47,7 @@ fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
 /// `i32 @<name>()` with one unused `add` named `dead` before the terminator, built
 /// with [`NoFolder`] so the constant add survives for `DcePass` to erase.
 fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, Unverified>,
+    m: &'ctx Module<B, Unverified>,
     name: &str,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
@@ -234,7 +234,7 @@ fn transform_dyn_function_pipeline_downgrades_mutates_and_orders() -> Result<(),
     // A transform container ALWAYS yields `Unverified` — the explicit
     // annotation is the compile-time half of the lock (a `DcePass` member
     // means at least one mutating rung; the container downgrades regardless).
-    let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut analyses)?;
+    let unverified: Module<_, Unverified> = pipe.run(verified, f, &mut analyses)?;
     let reverified = unverified.verify()?;
 
     // Member 1 ran; members 2/3 don't log.
@@ -276,7 +276,7 @@ fn read_only_dyn_function_pipeline_stays_verified_and_runs() -> Result<(), IrErr
 
     // A read-only container ALWAYS yields `Verified`, threading the original
     // module through untouched — the explicit annotation is the lock.
-    let still_verified: Module<'_, _, Verified> = pipe.run(verified, f, &mut analyses)?;
+    let still_verified: Module<_, Verified> = pipe.run(verified, f, &mut analyses)?;
 
     assert_eq!(*log.borrow(), vec!["a", "b"]);
     // Read-only: the IR is untouched.
@@ -302,7 +302,7 @@ fn transform_dyn_module_pipeline_downgrades_and_mutates() -> Result<(), IrError>
 
     // A `RewriteModule` member downgrades the module; the transform container's
     // output is unconditionally `Unverified`.
-    let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut analyses)?;
+    let unverified: Module<_, Unverified> = pipe.run(verified, &mut analyses)?;
 
     assert!(ran.get(), "RewriteModule pass must run");
     // The real mutation landed on the returned module.
@@ -322,7 +322,7 @@ fn read_only_dyn_module_pipeline_stays_verified_and_runs() -> Result<(), IrError
     let mut pipe = DynReadOnlyModulePipeline::new();
     pipe.push(CountFunctionsPass { ran: ran.clone() });
 
-    let still_verified: Module<'_, _, Verified> = pipe.run(verified, &mut analyses)?;
+    let still_verified: Module<_, Verified> = pipe.run(verified, &mut analyses)?;
 
     assert!(ran.get(), "Inspect module pass must run");
     assert_eq!(still_verified.as_view().functions().count(), 1);
@@ -354,7 +354,7 @@ fn runtime_assembly_variable_length_pipeline() -> Result<(), IrError> {
     assert_eq!(pipe.len(), tags.len());
     assert_eq!(pipe.pass_names().count(), tags.len());
 
-    let still_verified: Module<'_, _, Verified> = pipe.run(verified, f, &mut analyses)?;
+    let still_verified: Module<_, Verified> = pipe.run(verified, f, &mut analyses)?;
 
     // Every pushed pass ran, in push order.
     assert_eq!(*log.borrow(), tags);
@@ -388,7 +388,7 @@ fn runtime_assembly_module_transform_variable_length() -> Result<(), IrError> {
     }
     assert_eq!(pipe.len(), count);
 
-    let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut analyses)?;
+    let unverified: Module<_, Unverified> = pipe.run(verified, &mut analyses)?;
 
     assert!(flags.iter().all(|f| f.get()), "every pushed pass must run");
     // Each `AddGlobalPass` inserts a global named "g"; three members ⇒ three.

@@ -14,7 +14,7 @@ use llvmkit_ir::{
     Align, IrError, Linkage, MaybeAlign, Module, ModuleBrand, UnnamedAddr, VerifierRule, module_new,
 };
 
-fn module_text<'ctx, B: ModuleBrand, S>(m: &Module<'ctx, B, S>) -> String {
+fn module_text<B: ModuleBrand, S>(m: &Module<B, S>) -> String {
     format!("{m}")
 }
 

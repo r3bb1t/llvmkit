@@ -101,7 +101,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectEmptyEdge<B> {
 /// other:    ret 0
 /// ```
 fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, crate::Unverified>,
+    m: &'ctx Module<B, crate::Unverified>,
 ) -> IrResult<(crate::FunctionId<Dyn, B>, BlockId<Dyn, B>)> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -190,7 +190,7 @@ fn remove_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
 /// new_to:   ret 1   ; no leading phi -> redirect's `phi_values` slice is empty
 /// ```
 fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, crate::Unverified>,
+    m: &'ctx Module<B, crate::Unverified>,
 ) -> IrResult<RedirectFixture<'ctx, B>> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);

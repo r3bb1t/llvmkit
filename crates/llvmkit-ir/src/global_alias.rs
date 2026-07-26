@@ -124,7 +124,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
 
     pub fn set_aliasee<C: IsConstant<'ctx, B>>(
         self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         aliasee: C,
     ) -> IrResult<()> {
         let constant = aliasee.as_constant();
@@ -150,7 +150,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_linkage(self, _module: &'ctx Module<'ctx, B, Unverified>, linkage: Linkage) {
+    pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage) {
         self.data().linkage.set(linkage);
     }
 
@@ -160,11 +160,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_visibility(
-        self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
-        visibility: Visibility,
-    ) {
+    pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, visibility: Visibility) {
         self.data().visibility.set(visibility);
     }
 
@@ -174,11 +170,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_dll_storage_class(
-        self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
-        cls: DllStorageClass,
-    ) {
+    pub fn set_dll_storage_class(self, _module: &'ctx Module<B, Unverified>, cls: DllStorageClass) {
         self.data().dll_storage_class.set(cls);
     }
 
@@ -188,11 +180,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_thread_local_mode(
-        self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
-        tlm: ThreadLocalMode,
-    ) {
+    pub fn set_thread_local_mode(self, _module: &'ctx Module<B, Unverified>, tlm: ThreadLocalMode) {
         self.data().thread_local_mode.set(tlm);
     }
 
@@ -202,7 +190,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_unnamed_addr(self, _module: &'ctx Module<'ctx, B, Unverified>, value: UnnamedAddr) {
+    pub fn set_unnamed_addr(self, _module: &'ctx Module<B, Unverified>, value: UnnamedAddr) {
         self.data().unnamed_addr.set(value);
     }
 
@@ -212,7 +200,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
 
     pub fn set_metadata(
         self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         kind: crate::metadata::MetadataAttachmentKind,
         id: crate::metadata::MetadataSlot,
     ) {
@@ -223,14 +211,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
         self.data().partition.borrow().clone()
     }
 
-    pub fn set_partition<P>(self, _module: &'ctx Module<'ctx, B, Unverified>, partition: P)
+    pub fn set_partition<P>(self, _module: &'ctx Module<B, Unverified>, partition: P)
     where
         P: Into<String>,
     {
         *self.data().partition.borrow_mut() = Some(partition.into());
     }
 
-    pub fn clear_partition(self, _module: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_partition(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().partition.borrow_mut() = None;
     }
 }
@@ -259,12 +247,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalAlias<'ctx, B> {
     fn name(self) -> Option<String> {
         self.into_erased().name()
     }
-    fn set_name<Name>(self, _module_token: &'ctx Module<'ctx, B, Unverified>, _name: Name)
+    fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
     where
         Name: Into<String>,
     {
     }
-    fn clear_name(self, _module_token: &'ctx Module<'ctx, B, Unverified>) {}
+    fn clear_name(self, _module_token: &'ctx Module<B, Unverified>) {}
 }
 impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalAlias<'_, B> {
     fn debug_loc(self) -> Option<DebugLoc> {

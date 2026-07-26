@@ -72,7 +72,7 @@ pub fn main() -> Result<(), IrError> {
 ///    returns the old value.
 /// 3. `fence acquire` --- ensures subsequent reads observe other
 ///    threads' releases.
-pub fn build_atomic_inc<'ctx, B: ModuleBrand>(m: &Module<'ctx, B>) -> Result<(), IrError> {
+pub fn build_atomic_inc<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     // `add_typed_function::<i32, (Ptr,)>` is the typed primary: the turbofish
     // is the whole schema (returns `i32`, takes one pointer), so there is no
@@ -111,7 +111,7 @@ pub fn build_atomic_inc<'ctx, B: ModuleBrand>(m: &Module<'ctx, B>) -> Result<(),
 /// `Open` / `Closed` typestate on `SwitchInst`: cases are added
 /// through the chainable `add_case` API and the case list is sealed
 /// with `finish()`.
-pub fn build_dispatch<'ctx, B: ModuleBrand>(m: &Module<'ctx, B>) -> Result<(), IrError> {
+pub fn build_dispatch<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     // `add_typed_function::<i32, (i32, i32, i32)>` is the typed primary: the
     // turbofish *is* the signature, so no separate `FunctionType` is built.

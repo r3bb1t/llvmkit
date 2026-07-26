@@ -13,7 +13,7 @@
 //! - [`Module::verify_borrowed`](crate::Module::verify_borrowed) — borrow-only
 //!   diagnostic check.
 //! - [`Module::verify`](crate::Module::verify) — consumes the module and returns
-//!   `Module<'ctx, B, Verified>`, which the pass manager requires for
+//!   `Module<B, Verified>`, which the pass manager requires for
 //!   module pipelines that assume well-formed IR.
 //!
 //! ## Coverage gaps (deferred)
@@ -3214,7 +3214,7 @@ mod tests {
     /// Append a fabricated instruction to a block, bypassing the
     /// IRBuilder's typestate. Returns the new instruction's value id.
     fn fabricate_instruction<B: crate::ModuleBrand>(
-        m: &Module<'_, B>,
+        m: &Module<B>,
         bb_id: ValueSlot,
         result_ty: TypeSlot,
         kind: InstructionKindData,
@@ -3232,7 +3232,7 @@ mod tests {
 
     /// Push a fresh constant-int value of the given type.
     fn fab_const_int_id<B: crate::ModuleBrand>(
-        m: &Module<'_, B>,
+        m: &Module<B>,
         ty: TypeSlot,
         value: u64,
     ) -> ValueSlot {
@@ -3247,7 +3247,7 @@ mod tests {
     }
 
     /// Push a fresh `ptr null` value.
-    fn fab_null_ptr_id<B: crate::ModuleBrand>(m: &Module<'_, B>, ptr_ty: TypeSlot) -> ValueSlot {
+    fn fab_null_ptr_id<B: crate::ModuleBrand>(m: &Module<B>, ptr_ty: TypeSlot) -> ValueSlot {
         let m = m.core_ref();
         m.context().push_value(ValueData {
             ty: ptr_ty,
@@ -3258,7 +3258,7 @@ mod tests {
         })
     }
     fn skeleton<'ctx, B: crate::ModuleBrand + 'ctx>(
-        m: &Module<'ctx, B>,
+        m: &Module<B>,
         ret_ty: crate::Type<'ctx, B>,
         params: &[crate::Type<'ctx, B>],
         name: &str,
@@ -3276,7 +3276,7 @@ mod tests {
     }
 
     /// Append a `ret void` to a block via direct fabrication.
-    fn append_ret_void<B: crate::ModuleBrand>(m: &Module<'_, B>, bb_id: ValueSlot) {
+    fn append_ret_void<B: crate::ModuleBrand>(m: &Module<B>, bb_id: ValueSlot) {
         fabricate_instruction(
             m,
             bb_id,

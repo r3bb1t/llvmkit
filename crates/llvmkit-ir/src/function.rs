@@ -348,7 +348,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     /// Update linkage.
     #[inline]
-    pub fn set_linkage(self, _module: &'ctx Module<'ctx, B, Unverified>, linkage: Linkage) {
+    pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage) {
         *self.data().linkage.borrow_mut() = linkage;
     }
 
@@ -358,11 +358,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_visibility(
-        self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
-        visibility: Visibility,
-    ) {
+    pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, visibility: Visibility) {
         *self.data().visibility.borrow_mut() = visibility;
     }
 
@@ -372,11 +368,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_dll_storage_class(
-        self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
-        cls: DllStorageClass,
-    ) {
+    pub fn set_dll_storage_class(self, _module: &'ctx Module<B, Unverified>, cls: DllStorageClass) {
         *self.data().dll_storage_class.borrow_mut() = cls;
     }
 
@@ -386,11 +378,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_dso_locality(
-        self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
-        locality: DsoLocality,
-    ) {
+    pub fn set_dso_locality(self, _module: &'ctx Module<B, Unverified>, locality: DsoLocality) {
         *self.data().dso_locality.borrow_mut() = locality;
     }
 
@@ -402,7 +390,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     /// Update calling convention.
     #[inline]
-    pub fn set_calling_conv(self, _module: &'ctx Module<'ctx, B, Unverified>, cc: CallingConv) {
+    pub fn set_calling_conv(self, _module: &'ctx Module<B, Unverified>, cc: CallingConv) {
         *self.data().calling_conv.borrow_mut() = cc;
     }
 
@@ -415,7 +403,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// Update the unnamed-address marker. Mirrors
     /// `GlobalValue::setUnnamedAddr`.
     #[inline]
-    pub fn set_unnamed_addr(self, _module: &'ctx Module<'ctx, B, Unverified>, value: UnnamedAddr) {
+    pub fn set_unnamed_addr(self, _module: &'ctx Module<B, Unverified>, value: UnnamedAddr) {
         *self.data().unnamed_addr.borrow_mut() = value;
     }
 
@@ -425,7 +413,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_address_space(self, _module: &'ctx Module<'ctx, B, Unverified>, address_space: u32) {
+    pub fn set_address_space(self, _module: &'ctx Module<B, Unverified>, address_space: u32) {
         *self.data().address_space.borrow_mut() = address_space;
     }
 
@@ -433,14 +421,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self.data().section.borrow().clone()
     }
 
-    pub fn set_section<S>(self, _module: &'ctx Module<'ctx, B, Unverified>, section: S)
+    pub fn set_section<S>(self, _module: &'ctx Module<B, Unverified>, section: S)
     where
         S: Into<String>,
     {
         *self.data().section.borrow_mut() = Some(section.into());
     }
 
-    pub fn clear_section(self, _module: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_section(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().section.borrow_mut() = None;
     }
 
@@ -448,14 +436,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self.data().partition.borrow().clone()
     }
 
-    pub fn set_partition<P>(self, _module: &'ctx Module<'ctx, B, Unverified>, partition: P)
+    pub fn set_partition<P>(self, _module: &'ctx Module<B, Unverified>, partition: P)
     where
         P: Into<String>,
     {
         *self.data().partition.borrow_mut() = Some(partition.into());
     }
 
-    pub fn clear_partition(self, _module: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_partition(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().partition.borrow_mut() = None;
     }
 
@@ -465,7 +453,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_align(self, _module: &'ctx Module<'ctx, B, Unverified>, align: MaybeAlign) {
+    pub fn set_align(self, _module: &'ctx Module<B, Unverified>, align: MaybeAlign) {
         *self.data().align.borrow_mut() = align;
     }
 
@@ -473,14 +461,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self.data().gc.borrow().clone()
     }
 
-    pub fn set_gc<G>(self, _module: &'ctx Module<'ctx, B, Unverified>, gc: G)
+    pub fn set_gc<G>(self, _module: &'ctx Module<B, Unverified>, gc: G)
     where
         G: Into<String>,
     {
         *self.data().gc.borrow_mut() = Some(gc.into());
     }
 
-    pub fn clear_gc(self, _module: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_gc(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().gc.borrow_mut() = None;
     }
     pub fn prefix_data(self) -> Option<Constant<'ctx, B>> {
@@ -494,11 +482,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         })
     }
 
-    pub fn set_prefix_data<C>(
-        self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
-        data: C,
-    ) -> IrResult<()>
+    pub fn set_prefix_data<C>(self, _module: &'ctx Module<B, Unverified>, data: C) -> IrResult<()>
     where
         C: IsConstant<'ctx, B>,
     {
@@ -507,7 +491,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Ok(())
     }
 
-    pub fn clear_prefix_data(self, _module: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_prefix_data(self, _module: &'ctx Module<B, Unverified>) {
         self.data().prefix_data.set(None);
     }
 
@@ -522,11 +506,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         })
     }
 
-    pub fn set_prologue_data<C>(
-        self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
-        data: C,
-    ) -> IrResult<()>
+    pub fn set_prologue_data<C>(self, _module: &'ctx Module<B, Unverified>, data: C) -> IrResult<()>
     where
         C: IsConstant<'ctx, B>,
     {
@@ -535,7 +515,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Ok(())
     }
 
-    pub fn clear_prologue_data(self, _module: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_prologue_data(self, _module: &'ctx Module<B, Unverified>) {
         self.data().prologue_data.set(None);
     }
 
@@ -552,7 +532,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     pub fn set_personality_fn<C>(
         self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         data: C,
     ) -> IrResult<()>
     where
@@ -563,7 +543,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Ok(())
     }
 
-    pub fn clear_personality_fn(self, _module: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_personality_fn(self, _module: &'ctx Module<B, Unverified>) {
         self.data().personality_fn.set(None);
     }
 
@@ -582,14 +562,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     pub fn set_comdat(
         self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         comdat: ComdatRef<'ctx, B>,
     ) -> IrResult<()> {
         *self.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
         Ok(())
     }
 
-    pub fn clear_comdat(self, _module: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_comdat(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().comdat.borrow_mut() = None;
     }
 
@@ -599,7 +579,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     pub fn set_metadata(
         self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         kind: crate::metadata::MetadataAttachmentKind,
         id: crate::metadata::MetadataSlot,
     ) {
@@ -617,14 +597,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     #[inline]
     pub fn add_attribute(
         self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         index: AttrIndex,
         attr: crate::Attribute<'ctx, B>,
     ) {
         self.data().attributes.borrow_mut().add(index, attr);
     }
 
-    pub fn add_function_attr_group(self, _module: &'ctx Module<'ctx, B, Unverified>, group: u32) {
+    pub fn add_function_attr_group(self, _module: &'ctx Module<B, Unverified>, group: u32) {
         let mut groups = self.data().function_attr_groups.borrow_mut();
         if !groups.contains(&group) {
             groups.push(group);
@@ -632,7 +612,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
     pub fn set_attributes(
         self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         attributes: AttributeStorage,
     ) {
         *self.data().attributes.borrow_mut() = attributes;
@@ -648,7 +628,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     #[inline]
     pub fn set_string_attribute<Key, ValueText>(
         self,
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         index: AttrIndex,
         key: Key,
         value: ValueText,
@@ -795,7 +775,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// block already carries its final function-local unique name.
     pub fn append_basic_block<Name>(
         self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         name: Name,
     ) -> BasicBlock<'ctx, R, Unterminated, B>
     where
@@ -813,7 +793,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// re-present it: [`crate::IRBuilder`] stores only `&ModuleCore` (its
     /// `at_end` constructor is handed a block, not a token), and since a
     /// `Module` now owns its core, the ephemeral token it can reconstruct is a
-    /// *local* whose region is too short to satisfy `&'ctx Module<'ctx, …>`.
+    /// *local* whose region is too short to satisfy `&'ctx Module<…>`.
     /// Every builder was itself constructed from a module token or from a block
     /// minted through one, so the capability is already established.
     #[inline]
@@ -845,7 +825,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// step in LLVM's `LLParser::PerFunctionState::defineBB`.
     pub fn move_basic_block_to_end<R2, S2>(
         self,
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         block: BasicBlock<'ctx, R2, S2, B>,
     ) -> IrResult<()>
     where
@@ -916,7 +896,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// read-only handles.
     pub fn basic_block_for_construction(
         self,
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         value: Value<'ctx, B>,
     ) -> IrResult<BasicBlock<'ctx, R, Unterminated, B>> {
         let _ = module;
@@ -1141,7 +1121,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'
         self.into_erased().name()
     }
     #[inline]
-    fn set_name<Name>(self, _module_token: &'ctx Module<'ctx, B, Unverified>, _name: Name)
+    fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
     where
         Name: Into<String>,
     {
@@ -1150,7 +1130,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'
         // adds the proper path; today this is a no-op.
     }
     #[inline]
-    fn clear_name(self, _module_token: &'ctx Module<'ctx, B, Unverified>) {}
+    fn clear_name(self, _module_token: &'ctx Module<B, Unverified>) {}
 }
 impl<R: ReturnMarker, B: ModuleBrand> HasDebugLoc for FunctionValue<'_, R, B> {
     #[inline]

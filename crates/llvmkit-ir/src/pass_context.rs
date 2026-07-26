@@ -42,7 +42,7 @@
 //!     let m = module_new!("mod-pass-doc")?;
 //!     let verified = m.verify()?;
 //!     let mut analyses = Analyses::new();
-//!     let rewritten: Module<'_, _, Unverified> =
+//!     let rewritten: Module<_, Unverified> =
 //!         run_module_pass(AddMarkerGlobal, verified, &mut analyses)?;
 //!     assert_eq!(rewritten.globals().len(), 1);
 //!     let _ = rewritten.verify()?;
@@ -660,7 +660,7 @@ where
     'ctx: 'm,
     'ctx: 'r,
 {
-    module: &'m Module<'m, B, Unverified>,
+    module: &'m Module<B, Unverified>,
     function: FunctionView<'m, B>,
     results: R::ResultRefs<'r>,
     /// Witnessed dirty flag: set by every mutating method, read by
@@ -686,7 +686,7 @@ where
 {
     #[inline]
     pub(crate) fn new(
-        module: &'m Module<'m, B, Unverified>,
+        module: &'m Module<B, Unverified>,
         function: FunctionView<'m, B>,
         results: R::ResultRefs<'r>,
     ) -> Self {
@@ -752,7 +752,7 @@ where
     /// [`Self::builder_at`], and instruction construction through
     /// [`IRBuilder::at_end`].
     #[inline]
-    pub(crate) fn module_mut(&self) -> &'m Module<'m, B, Unverified> {
+    pub(crate) fn module_mut(&self) -> &'m Module<B, Unverified> {
         self.module
     }
 
@@ -1046,7 +1046,7 @@ where
 {
     #[inline]
     pub(crate) fn new(
-        module: &'m Module<'m, B, Unverified>,
+        module: &'m Module<B, Unverified>,
         function: FunctionView<'m, B>,
         results: R::ResultRefs<'r>,
     ) -> Self {
@@ -2946,7 +2946,7 @@ where
     'ctx: 'm,
     'ctx: 'r,
 {
-    token: &'m Module<'m, B, Unverified>,
+    token: &'m Module<B, Unverified>,
     results: R::ResultRefs<'r>,
 }
 
@@ -2958,7 +2958,7 @@ where
     'ctx: 'r,
 {
     #[inline]
-    pub(crate) fn new(token: &'m Module<'m, B, Unverified>, results: R::ResultRefs<'r>) -> Self {
+    pub(crate) fn new(token: &'m Module<B, Unverified>, results: R::ResultRefs<'r>) -> Self {
         Self { token, results }
     }
 
@@ -2979,7 +2979,7 @@ where
     /// precisely because their floors *do* claim something; they see the module
     /// through [`FnPatch::module`] instead.
     #[inline]
-    pub fn module_mut(&self) -> &'m Module<'m, B, Unverified> {
+    pub fn module_mut(&self) -> &'m Module<B, Unverified> {
         self.token
     }
 
@@ -3076,7 +3076,7 @@ pub struct PatchFunctions<'m, 'ctx, B: ModuleBrand + 'ctx>
 where
     'ctx: 'm,
 {
-    token: &'m Module<'m, B, Unverified>,
+    token: &'m Module<B, Unverified>,
     functions: ModuleFunctionViews<'m, B>,
     /// The yielded mutator's analysis region. Named only in `Item`, so it needs
     /// a marker to stay a parameter of this struct.
@@ -3113,7 +3113,7 @@ pub struct ReshapeFunctions<'m, 'ctx, B: ModuleBrand + 'ctx>
 where
     'ctx: 'm,
 {
-    token: &'m Module<'m, B, Unverified>,
+    token: &'m Module<B, Unverified>,
     functions: ModuleFunctionViews<'m, B>,
     /// The yielded mutator's analysis region. Named only in `Item`, so it needs
     /// a marker to stay a parameter of this struct.

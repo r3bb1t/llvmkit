@@ -97,7 +97,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchEdge<B> {
 /// `other` is the case-1 target — both feed the edge-op guard negatives below.
 #[allow(clippy::type_complexity)]
 fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, crate::Unverified>,
+    m: &'ctx Module<B, crate::Unverified>,
 ) -> IrResult<(
     crate::FunctionId<Dyn, B>,
     BlockId<Dyn, B>,
@@ -277,7 +277,7 @@ fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
 /// `shared` through the default — `shared`'s phi must keep one `entry` incoming.
 #[allow(clippy::type_complexity)]
 fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, crate::Unverified>,
+    m: &'ctx Module<B, crate::Unverified>,
 ) -> IrResult<(crate::FunctionId<Dyn, B>, BlockId<Dyn, B>, BlockId<Dyn, B>)> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);

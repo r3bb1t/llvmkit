@@ -36,10 +36,7 @@ use super::slot_mapping::SlotMapping;
 pub fn parse_assembly<R, S, F>(src: S, f: F) -> ParseResult<R>
 where
     S: AsRef<[u8]>,
-    F: for<'ctx> FnOnce(
-        &'ctx Module<'ctx, DynBrand, Unverified>,
-        ParsedModule<'ctx, DynBrand>,
-    ) -> R,
+    F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
     parse_assembly_with_name("asm", src, f)
 }
@@ -47,10 +44,7 @@ where
 fn parse_assembly_with_name<R, S, F>(name: &str, src: S, f: F) -> ParseResult<R>
 where
     S: AsRef<[u8]>,
-    F: for<'ctx> FnOnce(
-        &'ctx Module<'ctx, DynBrand, Unverified>,
-        ParsedModule<'ctx, DynBrand>,
-    ) -> R,
+    F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
     let module = Module::dynamic(name);
     let parsed = Parser::new(src.as_ref(), &module)?.parse_module()?;
@@ -62,10 +56,7 @@ where
 /// The closure receives the module by reference; see [`parse_assembly`].
 pub fn parse_assembly_string<R, F>(src: &str, f: F) -> ParseResult<R>
 where
-    F: for<'ctx> FnOnce(
-        &'ctx Module<'ctx, DynBrand, Unverified>,
-        ParsedModule<'ctx, DynBrand>,
-    ) -> R,
+    F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
     parse_assembly(src.as_bytes(), f)
 }
@@ -76,10 +67,7 @@ where
 pub fn parse_assembly_file<R, P, F>(path: P, f: F) -> ParseResult<R>
 where
     P: AsRef<Path>,
-    F: for<'ctx> FnOnce(
-        &'ctx Module<'ctx, DynBrand, Unverified>,
-        ParsedModule<'ctx, DynBrand>,
-    ) -> R,
+    F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
 {
     let path = path.as_ref();
     let module_name = path
@@ -111,7 +99,7 @@ pub fn parse_assembly_with_context<R, S, F>(src: S, f: F) -> ParseResult<R>
 where
     S: AsRef<[u8]>,
     F: for<'ctx> FnOnce(
-        &'ctx Module<'ctx, DynBrand, Unverified>,
+        &'ctx Module<DynBrand, Unverified>,
         ParsedModule<'ctx, DynBrand>,
         AsmParserContext<'ctx, DynBrand>,
     ) -> R,
@@ -127,7 +115,7 @@ where
 /// Parse a single LLVM type and require end-of-input.
 pub fn parse_type<'ctx, B: ModuleBrand + 'ctx>(
     src: &[u8],
-    module: &'ctx Module<'ctx, B, Unverified>,
+    module: &'ctx Module<B, Unverified>,
     slots: Option<&SlotMapping<'ctx, B>>,
 ) -> ParseResult<Type<'ctx, B>> {
     let parser = match slots {
@@ -146,7 +134,7 @@ pub fn parse_type<'ctx, B: ModuleBrand + 'ctx>(
 /// Parse one LLVM type prefix and report the number of consumed bytes.
 pub fn parse_type_at_beginning<'ctx, B: ModuleBrand + 'ctx>(
     src: &[u8],
-    module: &'ctx Module<'ctx, B, Unverified>,
+    module: &'ctx Module<B, Unverified>,
     slots: Option<&SlotMapping<'ctx, B>>,
 ) -> ParseResult<(Type<'ctx, B>, usize)> {
     let parser = match slots {
@@ -159,7 +147,7 @@ pub fn parse_type_at_beginning<'ctx, B: ModuleBrand + 'ctx>(
 /// Parse one constant value of the supplied LLVM type and require EOF.
 pub fn parse_constant_value<'ctx, B: ModuleBrand + 'ctx>(
     src: &[u8],
-    module: &'ctx Module<'ctx, B, Unverified>,
+    module: &'ctx Module<B, Unverified>,
     ty: Type<'ctx, B>,
     slots: Option<&SlotMapping<'ctx, B>>,
 ) -> ParseResult<Constant<'ctx, B>> {
@@ -172,7 +160,7 @@ pub fn parse_constant_value<'ctx, B: ModuleBrand + 'ctx>(
 
 fn record_parser_context<'ctx, B: ModuleBrand + 'ctx>(
     src: &[u8],
-    module: &'ctx Module<'ctx, B, Unverified>,
+    module: &'ctx Module<B, Unverified>,
     context: &mut AsmParserContext<'ctx, B>,
 ) -> ParseResult<()> {
     let lines = source_lines(src);

@@ -1,7 +1,7 @@
 use llvmkit_ir::{
     Constant, Dyn, IRBuilder, IntValue, IntoIrField, IrError, IrField, Linkage, Module,
-    ModuleBrand, StructFields, StructSchema, StructSchemaValue, StructValue, Type, TypeKindLabel,
-    Unverified, ValidatedStructValue, Value, module_new,
+    ModuleBrand, ModuleView, StructFields, StructSchema, StructSchemaValue, StructValue, Type,
+    TypeKindLabel, ValidatedStructValue, Value, module_new,
 };
 
 struct Point;
@@ -66,9 +66,7 @@ impl StructSchema for Point {
 
     const NAME: &'static str = "Point";
 
-    fn field_types<'ctx, B>(
-        module: &'ctx Module<'ctx, B, Unverified>,
-    ) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -106,9 +104,7 @@ impl StructSchema for BadPoint {
 
     const NAME: &'static str = "Point";
 
-    fn field_types<'ctx, B>(
-        module: &'ctx Module<'ctx, B, Unverified>,
-    ) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -143,9 +139,7 @@ impl StructSchema for RecursiveNode {
 
     const NAME: &'static str = "RecursiveNode";
 
-    fn field_types<'ctx, B>(
-        module: &'ctx Module<'ctx, B, Unverified>,
-    ) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -178,9 +172,7 @@ impl StructSchema for EmptyName {
 
     const NAME: &'static str = "";
 
-    fn field_types<'ctx, B>(
-        module: &'ctx Module<'ctx, B, Unverified>,
-    ) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -251,9 +243,7 @@ impl StructSchema for Rect {
 
     const NAME: &'static str = "Rect";
 
-    fn field_types<'ctx, B>(
-        module: &'ctx Module<'ctx, B, Unverified>,
-    ) -> Result<Vec<Type<'ctx, B>>, IrError>
+    fn field_types<'ctx, B>(module: ModuleView<'ctx, B>) -> Result<Vec<Type<'ctx, B>>, IrError>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -274,9 +264,9 @@ impl StructSchema for Rect {
 }
 
 fn poison_point<'ctx, B: ModuleBrand + 'ctx>(
-    module: &'ctx Module<'ctx, B>,
+    module: &'ctx Module<B>,
 ) -> Result<Constant<'ctx, B>, IrError> {
-    Ok(<Point as StructSchema>::ir_type(module)?
+    Ok(<Point as StructSchema>::ir_type(module.as_view())?
         .as_type()
         .get_poison()
         .as_constant())
@@ -288,8 +278,8 @@ fn poison_point<'ctx, B: ModuleBrand + 'ctx>(
 #[test]
 fn struct_schema_reuses_matching_named_body() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let first = <Point as StructSchema>::ir_type(&m)?;
-    let second = <Point as StructSchema>::ir_type(&m)?;
+    let first = <Point as StructSchema>::ir_type(m.as_view())?;
+    let second = <Point as StructSchema>::ir_type(m.as_view())?;
     assert_eq!(first.as_type(), second.as_type());
     let text = format!("{m}");
     assert_eq!(text.matches("%Point = type { i32, i32 }").count(), 1);
@@ -301,9 +291,9 @@ fn struct_schema_reuses_matching_named_body() -> Result<(), IrError> {
 #[test]
 fn struct_schema_rejects_mismatched_existing_named_body() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let _ = <Point as StructSchema>::ir_type(&m)?;
+    let _ = <Point as StructSchema>::ir_type(m.as_view())?;
     assert_eq!(
-        <BadPoint as StructSchema>::ir_type(&m),
+        <BadPoint as StructSchema>::ir_type(m.as_view()),
         Err(IrError::StructBodyMismatch {
             name: String::from("Point"),
         })
@@ -318,7 +308,7 @@ fn struct_schema_rejects_mismatched_existing_named_body() -> Result<(), IrError>
 fn struct_schema_rejects_recursive_named_body() -> Result<(), IrError> {
     let m = module_new!("schema")?;
     assert_eq!(
-        <RecursiveNode as StructSchema>::ir_type(&m),
+        <RecursiveNode as StructSchema>::ir_type(m.as_view()),
         Err(IrError::InvalidOperation {
             message: "recursive struct body",
         })
@@ -333,7 +323,7 @@ fn struct_schema_rejects_recursive_named_body() -> Result<(), IrError> {
 fn struct_schema_rejects_empty_identified_name() -> Result<(), IrError> {
     let m = module_new!("schema")?;
     assert_eq!(
-        <EmptyName as StructSchema>::ir_type(&m),
+        <EmptyName as StructSchema>::ir_type(m.as_view()),
         Err(IrError::InvalidOperation {
             message: "struct schema name must not be empty",
         })
@@ -351,7 +341,7 @@ fn struct_schema_params_are_branded_wrappers() -> Result<(), IrError> {
     let _: PointValue<'_, _> = point;
     assert_eq!(
         point.as_struct_value().ty().as_type(),
-        <Point as StructSchema>::ir_type(&m)?.as_type()
+        <Point as StructSchema>::ir_type(m.as_view())?.as_type()
     );
     Ok(())
 }
@@ -361,13 +351,13 @@ fn struct_schema_params_are_branded_wrappers() -> Result<(), IrError> {
 #[test]
 fn struct_schema_try_value_from_ir_wraps_raw_struct() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let point_ty = <Point as StructSchema>::ir_type(&m)?;
+    let point_ty = <Point as StructSchema>::ir_type(m.as_view())?;
     let fn_ty = m.fn_type(m.void_type(), [point_ty.as_type()], false);
     let f = m.add_function_dyn("raw_take_point", fn_ty, Linkage::External)?;
     let point = Point::try_value_from_ir(m.view(f).param(0)?)?;
     assert_eq!(
         point.as_struct_value().ty().as_type(),
-        <Point as StructSchema>::ir_type(&m)?.as_type()
+        <Point as StructSchema>::ir_type(m.as_view())?.as_type()
     );
     Ok(())
 }
@@ -377,7 +367,7 @@ fn struct_schema_try_value_from_ir_wraps_raw_struct() -> Result<(), IrError> {
 #[test]
 fn struct_schema_try_value_from_ir_rejects_wrong_schema() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let rect_ty = <Rect as StructSchema>::ir_type(&m)?;
+    let rect_ty = <Rect as StructSchema>::ir_type(m.as_view())?;
     let fn_ty = m.fn_type(m.void_type(), [rect_ty.as_type()], false);
     let f = m.add_function_dyn("raw_take_rect", fn_ty, Linkage::External)?;
     assert_eq!(
@@ -418,7 +408,7 @@ fn struct_fields_unpacks_manual_schema_into_params() -> Result<(), IrError> {
 #[test]
 fn struct_schema_extracts_and_inserts_typed_fields() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let point_ty = <Point as StructSchema>::ir_type(&m)?;
+    let point_ty = <Point as StructSchema>::ir_type(m.as_view())?;
     let fn_ty = m.fn_type(m.void_type(), [point_ty.as_type()], false);
     let f = m.add_function_dyn("edit", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -444,7 +434,7 @@ fn struct_schema_extracts_and_inserts_typed_fields() -> Result<(), IrError> {
 #[test]
 fn struct_schema_extract_field_mismatch_does_not_append_instruction() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let point_ty = <Point as StructSchema>::ir_type(&m)?;
+    let point_ty = <Point as StructSchema>::ir_type(m.as_view())?;
     let fn_ty = m.fn_type(m.void_type(), [point_ty.as_type()], false);
     let f = m.add_function_dyn("bad_extract", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -494,7 +484,7 @@ fn struct_schema_can_be_function_return() -> Result<(), IrError> {
 #[test]
 fn nested_struct_schema_accessors_return_nested_wrapper() -> Result<(), IrError> {
     let m = module_new!("schema")?;
-    let rect_ty = <Rect as StructSchema>::ir_type(&m)?;
+    let rect_ty = <Rect as StructSchema>::ir_type(m.as_view())?;
     let fn_ty = m.fn_type(m.void_type(), [rect_ty.as_type()], false);
     let f = m.add_function_dyn("read", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

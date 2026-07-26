@@ -198,7 +198,7 @@ pub trait ModuleBrand: Copy + core::fmt::Debug + Eq + Hash + 'static {}
 /// Brand for modules that opt out of compile-time identity separation.
 ///
 /// `DynBrand` is **exempt from the uniqueness registry**: arbitrarily many
-/// `Module<'_, DynBrand>` values may be live at once, they may be collected in
+/// `Module<DynBrand>` values may be live at once, they may be collected in
 /// a `Vec`, and they are separated from one another only by the runtime
 /// [`ModuleId`] tag. Reach for it when the module count is dynamic — a loop
 /// over translation units, a worker pool, a `Vec` of modules — where no single
@@ -460,9 +460,9 @@ impl<'ctx, B: ModuleBrand> From<&'ctx ModuleCore> for ModuleRef<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, S> From<&'ctx Module<'ctx, B, S>> for ModuleRef<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, S> From<&'ctx Module<B, S>> for ModuleRef<'ctx, B> {
     #[inline]
-    fn from(module: &'ctx Module<'ctx, B, S>) -> Self {
+    fn from(module: &'ctx Module<B, S>) -> Self {
         module.module_ref()
     }
 }
@@ -1167,6 +1167,88 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         self.fn_type(ret, core::iter::empty::<Type<'ctx, B>>(), is_var_arg)
     }
 
+    /// Get or create the identified struct type `%name`, leaving its body
+    /// unset. Pure type interning, so it belongs to the same
+    /// preservation-neutral family as the primitive constructors above.
+    #[inline]
+    pub fn named_struct(self, name: &str) -> StructType<'ctx, StructBodyDyn, B> {
+        let (id, _existed) = self.core.ctx.get_or_create_named_struct(name);
+        StructType::new(id, ModuleRef::new(self.core))
+    }
+
+    /// Look up an existing identified struct type by name, or `None`.
+    #[inline]
+    pub fn get_named_struct(self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
+        self.core
+            .ctx
+            .get_named_struct(name)
+            .map(|id| StructType::new(id, ModuleRef::new(self.core)))
+    }
+
+    /// Idempotently intern the named LLVM struct type described by schema `S`,
+    /// filling its body the first time.
+    ///
+    /// This lives on the read-only view for the same reason the primitive
+    /// constructors above do: it is preservation-**neutral**. It interns into
+    /// the context's type table and either fills a body that was empty or
+    /// confirms one that already matches — it never touches a function, block,
+    /// or global, and a mismatch is refused with
+    /// [`IrError::StructBodyMismatch`] rather than rewriting anything. That is
+    /// what lets [`crate::StructSchema`] and [`crate::IrField`] be declared
+    /// against a `ModuleView` instead of a `&Module<Unverified>` token —
+    /// which in turn is what lets [`crate::IRBuilder`] answer schema queries
+    /// without fabricating a module token it does not own.
+    ///
+    /// The *typestate* body setters — [`Module::set_struct_body`] and
+    /// [`Module::set_struct_body_dyn`], which drive an `Opaque` struct handle
+    /// to `BodySet` — stay on the token alone.
+    pub fn get_or_set_named_struct_body<S>(
+        self,
+    ) -> IrResult<StructType<'ctx, crate::struct_body_state::BodySet, B>>
+    where
+        S: StructSchema,
+    {
+        if S::NAME.is_empty() {
+            return Err(IrError::InvalidOperation {
+                message: "struct schema name must not be empty",
+            });
+        }
+        let field_types = S::field_types(self)?;
+        let elements: Box<[TypeSlot]> = field_types.iter().map(|t| t.id()).collect();
+        let (id, _existed) = self.core.ctx.get_or_create_named_struct(S::NAME);
+        let data = self
+            .core
+            .ctx
+            .type_data(id)
+            .as_struct()
+            .unwrap_or_else(|| unreachable!("named struct id stores struct data"));
+        {
+            let body = data.body.borrow();
+            if let Some(body) = body.as_ref() {
+                if body.packed == S::PACKED && body.elements.as_ref() == elements.as_ref() {
+                    return Ok(StructType::<crate::struct_body_state::BodySet, B>::new(
+                        id,
+                        ModuleRef::new(self.core),
+                    ));
+                }
+                return Err(IrError::StructBodyMismatch {
+                    name: S::NAME.to_owned(),
+                });
+            }
+        }
+        self.core.ctx.set_named_struct_body(
+            id,
+            StructBody {
+                elements,
+                packed: S::PACKED,
+            },
+        )?;
+        Ok(StructType::<crate::struct_body_state::BodySet, B>::new(
+            id,
+            ModuleRef::new(self.core),
+        ))
+    }
+
     /// Target extension type `target("name", type_params..., int_params...)`.
     #[inline]
     pub fn target_ext_type<Name, I, T, J>(
@@ -1273,9 +1355,9 @@ impl<'ctx, B: ModuleBrand> From<ModuleView<'ctx, B>> for ModuleRef<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, S> From<&'ctx Module<'ctx, B, S>> for ModuleView<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, S> From<&'ctx Module<B, S>> for ModuleView<'ctx, B> {
     #[inline]
-    fn from(module: &'ctx Module<'ctx, B, S>) -> Self {
+    fn from(module: &'ctx Module<B, S>) -> Self {
         module.as_view()
     }
 }
@@ -1466,49 +1548,20 @@ pub(super) struct ModuleCore {
     next_ssa_builder_id: core::cell::Cell<u32>,
 }
 
-/// Where a [`Module`] token's [`ModuleCore`] storage lives.
+/// Linear module token carrying a brand `B` and verification state `S`.
 ///
-/// The user-facing token always [`Owned`](CoreStore::Owned)s its core: a
-/// `Module` is the storage, not a borrow of storage parked in some caller's
-/// frame. That is what lets the token be *moved* (returned from a builder
-/// function, stored in a struct, threaded through a pass driver) instead of
-/// being pinned to the stack frame that happened to create it.
+/// The token **owns** its `ModuleCore` and borrows nothing, so it has no
+/// lifetime parameter at all: a `Module` *is* the storage, not a borrow of
+/// storage parked in some caller's frame. That is what lets the token be moved
+/// — returned from a builder function, stored in a struct field, collected into
+/// a `Vec`, sent across a thread boundary — instead of being pinned to the
+/// stack frame that created it.
 ///
-/// [`Borrowed`](CoreStore::Borrowed) is a crate-private hatch with exactly one
-/// consumer — [`Module::from_core`], which reconstructs an ephemeral token for
-/// [`crate::IRBuilder`]'s schema calls (the builder stores only
-/// `&ModuleCore`, and `IRBuilder::at_end` builds a builder from a block alone,
-/// with no token anywhere in scope). It is unreachable from outside the crate,
-/// so no `Module` a user can name is ever borrowed. Deleting it is a later
-/// slice's job and requires giving `IRBuilder` a real module token.
-enum CoreStore<'ctx> {
-    /// The token owns its storage (every user-facing module).
-    Owned(Box<ModuleCore>),
-    /// Crate-private ephemeral alias over storage a live token owns.
-    Borrowed(&'ctx ModuleCore),
-}
-
-impl CoreStore<'_> {
-    /// Borrow the storage. The returned borrow's region is the receiver's, so a
-    /// `&'ctx self` caller gets `&'ctx ModuleCore` and a short-borrow caller gets
-    /// a short one — one accessor covers both.
-    #[inline]
-    fn get(&self) -> &ModuleCore {
-        match self {
-            CoreStore::Owned(core) => core,
-            CoreStore::Borrowed(core) => core,
-        }
-    }
-}
-
-/// Linear module token carrying a generative brand `B` and verification state `S`.
-///
-/// The token **owns** its `ModuleCore`. Handle-minting methods therefore take
-/// `&'ctx self`: a handle tagged `'ctx` is a borrow *of the token*, so the
-/// borrow checker knows a live handle keeps the module alive. Because `'ctx` is
-/// covariant here (the brand `B` is separately invariant, so cross-module
-/// rejection is untouched), region inference simply shrinks `'ctx` to the
-/// borrow at each call site.
+/// Handles are the borrowing half: `m.view(id)` hands back a `Value<'a, B>`
+/// whose `'a` is a borrow *of this token*, so the borrow checker still knows a
+/// live handle keeps the module alive. The region lives on the handle, where it
+/// describes a real borrow, rather than on the module, where it described
+/// nothing.
 ///
 /// `Module` deliberately has **no** `Drop` impl: the typestate transitions
 /// ([`verify`](Self::verify), [`unverify`](Self::unverify)) move the owned core
@@ -1517,11 +1570,19 @@ impl CoreStore<'_> {
 /// `Drop` lives on the brand-registration *field* instead, which is legal
 /// precisely because a `Drop` field does not block moving fields out of a
 /// non-`Drop` struct.
-pub struct Module<'ctx, B: ModuleBrand, S = Unverified> {
-    store: CoreStore<'ctx>,
+///
+/// # `Send`
+///
+/// The brand is stored as `Invariant<B>` = `PhantomData<fn(B) -> B>`, which is
+/// `Send + Sync` whatever `B` is — so a module is `Send` even under a brand type
+/// that is deliberately `!Send`. `ModuleCore`'s interior mutability is `RefCell`
+/// (not `Sync`), so a module is `Send` but **not** `Sync`: it moves between
+/// threads, it is not shared between them.
+pub struct Module<B: ModuleBrand, S = Unverified> {
+    core: Box<ModuleCore>,
     /// Live claim on `B` in the process-global registry, for the tokens that
     /// hold one. `None` for registry-exempt tokens: [`Module::dynamic`]
-    /// ([`DynBrand`]) and the crate-private `from_core` alias.
+    /// ([`DynBrand`]).
     ///
     /// Moved along by every typestate transition, so a claim is released
     /// exactly once — when the last token over this module is dropped.
@@ -2457,7 +2518,7 @@ impl<'ctx> ModuleCore {
     }
 }
 
-impl Module<'static, DynBrand, Unverified> {
+impl Module<DynBrand, Unverified> {
     /// Construct a fresh module under the **named** brand `B`.
     ///
     /// At most one live module may hold a given brand type. A second call for a
@@ -2497,9 +2558,7 @@ impl Module<'static, DynBrand, Unverified> {
     /// [`IrError::BrandInUse`] if a live module already holds `B`;
     /// [`IrError::BrandRetired`] if `B` was retired by
     /// [`branded_once`](Self::branded_once).
-    pub fn branded<B: ModuleBrand>(
-        name: impl Into<String>,
-    ) -> IrResult<Module<'static, B, Unverified>> {
+    pub fn branded<B: ModuleBrand>(name: impl Into<String>) -> IrResult<Module<B, Unverified>> {
         Self::registered::<B>(name, false)
     }
 
@@ -2534,7 +2593,7 @@ impl Module<'static, DynBrand, Unverified> {
     /// [`IrError::BrandRetired`] if `B` has already been retired.
     pub fn branded_once<B: ModuleBrand>(
         name: impl Into<String>,
-    ) -> IrResult<Module<'static, B, Unverified>> {
+    ) -> IrResult<Module<B, Unverified>> {
         Self::registered::<B>(name, true)
     }
 
@@ -2556,12 +2615,12 @@ impl Module<'static, DynBrand, Unverified> {
     fn registered<B: ModuleBrand>(
         name: impl Into<String>,
         retire_on_drop: bool,
-    ) -> IrResult<Module<'static, B, Unverified>> {
+    ) -> IrResult<Module<B, Unverified>> {
         let name: String = name.into();
         let core = Box::new(ModuleCore::new(name));
         let registration = BrandGuard::<B>::claim(retire_on_drop)?;
         Ok(Module {
-            store: CoreStore::Owned(core),
+            core,
             registration: Some(registration),
             _brand: PhantomData,
             _state: PhantomData,
@@ -2581,10 +2640,10 @@ impl Module<'static, DynBrand, Unverified> {
     /// let modules: Vec<_> = (0..4).map(|i| Module::dynamic(format!("m{i}"))).collect();
     /// assert_eq!(modules.len(), 4);
     /// ```
-    pub fn dynamic(name: impl Into<String>) -> Module<'static, DynBrand, Unverified> {
+    pub fn dynamic(name: impl Into<String>) -> Module<DynBrand, Unverified> {
         let name: String = name.into();
         Module {
-            store: CoreStore::Owned(Box::new(ModuleCore::new(name))),
+            core: Box::new(ModuleCore::new(name)),
             registration: None,
             _brand: PhantomData,
             _state: PhantomData,
@@ -2592,13 +2651,13 @@ impl Module<'static, DynBrand, Unverified> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
+impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// Borrow the owned storage. Lifetime-eliding on purpose: a `&'ctx self`
     /// caller gets `&'ctx ModuleCore` (the handle-minting path), a short-borrow
     /// caller gets a short one (`Display`, the state transitions).
     #[inline]
     fn core(&self) -> &ModuleCore {
-        self.store.get()
+        &self.core
     }
 
     /// Owning module's [`ModuleId`].
@@ -2786,7 +2845,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
+impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// Allocate the next per-module [`crate::ssa_builder::SsaBuilderId`].
     #[inline]
     pub(crate) fn next_ssa_builder_id(&'ctx self) -> u32 {
@@ -2908,27 +2967,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
-    /// Crate-internal: reconstruct an unverified module token from the
-    /// raw core storage plus an already-established brand `B`. Lossless
-    /// inverse of [`Self::core_ref`] -- `IRBuilder` only stores
-    /// `&'ctx ModuleCore` internally (see `ir_builder.rs`), so builder
-    /// methods that need to call schema methods taking
-    /// `&'ctx Module<'ctx, B, Unverified>` (e.g. [`crate::IrField::ir_type`])
-    /// use this to reconstruct the typed view the builder was
-    /// originally positioned against.
-    #[inline]
-    pub(crate) fn from_core(core: &'ctx ModuleCore) -> Self {
-        Self {
-            store: CoreStore::Borrowed(core),
-            // An alias, not an owner: the real token still holds the claim, and
-            // this ephemeral one must not release it when it drops.
-            registration: None,
-            _brand: PhantomData,
-            _state: PhantomData,
-        }
-    }
-
+impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// `void`.
     #[inline]
     pub fn void_type(&'ctx self) -> VoidType<'ctx, B> {
@@ -3157,9 +3196,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         )
     }
 
+    /// Get or create the identified struct type `%name`, body unset.
+    /// Delegates to [`ModuleView::named_struct`].
     pub fn named_struct(&'ctx self, name: &str) -> StructType<'ctx, StructBodyDyn, B> {
-        let (id, _existed) = self.core().ctx.get_or_create_named_struct(name);
-        StructType::new(id, self.module_ref())
+        self.as_view().named_struct(name)
     }
 
     pub fn opaque_struct(
@@ -3183,58 +3223,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Ok(StructType::new(id, self.module_ref()))
     }
 
+    /// Look up an existing identified struct type by name. Delegates to
+    /// [`ModuleView::get_named_struct`].
     pub fn get_named_struct(&'ctx self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
-        self.core()
-            .ctx
-            .get_named_struct(name)
-            .map(|id| StructType::new(id, self.module_ref()))
+        self.as_view().get_named_struct(name)
     }
 
+    /// Idempotently intern schema `S`'s named struct type. Delegates to
+    /// [`ModuleView::get_or_set_named_struct_body`], which is where the schema
+    /// traits reach it.
     pub fn get_or_set_named_struct_body<S>(
         &'ctx self,
     ) -> IrResult<StructType<'ctx, crate::struct_body_state::BodySet, B>>
     where
         S: StructSchema,
     {
-        if S::NAME.is_empty() {
-            return Err(IrError::InvalidOperation {
-                message: "struct schema name must not be empty",
-            });
-        }
-        let field_types = S::field_types(self)?;
-        let elements: Box<[TypeSlot]> = field_types.iter().map(|t| t.id()).collect();
-        let (id, _existed) = self.core().ctx.get_or_create_named_struct(S::NAME);
-        let data = self
-            .core()
-            .ctx
-            .type_data(id)
-            .as_struct()
-            .unwrap_or_else(|| unreachable!("named struct id stores struct data"));
-        {
-            let body = data.body.borrow();
-            if let Some(body) = body.as_ref() {
-                if body.packed == S::PACKED && body.elements.as_ref() == elements.as_ref() {
-                    return Ok(StructType::<crate::struct_body_state::BodySet, B>::new(
-                        id,
-                        self.module_ref(),
-                    ));
-                }
-                return Err(IrError::StructBodyMismatch {
-                    name: S::NAME.to_owned(),
-                });
-            }
-        }
-        self.core().ctx.set_named_struct_body(
-            id,
-            StructBody {
-                elements,
-                packed: S::PACKED,
-            },
-        )?;
-        Ok(StructType::<crate::struct_body_state::BodySet, B>::new(
-            id,
-            self.module_ref(),
-        ))
+        self.as_view().get_or_set_named_struct_body::<S>()
     }
 
     pub fn set_struct_body_dyn<I, T>(
@@ -3324,8 +3328,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Ret: FunctionReturn,
         Params: FunctionParamList,
     {
-        let ret = Ret::ir_type(self)?;
-        let params = Params::ir_types(self)?;
+        let ret = Ret::ir_type(self.as_view())?;
+        let params = Params::ir_types(self.as_view())?;
         Ok(self.fn_type(ret, params, false))
     }
 
@@ -3346,8 +3350,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Ret: FunctionReturn,
         Params: FunctionParamList,
     {
-        let ret = Ret::ir_type(self)?;
-        let params = Params::ir_types(self)?;
+        let ret = Ret::ir_type(self.as_view())?;
+        let params = Params::ir_types(self.as_view())?;
         Ok(self.fn_type(ret, params, true))
     }
 
@@ -3944,12 +3948,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// token is gone, which is the whole point of the linear typestate. (This
     /// is also why `Module` must never grow a `Drop` impl — moving a field out
     /// of a `Drop` type is E0509.)
-    pub fn verify(self) -> IrResult<Module<'ctx, B, Verified>> {
+    pub fn verify(self) -> IrResult<Module<B, Verified>> {
         // A *short* view, not `as_view()`: `self` is about to be moved from, so
         // it cannot lend a `'ctx`-long borrow of itself.
         crate::verifier::Verifier::new(ModuleView::<B>::new(self.core())).run()?;
         Ok(Module {
-            store: self.store,
+            core: self.core,
             registration: self.registration,
             _brand: PhantomData,
             _state: PhantomData,
@@ -3957,12 +3961,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     }
 }
 
-impl<'ctx, B: ModuleBrand> Module<'ctx, B, Verified> {
+impl<B: ModuleBrand> Module<B, Verified> {
     /// Strip the verified state after mutation is required. Moves the owned
     /// core into the `Unverified` token.
-    pub fn unverify(self) -> Module<'ctx, B, Unverified> {
+    pub fn unverify(self) -> Module<B, Unverified> {
         Module {
-            store: self.store,
+            core: self.core,
             registration: self.registration,
             _brand: PhantomData,
             _state: PhantomData,
@@ -3970,7 +3974,7 @@ impl<'ctx, B: ModuleBrand> Module<'ctx, B, Verified> {
     }
 }
 
-impl<'ctx, B: ModuleBrand> Module<'ctx, B, Unverified> {
+impl<B: ModuleBrand> Module<B, Unverified> {
     /// Re-stamp this token `Verified` **without re-running the verifier**.
     ///
     /// Crate-internal plumbing for the read-only `Dyn…` pass pipelines
@@ -3987,9 +3991,9 @@ impl<'ctx, B: ModuleBrand> Module<'ctx, B, Unverified> {
     /// This replaces the old `scratch_unverified`, which handed out a *second*
     /// live token over the same storage — impossible now that a token owns its
     /// core, and undesirable regardless.
-    pub(crate) fn assume_verified(self) -> Module<'ctx, B, Verified> {
+    pub(crate) fn assume_verified(self) -> Module<B, Verified> {
         Module {
-            store: self.store,
+            core: self.core,
             registration: self.registration,
             _brand: PhantomData,
             _state: PhantomData,
@@ -4002,14 +4006,16 @@ impl<'ctx, B: ModuleBrand> Module<'ctx, B, Unverified> {
 // guard hashmap mutation, never the arena, so iteration / accessor
 // borrows of payload data are safe even while construction proceeds.
 //
-// `Module<'ctx>: !Sync` falls out of the `RefCell` fields. `Send` is
-// blocked by `&'ctx` references in handles transitively, which is fine
-// for a "one context per thread" model.
+// `Module<B, S>: !Sync` falls out of those `RefCell` fields: a module is not
+// shared between threads. It *is* `Send` — it owns its storage and borrows
+// nothing, and the brand rides as `Invariant<B>`, which is `Send` whatever `B`
+// is — so a module can be moved to another thread mid-authoring and finished
+// there. See `tests/module_send.rs`.
 
-impl<'ctx, B: ModuleBrand, S> core::fmt::Display for Module<'ctx, B, S> {
+impl<B: ModuleBrand, S> core::fmt::Display for Module<B, S> {
     /// Print the module as textual `.ll`. Mirrors `Module::print` from
     /// `llvm/lib/IR/AsmWriter.cpp`.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        crate::asm_writer::fmt_module(f, self.store.get())
+        crate::asm_writer::fmt_module(f, &self.core)
     }
 }

@@ -237,7 +237,7 @@ fn an_unwind_releases_the_brand() {
 /// generative brand structurally cannot express.
 #[test]
 fn dyn_brand_modules_coexist_and_collect() {
-    let modules: Vec<Module<'static, DynBrand, Unverified>> = (0..16)
+    let modules: Vec<Module<DynBrand, Unverified>> = (0..16)
         .map(|i| Module::dynamic(format!("dyn{i}")))
         .collect();
 
@@ -312,7 +312,7 @@ fn a_named_brand_emits_byte_identical_ir() -> Result<(), IrError> {
     brand!(Emitting);
 
     fn build<'ctx, B: ModuleBrand + 'ctx>(
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
     ) -> Result<String, IrError> {
         let i32_ty = module.i32_type();
         let fn_ty = module.fn_type(i32_ty, [i32_ty.as_type()], false);

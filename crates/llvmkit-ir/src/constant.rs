@@ -491,14 +491,14 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'
         self.into_erased().name()
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         self.into_erased().set_name(module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &'ctx Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
 }

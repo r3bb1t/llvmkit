@@ -15,15 +15,15 @@ error[E0382]: borrow of moved value: `module`
  --> tests/compile_fail/saved_global_handle_requires_unverified_token.rs:8:24
   |
 4 |     let module = Module::dynamic("saved-global");
-  |         ------ move occurs because `module` has type `Module<'_, DynBrand>`, which does not implement the `Copy` trait
+  |         ------ move occurs because `module` has type `Module<DynBrand>`, which does not implement the `Copy` trait
 ...
 7 |     let _verified = module.verify()?;
   |                            -------- `module` moved due to this method call
 8 |     global.set_linkage(&module, Linkage::Internal);
   |                        ^^^^^^^ value borrowed here after move
   |
-note: `Module::<'ctx, B>::verify` takes ownership of the receiver `self`, which moves `module`
+note: `Module::<B>::verify` takes ownership of the receiver `self`, which moves `module`
  --> src/module.rs
   |
-  |     pub fn verify(self) -> IrResult<Module<'ctx, B, Verified>> {
+  |     pub fn verify(self) -> IrResult<Module<B, Verified>> {
   |                   ^^^^

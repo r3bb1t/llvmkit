@@ -1047,7 +1047,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
     /// [`IrError::AnalysisNotRegistered`] if `A` was never registered.
     pub fn get_result<'v, A>(
         &mut self,
-        module: &'v crate::module::Module<'v, B, crate::module::Verified>,
+        module: &'v crate::module::Module<B, crate::module::Verified>,
     ) -> IrResult<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,

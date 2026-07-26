@@ -242,7 +242,7 @@ impl<B: ModuleBrand> FunctionPass<B> for InsertMergePhi<B> {
 /// phi incomings.
 #[allow(clippy::type_complexity)]
 fn build_diamond<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+    m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> IrResult<(
     llvmkit_ir::FunctionId<Dyn, B>,
     ValueId<B>,
@@ -548,7 +548,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchCase<B> {
 /// and adds `[ %ev, %entry ]` to `new`'s phi.
 #[allow(clippy::type_complexity)]
 fn build_switch_redirect<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+    m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> IrResult<(
     llvmkit_ir::FunctionId<Dyn, B>,
     BlockId<Dyn, B>,
@@ -1041,7 +1041,7 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
 /// guards below. Returns the function and the `Dyn` labels for `old`/`new`.
 #[allow(clippy::type_complexity)]
 fn build_cond_br_pair<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+    m: &'ctx Module<B, llvmkit_ir::Unverified>,
     then_is_new: bool,
 ) -> IrResult<(
     llvmkit_ir::FunctionId<Dyn, B>,
@@ -1187,7 +1187,7 @@ fn redirect_edge_rejects_cond_br_already_reaching_new() -> Result<(), IrError> {
 /// redirect test — a redirect onto it seeds an empty `phi_values`).
 #[allow(clippy::type_complexity)]
 fn build_cond_br_both_arms_phi<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+    m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> IrResult<(llvmkit_ir::FunctionId<Dyn, B>, BlockId<Dyn, B>)> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);

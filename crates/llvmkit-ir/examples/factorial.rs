@@ -53,7 +53,7 @@ use llvmkit_ir::{
     IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module, ModuleBrand, module_new,
 };
 
-pub fn build<B: ModuleBrand>(m: &Module<'_, B>) -> Result<(), IrError> {
+pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m

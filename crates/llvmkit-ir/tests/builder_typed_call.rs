@@ -252,9 +252,7 @@ fn build_varargs_call_printf_shape_two_fixed_args_and_int_tail() -> Result<(), I
 /// CallInst)` (both paths port the same operand-wiring assertions).
 #[test]
 fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<(), IrError> {
-    fn build_typed<'ctx, B: ModuleBrand + 'ctx>(
-        m: &Module<'ctx, B, Unverified>,
-    ) -> Result<(), IrError> {
+    fn build_typed<'ctx, B: ModuleBrand + 'ctx>(m: &Module<B, Unverified>) -> Result<(), IrError> {
         let callee = m.add_typed_function::<i32, (i32, i32), _>("callee", Linkage::External)?;
         let caller = m.add_typed_function::<i32, (i32, i32), _>("caller", Linkage::External)?;
         let entry = m.view(caller).append_basic_block(m, "entry");
@@ -265,9 +263,7 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
         b.build_ret(ret_val)?;
         Ok(())
     }
-    fn build_dyn<'ctx, B: ModuleBrand + 'ctx>(
-        m: &Module<'ctx, B, Unverified>,
-    ) -> Result<(), IrError> {
+    fn build_dyn<'ctx, B: ModuleBrand + 'ctx>(m: &Module<B, Unverified>) -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         // The callee stays typed: `build_call_dyn` propagates the
         // callee's return marker into the `CallInst`, and the dyn arm's
@@ -320,9 +316,7 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
 #[test]
 fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_print()
 -> Result<(), IrError> {
-    fn build_typed<'ctx, B: ModuleBrand + 'ctx>(
-        m: &Module<'ctx, B, Unverified>,
-    ) -> Result<(), IrError> {
+    fn build_typed<'ctx, B: ModuleBrand + 'ctx>(m: &Module<B, Unverified>) -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let host_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
@@ -336,9 +330,7 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
         b.build_ret(ret_val)?;
         Ok(())
     }
-    fn build_dyn<'ctx, B: ModuleBrand + 'ctx>(
-        m: &Module<'ctx, B, Unverified>,
-    ) -> Result<(), IrError> {
+    fn build_dyn<'ctx, B: ModuleBrand + 'ctx>(m: &Module<B, Unverified>) -> Result<(), IrError> {
         let i32_ty = m.i32_type();
         let ptr_ty = m.ptr_type(0);
         let host_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);

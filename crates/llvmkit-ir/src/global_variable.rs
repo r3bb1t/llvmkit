@@ -307,11 +307,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// `GlobalVariable::setInitializer`. Errors with
     /// [`IrError::TypeMismatch`] when the initializer's type does not
     /// match the global's value type. Module provenance is enforced by `B`.
-    pub fn set_initializer<C>(
-        self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
-        init: C,
-    ) -> IrResult<()>
+    pub fn set_initializer<C>(self, _module: &'ctx Module<B, Unverified>, init: C) -> IrResult<()>
     where
         C: IsConstant<'ctx, B>,
     {
@@ -328,7 +324,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     }
 
     /// Clear the initializer.
-    pub fn clear_initializer(self, _module: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_initializer(self, _module: &'ctx Module<B, Unverified>) {
         self.data().initializer.set(None);
     }
 
@@ -340,7 +336,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
 
     /// Update the linkage. Mirrors `GlobalValue::setLinkage`.
     #[inline]
-    pub fn set_linkage(self, _module: &'ctx Module<'ctx, B, Unverified>, linkage: Linkage) {
+    pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage) {
         self.data().linkage.set(linkage);
     }
 
@@ -352,7 +348,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
 
     /// Update visibility. Mirrors `GlobalValue::setVisibility`.
     #[inline]
-    pub fn set_visibility(self, _module: &'ctx Module<'ctx, B, Unverified>, vis: Visibility) {
+    pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, vis: Visibility) {
         self.data().visibility.set(vis);
     }
 
@@ -365,11 +361,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// Update DLL storage class. Mirrors
     /// `GlobalValue::setDLLStorageClass`.
     #[inline]
-    pub fn set_dll_storage_class(
-        self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
-        cls: DllStorageClass,
-    ) {
+    pub fn set_dll_storage_class(self, _module: &'ctx Module<B, Unverified>, cls: DllStorageClass) {
         self.data().dll_storage_class.set(cls);
     }
 
@@ -382,11 +374,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// Update thread-local mode. Mirrors
     /// `GlobalValue::setThreadLocalMode`.
     #[inline]
-    pub fn set_thread_local_mode(
-        self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
-        tlm: ThreadLocalMode,
-    ) {
+    pub fn set_thread_local_mode(self, _module: &'ctx Module<B, Unverified>, tlm: ThreadLocalMode) {
         self.data().thread_local_mode.set(tlm);
     }
 
@@ -399,7 +387,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// Update unnamed-addr marker. Mirrors
     /// `GlobalValue::setUnnamedAddr`.
     #[inline]
-    pub fn set_unnamed_addr(self, _module: &'ctx Module<'ctx, B, Unverified>, value: UnnamedAddr) {
+    pub fn set_unnamed_addr(self, _module: &'ctx Module<B, Unverified>, value: UnnamedAddr) {
         self.data().unnamed_addr.set(value);
     }
 
@@ -411,7 +399,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
 
     /// Set or clear the alignment. Mirrors `GlobalValue::setAlignment`.
     #[inline]
-    pub fn set_align(self, _module: &'ctx Module<'ctx, B, Unverified>, align: MaybeAlign) {
+    pub fn set_align(self, _module: &'ctx Module<B, Unverified>, align: MaybeAlign) {
         self.data().align.set(align);
     }
 
@@ -428,7 +416,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     }
 
     /// Set the section. Mirrors `GlobalValue::setSection`.
-    pub fn set_section<S>(self, _module: &'ctx Module<'ctx, B, Unverified>, section: S)
+    pub fn set_section<S>(self, _module: &'ctx Module<B, Unverified>, section: S)
     where
         S: Into<String>,
     {
@@ -436,7 +424,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     }
 
     /// Clear the section.
-    pub fn clear_section(self, _module: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_section(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().section.borrow_mut() = None;
     }
 
@@ -448,7 +436,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
 
     /// Set the partition. Mirrors
     /// `GlobalValue::setPartition`.
-    pub fn set_partition<P>(self, _module: &'ctx Module<'ctx, B, Unverified>, partition: P)
+    pub fn set_partition<P>(self, _module: &'ctx Module<B, Unverified>, partition: P)
     where
         P: Into<String>,
     {
@@ -456,18 +444,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     }
 
     /// Clear the partition.
-    pub fn clear_partition(self, _module: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_partition(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().partition.borrow_mut() = None;
     }
 
     /// Toggle the `externally_initialized` marker. Mirrors
     /// `GlobalVariable::setExternallyInitialized`.
     #[inline]
-    pub fn set_externally_initialized(
-        self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
-        value: bool,
-    ) {
+    pub fn set_externally_initialized(self, _module: &'ctx Module<B, Unverified>, value: bool) {
         self.data().externally_initialized.set(value);
     }
 
@@ -483,7 +467,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// ties the comdat to the same module as this global.
     pub fn set_comdat(
         self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         comdat: ComdatRef<'ctx, B>,
     ) -> IrResult<()> {
         *self.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
@@ -491,7 +475,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     }
 
     /// Clear the attached comdat.
-    pub fn clear_comdat(self, _module: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_comdat(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().comdat.borrow_mut() = None;
     }
 
@@ -501,7 +485,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
 
     pub fn set_metadata(
         self,
-        _module: &'ctx Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         kind: crate::metadata::MetadataAttachmentKind,
         id: crate::metadata::MetadataSlot,
     ) {
@@ -547,7 +531,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalVariable<'ctx, B> {
     fn name(self) -> Option<String> {
         self.into_erased().name()
     }
-    fn set_name<Name>(self, _module_token: &'ctx Module<'ctx, B, Unverified>, _name: Name)
+    fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
     where
         Name: Into<String>,
     {
@@ -555,7 +539,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalVariable<'ctx, B> {
         // -- they participate in the module's name table. Renaming
         // requires a dedicated path that keeps the table consistent.
     }
-    fn clear_name(self, _module_token: &'ctx Module<'ctx, B, Unverified>) {}
+    fn clear_name(self, _module_token: &'ctx Module<B, Unverified>) {}
 }
 impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalVariable<'_, B> {
     fn debug_loc(self) -> Option<DebugLoc> {

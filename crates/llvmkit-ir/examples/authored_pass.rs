@@ -76,7 +76,7 @@ fn main() -> Result<(), IrError> {
     // The driver names the function by **id**: it consumes the module token,
     // and a view would be a borrow of the very token being moved.
     // `as_function` drops the parameter schema without touching the module.
-    let verified: Module<'_, _, Verified> = run_function_pass(
+    let verified: Module<_, Verified> = run_function_pass(
         EntryReachable { flag: flag.clone() },
         verified,
         f.as_function(),
@@ -85,7 +85,7 @@ fn main() -> Result<(), IrError> {
     println!("entry-reachable = {}", flag.get());
 
     // The `RewriteModule` module pass downgrades to `Unverified`.
-    let rewritten: Module<'_, _, Unverified> =
+    let rewritten: Module<_, Unverified> =
         run_module_pass(AddMarkerGlobal, verified, &mut analyses)?;
     println!(
         "globals after add-marker-global = {}",

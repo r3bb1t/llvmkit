@@ -447,7 +447,7 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
 
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &'ctx Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
@@ -456,7 +456,7 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(&self, module_token: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_name(&self, module_token: &'ctx Module<B, Unverified>) {
         self.as_view().clear_name(module_token);
     }
 
@@ -563,7 +563,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
 
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &'ctx Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
@@ -572,7 +572,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(&self, module_token: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_name(&self, module_token: &'ctx Module<B, Unverified>) {
         self.to_erased().clear_name(module_token);
     }
 
@@ -889,7 +889,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// `I->replaceAllUsesWith(V); I->eraseFromParent();`.
     pub fn replace_all_uses_with<V: IsValue<'ctx, B>>(
         self,
-        module_token: &'ctx Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         replacement: V,
     ) -> IrResult<()> {
         let new_value = replacement.into_erased();
@@ -952,7 +952,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// `Instruction::eraseFromParent` in `lib/IR/Instruction.cpp`.
     ///
     /// Consumes `self`: use-after-erase is a *compile* error.
-    pub fn erase_from_parent(self, module_token: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn erase_from_parent(self, module_token: &'ctx Module<B, Unverified>) {
         let self_id = self.id;
         let module = module_token.core_ref();
         remove_local_name_from_parent(self.to_erased());
@@ -973,7 +973,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// Mirrors `Instruction::removeFromParent` in `lib/IR/Instruction.cpp`.
     pub fn detach_from_parent(
         self,
-        module_token: &'ctx Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
     ) -> Instruction<'ctx, state::Detached, B> {
         let module = module_token.core_ref();
         let self_id = self.id;
@@ -1000,7 +1000,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// `lib/IR/Instruction.cpp`.
     pub fn move_before(
         self,
-        module_token: &'ctx Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<()> {
         let module = module_token.core_ref();
@@ -1043,7 +1043,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// `other`'s parent block. Mirrors `Instruction::moveAfter`.
     pub fn move_after(
         self,
-        module_token: &'ctx Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<()> {
         let module = module_token.core_ref();
@@ -1087,7 +1087,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// `lib/IR/Instruction.cpp`.
     pub fn insert_before(
         self,
-        module_token: &'ctx Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
@@ -1110,7 +1110,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// `other`'s parent block. Mirrors `Instruction::insertAfter`.
     pub fn insert_after(
         self,
-        module_token: &'ctx Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
@@ -1133,7 +1133,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// instruction list. Mirrors `Instruction::insertInto(BB, BB->end())`.
     pub fn append_to<R: ReturnMarker>(
         self,
-        module_token: &'ctx Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         block: &BasicBlock<'ctx, R, Unterminated, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
@@ -1152,7 +1152,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// the value-arena slot tombstoned (still occupied for id-stability,
     /// but unreferenced by any block). Mirrors `Instruction::deleteValue`
     /// in `lib/IR/Instruction.cpp`.
-    pub fn drop_detached(self, module_token: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn drop_detached(self, module_token: &'ctx Module<B, Unverified>) {
         let self_id = self.id;
         let module = module_token.core_ref();
         deregister_operand_uses(self_id, &self.data().kind, module);
@@ -1458,14 +1458,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for InstructionView<'ctx, B> 
         InstructionView::name(&self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         InstructionView::set_name(&self, module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &'ctx Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         InstructionView::clear_name(&self, module_token);
     }
 }
@@ -1515,14 +1515,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Instruction<'ctx, state::
         Instruction::name(&self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         Instruction::set_name(&self, module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &'ctx Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         Instruction::clear_name(&self, module_token);
     }
 }
@@ -1761,7 +1761,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
     /// empty-phi contract.
     pub fn remove_incoming(
         &self,
-        module_token: &'ctx Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         index: u32,
     ) -> IrResult<Value<'ctx, B>> {
         match self {

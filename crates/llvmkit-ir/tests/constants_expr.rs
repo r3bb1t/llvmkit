@@ -5,7 +5,7 @@ use llvmkit_ir::{
     IrError, Linkage, Module, ModuleBrand, OverflowingConstantExprFlags, module_new,
 };
 
-fn module_text<'ctx, B: ModuleBrand, S>(m: &Module<'ctx, B, S>) -> String {
+fn module_text<B: ModuleBrand, S>(m: &Module<B, S>) -> String {
     format!("{m}")
 }
 

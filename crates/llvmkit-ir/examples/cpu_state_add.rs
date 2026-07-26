@@ -38,7 +38,7 @@ use llvmkit_ir::{
     AttrKind, IRBuilder, IntValue, IrError, Linkage, Module, ModuleBrand, UnnamedAddr, module_new,
 };
 
-pub fn build<B: ModuleBrand>(m: &Module<'_, B>) -> Result<(), IrError> {
+pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
 

@@ -661,7 +661,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// Set or clear the textual name.
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &'ctx Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
@@ -670,7 +670,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(&self, module_token: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_name(&self, module_token: &'ctx Module<B, Unverified>) {
         self.to_erased().clear_name(module_token);
     }
 
@@ -845,7 +845,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// `BasicBlock::splice` in `lib/IR/BasicBlock.cpp`.
     pub fn splice_into<R2: ReturnMarker, S2: BlockTerminationState>(
         self,
-        module_token: &'ctx Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         dest: BasicBlock<'ctx, R2, S2, B>,
     ) -> IrResult<()> {
         let _ = module_token;
@@ -894,7 +894,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// block. Mirrors `BasicBlock::splitBasicBlock` in `lib/IR/BasicBlock.cpp`.
     pub fn split_at<Name>(
         self,
-        module_token: &'ctx Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         before: &InstructionView<'ctx, B>,
         name: Name,
     ) -> IrResult<BasicBlock<'ctx, R, Unterminated, B>>
@@ -956,14 +956,14 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         BasicBlock::name(&self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         BasicBlock::set_name(&self, module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &'ctx Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         BasicBlock::clear_name(&self, module_token);
     }
 }

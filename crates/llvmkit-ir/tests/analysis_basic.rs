@@ -149,7 +149,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B>
 /// number of live modules, which is exactly what a reusable fixture needs.
 fn with_sample_module<R, F>(run: F) -> Result<R, IrError>
 where
-    F: FnOnce(Module<'static, DynBrand, Unverified>) -> Result<R, IrError>,
+    F: FnOnce(Module<DynBrand, Unverified>) -> Result<R, IrError>,
 {
     let module = Module::dynamic("analysis");
     let f = module

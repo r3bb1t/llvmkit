@@ -6,5 +6,5 @@ error[E0624]: method `module_mut` is private
    |
   ::: src/pass_context.rs
    |
-   |     pub(crate) fn module_mut(&self) -> &'m Module<'m, B, Unverified> {
-   |     ---------------------------------------------------------------- private method defined here
+   |     pub(crate) fn module_mut(&self) -> &'m Module<B, Unverified> {
+   |     ------------------------------------------------------------ private method defined here

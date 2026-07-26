@@ -33,7 +33,7 @@ use llvmkit_ir::{
 /// with [`NoFolder`] so the constant add survives to be a real trivially-dead
 /// instruction (mirrors `tests/pipeline_basic.rs`).
 fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, Unverified>,
+    m: &'ctx Module<B, Unverified>,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
@@ -51,7 +51,7 @@ fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
 
 /// `i32 @f()` whose entry just returns a constant — no dead instruction.
 fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, Unverified>,
+    m: &'ctx Module<B, Unverified>,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
@@ -90,7 +90,7 @@ fn erase_dead_instructions<'m, 'ctx, B: ModuleBrand + 'ctx>(
 /// Meta reader: yields a function pass's `NAME`/`REQUIRED` consts. The `witness`
 /// module fixes `'ctx`/`B` and `_pass` fixes `P` by inference, so no un-nameable
 /// brand has to be spelled.
-fn fn_pass_meta<'ctx, B, P>(_witness: &Module<'ctx, B, Verified>, _pass: &P) -> (&'static str, bool)
+fn fn_pass_meta<'ctx, B, P>(_witness: &Module<B, Verified>, _pass: &P) -> (&'static str, bool)
 where
     B: ModuleBrand + 'ctx,
     P: FunctionPass<B>,
@@ -99,10 +99,7 @@ where
 }
 
 /// Meta reader for a module pass — the module-level mirror of [`fn_pass_meta`].
-fn mod_pass_meta<'ctx, B, P>(
-    _witness: &Module<'ctx, B, Verified>,
-    _pass: &P,
-) -> (&'static str, bool)
+fn mod_pass_meta<'ctx, B, P>(_witness: &Module<B, Verified>, _pass: &P) -> (&'static str, bool)
 where
     B: ModuleBrand + 'ctx,
     P: ModulePass<B>,
@@ -163,7 +160,7 @@ fn macro_function_pass_matches_handwritten() -> Result<(), IrError> {
             "no `required` flag ⇒ REQUIRED stays the false default"
         );
 
-        let out: Module<'_, _, Unverified> =
+        let out: Module<_, Unverified> =
             run_function_pass(MacroEraser, verified, f, &mut analyses)?;
         format!("{}", out.verify()?)
     };
@@ -174,8 +171,7 @@ fn macro_function_pass_matches_handwritten() -> Result<(), IrError> {
         let f = build_dead_add(&m)?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let out: Module<'_, _, Unverified> =
-            run_function_pass(HandEraser, verified, f, &mut analyses)?;
+        let out: Module<_, Unverified> = run_function_pass(HandEraser, verified, f, &mut analyses)?;
         format!("{}", out.verify()?)
     };
 
@@ -235,7 +231,7 @@ fn macro_function_pass_with_requires_reads_analysis_and_stays_verified() -> Resu
 
     // The `Inspect` rung keeps the module verified: the explicit `Verified`
     // annotation is the compile-time half of the lock.
-    let out: Module<'_, _, Verified> = run_function_pass(pass, verified, f, &mut analyses)?;
+    let out: Module<_, Verified> = run_function_pass(pass, verified, f, &mut analyses)?;
 
     assert!(
         reachable.get(),
@@ -307,8 +303,7 @@ fn macro_module_pass_matches_handwritten() -> Result<(), IrError> {
 
         // `RewriteModule` downgrades: the explicit `Unverified` binding is the
         // compile-time half of the lock.
-        let out: Module<'_, _, Unverified> =
-            run_module_pass(MacroAddGlobal, verified, &mut analyses)?;
+        let out: Module<_, Unverified> = run_module_pass(MacroAddGlobal, verified, &mut analyses)?;
         assert_eq!(out.globals().len(), 1, "the macro pass added the global");
         format!("{}", out.verify()?)
     };
@@ -318,8 +313,7 @@ fn macro_module_pass_matches_handwritten() -> Result<(), IrError> {
         let _f = build_ret_i32(&m)?;
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let out: Module<'_, _, Unverified> =
-            run_module_pass(HandAddGlobal, verified, &mut analyses)?;
+        let out: Module<_, Unverified> = run_module_pass(HandAddGlobal, verified, &mut analyses)?;
         format!("{}", out.verify()?)
     };
 

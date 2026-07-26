@@ -82,7 +82,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
 
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(self, module_token: &'ctx Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
@@ -91,7 +91,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(self, module_token: &'ctx Module<'ctx, B, Unverified>) {
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
 }
@@ -126,14 +126,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Argument<'ctx, B> {
         Argument::name(self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &'ctx Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         Argument::set_name(self, module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &'ctx Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         Argument::clear_name(self, module_token);
     }
 }

@@ -72,14 +72,14 @@
 //!
 //!     // 1. Single-pass driver. `CountBlocks` is `Inspect`, so the module is
 //!     //    still `Verified` on the way out (the explicit binding proves it).
-//!     let verified: Module<'_, _, Verified> =
+//!     let verified: Module<_, Verified> =
 //!         run_function_pass(CountBlocks, verified, f, &mut analyses)?;
 //!
 //!     // 2. A compile-time tuple pipeline of two `PatchBody` passes, run in
 //!     //    written order. The output typestate folds the members' rungs: any
 //!     //    mutator ⇒ `Module<Unverified>`, so re-verifying is enforced by the
 //!     //    type system, not by convention.
-//!     let cleaned: Module<'_, _, Unverified> =
+//!     let cleaned: Module<_, Unverified> =
 //!         function_pipeline((InstSimplifyPass, DcePass)).run(verified, f, &mut analyses)?;
 //!     let reverified = cleaned.verify()?;
 //!
@@ -88,7 +88,7 @@
 //!     //    module threads through `Verified`.
 //!     let mut read_only = DynReadOnlyFunctionPipeline::new();
 //!     read_only.push(CountBlocks);
-//!     let _final: Module<'_, _, Verified> = read_only.run(reverified, f, &mut analyses)?;
+//!     let _final: Module<_, Verified> = read_only.run(reverified, f, &mut analyses)?;
 //!     Ok(())
 //! }
 //! ```
@@ -258,20 +258,20 @@ pub trait PassExecution: PipelineVerdict + pass_execution_sealed::Sealed {
 }
 
 impl PassExecution for StaysVerified {
-    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<'ctx, B, Verified>;
+    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<B, Verified>;
 
     fn out_module_view<'a, 'ctx, B: ModuleBrand + 'ctx>(
-        out: &'a Module<'ctx, B, Verified>,
+        out: &'a Module<B, Verified>,
     ) -> ModuleView<'a, B> {
         out.as_view()
     }
 }
 
 impl PassExecution for Downgrades {
-    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<'ctx, B, Unverified>;
+    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<B, Unverified>;
 
     fn out_module_view<'a, 'ctx, B: ModuleBrand + 'ctx>(
-        out: &'a Module<'ctx, B, Unverified>,
+        out: &'a Module<B, Unverified>,
     ) -> ModuleView<'a, B> {
         out.as_view()
     }
@@ -285,7 +285,7 @@ impl PassExecution for Downgrades {
 /// typestate move instead of threading one across it.
 #[inline]
 fn view_in<'a, 'ctx, B, S>(
-    module: &'a Module<'ctx, B, S>,
+    module: &'a Module<B, S>,
     function: FunctionId<Dyn, B>,
 ) -> FunctionView<'a, B>
 where
@@ -320,7 +320,7 @@ pub trait FnRungExecute: FnAccess + fn_rung_sealed::Sealed {
     /// to be minted *inside*, against whichever token the rung produces.
     fn execute<'ctx, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         function: FunctionId<Dyn, B>,
         results: R::ResultRefs<'_>,
     ) -> IrResult<(
@@ -337,10 +337,10 @@ pub trait FnRungExecute: FnAccess + fn_rung_sealed::Sealed {
 impl FnRungExecute for Inspect {
     fn execute<'ctx, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         function: FunctionId<Dyn, B>,
         results: R::ResultRefs<'_>,
-    ) -> IrResult<(FnReport, Module<'ctx, B, Verified>)>
+    ) -> IrResult<(FnReport, Module<B, Verified>)>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
@@ -358,10 +358,10 @@ impl FnRungExecute for Inspect {
 impl FnRungExecute for PatchBody {
     fn execute<'ctx, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         function: FunctionId<Dyn, B>,
         results: R::ResultRefs<'_>,
-    ) -> IrResult<(FnReport, Module<'ctx, B, Unverified>)>
+    ) -> IrResult<(FnReport, Module<B, Unverified>)>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
@@ -379,10 +379,10 @@ impl FnRungExecute for PatchBody {
 impl FnRungExecute for ReshapeCfg {
     fn execute<'ctx, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         function: FunctionId<Dyn, B>,
         results: R::ResultRefs<'_>,
-    ) -> IrResult<(FnReport, Module<'ctx, B, Unverified>)>
+    ) -> IrResult<(FnReport, Module<B, Unverified>)>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
@@ -410,7 +410,7 @@ pub trait ModRungExecute: ModAccess + mod_rung_sealed::Sealed {
     /// Run `pass` over `module` at this rung, given the prefetched `results`.
     fn execute<'ctx, 'r, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         mam: &'r ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
         results: R::ResultRefs<'r>,
@@ -428,11 +428,11 @@ pub trait ModRungExecute: ModAccess + mod_rung_sealed::Sealed {
 impl ModRungExecute for Inspect {
     fn execute<'ctx, 'r, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         mam: &'r ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
         results: R::ResultRefs<'r>,
-    ) -> IrResult<(ModReport, Module<'ctx, B, Verified>)>
+    ) -> IrResult<(ModReport, Module<B, Verified>)>
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
@@ -448,11 +448,11 @@ impl ModRungExecute for Inspect {
 impl ModRungExecute for RewriteModule {
     fn execute<'ctx, 'r, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         mam: &'r ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
         results: R::ResultRefs<'r>,
-    ) -> IrResult<(ModReport, Module<'ctx, B, Unverified>)>
+    ) -> IrResult<(ModReport, Module<B, Unverified>)>
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
@@ -474,7 +474,7 @@ impl ModRungExecute for RewriteModule {
 /// downgraded `Module<Unverified>` for a mutating one (D8).
 pub fn run_function_pass<'ctx, B, P, F>(
     mut pass: P,
-    module: Module<'ctx, B, Verified>,
+    module: Module<B, Verified>,
     function: F,
     analyses: &mut Analyses<'ctx, B>,
 ) -> IrResult<<<P::Access as FnAccess>::Verdict as PassExecution>::OutModule<'ctx, B>>
@@ -527,7 +527,7 @@ where
 /// preservation set.
 pub fn run_module_pass<'ctx, B, P>(
     mut pass: P,
-    module: Module<'ctx, B, Verified>,
+    module: Module<B, Verified>,
     analyses: &mut Analyses<'ctx, B>,
 ) -> IrResult<<<P::Access as ModAccess>::Verdict as PassExecution>::OutModule<'ctx, B>>
 where
@@ -590,7 +590,7 @@ impl VerdictCarry for StaysVerified {
 }
 
 impl VerdictCarry for Downgrades {
-    type Token<'m, B: ModuleBrand + 'm> = &'m Module<'m, B, Unverified>;
+    type Token<'m, B: ModuleBrand + 'm> = &'m Module<B, Unverified>;
 }
 
 /// Weakens a pipeline verdict's carried token down to one member's verdict
@@ -613,13 +613,13 @@ impl ProvidesToken<StaysVerified> for StaysVerified {
 }
 
 impl ProvidesToken<StaysVerified> for Downgrades {
-    fn member_token<'m, B: ModuleBrand + 'm>(_token: &'m Module<'m, B, Unverified>) {}
+    fn member_token<'m, B: ModuleBrand + 'm>(_token: &'m Module<B, Unverified>) {}
 }
 
 impl ProvidesToken<Downgrades> for Downgrades {
     fn member_token<'m, B: ModuleBrand + 'm>(
-        token: &'m Module<'m, B, Unverified>,
-    ) -> &'m Module<'m, B, Unverified> {
+        token: &'m Module<B, Unverified>,
+    ) -> &'m Module<B, Unverified> {
         token
     }
 }
@@ -736,7 +736,7 @@ impl FnMemberExec for Inspect {
 impl FnMemberExec for PatchBody {
     fn run_member<'m, 'ctx, B, R, P>(
         pass: &mut P,
-        token: &'m Module<'m, B, Unverified>,
+        token: &'m Module<B, Unverified>,
         function: FunctionView<'m, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
@@ -753,7 +753,7 @@ impl FnMemberExec for PatchBody {
 impl FnMemberExec for ReshapeCfg {
     fn run_member<'m, 'ctx, B, R, P>(
         pass: &mut P,
-        token: &'m Module<'m, B, Unverified>,
+        token: &'m Module<B, Unverified>,
         function: FunctionView<'m, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
@@ -929,7 +929,7 @@ impl<P> FunctionPipeline<P> {
     /// the current `fam` state. `Kinds` is the inferred leaf/nested dispatch tuple.
     pub fn run<'ctx, B, F, Kinds>(
         &mut self,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         function: F,
         analyses: &mut Analyses<'ctx, B>,
     ) -> IrResult<
@@ -988,7 +988,7 @@ pub trait FunctionPipelineExecute: VerdictCarry + PassExecution {
     #[doc(hidden)]
     fn execute<'ctx, B, P, Kinds>(
         passes: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         function: FunctionId<Dyn, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<<Self as PassExecution>::OutModule<'ctx, B>>
@@ -1000,10 +1000,10 @@ pub trait FunctionPipelineExecute: VerdictCarry + PassExecution {
 impl FunctionPipelineExecute for StaysVerified {
     fn execute<'ctx, B, P, Kinds>(
         passes: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         function: FunctionId<Dyn, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Verified>>
+    ) -> IrResult<Module<B, Verified>>
     where
         B: ModuleBrand + 'ctx,
         P: FunctionPassList<'ctx, B, Kinds, Verdict = Self>,
@@ -1016,10 +1016,10 @@ impl FunctionPipelineExecute for StaysVerified {
 impl FunctionPipelineExecute for Downgrades {
     fn execute<'ctx, B, P, Kinds>(
         passes: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         function: FunctionId<Dyn, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Unverified>>
+    ) -> IrResult<Module<B, Unverified>>
     where
         B: ModuleBrand + 'ctx,
         P: FunctionPassList<'ctx, B, Kinds, Verdict = Self>,
@@ -1114,7 +1114,7 @@ impl ModMemberExec for Inspect {
 impl ModMemberExec for RewriteModule {
     fn run_member<'m, 'ctx, B, R, P>(
         pass: &mut P,
-        token: &'m Module<'m, B, Unverified>,
+        token: &'m Module<B, Unverified>,
         module: ModuleView<'m, B>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
@@ -1345,7 +1345,7 @@ impl<P> ModulePipeline<P> {
     /// leaf/nested/for-each dispatch tuple.
     pub fn run<'ctx, B, Kinds>(
         &mut self,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         analyses: &mut Analyses<'ctx, B>,
     ) -> IrResult<
         <<P as ModulePassList<'ctx, B, Kinds>>::Verdict as PassExecution>::OutModule<'ctx, B>,
@@ -1395,7 +1395,7 @@ pub trait ModulePipelineExecute: VerdictCarry + PassExecution {
     #[doc(hidden)]
     fn execute<'m, 'ctx, B, P, Kinds>(
         passes: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<<Self as PassExecution>::OutModule<'ctx, B>>
@@ -1407,10 +1407,10 @@ pub trait ModulePipelineExecute: VerdictCarry + PassExecution {
 impl ModulePipelineExecute for StaysVerified {
     fn execute<'m, 'ctx, B, P, Kinds>(
         passes: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Verified>>
+    ) -> IrResult<Module<B, Verified>>
     where
         B: ModuleBrand + 'ctx,
         P: ModulePassList<'ctx, B, Kinds, Verdict = Self>,
@@ -1424,10 +1424,10 @@ impl ModulePipelineExecute for StaysVerified {
 impl ModulePipelineExecute for Downgrades {
     fn execute<'m, 'ctx, B, P, Kinds>(
         passes: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Unverified>>
+    ) -> IrResult<Module<B, Unverified>>
     where
         B: ModuleBrand + 'ctx,
         P: ModulePassList<'ctx, B, Kinds, Verdict = Self>,
@@ -1503,7 +1503,7 @@ mod erased {
         /// per-member flow the tuple pipelines use, just behind `dyn`.
         fn run_erased<'m>(
             &mut self,
-            token: &'m Module<'m, B, Unverified>,
+            token: &'m Module<B, Unverified>,
             function: FunctionView<'m, B>,
             fam: &mut FunctionAnalysisManager<'ctx, B>,
         ) -> IrResult<PreservedAnalyses>
@@ -1532,7 +1532,7 @@ mod erased {
     {
         fn run_erased<'m>(
             &mut self,
-            token: &'m Module<'m, B, Unverified>,
+            token: &'m Module<B, Unverified>,
             function: FunctionView<'m, B>,
             fam: &mut FunctionAnalysisManager<'ctx, B>,
         ) -> IrResult<PreservedAnalyses>
@@ -1572,7 +1572,7 @@ mod erased {
         /// invalidation (mirrors `run_module_member`), so this does not invalidate.
         fn run_erased<'m>(
             &mut self,
-            token: &'m Module<'m, B, Unverified>,
+            token: &'m Module<B, Unverified>,
             module: ModuleView<'m, B>,
             mam: &mut ModuleAnalysisManager<'ctx, B>,
             fam: &mut FunctionAnalysisManager<'ctx, B>,
@@ -1599,7 +1599,7 @@ mod erased {
     {
         fn run_erased<'m>(
             &mut self,
-            token: &'m Module<'m, B, Unverified>,
+            token: &'m Module<B, Unverified>,
             module: ModuleView<'m, B>,
             mam: &mut ModuleAnalysisManager<'ctx, B>,
             fam: &mut FunctionAnalysisManager<'ctx, B>,
@@ -1726,10 +1726,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynFunctionPipeline<'ctx, B> {
     /// before the next runs. Always returns `Module<Unverified>` (D8).
     pub fn run<F>(
         &mut self,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         function: F,
         analyses: &mut Analyses<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Unverified>>
+    ) -> IrResult<Module<B, Unverified>>
     where
         F: IntoFunctionId<B>,
     {
@@ -1804,10 +1804,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynReadOnlyFunctionPipeline<'ctx, B> {
     /// verified module straight through — no mutation, no re-verification (D8).
     pub fn run<F>(
         &mut self,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         function: F,
         analyses: &mut Analyses<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Verified>>
+    ) -> IrResult<Module<B, Verified>>
     where
         F: IntoFunctionId<B>,
     {
@@ -1887,9 +1887,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
     /// `Module<Unverified>` (D8).
     pub fn run(
         &mut self,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         analyses: &mut Analyses<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Unverified>> {
+    ) -> IrResult<Module<B, Unverified>> {
         let unverified = module.unverify();
         let view = unverified.as_view();
         let (mam, fam) = analyses.managers_mut();
@@ -1958,9 +1958,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynReadOnlyModulePipeline<'ctx, B> {
     /// re-verification (D8).
     pub fn run(
         &mut self,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         analyses: &mut Analyses<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Verified>> {
+    ) -> IrResult<Module<B, Verified>> {
         // Downgrade only to satisfy the erased signature; every member is
         // `Inspect`, so the token projects to `()` and never reaches a mutator.
         // Nothing was mutated, so the token is re-stamped `Verified` on the way

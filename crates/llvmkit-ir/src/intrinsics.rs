@@ -431,7 +431,7 @@ impl IntrinsicId {
 
     pub fn function_type<'ctx, B, S>(
         self,
-        module: &'ctx Module<'ctx, B, S>,
+        module: &'ctx Module<B, S>,
         overloads: &[Type<'ctx, B>],
     ) -> IrResult<FunctionType<'ctx, B>>
     where
@@ -522,10 +522,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
         Ok(name)
     }
 
-    pub fn function_type<S>(
-        &self,
-        module: &'ctx Module<'ctx, B, S>,
-    ) -> IrResult<FunctionType<'ctx, B>> {
+    pub fn function_type<S>(&self, module: &'ctx Module<B, S>) -> IrResult<FunctionType<'ctx, B>> {
         self.function_type_ref(module.module_ref())
     }
 

@@ -15,11 +15,11 @@ help: the trait `IsConstant<'_, Right>` is not implemented for `ConstantIntValue
    | |____________________________________^
    = help: for that trait implementation, expected `Left`, found `Right`
    = note: required for `ConstantIntValue<'_, i32, Left>` to implement `IntoConstantValue<'_, Right>`
-note: required by a bound in `Module::<'ctx, B>::add_global`
+note: required by a bound in `Module::<B>::add_global`
   --> src/module.rs
    |
    |     pub fn add_global<N, C>(&'ctx self, name: N, initializer: C) -> IrResult<GlobalId<B>>
    |            ---------- required by a bound in this associated function
 ...
    |         C: IntoConstantValue<'ctx, B>,
-   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Module::<'ctx, B>::add_global`
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Module::<B>::add_global`

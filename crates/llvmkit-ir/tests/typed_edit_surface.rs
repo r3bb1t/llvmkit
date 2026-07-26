@@ -81,7 +81,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectInvokeEdge<B> {
 /// unwind label %unwind`, plus an unreferenced `%new` block that a redirect can
 /// aim at. Returns the caller and the `%new` `Dyn` label.
 fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+    m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> IrResult<CallerFixture<B>> {
     let callee = m
         .add_typed_function::<(), (), _>("callee", Linkage::External)?
@@ -200,7 +200,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectCallBrEdge<B> {
 /// Build `void @caller()` with a `callbr void @callee() to label %cont
 /// [label %ind]`, plus an unreferenced `%new` block a redirect can aim at.
 fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+    m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> IrResult<CallerFixture<B>> {
     let callee = m
         .add_typed_function::<(), (), _>("callee", Linkage::External)?
@@ -310,7 +310,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RemoveCondBrArm {
 
 /// Build `i32 @f(i32 %a)` whose entry is `cond_br (%a == 0) ? then : else`.
 fn build_cond_br_fn<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+    m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> IrResult<FunctionId<i32, B>> {
     let i32_ty = m.i32_type();
     let f = m
@@ -422,7 +422,7 @@ impl<B: ModuleBrand> FunctionPass<B> for SwitchCaseOp<B> {
 /// case0, 1 -> case1 ]`, plus an unreferenced `%new` block. Returns the
 /// function and the `case0`/`new` `Dyn` labels.
 fn build_switch_fn<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+    m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> IrResult<SwitchFixture<B>> {
     let i32_ty = m.i32_type();
     let f = m
@@ -562,7 +562,7 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchSuccessor<B> {
 /// `redirect_successor(bogus, new, [ev])` would pass phi validation and corrupt
 /// `new`'s phi; `%ev` (defined in `entry`) is a valid seed for it.
 fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+    m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> IrResult<SwitchBogusFixture<B>> {
     let i32_ty = m.i32_type();
     let f = m

@@ -8,7 +8,7 @@
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::{AnyTypeEnum, Module, ModuleBrand, module_new};
 
-fn parse_into<B: ModuleBrand>(src: &str, m: &Module<'_, B>) {
+fn parse_into<B: ModuleBrand>(src: &str, m: &Module<B>) {
     Parser::new(src.as_bytes(), m)
         .expect("lexer primes")
         .parse_module()

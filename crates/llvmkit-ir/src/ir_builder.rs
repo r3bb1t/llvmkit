@@ -300,7 +300,7 @@ where
     R: ReturnMarker,
 {
     module: &'ctx ModuleCore,
-    _module: PhantomData<&'m Module<'ctx, B, Unverified>>,
+    _module: PhantomData<&'m Module<B, Unverified>>,
     insert_block: Option<BasicBlock<'ctx, R, Unterminated, B>>,
     /// Optional insertion anchor: when `Some(id)`, new instructions are
     /// inserted *before* the instruction with this id (mirrors upstream
@@ -325,7 +325,7 @@ where
     /// matches the runtime-equality `build_ret` path; use
     /// [`IRBuilder::new_for`] when the caller already knows the return
     /// shape statically.
-    pub fn new(module: &'ctx Module<'ctx, B, Unverified>) -> Self {
+    pub fn new(module: &'ctx Module<B, Unverified>) -> Self {
         Self {
             module: module.core_ref(),
             _module: PhantomData,
@@ -346,7 +346,7 @@ where
     /// let b = IRBuilder::new_for::<i32>(&module);
     /// ```
     pub fn new_for<R>(
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
     ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, R>
     where
         R: ReturnMarker,
@@ -365,7 +365,7 @@ where
     /// Construct an unpositioned builder from a Rust function-pointer
     /// signature's return schema.
     pub fn new_for_return<Sig>(
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
     ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, <Sig::Ret as FunctionReturn>::Marker>
     where
         Sig: FunctionSignature,
@@ -426,7 +426,7 @@ where
 {
     /// Construct an unpositioned builder using a caller-supplied
     /// folder.
-    pub fn with_folder(module: &'ctx Module<'ctx, B, Unverified>, folder: F) -> Self {
+    pub fn with_folder(module: &'ctx Module<B, Unverified>, folder: F) -> Self {
         Self {
             module: module.core_ref(),
             _module: PhantomData,
@@ -526,57 +526,39 @@ where
         id.resolve_in(ModuleRef::new(self.module))
     }
 
-    /// The ephemeral [`Module`] token the builder reconstructs to reach the
+    /// The builder's [`ModuleView`], which is how it reaches the
     /// user-implementable schema traits ([`IrField::ir_type`],
-    /// [`StructSchema::ir_type`], [`FunctionReturn::ir_type`], …), which are
-    /// declared against a `&Module<Unverified>` token rather than a view.
+    /// [`StructSchema::ir_type`], [`FunctionReturn::ir_type`], …).
     ///
-    /// A `Module` **owns** its `ModuleCore`, so this token is a *borrowed*
-    /// alias ([`Module::from_core`]) over storage some live token owns, and it
-    /// is a **local**: its region is this call, not `'ctx`. Anything a schema
-    /// method hands back is therefore anchored to that local region and must be
-    /// re-anchored to `'ctx` through its lifetime-free id before it escapes —
-    /// see [`Self::schema_ir_type`]. Never return the token, and never let a
-    /// handle minted from it leave without re-anchoring.
-    ///
-    /// The builder cannot simply hold a real `&'ctx Module` instead:
-    /// [`IRBuilder::at_end`] constructs a builder from a *block* alone, with no
-    /// module token anywhere in scope. Removing this hatch means changing that
-    /// constructor, which is a later slice's job.
+    /// Those traits used to be declared against `&Module<Unverified>`, and the
+    /// builder — which stores only `&'ctx ModuleCore`, because
+    /// [`IRBuilder::at_end`] constructs a builder from a *block* alone with no
+    /// module token in scope — had to fabricate an ephemeral borrowed `Module`
+    /// to call them, then re-anchor every answer from that local region back to
+    /// `'ctx` through its id. Declaring the schema traits against the view
+    /// deletes both the fabricated token and the re-anchoring: a view is
+    /// already `'ctx`-anchored, so the type it hands back is directly usable.
     #[inline]
-    fn schema_token(&self) -> Module<'_, B, Unverified> {
-        Module::from_core(self.module)
+    fn schema_view(&self) -> ModuleView<'ctx, B> {
+        ModuleView::new(self.module)
     }
 
-    /// [`IrField::ir_type`] for `T`, re-anchored from the ephemeral token's
-    /// local region to `'ctx` through the answer's lifetime-free [`TypeSlot`].
-    ///
-    /// This is the trick cycle B's id currency bought: the *value* the schema
-    /// returns is region-bound, but the id inside it is not, so the answer can
-    /// be re-minted against the builder's own `'ctx`-anchored [`ModuleRef`].
+    /// [`IrField::ir_type`] for `T`.
     #[inline]
     fn schema_ir_type<T>(&self) -> IrResult<Type<'ctx, B>>
     where
         T: IrField,
     {
-        let token = self.schema_token();
-        let ty = T::ir_type(&token)?;
-        Ok(Type::new(ty.id(), ModuleRef::new(self.module)))
+        T::ir_type(self.schema_view())
     }
 
-    /// [`StructSchema::ir_type`] for `S`, re-anchored to `'ctx` exactly as
-    /// [`Self::schema_ir_type`] does.
+    /// [`StructSchema::ir_type`] for `S`.
     #[inline]
     fn schema_struct_type<Sch>(&self) -> IrResult<StructType<'ctx, StructBodyDyn, B>>
     where
         Sch: StructSchema,
     {
-        let token = self.schema_token();
-        let ty = Sch::ir_type(&token)?;
-        Ok(StructType::new(
-            ty.as_dyn().as_type().id(),
-            ModuleRef::new(self.module),
-        ))
+        Ok(Sch::ir_type(self.schema_view())?.as_dyn())
     }
 
     /// Position the builder at the end of the block named by a storable
@@ -1021,10 +1003,8 @@ where
     {
         // Build the parameter IR types first, so a failure here appends no
         // block (the erased sibling receives its `&[Type]` pre-built and so
-        // cannot fail at this step). Only the types' lifetime-free ids are read
-        // below, so the ephemeral schema token's short region never escapes.
-        let token = self.schema_token();
-        let param_types = Params::ir_types(&token)?;
+        // cannot fail at this step).
+        let param_types = Params::ir_types(self.schema_view())?;
         let bb = function.append_basic_block_unchecked(name);
         let bb_id = bb.slot();
         let mut phi_values = Vec::with_capacity(param_types.len());
@@ -4922,12 +4902,9 @@ where
         Callee: IntoPointerValue<'ctx, B>,
     {
         let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
-        // Ephemeral schema token (see `schema_token`): `fn_ty` never escapes —
-        // only its lifetime-free ids are read below — so no re-anchoring is
-        // needed here.
-        let module = self.schema_token();
-        let ret = <Sig::Ret as FunctionReturn>::ir_type(&module)?;
-        let params = <Sig::Params as FunctionParamList>::ir_types(&module)?;
+        let module = self.schema_view();
+        let ret = <Sig::Ret as FunctionReturn>::ir_type(module)?;
+        let params = <Sig::Params as FunctionParamList>::ir_types(module)?;
         let fn_ty = module.fn_type(ret, params, false);
         let callee_v = IsValue::into_erased(callee);
         let arg_ids = args.lower(ModuleRef::new(self.module))?;

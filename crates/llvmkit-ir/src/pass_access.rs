@@ -173,7 +173,7 @@ impl ModAccess for Inspect {
 
 impl FnAccess for PatchBody {
     type Verdict = Downgrades;
-    type Token<'m, B: ModuleBrand + 'm> = &'m Module<'m, B, Unverified>;
+    type Token<'m, B: ModuleBrand + 'm> = &'m Module<B, Unverified>;
 
     fn preserved_floor() -> PreservedAnalyses {
         PreservedAnalyses::all_in_set::<CFGAnalyses>()
@@ -182,7 +182,7 @@ impl FnAccess for PatchBody {
 
 impl FnAccess for ReshapeCfg {
     type Verdict = Downgrades;
-    type Token<'m, B: ModuleBrand + 'm> = &'m Module<'m, B, Unverified>;
+    type Token<'m, B: ModuleBrand + 'm> = &'m Module<B, Unverified>;
 
     fn preserved_floor() -> PreservedAnalyses {
         PreservedAnalyses::none()
@@ -191,7 +191,7 @@ impl FnAccess for ReshapeCfg {
 
 impl ModAccess for RewriteModule {
     type Verdict = Downgrades;
-    type Token<'m, B: ModuleBrand + 'm> = &'m Module<'m, B, Unverified>;
+    type Token<'m, B: ModuleBrand + 'm> = &'m Module<B, Unverified>;
 
     fn preserved_floor() -> PreservedAnalyses {
         PreservedAnalyses::none()

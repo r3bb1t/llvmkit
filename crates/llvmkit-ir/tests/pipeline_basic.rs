@@ -4,7 +4,7 @@
 //! These re-establish the coverage the Task 3 cutover deleted along with the
 //! old effect-typed `tests/typed_pipeline_basic.rs`, rewritten to the Pass API
 //! v2 traits. Each test binds the pipeline's result with an EXPLICIT
-//! `Module<'_, _, Verified>` / `Module<'_, _, Unverified>` annotation: that
+//! `Module<_, Verified>` / `Module<_, Unverified>` annotation: that
 //! annotation is the compile-time half of the lock — a wrong derived verdict
 //! fails to compile — and the runtime asserts prove the passes genuinely ran,
 //! in order, observing each other's effects and invalidations.
@@ -29,7 +29,7 @@ use llvmkit_ir::{
 
 /// Single-block `i32 @<name>()` whose entry just returns a constant.
 fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, Unverified>,
+    m: &'ctx Module<B, Unverified>,
     name: &str,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
@@ -45,7 +45,7 @@ fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
 /// Built with [`NoFolder`] so the constant add is not folded away, giving
 /// `DcePass` a real trivially-dead instruction to erase.
 fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<'ctx, B, Unverified>,
+    m: &'ctx Module<B, Unverified>,
     name: &str,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
@@ -268,7 +268,7 @@ fn all_inspect_function_pipeline_stays_verified() -> Result<(), IrError> {
     let mut analyses = Analyses::new();
     // The explicit `Verified` annotation is the compile-time half: an
     // all-`Inspect` pipeline folds to `StaysVerified`.
-    let _still_verified: Module<'_, _, Verified> = pipe.run(verified, f, &mut analyses)?;
+    let _still_verified: Module<_, Verified> = pipe.run(verified, f, &mut analyses)?;
     assert_eq!(*log.borrow(), vec!["a", "b"]);
     Ok(())
 }
@@ -293,7 +293,7 @@ fn function_pipeline_with_mutator_downgrades() -> Result<(), IrError> {
     let mut analyses = Analyses::new();
     // `DcePass` is `PatchBody`, so the folded verdict is `Downgrades`: this
     // only type-checks because the mutator downgraded the output typestate.
-    let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut analyses)?;
+    let unverified: Module<_, Unverified> = pipe.run(verified, f, &mut analyses)?;
     let reverified = unverified.verify()?;
     assert_eq!(*log.borrow(), vec!["ro"]);
     assert!(!format!("{reverified}").contains("%dead"));
@@ -312,7 +312,7 @@ fn module_pipeline_all_inspect_stays_verified() -> Result<(), IrError> {
     let mut analyses = Analyses::new();
     let ran = Rc::new(Cell::new(false));
     let mut pipe = module_pipeline((CountFunctionsPass { ran: ran.clone() },));
-    let _still_verified: Module<'_, _, Verified> = pipe.run(verified, &mut analyses)?;
+    let _still_verified: Module<_, Verified> = pipe.run(verified, &mut analyses)?;
     assert!(ran.get(), "Inspect module pass must run");
     Ok(())
 }
@@ -327,7 +327,7 @@ fn module_pipeline_with_rewrite_downgrades() -> Result<(), IrError> {
     let ran = Rc::new(Cell::new(false));
     let mut pipe = module_pipeline((AddGlobalPass { ran: ran.clone() },));
     // `RewriteModule` folds to `Downgrades`.
-    let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut analyses)?;
+    let unverified: Module<_, Unverified> = pipe.run(verified, &mut analyses)?;
     assert!(ran.get(), "RewriteModule pass must run");
     assert_eq!(unverified.globals().len(), 1);
     unverified.verify()?;
@@ -352,7 +352,7 @@ fn for_each_function_read_only_stays_verified() -> Result<(), IrError> {
     },))),));
     // The wrapped function pipeline is all read-only, so its verdict
     // propagates out as `StaysVerified`.
-    let _still_verified: Module<'_, _, Verified> = pipe.run(verified, &mut analyses)?;
+    let _still_verified: Module<_, Verified> = pipe.run(verified, &mut analyses)?;
     assert_eq!(*log.borrow(), vec!["visited"]);
     Ok(())
 }
@@ -393,7 +393,7 @@ fn for_each_function_mutating_downgrades_and_visits_defs() -> Result<(), IrError
     ))),));
     // The inner function pipeline mutates (`PatchBody`), so its `Downgrades`
     // verdict propagates out through `for_each_function` to the module.
-    let unverified: Module<'_, _, Unverified> = pipe.run(verified, &mut analyses)?;
+    let unverified: Module<_, Unverified> = pipe.run(verified, &mut analyses)?;
     let reverified = unverified.verify()?;
     // Both definitions were visited in module order; the declaration was not.
     assert_eq!(*visited.borrow(), vec!["f1".to_owned(), "f2".to_owned()]);
@@ -431,7 +431,7 @@ fn nested_read_only_pipeline_stays_verified() -> Result<(), IrError> {
     let mut analyses = Analyses::new();
     // A nested all-read-only pipeline folds to `StaysVerified`, and that
     // folded verdict joins cleanly with the outer member.
-    let _still_verified: Module<'_, _, Verified> = pipe.run(verified, f, &mut analyses)?;
+    let _still_verified: Module<_, Verified> = pipe.run(verified, f, &mut analyses)?;
     assert_eq!(*log.borrow(), vec!["outer", "inner-a", "inner-b"]);
     Ok(())
 }
@@ -459,7 +459,7 @@ fn nested_pipeline_with_inner_mutator_downgrades() -> Result<(), IrError> {
     // The inner pipeline's own folded verdict is `Downgrades`; that — not the
     // leaf members — is what the outer pipeline joins against, downgrading the
     // whole run (D8).
-    let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut analyses)?;
+    let unverified: Module<_, Unverified> = pipe.run(verified, f, &mut analyses)?;
     let reverified = unverified.verify()?;
     assert_eq!(*log.borrow(), vec!["outer", "inner-ro"]);
     assert!(!format!("{reverified}").contains("%dead"));
@@ -488,7 +488,7 @@ fn pipeline_runs_in_order_and_second_member_sees_first() -> Result<(), IrError> 
     // (`ObserveEntryCount`, Inspect) then observes the shrunken block.
     let mut pipe = function_pipeline((DcePass, ObserveEntryCount { seen: seen.clone() }));
     let mut analyses = Analyses::new();
-    let unverified: Module<'_, _, Unverified> = pipe.run(verified, f, &mut analyses)?;
+    let unverified: Module<_, Unverified> = pipe.run(verified, f, &mut analyses)?;
     // Member 2 saw only `ret` — proving member 1 ran first and its effect
     // was visible.
     assert_eq!(seen.get(), 1);
@@ -520,7 +520,7 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
     // flag saw no mutation, so `done()` reports all-preserved and the
     // cached dominator tree survives — no needless invalidation.
     let mut noop = function_pipeline((NoOpReshape,));
-    let after_noop: Module<'_, _, Unverified> = noop.run(verified, f, &mut analyses)?;
+    let after_noop: Module<_, Unverified> = noop.run(verified, f, &mut analyses)?;
     assert!(
         analyses
             .function_manager()
@@ -534,7 +534,7 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
     // pipeline invalidates the (non-preserved) dominator tree.
     let reverified = after_noop.verify()?;
     let mut pipe = function_pipeline((MutatingReshape,));
-    let unverified: Module<'_, _, Unverified> = pipe.run(reverified, f, &mut analyses)?;
+    let unverified: Module<_, Unverified> = pipe.run(reverified, f, &mut analyses)?;
 
     // The cached tree is gone after the mutating member's invalidation.
     assert!(

@@ -1205,7 +1205,7 @@ where
 /// `exit`'s read of it chases back through `mid` to the sealed,
 /// predecessor-less function entry and must error.
 fn build_straight_line<B: ModuleBrand>(
-    m: &Module<'_, B>,
+    m: &Module<B>,
     case: &GeneratedCase,
 ) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
@@ -1250,7 +1250,7 @@ fn build_straight_line<B: ModuleBrand>(
 /// phi operand back through the sealed `right` block to function entry and
 /// must error.
 fn build_diamond<B: ModuleBrand>(
-    m: &Module<'_, B>,
+    m: &Module<B>,
     case: &GeneratedCase,
 ) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
@@ -1318,7 +1318,7 @@ fn build_diamond<B: ModuleBrand>(
 /// to the sealed, predecessor-less function entry) -- i.e. at
 /// `seal_block(loop_bb)`, not at `use_int_var`.
 fn build_loop<B: ModuleBrand>(
-    m: &Module<'_, B>,
+    m: &Module<B>,
     case: &GeneratedCase,
 ) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
@@ -1392,7 +1392,7 @@ fn build_loop<B: ModuleBrand>(
 /// alongside `br`/`cond_br`). With `undef_var = Some(idx)`, variable
 /// `idx`'s def before the switch is skipped, so `shared`'s read must error.
 fn build_switch_shared<B: ModuleBrand>(
-    m: &Module<'_, B>,
+    m: &Module<B>,
     case: &GeneratedCase,
 ) -> Result<BuildOutcome, IrError> {
     let i32_ty = m.i32_type();
@@ -1432,7 +1432,7 @@ fn build_switch_shared<B: ModuleBrand>(
 }
 
 fn build_case<B: ModuleBrand>(
-    m: &Module<'_, B>,
+    m: &Module<B>,
     case: &GeneratedCase,
 ) -> Result<BuildOutcome, IrError> {
     match case.shape {

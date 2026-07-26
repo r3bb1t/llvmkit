@@ -89,7 +89,7 @@ impl<B: ModuleBrand> FunctionPass<B> for ReportFunctionPass {
     }
 }
 
-pub fn build<B: ModuleBrand>(m: &Module<'_, B>) -> Result<(), IrError> {
+pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let f = m.add_typed_function::<i32, (bool, i32, i32), _>("select_or_add", Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
@@ -126,7 +126,7 @@ pub fn build<B: ModuleBrand>(m: &Module<'_, B>) -> Result<(), IrError> {
     Ok(())
 }
 
-pub fn run_demo<B: ModuleBrand>(m: Module<'_, B>) -> Result<(String, String, String), IrError> {
+pub fn run_demo<B: ModuleBrand>(m: Module<B>) -> Result<(String, String, String), IrError> {
     // Everything the drivers below are handed is an **id**: each `run_*_pass`
     // consumes the module token, so a handle minted here would be a borrow of a
     // token that is about to move. Ids survive the move; views are re-minted on

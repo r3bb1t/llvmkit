@@ -58,7 +58,7 @@ impl<B: ModuleBrand> ModulePass<B> for CountFunctionsPass {
 /// llvmkit-specific single-pass-driver verification lock (no upstream
 /// analog: LLVM pass managers have no compile-time verified/unverified
 /// typestate). An `Inspect` `ModulePass` run through [`run_module_pass`]
-/// must bind as `Module<'_, _, Verified>` (read-only stays verified) *and*
+/// must bind as `Module<_, Verified>` (read-only stays verified) *and*
 /// must have genuinely executed.
 #[test]
 fn inspect_module_pass_stays_verified_and_runs() -> Result<(), IrError> {
@@ -78,7 +78,7 @@ fn inspect_module_pass_stays_verified_and_runs() -> Result<(), IrError> {
 
     // The explicit `Verified` annotation is the compile-time half of the
     // assertion: a wrong driver verdict here fails to compile.
-    let out: Module<'_, _, Verified> = run_module_pass(pass, verified, &mut analyses)?;
+    let out: Module<_, Verified> = run_module_pass(pass, verified, &mut analyses)?;
 
     assert!(ran.get(), "Inspect ModulePass::run must actually execute");
     assert_eq!(out.as_view().functions().count(), 1);
@@ -115,7 +115,7 @@ impl<B: ModuleBrand> ModulePass<B> for AddGlobalPass {
 /// llvmkit-specific single-pass-driver verification lock (no upstream
 /// analog: LLVM pass managers have no compile-time verified/unverified
 /// typestate). A `RewriteModule` `ModulePass` run through [`run_module_pass`]
-/// must bind as `Module<'_, _, Unverified>` (D8 downgrade) *and* its
+/// must bind as `Module<_, Unverified>` (D8 downgrade) *and* its
 /// mutation must be observable on the returned module.
 #[test]
 fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
@@ -137,7 +137,7 @@ fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
 
     // The explicit `Unverified` annotation is the compile-time half of
     // the assertion: a wrong driver verdict here fails to compile.
-    let out: Module<'_, _, Unverified> = run_module_pass(pass, verified, &mut analyses)?;
+    let out: Module<_, Unverified> = run_module_pass(pass, verified, &mut analyses)?;
 
     assert!(
         ran.get(),
@@ -180,7 +180,7 @@ impl<B: ModuleBrand> FunctionPass<B> for InspectFnPass {
 /// llvmkit-specific single-pass-driver verification lock (no upstream
 /// analog: LLVM pass managers have no compile-time verified/unverified
 /// typestate). An `Inspect` `FunctionPass` run through [`run_function_pass`]
-/// must bind as `Module<'_, _, Verified>` *and* must have genuinely
+/// must bind as `Module<_, Verified>` *and* must have genuinely
 /// executed. (`run_function_pass` already has executed coverage at the
 /// mutating `PatchBody` rung via `DcePass`/`InstSimplifyPass` in
 /// `scalar_cleanup_passes.rs`; this closes the `Inspect`-rung gap.)
@@ -202,7 +202,7 @@ fn inspect_function_pass_stays_verified_and_runs() -> Result<(), IrError> {
 
     // The explicit `Verified` annotation is the compile-time half of the
     // assertion: a wrong driver verdict here fails to compile.
-    let out: Module<'_, _, Verified> = run_function_pass(pass, verified, f, &mut analyses)?;
+    let out: Module<_, Verified> = run_function_pass(pass, verified, f, &mut analyses)?;
 
     assert!(ran.get(), "Inspect FunctionPass::run must actually execute");
     // A read-only pass leaves the IR untouched.

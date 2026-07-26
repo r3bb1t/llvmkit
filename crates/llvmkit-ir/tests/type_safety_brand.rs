@@ -9,9 +9,7 @@ use llvmkit_ir::{
     IntValue, IrResult, Linkage, Module, ModuleBrand, Unverified, Value, module_new,
 };
 
-fn exercise_tables<'ctx, B: ModuleBrand + 'ctx>(
-    module: Module<'ctx, B, Unverified>,
-) -> IrResult<()> {
+fn exercise_tables<'ctx, B: ModuleBrand + 'ctx>(module: Module<B, Unverified>) -> IrResult<()> {
     let i64_ty = module.i64_type();
     let fn_ty = module.fn_type(i64_ty.as_type(), [i64_ty.as_type()], false);
     let function = module.add_function_dyn("f", fn_ty, Linkage::External)?;

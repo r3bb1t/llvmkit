@@ -418,7 +418,7 @@ where
     S: BuilderPositionState,
     R: ReturnMarker,
 {
-    module: &'ctx Module<'ctx, B, Unverified>,
+    module: &'ctx Module<B, Unverified>,
     function: FunctionValue<'ctx, R, B>,
     id: SsaBuilderId,
     folder: F,
@@ -435,7 +435,7 @@ impl<'m, 'ctx, B: ModuleBrand + 'ctx> SsaBuilder<'m, 'ctx, B, ConstantFolder, Un
     /// if `function` already has a body -- the layer must observe every
     /// CFG edge from birth.
     pub fn for_function<R: ReturnMarker>(
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         function: FunctionValue<'ctx, R, B>,
     ) -> IrResult<SsaBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, R>> {
         Self::with_folder_for_function(module, function, ConstantFolder)
@@ -448,7 +448,7 @@ impl<'m, 'ctx, B: ModuleBrand + 'ctx, F: IRBuilderFolder<'ctx, B> + Clone>
     /// Construct an `SsaBuilder` for `function` using a caller-supplied
     /// folder.
     pub fn with_folder_for_function<R>(
-        module: &'ctx Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         function: FunctionValue<'ctx, R, B>,
         folder: F,
     ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>>

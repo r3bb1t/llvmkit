@@ -1,4 +1,4 @@
-error[E0599]: no method named `add_function` found for struct `Module<'ctx, B, S>` in the current scope
+error[E0599]: no method named `add_function` found for struct `Module<B, S>` in the current scope
   --> tests/compile_fail/add_function_removed.rs:19:15
    |
 19 |     let _ = m.add_function::<i32, _>("bad", fn_ty, Linkage::External);
