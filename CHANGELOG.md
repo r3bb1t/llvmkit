@@ -1,11 +1,76 @@
 # Changelog
 
 Notable, user-visible changes to `llvmkit`. The format follows
-[Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0
-(`0.0.x`), so breaking changes are expected and are flagged inline. Until a
-tagged release is cut, entries accumulate under **Unreleased**.
+[Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
+breaking changes are expected and are flagged inline. Until a tagged release is
+cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-07-26
+
+**The llvmkit 2.0 release.** The version goes `0.0.4` → `0.1.0` rather than
+`0.0.5`: under Cargo's pre-1.0 rules `0.0.x` releases are all mutually
+incompatible, but bumping the *minor* is the conventional signal that this one
+breaks on purpose and broadly. Cycles A–D reshaped the core currency of the
+API — handles became storable ids, the module became an owned value, and its
+identity moved from a lifetime to a type. Almost every construction call site
+changes. The migration is mechanical and each break is spelled out under the
+cycle that made it.
+
+The headline shape, for a reader arriving cold:
+
+```rust
+let m = module_new!("demo")?;                       // owned, Send, no lifetime
+let f = m.add_typed_function::<i32, (i32, i32), _>  // declarations return ids
+    ("add", Linkage::External)?;
+let entry = m.view(f).append_basic_block(&m, "entry");   // ids resolve to handles
+```
+
+### llvmkit 2.0 — the polish and freeze cycle (cycle E)
+
+The API surface is frozen for the release: the remaining asymmetry is closed,
+and the documentation is reconciled with the library that cycles A–D actually
+produced.
+
+#### Changed (breaking)
+
+- **Lookups return ids, symmetric with declarations.** `Module::get_global` →
+  `Option<GlobalId<B>>`, `get_alias` → `Option<GlobalAliasId<B>>`, `get_ifunc`
+  → `Option<GlobalIFuncId<B>>`, `function_by_name_dyn` →
+  `Option<FunctionId<Dyn, B>>`, and `function_by_name::<R>` →
+  `IrResult<Option<FunctionId<R, B>>>`. Reach the handle with `m.view(id)`,
+  exactly as for a declaration's id. The marker check on `function_by_name::<R>`
+  is unchanged — a mismatched signature is still
+  `IrError::ReturnTypeMismatch`, never a silently widened id. The four
+  unconditional lookups also relax `&'ctx self` to `&self`: an id borrows
+  nothing, so a lookup no longer pins a borrow of the module.
+  `Module::get_comdat` is deliberately exempt and documents why — a comdat is
+  not a `Value`, and `ComdatId` is a bare `u32` carrying neither a `ModuleId`
+  tag nor a brand, so it is not a member of the id family and `view` cannot
+  resolve it.
+
+#### Documentation
+
+- The README's **Same-module safety** section, **D7**, and the three-run-modes
+  example described the deleted generative lifetime brand and spelled
+  `Module<'ctx, Brand<'ctx>, S>`. They now describe the three brand rungs
+  (`module_new!` / `branded::<B>` / `dynamic`) and separate precisely what is
+  compile-time (distinct brand types are a type error; the uniqueness registry
+  is what makes a brand name one module) from what is run-time (modules sharing
+  a brand type fall back to the `ModuleId` tag, surfacing as
+  `IrError::ForeignValueId`, `None`, or a `view` panic).
+- New README section, **Where llvmkit improves on upstream LLVM**: storable ids
+  and an owned module (so a lifter can suspend, move threads, and resume),
+  unrepresentable-versus-diagnosed error classes, and verification as a
+  typestate rather than a function you must remember to call.
+- `docs/type-safety-vs-llvm.md` worked examples re-spelled against the
+  lifetime-free `Module<B, S>`.
+- The **"2 environmental `.stderr` fixtures"** caveat is retired from
+  `docs/pass-facing-type-safety.md` and `docs/unforgeable-markers-design.md`.
+  It was never real: both fixtures pass on the pinned 1.96.0 toolchain, and the
+  mismatch only ever appeared under a newer rustc. The trybuild baseline is
+  **0 failures of 80**.
 
 ### llvmkit 2.0 — the SSA session is a value (cycle D)
 
