@@ -14,7 +14,7 @@
 //! non-void in Function of void return type!" check, enforced here at
 //! the type level instead of at verify time.
 
-use llvmkit_ir::{Linkage, Module};
+use llvmkit_ir::{Linkage, Module, SsaState};
 
 fn main() {
     let m = Module::dynamic("ssa-ret-value-in-void-fn");
@@ -22,10 +22,11 @@ fn main() {
         .add_typed_function::<(), (), _>("f", Linkage::External)
         .unwrap()
         .as_function();
-    let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f)).unwrap();
+    let mut state = SsaState::for_function(&m, m.view(f)).unwrap();
+    let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f), &mut state).unwrap();
     let entry = b.create_block("entry");
 
-    let b = b.switch_to_block(entry).unwrap();
+    b.switch_to_block(entry).unwrap();
     // `f`'s return marker is `()` (void) -- `ret_void()` is the only
     // valid terminator here, `ret(1_i32)` has no matching
     // `IntoReturnValue<'_, (), _>` impl for `i32`.

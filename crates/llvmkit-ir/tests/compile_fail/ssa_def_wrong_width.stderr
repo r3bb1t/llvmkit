@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `IntValue<'_, i64, DynBrand>: IntoIntValue<'_, i32, DynBrand>` is not satisfied
-  --> tests/compile_fail/ssa_def_wrong_width.rs:36:24
+  --> tests/compile_fail/ssa_def_wrong_width.rs:37:24
    |
-36 |     b.def_int_var(x32, wide).unwrap();
+37 |     b.def_int_var(x32, wide).unwrap();
    |       -----------      ^^^^ the trait `IntoIntValue<'_, i32, DynBrand>` is not implemented for `IntValue<'_, i64, DynBrand>`
    |       |
    |       required by a bound introduced by this call
@@ -13,11 +13,11 @@ help: the trait `IntoIntValue<'_, i32, DynBrand>` is not implemented for `IntVal
    | impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, W, B> for IntValue<'ctx, W, B> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    = help: for that trait implementation, expected `i64`, found `i32`
-note: required by a bound in `SsaBuilder::<'m, 'ctx, B, F, Positioned, R>::def_int_var`
+note: required by a bound in `SsaBuilder::<'s, 'ctx, B, F, R>::def_int_var`
   --> src/ssa_builder.rs
    |
    |     pub fn def_int_var<W: IntWidth, V>(
    |            ----------- required by a bound in this associated function
 ...
    |         V: IntoIntValue<'ctx, W, B>,
-   |            ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SsaBuilder::<'m, 'ctx, B, F, Positioned, R>::def_int_var`
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SsaBuilder::<'s, 'ctx, B, F, R>::def_int_var`

@@ -14,14 +14,44 @@
 //! problem incrementally for a single value at a time during
 //! transformation passes rather than during initial construction.
 //!
-//! This module ships the typed variable/block vocabulary, `SsaState`,
-//! construction, `create_block`/`declare_*`/`seal_block`, the private
-//! Braun engine (`write_variable`, `read_variable_in`,
+//! This module ships the typed variable/block vocabulary, the owned
+//! [`SsaState`], construction, `create_block`/`declare_*`/`seal_block`,
+//! the private Braun engine (`write_variable`, `read_variable_in`,
 //! `add_phi_operands`, `try_remove_trivial_phi`, `emit_operandless_phi`,
 //! `resolve`), and the full public lifecycle built on top of it:
-//! `switch_to_block`/`finish` (Unpositioned-only) and
-//! `ins`/`current_block`/`def_*_var`/`use_*_var`/the terminator family
-//! `br`/`cond_br`/`switch`/`ret`/`ret_void`/`unreachable` (Positioned-only).
+//! `switch_to_block`/`finish` and `ins`/`current_block`/`def_*_var`/
+//! `use_*_var`/the terminator family
+//! `br`/`cond_br`/`switch`/`ret`/`ret_void`/`unreachable`.
+//!
+//! # The cursor model (llvmkit 2.0 cycle D)
+//!
+//! `SsaBuilder` is **one type**. Its insertion point is *data* — a
+//! `cursor: Option<BlockId<..>>` field — not a type-state parameter that
+//! changes the builder's type on `switch_to_block`. Every operation that
+//! needs an insertion point reports [`IrError::SsaUnpositioned`] when the
+//! cursor is empty, and every terminator clears it.
+//!
+//! This is a deliberate, *local* softening of Doctrine D1, and it is the
+//! same trade the crate spells `_dyn` everywhere else: a static law is
+//! rendered at runtime exactly where the tool's whole job is to be
+//! dynamic. `SsaBuilder` **is** the dynamic-CFG tool — a step-driven
+//! lifter discovers its blocks from the input it is decoding, holds the
+//! builder across `&mut self` calls, and cannot thread a type-changing
+//! value through a suspend/resume boundary without a take/put-back dance
+//! (see `examples/lifter_session.rs`, which the old shape could not
+//! express at all).
+//!
+//! What is emphatically **not** softened: [`crate::IRBuilder`]'s own
+//! linear `BasicBlock` token and its terminator-consuming cursor stay
+//! exactly as they were. A linear capability never becomes a `Copy` id —
+//! that is why the phi `Open`/`Closed` marker was retired while the
+//! terminator states were kept.
+//!
+//! [`SsaState`] carries the Braun bookkeeping and is an owned, `Send`,
+//! `Clone`, lifetime-free value: a real lifter stores it in a struct
+//! field and snapshots/restores the whole variable environment per
+//! branch. The working builder is minted from `(&module, function,
+//! &mut state)` and dropped again between steps.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -35,9 +65,9 @@ use super::instruction::{Instruction, state::Attached};
 use super::int_width::{IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IRBuilderFolder;
-use super::ir_builder::{BuilderPositionState, IntoReturnValue, Positioned, Unpositioned};
+use super::ir_builder::{IntoReturnValue, Positioned};
 use super::marker::{Dyn, ReturnMarker};
-use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::module::{Invariant, Module, ModuleBrand, ModuleRef, Unverified};
 use super::r#type::TypeSlot;
 use super::value::{
     FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Typed, Value, ValueSlot,
@@ -100,22 +130,29 @@ pub struct SsaBuilderId(u32);
 /// Typed SSA variable of integer width `W`. Cranelift analogue:
 /// `cranelift_frontend::Variable`, specialised per category per llvmkit
 /// convention (cf. `PhiInst` / `FpPhiInst` / `PointerPhiInst`).
-pub struct IntVariable<'ctx, W: IntWidth, B: ModuleBrand> {
+///
+/// Lifetime-free since cycle D: the handle is a `Copy`, module-tagged id
+/// exactly like [`crate::IntValueId`] &c, so it can be stored in a
+/// lifter's own struct alongside the module and the [`SsaState`]. The
+/// owning module is pinned by the *type* parameter `B`, not by a stored
+/// `ModuleRef` — resolution happens at the def/use call sites, which
+/// already hold the module.
+pub struct IntVariable<W: IntWidth, B: ModuleBrand> {
     index: u32,
     owner: SsaBuilderId,
     ty: TypeSlot,
-    module: ModuleRef<'ctx, B>,
+    _b: Invariant<B>,
     _w: core::marker::PhantomData<fn() -> W>,
 }
 
-impl<'ctx, W: IntWidth, B: ModuleBrand> Clone for IntVariable<'ctx, W, B> {
+impl<W: IntWidth, B: ModuleBrand> Clone for IntVariable<W, B> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, W: IntWidth, B: ModuleBrand> Copy for IntVariable<'ctx, W, B> {}
-impl<'ctx, W: IntWidth, B: ModuleBrand> core::fmt::Debug for IntVariable<'ctx, W, B> {
+impl<W: IntWidth, B: ModuleBrand> Copy for IntVariable<W, B> {}
+impl<W: IntWidth, B: ModuleBrand> core::fmt::Debug for IntVariable<W, B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("IntVariable")
             .field("index", &self.index)
@@ -123,14 +160,14 @@ impl<'ctx, W: IntWidth, B: ModuleBrand> core::fmt::Debug for IntVariable<'ctx, W
             .finish()
     }
 }
-impl<'ctx, W: IntWidth, B: ModuleBrand> PartialEq for IntVariable<'ctx, W, B> {
+impl<W: IntWidth, B: ModuleBrand> PartialEq for IntVariable<W, B> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index && self.owner == other.owner && self.ty == other.ty
     }
 }
-impl<'ctx, W: IntWidth, B: ModuleBrand> Eq for IntVariable<'ctx, W, B> {}
-impl<'ctx, W: IntWidth, B: ModuleBrand> core::hash::Hash for IntVariable<'ctx, W, B> {
+impl<W: IntWidth, B: ModuleBrand> Eq for IntVariable<W, B> {}
+impl<W: IntWidth, B: ModuleBrand> core::hash::Hash for IntVariable<W, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.index.hash(h);
         self.owner.hash(h);
@@ -138,7 +175,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand> core::hash::Hash for IntVariable<'ctx, W
     }
 }
 
-impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntVariable<'ctx, W, B> {
+impl<W: IntWidth, B: ModuleBrand> IntVariable<W, B> {
     /// The [`SsaBuilder`] that declared this variable. Foreign use (a
     /// handle from a different builder) is a typed runtime error at the
     /// def/use call sites.
@@ -146,31 +183,26 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntVariable<'ctx, W, B> {
     pub fn owner(&self) -> SsaBuilderId {
         self.owner
     }
-
-    /// Owning module reference.
-    #[inline]
-    pub fn module(&self) -> ModuleView<'ctx, B> {
-        ModuleView::new(self.module.module())
-    }
 }
 
-/// Typed SSA variable of float kind `K`.
-pub struct FloatVariable<'ctx, K: FloatKind, B: ModuleBrand> {
+/// Typed SSA variable of float kind `K`. Lifetime-free for the same
+/// reason as [`IntVariable`].
+pub struct FloatVariable<K: FloatKind, B: ModuleBrand> {
     index: u32,
     owner: SsaBuilderId,
     ty: TypeSlot,
-    module: ModuleRef<'ctx, B>,
+    _b: Invariant<B>,
     _k: core::marker::PhantomData<fn() -> K>,
 }
 
-impl<'ctx, K: FloatKind, B: ModuleBrand> Clone for FloatVariable<'ctx, K, B> {
+impl<K: FloatKind, B: ModuleBrand> Clone for FloatVariable<K, B> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, K: FloatKind, B: ModuleBrand> Copy for FloatVariable<'ctx, K, B> {}
-impl<'ctx, K: FloatKind, B: ModuleBrand> core::fmt::Debug for FloatVariable<'ctx, K, B> {
+impl<K: FloatKind, B: ModuleBrand> Copy for FloatVariable<K, B> {}
+impl<K: FloatKind, B: ModuleBrand> core::fmt::Debug for FloatVariable<K, B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FloatVariable")
             .field("index", &self.index)
@@ -178,14 +210,14 @@ impl<'ctx, K: FloatKind, B: ModuleBrand> core::fmt::Debug for FloatVariable<'ctx
             .finish()
     }
 }
-impl<'ctx, K: FloatKind, B: ModuleBrand> PartialEq for FloatVariable<'ctx, K, B> {
+impl<K: FloatKind, B: ModuleBrand> PartialEq for FloatVariable<K, B> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index && self.owner == other.owner && self.ty == other.ty
     }
 }
-impl<'ctx, K: FloatKind, B: ModuleBrand> Eq for FloatVariable<'ctx, K, B> {}
-impl<'ctx, K: FloatKind, B: ModuleBrand> core::hash::Hash for FloatVariable<'ctx, K, B> {
+impl<K: FloatKind, B: ModuleBrand> Eq for FloatVariable<K, B> {}
+impl<K: FloatKind, B: ModuleBrand> core::hash::Hash for FloatVariable<K, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.index.hash(h);
         self.owner.hash(h);
@@ -193,36 +225,31 @@ impl<'ctx, K: FloatKind, B: ModuleBrand> core::hash::Hash for FloatVariable<'ctx
     }
 }
 
-impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatVariable<'ctx, K, B> {
+impl<K: FloatKind, B: ModuleBrand> FloatVariable<K, B> {
     /// The [`SsaBuilder`] that declared this variable.
     #[inline]
     pub fn owner(&self) -> SsaBuilderId {
         self.owner
     }
-
-    /// Owning module reference.
-    #[inline]
-    pub fn module(&self) -> ModuleView<'ctx, B> {
-        ModuleView::new(self.module.module())
-    }
 }
 
 /// Typed SSA variable of pointer category (any address space).
-pub struct PointerVariable<'ctx, B: ModuleBrand> {
+/// Lifetime-free for the same reason as [`IntVariable`].
+pub struct PointerVariable<B: ModuleBrand> {
     index: u32,
     owner: SsaBuilderId,
     ty: TypeSlot,
-    module: ModuleRef<'ctx, B>,
+    _b: Invariant<B>,
 }
 
-impl<'ctx, B: ModuleBrand> Clone for PointerVariable<'ctx, B> {
+impl<B: ModuleBrand> Clone for PointerVariable<B> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'ctx, B: ModuleBrand> Copy for PointerVariable<'ctx, B> {}
-impl<'ctx, B: ModuleBrand> core::fmt::Debug for PointerVariable<'ctx, B> {
+impl<B: ModuleBrand> Copy for PointerVariable<B> {}
+impl<B: ModuleBrand> core::fmt::Debug for PointerVariable<B> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("PointerVariable")
             .field("index", &self.index)
@@ -230,14 +257,14 @@ impl<'ctx, B: ModuleBrand> core::fmt::Debug for PointerVariable<'ctx, B> {
             .finish()
     }
 }
-impl<'ctx, B: ModuleBrand> PartialEq for PointerVariable<'ctx, B> {
+impl<B: ModuleBrand> PartialEq for PointerVariable<B> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index && self.owner == other.owner && self.ty == other.ty
     }
 }
-impl<'ctx, B: ModuleBrand> Eq for PointerVariable<'ctx, B> {}
-impl<'ctx, B: ModuleBrand> core::hash::Hash for PointerVariable<'ctx, B> {
+impl<B: ModuleBrand> Eq for PointerVariable<B> {}
+impl<B: ModuleBrand> core::hash::Hash for PointerVariable<B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.index.hash(h);
         self.owner.hash(h);
@@ -245,17 +272,11 @@ impl<'ctx, B: ModuleBrand> core::hash::Hash for PointerVariable<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> PointerVariable<'ctx, B> {
+impl<B: ModuleBrand> PointerVariable<B> {
     /// The [`SsaBuilder`] that declared this variable.
     #[inline]
     pub fn owner(&self) -> SsaBuilderId {
         self.owner
-    }
-
-    /// Owning module reference.
-    #[inline]
-    pub fn module(&self) -> ModuleView<'ctx, B> {
-        ModuleView::new(self.module.module())
     }
 }
 
@@ -347,6 +368,7 @@ enum VarCategory {
     Pointer,
 }
 
+#[derive(Debug, Clone)]
 struct VarData {
     ty: TypeSlot,
     category: VarCategory,
@@ -354,7 +376,56 @@ struct VarData {
     poison_on_undef: bool,
 }
 
-struct SsaState<'ctx, R: ReturnMarker, B: ModuleBrand> {
+/// The on-the-fly SSA construction state for one function: Braun's
+/// `currentDef` / `incompletePhis` / `sealedBlocks` / `filledBlocks`
+/// bookkeeping plus the declared-variable table.
+///
+/// **Owned, `Send`, `Clone`, lifetime-free.** It holds no borrow of the
+/// module and no linear IR capability — only `ValueSlot`s and the
+/// module brand `B` as a phantom tag — so it can live in a struct
+/// field, cross a thread boundary alongside its [`Module`], and be
+/// *snapshotted and restored* around a speculative branch. (A real
+/// lifter saves its whole variable environment before a conditional and
+/// restores it on the other arm; the C++ system this crate is modelled
+/// on does exactly that.)
+///
+/// The state is inert on its own: mint a short-lived [`SsaBuilder`] from
+/// `(&module, function, &mut state)` to author IR through it, and drop
+/// the builder again between steps.
+///
+/// ```
+/// use llvmkit_ir::{Linkage, Module, SsaBuilder, SsaState};
+///
+/// # fn main() -> Result<(), llvmkit_ir::IrError> {
+/// let m = Module::dynamic("session");
+/// let f = m
+///     .add_typed_function::<(), (), _>("f", Linkage::External)?
+///     .as_function();
+///
+/// // The state outlives every builder minted from it.
+/// let mut state = SsaState::for_function(&m, m.view(f))?;
+///
+/// let entry = {
+///     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut state)?;
+///     b.create_block("entry")
+/// };
+/// {
+///     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut state)?;
+///     b.switch_to_block(entry)?;
+///     b.ret_void()?;
+///     b.finish()?;
+/// }
+/// assert!(format!("{m}").contains("ret void"));
+/// # Ok(()) }
+/// ```
+#[derive(Debug, Clone)]
+pub struct SsaState<B: ModuleBrand> {
+    /// The function this state is authoring. Every builder minted from it
+    /// must name the same function ([`IrError::SsaForeignFunction`]).
+    function: ValueSlot,
+    /// Identity every [`SsaBlock`] / variable handle this state's builders
+    /// hand out is stamped with.
+    id: SsaBuilderId,
     vars: Vec<VarData>,
     /// Braun `currentDef`: `(block, var) -> definition value`.
     current_def: HashMap<(ValueSlot, u32), ValueSlot>,
@@ -372,10 +443,15 @@ struct SsaState<'ctx, R: ReturnMarker, B: ModuleBrand> {
     filled: HashSet<ValueSlot>,
     /// Braun `incompletePhis`: `block -> [(var index, phi value)]`.
     incomplete_phis: HashMap<ValueSlot, Vec<(u32, ValueSlot)>>,
-    /// Linear insertion capabilities for not-yet-current blocks.
-    open_blocks: HashMap<ValueSlot, BasicBlock<'ctx, R, Unterminated, B>>,
-    /// Linear lifecycle handles for layer-created phis (RAUW / erase).
-    created_phis: HashMap<ValueSlot, Instruction<'ctx, Attached, B>>,
+    /// Slots of the phis this layer created and still tracks. Cycle D
+    /// stores the raw slot rather than a linear
+    /// [`Instruction`](crate::Instruction) handle: keeping a linear
+    /// capability here is what forced `SsaState` to carry a `'ctx`, and
+    /// the RAUW/erase sites re-mint the handle from the slot at the
+    /// moment they need it (`Instruction::from_parts`), which is the same
+    /// crate-internal move `try_remove_trivial_phi`'s erase step already
+    /// made.
+    created_phis: HashSet<ValueSlot>,
     /// `phi -> declaring variable index`, populated alongside
     /// `created_phis` in `emit_operandless_phi` (the one place that
     /// KNOWS which variable a phi was created for). Lets
@@ -385,11 +461,30 @@ struct SsaState<'ctx, R: ReturnMarker, B: ModuleBrand> {
     phi_var: HashMap<ValueSlot, u32>,
     /// Deterministic iteration for a future `finish()`.
     block_order: Vec<ValueSlot>,
+    _b: Invariant<B>,
 }
 
-impl<'ctx, R: ReturnMarker, B: ModuleBrand> SsaState<'ctx, R, B> {
-    fn new() -> Self {
-        Self {
+impl<B: ModuleBrand> SsaState<B> {
+    /// Begin on-the-fly SSA construction for `function`.
+    ///
+    /// Errors with [`IrError::SsaFunctionHasBlocks`] if `function`
+    /// already has a body -- the layer must observe every CFG edge from
+    /// birth, so grafting onto a partially-built function is rejected.
+    /// This is the *only* place that check runs: re-minting a builder
+    /// over an in-progress state must obviously not re-trip it.
+    pub fn for_function<'ctx, R: ReturnMarker>(
+        module: &'ctx Module<B, Unverified>,
+        function: FunctionValue<'ctx, R, B>,
+    ) -> IrResult<Self>
+    where
+        B: 'ctx,
+    {
+        if function.entry_block().is_some() {
+            return Err(IrError::SsaFunctionHasBlocks);
+        }
+        Ok(Self {
+            function: function.slot(),
+            id: SsaBuilderId(module.next_ssa_builder_id()),
             vars: Vec::new(),
             current_def: HashMap::new(),
             resolved: RefCell::new(HashMap::new()),
@@ -397,95 +492,146 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> SsaState<'ctx, R, B> {
             sealed: HashSet::new(),
             filled: HashSet::new(),
             incomplete_phis: HashMap::new(),
-            open_blocks: HashMap::new(),
-            created_phis: HashMap::new(),
+            created_phis: HashSet::new(),
             phi_var: HashMap::new(),
             block_order: Vec::new(),
-        }
+            _b: core::marker::PhantomData,
+        })
+    }
+
+    /// The identity stamped onto every [`SsaBlock`] and declared variable
+    /// handed out by a builder over this state. Two states never share
+    /// one, so a handle from another session is refused
+    /// ([`IrError::SsaForeignBlock`] / [`IrError::SsaForeignVariable`]) --
+    /// including a handle from a *snapshot clone*, which deliberately
+    /// keeps the original's id so a restored environment still accepts
+    /// the blocks it was minted with.
+    #[inline]
+    pub fn id(&self) -> SsaBuilderId {
+        self.id
+    }
+
+    /// Number of blocks created through this state so far.
+    #[inline]
+    pub fn block_count(&self) -> usize {
+        self.block_order.len()
+    }
+
+    /// Number of variables declared through this state so far.
+    #[inline]
+    pub fn variable_count(&self) -> usize {
+        self.vars.len()
     }
 }
 
 /// Cranelift-`FunctionBuilder`-style layer on top of the typed
 /// [`IRBuilder`] implementing Braun et al.'s on-the-fly SSA construction
 /// (sealed blocks, incomplete phis, trivial-phi elimination). See the
-/// module docs for the algorithm citation.
+/// module docs for the algorithm citation and for why the insertion
+/// point is *data* rather than a type-state parameter.
+///
+/// The builder is a short-lived working handle: it borrows the module
+/// and its [`SsaState`], and holds nothing that cannot be rebuilt from
+/// the two. Mint one, drive it, drop it; the session lives in the state.
 ///
 /// [`IRBuilder`]: crate::IRBuilder
-pub struct SsaBuilder<'m, 'ctx, B, F = ConstantFolder, S = Unpositioned, R = Dyn>
+pub struct SsaBuilder<'s, 'ctx, B, F = ConstantFolder, R = Dyn>
 where
     B: ModuleBrand,
     F: IRBuilderFolder<'ctx, B> + Clone,
-    S: BuilderPositionState,
     R: ReturnMarker,
 {
     module: &'ctx Module<B, Unverified>,
     function: FunctionValue<'ctx, R, B>,
-    id: SsaBuilderId,
     folder: F,
-    /// `Some` iff `S = Positioned` (mirrors the `insert_block()` `Option`
-    /// precedent at `ir_builder.rs`'s `IRBuilder::insert_block`).
-    inner: Option<super::ir_builder::IRBuilder<'m, 'ctx, B, F, Positioned, R>>,
-    state: SsaState<'ctx, R, B>,
-    _s: core::marker::PhantomData<S>,
+    /// The cursor, as data: `None` = unpositioned. Every operation that
+    /// needs an insertion point reports [`IrError::SsaUnpositioned`] when
+    /// it is empty, and every terminator empties it.
+    ///
+    /// The payload is the positioned plain [`IRBuilder`] itself rather
+    /// than a bare [`BlockId`], for one reason: it is what lets
+    /// [`ins`](Self::ins) hand out a **borrow**. A borrowed positioned
+    /// builder cannot reach the plain builder's `self`-consuming
+    /// terminators, so an `ins()` caller structurally cannot terminate a
+    /// block behind this layer's back and leave the Braun edge
+    /// bookkeeping incomplete. The block id is recoverable from it at
+    /// any time ([`current_block`](Self::current_block)), so nothing
+    /// about "the position is data" is given up.
+    ///
+    /// [`IRBuilder`]: crate::IRBuilder
+    cursor: Option<super::ir_builder::IRBuilder<'ctx, 'ctx, B, F, Positioned, R>>,
+    state: &'s mut SsaState<B>,
 }
 
-impl<'m, 'ctx, B: ModuleBrand + 'ctx> SsaBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Dyn> {
-    /// Construct an `SsaBuilder` for `function` using the default
-    /// [`ConstantFolder`]. Errors with [`IrError::SsaFunctionHasBlocks`]
-    /// if `function` already has a body -- the layer must observe every
-    /// CFG edge from birth.
-    pub fn for_function<R: ReturnMarker>(
+impl<'s, 'ctx, B: ModuleBrand + 'ctx, R: ReturnMarker>
+    SsaBuilder<'s, 'ctx, B, ConstantFolder, R>
+{
+    /// Mint a working builder over `state` using the default
+    /// [`ConstantFolder`].
+    ///
+    /// `function` must be the one `state` was opened for
+    /// ([`SsaState::for_function`]), otherwise
+    /// [`IrError::SsaForeignFunction`]. The builder starts unpositioned;
+    /// call [`switch_to_block`](Self::switch_to_block) before emitting.
+    pub fn for_function(
         module: &'ctx Module<B, Unverified>,
         function: FunctionValue<'ctx, R, B>,
-    ) -> IrResult<SsaBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, R>> {
-        Self::with_folder_for_function(module, function, ConstantFolder)
+        state: &'s mut SsaState<B>,
+    ) -> IrResult<Self> {
+        Self::with_folder_for_function(module, function, state, ConstantFolder)
     }
 }
 
-impl<'m, 'ctx, B: ModuleBrand + 'ctx, F: IRBuilderFolder<'ctx, B> + Clone>
-    SsaBuilder<'m, 'ctx, B, F, Unpositioned, Dyn>
+impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IRBuilderFolder<'ctx, B> + Clone,
+    R: ReturnMarker,
 {
-    /// Construct an `SsaBuilder` for `function` using a caller-supplied
+    /// [`for_function`](SsaBuilder::for_function) with a caller-supplied
     /// folder.
-    pub fn with_folder_for_function<R>(
+    pub fn with_folder_for_function(
         module: &'ctx Module<B, Unverified>,
         function: FunctionValue<'ctx, R, B>,
+        state: &'s mut SsaState<B>,
         folder: F,
-    ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>>
-    where
-        R: ReturnMarker,
-    {
-        if function.entry_block().is_some() {
-            return Err(IrError::SsaFunctionHasBlocks);
+    ) -> IrResult<Self> {
+        if state.function != function.slot() {
+            return Err(IrError::SsaForeignFunction);
         }
         Ok(SsaBuilder {
             module,
             function,
-            id: SsaBuilderId(module.next_ssa_builder_id()),
             folder,
-            inner: None,
-            state: SsaState::new(),
-            _s: core::marker::PhantomData,
+            cursor: None,
+            state,
         })
     }
 }
 
 // --------------------------------------------------------------------------
-// Any-state surface: create_block, variable declarations, seal_block
+// Session surface: create_block, variable declarations, seal_block
 // --------------------------------------------------------------------------
 
-impl<'m, 'ctx, B, F, S, R> SsaBuilder<'m, 'ctx, B, F, S, R>
+impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
     F: IRBuilderFolder<'ctx, B> + Clone,
-    S: BuilderPositionState,
     R: ReturnMarker,
 {
-    /// This builder's per-module id. Exposed for diagnostics /
+    /// This session's per-module id. Exposed for diagnostics /
     /// cross-checking; ordinary callers do not need to inspect it.
+    /// Same value as [`SsaState::id`], since the identity lives in the
+    /// state rather than in the (re-mintable) builder.
     #[inline]
     pub fn id(&self) -> SsaBuilderId {
-        self.id
+        self.state.id
+    }
+
+    /// Read-only access to the session state this builder is driving.
+    #[inline]
+    pub fn state(&self) -> &SsaState<B> {
+        self.state
     }
 
     /// Append a block. The FIRST created block is the entry block and is
@@ -501,8 +647,10 @@ where
         }
         self.state.block_order.push(block_id);
         self.state.preds.entry(block_id).or_default();
-        self.state.open_blocks.insert(block_id, block);
-        SsaBlock { id, owner: self.id }
+        SsaBlock {
+            id,
+            owner: self.state.id,
+        }
     }
 
     /// Declare a strict int variable: reading it on a def-less path is a
@@ -510,7 +658,7 @@ where
     pub fn declare_int_var<W: StaticIntWidth, Name: Into<String>>(
         &mut self,
         name: Name,
-    ) -> IntVariable<'ctx, W, B> {
+    ) -> IntVariable<W, B> {
         let ty = W::ir_type(self.module_ref()).as_type().id();
         self.declare_var_raw(ty, name, VarCategory::Int, false)
             .into()
@@ -522,7 +670,7 @@ where
     pub fn declare_int_var_poison<W: StaticIntWidth, Name: Into<String>>(
         &mut self,
         name: Name,
-    ) -> IntVariable<'ctx, W, B> {
+    ) -> IntVariable<W, B> {
         let ty = W::ir_type(self.module_ref()).as_type().id();
         self.declare_var_raw(ty, name, VarCategory::Int, true)
             .into()
@@ -534,7 +682,7 @@ where
         &mut self,
         ty: IntType<'ctx, super::int_width::IntDyn, B>,
         name: Name,
-    ) -> IntVariable<'ctx, super::int_width::IntDyn, B> {
+    ) -> IntVariable<super::int_width::IntDyn, B> {
         self.declare_var_raw(ty.as_type().id(), name, VarCategory::Int, false)
             .into()
     }
@@ -544,7 +692,7 @@ where
         &mut self,
         ty: IntType<'ctx, super::int_width::IntDyn, B>,
         name: Name,
-    ) -> IntVariable<'ctx, super::int_width::IntDyn, B> {
+    ) -> IntVariable<super::int_width::IntDyn, B> {
         self.declare_var_raw(ty.as_type().id(), name, VarCategory::Int, true)
             .into()
     }
@@ -553,7 +701,7 @@ where
     pub fn declare_float_var<K: StaticFloatKind, Name: Into<String>>(
         &mut self,
         name: Name,
-    ) -> FloatVariable<'ctx, K, B> {
+    ) -> FloatVariable<K, B> {
         let ty = K::ir_type(self.module_ref()).as_type().id();
         self.declare_var_raw(ty, name, VarCategory::Float, false)
             .into()
@@ -563,7 +711,7 @@ where
     pub fn declare_float_var_poison<K: StaticFloatKind, Name: Into<String>>(
         &mut self,
         name: Name,
-    ) -> FloatVariable<'ctx, K, B> {
+    ) -> FloatVariable<K, B> {
         let ty = K::ir_type(self.module_ref()).as_type().id();
         self.declare_var_raw(ty, name, VarCategory::Float, true)
             .into()
@@ -575,7 +723,7 @@ where
         &mut self,
         ty: FloatType<'ctx, super::float_kind::FloatDyn, B>,
         name: Name,
-    ) -> FloatVariable<'ctx, super::float_kind::FloatDyn, B> {
+    ) -> FloatVariable<super::float_kind::FloatDyn, B> {
         self.declare_var_raw(ty.as_type().id(), name, VarCategory::Float, false)
             .into()
     }
@@ -585,7 +733,7 @@ where
         &mut self,
         ty: FloatType<'ctx, super::float_kind::FloatDyn, B>,
         name: Name,
-    ) -> FloatVariable<'ctx, super::float_kind::FloatDyn, B> {
+    ) -> FloatVariable<super::float_kind::FloatDyn, B> {
         self.declare_var_raw(ty.as_type().id(), name, VarCategory::Float, true)
             .into()
     }
@@ -595,7 +743,7 @@ where
     pub fn declare_pointer_var<Name: Into<String>>(
         &mut self,
         name: Name,
-    ) -> PointerVariable<'ctx, B> {
+    ) -> PointerVariable<B> {
         let ty = self.module.ptr_type(0).as_type().id();
         self.declare_var_raw(ty, name, VarCategory::Pointer, false)
             .into()
@@ -605,7 +753,7 @@ where
     pub fn declare_pointer_var_poison<Name: Into<String>>(
         &mut self,
         name: Name,
-    ) -> PointerVariable<'ctx, B> {
+    ) -> PointerVariable<B> {
         let ty = self.module.ptr_type(0).as_type().id();
         self.declare_var_raw(ty, name, VarCategory::Pointer, true)
             .into()
@@ -617,7 +765,7 @@ where
         &mut self,
         ty: PointerType<'ctx, B>,
         name: Name,
-    ) -> PointerVariable<'ctx, B> {
+    ) -> PointerVariable<B> {
         self.declare_var_raw(ty.as_type().id(), name, VarCategory::Pointer, false)
             .into()
     }
@@ -627,7 +775,7 @@ where
         &mut self,
         ty: PointerType<'ctx, B>,
         name: Name,
-    ) -> PointerVariable<'ctx, B> {
+    ) -> PointerVariable<B> {
         self.declare_var_raw(ty.as_type().id(), name, VarCategory::Pointer, true)
             .into()
     }
@@ -643,7 +791,7 @@ where
         name: Name,
         category: VarCategory,
         poison_on_undef: bool,
-    ) -> VarHandle<'ctx, B> {
+    ) -> VarHandle<B> {
         let index = u32::try_from(self.state.vars.len())
             .unwrap_or_else(|_| unreachable!("more than u32::MAX SSA variables declared"));
         self.state.vars.push(VarData {
@@ -654,9 +802,9 @@ where
         });
         VarHandle {
             index,
-            owner: self.id,
+            owner: self.state.id,
             ty,
-            module: self.module_ref(),
+            _b: core::marker::PhantomData,
         }
     }
 
@@ -666,7 +814,7 @@ where
     }
 
     fn check_owner_block(&self, block: &SsaBlock<R, B>) -> IrResult<()> {
-        if block.owner != self.id {
+        if block.owner != self.state.id {
             return Err(IrError::SsaForeignBlock);
         }
         Ok(())
@@ -680,7 +828,7 @@ where
     /// unrelated structs with no shared trait -- every def/use call site
     /// passes `var.owner`.
     fn check_owner_var(&self, owner: SsaBuilderId) -> IrResult<()> {
-        if owner != self.id {
+        if owner != self.state.id {
             return Err(IrError::SsaForeignVariable);
         }
         Ok(())
@@ -710,23 +858,26 @@ where
 }
 
 // --------------------------------------------------------------------------
-// Unpositioned-only surface: switch_to_block, finish
+// Cursor: switch_to_block, ins, current_block, finish
 // --------------------------------------------------------------------------
 
-impl<'m, 'ctx, B, F, R> SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>
+impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
     F: IRBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
-    /// Position at the end of `block`. "Terminate the current block
-    /// before switching" is a COMPILE error -- this method does not
-    /// exist on the `Positioned` state, so a caller can never leave a
-    /// half-built block behind while moving to another one.
-    pub fn switch_to_block(
-        mut self,
-        block: SsaBlock<R, B>,
-    ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Positioned, R>> {
+    /// Move the cursor to the end of `block`.
+    ///
+    /// Unlike the pre-cycle-D shape this does not change the builder's
+    /// *type* -- the position is data. "Terminate the block you are in
+    /// before moving on" is therefore a runtime law here rather than a
+    /// static one, enforced by the same [`IrError::SsaBlockAlreadyFilled`]
+    /// this method has always raised for an already-terminated target,
+    /// plus `finish`'s [`IrError::SsaUnfilledBlock`] sweep for a block
+    /// abandoned half-built. See the module docs for why the SSA layer --
+    /// and only the SSA layer -- makes that trade.
+    pub fn switch_to_block(&mut self, block: SsaBlock<R, B>) -> IrResult<()> {
         self.check_owner_block(&block)?;
         let block_id = block.id.slot();
         if self.state.filled.contains(&block_id) {
@@ -734,30 +885,49 @@ where
                 block: block_name(self.module_ref(), block_id),
             });
         }
-        let handle = self.state.open_blocks.remove(&block_id).unwrap_or_else(|| {
-            unreachable!("SsaBuilder invariant: an unfilled block retains its linear handle")
-        });
-        let inner = super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone())
-            .position_at_end(handle);
-        Ok(SsaBuilder {
-            module: self.module,
-            function: self.function,
-            id: self.id,
-            folder: self.folder,
-            inner: Some(inner),
-            state: self.state,
-            _s: core::marker::PhantomData,
-        })
+        // `position_at_end_dyn` re-derives the plain builder's linear
+        // insertion token from the id and re-checks that the block is
+        // still open, so the strict builder's own guarantee is enforced
+        // at every reposition rather than assumed from a token this
+        // layer had been hoarding.
+        self.cursor = Some(
+            super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone())
+                .position_at_end_dyn(block.id)?,
+        );
+        Ok(())
+    }
+
+    /// `true` while the cursor names a block.
+    #[inline]
+    pub fn is_positioned(&self) -> bool {
+        self.cursor.is_some()
+    }
+
+    /// Clear the cursor without emitting anything. The block keeps its
+    /// (unfilled) status, so `finish` will still insist on a terminator
+    /// for it.
+    #[inline]
+    pub fn clear_position(&mut self) {
+        self.cursor = None;
     }
 
     /// Seal every remaining unsealed block (draining their incomplete
     /// phis via the private `add_phi_operands` engine step, exactly as
     /// [`Self::seal_block`] would), then require every created block to
-    /// have been filled (received a terminator). Consuming `self` on
-    /// `Unpositioned` gives two static guarantees: no def/use/terminator
-    /// call is reachable after `finish`, and no block can be mid-
-    /// construction (`Positioned`) when it runs.
+    /// have been filled (received a terminator).
+    ///
+    /// Consuming `self` releases the borrow on the [`SsaState`]. A
+    /// builder that is still positioned when `finish` runs is sitting in
+    /// a block with no terminator, which is exactly the
+    /// [`IrError::SsaUnfilledBlock`] case -- reported up front so the
+    /// error names the block the caller was mid-way through rather than
+    /// whichever unfilled block happens to come first in creation order.
     pub fn finish(mut self) -> IrResult<()> {
+        if let Some(open) = self.cursor.as_ref().map(|b| b.insert_block().slot()) {
+            return Err(IrError::SsaUnfilledBlock {
+                block: block_name(self.module_ref(), open),
+            });
+        }
         for block_id in self.state.block_order.clone() {
             if !self.state.sealed.contains(&block_id) {
                 let pending = self
@@ -783,46 +953,50 @@ where
 }
 
 // --------------------------------------------------------------------------
-// Positioned-only surface: ins, current_block, def/use, terminators
+// Positioned surface: ins, current_block, def/use, terminators
 // --------------------------------------------------------------------------
 
-impl<'m, 'ctx, B, F, R> SsaBuilder<'m, 'ctx, B, F, Positioned, R>
+impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
     F: IRBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
     /// The full existing typed instruction surface, cranelift-style:
-    /// `b.ins().build_int_mul(a, b, "x")?`. The `&`-return makes the
-    /// inner [`IRBuilder`](super::ir_builder::IRBuilder)'s
-    /// self-consuming methods (terminators, repositioning) structurally
-    /// unreachable through this handle -- the `SsaBuilder` never
-    /// surrenders the inner builder, which keeps its CFG bookkeeping
-    /// (edges/fill state) complete. Reaching a terminator or a
-    /// reposition requires going through this type's own terminator
-    /// methods below, each of which records the bookkeeping the inner
-    /// call alone would skip.
-    pub fn ins(&self) -> &super::ir_builder::IRBuilder<'m, 'ctx, B, F, Positioned, R> {
-        self.inner.as_ref().unwrap_or_else(|| {
-            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
+    /// `b.ins()?.build_int_mul(a, b, "x")?`.
+    ///
+    /// The `&`-return makes the plain
+    /// [`IRBuilder`](super::ir_builder::IRBuilder)'s self-consuming
+    /// methods (terminators, repositioning) structurally unreachable
+    /// through this handle -- the `SsaBuilder` never surrenders its
+    /// positioned builder, which keeps its CFG bookkeeping (edges/fill
+    /// state) complete. Reaching a terminator or a reposition requires
+    /// going through this type's own terminator methods below, each of
+    /// which records the bookkeeping the inner call alone would skip.
+    ///
+    /// What *did* change in cycle D is only the failure mode: an
+    /// unpositioned builder used to be a different type (so this was an
+    /// `E0599`), and now reports [`IrError::SsaUnpositioned`].
+    pub fn ins(&self) -> IrResult<&super::ir_builder::IRBuilder<'ctx, 'ctx, B, F, Positioned, R>> {
+        self.cursor.as_ref().ok_or(IrError::SsaUnpositioned)
+    }
+
+    /// The block the cursor names, as a copyable [`SsaBlock`] handle
+    /// (usable as a branch target / phi predecessor elsewhere in this
+    /// session's surface). [`IrError::SsaUnpositioned`] when the cursor
+    /// is empty.
+    pub fn current_block(&self) -> IrResult<SsaBlock<R, B>> {
+        Ok(SsaBlock {
+            id: self.ins()?.insert_block().id(),
+            owner: self.state.id,
         })
     }
 
-    /// The block this builder is currently positioned at, as a copyable
-    /// [`SsaBlock`] handle (usable as a branch target / phi predecessor
-    /// elsewhere in this builder's own surface).
-    pub fn current_block(&self) -> SsaBlock<R, B> {
-        SsaBlock {
-            id: self.ins().insert_block().id(),
-            owner: self.id,
-        }
-    }
-
-    /// [`ValueSlot`] of the block this builder is currently positioned at
-    /// -- the Braun engine's block key.
+    /// [`ValueSlot`] of the block the cursor names -- the Braun engine's
+    /// block key.
     #[inline]
-    fn current_block_id(&self) -> ValueSlot {
-        self.ins().insert_block().slot()
+    fn current_block_id(&self) -> IrResult<ValueSlot> {
+        Ok(self.ins()?.insert_block().slot())
     }
 
     /// Braun `writeVariable`: pure bookkeeping, no IR emitted.
@@ -856,7 +1030,7 @@ where
     /// pins, which is the case this check was originally written for.
     pub fn def_int_var<W: IntWidth, V>(
         &mut self,
-        var: IntVariable<'ctx, W, B>,
+        var: IntVariable<W, B>,
         value: V,
     ) -> IrResult<()>
     where
@@ -865,7 +1039,7 @@ where
         self.check_owner_var(var.owner)?;
         let v = value.into_int_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.into_erased().ty())?;
-        let block = self.current_block_id();
+        let block = self.current_block_id()?;
         self.write_variable(var.index, block, v.slot());
         Ok(())
     }
@@ -877,10 +1051,10 @@ where
     /// comment for the full argument.
     pub fn use_int_var<W: IntWidth>(
         &mut self,
-        var: IntVariable<'ctx, W, B>,
+        var: IntVariable<W, B>,
     ) -> IrResult<IntValue<'ctx, W, B>> {
         self.check_owner_var(var.owner)?;
-        let block = self.current_block_id();
+        let block = self.current_block_id()?;
         let id = self.read_variable_in(var.index, block)?;
         let value = Value::from_parts(id, self.module_ref(), var.ty);
         Ok(IntValue::from_value_unchecked(value))
@@ -896,7 +1070,7 @@ where
     /// half).
     pub fn def_float_var<K: FloatKind, V>(
         &mut self,
-        var: FloatVariable<'ctx, K, B>,
+        var: FloatVariable<K, B>,
         value: V,
     ) -> IrResult<()>
     where
@@ -905,7 +1079,7 @@ where
         self.check_owner_var(var.owner)?;
         let v = value.into_float_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
-        let block = self.current_block_id();
+        let block = self.current_block_id()?;
         self.write_variable(var.index, block, v.slot());
         Ok(())
     }
@@ -913,10 +1087,10 @@ where
     /// Float twin of [`Self::use_int_var`].
     pub fn use_float_var<K: FloatKind>(
         &mut self,
-        var: FloatVariable<'ctx, K, B>,
+        var: FloatVariable<K, B>,
     ) -> IrResult<FloatValue<'ctx, K, B>> {
         self.check_owner_var(var.owner)?;
-        let block = self.current_block_id();
+        let block = self.current_block_id()?;
         let id = self.read_variable_in(var.index, block)?;
         let value = Value::from_parts(id, self.module_ref(), var.ty);
         Ok(FloatValue::from_value_unchecked(value))
@@ -940,14 +1114,14 @@ where
     /// now share `Type::require_match` with its twins instead of spelling
     /// its own compare (`pointer_var_wrong_addrspace_def_rejected`,
     /// `tests/ssa_builder.rs`, names both address spaces).
-    pub fn def_pointer_var<V>(&mut self, var: PointerVariable<'ctx, B>, value: V) -> IrResult<()>
+    pub fn def_pointer_var<V>(&mut self, var: PointerVariable<B>, value: V) -> IrResult<()>
     where
         V: IntoPointerValue<'ctx, B>,
     {
         self.check_owner_var(var.owner)?;
         let v = value.into_pointer_value(self.module_ref())?;
         super::r#type::Type::new(var.ty, self.module_ref()).require_match(Typed::ty(v))?;
-        let block = self.current_block_id();
+        let block = self.current_block_id()?;
         self.write_variable(var.index, block, v.slot());
         Ok(())
     }
@@ -955,10 +1129,10 @@ where
     /// Pointer twin of [`Self::use_int_var`].
     pub fn use_pointer_var(
         &mut self,
-        var: PointerVariable<'ctx, B>,
+        var: PointerVariable<B>,
     ) -> IrResult<PointerValue<'ctx, B>> {
         self.check_owner_var(var.owner)?;
-        let block = self.current_block_id();
+        let block = self.current_block_id()?;
         let id = self.read_variable_in(var.index, block)?;
         let value = Value::from_parts(id, self.module_ref(), var.ty);
         Ok(PointerValue::from_value_unchecked(value))
@@ -966,13 +1140,16 @@ where
 
     // ---- Terminators ----
     //
-    // Each terminator consumes `self`, delegates to the inner builder's
-    // OWN consuming terminator (which does the actual IR emission and
-    // block-termination bookkeeping), records the CFG edge(s) the Braun
-    // engine needs (`preds`, in the exact order phi incoming operands
-    // should later be added in), marks the source block filled, and
-    // returns the `Unpositioned` builder so construction can continue
-    // at a different (or the same, if re-`switch_to_block`ed) block.
+    // Each terminator mints a plain positioned builder for the cursor
+    // (`ins`, which reports `SsaUnpositioned` if the cursor is empty),
+    // delegates to that builder's OWN consuming terminator (which does
+    // the actual IR emission and block-termination bookkeeping), records
+    // the CFG edge(s) the Braun engine needs (`preds`, in the exact
+    // order phi incoming operands should later be added in), marks the
+    // source block filled, and clears the cursor -- so construction
+    // continues at whichever block is switched to next, and a second
+    // terminator on the same block is `SsaUnpositioned` (or, after an
+    // explicit re-switch, `SsaBlockAlreadyFilled`).
     //
     // "ANY edge into a Braun-sealed block is an error" both enforces
     // Braun's own precondition (a sealed block's predecessor set is
@@ -982,10 +1159,7 @@ where
     // `verify()` time.
 
     /// Produce `br label %dest`. Mirrors `IRBuilder::CreateBr`.
-    pub fn br(
-        mut self,
-        dest: SsaBlock<R, B>,
-    ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>> {
+    pub fn br(&mut self, dest: SsaBlock<R, B>) -> IrResult<()> {
         self.check_owner_block(&dest)?;
         let dest_id = dest.id.slot();
         if self.state.sealed.contains(&dest_id) {
@@ -993,22 +1167,12 @@ where
                 block: block_name(self.module_ref(), dest_id),
             });
         }
-        let src_id = self.current_block_id();
-        let inner = self.inner.take().unwrap_or_else(|| {
-            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
-        });
+        let src_id = self.current_block_id()?;
+        let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
         let (_terminated, _inst) = inner.build_br(dest.id)?;
         self.state.preds.entry(dest_id).or_default().push(src_id);
         self.state.filled.insert(src_id);
-        Ok(SsaBuilder {
-            module: self.module,
-            function: self.function,
-            id: self.id,
-            folder: self.folder,
-            inner: None,
-            state: self.state,
-            _s: core::marker::PhantomData,
-        })
+        Ok(())
     }
 
     /// Produce `br i1 <cond>, label %then, label %else`. Mirrors
@@ -1017,11 +1181,11 @@ where
     /// incoming operands added in the same order once each predecessor
     /// is later completed.
     pub fn cond_br<C>(
-        mut self,
+        &mut self,
         cond: C,
         then_dest: SsaBlock<R, B>,
         else_dest: SsaBlock<R, B>,
-    ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>>
+    ) -> IrResult<()>
     where
         C: IntoIntValue<'ctx, bool, B>,
     {
@@ -1039,23 +1203,13 @@ where
                 block: block_name(self.module_ref(), else_id),
             });
         }
-        let src_id = self.current_block_id();
-        let inner = self.inner.take().unwrap_or_else(|| {
-            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
-        });
+        let src_id = self.current_block_id()?;
+        let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
         let (_terminated, _inst) = inner.build_cond_br(cond, then_dest.id, else_dest.id)?;
         self.state.preds.entry(then_id).or_default().push(src_id);
         self.state.preds.entry(else_id).or_default().push(src_id);
         self.state.filled.insert(src_id);
-        Ok(SsaBuilder {
-            module: self.module,
-            function: self.function,
-            id: self.id,
-            folder: self.folder,
-            inner: None,
-            state: self.state,
-            _s: core::marker::PhantomData,
-        })
+        Ok(())
     }
 
     /// Produce `switch <cond>, label %default [ <case> label %dest ... ]`.
@@ -1087,11 +1241,11 @@ where
     /// instead of dropping a half-built builder over a partially-cased
     /// live switch.
     pub fn switch<W, V, C, Cases>(
-        mut self,
+        &mut self,
         cond: V,
         default_dest: SsaBlock<R, B>,
         cases: Cases,
-    ) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>>
+    ) -> IrResult<()>
     where
         W: IntWidth,
         V: IntoIntValue<'ctx, W, B>,
@@ -1123,10 +1277,8 @@ where
                 });
             }
         }
-        let src_id = self.current_block_id();
-        let inner = self.inner.take().unwrap_or_else(|| {
-            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
-        });
+        let src_id = self.current_block_id()?;
+        let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
         let (_terminated, open) = inner.build_switch_dyn(cond, default_dest.id, "")?;
         let mut open = open;
         for (case_value, target) in cases {
@@ -1142,63 +1294,35 @@ where
             self.state.preds.entry(dest_id).or_default().push(src_id);
         }
         self.state.filled.insert(src_id);
-        Ok(SsaBuilder {
-            module: self.module,
-            function: self.function,
-            id: self.id,
-            folder: self.folder,
-            inner: None,
-            state: self.state,
-            _s: core::marker::PhantomData,
-        })
+        Ok(())
     }
 
     /// Produce `ret <value>`. Mirrors `IRBuilder::CreateRet`. Records no
     /// edges -- a `ret` has no successors.
-    pub fn ret<V>(mut self, value: V) -> IrResult<SsaBuilder<'m, 'ctx, B, F, Unpositioned, R>>
+    pub fn ret<V>(&mut self, value: V) -> IrResult<()>
     where
         V: IntoReturnValue<'ctx, R, B>,
     {
-        let src_id = self.current_block_id();
-        let inner = self.inner.take().unwrap_or_else(|| {
-            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
-        });
+        let src_id = self.current_block_id()?;
+        let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
         let (_terminated, _inst) = inner.build_ret(value)?;
         self.state.filled.insert(src_id);
-        Ok(SsaBuilder {
-            module: self.module,
-            function: self.function,
-            id: self.id,
-            folder: self.folder,
-            inner: None,
-            state: self.state,
-            _s: core::marker::PhantomData,
-        })
+        Ok(())
     }
 
     /// Produce `unreachable`. Mirrors `IRBuilder::CreateUnreachable`.
-    /// Infallible (matching the inner builder's own `build_unreachable`
-    /// shape); records no edges.
-    pub fn unreachable(mut self) -> SsaBuilder<'m, 'ctx, B, F, Unpositioned, R> {
-        let src_id = self.current_block_id();
-        let inner = self.inner.take().unwrap_or_else(|| {
-            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
-        });
+    /// Records no edges. The inner `build_unreachable` is infallible, so
+    /// the only failure here is an empty cursor.
+    pub fn unreachable(&mut self) -> IrResult<()> {
+        let src_id = self.current_block_id()?;
+        let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
         let (_terminated, _inst) = inner.build_unreachable();
         self.state.filled.insert(src_id);
-        SsaBuilder {
-            module: self.module,
-            function: self.function,
-            id: self.id,
-            folder: self.folder,
-            inner: None,
-            state: self.state,
-            _s: core::marker::PhantomData,
-        }
+        Ok(())
     }
 }
 
-impl<'m, 'ctx, B, F> SsaBuilder<'m, 'ctx, B, F, Positioned, ()>
+impl<'s, 'ctx, B, F> SsaBuilder<'s, 'ctx, B, F, ()>
 where
     B: ModuleBrand + 'ctx,
     F: IRBuilderFolder<'ctx, B> + Clone,
@@ -1209,68 +1333,58 @@ where
     /// builder's `ret_void` would need a runtime parent-function check;
     /// no such builder shape is reachable here since `R = ()` is fixed
     /// by this impl block).
-    pub fn ret_void(mut self) -> SsaBuilder<'m, 'ctx, B, F, Unpositioned, ()> {
-        let src_id = self.current_block_id();
-        let inner = self.inner.take().unwrap_or_else(|| {
-            unreachable!("SsaBuilder invariant: Positioned state always holds the inner builder")
-        });
+    pub fn ret_void(&mut self) -> IrResult<()> {
+        let src_id = self.current_block_id()?;
+        let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
         let (_terminated, _inst) = inner.build_ret_void();
         self.state.filled.insert(src_id);
-        SsaBuilder {
-            module: self.module,
-            function: self.function,
-            id: self.id,
-            folder: self.folder,
-            inner: None,
-            state: self.state,
-            _s: core::marker::PhantomData,
-        }
+        Ok(())
     }
 }
 
 /// Shared field layout produced by [`SsaBuilder::declare_var_raw`]; each
 /// public `IntVariable`/`FloatVariable`/`PointerVariable` constructor
 /// below narrows this into its own phantom shape.
-struct VarHandle<'ctx, B: ModuleBrand> {
+struct VarHandle<B: ModuleBrand> {
     index: u32,
     owner: SsaBuilderId,
     ty: TypeSlot,
-    module: ModuleRef<'ctx, B>,
+    _b: Invariant<B>,
 }
 
-impl<'ctx, B: ModuleBrand> From<VarHandle<'ctx, B>> for PointerVariable<'ctx, B> {
+impl<B: ModuleBrand> From<VarHandle<B>> for PointerVariable<B> {
     #[inline]
-    fn from(h: VarHandle<'ctx, B>) -> Self {
+    fn from(h: VarHandle<B>) -> Self {
         PointerVariable {
             index: h.index,
             owner: h.owner,
             ty: h.ty,
-            module: h.module,
+            _b: core::marker::PhantomData,
         }
     }
 }
 
-impl<'ctx, W: IntWidth, B: ModuleBrand> From<VarHandle<'ctx, B>> for IntVariable<'ctx, W, B> {
+impl<W: IntWidth, B: ModuleBrand> From<VarHandle<B>> for IntVariable<W, B> {
     #[inline]
-    fn from(h: VarHandle<'ctx, B>) -> Self {
+    fn from(h: VarHandle<B>) -> Self {
         IntVariable {
             index: h.index,
             owner: h.owner,
             ty: h.ty,
-            module: h.module,
+            _b: core::marker::PhantomData,
             _w: core::marker::PhantomData,
         }
     }
 }
 
-impl<'ctx, K: FloatKind, B: ModuleBrand> From<VarHandle<'ctx, B>> for FloatVariable<'ctx, K, B> {
+impl<K: FloatKind, B: ModuleBrand> From<VarHandle<B>> for FloatVariable<K, B> {
     #[inline]
-    fn from(h: VarHandle<'ctx, B>) -> Self {
+    fn from(h: VarHandle<B>) -> Self {
         FloatVariable {
             index: h.index,
             owner: h.owner,
             ty: h.ty,
-            module: h.module,
+            _b: core::marker::PhantomData,
             _k: core::marker::PhantomData,
         }
     }
@@ -1340,11 +1454,10 @@ where
 // bounded by the number of blocks in the function, which is itself
 // bounded by available memory -- there is no pathological input that
 // grows this past a reasonable native stack.
-impl<'m, 'ctx, B, F, S, R> SsaBuilder<'m, 'ctx, B, F, S, R>
+impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
     F: IRBuilderFolder<'ctx, B> + Clone,
-    S: BuilderPositionState,
     R: ReturnMarker,
 {
     /// Braun `writeVariable`.
@@ -1481,14 +1594,19 @@ where
         // step already resolved away.
         let users: Vec<ValueSlot> = self.phi_user_ids(phi);
         self.state.phi_var.remove(&phi);
-        let handle = self.state.created_phis.remove(&phi).unwrap_or_else(|| {
+        if !self.state.created_phis.remove(&phi) {
             unreachable!(
                 "SsaBuilder invariant: every ValueSlot reachable through try_remove_trivial_phi \
-                 was produced by Self::emit_operandless_phi, which always records its handle in \
+                 was produced by Self::emit_operandless_phi, which always records its slot in \
                  created_phis before returning"
             )
-        });
+        }
         let module = self.module_ref();
+        // Re-mint the linear lifecycle handle from the slot: cycle D
+        // stopped `SsaState` storing one so it could shed its `'ctx`.
+        // The slot came out of `created_phis`, so it names a phi this
+        // layer created and has not yet erased.
+        let handle = Instruction::<Attached, B>::from_parts(phi, module);
         let same_ty = module.value_data(same).ty;
         let replacement = Value::from_parts(same, module, same_ty);
         // `replace_all_uses_with`'s only failure mode is a type mismatch
@@ -1533,7 +1651,7 @@ where
         Instruction::<Attached, B>::from_parts(phi, module).erase_from_parent(self.module);
         self.state.resolved.borrow_mut().insert(phi, same);
         for user in users {
-            if self.state.created_phis.contains_key(&user) {
+            if self.state.created_phis.contains(&user) {
                 self.try_remove_trivial_phi(user)?;
             }
         }
@@ -1569,9 +1687,10 @@ where
     /// throwaway builder's cursor (see `append_phi_instruction`), so this
     /// method only has to position a builder *inside* `block` — the exact
     /// cursor within it does not affect where the phi lands. That
-    /// collapses to two cases, keyed on emptiness rather than on which of
-    /// `self.inner` / `open_blocks` currently owns the block's linear
-    /// handle:
+    /// collapses to two cases, keyed purely on emptiness — cycle D no
+    /// longer has to ask which of the live builder / an `open_blocks`
+    /// map owns the block's linear handle, because it keeps no such
+    /// handle at all:
     ///
     /// - `block` has >= 1 instruction already (whether it is open,
     ///   current, or filled/terminated): a fresh throwaway builder
@@ -1580,11 +1699,11 @@ where
     ///   `BasicBlock` handle is needed at all here.
     /// - `block` is empty: `position_before` has no anchor to derive
     ///   from, so head-insertion needs an actual end-of-block position,
-    ///   which requires the block's linear `Unterminated` handle. If
-    ///   `block` is the live positioned block, `self.inner`'s own
-    ///   append (`&self`-based phi builders, `insert_before: None`) IS
-    ///   that position. Otherwise the handle is borrowed out of
-    ///   `open_blocks`, used, and stored back.
+    ///   which requires an `Unterminated` `BasicBlock` handle. It is
+    ///   re-minted from the slot. That is sound *because* this arm is
+    ///   reached only when the block has no instructions: an empty block
+    ///   provably has no terminator, so the `Unterminated` claim the
+    ///   handle makes is checked, not assumed.
     fn emit_operandless_phi(&mut self, var: u32, block: ValueSlot) -> IrResult<ValueSlot> {
         let idx = usize::try_from(var).unwrap_or_else(|_| {
             unreachable!("SsaBuilder invariant: var indices are u32::try_from(vars.len())")
@@ -1614,38 +1733,19 @@ where
                 super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone())
                     .position_before(&anchor);
             build_typed_phi(&builder, var_category, var_ty, module, &var_name)?
-        } else if let Some(current) = self
-            .inner
-            .as_ref()
-            .filter(|b| b.insert_block().slot() == block)
-        {
-            // Empty and currently positioned: the phi builders take
-            // `&self`, so appending through the live builder directly
-            // IS head-insertion (no repositioning round-trip needed).
-            build_typed_phi(current, var_category, var_ty, module, &var_name)?
         } else {
-            // Empty and not current: borrow the linear handle out of
-            // `open_blocks`, position at its end (which is also its
-            // head, since it is empty), emit, and store the handle back.
-            let open = self.state.open_blocks.remove(&block).unwrap_or_else(|| {
-                unreachable!(
-                    "SsaBuilder invariant: every block id ever passed to emit_operandless_phi \
-                     came from a recorded CFG edge or entry, so it is either the live positioned \
-                     block, still open, or already filled (handled by the non-empty branch above)"
-                )
-            });
-            let positioned =
+            // Empty: end-of-block IS head-of-block, and an empty block
+            // has no terminator, so re-minting the `Unterminated` handle
+            // from the slot states only what the emptiness check just
+            // proved.
+            let open =
+                BasicBlock::<Dyn, Unterminated, B>::from_parts(block, module, label_ty);
+            let positioned: super::ir_builder::IRBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
                 super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone())
                     .position_at_end(open);
-            let inst = build_typed_phi(&positioned, var_category, var_ty, module, &var_name)?;
-            self.state
-                .open_blocks
-                .insert(block, positioned.into_insert_block());
-            inst
+            build_typed_phi(&positioned, var_category, var_ty, module, &var_name)?
         };
-        self.state
-            .created_phis
-            .insert(inst, Instruction::<Attached, B>::from_parts(inst, module));
+        self.state.created_phis.insert(inst);
         self.state.phi_var.insert(inst, var);
         Ok(inst)
     }
@@ -1726,17 +1826,15 @@ where
     fn undefined_phi_replacement(&mut self, phi: ValueSlot) -> IrResult<ValueSlot> {
         let module = self.module_ref();
         let ty = module.value_data(phi).ty;
-        let block_id = self
-            .state
-            .created_phis
-            .get(&phi)
-            .map(|h| h.parent().slot())
-            .unwrap_or_else(|| {
-                unreachable!(
-                    "SsaBuilder invariant: try_remove_trivial_phi only calls this helper on a \
-                     phi still present in created_phis"
-                )
-            });
+        if !self.state.created_phis.contains(&phi) {
+            unreachable!(
+                "SsaBuilder invariant: try_remove_trivial_phi only calls this helper on a \
+                 phi still present in created_phis"
+            )
+        }
+        let block_id = Instruction::<Attached, B>::from_parts(phi, module)
+            .parent()
+            .slot();
         // Recover which declared variable this phi belongs to via
         // `phi_var`, populated alongside `created_phis` in
         // `emit_operandless_phi` (the one place that KNOWS which
@@ -1766,13 +1864,13 @@ where
             // shape as the trivial path in `try_remove_trivial_phi`.
             let users: Vec<ValueSlot> = self.phi_user_ids(phi);
             self.state.phi_var.remove(&phi);
-            let handle = self.state.created_phis.remove(&phi).unwrap_or_else(|| {
+            if !self.state.created_phis.remove(&phi) {
                 unreachable!(
                     "SsaBuilder invariant: undefined_phi_replacement read this phi's block out \
                      of created_phis a few lines above"
                 )
-            });
-            handle
+            }
+            Instruction::<Attached, B>::from_parts(phi, module)
                 .replace_all_uses_with(self.module, poison.into_erased())
                 .unwrap_or_else(|_| {
                     unreachable!(
@@ -1784,7 +1882,7 @@ where
             let resolved = poison.slot();
             self.state.resolved.borrow_mut().insert(phi, resolved);
             for user in users {
-                if self.state.created_phis.contains_key(&user) {
+                if self.state.created_phis.contains(&user) {
                     self.try_remove_trivial_phi(user)?;
                 }
             }
@@ -1814,7 +1912,8 @@ mod tests {
         let m = crate::module_new!("ssa-entry-seal")?;
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let mut st_b = SsaState::for_function(&m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let entry_id = entry.id.slot();
         assert!(b.state.sealed.contains(&entry_id));
@@ -1834,7 +1933,8 @@ mod tests {
         let m = crate::module_new!("ssa-double-seal")?;
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let mut st_b = SsaState::for_function(&m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let _entry = b.create_block("entry");
         let second = b.create_block("second"); // not entry -- unsealed
         b.seal_block(second)?;
@@ -1848,14 +1948,17 @@ mod tests {
     /// llvmkit-specific: locks `SsaFunctionHasBlocks` -- the layer must
     /// observe every CFG edge from birth, so grafting onto a function
     /// that already has a body is rejected rather than silently missing
-    /// the pre-existing blocks' edges.
+    /// the pre-existing blocks' edges. Cycle D moved the check to
+    /// [`SsaState::for_function`], the one place a session is *opened*:
+    /// `SsaBuilder::for_function` re-mints a working handle over an
+    /// in-progress session and must obviously not re-trip it.
     #[test]
     fn for_function_rejects_function_with_existing_blocks() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-nonempty-fn")?;
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let _entry = m.view(f).append_basic_block(&m, "entry");
-        match SsaBuilder::for_function(&m, m.view(f)) {
+        match SsaState::for_function(&m, m.view(f)) {
             Err(IrError::SsaFunctionHasBlocks) => {}
             Ok(_) => panic!("expected SsaFunctionHasBlocks, got Ok"),
             Err(other) => panic!("expected SsaFunctionHasBlocks, got {other:?}"),
@@ -1871,11 +1974,13 @@ mod tests {
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
         let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
-        let mut b1 = SsaBuilder::for_function(&m, m.view(f1))?;
+        let mut st_b1 = SsaState::for_function(&m, m.view(f1))?;
+        let mut b1 = SsaBuilder::for_function(&m, m.view(f1), &mut st_b1)?;
         let _entry1 = b1.create_block("entry");
         let other1 = b1.create_block("other");
 
-        let mut b2 = SsaBuilder::for_function(&m, m.view(f2))?;
+        let mut st_b2 = SsaState::for_function(&m, m.view(f2))?;
+        let mut b2 = SsaBuilder::for_function(&m, m.view(f2), &mut st_b2)?;
         let _entry2 = b2.create_block("entry");
 
         match b2.seal_block(other1) {
@@ -1885,23 +1990,24 @@ mod tests {
         Ok(())
     }
 
-    /// llvmkit-specific: locks the declared-variable handle shape
-    /// (`owner`/`module` accessors) across all three categories.
+    /// llvmkit-specific: locks the declared-variable handle shape (the
+    /// `owner` accessor) across all three categories. The old `module()`
+    /// accessor is gone with cycle D's lifetime-free variable handles:
+    /// the owning module is pinned by the brand type parameter, and the
+    /// handle stores no `ModuleRef` to report.
     #[test]
-    fn declare_var_family_reports_owner_and_module() -> Result<(), IrError> {
+    fn declare_var_family_reports_owner() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-declare")?;
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let mut st_b = SsaState::for_function(&m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let int_var = b.declare_int_var::<i32, _>("x");
         let float_var = b.declare_float_var::<f64, _>("y");
         let ptr_var = b.declare_pointer_var("z");
         assert_eq!(int_var.owner(), b.id());
         assert_eq!(float_var.owner(), b.id());
         assert_eq!(ptr_var.owner(), b.id());
-        assert_eq!(int_var.module().id(), m.id());
-        assert_eq!(float_var.module().id(), m.id());
-        assert_eq!(ptr_var.module().id(), m.id());
         assert_eq!(b.state.vars.len(), 3);
         Ok(())
     }
@@ -1918,7 +2024,8 @@ mod tests {
         let m = crate::module_new!("ssa-straight-line")?;
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let mut st_b = SsaState::for_function(&m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let entry_id = entry.id.slot();
 
@@ -1945,7 +2052,8 @@ mod tests {
         let m = crate::module_new!("ssa-incomplete-phi")?;
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let mut st_b = SsaState::for_function(&m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let _entry = b.create_block("entry");
         let entry_id = _entry.id.slot();
         let loop_bb = b.create_block("loop");
@@ -1964,7 +2072,7 @@ mod tests {
         // completion.
         let read_before_seal = b.read_variable_in(var.index, loop_id)?;
         assert_eq!(b.state.incomplete_phis.get(&loop_id).map(Vec::len), Some(1));
-        assert!(b.state.created_phis.contains_key(&read_before_seal));
+        assert!(b.state.created_phis.contains(&read_before_seal));
 
         // Record the loop body's own write (e.g. `i + 1`, modeled
         // here as reusing a fresh constant is fine -- the engine
@@ -2002,7 +2110,8 @@ mod tests {
         let m = crate::module_new!("ssa-trivial-join")?;
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let mut st_b = SsaState::for_function(&m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let _entry = b.create_block("entry");
         let entry_id = _entry.id.slot();
         let left = b.create_block("left");
@@ -2054,7 +2163,8 @@ mod tests {
         let m = crate::module_new!("ssa-undefined-strict")?;
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let mut st_b = SsaState::for_function(&m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let entry_id = entry.id.slot();
 
@@ -2078,7 +2188,8 @@ mod tests {
         let m = crate::module_new!("ssa-undefined-poison")?;
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let mut st_b = SsaState::for_function(&m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let entry_id = entry.id.slot();
 
@@ -2110,7 +2221,8 @@ mod tests {
         let m = crate::module_new!("ssa-chase-memoization")?;
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let mut st_b = SsaState::for_function(&m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let entry_id = entry.id.slot();
         let b1 = b.create_block("b1");
@@ -2190,11 +2302,12 @@ mod tests {
         let m = crate::module_new!("ssa-forged-static-width")?;
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let mut st_b = SsaState::for_function(&m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let x = b.declare_int_var::<i32, _>("x");
 
-        let mut b = b.switch_to_block(entry)?;
+        b.switch_to_block(entry)?;
         let forged: IntValue<'_, i32, _> =
             IntValue::from_value_unchecked(m.i64_type().const_zero().into_erased());
 
@@ -2227,11 +2340,12 @@ mod tests {
         let m = crate::module_new!("ssa-forged-static-kind")?;
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let mut st_b = SsaState::for_function(&m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let x = b.declare_float_var::<f32, _>("x");
 
-        let mut b = b.switch_to_block(entry)?;
+        b.switch_to_block(entry)?;
         let forged: FloatValue<'_, f32, _> =
             FloatValue::from_value_unchecked(m.f64_type().const_from_bits(0).into_erased());
 
@@ -2271,11 +2385,12 @@ mod tests {
         let m = crate::module_new!("ssa-forged-pointer")?;
         let fn_ty = m.fn_type_no_params(m.void_type(), false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let mut b = SsaBuilder::for_function(&m, m.view(f))?;
+        let mut st_b = SsaState::for_function(&m, m.view(f))?;
+        let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
         let entry = b.create_block("entry");
         let p = b.declare_pointer_var("p");
 
-        let mut b = b.switch_to_block(entry)?;
+        b.switch_to_block(entry)?;
         let forged: PointerValue<'_, _> =
             PointerValue::from_value_unchecked(m.i32_type().const_zero().into_erased());
 

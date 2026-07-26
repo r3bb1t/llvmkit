@@ -322,6 +322,7 @@ pub use pass_pipeline::{
 pub use phi_check::{PhiCoherenceError, check_function_phi_coherence};
 pub use ssa_builder::{
     FloatVariable, IntVariable, IntoIrResult, PointerVariable, SsaBlock, SsaBuilder, SsaBuilderId,
+    SsaState,
 };
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
 pub use struct_schema::{
