@@ -6,7 +6,8 @@
 use llvmkit_asmparser::file_loc::FileLoc;
 use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_asmparser::parser;
-use llvmkit_ir::{AnyTypeEnum, module_new};
+use llvmkit_asmparser::{parse_branded, parse_dynamic, parse_file_dynamic, parse_into};
+use llvmkit_ir::{AnyTypeEnum, Module, module_new};
 
 const MINIMAL: &str = include_str!("fixtures/facade_minimal.ll");
 
@@ -21,6 +22,91 @@ fn parse_assembly_string_round_trips_module() {
         assert!(printed.contains("ret i32 0"));
     })
     .expect("facade parse succeeds");
+}
+
+/// llvmkit-specific (cycle C4): the closure-free entry points hand back the
+/// **owned** module, so the caller can `verify()` it — which the closure forms
+/// cannot do, because they only lend the module by reference.
+#[test]
+fn parse_dynamic_returns_an_owned_verifiable_module() {
+    let module = parse_dynamic(MINIMAL).expect("owned parse succeeds");
+    let module = module.verify().expect("parsed module verifies");
+    let printed = format!("{module}");
+    assert!(printed.contains("target triple = \"x86_64-pc-linux-gnu\""));
+    assert!(printed.contains("define i32 @main()"));
+    assert!(printed.contains("ret i32 0"));
+}
+
+/// The owned module is a value: it can be pushed into a `Vec` and outlive the
+/// call that produced it. `DynBrand` is registry-exempt, so many can be live.
+#[test]
+fn parse_dynamic_modules_collect_into_a_vec() {
+    let sources = [
+        "@a = global i32 1
+",
+        "@b = global i32 2
+",
+        "@c = global i32 3
+",
+    ];
+    let modules: Vec<_> = sources
+        .into_iter()
+        .map(|src| parse_dynamic(src).expect("owned parse succeeds"))
+        .collect();
+    assert_eq!(modules.len(), 3);
+    // Distinct modules, separated by the runtime tag.
+    assert_ne!(modules[0].id(), modules[1].id());
+    assert_ne!(modules[1].id(), modules[2].id());
+    assert!(format!("{}", modules[2]).contains("@c = global i32 3"));
+}
+
+/// A named brand survives the parse: the returned token carries `B`, so its
+/// handles are statically separated from every other module's.
+#[test]
+fn parse_branded_returns_the_named_brand() {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    struct ParsedFacade;
+    impl llvmkit_ir::ModuleBrand for ParsedFacade {}
+
+    let module: Module<ParsedFacade, _> =
+        parse_branded::<ParsedFacade, _>(MINIMAL).expect("branded parse succeeds");
+    let module = module.verify().expect("parsed module verifies");
+    assert!(format!("{module}").contains("define i32 @main()"));
+
+    // The brand is claimed for as long as the module lives.
+    assert!(matches!(
+        parse_branded::<ParsedFacade, _>(MINIMAL),
+        Err(ParseError::BrandInUse { .. })
+    ));
+    drop(module);
+    // ...and released when it dies.
+    assert!(parse_branded::<ParsedFacade, _>(MINIMAL).is_ok());
+}
+
+/// `parse_into` lets the caller pick the module — here an unnameable
+/// `module_new!` brand — and hands the same token straight back.
+#[test]
+fn parse_into_fills_a_caller_supplied_module() {
+    let module = module_new!("caller-named").expect("fresh brand");
+    let id_before = module.id();
+    let module = parse_into(module, MINIMAL).expect("parse into succeeds");
+    assert_eq!(module.id(), id_before);
+    assert_eq!(module.name(), "caller-named");
+    let module = module.verify().expect("parsed module verifies");
+    assert!(format!("{module}").contains("define i32 @main()"));
+}
+
+/// The file entry point names the module after the file and returns it owned.
+#[test]
+fn parse_file_dynamic_returns_an_owned_module_named_after_the_file() {
+    let module = parse_file_dynamic(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/facade_minimal.ll"
+    ))
+    .expect("owned file parse succeeds");
+    assert_eq!(module.name(), "facade_minimal.ll");
+    let module = module.verify().expect("parsed module verifies");
+    assert!(format!("{module}").contains("define i32 @main()"));
 }
 
 /// Ports `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` file-loading
