@@ -16,8 +16,8 @@ help: the trait `IntoIntValue<'_, i32, DynBrand>` is not implemented for `IntVal
 note: required by a bound in `SsaBuilder::<'s, 'ctx, B, F, R>::def_int_var`
   --> src/ssa_builder.rs
    |
-   |     pub fn def_int_var<W: IntWidth, V>(
+   |     pub fn def_int_var<W: IntWidth, V>(&mut self, var: IntVariable<W, B>, value: V) -> IrResult<()>
    |            ----------- required by a bound in this associated function
-...
+   |     where
    |         V: IntoIntValue<'ctx, W, B>,
    |            ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SsaBuilder::<'s, 'ctx, B, F, R>::def_int_var`

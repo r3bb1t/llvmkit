@@ -563,9 +563,7 @@ where
     state: &'s mut SsaState<B>,
 }
 
-impl<'s, 'ctx, B: ModuleBrand + 'ctx, R: ReturnMarker>
-    SsaBuilder<'s, 'ctx, B, ConstantFolder, R>
-{
+impl<'s, 'ctx, B: ModuleBrand + 'ctx, R: ReturnMarker> SsaBuilder<'s, 'ctx, B, ConstantFolder, R> {
     /// Mint a working builder over `state` using the default
     /// [`ConstantFolder`].
     ///
@@ -740,10 +738,7 @@ where
 
     /// Declare a strict pointer variable in the default address space
     /// (addrspace 0).
-    pub fn declare_pointer_var<Name: Into<String>>(
-        &mut self,
-        name: Name,
-    ) -> PointerVariable<B> {
+    pub fn declare_pointer_var<Name: Into<String>>(&mut self, name: Name) -> PointerVariable<B> {
         let ty = self.module.ptr_type(0).as_type().id();
         self.declare_var_raw(ty, name, VarCategory::Pointer, false)
             .into()
@@ -1028,11 +1023,7 @@ where
     /// only "some integer width" while `var.ty` names the actual one --
     /// `IntoIntValue<IntDyn>` happily lifts a DIFFERENT width than `var.ty`
     /// pins, which is the case this check was originally written for.
-    pub fn def_int_var<W: IntWidth, V>(
-        &mut self,
-        var: IntVariable<W, B>,
-        value: V,
-    ) -> IrResult<()>
+    pub fn def_int_var<W: IntWidth, V>(&mut self, var: IntVariable<W, B>, value: V) -> IrResult<()>
     where
         V: IntoIntValue<'ctx, W, B>,
     {
@@ -1127,10 +1118,7 @@ where
     }
 
     /// Pointer twin of [`Self::use_int_var`].
-    pub fn use_pointer_var(
-        &mut self,
-        var: PointerVariable<B>,
-    ) -> IrResult<PointerValue<'ctx, B>> {
+    pub fn use_pointer_var(&mut self, var: PointerVariable<B>) -> IrResult<PointerValue<'ctx, B>> {
         self.check_owner_var(var.owner)?;
         let block = self.current_block_id()?;
         let id = self.read_variable_in(var.index, block)?;
@@ -1738,8 +1726,7 @@ where
             // has no terminator, so re-minting the `Unterminated` handle
             // from the slot states only what the emptiness check just
             // proved.
-            let open =
-                BasicBlock::<Dyn, Unterminated, B>::from_parts(block, module, label_ty);
+            let open = BasicBlock::<Dyn, Unterminated, B>::from_parts(block, module, label_ty);
             let positioned: super::ir_builder::IRBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
                 super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone())
                     .position_at_end(open);

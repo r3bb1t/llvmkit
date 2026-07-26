@@ -330,7 +330,11 @@ impl<B: ModuleBrand> LifterSession<B> {
         let fallthrough = self.program.get(self.pc + 1).map(|&(next, _)| next);
         self.pc += 1;
 
-        let mut b = SsaBuilder::for_function(&self.module, self.module.view(self.function), &mut self.state)?;
+        let mut b = SsaBuilder::for_function(
+            &self.module,
+            self.module.view(self.function),
+            &mut self.state,
+        )?;
 
         // --- restore the cursor the previous step parked ---
         if self.leaders.contains(&addr) {
@@ -373,9 +377,12 @@ impl<B: ModuleBrand> LifterSession<B> {
             }
             Pseudo::BrZero { src, target } => {
                 let c = b.use_int_var(regs[src])?;
-                let is_zero =
-                    b.ins()?
-                        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, c, 0_i32, "is_zero")?;
+                let is_zero = b.ins()?.build_int_cmp::<i32, _, _, _>(
+                    IntPredicate::Eq,
+                    c,
+                    0_i32,
+                    "is_zero",
+                )?;
                 let not_taken_addr =
                     fallthrough.expect("a conditional branch is never the last instruction");
                 let taken = block_at(&mut b, &mut self.blocks, target);
@@ -425,7 +432,11 @@ impl<B: ModuleBrand> LifterSession<B> {
     /// owns it and can hand it to a JIT, a printer, or the next stage.
     pub fn finish(mut self) -> Result<Module<B, Verified>, IrError> {
         {
-            let b = SsaBuilder::for_function(&self.module, self.module.view(self.function), &mut self.state)?;
+            let b = SsaBuilder::for_function(
+                &self.module,
+                self.module.view(self.function),
+                &mut self.state,
+            )?;
             b.finish()?;
         }
         self.module.verify()
@@ -444,7 +455,9 @@ pub fn drive<B: ModuleBrand>(session: &mut LifterSession<B>, log: bool) -> Resul
                 module_size,
             } => {
                 if log {
-                    println!("  {addr:#06x}  {mnemonic:<5}  module now holds {module_size:>2} instructions");
+                    println!(
+                        "  {addr:#06x}  {mnemonic:<5}  module now holds {module_size:>2} instructions"
+                    );
                 }
                 lifted += 1;
             }

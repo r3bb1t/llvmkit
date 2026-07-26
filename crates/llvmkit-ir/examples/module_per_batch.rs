@@ -27,9 +27,7 @@
 //! cargo run -p llvmkit-ir --example module_per_batch
 //! ```
 
-use llvmkit_ir::{
-    IRBuilder, IrError, Linkage, Module, ModuleBrand, Unverified, Verified, ValueId,
-};
+use llvmkit_ir::{IRBuilder, IrError, Linkage, Module, ModuleBrand, Unverified, ValueId, Verified};
 
 /// The brand every batch runs under. Named, so `Module<Jit, _>` is spellable
 /// in a signature — and registry-checked, so two live batches cannot overlap.
