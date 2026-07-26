@@ -2738,6 +2738,49 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
         self.core().iter_globals::<B>()
     }
 
+    /// Total number of instructions across every block of every function
+    /// in this module. Mirrors the C++ idiom
+    /// `for (F : M) for (BB : F) count += BB.size()` — LLVM has no
+    /// `Module::getInstructionCount()`, but its size-driven heuristics
+    /// (`InlineCost`, `-instcount`) compute exactly this.
+    ///
+    /// The reason it is on the module rather than left to the caller: a
+    /// transform driven to a fixpoint terminates on "the module stopped
+    /// changing size", and spelling that by hand means threading a
+    /// nested walk through code whose subject is the transform, not the
+    /// arithmetic. Declarations contribute nothing (they have no
+    /// blocks).
+    ///
+    /// ```
+    /// use llvmkit_ir::{Dyn, IRBuilder, IntValue, Linkage, Module};
+    ///
+    /// # fn main() -> Result<(), llvmkit_ir::IrError> {
+    /// let m = Module::dynamic("count");
+    /// assert_eq!(m.instruction_count(), 0);
+    ///
+    /// let i32_ty = m.i32_type();
+    /// let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    /// let entry = m.view(f).append_basic_block(&m, "entry");
+    ///
+    /// let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    /// let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    /// let sum = b.build_int_add(n, 1_i32, "sum")?;
+    /// b.build_ret(m.view(sum))?;
+    /// assert_eq!(m.instruction_count(), 2);
+    /// # Ok(()) }
+    /// ```
+    pub fn instruction_count(&'ctx self) -> usize {
+        self.core()
+            .iter_functions::<B>()
+            .map(|f| {
+                f.basic_blocks()
+                    .map(|bb| bb.instructions().len())
+                    .sum::<usize>()
+            })
+            .sum()
+    }
+
     /// Look up a function by name with this module token's brand,
     /// widened to [`Dyn`].
     pub fn function_by_name_dyn(&'ctx self, name: &str) -> Option<FunctionValue<'ctx, Dyn, B>> {

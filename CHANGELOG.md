@@ -7,6 +7,60 @@ tagged release is cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### llvmkit 2.0 — the SSA session is a value (cycle D)
+
+`SsaBuilder` converges on the cursor model. It is **one type** whose insertion
+point is data, and the Braun bookkeeping moves into an owned, `Send`, `Clone`,
+lifetime-free `SsaState<B>` that a caller stores in a struct field, snapshots
+around a speculative branch, and drives one step at a time.
+
+#### Changed (breaking)
+
+- **`SsaBuilder<'m, 'ctx, B, F, S, R>` → `SsaBuilder<'s, 'ctx, B, F, R>`.** The
+  `S: BuilderPositionState` parameter is gone: `switch_to_block` takes
+  `&mut self` and returns `IrResult<()>` instead of changing the builder's type,
+  and so does every terminator (`br` / `cond_br` / `switch` / `ret` /
+  `ret_void` / `unreachable`; the last two became fallible). Operations that
+  need an insertion point report the new **`IrError::SsaUnpositioned`** instead
+  of not existing. This is the runtime rendering of a static law, taken *only*
+  on the on-the-fly SSA layer, whose whole job is authoring a CFG discovered at
+  run time — the plain `IRBuilder`'s linear block token and
+  terminator-consuming cursor are untouched.
+- **The session state is explicit.** Open it with `SsaState::for_function(&m,
+  m.view(f))?` (this is where `SsaFunctionHasBlocks` is now raised), then mint
+  working builders with `SsaBuilder::for_function(&m, m.view(f), &mut state)?`.
+  Pairing a state with another function is `IrError::SsaForeignFunction`.
+- **`ins()` and `current_block()` are fallible**: `b.ins()?.build_int_mul(..)?`.
+  `ins()` still returns a **borrow** of the positioned plain builder, so its
+  self-consuming terminators stay structurally unreachable through it.
+- **The typed variable handles lost their lifetime**: `IntVariable<'ctx, W, B>`
+  → `IntVariable<W, B>`, `FloatVariable<'ctx, K, B>` → `FloatVariable<K, B>`,
+  `PointerVariable<'ctx, B>` → `PointerVariable<B>`. They are `Copy`,
+  module-tagged ids like every other cycle-A/B id. Their `module()` accessor is
+  removed with the `ModuleRef` they used to carry — the owning module is pinned
+  by the brand type parameter.
+
+#### Added
+
+- **`SsaState<B>`** — owned, `Send`, `Clone`, no lifetime. `for_function`,
+  `id`, `block_count`, `variable_count`.
+- `SsaBuilder::is_positioned` / `clear_position` / `state`.
+- `IrError::SsaUnpositioned`, `IrError::SsaForeignFunction`.
+- **`Module::instruction_count()`** — total instructions across every block of
+  every function. The module-size probe a transform driven to a fixpoint
+  watches for a plateau.
+- **`examples/lifter_session.rs`** — the consumer proof. A binary lifter as a
+  plain struct owning its `Module`, an address→block `HashMap`, its `SsaState`
+  and its cursor, driven by a suspend/resume `step()` loop, moved to a worker
+  thread mid-function, and finished there. No closure, no borrow held across a
+  step. Emits real, verified IR.
+- **`examples/module_per_batch.rs`** — the JIT/batch shape: build a module,
+  hand it away *by value* to a consumer, build the next one, all under one
+  named brand the registry re-issues each round.
+- `tests/block_id_stability.rs` — a `BlockId` minted before a block
+  replace-all-uses still resolves *and still drives the mutation API*
+  afterwards, so an address→block side map needs no hand-migration.
+
 ### llvmkit 2.0 — owned modules, branded by type (cycle C)
 
 A module is now an ordinary owned value. `Module<'ctx, B, S>` becomes

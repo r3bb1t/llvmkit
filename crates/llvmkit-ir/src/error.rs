@@ -905,13 +905,36 @@ pub enum IrError {
     #[error("value id belongs to a different Module")]
     ForeignValueId,
 
-    /// [`crate::SsaBuilder::for_function`] /
-    /// `with_folder_for_function` was given a function that already has
-    /// a body. The layer must observe every CFG edge from birth (Braun's
-    /// algorithm needs to see every `br` as it is recorded), so grafting
-    /// onto a partially-built function is rejected.
+    /// [`crate::SsaState::for_function`] was given a function that
+    /// already has a body. The layer must observe every CFG edge from
+    /// birth (Braun's algorithm needs to see every `br` as it is
+    /// recorded), so grafting onto a partially-built function is
+    /// rejected.
     #[error("SsaBuilder requires a function with no existing basic blocks")]
     SsaFunctionHasBlocks,
+
+    /// A [`crate::SsaBuilder`] was minted over an [`crate::SsaState`]
+    /// that was opened for a *different* function. The state carries
+    /// Braun bookkeeping keyed to one function's blocks, so pairing it
+    /// with another would append blocks nowhere near the recorded edges.
+    #[error("SsaState was opened for a different function")]
+    SsaForeignFunction,
+
+    /// An [`crate::SsaBuilder`] operation that needs an insertion point
+    /// was called while the cursor was empty — either before the first
+    /// [`switch_to_block`](crate::SsaBuilder::switch_to_block) or after a
+    /// terminator cleared it.
+    ///
+    /// This is the *runtime rendering of a static law*: before llvmkit
+    /// 2.0 cycle D the SSA layer carried an `Unpositioned`/`Positioned`
+    /// type-state, so this case was an `E0599`. It became a runtime error
+    /// on the on-the-fly SSA layer only (the crate's `_dyn` convention),
+    /// because that layer's whole purpose is authoring a CFG discovered
+    /// at run time — see `ssa_builder.rs`'s module docs. The plain
+    /// [`IRBuilder`](crate::IRBuilder) keeps its static positioning
+    /// type-state untouched.
+    #[error("SsaBuilder has no current block; call switch_to_block first")]
+    SsaUnpositioned,
 
     /// A phi already has an entry for this predecessor block with a
     /// different value; a second, differing entry is meaningless in any

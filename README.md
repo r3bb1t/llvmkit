@@ -352,8 +352,8 @@ b.def_int_var(i_var, n)?;
 // loop block:
 let i = b.use_int_var(i_var)?;
 let acc = b.use_int_var(acc_var)?;
-let next_acc = b.ins().build_int_mul(acc, i, "next_acc")?;
-let next_i = b.ins().build_int_sub(i, 1_i32, "next_i")?;
+let next_acc = b.ins()?.build_int_mul(acc, i, "next_acc")?;
+let next_i = b.ins()?.build_int_sub(i, 1_i32, "next_i")?;
 b.def_int_var(acc_var, next_acc)?;
 b.def_int_var(i_var, next_i)?;
 b.seal_block(loop_bb)?; // completes both phis from the now-known predecessor set

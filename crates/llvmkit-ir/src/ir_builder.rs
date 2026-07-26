@@ -192,8 +192,11 @@ mod state_sealed {
 
 /// Sealed marker trait for the [`IRBuilder`] positioning typestate.
 /// The two implementors are [`Unpositioned`] and [`Positioned`];
-/// external crates cannot invent new states. Public so higher layers
-/// (e.g. the Braun-SSA `SsaBuilder`) can be generic over the same states.
+/// external crates cannot invent new states. Public so a caller writing
+/// its own state-generic wrapper over an `IRBuilder` field can name the
+/// bound. (The in-crate Braun-SSA [`SsaBuilder`](crate::SsaBuilder) used
+/// to be such a caller; since llvmkit 2.0 cycle D it is one type whose
+/// cursor is data, and always stores a `Positioned` inner builder.)
 pub trait BuilderPositionState: state_sealed::Sealed + 'static {}
 
 impl BuilderPositionState for Unpositioned {}

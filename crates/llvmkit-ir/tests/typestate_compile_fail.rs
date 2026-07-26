@@ -93,11 +93,24 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/typed_call_wrong_arg_type_lifted.rs");
     t.compile_fail("tests/compile_fail/typed_call_void_result_use.rs");
     t.compile_fail("tests/compile_fail/typed_call_cross_module_arg.rs");
-    t.compile_fail("tests/compile_fail/ssa_def_unpositioned.rs");
-    t.compile_fail("tests/compile_fail/ssa_use_after_terminator.rs");
+    // llvmkit 2.0 cycle D1 (`SsaBuilder` converges on the cursor model):
+    // three former fixtures here — `ssa_def_unpositioned`,
+    // `ssa_finish_positioned`, `ssa_use_after_terminator` — proved the SSA
+    // layer's `Unpositioned`/`Positioned` type-state, which cycle D
+    // *deliberately retired* in favour of a cursor held as data. Blessing their
+    // `.stderr` was not an option (the code they contain now compiles), and
+    // migrating their sources would have left them proving nothing, so they
+    // were deleted and replaced by runtime locks on the errors that took over:
+    // `unpositioned_def_is_a_typed_runtime_error`,
+    // `second_terminator_on_a_finished_block_is_unpositioned` and
+    // `finish_while_positioned_names_the_open_block` in `tests/ssa_builder.rs`.
+    // The two fixtures below survive untouched in doctrine: neither concerns
+    // positioning, and both still fail for exactly the same reason (an
+    // unsatisfied `IntoIntValue<i32>` / `IntoReturnValue<()>` bound) — only the
+    // `note: required by a bound in ...` line moved, since the methods now live
+    // in an impl block without the `Positioned` parameter.
     t.compile_fail("tests/compile_fail/ssa_def_wrong_width.rs");
     t.compile_fail("tests/compile_fail/ssa_ret_value_in_void_fn.rs");
-    t.compile_fail("tests/compile_fail/ssa_finish_positioned.rs");
     // capability-graded pass API capability-rung locks (Task 9). Each proves a rung guarantee
     // whose primary error is one of OUR OWN stable messages (an `E0599`
     // absent-method, a `#[diagnostic::on_unimplemented]`, or a `syn::Error`),
