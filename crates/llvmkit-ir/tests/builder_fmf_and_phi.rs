@@ -264,13 +264,10 @@ fn fmf_accumulates_contract_approx_reassoc_on_fmul() -> Result<(), IrError> {
 // Helper: build a tiny module exercising the fcmp wrapper, assert that
 // the AsmWriter emits the expected predicate keyword.
 //
-// A macro rather than a higher-ranked closure parameter. The callback has to be
-// generic over BOTH the module's region and its *generative brand*, and Rust
-// cannot quantify a `for<..>` bound over a type — so the function form had to
-// spell the brand as `Brand<'ctx>`, which ties each handle's region to the
-// brand's region. A `Module` owns its `ModuleCore`, so a borrow of the token
-// can never live for the universally-quantified brand region; expanding the
-// body inline drops the bound and lets `'_` shrink to the borrow.
+// A macro rather than a higher-ranked closure parameter. The callback would
+// have to be generic over the module's *brand type*, and Rust cannot quantify a
+// `for<..>` bound over a type — only over a lifetime. Expanding the body inline
+// sidesteps the bound entirely and lets `'_` shrink to the borrow.
 //
 // `module_new!` sits *inside* the macro body on purpose: every expansion of
 // this macro re-expands it, so each call site still gets its own brand type.

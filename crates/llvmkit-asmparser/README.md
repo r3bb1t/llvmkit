@@ -15,8 +15,10 @@ Tracking **LLVM 22.1.4**.
 - **`.ll` lexer** — borrows from a pre-loaded `&[u8]`; tokens carry `Cow<[u8]>`
   payloads that allocate only when an escape sequence actually changes bytes.
 - **`.ll` parser** — recursive-descent, one-token lookahead. Builds into an
-  existing `Module<'ctx, _, Unverified>` from `llvmkit-ir`; the `'ctx` brand
-  prevents cross-module mixing at compile time. Covers `target datalayout` /
+  existing `Module<_, Unverified>` from `llvmkit-ir`; the module's brand *type*
+  prevents cross-module mixing at compile time. Closure-free entry points
+  (`parse_branded::<B>`, `parse_dynamic`, `parse_file_branded::<B>`,
+  `parse_file_dynamic`, `parse_into`) return the owned module directly. Covers `target datalayout` /
   `target triple`, `source_filename`, `module asm`, type definitions, globals,
   declarations, definitions, function attributes/comdats/header operands,
   metadata and debug records, use-list directives, summaries, every shipped

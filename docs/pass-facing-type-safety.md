@@ -104,7 +104,7 @@ Decisions locked with user: all four packages; nested sub-enums (not flat, not r
 5. **Typed operands — rule: type exactly what the IR grammar guarantees.** `pointer() -> PointerValue` on `LoadInst` (`instructions.rs:311`), `StoreInst` (`:373`), `GepInst` (`:428`), `AtomicCmpXchgInst` (`:1780`), `AtomicRMWInst` (`:1843`), `VAArgInst` (`:1507`). `CallInst::classify_callee() -> Callee::{Direct(FunctionValue), Indirect(PointerValue)}` (new enum; `callee() -> Value` may remain as escape hatch). Binop/cmp/select operands stay `Value` (int-or-vector legitimately). Reuse existing `PointerValue` (`typed_pointer_value.rs`); do NOT invent new typed wrappers beyond what exists.
 6. **Missing readers.** `SwitchInst::cases() -> impl ExactSizeIterator<Item = (Value, BasicBlockLabel<Dyn>)>` (case constants surfaced as stored), `IndirectBrInst::destinations()`, `LandingPadInst::clauses() -> impl Iterator<Item = LandingPadClause>` (catch/filter distinction), `CatchSwitchInst::handlers()`. Data already lives in per-variant payloads (`instruction.rs:205-207` `operand_ids` shows the storage); this is read-surface only, valid on `TermClosed` handles.
 7. **Groupings.** `InstructionKind::as_binary_op(&self) -> Option<BinaryOp<'ctx,B>>` — one grouped view with `lhs()`, `rhs()`, `opcode() -> BinOpcode`, `is_commutative()`; generate impls inside the existing binop macro. `as_cmp(&self) -> Option<Cmp<'ctx,B>>` unifying ICmp/FCmp with a shared predicate view (reuse `cmp_predicate.rs`). Extend `OverflowingBinaryOperator` (`operator.rs:18`) to `ShlInst` (C++ parity: add/sub/mul/**shl**); add `PossiblyExactOperator` trait for `UDiv`/`SDiv`/`LShr`/`AShr` (`is_exact` already exists per-handle via the macro; the trait unifies it).
-8. **Fix the token gap:** `AtomicRMWInst::set_value_operand` (`instructions.rs:1855`) gains a `&Module<'ctx,B,Unverified>` parameter, restoring the "no mutation without a token" rule. Compile-fail test pins it.
+8. **Fix the token gap:** `AtomicRMWInst::set_value_operand` (`instructions.rs:1855`) gains a `&Module<B, Unverified>` parameter, restoring the "no mutation without a token" rule. Compile-fail test pins it.
 
 ## Package 2 — Pattern DSL (`crates/llvmkit-ir/src/matchers.rs`, new)
 
@@ -160,7 +160,9 @@ One branch per package, each cut from `dev` after the previous merges (per the e
 5. `feature-9/analysis-preservation-phase2` — Package 4 remainder (`done()`-flush, `PrefetchableAnalysis`) ✅
 6. `feature-10/worklist-cursor` — Package 3's deferred perf: erase-safe cursor + worklist ✅ (own spec)
 
-Version stays 0.0.x. User-visible changes now accumulate in the top-level [`CHANGELOG.md`](../CHANGELOG.md) under **Unreleased** until a release is tagged (started with the phi-guarantees work; earlier packages were recorded per-commit). CI runs on `master`+`dev`; every merge to `dev` was green first (modulo two pre-existing environmental `.stderr` mismatches that pass on CI's canonical rustc).
+User-visible changes accumulate in the top-level [`CHANGELOG.md`](../CHANGELOG.md) under **Unreleased** until a release is tagged (started with the phi-guarantees work; earlier packages were recorded per-commit). CI runs on `master`+`dev`; every merge to `dev` was green first.
+
+> **Historical note.** This document once recorded "two pre-existing environmental `.stderr` mismatches" (`folder_typed_wrong_width`, `extract_value_empty_indices`) as an expected local failure. That caveat is **retired and was never real**: both fixtures pass on the pinned CI toolchain, and the mismatch only ever appeared when the suite was run on a newer rustc than the pinned one. Gate on `cargo +1.96.0` and the trybuild baseline is **0 failures of 80 fixtures**.
 
 ## Out of scope (recorded as considered/deferred with reasons)
 

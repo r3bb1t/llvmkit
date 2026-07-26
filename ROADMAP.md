@@ -584,7 +584,7 @@ Cover APIs commonly used by Rust projects that currently depend on Inkwell for I
 - Intrinsic declaration and overloaded intrinsic typing.
 - Attribute groups and function/callsite attribute APIs.
 - Bitcode reader/writer or an explicit bridge plan if bitcode stays out longer.
-- Stable `Module` parse/print entry points with ergonomic `from_str` / `from_path` helpers that still preserve generative branding.
+- Stable `Module` parse/print entry points with ergonomic `from_str` / `from_path` helpers that still preserve the module's brand type.
 - Better error spans and diagnostics for parser/verifier failures.
 
 ### UX goals

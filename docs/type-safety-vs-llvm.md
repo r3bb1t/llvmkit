@@ -539,13 +539,13 @@ The handle is intentionally not `Copy` or `Clone`; lifecycle methods take `self`
 ```rust
 pub fn replace_all_uses_with<V: IsValue<'ctx, B>>(
     self,
-    module_token: &Module<'ctx, B, Unverified>,
+    module_token: &'ctx Module<B, Unverified>,
     replacement: V,
 ) -> IrResult<()>
 ```
 
 ```rust
-pub fn erase_from_parent(self, module_token: &Module<'ctx, B, Unverified>)
+pub fn erase_from_parent(self, module_token: &'ctx Module<B, Unverified>)
 ```
 
 Once an instruction handle is erased or detached, the consumed binding cannot be
@@ -675,8 +675,8 @@ LLVM C++ verification is a convention: a caller chooses whether to run
 `llvmkit` encodes the state:
 
 ```rust
-Module<'ctx, B, Unverified>
-Module<'ctx, B, Verified>
+Module<B, Unverified>
+Module<B, Verified>
 ```
 
 Verification consumes mutation capability and returns a verified token on
@@ -850,12 +850,12 @@ of the tuple, never a value anyone writes:
 
 ```rust
 // Two read-only passes → the pipeline hands back a still-verified module.
-let m: Module<'_, _, Verified> =
+let m: Module<_, Verified> =
     function_pipeline((CountBlocks, EntryReachable)).run(verified, f, &mut analyses)?;
 
 // Swap in one mutating (`PatchBody`) pass and the SAME `.run(...)` call now
 // returns `Module<Unverified>` — the `Verified` annotation above stops compiling.
-let m: Module<'_, _, Unverified> =
+let m: Module<_, Unverified> =
     function_pipeline((CountBlocks, InstSimplifyPass)).run(verified, f, &mut analyses)?;
 let _ = m.verify()?; // required before the next verified-only stage
 ```

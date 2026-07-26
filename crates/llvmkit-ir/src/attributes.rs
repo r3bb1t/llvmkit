@@ -774,8 +774,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> AttributeList<'ctx, B> {
 /// `Type<'ctx>` payload is collapsed to a [`TypeSlot`] so the enum is
 /// lifetime-free and can be embedded in [`crate::value::ValueData`].
 ///
-/// Conversions are total in both directions when paired with a
-/// `Module<'ctx>`: `Attribute<'ctx> <-> AttributeStored`.
+/// Conversions are total in both directions when paired with a module view:
+/// `Attribute<'ctx, B> <-> AttributeStored`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) enum AttributeStored {
     Enum(AttrKind),

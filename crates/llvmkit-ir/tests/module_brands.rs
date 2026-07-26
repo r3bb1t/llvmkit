@@ -1,7 +1,7 @@
 //! Brands as *types*: the uniqueness registry behind
 //! [`Module::branded`](llvmkit_ir::Module::branded) /
 //! [`branded_once`](llvmkit_ir::Module::branded_once), the registry-exempt
-//! [`DynBrand`], and the generative
+//! [`DynBrand`], and the per-expansion-site
 //! [`module_new!`](llvmkit_ir::module_new) macro.
 //!
 //! llvmkit-specific: LLVM's C++ `Module` has no compile-time identity at all —
@@ -234,7 +234,8 @@ fn an_unwind_releases_the_brand() {
 
 /// `DynBrand` never touches the registry, so arbitrarily many modules of the
 /// same brand type are live at once and they collect into a `Vec` — the case a
-/// generative brand structurally cannot express.
+/// registry-claimed brand (`branded` / `module_new!`) structurally cannot
+/// express, since it admits at most one live module per brand type.
 #[test]
 fn dyn_brand_modules_coexist_and_collect() {
     let modules: Vec<Module<DynBrand, Unverified>> = (0..16)

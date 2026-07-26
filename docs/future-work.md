@@ -228,13 +228,14 @@ deferred it.
   `ret_void`/`unreachable` terminators only. Aggregate variable categories
   (per-field fan-out through `StructSchema`) and `invoke`/`callbr`/EH
   terminators are the documented future scope in the module's own doc comment.
-- **`IrField::ir_type` accepting `ModuleRef`** -- `IrField::ir_type` and
-  `StructSchema::ir_type` currently demand `&Module<'ctx, B, Unverified>`.
-  `build_field_gep` (`ir_builder.rs`) has to construct a temporary
-  `Module::from_core(self.module)` wrapper solely to call `S::ir_type(...)`.
-  Widening the trait method to accept `ModuleRef`/`&ModuleCore` directly
-  would remove the need for `Module::from_core` entirely. Flagged during
-  Task 6's review as a candidate for this document.
+- **`IrField::ir_type` accepting a module view -- done** (llvmkit 2.0 cycle C,
+  `feature-32/owned-modules`). `IrField::ir_type`, `StructSchema::field_types` /
+  `ir_type`, `FunctionReturn::ir_type`, `FunctionParam::ir_type` and
+  `FunctionParamList::ir_types` now take `ModuleView<'ctx, B>` instead of
+  `&Module<..., Unverified>`, so `build_field_gep` no longer wraps a temporary
+  module token to call `S::ir_type(...)` — `Module::from_core` is gone with it.
+  Type construction is preservation-neutral, which is why the view already
+  carried the constructor surface.
 - **`proptest` `undef_var` index randomization** -- the auto-SSA property
   test suite's undefined-variable-read fixture hardcodes `Some(0)` as the
   undefined variable index instead of drawing from `0..var_count`; a one-line

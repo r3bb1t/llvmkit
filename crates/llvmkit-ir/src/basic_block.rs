@@ -7,7 +7,7 @@
 //! category, with type [`LabelType`](crate::LabelType). It owns
 //! a list of instruction value-ids, mutated through the [`IRBuilder`]
 //! and other future helpers via interior mutability so the same
-//! `&'ctx Module<'ctx>` borrow can be passed around freely.
+//! `&'ctx Module<B, Unverified>` borrow can be passed around freely.
 //!
 //! ## Return-marker propagation
 //!

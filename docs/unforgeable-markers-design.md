@@ -151,8 +151,10 @@ the failure mode this whole program exists to prevent.
   the Cycle 1 runtime checks stay, so the in-crate hostile folder — if it can still be
   written — is still caught. If the hard seal makes that folder *unwritable*, the test must
   be retired with its `UPSTREAM.md` row, not deleted silently.
-- Per-slice: the 5 gates. Baseline: **125 binaries ok, trybuild `2 of 78`** (the two
-  environmental fixtures only, never re-blessed).
+- Per-slice: the 5 gates. Baseline at the time of writing: **125 binaries ok, trybuild
+  `2 of 78`**. That two-failure baseline was an artifact of running the suite on a
+  newer rustc than the pinned CI toolchain — gated on `cargo +1.96.0` the correct
+  baseline is **0 failures**, and the "environmental fixtures" caveat is retired.
 
 ## Docs (part of the work, not an afterthought)
 

@@ -206,7 +206,7 @@ generated `<Struct>Value<'ctx, B>` wrapper in IR, and call field
 accessors/builders instead of indexing aggregates manually:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrStruct, Linkage, Module};
+use llvmkit_ir::{IRBuilder, IrStruct, Linkage, module_new};
 
 #[derive(IrStruct)]
 struct Point {
@@ -397,17 +397,113 @@ reach codegen through upstream LLVM, and `llvmkit` when the task is IR
 construction / analysis and compile-time misuse safety matters more than
 having `libLLVM`'s full backend behind it.
 
+### Where llvmkit improves on upstream LLVM
+
+`llvmkit` models a subset of LLVM and stops at IR construction, analysis, and
+verification (see "Out of scope"). Within that subset there are three places
+where its API makes a guarantee upstream's cannot, and they are worth stating
+concretely rather than as a slogan.
+
+**1. A module is an owned value, and every handle has a storable id.**
+`Module<B, S>` owns its storage, has no lifetime parameter, and is `Send`, so it
+can be returned from a function, held in a struct field, collected into a `Vec`,
+and moved to another thread. Handles like `IntValue<'ctx, W, B>` borrow the
+module, but each one also has an `id()` — `IntValueId<W, B>`, `BlockId<..>`,
+`FunctionId<R, B>`, `GlobalId<B>` — that is `Copy + Send` and carries the brand
+*without* the borrow. That is what lets a binary lifter keep its own
+`HashMap<u64, BlockId<..>>` from guest address to block, suspend in the middle
+of a function, move to a worker thread, and resume there
+(`crates/llvmkit-ir/examples/lifter_session.rs` does exactly this).
+
+Upstream's equivalent of a stored id is a raw `Value *` / `BasicBlock *`, and
+keeping it valid is the client's job. LLVM ships `WeakVH`, `AssertingVH`, and
+`CallbackVH` (`llvm/include/llvm/IR/ValueHandle.h`) specifically for
+"catching dangling pointer bugs", and the Programmers Manual warns that the
+weak form can still leave a dangling pointer. An llvmkit id is not a pointer:
+resolving it re-checks the module tag and the arena slot, so a stale or foreign
+id becomes `IrError::ForeignValueId`, `None`, or a panic — never a read of freed
+memory. With `#![forbid(unsafe_code)]` on every workspace crate there is no
+unsafe path available for it to take.
+
+**2. Several error classes are unrepresentable rather than diagnosed.** An
+integer width is a type parameter (`IntValue<'ctx, i32, B>`), a vector's element
+and lane count are type parameters (`VectorValue<'ctx, i32, Len<4>, B>`), a
+function's signature is a type parameter, and the owning module is a brand type.
+So a mismatched `add`, a `<4 x i32>` mixed with a `<8 x i32>`, a call with the
+wrong arity, a `ret` in a `void` function, and an operand borrowed from another
+module are all *compile* errors — there is no program text that expresses them
+and no runtime check to reach. Upstream accepts each of these as `Value *` and
+reports them from `Verifier.cpp`, later, if verification runs at all. The
+mapping from each upstream verifier message to the llvmkit type that forecloses
+it is tabulated in [Type Safety: llvmkit vs. LLVM C++](docs/type-safety-vs-llvm.md),
+and 80 compile-fail fixtures lock the guarantees.
+
+**3. Verification is a typestate, not a function you must remember to call.**
+`Module::verify(self)` consumes `Module<B, Unverified>` and returns
+`Module<B, Verified>`; APIs that are only sound on verified IR demand the
+`Verified` token, and any mutating pass *derives* `Module<B, Unverified>` from
+its capability rung, so the re-verify is enforced by the type checker rather
+than by a convention. Upstream's `verifyModule` is a free function returning a
+bool sentinel that a caller can simply not call — and its pass-manager form
+reports preservation through a hand-written `PreservedAnalyses`, where
+over-claiming leaves stale analyses for a later pass to miscompile against. In
+llvmkit that claim is derived from the rung and is unspellable.
+
+The honest limits: these guarantees cover the *modeled* surface only, the
+erased `Dyn` forms deliberately trade them back for runtime checks so parsed and
+dynamic IR still works, and none of it helps if you need codegen — upstream is
+the only option there.
+
 ### Same-module safety
 
-Every module carries a compile-time brand type. `module_new!("name")` mints a
-fresh one per expansion site, `Module::branded::<B>("name")` takes a brand you
-name yourself (at most one live module per brand), and `Module::dynamic("name")`
-opts out of the registry when the number of modules is a run-time decision.
-Normal code does not name the brand: values, constants, basic blocks, globals,
-and builders infer it from the `Module` or type receiver used to create them.
-Builder and mutation APIs therefore reject cross-module operands at compile time
-instead of returning a runtime "foreign value" error. Generic extension code may
-name `B: ModuleBrand` explicitly when it needs to accept any module brand.
+A module's identity is a **type**. `Module<B, S>` is an owned, `Send`,
+lifetime-free value; the `B: ModuleBrand` parameter rides on every handle, id,
+and builder minted from it, and it is what separates one module from another.
+Normal code never names the brand — values, constants, basic blocks, globals,
+and builders infer it from the `Module` or type receiver they came from. Generic
+extension code names `B: ModuleBrand` explicitly when it must accept any module.
+
+There are three ways to obtain a brand, trading ergonomics against how much of
+the separation is static:
+
+| Constructor | Brand | Separation |
+|---|---|---|
+| `module_new!("name")` | a fresh, **unnameable** type per expansion site | compile-time |
+| `Module::branded::<MyBrand>("name")` | a `'static` type you declare and can name | compile-time |
+| `Module::dynamic("name")` | `DynBrand`, shared by every such module | run-time only |
+
+`module_new!` is the default: it declares a brand inside its own block scope, so
+no two expansion sites can ever collide and nothing outside can name the type.
+Name a brand yourself when a module must appear in a struct field, a function
+signature, or a return type — somewhere the type has to be written down.
+`Module::dynamic` is for a module *count* that is a run-time decision (a loop
+over translation units, a worker pool, a `Vec<Module<DynBrand>>`), where no
+single static type could name each module individually.
+
+**What is compile-time.** A process-global registry admits at most one live
+`Module` per brand type, so a brand names exactly one module; a second claim is
+`IrError::BrandInUse`, and `Module::branded_once` retires its brand permanently
+on drop (`IrError::BrandRetired`) so a stale `'static` id can never be replayed
+against fresh storage. Because of that lock, two **distinct** brand types are
+two distinct modules, and handing a handle or id from one to the other's
+builders, mutators, or resolvers is a type error — no runtime check is involved,
+and there is no `IrError` variant for it to return. `DynBrand` is exempt from
+the registry, which is precisely why it buys no compile-time separation.
+
+**What is run-time.** Ids are storable: they carry the brand but not the borrow,
+so they outlive the handle they came from — and therefore they also carry a
+`ModuleId` tag, checked whenever an id is resolved back to a handle. That tag is
+the backstop for the two cases the type system cannot see: two `DynBrand`
+modules (the same type by construction), and a named brand re-issued to a fresh
+module after the previous one dropped. Neither can become a silent miscompile.
+Which form the rejection takes depends on the surface: the fallible id-taking
+APIs — builders, pass mutators, `try_from_id`-style resolvers — return
+`IrError::ForeignValueId`; `Module::try_view(id)` returns `None`; and
+`Module::view(id)` *panics*, treating a foreign id as a deterministic contract
+violation in the same way indexing a slice out of bounds is.
+
+Compile-time separation is the guarantee llvmkit leads with; the runtime tag is
+what keeps the deliberately-erased case sound instead of undefined.
 
 ### Instruction lifecycle safety
 
@@ -604,19 +700,21 @@ forcing an explicit re-`verify()` before the next verified-only stage (D8):
 
 ```rust
 use llvmkit_ir::{
-    Analyses, Brand, DcePass, FunctionView, InstSimplifyPass, IrResult, Module, Unverified,
-    Verified, function_pipeline, run_function_pass,
+    Analyses, DcePass, Dyn, FunctionId, InstSimplifyPass, IrResult, Module, ModuleBrand,
+    Unverified, Verified, function_pipeline, run_function_pass,
 };
 
-fn cleanup<'ctx>(
-    verified: Module<'ctx, Brand<'ctx>, Verified>,
-    f: FunctionView<'ctx>,
+fn cleanup<'ctx, B: ModuleBrand + 'ctx>(
+    verified: Module<B, Verified>,
+    f: FunctionId<Dyn, B>,
 ) -> IrResult<()> {
     let mut analyses = Analyses::new();
 
     // 1. A single pass. `InstSimplifyPass` is `PatchBody`, so the driver
     //    returns `Module<Unverified>` and the re-verify is enforced by the type.
-    let simplified: Module<'_, _, Unverified> =
+    //    The driver is handed an **id**, never a view: it consumes the module
+    //    token, and a view would be a borrow of the token about to move.
+    let simplified: Module<B, Unverified> =
         run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
 
     // 2. A compile-time tuple pipeline, run in written order. The output
@@ -645,7 +743,7 @@ For runnable end-to-end versions, see
 | `PreservedAnalyses::all()` / `none()` hand-written by the pass | derived from the pass's `type Access` rung — never hand-written |
 | `FAM.getResult<A>(F)` (fallible, null on undeclared) | `cx.analysis::<A, _>()` — infallible; declared in `type Requires`, prefetched |
 | `ModuleToFunctionPassAdaptor` | `for_each_function(function_pipeline((..)))` as a module-pipeline member |
-| mutating IR in a pass | declare a mutating rung, call the consuming `cx.mutate()`, receive a mutator; the driver returns `Module<'ctx, B, Unverified>` |
+| mutating IR in a pass | declare a mutating rung, call the consuming `cx.mutate()`, receive a mutator; the driver returns `Module<B, Unverified>` |
 | plugin registration (`llvmGetPassPluginInfo`) | none — a pass is a plain value; no registration step |
 
 Important boundary: the crate currently ships **the capability-graded pass API,
@@ -711,15 +809,24 @@ locks.
   updates live in one exhaustive place per construction / mutation primitive.
 - **D6. Aggregate types preserve element shape.** Aggregate typing is modeled
   directly rather than flattened into weak runtime predicates.
-- **D7. Cross-module mixing is rejected.** Public construction and mutation
-  APIs carry a module brand type, so values minted under one brand cannot be
-  passed to another module's builders or mutators. This is a type error, not a
-  runtime same-module check.
+- **D7. Cross-module mixing is rejected.** Every handle, id, and builder carries
+  the owning module's brand — a `'static` *type* parameter `B`. Two modules with
+  **distinct** brand types cannot exchange operands: that is a type error, caught
+  at compile time, with no runtime check involved. A process-global registry
+  admits at most one live `Module` per brand (`IrError::BrandInUse` /
+  `BrandRetired`), which is what makes a brand name *one* module unambiguously.
+  Where two modules deliberately **share** a brand type — every
+  `Module::dynamic` module is `DynBrand`, and a named brand is re-issued after
+  the previous module drops — the compile-time half cannot apply, and a mix-up
+  is instead caught at the arena boundary by the runtime `ModuleId` tag every id
+  carries (`IrError::ForeignValueId`). Compile-time separation is the guarantee;
+  the runtime tag is the backstop that keeps the erased case sound rather than
+  silently miscompiling. See [Same-module safety](#same-module-safety).
 - **D8. Verified guarantees are explicit.** Verification consumes an
-  unverified token and produces `Module<'ctx, B, Verified>`. A pass pipeline's
+  unverified token and produces `Module<B, Verified>`. A pass pipeline's
   output typestate is *derived* from its members' capability rungs: an
   all-read-only (`Inspect`) run preserves that verified state at the type level,
-  while any mutating pass returns `Module<'ctx, B, Unverified>`, so their output
+  while any mutating pass returns `Module<B, Unverified>`, so their output
   must be verified again before another verified-only pipeline can consume it.
 - **D9. Iteration safety is structural.** Mutating-while-iterating uses
   dedicated cursor APIs rather than relying on caller discipline.
