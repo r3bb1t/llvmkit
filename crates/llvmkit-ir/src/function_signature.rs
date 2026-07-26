@@ -69,7 +69,7 @@ pub trait FunctionReturn: Sized + 'static {
     type Marker: ReturnMarker;
 
     /// Construct this schema's LLVM IR return type in `module`.
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx;
 
@@ -104,7 +104,7 @@ pub trait FunctionParam: Sized + 'static {
     type Value<'ctx, B: ModuleBrand + 'ctx>;
 
     /// Construct this schema's LLVM IR parameter type in `module`.
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx;
 
@@ -160,7 +160,7 @@ pub trait FunctionParamList: Sized + 'static {
     type Values<'ctx, B: ModuleBrand + 'ctx>;
 
     /// Construct the LLVM IR parameter type list in tuple order.
-    fn ir_types<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
+    fn ir_types<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
     where
         B: ModuleBrand + 'ctx;
 
@@ -340,7 +340,7 @@ where
     #[inline]
     pub fn append_basic_block<Name>(
         self,
-        module: &Module<'ctx, B, Unverified>,
+        module: &'ctx Module<'ctx, B, Unverified>,
         name: Name,
     ) -> BasicBlock<'ctx, Ret::Marker, Unterminated, B>
     where
@@ -353,7 +353,7 @@ where
     #[inline]
     pub fn builder<'m>(
         self,
-        module: &'m Module<'ctx, B, Unverified>,
+        module: &'ctx Module<'ctx, B, Unverified>,
     ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker> {
         IRBuilder::new_for::<Ret::Marker>(module)
     }
@@ -505,7 +505,7 @@ where
     #[inline]
     pub fn append_basic_block<Name>(
         self,
-        module: &Module<'ctx, B, Unverified>,
+        module: &'ctx Module<'ctx, B, Unverified>,
         name: Name,
     ) -> BasicBlock<'ctx, Ret::Marker, Unterminated, B>
     where
@@ -518,7 +518,7 @@ where
     #[inline]
     pub fn builder<'m>(
         self,
-        module: &'m Module<'ctx, B, Unverified>,
+        module: &'ctx Module<'ctx, B, Unverified>,
     ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker> {
         IRBuilder::new_for::<Ret::Marker>(module)
     }
@@ -649,7 +649,7 @@ impl FunctionReturn for () {
     type Marker = ();
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -687,7 +687,7 @@ impl FunctionReturn for Ptr {
     type Marker = Ptr;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -725,7 +725,7 @@ impl FunctionParam for Ptr {
     type Value<'ctx, B: ModuleBrand + 'ctx> = PointerValue<'ctx, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -782,7 +782,7 @@ macro_rules! impl_int_signature_marker {
             type Marker = $marker;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -820,7 +820,7 @@ macro_rules! impl_int_signature_marker {
             type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, $marker, B>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -884,7 +884,7 @@ impl<const N: u32> FunctionReturn for Width<N> {
     type Marker = Width<N>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -922,7 +922,7 @@ impl<const N: u32> FunctionParam for Width<N> {
     type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, Width<N>, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -979,7 +979,9 @@ macro_rules! impl_float_signature_marker {
             type Marker = $marker;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(
+                module: &'ctx Module<'ctx, B, Unverified>,
+            ) -> IrResult<Type<'ctx, B>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -1017,7 +1019,9 @@ macro_rules! impl_float_signature_marker {
             type Value<'ctx, B: ModuleBrand + 'ctx> = FloatValue<'ctx, $marker, B>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(
+                module: &'ctx Module<'ctx, B, Unverified>,
+            ) -> IrResult<Type<'ctx, B>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -1096,7 +1100,7 @@ impl FunctionParamList for () {
     type Values<'ctx, B: ModuleBrand + 'ctx> = ();
 
     #[inline]
-    fn ir_types<'ctx, B>(_module: &Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
+    fn ir_types<'ctx, B>(_module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -1144,7 +1148,7 @@ macro_rules! impl_param_list_tuple {
             type Values<'ctx, B: ModuleBrand + 'ctx> = ($($param::Value<'ctx, B>,)+);
 
             #[inline]
-            fn ir_types<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
+            fn ir_types<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
             where
                 B: ModuleBrand + 'ctx,
             {

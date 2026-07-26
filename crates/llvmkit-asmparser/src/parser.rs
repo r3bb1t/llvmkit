@@ -20,12 +20,23 @@ use super::parse_error::{ParseError, ParseResult};
 use super::slot_mapping::SlotMapping;
 
 /// Parse a complete textual IR module from bytes under a fresh module brand.
+///
+/// The closure receives the module **by reference**, not by value. A
+/// [`ParsedModule`] borrows the module token it was parsed against, and a
+/// [`Module`] owns its storage — so handing out the token *and* a by-product
+/// that borrows it is not expressible. Inspect the module through `&` (e.g.
+/// [`Module::verify_borrowed`], `format!`) inside the closure.
+///
+/// The bound is higher-ranked over *two* regions: `'ctx` is the borrow the
+/// closure gets, `'brand` is the generative brand's region. They are separate —
+/// spelling `Brand<'ctx>` would pin the borrow to the brand region, which no
+/// borrow of an owning token can satisfy.
 pub fn parse_assembly<R, S, F>(src: S, f: F) -> ParseResult<R>
 where
     S: AsRef<[u8]>,
-    F: for<'ctx> FnOnce(
-        Module<'ctx, Brand<'ctx>, Unverified>,
-        ParsedModule<'ctx, Brand<'ctx>>,
+    F: for<'ctx, 'brand> FnOnce(
+        &'ctx Module<'ctx, Brand<'brand>, Unverified>,
+        ParsedModule<'ctx, Brand<'brand>>,
     ) -> R,
 {
     parse_assembly_with_name("asm", src, f)
@@ -34,35 +45,39 @@ where
 fn parse_assembly_with_name<R, S, F>(name: &str, src: S, f: F) -> ParseResult<R>
 where
     S: AsRef<[u8]>,
-    F: for<'ctx> FnOnce(
-        Module<'ctx, Brand<'ctx>, Unverified>,
-        ParsedModule<'ctx, Brand<'ctx>>,
+    F: for<'ctx, 'brand> FnOnce(
+        &'ctx Module<'ctx, Brand<'brand>, Unverified>,
+        ParsedModule<'ctx, Brand<'brand>>,
     ) -> R,
 {
     Module::with_new::<_, _, _>(name, |module| {
         let parsed = Parser::new(src.as_ref(), &module)?.parse_module()?;
-        Ok(f(module, parsed))
+        Ok(f(&module, parsed))
     })
 }
 
 /// Parse a complete textual IR module from a UTF-8 string under a fresh brand.
+///
+/// The closure receives the module by reference; see [`parse_assembly`].
 pub fn parse_assembly_string<R, F>(src: &str, f: F) -> ParseResult<R>
 where
-    F: for<'ctx> FnOnce(
-        Module<'ctx, Brand<'ctx>, Unverified>,
-        ParsedModule<'ctx, Brand<'ctx>>,
+    F: for<'ctx, 'brand> FnOnce(
+        &'ctx Module<'ctx, Brand<'brand>, Unverified>,
+        ParsedModule<'ctx, Brand<'brand>>,
     ) -> R,
 {
     parse_assembly(src.as_bytes(), f)
 }
 
 /// Read and parse a complete textual IR module under a fresh module brand.
+///
+/// The closure receives the module by reference; see [`parse_assembly`].
 pub fn parse_assembly_file<R, P, F>(path: P, f: F) -> ParseResult<R>
 where
     P: AsRef<Path>,
-    F: for<'ctx> FnOnce(
-        Module<'ctx, Brand<'ctx>, Unverified>,
-        ParsedModule<'ctx, Brand<'ctx>>,
+    F: for<'ctx, 'brand> FnOnce(
+        &'ctx Module<'ctx, Brand<'brand>, Unverified>,
+        ParsedModule<'ctx, Brand<'brand>>,
     ) -> R,
 {
     let path = path.as_ref();
@@ -89,13 +104,15 @@ where
 }
 
 /// Parse a complete textual IR module and return source locations inside the closure.
+///
+/// The closure receives the module by reference; see [`parse_assembly`].
 pub fn parse_assembly_with_context<R, S, F>(src: S, f: F) -> ParseResult<R>
 where
     S: AsRef<[u8]>,
-    F: for<'ctx> FnOnce(
-        Module<'ctx, Brand<'ctx>, Unverified>,
-        ParsedModule<'ctx, Brand<'ctx>>,
-        AsmParserContext<'ctx>,
+    F: for<'ctx, 'brand> FnOnce(
+        &'ctx Module<'ctx, Brand<'brand>, Unverified>,
+        ParsedModule<'ctx, Brand<'brand>>,
+        AsmParserContext<'ctx, Brand<'brand>>,
     ) -> R,
 {
     Module::with_new::<_, _, _>("asm", |module| {
@@ -103,14 +120,14 @@ where
         let parsed = Parser::new(bytes, &module)?.parse_module()?;
         let mut context = AsmParserContext::new();
         record_parser_context(bytes, &module, &mut context)?;
-        Ok(f(module, parsed, context))
+        Ok(f(&module, parsed, context))
     })
 }
 
 /// Parse a single LLVM type and require end-of-input.
 pub fn parse_type<'ctx, B: ModuleBrand + 'ctx>(
     src: &[u8],
-    module: &Module<'ctx, B, Unverified>,
+    module: &'ctx Module<'ctx, B, Unverified>,
     slots: Option<&SlotMapping<'ctx, B>>,
 ) -> ParseResult<Type<'ctx, B>> {
     let parser = match slots {
@@ -129,7 +146,7 @@ pub fn parse_type<'ctx, B: ModuleBrand + 'ctx>(
 /// Parse one LLVM type prefix and report the number of consumed bytes.
 pub fn parse_type_at_beginning<'ctx, B: ModuleBrand + 'ctx>(
     src: &[u8],
-    module: &Module<'ctx, B, Unverified>,
+    module: &'ctx Module<'ctx, B, Unverified>,
     slots: Option<&SlotMapping<'ctx, B>>,
 ) -> ParseResult<(Type<'ctx, B>, usize)> {
     let parser = match slots {
@@ -142,7 +159,7 @@ pub fn parse_type_at_beginning<'ctx, B: ModuleBrand + 'ctx>(
 /// Parse one constant value of the supplied LLVM type and require EOF.
 pub fn parse_constant_value<'ctx, B: ModuleBrand + 'ctx>(
     src: &[u8],
-    module: &Module<'ctx, B, Unverified>,
+    module: &'ctx Module<'ctx, B, Unverified>,
     ty: Type<'ctx, B>,
     slots: Option<&SlotMapping<'ctx, B>>,
 ) -> ParseResult<Constant<'ctx, B>> {
@@ -153,10 +170,10 @@ pub fn parse_constant_value<'ctx, B: ModuleBrand + 'ctx>(
     parser.parse_standalone_constant_value(ty)
 }
 
-fn record_parser_context<'ctx>(
+fn record_parser_context<'ctx, B: ModuleBrand + 'ctx>(
     src: &[u8],
-    module: &Module<'ctx, Brand<'ctx>, Unverified>,
-    context: &mut AsmParserContext<'ctx>,
+    module: &'ctx Module<'ctx, B, Unverified>,
+    context: &mut AsmParserContext<'ctx, B>,
 ) -> ParseResult<()> {
     let lines = source_lines(src);
     for function_view in module.as_view().functions() {

@@ -204,9 +204,7 @@ fn inspect_function_pass_stays_verified_and_runs() -> Result<(), IrError> {
 
         // The explicit `Verified` annotation is the compile-time half of the
         // assertion: a wrong driver verdict here fails to compile.
-        let f_view = verified.view(f);
-        let out: Module<'_, _, Verified> =
-            run_function_pass(pass, verified, f_view, &mut analyses)?;
+        let out: Module<'_, _, Verified> = run_function_pass(pass, verified, f, &mut analyses)?;
 
         assert!(ran.get(), "Inspect FunctionPass::run must actually execute");
         // A read-only pass leaves the IR untouched.

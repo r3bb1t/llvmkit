@@ -51,7 +51,7 @@ pub trait IrField: Sized + 'static {
     type Value<'ctx, B: ModuleBrand + 'ctx>;
 
     /// Construct this field's LLVM IR type in `module`.
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx;
 
@@ -145,7 +145,9 @@ pub trait StructSchema: Sized + 'static {
     const PACKED: bool = false;
 
     /// Construct this schema's field types in source-layout order.
-    fn field_types<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
+    fn field_types<'ctx, B>(
+        module: &'ctx Module<'ctx, B, Unverified>,
+    ) -> IrResult<Vec<Type<'ctx, B>>>
     where
         B: ModuleBrand + 'ctx;
 
@@ -157,7 +159,7 @@ pub trait StructSchema: Sized + 'static {
     /// Return the idempotent named LLVM struct type for this schema.
     #[inline]
     fn ir_type<'ctx, B>(
-        module: &Module<'ctx, B, Unverified>,
+        module: &'ctx Module<'ctx, B, Unverified>,
     ) -> IrResult<crate::StructType<'ctx, crate::BodySet, B>>
     where
         B: ModuleBrand + 'ctx,
@@ -184,7 +186,7 @@ where
     type Value<'ctx, B: ModuleBrand + 'ctx> = S::Value<'ctx, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -236,7 +238,7 @@ macro_rules! impl_int_field {
             type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, $w, B>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -291,7 +293,7 @@ impl IrField for IntDyn {
     type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, IntDyn, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(_module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(_module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -337,7 +339,7 @@ impl<const N: u32> IrField for Width<N> {
     type Value<'ctx, B: ModuleBrand + 'ctx> = IntValue<'ctx, Width<N>, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -383,7 +385,7 @@ macro_rules! impl_float_field {
             type Value<'ctx, B: ModuleBrand + 'ctx> = FloatValue<'ctx, $k, B>;
 
             #[inline]
-            fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+            fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
             where
                 B: ModuleBrand + 'ctx,
             {
@@ -439,7 +441,7 @@ impl IrField for Ptr {
     type Value<'ctx, B: ModuleBrand + 'ctx> = PointerValue<'ctx, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -589,7 +591,7 @@ where
         <S::FieldParams as FunctionParamList>::Values<'ctx, B>;
 
     #[inline]
-    fn ir_types<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
+    fn ir_types<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Vec<Type<'ctx, B>>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -647,7 +649,7 @@ where
     type Marker = Dyn;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {
@@ -688,7 +690,7 @@ where
     type Value<'ctx, B: ModuleBrand + 'ctx> = S::Value<'ctx, B>;
 
     #[inline]
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {

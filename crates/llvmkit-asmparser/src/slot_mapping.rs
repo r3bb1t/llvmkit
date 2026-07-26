@@ -159,7 +159,7 @@ mod tests {
                 .add_external_global("g", i32_ty.as_type())
                 .expect("fresh global");
 
-            let mut mapping: SlotMapping<'_> = SlotMapping::new();
+            let mut mapping: SlotMapping<'_, _> = SlotMapping::new();
             mapping
                 .global_values
                 .add(0, GlobalRef::Variable(m.view(g)))

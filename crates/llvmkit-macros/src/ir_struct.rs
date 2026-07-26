@@ -187,7 +187,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
 
             #[inline]
             #vis fn build<'m, F, R, Name, #(#build_generics,)*>(
-                #module_param: &#ir::Module<'ctx, B, #ir::Unverified>,
+                #module_param: &'ctx #ir::Module<'ctx, B, #ir::Unverified>,
                 #builder_param: &#ir::IRBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
                 #(#build_params,)*
                 #name_param: Name,
@@ -211,7 +211,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             const PACKED: bool = #packed;
 
             fn field_types<'ctx, B>(
-                module: &#ir::Module<'ctx, B, #ir::Unverified>,
+                module: &'ctx #ir::Module<'ctx, B, #ir::Unverified>,
             ) -> #ir::IrResult<::std::vec::Vec<#ir::Type<'ctx, B>>>
             where
                 B: #ir::ModuleBrand + 'ctx,

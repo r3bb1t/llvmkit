@@ -12,7 +12,7 @@ struct Leaker;
 impl FunctionParam for Leaker {
     type Value<'ctx, B: ModuleBrand + 'ctx> = ();
 
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: &'ctx Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {

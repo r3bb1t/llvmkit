@@ -214,7 +214,7 @@ impl<'ctx> From<&'ctx ModuleCore> for ModuleRef<'ctx, Brand<'ctx>> {
 impl<'ctx, B: ModuleBrand + 'ctx, S> From<&'ctx Module<'ctx, B, S>> for ModuleRef<'ctx, B> {
     #[inline]
     fn from(module: &'ctx Module<'ctx, B, S>) -> Self {
-        ModuleRef::new(module.core)
+        module.module_ref()
     }
 }
 
@@ -1024,9 +1024,9 @@ impl<'ctx, B: ModuleBrand> From<ModuleView<'ctx, B>> for ModuleRef<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx, S> From<&Module<'ctx, B, S>> for ModuleView<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx, S> From<&'ctx Module<'ctx, B, S>> for ModuleView<'ctx, B> {
     #[inline]
-    fn from(module: &Module<'ctx, B, S>) -> Self {
+    fn from(module: &'ctx Module<'ctx, B, S>) -> Self {
         module.as_view()
     }
 }
@@ -1217,9 +1217,55 @@ pub(super) struct ModuleCore {
     next_ssa_builder_id: core::cell::Cell<u32>,
 }
 
+/// Where a [`Module`] token's [`ModuleCore`] storage lives.
+///
+/// The user-facing token always [`Owned`](CoreStore::Owned)s its core: a
+/// `Module` is the storage, not a borrow of storage parked in some caller's
+/// frame. That is what lets the token be *moved* (returned from a builder
+/// function, stored in a struct, threaded through a pass driver) instead of
+/// being pinned to the stack frame that happened to create it.
+///
+/// [`Borrowed`](CoreStore::Borrowed) is a crate-private hatch with exactly one
+/// consumer — [`Module::from_core`], which reconstructs an ephemeral token for
+/// [`crate::IRBuilder`]'s schema calls (the builder stores only
+/// `&ModuleCore`, and `IRBuilder::at_end` builds a builder from a block alone,
+/// with no token anywhere in scope). It is unreachable from outside the crate,
+/// so no `Module` a user can name is ever borrowed. Deleting it is a later
+/// slice's job and requires giving `IRBuilder` a real module token.
+enum CoreStore<'ctx> {
+    /// The token owns its storage (every user-facing module).
+    Owned(Box<ModuleCore>),
+    /// Crate-private ephemeral alias over storage a live token owns.
+    Borrowed(&'ctx ModuleCore),
+}
+
+impl CoreStore<'_> {
+    /// Borrow the storage. The returned borrow's region is the receiver's, so a
+    /// `&'ctx self` caller gets `&'ctx ModuleCore` and a short-borrow caller gets
+    /// a short one — one accessor covers both.
+    #[inline]
+    fn get(&self) -> &ModuleCore {
+        match self {
+            CoreStore::Owned(core) => core,
+            CoreStore::Borrowed(core) => core,
+        }
+    }
+}
+
 /// Linear module token carrying a generative brand `B` and verification state `S`.
+///
+/// The token **owns** its `ModuleCore`. Handle-minting methods therefore take
+/// `&'ctx self`: a handle tagged `'ctx` is a borrow *of the token*, so the
+/// borrow checker knows a live handle keeps the module alive. Because `'ctx` is
+/// covariant here (the brand `B` is separately invariant, so cross-module
+/// rejection is untouched), region inference simply shrinks `'ctx` to the
+/// borrow at each call site.
+///
+/// `Module` deliberately has **no** `Drop` impl: the typestate transitions
+/// ([`verify`](Self::verify), [`unverify`](Self::unverify)) move the owned core
+/// out of `self` into the new-state token, which `Drop` would forbid (E0509).
 pub struct Module<'ctx, B: ModuleBrand = Brand<'ctx>, S = Unverified> {
-    core: &'ctx ModuleCore,
+    store: CoreStore<'ctx>,
     _brand: Invariant<B>,
     _state: PhantomData<S>,
 }
@@ -2156,9 +2202,8 @@ impl Module<'static, Brand<'static>, Unverified> {
         N: Into<String>,
         F: for<'brand> FnOnce(Module<'brand, Brand<'brand>, Unverified>) -> R,
     {
-        let core = ModuleCore::new(name);
         let module = Module {
-            core: &core,
+            store: CoreStore::Owned(Box::new(ModuleCore::new(name))),
             _brand: PhantomData,
             _state: PhantomData,
         };
@@ -2167,78 +2212,86 @@ impl Module<'static, Brand<'static>, Unverified> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
+    /// Borrow the owned storage. Lifetime-eliding on purpose: a `&'ctx self`
+    /// caller gets `&'ctx ModuleCore` (the handle-minting path), a short-borrow
+    /// caller gets a short one (`Display`, the state transitions).
+    #[inline]
+    fn core(&self) -> &ModuleCore {
+        self.store.get()
+    }
+
     /// Owning module's [`ModuleId`].
     #[inline]
     pub fn id(&self) -> ModuleId {
-        self.core.id()
+        self.core().id()
     }
 
     /// Module identifier.
     #[inline]
     pub fn name(&self) -> &str {
-        self.core.name()
+        self.core().name()
     }
 
     /// Read-only branded view.
     #[inline]
-    pub fn as_view(&self) -> ModuleView<'ctx, B> {
-        ModuleView::new(self.core)
+    pub fn as_view(&'ctx self) -> ModuleView<'ctx, B> {
+        ModuleView::new(self.core())
     }
 
     /// Crate-internal borrow of the state-erased module storage.
     #[inline]
-    pub(super) fn core_ref(&self) -> &'ctx ModuleCore {
-        self.core
+    pub(super) fn core_ref(&'ctx self) -> &'ctx ModuleCore {
+        self.core()
     }
 
     /// Crate-internal state-erased module handle with this token's brand.
     #[inline]
-    pub(super) fn module_ref(&self) -> ModuleRef<'ctx, B> {
-        ModuleRef::new(self.core)
+    pub(super) fn module_ref(&'ctx self) -> ModuleRef<'ctx, B> {
+        ModuleRef::new(self.core())
     }
 
     /// `source_filename = "..."` directive.
     #[inline]
     pub fn source_filename(&self) -> Option<core::cell::Ref<'_, str>> {
-        self.core.source_filename()
+        self.core().source_filename()
     }
 
     /// Borrow the parsed data layout.
     #[inline]
     pub fn data_layout(&self) -> core::cell::Ref<'_, DataLayout> {
-        self.core.data_layout()
+        self.core().data_layout()
     }
 
     /// Target triple directive.
     #[inline]
     pub fn target_triple(&self) -> Option<String> {
-        self.core.target_triple()
+        self.core().target_triple()
     }
 
     /// Module-level inline assembly.
     #[inline]
     pub fn module_asm(&self) -> String {
-        self.core.module_asm()
+        self.core().module_asm()
     }
 
     pub fn attribute_groups(&self) -> Vec<(u32, AttributeStorage)> {
-        self.core.attribute_groups()
+        self.core().attribute_groups()
     }
 
     /// Iterate globals in declaration order with this module token's brand.
     pub fn globals(
-        &self,
+        &'ctx self,
     ) -> impl ExactSizeIterator<Item = GlobalVariable<'ctx, B>>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
-        self.core.iter_globals::<B>()
+        self.core().iter_globals::<B>()
     }
 
     /// Look up a function by name with this module token's brand,
     /// widened to [`Dyn`].
-    pub fn function_by_name_dyn(&self, name: &str) -> Option<FunctionValue<'ctx, Dyn, B>> {
-        self.core
+    pub fn function_by_name_dyn(&'ctx self, name: &str) -> Option<FunctionValue<'ctx, Dyn, B>> {
+        self.core()
             .function_by_name
             .borrow()
             .get(name)
@@ -2246,34 +2299,38 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
             .map(|id| {
                 FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
                     id,
-                    ModuleRef::<B>::new(self.core),
+                    ModuleRef::<B>::new(self.core()),
                 )
             })
     }
 
     /// Look up a function by name and narrow to a specific return marker.
-    pub fn function_by_name<R>(&self, name: &str) -> IrResult<Option<FunctionValue<'ctx, R, B>>>
+    pub fn function_by_name<R>(
+        &'ctx self,
+        name: &str,
+    ) -> IrResult<Option<FunctionValue<'ctx, R, B>>>
     where
         R: crate::marker::ReturnMarker,
     {
-        let Some(id) = self.core.function_by_name.borrow().get(name).copied() else {
+        let Some(id) = self.core().function_by_name.borrow().get(name).copied() else {
             return Ok(None);
         };
-        let value_data = self.core.ctx.value_data(id);
+        let value_data = self.core().ctx.value_data(id);
         let signature_id = match &value_data.kind {
             crate::value::ValueKindData::Function(f) => f.signature,
             _ => unreachable!("function_by_name table only stores function ids"),
         };
         let ret_id = self
-            .core
+            .core()
             .ctx
             .type_data(signature_id)
             .as_function()
             .unwrap_or_else(|| unreachable!("function value carries a function signature"))
             .0;
-        let ret_data = self.core.ctx.type_data(ret_id);
+        let ret_data = self.core().ctx.type_data(ret_id);
         if !crate::function::signature_matches_marker::<R>(ret_data) {
-            let got = crate::r#type::Type::new(ret_id, ModuleRef::<B>::new(self.core)).kind_label();
+            let got =
+                crate::r#type::Type::new(ret_id, ModuleRef::<B>::new(self.core())).kind_label();
             return Err(IrError::ReturnTypeMismatch {
                 expected: crate::marker::marker_kind_label::<R>()
                     .unwrap_or_else(|| unreachable!("Dyn marker matches every signature")),
@@ -2282,12 +2339,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
         }
         Ok(Some(FunctionValue::<'ctx, R, B>::from_parts_unchecked(
             id,
-            ModuleRef::<B>::new(self.core),
+            ModuleRef::<B>::new(self.core()),
         )))
     }
     /// Verify the module's structural invariants without consuming it.
     pub fn verify_borrowed(&self) -> IrResult<()> {
-        crate::verifier::Verifier::new(self.as_view()).run()
+        // Deliberately not `self.as_view()`: that is a `&'ctx self` method (it
+        // mints a `'ctx`-anchored view), while this only needs a view for the
+        // duration of the call. Building it from a short borrow keeps
+        // `verify_borrowed` callable on a token the caller is about to move.
+        crate::verifier::Verifier::new(ModuleView::<B>::new(self.core())).run()
     }
 
     /// Resolve a storable value id (from [`Value::id`](crate::Value::id)
@@ -2316,7 +2377,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
     /// tombstone-liveness detection is deferred (see the crate's `value_id`
     /// notes).
     #[inline]
-    pub fn view<I>(&self, id: I) -> I::View
+    pub fn view<I>(&'ctx self, id: I) -> I::View
     where
         I: ViewIn<'ctx, B>,
     {
@@ -2336,7 +2397,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
     /// only; a tombstoned-but-in-range slot is not detected (no cheap liveness
     /// flag exists). Works on both [`Unverified`] and [`Verified`] modules.
     #[inline]
-    pub fn try_view<I>(&self, id: I) -> Option<I::View>
+    pub fn try_view<I>(&'ctx self, id: I) -> Option<I::View>
     where
         I: ViewIn<'ctx, B>,
     {
@@ -2347,12 +2408,12 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<'ctx, B, S> {
 impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// Allocate the next per-module [`crate::ssa_builder::SsaBuilderId`].
     #[inline]
-    pub(crate) fn next_ssa_builder_id(&self) -> u32 {
-        self.core.next_ssa_builder_id()
+    pub(crate) fn next_ssa_builder_id(&'ctx self) -> u32 {
+        self.core().next_ssa_builder_id()
     }
 
     pub fn function_builder<R, Name>(
-        &self,
+        &'ctx self,
         name: Name,
         signature: FunctionType<'ctx, B>,
     ) -> FunctionBuilder<'ctx, R, B>
@@ -2360,11 +2421,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         R: crate::marker::ReturnMarker,
         Name: Into<String>,
     {
-        self.core.function_builder::<B, R, Name>(name, signature)
+        self.core().function_builder::<B, R, Name>(name, signature)
     }
 
     pub fn constant_expr<Operands, Indices, Mask>(
-        &self,
+        &'ctx self,
         result_ty: Type<'ctx, B>,
         opcode: ConstantExprOpcode,
         operands: Operands,
@@ -2377,12 +2438,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Indices: IntoIterator<Item = u32>,
         Mask: IntoIterator<Item = i32>,
     {
-        self.core
+        self.core()
             .constant_expr::<B>(result_ty, opcode, operands, indices, mask, flags)
     }
 
     pub fn constant_expr_with_options<Operands, Indices, Mask>(
-        &self,
+        &'ctx self,
         result_ty: Type<'ctx, B>,
         opcode: ConstantExprOpcode,
         operands: Operands,
@@ -2395,12 +2456,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Indices: IntoIterator<Item = u32>,
         Mask: IntoIterator<Item = i32>,
     {
-        self.core
+        self.core()
             .constant_expr_with_options::<B>(result_ty, opcode, operands, indices, mask, options)
     }
 
     pub fn block_address<R, S>(
-        &self,
+        &'ctx self,
         function: FunctionValue<'ctx, R, B>,
         block: &BasicBlock<'ctx, R, S, B>,
     ) -> IrResult<Constant<'ctx, B>>
@@ -2408,44 +2469,47 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         R: crate::ReturnMarker,
         S: crate::BlockTerminationState,
     {
-        self.core.block_address::<B, R, S>(function, block)
+        self.core().block_address::<B, R, S>(function, block)
     }
 
     pub fn block_address_placeholder(
-        &self,
+        &'ctx self,
         ty: Type<'ctx, B>,
     ) -> IrResult<BlockAddressPlaceholder<'ctx, B>> {
-        self.core.block_address_placeholder::<B>(ty)
+        self.core().block_address_placeholder::<B>(ty)
     }
 
-    pub fn dso_local_equivalent(&self, function: FunctionValue<'ctx, Dyn, B>) -> Constant<'ctx, B> {
-        self.core.dso_local_equivalent::<B>(function)
+    pub fn dso_local_equivalent(
+        &'ctx self,
+        function: FunctionValue<'ctx, Dyn, B>,
+    ) -> Constant<'ctx, B> {
+        self.core().dso_local_equivalent::<B>(function)
     }
 
     pub fn dso_local_equivalent_global(
-        &self,
+        &'ctx self,
         global: Constant<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
-        self.core.dso_local_equivalent_global::<B>(global)
+        self.core().dso_local_equivalent_global::<B>(global)
     }
 
-    pub fn no_cfi(&self, function: FunctionValue<'ctx, Dyn, B>) -> Constant<'ctx, B> {
-        self.core.no_cfi::<B>(function)
+    pub fn no_cfi(&'ctx self, function: FunctionValue<'ctx, Dyn, B>) -> Constant<'ctx, B> {
+        self.core().no_cfi::<B>(function)
     }
 
-    pub fn no_cfi_global(&self, global: Constant<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
-        self.core.no_cfi_global::<B>(global)
+    pub fn no_cfi_global(&'ctx self, global: Constant<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
+        self.core().no_cfi_global::<B>(global)
     }
 
     pub fn ptr_auth(
-        &self,
+        &'ctx self,
         pointer: impl IsConstant<'ctx, B>,
         key: impl IsConstant<'ctx, B>,
         discriminator: impl IsConstant<'ctx, B>,
         addr_discriminator: impl IsConstant<'ctx, B>,
         deactivation_symbol: impl IsConstant<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
-        self.core.ptr_auth::<B>(
+        self.core().ptr_auth::<B>(
             pointer,
             key,
             discriminator,
@@ -2454,12 +2518,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         )
     }
 
-    pub fn token_none(&self) -> Constant<'ctx, B> {
-        self.core.token_none::<B>()
+    pub fn token_none(&'ctx self) -> Constant<'ctx, B> {
+        self.core().token_none::<B>()
     }
 
-    pub fn target_ext_none(&self, ty: Type<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
-        self.core.target_ext_none::<B>(ty)
+    pub fn target_ext_none(&'ctx self, ty: Type<'ctx, B>) -> IrResult<Constant<'ctx, B>> {
+        self.core().target_ext_none::<B>(ty)
     }
 }
 
@@ -2469,13 +2533,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// inverse of [`Self::core_ref`] -- `IRBuilder` only stores
     /// `&'ctx ModuleCore` internally (see `ir_builder.rs`), so builder
     /// methods that need to call schema methods taking
-    /// `&Module<'ctx, B, Unverified>` (e.g. [`crate::IrField::ir_type`])
+    /// `&'ctx Module<'ctx, B, Unverified>` (e.g. [`crate::IrField::ir_type`])
     /// use this to reconstruct the typed view the builder was
     /// originally positioned against.
     #[inline]
     pub(crate) fn from_core(core: &'ctx ModuleCore) -> Self {
         Self {
-            core,
+            store: CoreStore::Borrowed(core),
             _brand: PhantomData,
             _state: PhantomData,
         }
@@ -2483,160 +2547,164 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
 
     /// `void`.
     #[inline]
-    pub fn void_type(&self) -> VoidType<'ctx, B> {
-        VoidType::new(self.core.ctx.void(), self.module_ref())
+    pub fn void_type(&'ctx self) -> VoidType<'ctx, B> {
+        VoidType::new(self.core().ctx.void(), self.module_ref())
     }
 
     /// `label`.
     #[inline]
-    pub fn label_type(&self) -> LabelType<'ctx, B> {
-        LabelType::new(self.core.ctx.label(), self.module_ref())
+    pub fn label_type(&'ctx self) -> LabelType<'ctx, B> {
+        LabelType::new(self.core().ctx.label(), self.module_ref())
     }
 
     /// `metadata`.
     #[inline]
-    pub fn metadata_type(&self) -> MetadataType<'ctx, B> {
-        MetadataType::new(self.core.ctx.metadata(), self.module_ref())
+    pub fn metadata_type(&'ctx self) -> MetadataType<'ctx, B> {
+        MetadataType::new(self.core().ctx.metadata(), self.module_ref())
     }
 
     /// `token`.
     #[inline]
-    pub fn token_type(&self) -> TokenType<'ctx, B> {
-        TokenType::new(self.core.ctx.token(), self.module_ref())
+    pub fn token_type(&'ctx self) -> TokenType<'ctx, B> {
+        TokenType::new(self.core().ctx.token(), self.module_ref())
     }
 
     /// `half`.
     #[inline]
-    pub fn half_type(&self) -> FloatType<'ctx, Half, B> {
-        FloatType::new(self.core.ctx.half(), self.module_ref())
+    pub fn half_type(&'ctx self) -> FloatType<'ctx, Half, B> {
+        FloatType::new(self.core().ctx.half(), self.module_ref())
     }
 
     /// `bfloat`.
     #[inline]
-    pub fn bfloat_type(&self) -> FloatType<'ctx, BFloat, B> {
-        FloatType::new(self.core.ctx.bfloat(), self.module_ref())
+    pub fn bfloat_type(&'ctx self) -> FloatType<'ctx, BFloat, B> {
+        FloatType::new(self.core().ctx.bfloat(), self.module_ref())
     }
 
     /// `float` (32-bit IEEE 754).
     #[inline]
-    pub fn f32_type(&self) -> FloatType<'ctx, f32, B> {
-        FloatType::new(self.core.ctx.float(), self.module_ref())
+    pub fn f32_type(&'ctx self) -> FloatType<'ctx, f32, B> {
+        FloatType::new(self.core().ctx.float(), self.module_ref())
     }
 
     /// `double` (64-bit IEEE 754).
     #[inline]
-    pub fn f64_type(&self) -> FloatType<'ctx, f64, B> {
-        FloatType::new(self.core.ctx.double(), self.module_ref())
+    pub fn f64_type(&'ctx self) -> FloatType<'ctx, f64, B> {
+        FloatType::new(self.core().ctx.double(), self.module_ref())
     }
 
     /// `fp128`.
     #[inline]
-    pub fn fp128_type(&self) -> FloatType<'ctx, Fp128, B> {
-        FloatType::new(self.core.ctx.fp128(), self.module_ref())
+    pub fn fp128_type(&'ctx self) -> FloatType<'ctx, Fp128, B> {
+        FloatType::new(self.core().ctx.fp128(), self.module_ref())
     }
 
     /// `x86_fp80`.
     #[inline]
-    pub fn x86_fp80_type(&self) -> FloatType<'ctx, X86Fp80, B> {
-        FloatType::new(self.core.ctx.x86_fp80(), self.module_ref())
+    pub fn x86_fp80_type(&'ctx self) -> FloatType<'ctx, X86Fp80, B> {
+        FloatType::new(self.core().ctx.x86_fp80(), self.module_ref())
     }
 
     /// `ppc_fp128`.
     #[inline]
-    pub fn ppc_fp128_type(&self) -> FloatType<'ctx, PpcFp128, B> {
-        FloatType::new(self.core.ctx.ppc_fp128(), self.module_ref())
+    pub fn ppc_fp128_type(&'ctx self) -> FloatType<'ctx, PpcFp128, B> {
+        FloatType::new(self.core().ctx.ppc_fp128(), self.module_ref())
     }
 
     /// `x86_amx`.
     #[inline]
-    pub fn x86_amx_type(&self) -> Type<'ctx, B> {
-        Type::new(self.core.ctx.x86_amx(), self.module_ref())
+    pub fn x86_amx_type(&'ctx self) -> Type<'ctx, B> {
+        Type::new(self.core().ctx.x86_amx(), self.module_ref())
     }
 
     /// `exnref`.
     #[inline]
-    pub fn wasm_exnref_type(&self) -> Type<'ctx, B> {
-        Type::new(self.core.ctx.wasm_exnref(), self.module_ref())
+    pub fn wasm_exnref_type(&'ctx self) -> Type<'ctx, B> {
+        Type::new(self.core().ctx.wasm_exnref(), self.module_ref())
     }
 
     /// `i1`.
     #[inline]
-    pub fn bool_type(&self) -> IntType<'ctx, bool, B> {
-        IntType::new(self.core.ctx.int_type(1), self.module_ref())
+    pub fn bool_type(&'ctx self) -> IntType<'ctx, bool, B> {
+        IntType::new(self.core().ctx.int_type(1), self.module_ref())
     }
 
     /// Alias for [`Self::bool_type`].
     #[inline]
-    pub fn i1_type(&self) -> IntType<'ctx, bool, B> {
+    pub fn i1_type(&'ctx self) -> IntType<'ctx, bool, B> {
         self.bool_type()
     }
 
     #[inline]
-    pub fn i8_type(&self) -> IntType<'ctx, i8, B> {
-        IntType::new(self.core.ctx.int_type(8), self.module_ref())
+    pub fn i8_type(&'ctx self) -> IntType<'ctx, i8, B> {
+        IntType::new(self.core().ctx.int_type(8), self.module_ref())
     }
 
     #[inline]
-    pub fn i16_type(&self) -> IntType<'ctx, i16, B> {
-        IntType::new(self.core.ctx.int_type(16), self.module_ref())
+    pub fn i16_type(&'ctx self) -> IntType<'ctx, i16, B> {
+        IntType::new(self.core().ctx.int_type(16), self.module_ref())
     }
 
     #[inline]
-    pub fn i32_type(&self) -> IntType<'ctx, i32, B> {
-        IntType::new(self.core.ctx.int_type(32), self.module_ref())
+    pub fn i32_type(&'ctx self) -> IntType<'ctx, i32, B> {
+        IntType::new(self.core().ctx.int_type(32), self.module_ref())
     }
 
     #[inline]
-    pub fn i64_type(&self) -> IntType<'ctx, i64, B> {
-        IntType::new(self.core.ctx.int_type(64), self.module_ref())
+    pub fn i64_type(&'ctx self) -> IntType<'ctx, i64, B> {
+        IntType::new(self.core().ctx.int_type(64), self.module_ref())
     }
 
     #[inline]
-    pub fn i128_type(&self) -> IntType<'ctx, i128, B> {
-        IntType::new(self.core.ctx.int_type(128), self.module_ref())
+    pub fn i128_type(&'ctx self) -> IntType<'ctx, i128, B> {
+        IntType::new(self.core().ctx.int_type(128), self.module_ref())
     }
 
-    pub fn custom_width_int_type(&self, bits: u32) -> IrResult<IntType<'ctx, IntDyn, B>> {
+    pub fn custom_width_int_type(&'ctx self, bits: u32) -> IrResult<IntType<'ctx, IntDyn, B>> {
         if !(MIN_INT_BITS..=MAX_INT_BITS).contains(&bits) {
             return Err(IrError::InvalidIntegerWidth { bits });
         }
         Ok(IntType::new(
-            self.core.ctx.int_type(bits),
+            self.core().ctx.int_type(bits),
             self.module_ref(),
         ))
     }
 
-    pub fn int_type_n<const N: u32>(&self) -> IntType<'ctx, Width<N>, B> {
+    pub fn int_type_n<const N: u32>(&'ctx self) -> IntType<'ctx, Width<N>, B> {
         const {
             assert!(
                 N >= MIN_INT_BITS && N <= MAX_INT_BITS,
                 "integer width N outside [MIN_INT_BITS, MAX_INT_BITS]",
             );
         }
-        IntType::new(self.core.ctx.int_type(N), self.module_ref())
+        IntType::new(self.core().ctx.int_type(N), self.module_ref())
     }
 
-    pub fn ptr_type(&self, addr_space: u32) -> PointerType<'ctx, B> {
-        PointerType::new(self.core.ctx.ptr_type(addr_space), self.module_ref())
+    pub fn ptr_type(&'ctx self, addr_space: u32) -> PointerType<'ctx, B> {
+        PointerType::new(self.core().ctx.ptr_type(addr_space), self.module_ref())
     }
 
-    pub fn typed_pointer_type<T>(&self, pointee: T, addr_space: u32) -> TypedPointerType<'ctx, B>
+    pub fn typed_pointer_type<T>(
+        &'ctx self,
+        pointee: T,
+        addr_space: u32,
+    ) -> TypedPointerType<'ctx, B>
     where
         T: Into<Type<'ctx, B>>,
     {
         let pointee_id = pointee.into().id();
         TypedPointerType::new(
-            self.core.ctx.typed_pointer_type(pointee_id, addr_space),
+            self.core().ctx.typed_pointer_type(pointee_id, addr_space),
             self.module_ref(),
         )
     }
 
-    pub fn array_type<T>(&self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B>
+    pub fn array_type<T>(&'ctx self, elem: T, n: u64) -> ArrayType<'ctx, ElemDyn, ArrLenDyn, B>
     where
         T: Into<Type<'ctx, B>>,
     {
         let elem_id = elem.into().id();
-        ArrayType::new(self.core.ctx.array_type(elem_id, n), self.module_ref())
+        ArrayType::new(self.core().ctx.array_type(elem_id, n), self.module_ref())
     }
 
     /// Const-generic typed array `[N x E]`. The element marker `E` projects
@@ -2645,17 +2713,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// [`vector_type_n`](Self::vector_type_n), `N == 0` is **not** rejected:
     /// LLVM permits zero-length arrays `[0 x T]`. Mirrors `Type::getIntNTy`
     /// + `ArrayType::get`.
-    pub fn array_type_n<E, const N: u64>(&self) -> ArrayType<'ctx, E, ArrLen<N>, B>
+    pub fn array_type_n<E, const N: u64>(&'ctx self) -> ArrayType<'ctx, E, ArrLen<N>, B>
     where
         E: StaticVecElem<'ctx, B>,
     {
         let elem = E::element_ir_type(self.module_ref());
-        let id = self.core.ctx.array_type(elem.id(), N);
+        let id = self.core().ctx.array_type(elem.id(), N);
         ArrayType::new(id, self.module_ref())
     }
 
     pub fn vector_type<T>(
-        &self,
+        &'ctx self,
         elem: T,
         n: u32,
         scalable: bool,
@@ -2665,9 +2733,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     {
         let elem_id = elem.into().id();
         let id = if scalable {
-            self.core.ctx.scalable_vector_type(elem_id, n)
+            self.core().ctx.scalable_vector_type(elem_id, n)
         } else {
-            self.core.ctx.fixed_vector_type(elem_id, n)
+            self.core().ctx.fixed_vector_type(elem_id, n)
         };
         VectorType::new(id, self.module_ref())
     }
@@ -2677,7 +2745,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// yielding a statically typed [`VectorType<'ctx, E, Len<N>, B>`].
     /// `const`-evaluated at monomorphisation: `N == 0` is a compile error.
     /// Mirrors `Type::getIntNTy` + `VectorType::get`.
-    pub fn vector_type_n<E, const N: u32>(&self) -> VectorType<'ctx, E, Len<N>, B>
+    pub fn vector_type_n<E, const N: u32>(&'ctx self) -> VectorType<'ctx, E, Len<N>, B>
     where
         E: StaticVecElem<'ctx, B>,
     {
@@ -2685,35 +2753,39 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
             assert!(N > 0, "vector length must be >= 1");
         }
         let elem = E::element_ir_type(self.module_ref());
-        let id = self.core.ctx.fixed_vector_type(elem.id(), N);
+        let id = self.core().ctx.fixed_vector_type(elem.id(), N);
         VectorType::new(id, self.module_ref())
     }
 
-    pub fn struct_type<I, T>(&self, elements: I, packed: bool) -> StructType<'ctx, StructBodyDyn, B>
+    pub fn struct_type<I, T>(
+        &'ctx self,
+        elements: I,
+        packed: bool,
+    ) -> StructType<'ctx, StructBodyDyn, B>
     where
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
     {
         let elems: Box<[TypeSlot]> = elements.into_iter().map(|t| t.into().id()).collect();
         StructType::new(
-            self.core.ctx.literal_struct_type(elems, packed),
+            self.core().ctx.literal_struct_type(elems, packed),
             self.module_ref(),
         )
     }
 
-    pub fn named_struct(&self, name: &str) -> StructType<'ctx, StructBodyDyn, B> {
-        let (id, _existed) = self.core.ctx.get_or_create_named_struct(name);
+    pub fn named_struct(&'ctx self, name: &str) -> StructType<'ctx, StructBodyDyn, B> {
+        let (id, _existed) = self.core().ctx.get_or_create_named_struct(name);
         StructType::new(id, self.module_ref())
     }
 
     pub fn opaque_struct(
-        &self,
+        &'ctx self,
         name: &str,
     ) -> IrResult<StructType<'ctx, crate::struct_body_state::Opaque, B>> {
-        let (id, existed) = self.core.ctx.get_or_create_named_struct(name);
+        let (id, existed) = self.core().ctx.get_or_create_named_struct(name);
         if existed {
             let s = self
-                .core
+                .core()
                 .ctx
                 .type_data(id)
                 .as_struct()
@@ -2727,15 +2799,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         Ok(StructType::new(id, self.module_ref()))
     }
 
-    pub fn get_named_struct(&self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
-        self.core
+    pub fn get_named_struct(&'ctx self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
+        self.core()
             .ctx
             .get_named_struct(name)
             .map(|id| StructType::new(id, self.module_ref()))
     }
 
     pub fn get_or_set_named_struct_body<S>(
-        &self,
+        &'ctx self,
     ) -> IrResult<StructType<'ctx, crate::struct_body_state::BodySet, B>>
     where
         S: StructSchema,
@@ -2747,9 +2819,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         }
         let field_types = S::field_types(self)?;
         let elements: Box<[TypeSlot]> = field_types.iter().map(|t| t.id()).collect();
-        let (id, _existed) = self.core.ctx.get_or_create_named_struct(S::NAME);
+        let (id, _existed) = self.core().ctx.get_or_create_named_struct(S::NAME);
         let data = self
-            .core
+            .core()
             .ctx
             .type_data(id)
             .as_struct()
@@ -2768,7 +2840,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
                 });
             }
         }
-        self.core.ctx.set_named_struct_body(
+        self.core().ctx.set_named_struct_body(
             id,
             StructBody {
                 elements,
@@ -2782,7 +2854,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     }
 
     pub fn set_struct_body_dyn<I, T>(
-        &self,
+        &'ctx self,
         st: StructType<'ctx, StructBodyDyn, B>,
         elements: I,
         packed: bool,
@@ -2797,7 +2869,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
             packed,
         };
         let s = self
-            .core
+            .core()
             .ctx
             .type_data(st.id)
             .as_struct()
@@ -2808,11 +2880,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
                 got: TypeKindLabel::Struct,
             });
         }
-        self.core.ctx.set_named_struct_body(st.id, body)
+        self.core().ctx.set_named_struct_body(st.id, body)
     }
 
     pub fn set_struct_body<I, T>(
-        &self,
+        &'ctx self,
         opaque: StructType<'ctx, crate::struct_body_state::Opaque, B>,
         elements: I,
         packed: bool,
@@ -2826,11 +2898,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
             elements: elems,
             packed,
         };
-        self.core.ctx.set_named_struct_body(opaque.id, body)?;
+        self.core().ctx.set_named_struct_body(opaque.id, body)?;
         Ok(opaque.retag::<crate::struct_body_state::BodySet>())
     }
 
-    pub fn fn_type<I, R, T>(&self, ret: R, params: I, is_var_arg: bool) -> FunctionType<'ctx, B>
+    pub fn fn_type<I, R, T>(
+        &'ctx self,
+        ret: R,
+        params: I,
+        is_var_arg: bool,
+    ) -> FunctionType<'ctx, B>
     where
         I: IntoIterator<Item = T>,
         R: Into<Type<'ctx, B>>,
@@ -2839,7 +2916,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         let ret = ret.into();
         let params: Box<[TypeSlot]> = params.into_iter().map(|t| t.into().id()).collect();
         FunctionType::new(
-            self.core.ctx.function_type(ret.id(), params, is_var_arg),
+            self.core().ctx.function_type(ret.id(), params, is_var_arg),
             self.module_ref(),
         )
     }
@@ -2850,7 +2927,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// (`fn_type(ret, Vec::<Type>::new(), va)`). This pins the element type for
     /// them — `fn_type_no_params(ret, is_var_arg)` is exactly
     /// `fn_type(ret, [], is_var_arg)`.
-    pub fn fn_type_no_params<R>(&self, ret: R, is_var_arg: bool) -> FunctionType<'ctx, B>
+    pub fn fn_type_no_params<R>(&'ctx self, ret: R, is_var_arg: bool) -> FunctionType<'ctx, B>
     where
         R: Into<Type<'ctx, B>>,
     {
@@ -2858,7 +2935,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     }
 
     /// Fixed-arity typed function type: `Ret (Params...)`.
-    pub fn typed_function_type<Ret, Params>(&self) -> IrResult<FunctionType<'ctx, B>>
+    pub fn typed_function_type<Ret, Params>(&'ctx self) -> IrResult<FunctionType<'ctx, B>>
     where
         Ret: FunctionReturn,
         Params: FunctionParamList,
@@ -2870,7 +2947,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
 
     /// Fixed-arity typed function type from a Rust function-pointer
     /// schema (`fn(...) -> Ret`).
-    pub fn typed_function_type_of<Sig>(&self) -> IrResult<FunctionType<'ctx, B>>
+    pub fn typed_function_type_of<Sig>(&'ctx self) -> IrResult<FunctionType<'ctx, B>>
     where
         Sig: FunctionSignature,
     {
@@ -2880,7 +2957,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// Variadic typed function type: `Ret (Params..., ...)`. `Params`
     /// describes only the fixed-prefix parameters — the trailing `...`
     /// is not itself a schema-typed parameter.
-    pub fn typed_varargs_function_type<Ret, Params>(&self) -> IrResult<FunctionType<'ctx, B>>
+    pub fn typed_varargs_function_type<Ret, Params>(&'ctx self) -> IrResult<FunctionType<'ctx, B>>
     where
         Ret: FunctionReturn,
         Params: FunctionParamList,
@@ -2891,7 +2968,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     }
 
     /// Variadic typed function type from a Rust function-pointer schema.
-    pub fn typed_varargs_function_type_of<Sig>(&self) -> IrResult<FunctionType<'ctx, B>>
+    pub fn typed_varargs_function_type_of<Sig>(&'ctx self) -> IrResult<FunctionType<'ctx, B>>
     where
         Sig: FunctionSignature,
     {
@@ -2899,7 +2976,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     }
 
     pub fn target_ext_type<Name, I, T, J>(
-        &self,
+        &'ctx self,
         name: Name,
         type_params: I,
         int_params: J,
@@ -2914,7 +2991,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         let type_params: Box<[TypeSlot]> = type_params.into_iter().map(|t| t.into().id()).collect();
         let int_params: Box<[u32]> = int_params.into_iter().collect();
         TargetExtType::new(
-            self.core.ctx.target_ext_type(name, type_params, int_params),
+            self.core()
+                .ctx
+                .target_ext_type(name, type_params, int_params),
             self.module_ref(),
         )
     }
@@ -2923,7 +3002,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// [`TypedFunctionId`]. Resolve it back into the borrowing
     /// [`TypedFunctionValue`] facade with [`view`](Self::view).
     pub fn add_typed_function<Ret, Params, Name>(
-        &self,
+        &'ctx self,
         name: Name,
         linkage: Linkage,
     ) -> IrResult<TypedFunctionId<Ret, Params, B>>
@@ -2940,7 +3019,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// Declare a typed function from a Rust function-pointer schema, returning
     /// its storable [`TypedFunctionId`].
     pub fn add_typed_function_of<Sig, Name>(
-        &self,
+        &'ctx self,
         name: Name,
         linkage: Linkage,
     ) -> IrResult<TypedFunctionId<Sig::Ret, Sig::Params, B>>
@@ -2962,7 +3041,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// the borrowing [`crate::function_signature::TypedVarArgsFunctionValue`]
     /// facade with [`view`](Self::view).
     pub fn add_typed_varargs_function<Ret, Params, Name>(
-        &self,
+        &'ctx self,
         name: Name,
         linkage: Linkage,
     ) -> IrResult<TypedVarArgsFunctionId<Ret, Params, B>>
@@ -2982,7 +3061,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// Declare a variadic typed function from a Rust function-pointer schema,
     /// returning its storable [`TypedVarArgsFunctionId`].
     pub fn add_typed_varargs_function_of<Sig, Name>(
-        &self,
+        &'ctx self,
         name: Name,
         linkage: Linkage,
     ) -> IrResult<TypedVarArgsFunctionId<Sig::Ret, Sig::Params, B>>
@@ -3016,7 +3095,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// the dropped marker check load-bearing again — re-add it here if
     /// that ever changes.
     fn declare_function<R>(
-        &self,
+        &'ctx self,
         name: &str,
         signature: FunctionType<'ctx, B>,
         linkage: crate::global_value::Linkage,
@@ -3025,12 +3104,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         R: crate::marker::ReturnMarker,
     {
         reject_reserved_intrinsic_name(name)?;
-        if !name.is_empty() && self.core.global_name_exists(name) {
+        if !name.is_empty() && self.core().global_name_exists(name) {
             return Err(IrError::DuplicateFunctionName {
                 name: name.to_owned(),
             });
         }
-        self.core.push_function(
+        self.core().push_function(
             name,
             signature,
             linkage,
@@ -3053,7 +3132,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// Resolve the id back into a borrowing [`FunctionValue`] with
     /// [`view`](Self::view).
     pub fn add_function_dyn<Name>(
-        &self,
+        &'ctx self,
         name: Name,
         signature: FunctionType<'ctx, B>,
         linkage: crate::global_value::Linkage,
@@ -3067,22 +3146,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     }
 
     pub fn intrinsic_descriptor_from_signature(
-        &self,
+        &'ctx self,
         name: &str,
         fn_ty: FunctionType<'ctx, B>,
     ) -> IrResult<IntrinsicDescriptor<'ctx, B>> {
-        self.core
+        self.core()
             .intrinsic_descriptor_from_signature::<B>(name, fn_ty)
     }
 
     /// Return the existing declaration for `descriptor`, or insert its canonical
     /// generated declaration.
     pub fn get_or_insert_intrinsic_declaration(
-        &self,
+        &'ctx self,
         descriptor: &IntrinsicDescriptor<'ctx, B>,
     ) -> IrResult<FunctionId<Dyn, B>> {
         let function = self
-            .core
+            .core()
             .get_or_insert_intrinsic_declaration::<B>(descriptor)?;
         for (arg_index, name) in descriptor.argument_names() {
             let arg = function.param(arg_index)?;
@@ -3092,7 +3171,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     }
 
     pub fn get_or_insert_intrinsic_declaration_by_id(
-        &self,
+        &'ctx self,
         id: IntrinsicId,
         overloads: &[Type<'ctx, B>],
     ) -> IrResult<FunctionId<Dyn, B>> {
@@ -3101,7 +3180,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     }
 
     pub fn get_or_insert_intrinsic_declaration_by_name<Name>(
-        &self,
+        &'ctx self,
         name: Name,
     ) -> IrResult<FunctionId<Dyn, B>>
     where
@@ -3124,7 +3203,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     ///
     /// Returns the storable [`GlobalId`]; resolve it back into a borrowing
     /// [`GlobalVariable`] with [`view`](Self::view).
-    pub fn add_global<N, C>(&self, name: N, initializer: C) -> IrResult<GlobalId<B>>
+    pub fn add_global<N, C>(&'ctx self, name: N, initializer: C) -> IrResult<GlobalId<B>>
     where
         N: AsRef<str>,
         C: IntoConstantValue<'ctx, B>,
@@ -3143,7 +3222,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     ///
     /// Like [`add_global`](Self::add_global) but marks the global as
     /// `constant` rather than mutable.
-    pub fn add_global_constant<N, C>(&self, name: N, initializer: C) -> IrResult<GlobalId<B>>
+    pub fn add_global_constant<N, C>(&'ctx self, name: N, initializer: C) -> IrResult<GlobalId<B>>
     where
         N: AsRef<str>,
         C: IntoConstantValue<'ctx, B>,
@@ -3166,7 +3245,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     /// this uses the module's default linkage. Accepts any
     /// `impl Into<Type>` so a typed handle needn't be widened via
     /// `.as_type()`.
-    pub fn add_global_uninitialized<N, T>(&self, name: N, value_type: T) -> IrResult<GlobalId<B>>
+    pub fn add_global_uninitialized<N, T>(
+        &'ctx self,
+        name: N,
+        value_type: T,
+    ) -> IrResult<GlobalId<B>>
     where
         N: AsRef<str>,
         T: Into<Type<'ctx, B>>,
@@ -3179,7 +3262,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         .build()
     }
 
-    pub fn add_external_global<N, T>(&self, name: N, value_type: T) -> IrResult<GlobalId<B>>
+    pub fn add_external_global<N, T>(&'ctx self, name: N, value_type: T) -> IrResult<GlobalId<B>>
     where
         N: AsRef<str>,
         T: Into<Type<'ctx, B>>,
@@ -3194,7 +3277,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     }
 
     pub fn global_builder<N>(
-        &self,
+        &'ctx self,
         name: N,
         value_type: Type<'ctx, B>,
     ) -> crate::global_variable::GlobalBuilder<'ctx, B>
@@ -3204,9 +3287,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         crate::global_variable::GlobalBuilder::new(self.module_ref(), name, value_type)
     }
 
-    pub fn get_global(&self, name: &str) -> Option<GlobalVariable<'ctx, B>> {
-        let id = self.core.global_by_name.borrow().get(name).copied()?;
-        let value_data = self.core.ctx.value_data(id);
+    pub fn get_global(&'ctx self, name: &str) -> Option<GlobalVariable<'ctx, B>> {
+        let id = self.core().global_by_name.borrow().get(name).copied()?;
+        let value_data = self.core().ctx.value_data(id);
         Some(GlobalVariable::from_parts_unchecked(
             id,
             self.module_ref(),
@@ -3215,7 +3298,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
     }
 
     pub fn alias_builder<C, Name>(
-        &self,
+        &'ctx self,
         name: Name,
         value_type: Type<'ctx, B>,
         aliasee: C,
@@ -3227,9 +3310,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         GlobalAliasBuilder::new(self.module_ref(), name, value_type, aliasee)
     }
 
-    pub fn get_alias(&self, name: &str) -> Option<GlobalAlias<'ctx, B>> {
-        let id = self.core.alias_by_name.borrow().get(name).copied()?;
-        let value_data = self.core.ctx.value_data(id);
+    pub fn get_alias(&'ctx self, name: &str) -> Option<GlobalAlias<'ctx, B>> {
+        let id = self.core().alias_by_name.borrow().get(name).copied()?;
+        let value_data = self.core().ctx.value_data(id);
         Some(GlobalAlias::from_parts_unchecked(
             id,
             self.module_ref(),
@@ -3237,12 +3320,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         ))
     }
 
-    pub fn alias_empty(&self) -> bool {
-        self.core.alias_empty()
+    pub fn alias_empty(&'ctx self) -> bool {
+        self.core().alias_empty()
     }
 
     pub fn ifunc_builder<C, Name>(
-        &self,
+        &'ctx self,
         name: Name,
         value_type: Type<'ctx, B>,
         resolver: C,
@@ -3254,9 +3337,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         GlobalIFuncBuilder::new(self.module_ref(), name, value_type, resolver)
     }
 
-    pub fn get_ifunc(&self, name: &str) -> Option<GlobalIFunc<'ctx, B>> {
-        let id = self.core.ifunc_by_name.borrow().get(name).copied()?;
-        let value_data = self.core.ctx.value_data(id);
+    pub fn get_ifunc(&'ctx self, name: &str) -> Option<GlobalIFunc<'ctx, B>> {
+        let id = self.core().ifunc_by_name.borrow().get(name).copied()?;
+        let value_data = self.core().ctx.value_data(id);
         Some(GlobalIFunc::from_parts_unchecked(
             id,
             self.module_ref(),
@@ -3264,71 +3347,71 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         ))
     }
 
-    pub fn ifunc_empty(&self) -> bool {
-        self.core.ifunc_empty()
+    pub fn ifunc_empty(&'ctx self) -> bool {
+        self.core().ifunc_empty()
     }
 
-    pub fn global_empty(&self) -> bool {
-        self.core.global_empty()
+    pub fn global_empty(&'ctx self) -> bool {
+        self.core().global_empty()
     }
 
-    pub fn set_source_filename<N>(&self, filename: N)
+    pub fn set_source_filename<N>(&'ctx self, filename: N)
     where
         N: Into<String>,
     {
-        self.core.set_source_filename(filename);
+        self.core().set_source_filename(filename);
     }
 
-    pub fn clear_source_filename(&self) {
-        self.core.clear_source_filename();
+    pub fn clear_source_filename(&'ctx self) {
+        self.core().clear_source_filename();
     }
 
-    pub fn set_data_layout<L>(&self, layout: L) -> IrResult<()>
+    pub fn set_data_layout<L>(&'ctx self, layout: L) -> IrResult<()>
     where
         L: AsRef<str>,
     {
-        self.core.set_data_layout(layout)
+        self.core().set_data_layout(layout)
     }
 
-    pub fn set_data_layout_value(&self, layout: DataLayout) {
-        self.core.set_data_layout_value(layout);
+    pub fn set_data_layout_value(&'ctx self, layout: DataLayout) {
+        self.core().set_data_layout_value(layout);
     }
 
-    pub fn set_target_triple<T>(&self, triple: T)
+    pub fn set_target_triple<T>(&'ctx self, triple: T)
     where
         T: Into<String>,
     {
-        self.core.set_target_triple(triple);
+        self.core().set_target_triple(triple);
     }
 
-    pub fn clear_target_triple(&self) {
-        self.core.clear_target_triple();
+    pub fn clear_target_triple(&'ctx self) {
+        self.core().clear_target_triple();
     }
 
-    pub fn set_module_asm<A>(&self, asm: A)
+    pub fn set_module_asm<A>(&'ctx self, asm: A)
     where
         A: Into<String>,
     {
-        self.core.set_module_asm(asm);
+        self.core().set_module_asm(asm);
     }
 
-    pub fn append_module_asm<A>(&self, line: A)
+    pub fn append_module_asm<A>(&'ctx self, line: A)
     where
         A: AsRef<str>,
     {
-        self.core.append_module_asm(line);
+        self.core().append_module_asm(line);
     }
 
-    pub fn get_or_insert_comdat(&self, name: &str) -> ComdatRef<'ctx, B> {
-        self.core.get_or_insert_comdat::<B, _>(name)
+    pub fn get_or_insert_comdat(&'ctx self, name: &str) -> ComdatRef<'ctx, B> {
+        self.core().get_or_insert_comdat::<B, _>(name)
     }
 
-    pub fn get_comdat(&self, name: &str) -> Option<ComdatRef<'ctx, B>> {
-        self.core.get_comdat::<B>(name)
+    pub fn get_comdat(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
+        self.core().get_comdat::<B>(name)
     }
 
     pub fn inline_asm<Asm, Constraints>(
-        &self,
+        &'ctx self,
         fn_ty: FunctionType<'ctx, B>,
         asm: Asm,
         constraints: Constraints,
@@ -3348,7 +3431,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
             can_unwind: options.can_unwind(),
             dialect: options.dialect(),
         };
-        let id = self.core.ctx.push_value(crate::value::ValueData {
+        let id = self.core().ctx.push_value(crate::value::ValueData {
             ty: ptr_ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
@@ -3358,120 +3441,131 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
         crate::inline_asm::InlineAsm::from_parts(id, self.module_ref(), ptr_ty)
     }
 
-    pub fn metadata_string<S>(&self, s: S) -> MetadataSlot
+    pub fn metadata_string<S>(&'ctx self, s: S) -> MetadataSlot
     where
         S: Into<String>,
     {
-        self.core.metadata_string(s)
+        self.core().metadata_string(s)
     }
 
-    pub fn metadata_tuple<Ops>(&self, operands: Ops) -> MetadataSlot
+    pub fn metadata_tuple<Ops>(&'ctx self, operands: Ops) -> MetadataSlot
     where
         Ops: AsRef<[MetadataRef]>,
     {
-        self.core.metadata_tuple(operands)
+        self.core().metadata_tuple(operands)
     }
 
-    pub fn metadata_tuple_with_distinct<Ops>(&self, distinct: bool, operands: Ops) -> MetadataSlot
+    pub fn metadata_tuple_with_distinct<Ops>(
+        &'ctx self,
+        distinct: bool,
+        operands: Ops,
+    ) -> MetadataSlot
     where
         Ops: AsRef<[MetadataRef]>,
     {
-        self.core.metadata_tuple_with_distinct(distinct, operands)
+        self.core().metadata_tuple_with_distinct(distinct, operands)
     }
 
-    pub fn metadata_constant<C>(&self, c: C) -> MetadataSlot
+    pub fn metadata_constant<C>(&'ctx self, c: C) -> MetadataSlot
     where
         C: IsConstant<'ctx, B>,
     {
         let id = c.as_constant().id;
-        self.core.metadata_constant_value(id)
+        self.core().metadata_constant_value(id)
     }
 
-    pub fn metadata_specialized(&self, node: SpecializedMetadataNode) -> MetadataSlot {
-        self.core.metadata_specialized(node)
+    pub fn metadata_specialized(&'ctx self, node: SpecializedMetadataNode) -> MetadataSlot {
+        self.core().metadata_specialized(node)
     }
 
-    pub fn metadata_node(&self, kind: MetadataKind) -> MetadataSlot {
-        self.core.metadata_node(kind)
+    pub fn metadata_node(&'ctx self, kind: MetadataKind) -> MetadataSlot {
+        self.core().metadata_node(kind)
     }
 
     pub fn metadata_as_value(
-        &self,
+        &'ctx self,
         md: crate::metadata::MetadataSlot,
     ) -> crate::value::Value<'ctx, B> {
-        let ty = self.core.ctx.metadata();
-        if let Some(&id) = self.core.metadata_as_value_cache.borrow().get(&md) {
+        let ty = self.core().ctx.metadata();
+        if let Some(&id) = self.core().metadata_as_value_cache.borrow().get(&md) {
             return crate::value::Value::from_parts(id, self.module_ref(), ty);
         }
-        let id = self.core.ctx.push_value(crate::value::ValueData {
+        let id = self.core().ctx.push_value(crate::value::ValueData {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::MetadataAsValue(md),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
-        self.core
+        self.core()
             .metadata_as_value_cache
             .borrow_mut()
             .insert(md, id);
         crate::value::Value::from_parts(id, self.module_ref(), ty)
     }
 
-    pub fn metadata_reserve(&self) -> MetadataSlot {
-        self.core.metadata_reserve()
+    pub fn metadata_reserve(&'ctx self) -> MetadataSlot {
+        self.core().metadata_reserve()
     }
 
     pub fn metadata_set(
-        &self,
+        &'ctx self,
         id: crate::metadata::MetadataSlot,
         kind: crate::metadata::MetadataKind,
     ) {
-        self.core.metadata_set(id, kind);
+        self.core().metadata_set(id, kind);
     }
 
     pub fn metadata_get(
-        &self,
+        &'ctx self,
         id: crate::metadata::MetadataSlot,
     ) -> Option<crate::metadata::MetadataKind> {
-        self.core.metadata_get(id)
+        self.core().metadata_get(id)
     }
 
-    pub fn metadata_count(&self) -> usize {
-        self.core.metadata_count()
+    pub fn metadata_count(&'ctx self) -> usize {
+        self.core().metadata_count()
     }
 
-    pub fn get_or_insert_named_metadata<Name>(&self, name: Name) -> usize
+    pub fn get_or_insert_named_metadata<Name>(&'ctx self, name: Name) -> usize
     where
         Name: Into<String>,
     {
-        self.core.get_or_insert_named_metadata(name)
+        self.core().get_or_insert_named_metadata(name)
     }
 
-    pub fn named_metadata_add_operand(&self, index: usize, op: MetadataRef) {
-        self.core.named_metadata_add_operand(index, op);
+    pub fn named_metadata_add_operand(&'ctx self, index: usize, op: MetadataRef) {
+        self.core().named_metadata_add_operand(index, op);
     }
 
-    pub fn named_metadata_count(&self) -> usize {
-        self.core.named_metadata_count()
+    pub fn named_metadata_count(&'ctx self) -> usize {
+        self.core().named_metadata_count()
     }
 
-    pub fn append_use_list_order(&self, record: UseListOrderRecord) -> IrResult<()> {
-        self.core.append_use_list_order(record)
+    pub fn append_use_list_order(&'ctx self, record: UseListOrderRecord) -> IrResult<()> {
+        self.core().append_use_list_order(record)
     }
 
-    pub fn append_use_list_order_bb(&self, record: UseListOrderBBRecord) -> IrResult<()> {
-        self.core.append_use_list_order_bb(record)
+    pub fn append_use_list_order_bb(&'ctx self, record: UseListOrderBBRecord) -> IrResult<()> {
+        self.core().append_use_list_order_bb(record)
     }
 
-    pub fn set_attribute_group(&self, id: u32, storage: AttributeStorage) {
-        self.core.set_attribute_group(id, storage);
+    pub fn set_attribute_group(&'ctx self, id: u32, storage: AttributeStorage) {
+        self.core().set_attribute_group(id, storage);
     }
 
     /// Verify the module and consume it into the `Verified` state.
+    ///
+    /// The owned core is **moved** into the new-state token; the `Unverified`
+    /// token is gone, which is the whole point of the linear typestate. (This
+    /// is also why `Module` must never grow a `Drop` impl — moving a field out
+    /// of a `Drop` type is E0509.)
     pub fn verify(self) -> IrResult<Module<'ctx, B, Verified>> {
-        crate::verifier::Verifier::new(self.as_view()).run()?;
+        // A *short* view, not `as_view()`: `self` is about to be moved from, so
+        // it cannot lend a `'ctx`-long borrow of itself.
+        crate::verifier::Verifier::new(ModuleView::<B>::new(self.core())).run()?;
         Ok(Module {
-            core: self.core,
+            store: self.store,
             _brand: PhantomData,
             _state: PhantomData,
         })
@@ -3479,31 +3573,37 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<'ctx, B, Unverified> {
 }
 
 impl<'ctx, B: ModuleBrand> Module<'ctx, B, Verified> {
-    /// Strip the verified state after mutation is required.
+    /// Strip the verified state after mutation is required. Moves the owned
+    /// core into the `Unverified` token.
     pub fn unverify(self) -> Module<'ctx, B, Unverified> {
         Module {
-            core: self.core,
+            store: self.store,
             _brand: PhantomData,
             _state: PhantomData,
         }
     }
+}
 
-    /// Reborrow this verified module as an *unverified* capability token
-    /// **without consuming it**.
+impl<'ctx, B: ModuleBrand> Module<'ctx, B, Unverified> {
+    /// Re-stamp this token `Verified` **without re-running the verifier**.
     ///
     /// Crate-internal plumbing for the read-only `Dyn…` pass pipelines
     /// (`crate::pass_manager`): a boxed pass runs behind an erased trait whose
     /// entry point is typed to take a `&Module<Unverified>` mutation token, but a
     /// read-only container holds only `Inspect` passes — whose rung token is `()`,
     /// so the reference is projected away and never reaches a mutator. The
-    /// container therefore hands over this throwaway alias purely to satisfy the
-    /// erased signature, then threads the *original* verified module out untouched
-    /// (no re-verification; D8). It is `pub(crate)` and used only there, where the
-    /// container's `push` bound (`Inspect`-only) makes the no-mutation invariant
-    /// structural rather than assumed.
-    pub(crate) fn scratch_unverified(&self) -> Module<'ctx, B, Unverified> {
+    /// container therefore [`unverify`](Module::unverify)s once, lends the
+    /// resulting token to the erased signature, and re-stamps it here on the way
+    /// out (no re-verification; D8). The container's `push` bound
+    /// (`Inspect`-only) is what makes the no-mutation invariant structural
+    /// rather than assumed.
+    ///
+    /// This replaces the old `scratch_unverified`, which handed out a *second*
+    /// live token over the same storage — impossible now that a token owns its
+    /// core, and undesirable regardless.
+    pub(crate) fn assume_verified(self) -> Module<'ctx, B, Verified> {
         Module {
-            core: self.core,
+            store: self.store,
             _brand: PhantomData,
             _state: PhantomData,
         }
@@ -3523,6 +3623,6 @@ impl<'ctx, B: ModuleBrand, S> core::fmt::Display for Module<'ctx, B, S> {
     /// Print the module as textual `.ll`. Mirrors `Module::print` from
     /// `llvm/lib/IR/AsmWriter.cpp`.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        crate::asm_writer::fmt_module(f, self.core)
+        crate::asm_writer::fmt_module(f, self.store.get())
     }
 }

@@ -19,7 +19,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, DominatorTreeAnalysis, Dyn, FnCx, FnPatch, FnReport, FunctionPass, FunctionView,
+    Analyses, DominatorTreeAnalysis, Dyn, FnCx, FnPatch, FnReport, FunctionId, FunctionPass,
     IRBuilder, InstructionView, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
     ModulePass, NoFolder, PatchBody, RewriteModule, Unverified, Verified, function_pass,
     module_pass, run_function_pass, run_module_pass,
@@ -33,8 +33,8 @@ use llvmkit_ir::{
 /// with [`NoFolder`] so the constant add survives to be a real trivially-dead
 /// instruction (mirrors `tests/pipeline_basic.rs`).
 fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, Unverified>,
-) -> Result<FunctionView<'ctx, B>, IrError> {
+    m: &'ctx Module<'ctx, B, Unverified>,
+) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -46,20 +46,20 @@ fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
         "dead",
     )?;
     b.build_ret(i32_ty.const_int(1_u32))?;
-    Ok(m.view(f).into())
+    Ok(f)
 }
 
 /// `i32 @f()` whose entry just returns a constant — no dead instruction.
 fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, Unverified>,
-) -> Result<FunctionView<'ctx, B>, IrError> {
+    m: &'ctx Module<'ctx, B, Unverified>,
+) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     b.build_ret(i32_ty.const_int(1_u32))?;
-    Ok(m.view(f).into())
+    Ok(f)
 }
 
 /// The single mutating body shared by the macro pass and its hand-written twin:

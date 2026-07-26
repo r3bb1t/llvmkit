@@ -24,8 +24,7 @@ fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
-        let unverified = run_function_pass(InstSimplifyPass, verified, f_view, &mut analyses)?;
+        let unverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -71,8 +70,7 @@ fn instsimplify_user_cascade_folds_dependent_add_chain() -> Result<(), IrError> 
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
-        let unverified = run_function_pass(InstSimplifyPass, verified, f_view, &mut analyses)?;
+        let unverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -119,8 +117,7 @@ fn dce_pass_erases_dead_integer_chain_and_preserves_store() -> Result<(), IrErro
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
-        let unverified = run_function_pass(DcePass, verified, f_view, &mut analyses)?;
+        let unverified = run_function_pass(DcePass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -161,12 +158,9 @@ fn instsimplify_and_dce_pipeline_folds_and_erases() -> Result<(), IrError> {
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
-        let after_instsimplify =
-            run_function_pass(InstSimplifyPass, verified, f_view, &mut analyses)?;
+        let after_instsimplify = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
         let reverified = after_instsimplify.verify()?;
-        let f_view = reverified.view(f);
-        let after_dce = run_function_pass(DcePass, reverified, f_view, &mut analyses)?;
+        let after_dce = run_function_pass(DcePass, reverified, f, &mut analyses)?;
         let reverified = after_dce.verify()?;
         let text = format!("{reverified}");
 
@@ -204,8 +198,7 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
-        let unverified = run_function_pass(InstSimplifyPass, verified, f_view, &mut analyses)?;
+        let unverified = run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -247,8 +240,7 @@ fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), 
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
-        let reverified = run_function_pass(DcePass, verified, f_view, &mut analyses)?.verify()?;
+        let reverified = run_function_pass(DcePass, verified, f, &mut analyses)?.verify()?;
         let text = format!("{reverified}");
 
         assert!(
@@ -293,8 +285,7 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
-        let reverified = run_function_pass(DcePass, verified, f_view, &mut analyses)?.verify()?;
+        let reverified = run_function_pass(DcePass, verified, f, &mut analyses)?.verify()?;
         let text = format!("{reverified}");
 
         assert!(text.contains("store i32 1"), "store kept:\n{text}");
@@ -327,9 +318,8 @@ fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), 
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
         let reverified =
-            run_function_pass(InstSimplifyPass, verified, f_view, &mut analyses)?.verify()?;
+            run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?.verify()?;
         let text = format!("{reverified}");
 
         // The pass terminated (no hang); the side-effecting load is kept, its
@@ -388,9 +378,8 @@ fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
         let reverified =
-            run_function_pass(InstSimplifyPass, verified, f_view, &mut analyses)?.verify()?;
+            run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?.verify()?;
         let text = format!("{reverified}");
 
         // Match the instruction form, not the bare word (the module id could
@@ -446,9 +435,8 @@ fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
         let reverified =
-            run_function_pass(InstSimplifyPass, verified, f_view, &mut analyses)?.verify()?;
+            run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?.verify()?;
         let text = format!("{reverified}");
 
         assert!(
@@ -506,9 +494,8 @@ fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
         let reverified =
-            run_function_pass(InstSimplifyPass, verified, f_view, &mut analyses)?.verify()?;
+            run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?.verify()?;
         let text = format!("{reverified}");
 
         assert!(
@@ -561,9 +548,8 @@ fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
         let reverified =
-            run_function_pass(InstSimplifyPass, verified, f_view, &mut analyses)?.verify()?;
+            run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?.verify()?;
         let text = format!("{reverified}");
 
         assert!(

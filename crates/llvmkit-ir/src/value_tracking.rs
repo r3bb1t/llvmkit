@@ -1938,7 +1938,7 @@ mod tests {
     }
 
     fn fabricated_value<'ctx, B: ModuleBrand + 'ctx>(
-        m: &Module<'ctx, B>,
+        m: &'ctx Module<'ctx, B>,
         id: ValueSlot,
         ty: TypeSlot,
     ) -> Value<'ctx, B> {

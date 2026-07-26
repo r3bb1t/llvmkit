@@ -130,7 +130,7 @@ pub struct PhiCoherenceError {
 pub(crate) fn render_phi_violation<'ctx, B: ModuleBrand>(
     violation: &PhiViolation,
     result_ty: TypeSlot,
-    module: &Module<'ctx, B, Unverified>,
+    module: &'ctx Module<'ctx, B, Unverified>,
 ) -> String {
     let ctx = module.core_ref().context();
     match violation {
@@ -168,7 +168,7 @@ pub(crate) fn render_phi_violation<'ctx, B: ModuleBrand>(
 /// the first violation encountered (block order, then phi order).
 #[doc(hidden)]
 pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
-    module: &Module<'ctx, B, Unverified>,
+    module: &'ctx Module<'ctx, B, Unverified>,
     function: FunctionValue<'ctx, Dyn, B>,
 ) -> Result<(), PhiCoherenceError> {
     let ctx = module.core_ref().context();

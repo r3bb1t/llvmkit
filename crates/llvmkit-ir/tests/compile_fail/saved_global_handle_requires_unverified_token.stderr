@@ -1,3 +1,16 @@
+error[E0505]: cannot move out of `module` because it is borrowed
+ --> tests/compile_fail/saved_global_handle_requires_unverified_token.rs:7:25
+  |
+4 |     Module::with_new::<_, _, _>("saved-global", |module| {
+  |                                                  ------ binding `module` declared here
+5 |         let i32_ty = module.i32_type();
+6 |         let global = module.view(module.add_global("g", i32_ty.const_zero())?);
+  |                      ------ borrow of `module` occurs here
+7 |         let _verified = module.verify()?;
+  |                         ^^^^^^ move out of `module` occurs here
+8 |         global.set_linkage(&module, Linkage::Internal);
+  |         ------ borrow later used here
+
 error[E0382]: borrow of moved value: `module`
  --> tests/compile_fail/saved_global_handle_requires_unverified_token.rs:8:28
   |

@@ -73,11 +73,13 @@ fn main() -> Result<(), IrError> {
         // The `Inspect` function pass keeps the module verified (compile-time
         // half of the guarantee is the explicit `Verified` binding).
         let flag = Rc::new(Cell::new(false));
-        let f_view = verified.view(f).as_function();
+        // The driver names the function by **id**: it consumes the module token,
+        // and a view would be a borrow of the very token being moved.
+        // `as_function` drops the parameter schema without touching the module.
         let verified: Module<'_, _, Verified> = run_function_pass(
             EntryReachable { flag: flag.clone() },
             verified,
-            f_view,
+            f.as_function(),
             &mut analyses,
         )?;
         println!("entry-reachable = {}", flag.get());

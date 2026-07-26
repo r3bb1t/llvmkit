@@ -9,8 +9,8 @@
 //! coverage to the typed-marker API.
 
 use llvmkit_ir::{
-    Brand, ConstantFolder, Dyn, FastMathFlags, FloatValue, IRBuilder, InstructionKind,
-    InstructionView, IntValueId, IrError, Linkage, Module, PointerValue, Positioned,
+    Dyn, FastMathFlags, FloatValue, IRBuilder, InstructionKind, InstructionView, IrError, Linkage,
+    Module, PointerValue,
 };
 
 // --- Builder-context FMF -----------------------------------------------
@@ -268,6 +268,49 @@ fn fmf_accumulates_contract_approx_reassoc_on_fmul() -> Result<(), IrError> {
     })
 }
 
+// Helper: build a tiny module exercising the fcmp wrapper, assert that
+// the AsmWriter emits the expected predicate keyword.
+//
+// A macro rather than a higher-ranked closure parameter. The callback has to be
+// generic over BOTH the module's region and its *generative brand*, and Rust
+// cannot quantify a `for<..>` bound over a type — so the function form had to
+// spell the brand as `Brand<'ctx>`, which ties each handle's region to the
+// brand's region. A `Module` owns its `ModuleCore`, so a borrow of the token
+// can never live for the universally-quantified brand region; expanding the
+// body inline drops the bound and lets `'_` shrink to the borrow.
+macro_rules! fcmp_predicate_emits {
+    ($expected_pred:expr, |$b:ident, $lhs:ident, $rhs:ident| $mk:expr) => {{
+        let expected_pred: &str = $expected_pred;
+        Module::with_new("a", |m| {
+            let f32_ty = m.f32_type();
+            let i1_ty = m.bool_type();
+            let fn_ty = m.fn_type(i1_ty, [f32_ty.as_type(), f32_ty.as_type()], false);
+            let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+            let entry = m.view(f).append_basic_block(&m, "entry");
+            let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+            let lhs: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
+            let rhs: FloatValue<'_, f32, _> = m.view(f).param(1)?.try_into()?;
+            let r = {
+                let $b = &b;
+                let ($lhs, $rhs) = (lhs, rhs);
+                $mk
+            }?;
+            b.build_ret(r)?;
+            let text = format!("{m}");
+            let needle = format!(
+                "%r = fcmp {expected_pred} float %0, %1
+"
+            );
+            assert!(
+                text.contains(&needle),
+                "expected `{needle}`; got:
+{text}"
+            );
+            Ok(())
+        })
+    }};
+}
+
 // --- Per-predicate fcmp -------------------------------------------------
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 1677:
@@ -276,7 +319,7 @@ fn fmf_accumulates_contract_approx_reassoc_on_fmul() -> Result<(), IrError> {
 /// agnostic to the float kind.
 #[test]
 fn build_fcmp_oeq_emits_oeq() -> Result<(), IrError> {
-    fcmp_predicate_emits("oeq", |b, lhs, rhs| {
+    fcmp_predicate_emits!("oeq", |b, lhs, rhs| {
         b.build_fcmp_oeq::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
@@ -284,7 +327,7 @@ fn build_fcmp_oeq_emits_oeq() -> Result<(), IrError> {
 /// Mirrors `compatibility.ll` line 1679: `fcmp ogt half %fop1, %fop2`.
 #[test]
 fn build_fcmp_ogt_emits_ogt() -> Result<(), IrError> {
-    fcmp_predicate_emits("ogt", |b, lhs, rhs| {
+    fcmp_predicate_emits!("ogt", |b, lhs, rhs| {
         b.build_fcmp_ogt::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
@@ -292,7 +335,7 @@ fn build_fcmp_ogt_emits_ogt() -> Result<(), IrError> {
 /// Mirrors `compatibility.ll` line 1681: `fcmp oge half %fop1, %fop2`.
 #[test]
 fn build_fcmp_oge_emits_oge() -> Result<(), IrError> {
-    fcmp_predicate_emits("oge", |b, lhs, rhs| {
+    fcmp_predicate_emits!("oge", |b, lhs, rhs| {
         b.build_fcmp_oge::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
@@ -300,7 +343,7 @@ fn build_fcmp_oge_emits_oge() -> Result<(), IrError> {
 /// Mirrors `compatibility.ll` line 1683: `fcmp olt half %fop1, %fop2`.
 #[test]
 fn build_fcmp_olt_emits_olt() -> Result<(), IrError> {
-    fcmp_predicate_emits("olt", |b, lhs, rhs| {
+    fcmp_predicate_emits!("olt", |b, lhs, rhs| {
         b.build_fcmp_olt::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
@@ -308,7 +351,7 @@ fn build_fcmp_olt_emits_olt() -> Result<(), IrError> {
 /// Mirrors `compatibility.ll` line 1685: `fcmp ole half %fop1, %fop2`.
 #[test]
 fn build_fcmp_ole_emits_ole() -> Result<(), IrError> {
-    fcmp_predicate_emits("ole", |b, lhs, rhs| {
+    fcmp_predicate_emits!("ole", |b, lhs, rhs| {
         b.build_fcmp_ole::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
@@ -316,7 +359,7 @@ fn build_fcmp_ole_emits_ole() -> Result<(), IrError> {
 /// Mirrors `compatibility.ll` line 1689: `fcmp ord half %fop1, %fop2`.
 #[test]
 fn build_fcmp_ord_emits_ord() -> Result<(), IrError> {
-    fcmp_predicate_emits("ord", |b, lhs, rhs| {
+    fcmp_predicate_emits!("ord", |b, lhs, rhs| {
         b.build_fcmp_ord::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
@@ -324,7 +367,7 @@ fn build_fcmp_ord_emits_ord() -> Result<(), IrError> {
 /// Mirrors `compatibility.ll` line 1703: `fcmp uno half %fop1, %fop2`.
 #[test]
 fn build_fcmp_uno_emits_uno() -> Result<(), IrError> {
-    fcmp_predicate_emits("uno", |b, lhs, rhs| {
+    fcmp_predicate_emits!("uno", |b, lhs, rhs| {
         b.build_fcmp_uno::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
@@ -332,36 +375,8 @@ fn build_fcmp_uno_emits_uno() -> Result<(), IrError> {
 /// Mirrors `compatibility.ll` line 1691: `fcmp ueq half %fop1, %fop2`.
 #[test]
 fn build_fcmp_ueq_emits_ueq() -> Result<(), IrError> {
-    fcmp_predicate_emits("ueq", |b, lhs, rhs| {
+    fcmp_predicate_emits!("ueq", |b, lhs, rhs| {
         b.build_fcmp_ueq::<f32, _, _, _>(lhs, rhs, "r")
-    })
-}
-
-// Helper: build a tiny module exercising the fcmp wrapper, assert that
-// the AsmWriter emits the expected predicate keyword.
-fn fcmp_predicate_emits<F>(expected_pred: &str, mk: F) -> Result<(), IrError>
-where
-    F: for<'ctx> FnOnce(
-        &IRBuilder<'_, 'ctx, Brand<'ctx>, ConstantFolder, Positioned, Dyn>,
-        FloatValue<'ctx, f32, Brand<'ctx>>,
-        FloatValue<'ctx, f32, Brand<'ctx>>,
-    ) -> Result<IntValueId<bool, Brand<'ctx>>, IrError>,
-{
-    Module::with_new("a", |m| {
-        let f32_ty = m.f32_type();
-        let i1_ty = m.bool_type();
-        let fn_ty = m.fn_type(i1_ty, [f32_ty.as_type(), f32_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let lhs: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
-        let rhs: FloatValue<'_, f32, _> = m.view(f).param(1)?.try_into()?;
-        let r = mk(&b, lhs, rhs)?;
-        b.build_ret(r)?;
-        let text = format!("{m}");
-        let needle = format!("%r = fcmp {expected_pred} float %0, %1\n");
-        assert!(text.contains(&needle), "expected `{needle}`; got:\n{text}");
-        Ok(())
     })
 }
 

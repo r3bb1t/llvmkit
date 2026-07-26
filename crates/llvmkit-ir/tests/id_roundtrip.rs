@@ -110,7 +110,10 @@ fn view_works_on_verified_module() -> Result<(), IrError> {
         let f_id: FunctionId<i32, _> = m.view(f).id();
 
         let verified = m.verify()?;
-        assert_eq!(verified.view(g_id), g);
+        // The id — not the handle — is what crosses the `verify` move: `g`
+        // borrows the token `verify` consumed. Re-resolving `g_id` against the
+        // verified token must land on the same global.
+        assert_eq!(verified.view(g_id).id(), g_id);
         assert_eq!(
             verified.view(f_id),
             verified.view(f),
@@ -128,7 +131,7 @@ fn view_works_on_verified_module() -> Result<(), IrError> {
 fn ids_are_copy_and_send() {
     fn assert_copy_send<T: Copy + Send>() {}
 
-    fn id_bounds<'ctx, B: ModuleBrand + 'ctx>(_m: &Module<'ctx, B, Unverified>) {
+    fn id_bounds<'ctx, B: ModuleBrand + 'ctx>(_m: &'ctx Module<'ctx, B, Unverified>) {
         assert_copy_send::<ValueId<B>>();
         assert_copy_send::<IntValueId<i32, B>>();
         assert_copy_send::<FloatValueId<f64, B>>();

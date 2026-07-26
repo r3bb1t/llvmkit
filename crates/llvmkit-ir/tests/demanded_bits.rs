@@ -632,9 +632,7 @@ fn simplify_demanded_bits_pass_folds_known_demanded_low_bits() -> Result<(), IrE
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
-        let unverified =
-            run_function_pass(SimplifyDemandedBitsPass, verified, f_view, &mut analyses)?;
+        let unverified = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -671,9 +669,7 @@ fn simplify_demanded_bits_pass_ports_and_zext_and() -> Result<(), IrError> {
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
-        let unverified =
-            run_function_pass(SimplifyDemandedBitsPass, verified, f_view, &mut analyses)?;
+        let unverified = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -762,21 +758,19 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
             "{before}"
         );
 
-        // Resolve both function handles while the builders still borrow the
-        // module — `verify` consumes it.
-        let f_view = m.view(f);
-        let mutate_f_view = m.view(mutate_f);
+        // Both functions are named by **id**, so nothing borrows the module
+        // across the `verify` move.
         let verified = m.verify()?;
         // The module has two definitions; the retired adaptor visited both, so
         // the single-pass driver runs over each in module order, re-verifying
         // between (a mutating pass downgrades the module).
         let mut analyses = Analyses::new();
-        let after_f = run_function_pass(SimplifyDemandedBitsPass, verified, f_view, &mut analyses)?;
+        let after_f = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
         let reverified_f = after_f.verify()?;
         let unverified = run_function_pass(
             SimplifyDemandedBitsPass,
             reverified_f,
-            mutate_f_view,
+            mutate_f,
             &mut analyses,
         )?;
         let reverified = unverified.verify()?;
@@ -809,9 +803,7 @@ fn simplify_demanded_bits_pass_erases_dead_integer_chain() -> Result<(), IrError
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
-        let unverified =
-            run_function_pass(SimplifyDemandedBitsPass, verified, f_view, &mut analyses)?;
+        let unverified = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 
@@ -850,9 +842,7 @@ fn variable_lshr_demands_source_bits_that_can_reach_low_result() -> Result<(), I
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        let f_view = verified.view(f);
-        let unverified =
-            run_function_pass(SimplifyDemandedBitsPass, verified, f_view, &mut analyses)?;
+        let unverified = run_function_pass(SimplifyDemandedBitsPass, verified, f, &mut analyses)?;
         let reverified = unverified.verify()?;
         let text = format!("{reverified}");
 

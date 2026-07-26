@@ -287,7 +287,7 @@ mod tests {
                 .add_external_global("g", i32_ty.as_type())
                 .expect("fresh global");
 
-            let mut map: LocMap<'_> = LocMap::default();
+            let mut map: LocMap<'_, _> = LocMap::default();
             let r = FileLocRange::new(FileLoc::new(2, 0), FileLoc::new(4, 0));
             map.add(m.view(g).into_erased(), r).unwrap();
             assert_eq!(map.location_of(m.view(g).into_erased()), Some(r));
@@ -309,7 +309,7 @@ mod tests {
                 .add_external_global("g", i32_ty.as_type())
                 .expect("fresh global");
 
-            let mut map: LocMap<'_> = LocMap::default();
+            let mut map: LocMap<'_, _> = LocMap::default();
             let r = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(1, 5));
             map.add(m.view(g).into_erased(), r).unwrap();
 
@@ -340,7 +340,7 @@ mod tests {
                 .add_external_global("g_far", i32_ty.as_type())
                 .expect("fresh global");
 
-            let mut map: LocMap<'_> = LocMap::default();
+            let mut map: LocMap<'_, _> = LocMap::default();
             let inner = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(2, 0));
             let far = FileLocRange::new(FileLoc::new(5, 0), FileLoc::new(6, 0));
             map.add(m.view(g_inner).into_erased(), inner).unwrap();

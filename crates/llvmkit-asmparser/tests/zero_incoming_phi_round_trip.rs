@@ -90,8 +90,7 @@ fn build_and_empty_phi() -> IrResult<String> {
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         let pass = RemoveEdge { from_name: "entry" };
-        let f_view = verified.view(f);
-        let out = run_function_pass(pass, verified, f_view, &mut analyses)?;
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
         let reverified = out.verify().expect("remove_then output must re-verify");
         Ok(format!("{reverified}"))
     })

@@ -1594,7 +1594,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     /// edge edits when the whole predecessor edge is going away.
     pub fn remove_incoming(
         &self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<'ctx, B, Unverified>,
         index: u32,
     ) -> IrResult<Value<'ctx, B>> {
         let _ = module_token;
@@ -1818,7 +1818,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     /// swap-with-last semantics and the same non-deleting empty-phi contract.
     pub fn remove_incoming(
         &self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<'ctx, B, Unverified>,
         index: u32,
     ) -> IrResult<Value<'ctx, B>> {
         let _ = module_token;
@@ -2031,7 +2031,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     /// swap-with-last semantics and the same non-deleting empty-phi contract.
     pub fn remove_incoming(
         &self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<'ctx, B, Unverified>,
         index: u32,
     ) -> IrResult<Value<'ctx, B>> {
         let _ = module_token;
@@ -2150,7 +2150,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
     /// non-deleting empty-phi contract.
     pub fn remove_incoming(
         &self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<'ctx, B, Unverified>,
         index: u32,
     ) -> IrResult<Value<'ctx, B>> {
         let _ = module_token;
@@ -2670,7 +2670,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
     /// `ModuleRef`.
     pub fn set_value_operand(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<'ctx, B, Unverified>,
         value: Value<'ctx, B>,
     ) -> IrResult<()> {
         let _ = module_token;

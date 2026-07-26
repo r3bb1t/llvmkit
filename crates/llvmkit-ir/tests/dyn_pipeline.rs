@@ -21,9 +21,9 @@ use std::rc::Rc;
 
 use llvmkit_ir::{
     Analyses, DCE, DcePass, Dyn, DynFunctionPipeline, DynModulePipeline,
-    DynReadOnlyFunctionPipeline, DynReadOnlyModulePipeline, FnCx, FnReport, FunctionPass,
-    FunctionView, IRBuilder, Inspect, IrError, IrResult, Linkage, ModCx, ModReport, Module,
-    ModuleBrand, ModulePass, NoFolder, RewriteModule, Unverified, Verified,
+    DynReadOnlyFunctionPipeline, DynReadOnlyModulePipeline, FnCx, FnReport, FunctionId,
+    FunctionPass, FunctionView, IRBuilder, Inspect, IrError, IrResult, Linkage, ModCx, ModReport,
+    Module, ModuleBrand, ModulePass, NoFolder, RewriteModule, Unverified, Verified,
 };
 
 // ==========================================================================
@@ -32,24 +32,24 @@ use llvmkit_ir::{
 
 /// Single-block `i32 @<name>()` whose entry just returns a constant.
 fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, Unverified>,
+    m: &'ctx Module<'ctx, B, Unverified>,
     name: &str,
-) -> Result<FunctionView<'ctx, B>, IrError> {
+) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     b.build_ret(i32_ty.const_int(1_u32))?;
-    Ok(m.view(f).into())
+    Ok(f)
 }
 
 /// `i32 @<name>()` with one unused `add` named `dead` before the terminator, built
 /// with [`NoFolder`] so the constant add survives for `DcePass` to erase.
 fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, Unverified>,
+    m: &'ctx Module<'ctx, B, Unverified>,
     name: &str,
-) -> Result<FunctionView<'ctx, B>, IrError> {
+) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
@@ -61,7 +61,7 @@ fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
         "dead",
     )?;
     b.build_ret(i32_ty.const_int(1_u32))?;
-    Ok(m.view(f).into())
+    Ok(f)
 }
 
 // ==========================================================================
@@ -205,7 +205,13 @@ fn transform_dyn_function_pipeline_downgrades_mutates_and_orders() -> Result<(),
     Module::with_new("dyn-fn-transform", |m| {
         let f = build_dead_add_named(&m, "f")?;
         // Entry starts with `dead` + `ret`.
-        assert_eq!(f.entry_block().expect("def").instruction_count(), 2);
+        assert_eq!(
+            FunctionView::from(m.view(f))
+                .entry_block()
+                .expect("def")
+                .instruction_count(),
+            2
+        );
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         let log = Rc::new(RefCell::new(Vec::new()));

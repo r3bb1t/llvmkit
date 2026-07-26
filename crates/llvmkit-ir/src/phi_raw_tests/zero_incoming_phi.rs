@@ -25,11 +25,7 @@ type DynBlockId<B> = BlockId<Dyn, B>;
 /// Return of `build_redirect_single_pred_phi`: the function plus the `to` and
 /// `new_to` `Dyn` labels. Named so the signature stays under clippy's
 /// `type_complexity` threshold without an `#[allow]` (the repo bans them).
-type RedirectFixture<'ctx, B> = (
-    crate::FunctionValue<'ctx, Dyn, B>,
-    DynBlockId<B>,
-    DynBlockId<B>,
-);
+type RedirectFixture<'ctx, B> = (crate::FunctionId<Dyn, B>, DynBlockId<B>, DynBlockId<B>);
 
 /// A `ReshapeCfg` pass that removes the `from_name` block's `cond_br` then-edge
 /// (its target `to` is the then-arm by construction), collapsing the `cond_br`
@@ -105,8 +101,8 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectEmptyEdge<B> {
 /// other:    ret 0
 /// ```
 fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, crate::Unverified>,
-) -> IrResult<(crate::FunctionValue<'ctx, Dyn, B>, BlockId<Dyn, B>)> {
+    m: &'ctx Module<'ctx, B, crate::Unverified>,
+) -> IrResult<(crate::FunctionId<Dyn, B>, BlockId<Dyn, B>)> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -137,7 +133,7 @@ fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
-    Ok((m.view(f), to_lbl))
+    Ok((f, to_lbl))
 }
 
 /// Removing `entry → to` — `entry` being `to`'s only predecessor — empties
@@ -195,7 +191,7 @@ fn remove_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
 /// new_to:   ret 1   ; no leading phi -> redirect's `phi_values` slice is empty
 /// ```
 fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, crate::Unverified>,
+    m: &'ctx Module<'ctx, B, crate::Unverified>,
 ) -> IrResult<RedirectFixture<'ctx, B>> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
@@ -233,7 +229,7 @@ fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new_to);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
-    Ok((m.view(f), old_to_lbl, new_to_lbl))
+    Ok((f, old_to_lbl, new_to_lbl))
 }
 
 /// Redirecting `entry → old_to` onto `new_to` — `entry` being `old_to`'s only

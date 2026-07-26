@@ -17,9 +17,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, DcePass, DominatorTreeAnalysis, Dyn, FnCx, FnReport, FunctionPass, FunctionView,
-    IRBuilder, Inspect, IrError, IrResult, Linkage, ModCx, ModReport, Module, ModuleBrand,
-    ModulePass, NoFolder, PatchBody, ReshapeCfg, RewriteModule, Unverified, Verified,
+    Analyses, DcePass, DominatorTreeAnalysis, Dyn, FnCx, FnReport, FunctionId, FunctionPass,
+    FunctionView, IRBuilder, Inspect, IrError, IrResult, Linkage, ModCx, ModReport, Module,
+    ModuleBrand, ModulePass, NoFolder, PatchBody, ReshapeCfg, RewriteModule, Unverified, Verified,
     for_each_function, function_pipeline, module_pipeline,
 };
 
@@ -29,25 +29,25 @@ use llvmkit_ir::{
 
 /// Single-block `i32 @<name>()` whose entry just returns a constant.
 fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, Unverified>,
+    m: &'ctx Module<'ctx, B, Unverified>,
     name: &str,
-) -> Result<FunctionView<'ctx, B>, IrError> {
+) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
     b.build_ret(i32_ty.const_int(1_u32))?;
-    Ok(m.view(f).into())
+    Ok(f)
 }
 
 /// `i32 @<name>()` with one unused `add` named `dead` before the terminator.
 /// Built with [`NoFolder`] so the constant add is not folded away, giving
 /// `DcePass` a real trivially-dead instruction to erase.
 fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, Unverified>,
+    m: &'ctx Module<'ctx, B, Unverified>,
     name: &str,
-) -> Result<FunctionView<'ctx, B>, IrError> {
+) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
@@ -59,7 +59,7 @@ fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
         "dead",
     )?;
     b.build_ret(i32_ty.const_int(1_u32))?;
-    Ok(m.view(f).into())
+    Ok(f)
 }
 
 // ==========================================================================
@@ -372,8 +372,20 @@ fn for_each_function_mutating_downgrades_and_visits_defs() -> Result<(), IrError
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let _decl = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
 
-        assert_eq!(f1.entry_block().expect("def").instruction_count(), 2);
-        assert_eq!(f2.entry_block().expect("def").instruction_count(), 2);
+        assert_eq!(
+            FunctionView::from(m.view(f1))
+                .entry_block()
+                .expect("def")
+                .instruction_count(),
+            2
+        );
+        assert_eq!(
+            FunctionView::from(m.view(f2))
+                .entry_block()
+                .expect("def")
+                .instruction_count(),
+            2
+        );
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
@@ -471,7 +483,13 @@ fn pipeline_runs_in_order_and_second_member_sees_first() -> Result<(), IrError> 
     Module::with_new("pipe-order", |m| {
         let f = build_dead_add_named(&m, "f")?;
         // Entry starts with `dead` + `ret`.
-        assert_eq!(f.entry_block().expect("def").instruction_count(), 2);
+        assert_eq!(
+            FunctionView::from(m.view(f))
+                .entry_block()
+                .expect("def")
+                .instruction_count(),
+            2
+        );
         let verified = m.verify()?;
         let seen = Rc::new(Cell::new(0usize));
         // Member 1 (`DcePass`, PatchBody) erases the dead add; member 2
@@ -498,11 +516,11 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
         analyses.register_function_analysis(DominatorTreeAnalysis);
         let _dt = analyses
             .function_manager_mut()
-            .get_result::<DominatorTreeAnalysis, _>(f)?;
+            .get_result::<DominatorTreeAnalysis, _>(verified.view(f))?;
         assert!(
             analyses
                 .function_manager()
-                .get_cached_result::<DominatorTreeAnalysis, _>(f)
+                .get_cached_result::<DominatorTreeAnalysis, _>(verified.view(f))
                 .is_some(),
             "dominator tree must be cached after computing it"
         );
@@ -515,7 +533,7 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
         assert!(
             analyses
                 .function_manager()
-                .get_cached_result::<DominatorTreeAnalysis, _>(f)
+                .get_cached_result::<DominatorTreeAnalysis, _>(after_noop.view(f))
                 .is_some(),
             "a witnessed no-op ReshapeCfg run must preserve the cached dominator tree"
         );
@@ -531,7 +549,7 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
         assert!(
             analyses
                 .function_manager()
-                .get_cached_result::<DominatorTreeAnalysis, _>(f)
+                .get_cached_result::<DominatorTreeAnalysis, _>(unverified.view(f))
                 .is_none(),
             "a mutating ReshapeCfg run's none() floor must invalidate the cached dominator tree"
         );
@@ -539,13 +557,16 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
         // The still-registered analysis recomputes on demand.
         let dt = analyses
             .function_manager_mut()
-            .get_result::<DominatorTreeAnalysis, _>(f)?;
-        let entry = f.entry_block().expect("definition has an entry block");
+            .get_result::<DominatorTreeAnalysis, _>(unverified.view(f))?;
+        let entry = unverified
+            .view(f)
+            .entry_block()
+            .expect("definition has an entry block");
         assert!(dt.is_reachable_from_entry(entry));
         assert!(
             analyses
                 .function_manager()
-                .get_cached_result::<DominatorTreeAnalysis, _>(f)
+                .get_cached_result::<DominatorTreeAnalysis, _>(unverified.view(f))
                 .is_some(),
             "dominator tree must be re-cached after recomputation"
         );

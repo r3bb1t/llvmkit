@@ -127,16 +127,25 @@ pub fn build<B: ModuleBrand>(m: &Module<'_, B>) -> Result<(), IrError> {
 }
 
 pub fn run_demo<B: ModuleBrand>(m: Module<'_, B>) -> Result<(String, String, String), IrError> {
+    // Everything the drivers below are handed is an **id**: each `run_*_pass`
+    // consumes the module token, so a handle minted here would be a borrow of a
+    // token that is about to move. Ids survive the move; views are re-minted on
+    // the far side against whichever module the run produced.
     let function = m
         .function_by_name_dyn("select_or_add")
-        .expect("demo function is present");
-    let entry = function
+        .expect("demo function is present")
+        .id();
+    let entry = m
+        .view(function)
         .entry_block()
-        .expect("demo function has an entry block");
-    let merge = function
+        .expect("demo function has an entry block")
+        .id();
+    let merge = m
+        .view(function)
         .basic_blocks()
         .find(|bb| bb.name().as_deref() == Some("merge"))
-        .expect("demo function has a merge block");
+        .expect("demo function has a merge block")
+        .id();
 
     // Mutating cleanup: `InstSimplifyPass` and `DcePass` each declare the
     // `PatchBody` rung, so `run_function_pass` downgrades the module to
@@ -154,7 +163,7 @@ pub fn run_demo<B: ModuleBrand>(m: Module<'_, B>) -> Result<(String, String, Str
     analyses.register_function_analysis(DominatorTreeAnalysis);
     let dt = analyses
         .function_manager_mut()
-        .get_result::<DominatorTreeAnalysis, _>(function)?;
+        .get_result::<DominatorTreeAnalysis, _>(module.view(function))?;
 
     let lines = Rc::new(RefCell::new(vec![format!(
         "analysis entry_dominates_merge={}",

@@ -128,9 +128,9 @@ macro_rules! decl_constant_handle {
             #[inline]
             fn name(self) -> Option<String> { self.into_erased().name() }
             #[inline]
-            fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name) where Name: Into<String> { self.into_erased().set_name(module_token, name); }
+            fn set_name<Name>(self, module_token: &'ctx Module<'ctx, B, Unverified>, name: Name) where Name: Into<String> { self.into_erased().set_name(module_token, name); }
             #[inline]
-            fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) { self.into_erased().clear_name(module_token); }
+            fn clear_name(self, module_token: &'ctx Module<'ctx, B, Unverified>) { self.into_erased().clear_name(module_token); }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> HasDebugLoc for $name<'ctx, B> {
             #[inline]
@@ -307,13 +307,13 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> HasName<'ctx, B> for ConstantIntV
     fn name(self) -> Option<String> {
         self.into_erased().name()
     }
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         self.into_erased().set_name(module_token, name);
     }
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<'ctx, B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
 }
@@ -520,13 +520,13 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> HasName<'ctx, B>
     fn name(self) -> Option<String> {
         self.into_erased().name()
     }
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<'ctx, B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         self.into_erased().set_name(module_token, name);
     }
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<'ctx, B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
 }

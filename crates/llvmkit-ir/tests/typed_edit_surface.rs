@@ -9,9 +9,9 @@
 //! ops that do exist.
 
 use llvmkit_ir::{
-    Analyses, BasicBlockLabel, BlockId, Dyn, FnCx, FnReport, FunctionPass, FunctionValue,
-    IRBuilder, IntPredicate, IntValue, IrError, IrResult, Linkage, Module, ModuleBrand, ReshapeCfg,
-    TermEdit, Value, ValueId, run_function_pass,
+    Analyses, BasicBlockLabel, BlockId, Dyn, FnCx, FnReport, FunctionId, FunctionPass, IRBuilder,
+    IntPredicate, IntValue, IrError, IrResult, Linkage, Module, ModuleBrand, ReshapeCfg, TermEdit,
+    Value, ValueId, run_function_pass,
 };
 
 // Fixture return-type aliases. These keep the `build_*` helper signatures under
@@ -20,21 +20,17 @@ use llvmkit_ir::{
 
 /// Return of `build_invoke_caller`/`build_callbr_caller`: the caller function
 /// and the `%new` `Dyn` label a redirect can aim at.
-type CallerFixture<'ctx, B> = (FunctionValue<'ctx, (), B>, BlockId<Dyn, B>);
+type CallerFixture<B> = (FunctionId<(), B>, BlockId<Dyn, B>);
 
 /// Return of `build_switch_fn`: the function plus the `case0` and `new` `Dyn`
 /// labels.
-type SwitchFixture<'ctx, B> = (
-    FunctionValue<'ctx, i32, B>,
-    BlockId<Dyn, B>,
-    BlockId<Dyn, B>,
-);
+type SwitchFixture<B> = (FunctionId<i32, B>, BlockId<Dyn, B>, BlockId<Dyn, B>);
 
 /// Return of `build_switch_bogus_fn`: the function, a non-case (`bogus`) `Dyn`
 /// label, the `new` `Dyn` label (which carries a head-phi), and a valid phi
 /// seed value id for `new`.
-type SwitchBogusFixture<'ctx, B> = (
-    FunctionValue<'ctx, i32, B>,
+type SwitchBogusFixture<B> = (
+    FunctionId<i32, B>,
     BlockId<Dyn, B>,
     BlockId<Dyn, B>,
     ValueId<B>,
@@ -85,8 +81,8 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectInvokeEdge<B> {
 /// unwind label %unwind`, plus an unreferenced `%new` block that a redirect can
 /// aim at. Returns the caller and the `%new` `Dyn` label.
 fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
-) -> IrResult<CallerFixture<'ctx, B>> {
+    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> IrResult<CallerFixture<B>> {
     let callee = m
         .add_typed_function::<(), (), _>("callee", Linkage::External)?
         .as_function();
@@ -119,7 +115,7 @@ fn build_invoke_caller<'ctx, B: ModuleBrand + 'ctx>(
         unwind_lbl,
         "",
     )?;
-    Ok((m.view(caller), new_dyn))
+    Ok((caller, new_dyn))
 }
 
 /// `edit_invoke(..).redirect_normal(new, [])` retargets ONLY the normal edge;
@@ -206,8 +202,8 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectCallBrEdge<B> {
 /// Build `void @caller()` with a `callbr void @callee() to label %cont
 /// [label %ind]`, plus an unreferenced `%new` block a redirect can aim at.
 fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
-) -> IrResult<CallerFixture<'ctx, B>> {
+    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> IrResult<CallerFixture<B>> {
     let callee = m
         .add_typed_function::<(), (), _>("callee", Linkage::External)?
         .as_function();
@@ -234,7 +230,7 @@ fn build_callbr_caller<'ctx, B: ModuleBrand + 'ctx>(
 
     let b = IRBuilder::new_for::<()>(m).position_at_end(entry);
     let _ = b.build_callbr(callee, Vec::<Value<'_, _>>::new(), cont_lbl, [ind_lbl], "")?;
-    Ok((m.view(caller), new_dyn))
+    Ok((caller, new_dyn))
 }
 
 /// `edit_callbr(..).redirect_default(new, [])` retargets the fallthrough edge.
@@ -318,8 +314,8 @@ impl<B: ModuleBrand> FunctionPass<B> for RemoveCondBrArm {
 
 /// Build `i32 @f(i32 %a)` whose entry is `cond_br (%a == 0) ? then : else`.
 fn build_cond_br_fn<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
-) -> IrResult<FunctionValue<'ctx, i32, B>> {
+    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> IrResult<FunctionId<i32, B>> {
     let i32_ty = m.i32_type();
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
@@ -340,7 +336,7 @@ fn build_cond_br_fn<'ctx, B: ModuleBrand + 'ctx>(
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     b.build_cond_br(c, then_lbl, else_lbl)?;
-    Ok(m.view(f))
+    Ok(f)
 }
 
 /// `edit_cond_br(..).remove_then()` collapses the `cond_br` to `br label
@@ -432,8 +428,8 @@ impl<B: ModuleBrand> FunctionPass<B> for SwitchCaseOp<B> {
 /// case0, 1 -> case1 ]`, plus an unreferenced `%new` block. Returns the
 /// function and the `case0`/`new` `Dyn` labels.
 fn build_switch_fn<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
-) -> IrResult<SwitchFixture<'ctx, B>> {
+    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> IrResult<SwitchFixture<B>> {
     let i32_ty = m.i32_type();
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
@@ -462,7 +458,7 @@ fn build_switch_fn<'ctx, B: ModuleBrand + 'ctx>(
     let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     let sw = sw.add_case(i32_ty.const_int(0_u32), case0_lbl)?;
     sw.add_case(i32_ty.const_int(1_u32), case1_lbl)?.finish();
-    Ok((m.view(f), case0_dyn, new_dyn))
+    Ok((f, case0_dyn, new_dyn))
 }
 
 /// `edit_switch(..).redirect_successor(case0, new, [])` retargets the case-0
@@ -574,8 +570,8 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchSuccessor<B> {
 /// `redirect_successor(bogus, new, [ev])` would pass phi validation and corrupt
 /// `new`'s phi; `%ev` (defined in `entry`) is a valid seed for it.
 fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
-) -> IrResult<SwitchBogusFixture<'ctx, B>> {
+    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> IrResult<SwitchBogusFixture<B>> {
     let i32_ty = m.i32_type();
     let f = m
         .add_typed_function::<i32, (i32,), _>("f", Linkage::External)?
@@ -625,7 +621,7 @@ fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
     let np: IntValue<'_, i32, _> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
-    Ok((m.view(f), bogus_dyn, new_dyn, m.view(ev).into_erased().id()))
+    Ok((f, bogus_dyn, new_dyn, m.view(ev).into_erased().id()))
 }
 
 /// `redirect_successor` rejects an `old_to` that is not a case successor of the
@@ -728,8 +724,7 @@ fn edit_terminator_ret_is_uneditable() -> Result<(), IrError> {
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         // The pass's internal assertion is the test; a clean run means it held.
-        let f_view = verified.view(f);
-        let _ = run_function_pass(AssertUneditable, verified, f_view, &mut analyses)?;
+        let _ = run_function_pass(AssertUneditable, verified, f, &mut analyses)?;
         Ok(())
     })
 }

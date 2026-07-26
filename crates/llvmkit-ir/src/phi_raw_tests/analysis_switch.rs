@@ -97,9 +97,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchEdge<B> {
 /// `other` is the case-1 target — both feed the edge-op guard negatives below.
 #[allow(clippy::type_complexity)]
 fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, crate::Unverified>,
+    m: &'ctx Module<'ctx, B, crate::Unverified>,
 ) -> IrResult<(
-    crate::FunctionValue<'ctx, Dyn, B>,
+    crate::FunctionId<Dyn, B>,
     BlockId<Dyn, B>,
     BlockId<Dyn, B>,
     BlockId<Dyn, B>,
@@ -144,7 +144,7 @@ fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
         .add_incoming(d, dflt_lbl)?;
     b.build_ret(p.as_int_value())?;
 
-    Ok((m.view(f), dflt_lbl, other_lbl, merge_lbl))
+    Ok((f, dflt_lbl, other_lbl, merge_lbl))
 }
 
 /// `remove_successor` drops the `entry → merge` switch case AND mechanically
@@ -281,12 +281,8 @@ fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
 /// `shared` through the default — `shared`'s phi must keep one `entry` incoming.
 #[allow(clippy::type_complexity)]
 fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, crate::Unverified>,
-) -> IrResult<(
-    crate::FunctionValue<'ctx, Dyn, B>,
-    BlockId<Dyn, B>,
-    BlockId<Dyn, B>,
-)> {
+    m: &'ctx Module<'ctx, B, crate::Unverified>,
+) -> IrResult<(crate::FunctionId<Dyn, B>, BlockId<Dyn, B>, BlockId<Dyn, B>)> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -328,7 +324,7 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
-    Ok((m.view(f), shared_lbl, new_lbl))
+    Ok((f, shared_lbl, new_lbl))
 }
 
 /// SURVIVING-PARALLEL-EDGE (switch redirect): redirecting the case-0 edge of a

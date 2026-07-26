@@ -11,7 +11,7 @@
 use llvmkit_ir::{
     Analyses, BlockId, DominatorTree, DominatorTreeAnalysis, Dyn, FnCx, FnReport, FunctionPass,
     FunctionView, IRBuilder, InsertPoint, IntPredicate, IntValue, IntValueId, IrError, IrResult,
-    Linkage, Module, ModuleBrand, ReshapeCfg, Type, ValueId, run_function_pass,
+    Linkage, Module, ModuleBrand, ReshapeCfg, ValueId, run_function_pass,
 };
 
 /// A `ReshapeCfg` pass that requires the dominator tree and splits the entry
@@ -70,11 +70,12 @@ fn reshape_pass_preserves_and_repairs_dominator_tree() -> Result<(), IrError> {
         // Run the reshape pass. It prefetches the dominator tree (while `next` is
         // reachable), splits the entry, and reports the ReshapeCfg floor + its
         // edit log.
-        let f_view = verified.view(f);
-        let _unverified = run_function_pass(SplitEntryPass, verified, f_view, &mut analyses)?;
+        let unverified = run_function_pass(SplitEntryPass, verified, f, &mut analyses)?;
 
         // The dominator tree survived the reshape — witnessed-preserved, not
-        // evicted by the `none()` floor.
+        // evicted by the `none()` floor. The view is re-minted against the
+        // module the run produced; the pre-run token has been moved away.
+        let f_view = unverified.view(f);
         let cached: Option<&DominatorTree> = analyses
             .function_manager()
             .get_cached_result::<DominatorTreeAnalysis, _>(FunctionView::from(f_view));
@@ -184,8 +185,7 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         let pass = SplitAtAdd { ip: Some(ip) };
-        let f_view = verified.view(f);
-        let out = run_function_pass(pass, verified, f_view, &mut analyses)?;
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
 
         // THE assertion: the output must re-verify. Without the phi fix the
         // verifier fails: "phi incoming block %entry is not a predecessor".
@@ -206,14 +206,16 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
 /// value's dominance over its edge through `analysis_repaired` before creating
 /// the phi. The incomings/labels are stashed at build time (arena ids are stable
 /// across `verify()`), mirroring how `SplitAtAdd` stashes its `InsertPoint`.
-struct InsertMergePhi<'s, B: ModuleBrand + 's> {
+struct InsertMergePhi<B: ModuleBrand> {
     merge_name: &'static str,
-    ty: Type<'s, B>,
     incomings: Vec<(ValueId<B>, BlockId<Dyn, B>)>,
 }
 
-// Stashes a `'s`-bound `Type`; see `SplitAtAdd` for why `Self: 'm` makes that work.
-impl<'s, B: ModuleBrand> FunctionPass<B> for InsertMergePhi<'s, B> {
+// The phi's `Type` is re-derived from an incoming *inside* `run`, not stashed in
+// a field: a `Type` borrows the module token, and the driver moves that token
+// (every typestate transition is a move), so a stashed one would outlive its
+// storage. Ids survive the move; handles are re-minted on the far side.
+impl<B: ModuleBrand> FunctionPass<B> for InsertMergePhi<B> {
     type Access = ReshapeCfg;
     type Requires = (DominatorTreeAnalysis,);
     const NAME: &'static str = "insert-merge-phi";
@@ -232,7 +234,9 @@ impl<'s, B: ModuleBrand> FunctionPass<B> for InsertMergePhi<'s, B> {
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.merge_name))
             .expect("merge block is present");
-        reshape.insert_phi_dyn(merge.id(), self.ty, &self.incomings)?;
+        let (first, _) = self.incomings[0];
+        let ty = reshape.module().view(first).ty();
+        reshape.insert_phi_dyn(merge.id(), ty, &self.incomings)?;
         Ok(reshape.done())
     }
 }
@@ -244,9 +248,9 @@ impl<'s, B: ModuleBrand> FunctionPass<B> for InsertMergePhi<'s, B> {
 /// phi incomings.
 #[allow(clippy::type_complexity)]
 fn build_diamond<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
+    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
 ) -> IrResult<(
-    llvmkit_ir::FunctionValue<'ctx, Dyn, B>,
+    llvmkit_ir::FunctionId<Dyn, B>,
     ValueId<B>,
     BlockId<Dyn, B>,
     ValueId<B>,
@@ -288,7 +292,7 @@ fn build_diamond<'ctx, B: ModuleBrand + 'ctx>(
     b.build_ret(i32_ty.const_int(0_u32))?;
 
     Ok((
-        m.view(f),
+        f,
         m.view(lv).into_erased().id(),
         left_label,
         m.view(rv).into_erased().id(),
@@ -303,14 +307,12 @@ fn build_diamond<'ctx, B: ModuleBrand + 'ctx>(
 #[test]
 fn insert_phi_into_merge_block_verifies() -> Result<(), IrError> {
     Module::with_new("insert-phi-merge", |m| {
-        let i32_ty = m.i32_type();
         let (f, lv, left_label, rv, right_label) = build_diamond(&m)?;
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         let pass = InsertMergePhi {
             merge_name: "merge",
-            ty: i32_ty.as_type(),
             incomings: vec![(lv, left_label), (rv, right_label)],
         };
         let out = run_function_pass(pass, verified, f, &mut analyses)?;
@@ -439,7 +441,6 @@ fn insert_phi_typed_rejects_empty_incomings() -> Result<(), IrError> {
 #[test]
 fn insert_phi_rejects_non_dominating_incoming() -> Result<(), IrError> {
     Module::with_new("insert-phi-nondom", |m| {
-        let i32_ty = m.i32_type();
         let (f, lv, left_label, _rv, right_label) = build_diamond(&m)?;
 
         let verified = m.verify()?;
@@ -448,7 +449,6 @@ fn insert_phi_rejects_non_dominating_incoming() -> Result<(), IrError> {
         // value that does not dominate `right` -> the dominance witness fails.
         let pass = InsertMergePhi {
             merge_name: "merge",
-            ty: i32_ty.as_type(),
             incomings: vec![(lv, left_label), (lv, right_label)],
         };
         let err = run_function_pass(pass, verified, f, &mut analyses)
@@ -470,7 +470,6 @@ fn insert_phi_rejects_non_dominating_incoming() -> Result<(), IrError> {
 #[test]
 fn insert_phi_rejects_incomplete_incomings() -> Result<(), IrError> {
     Module::with_new("insert-phi-incomplete", |m| {
-        let i32_ty = m.i32_type();
         let (f, lv, left_label, _rv, _right_label) = build_diamond(&m)?;
 
         let verified = m.verify()?;
@@ -478,7 +477,6 @@ fn insert_phi_rejects_incomplete_incomings() -> Result<(), IrError> {
         // Only one incoming for merge's two predecessors {left, right}.
         let pass = InsertMergePhi {
             merge_name: "merge",
-            ty: i32_ty.as_type(),
             incomings: vec![(lv, left_label)],
         };
         let err = run_function_pass(pass, verified, f, &mut analyses)
@@ -561,9 +559,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchCase<B> {
 /// and adds `[ %ev, %entry ]` to `new`'s phi.
 #[allow(clippy::type_complexity)]
 fn build_switch_redirect<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
+    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
 ) -> IrResult<(
-    llvmkit_ir::FunctionValue<'ctx, Dyn, B>,
+    llvmkit_ir::FunctionId<Dyn, B>,
     BlockId<Dyn, B>,
     BlockId<Dyn, B>,
     ValueId<B>,
@@ -610,7 +608,7 @@ fn build_switch_redirect<'ctx, B: ModuleBrand + 'ctx>(
     let np: IntValue<'_, i32, _> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
-    Ok((m.view(f), old_dyn, new_dyn, m.view(ev).into_erased().id()))
+    Ok((f, old_dyn, new_dyn, m.view(ev).into_erased().id()))
 }
 
 /// `redirect_successor` retargets the `entry → old` switch case onto `new` AND
@@ -691,11 +689,12 @@ fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
     Module::with_new("redirect-edge-type", |m| {
         let i64_ty = m.i64_type();
         let (f, old_dyn, new_dyn, _ev) = build_switch_redirect(&m)?;
+        // `new`'s phi is i32; an i64 constant is the wrong type for it. Taken as
+        // an **id** before the move: the constant handle borrows the token.
+        let wrong: ValueId<_> = i64_ty.const_int(0_u32).into_erased().id();
 
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
-        // `new`'s phi is i32; an i64 constant is the wrong type for it.
-        let wrong: ValueId<_> = i64_ty.const_int(0_u32).into_erased().id();
         let pass = RedirectSwitchCase {
             from_name: "entry",
             old_to: old_dyn,
@@ -888,8 +887,7 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
             new_to: new_dyn,
             phi_values: vec![verified.view(ev).into_erased().id()],
         };
-        let f_view = verified.view(f);
-        let out = run_function_pass(pass, verified, f_view, &mut analyses)?;
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
         let reverified = out.verify().expect("redirect_then output must re-verify");
         let printed = format!("{reverified}");
         assert!(
@@ -965,8 +963,7 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
         let verified = m.verify()?;
         let mut analyses = Analyses::new();
         let pass = RemoveCondBrElse { from_name: "entry" };
-        let f_view = verified.view(f);
-        let out = run_function_pass(pass, verified, f_view, &mut analyses)?;
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
 
         // The condition is no longer an operand of the (now unconditional)
         // branch — the collapse deregistered it. Nothing in `verify()` checks
@@ -1034,8 +1031,7 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
             new_to: new_dyn,
             phi_values: vec![verified.view(ev).into_erased().id()],
         };
-        let f_view = verified.view(f);
-        let out = run_function_pass(pass, verified, f_view, &mut analyses)?;
+        let out = run_function_pass(pass, verified, f, &mut analyses)?;
         let reverified = out.verify().expect("redirect output must re-verify");
         let printed = format!("{reverified}");
         assert!(
@@ -1062,10 +1058,10 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
 /// guards below. Returns the function and the `Dyn` labels for `old`/`new`.
 #[allow(clippy::type_complexity)]
 fn build_cond_br_pair<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
+    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
     then_is_new: bool,
 ) -> IrResult<(
-    llvmkit_ir::FunctionValue<'ctx, Dyn, B>,
+    llvmkit_ir::FunctionId<Dyn, B>,
     BlockId<Dyn, B>,
     BlockId<Dyn, B>,
 )> {
@@ -1095,7 +1091,7 @@ fn build_cond_br_pair<'ctx, B: ModuleBrand + 'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
-    Ok((m.view(f), old_dyn, new_dyn))
+    Ok((f, old_dyn, new_dyn))
 }
 
 /// SEMANTIC CHANGE (former error, now valid): removing the then-arm of a
@@ -1211,8 +1207,8 @@ fn redirect_edge_rejects_cond_br_already_reaching_new() -> Result<(), IrError> {
 /// redirect test — a redirect onto it seeds an empty `phi_values`).
 #[allow(clippy::type_complexity)]
 fn build_cond_br_both_arms_phi<'ctx, B: ModuleBrand + 'ctx>(
-    m: &Module<'ctx, B, llvmkit_ir::Unverified>,
-) -> IrResult<(llvmkit_ir::FunctionValue<'ctx, Dyn, B>, BlockId<Dyn, B>)> {
+    m: &'ctx Module<'ctx, B, llvmkit_ir::Unverified>,
+) -> IrResult<(llvmkit_ir::FunctionId<Dyn, B>, BlockId<Dyn, B>)> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -1265,7 +1261,7 @@ fn build_cond_br_both_arms_phi<'ctx, B: ModuleBrand + 'ctx>(
     let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
-    Ok((m.view(f), new_dyn))
+    Ok((f, new_dyn))
 }
 
 /// SURVIVING-PARALLEL-EDGE (remove): `remove_then` on a `cond_br %c, shared,

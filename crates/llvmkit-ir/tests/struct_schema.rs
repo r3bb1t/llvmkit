@@ -67,7 +67,7 @@ impl StructSchema for Point {
     const NAME: &'static str = "Point";
 
     fn field_types<'ctx, B>(
-        module: &Module<'ctx, B, Unverified>,
+        module: &'ctx Module<'ctx, B, Unverified>,
     ) -> Result<Vec<Type<'ctx, B>>, IrError>
     where
         B: ModuleBrand + 'ctx,
@@ -107,7 +107,7 @@ impl StructSchema for BadPoint {
     const NAME: &'static str = "Point";
 
     fn field_types<'ctx, B>(
-        module: &Module<'ctx, B, Unverified>,
+        module: &'ctx Module<'ctx, B, Unverified>,
     ) -> Result<Vec<Type<'ctx, B>>, IrError>
     where
         B: ModuleBrand + 'ctx,
@@ -144,7 +144,7 @@ impl StructSchema for RecursiveNode {
     const NAME: &'static str = "RecursiveNode";
 
     fn field_types<'ctx, B>(
-        module: &Module<'ctx, B, Unverified>,
+        module: &'ctx Module<'ctx, B, Unverified>,
     ) -> Result<Vec<Type<'ctx, B>>, IrError>
     where
         B: ModuleBrand + 'ctx,
@@ -179,7 +179,7 @@ impl StructSchema for EmptyName {
     const NAME: &'static str = "";
 
     fn field_types<'ctx, B>(
-        module: &Module<'ctx, B, Unverified>,
+        module: &'ctx Module<'ctx, B, Unverified>,
     ) -> Result<Vec<Type<'ctx, B>>, IrError>
     where
         B: ModuleBrand + 'ctx,
@@ -252,7 +252,7 @@ impl StructSchema for Rect {
     const NAME: &'static str = "Rect";
 
     fn field_types<'ctx, B>(
-        module: &Module<'ctx, B, Unverified>,
+        module: &'ctx Module<'ctx, B, Unverified>,
     ) -> Result<Vec<Type<'ctx, B>>, IrError>
     where
         B: ModuleBrand + 'ctx,
@@ -274,7 +274,7 @@ impl StructSchema for Rect {
 }
 
 fn poison_point<'ctx, B: ModuleBrand + 'ctx>(
-    module: &Module<'ctx, B>,
+    module: &'ctx Module<'ctx, B>,
 ) -> Result<Constant<'ctx, B>, IrError> {
     Ok(<Point as StructSchema>::ir_type(module)?
         .as_type()

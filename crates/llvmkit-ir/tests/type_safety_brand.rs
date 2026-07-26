@@ -14,15 +14,15 @@ fn exercise_tables<'ctx>(module: Module<'ctx>) -> IrResult<()> {
     let fn_ty = module.fn_type(i64_ty.as_type(), [i64_ty.as_type()], false);
     let function = module.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = module.view(function).append_basic_block(&module, "entry");
-    let parameter: IntValue<'ctx, i64, _> = module.view(function).param(0)?.try_into()?;
+    let parameter: IntValue<'_, i64, _> = module.view(function).param(0)?.try_into()?;
 
-    let mut values = HashMap::<&str, Value<'ctx, _>>::new();
+    let mut values = HashMap::<&str, Value<'_, _>>::new();
     values.insert("parameter", parameter.into_erased());
-    let mut integers = HashMap::<&str, IntValue<'ctx, i64, _>>::new();
+    let mut integers = HashMap::<&str, IntValue<'_, i64, _>>::new();
     integers.insert("parameter", parameter);
 
     let lhs = *integers.get("parameter").expect("int value");
-    let rhs: IntValue<'ctx, i64, _> = (*values.get("parameter").expect("value")).try_into()?;
+    let rhs: IntValue<'_, i64, _> = (*values.get("parameter").expect("value")).try_into()?;
     let builder = IRBuilder::new_for::<Dyn>(&module).position_at_end(entry);
     let sum = builder.build_int_add(lhs, rhs, "sum")?;
     builder.build_ret(sum)?;
