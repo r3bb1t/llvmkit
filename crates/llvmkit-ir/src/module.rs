@@ -414,6 +414,33 @@ macro_rules! module_new {
 /// The reference carries the invariant module brand `B`, but it points at
 /// crate-private `ModuleCore` storage rather than a `Module<..., State>` token,
 /// so handles do not borrow the verification state.
+///
+/// # Why this is not [`ModuleView`]
+///
+/// The two are **representationally identical** — both are
+/// `(&'ctx ModuleCore, Invariant<B>)` — and cycle E considered merging them.
+/// They are kept apart because they differ in *capability*, which in this crate
+/// is what a type is for:
+///
+/// - `ModuleRef` is the **storage pointer**. It is the `module` field embedded
+///   in every borrowing handle, and its entire public surface is
+///   [`id`](Self::id). It says "I can find the arena", nothing more.
+/// - [`ModuleView`] is the **read capability**. It is what a user receives from
+///   a handle's `module()` accessor, and it carries the full read surface plus
+///   all 40-odd type constructors.
+///
+/// A function that takes a `ModuleRef` is therefore stating that it only needs
+/// to resolve slots — not that it may read the module or intern new types. That
+/// is the same capability-by-type pattern the crate uses for
+/// [`Instruction`](crate::Instruction) versus
+/// [`InstructionView`](crate::InstructionView) (one value, two capabilities) and
+/// for [`Module<B, Verified>`](Module) versus `Module<B, Unverified>` (one
+/// storage, two capabilities). Identical layout with a different method set is
+/// how Rust encodes a capability grade; it is not accidental duplication.
+///
+/// The "one concept, one representation" principle in the README is about not
+/// implementing a *concept* twice, which is not what these do: there is exactly
+/// one module-storage concept here, exposed at two capability grades.
 pub struct ModuleRef<'ctx, B: ModuleBrand> {
     core: &'ctx ModuleCore,
     _brand: Invariant<B>,
@@ -506,7 +533,14 @@ impl<B: ModuleBrand> core::fmt::Debug for ModuleRef<'_, B> {
 /// crate-private storage or the linear verification-state token. Beyond reads
 /// it carries the full type-constructor surface (see the `Type constructors`
 /// section below for why that is not a loosening), which is what the
-/// user-implementable schema traits are declared against.
+/// user-implementable schema traits ([`IrField::ir_type`](crate::IrField),
+/// [`StructSchema`], the `FunctionReturn` /
+/// `FunctionParam` family) are declared against.
+///
+/// This is the **read capability** grade over a module's storage;
+/// [`ModuleRef`] is the bare **storage pointer** grade. The two have the same
+/// layout on purpose — see [`ModuleRef`]'s "Why this is not `ModuleView`"
+/// section for why they stay distinct types.
 #[derive(Clone, Copy)]
 pub struct ModuleView<'ctx, B: ModuleBrand> {
     core: &'ctx ModuleCore,

@@ -26,6 +26,12 @@ fn typestate_compile_fail() {
     // public surface; this lock pins its absence (E0599).
     t.compile_fail("tests/compile_fail/add_function_removed.rs");
     t.compile_fail("tests/compile_fail/position_at_end_terminated_block.rs");
+    // Cycle E: the *linearity* half of "one terminator per block", which the
+    // fixture above does not cover. `position_at_end_terminated_block` proves a
+    // `Terminated` BLOCK cannot be re-positioned into; this proves the BUILDER
+    // is gone, because every terminator-emitting build takes `self` by value.
+    // Primary error is rustc's stable `E0382`.
+    t.compile_fail("tests/compile_fail/builder_cannot_terminate_twice.rs");
     t.compile_fail("tests/compile_fail/retained_unterminated_block_cannot_reposition.rs");
     t.compile_fail("tests/compile_fail/terminated_block_cannot_start_cursor.rs");
     // Slice 7 "the break": the raw typed-phi builders and the open-phi
@@ -185,4 +191,11 @@ fn typestate_compile_fail() {
     // the brand type used there really is `!Send`, so asserting that
     // `Module<NotSendBrand, S>: Send` is not vacuous.
     t.compile_fail("tests/compile_fail/not_send_brand_is_really_not_send.rs");
+    // Cycle E: a module is an owned value that can be dropped, so a borrowing
+    // handle minted from it cannot outlive it (`E0597`). The compile-time law
+    // that makes the storable id family necessary rather than merely
+    // convenient — the `.id()` form of the same program compiles, which is why
+    // a stale *id* is a run-time rejection (`module_ownership.rs`) while a
+    // stale *view* cannot be constructed at all.
+    t.compile_fail("tests/compile_fail/view_cannot_outlive_its_module.rs");
 }
