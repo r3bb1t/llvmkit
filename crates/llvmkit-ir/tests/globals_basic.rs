@@ -934,8 +934,11 @@ fn module_named_global_lookup_round_trip() {
     let i32_ty = m.i32_type();
     let zero = i32_ty.const_int(0i32);
     let g = m.add_global("foo", zero).expect("add");
+    // The lookup returns the *same id* the declaration handed back — that is
+    // the whole point of the `add_* -> Id` / `get_* -> Option<Id>` symmetry.
     let looked_up = m.get_global("foo").expect("found");
-    assert_eq!(m.view(g), looked_up);
+    assert_eq!(g, looked_up);
+    assert_eq!(m.view(g), m.view(looked_up));
     assert!(m.get_global("missing").is_none());
 }
 

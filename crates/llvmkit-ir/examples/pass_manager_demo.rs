@@ -133,8 +133,7 @@ pub fn run_demo<B: ModuleBrand>(m: Module<B>) -> Result<(String, String, String)
     // the far side against whichever module the run produced.
     let function = m
         .function_by_name_dyn("select_or_add")
-        .expect("demo function is present")
-        .id();
+        .expect("demo function is present");
     let entry = m
         .view(function)
         .entry_block()

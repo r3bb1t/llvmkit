@@ -93,7 +93,10 @@ use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, Type
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{Value, ValueData, ValueKindData, ValueSlot, ValueUse};
-use super::value_id::{FunctionId, GlobalId, TypedFunctionId, TypedVarArgsFunctionId, ViewIn};
+use super::value_id::{
+    FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, TypedFunctionId, TypedVarArgsFunctionId,
+    ViewIn,
+};
 use super::vec_len::{Len, LenDyn};
 
 #[cfg(test)]
@@ -2782,26 +2785,26 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     }
 
     /// Look up a function by name with this module token's brand,
-    /// widened to [`Dyn`].
-    pub fn function_by_name_dyn(&'ctx self, name: &str) -> Option<FunctionValue<'ctx, Dyn, B>> {
-        self.core()
-            .function_by_name
-            .borrow()
-            .get(name)
-            .copied()
-            .map(|id| {
-                FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
-                    id,
-                    ModuleRef::<B>::new(self.core()),
-                )
-            })
+    /// widened to [`Dyn`], returning its storable [`FunctionId`].
+    ///
+    /// Symmetric with [`add_function_dyn`](Self::add_function_dyn): a lookup
+    /// hands back the same currency a declaration does. Reach the borrowing
+    /// [`FunctionValue`] with [`view`](Self::view) when you need one.
+    ///
+    /// The id borrows nothing, so this takes `&self` rather than `&'ctx self` —
+    /// a lookup can be interleaved with other borrows of the module.
+    pub fn function_by_name_dyn(&self, name: &str) -> Option<FunctionId<Dyn, B>> {
+        let slot = self.core().function_by_name.borrow().get(name).copied()?;
+        Some(FunctionId::from_raw(self.core().id, slot))
     }
 
-    /// Look up a function by name and narrow to a specific return marker.
-    pub fn function_by_name<R>(
-        &'ctx self,
-        name: &str,
-    ) -> IrResult<Option<FunctionValue<'ctx, R, B>>>
+    /// Look up a function by name and narrow to a specific return marker,
+    /// returning its storable [`FunctionId`].
+    ///
+    /// Symmetric with the `add_*` family. The marker check is unchanged: a
+    /// signature that does not match `R` is
+    /// [`IrError::ReturnTypeMismatch`], not a silently-widened id.
+    pub fn function_by_name<R>(&'ctx self, name: &str) -> IrResult<Option<FunctionId<R, B>>>
     where
         R: crate::marker::ReturnMarker,
     {
@@ -2830,11 +2833,9 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
                 got,
             });
         }
-        Ok(Some(FunctionValue::<'ctx, R, B>::from_parts_unchecked(
-            id,
-            ModuleRef::<B>::new(self.core()),
-        )))
+        Ok(Some(FunctionId::<R, B>::from_raw(self.core().id, id)))
     }
+
     /// Verify the module's structural invariants without consuming it.
     pub fn verify_borrowed(&self) -> IrResult<()> {
         // Deliberately not `self.as_view()`: that is a `&'ctx self` method (it
@@ -3728,14 +3729,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         crate::global_variable::GlobalBuilder::new(self.module_ref(), name, value_type)
     }
 
-    pub fn get_global(&'ctx self, name: &str) -> Option<GlobalVariable<'ctx, B>> {
-        let id = self.core().global_by_name.borrow().get(name).copied()?;
-        let value_data = self.core().ctx.value_data(id);
-        Some(GlobalVariable::from_parts_unchecked(
-            id,
-            self.module_ref(),
-            value_data.ty,
-        ))
+    /// Look up a global variable by name, returning its storable
+    /// [`GlobalId`].
+    ///
+    /// Symmetric with [`add_global`](Self::add_global) and the rest of the
+    /// `add_global_*` family: a lookup hands back the same currency a
+    /// declaration does. Reach the borrowing [`GlobalVariable`] with
+    /// [`view`](Self::view).
+    ///
+    /// The id borrows nothing, so this takes `&self`.
+    pub fn get_global(&self, name: &str) -> Option<GlobalId<B>> {
+        let slot = self.core().global_by_name.borrow().get(name).copied()?;
+        Some(GlobalId::from_raw(self.core().id, slot))
     }
 
     pub fn alias_builder<C, Name>(
@@ -3751,14 +3756,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         GlobalAliasBuilder::new(self.module_ref(), name, value_type, aliasee)
     }
 
-    pub fn get_alias(&'ctx self, name: &str) -> Option<GlobalAlias<'ctx, B>> {
-        let id = self.core().alias_by_name.borrow().get(name).copied()?;
-        let value_data = self.core().ctx.value_data(id);
-        Some(GlobalAlias::from_parts_unchecked(
-            id,
-            self.module_ref(),
-            value_data.ty,
-        ))
+    /// Look up a global alias by name, returning its storable
+    /// [`GlobalAliasId`]. Symmetric with
+    /// [`alias_builder`](Self::alias_builder)'s `build()`.
+    pub fn get_alias(&self, name: &str) -> Option<GlobalAliasId<B>> {
+        let slot = self.core().alias_by_name.borrow().get(name).copied()?;
+        Some(GlobalAliasId::from_raw(self.core().id, slot))
     }
 
     pub fn alias_empty(&'ctx self) -> bool {
@@ -3778,14 +3781,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         GlobalIFuncBuilder::new(self.module_ref(), name, value_type, resolver)
     }
 
-    pub fn get_ifunc(&'ctx self, name: &str) -> Option<GlobalIFunc<'ctx, B>> {
-        let id = self.core().ifunc_by_name.borrow().get(name).copied()?;
-        let value_data = self.core().ctx.value_data(id);
-        Some(GlobalIFunc::from_parts_unchecked(
-            id,
-            self.module_ref(),
-            value_data.ty,
-        ))
+    /// Look up an ifunc by name, returning its storable [`GlobalIFuncId`].
+    /// Symmetric with [`ifunc_builder`](Self::ifunc_builder)'s `build()`.
+    pub fn get_ifunc(&self, name: &str) -> Option<GlobalIFuncId<B>> {
+        let slot = self.core().ifunc_by_name.borrow().get(name).copied()?;
+        Some(GlobalIFuncId::from_raw(self.core().id, slot))
     }
 
     pub fn ifunc_empty(&'ctx self) -> bool {
@@ -3847,6 +3847,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().get_or_insert_comdat::<B, _>(name)
     }
 
+    /// Look up a comdat by name.
+    ///
+    /// Deliberately **not** part of the `get_* -> Option<Id>` symmetry the rest
+    /// of the lookups follow. A comdat is not a `Value`: it lives in its own
+    /// table, and [`ComdatId`] is a bare `u32` index carrying neither a
+    /// [`ModuleId`] tag nor a brand, so it is not a member of the llvmkit 2.0 id
+    /// family and [`view`](Self::view) cannot resolve it. Returning it here
+    /// would hand back something strictly *weaker* than the handle — untagged,
+    /// unbranded, and unresolvable — so the handle stays.
     pub fn get_comdat(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
         self.core().get_comdat::<B>(name)
     }

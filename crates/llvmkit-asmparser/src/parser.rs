@@ -328,7 +328,10 @@ fn record_parser_context<'ctx, B: ModuleBrand + 'ctx>(
 ) -> ParseResult<()> {
     let lines = source_lines(src);
     for function_view in module.as_view().functions() {
-        let Some(function) = module.function_by_name_dyn(function_view.name()) else {
+        let Some(function) = module
+            .function_by_name_dyn(function_view.name())
+            .map(|id| module.view(id))
+        else {
             continue;
         };
         let Some((start, end)) = function_range(&lines, Some(function.name())) else {

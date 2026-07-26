@@ -1040,7 +1040,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let deferred = std::mem::take(&mut self.deferred_block_addresses);
         for item in deferred {
             let function = match &item.function {
-                NameOrId::Name(name) => self.module.function_by_name_dyn(name),
+                NameOrId::Name(name) => self
+                    .module
+                    .function_by_name_dyn(name)
+                    .map(|id| self.module.view(id)),
                 NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
                     GlobalRef::Function(f) => Some(*f),
                     _ => None,
@@ -1781,13 +1784,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected("function name in uselistorder_bb"))?;
                 self.bump()?;
-                self.module.function_by_name_dyn(&name).ok_or_else(|| {
+                let fn_id = self.module.function_by_name_dyn(&name).ok_or_else(|| {
                     ParseError::UndefinedSymbol {
                         kind: crate::parse_error::SymbolKind::Global,
                         id: crate::parse_error::SymbolId::Named(name),
                         loc: DiagLoc::span(loc),
                     }
-                })?
+                })?;
+                self.module.view(fn_id)
             }
             Token::GlobalId(id) => {
                 let id = *id;
@@ -3987,14 +3991,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(self.loc()),
             });
         }
-        if let Some(gv) = self.module.get_global(&name) {
-            Ok(gv.into_erased())
-        } else if let Some(fv) = self.module.function_by_name_dyn(&name) {
-            Ok(fv.into_erased())
-        } else if let Some(a) = self.module.get_alias(&name) {
-            Ok(a.into_erased())
-        } else if let Some(i) = self.module.get_ifunc(&name) {
-            Ok(i.into_erased())
+        if let Some(id) = self.module.get_global(&name) {
+            Ok(self.module.view(id).into_erased())
+        } else if let Some(id) = self.module.function_by_name_dyn(&name) {
+            Ok(self.module.view(id).into_erased())
+        } else if let Some(id) = self.module.get_alias(&name) {
+            Ok(self.module.view(id).into_erased())
+        } else if let Some(id) = self.module.get_ifunc(&name) {
+            Ok(self.module.view(id).into_erased())
         } else {
             Err(ParseError::UndefinedSymbol {
                 kind: crate::parse_error::SymbolKind::Global,
@@ -4034,14 +4038,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(self.loc()),
             });
         }
-        if let Some(g) = self.module.get_global(&name) {
-            Ok(g.as_global_constant_ptr())
-        } else if let Some(f) = self.module.function_by_name_dyn(&name) {
-            Ok(f.as_global_constant_ptr())
-        } else if let Some(a) = self.module.get_alias(&name) {
-            Ok(a.as_global_constant_ptr())
-        } else if let Some(i) = self.module.get_ifunc(&name) {
-            Ok(i.as_global_constant_ptr())
+        if let Some(id) = self.module.get_global(&name) {
+            Ok(self.module.view(id).as_global_constant_ptr())
+        } else if let Some(id) = self.module.function_by_name_dyn(&name) {
+            Ok(self.module.view(id).as_global_constant_ptr())
+        } else if let Some(id) = self.module.get_alias(&name) {
+            Ok(self.module.view(id).as_global_constant_ptr())
+        } else if let Some(id) = self.module.get_ifunc(&name) {
+            Ok(self.module.view(id).as_global_constant_ptr())
         } else {
             Err(ParseError::UndefinedSymbol {
                 kind: crate::parse_error::SymbolKind::Global,
@@ -4072,14 +4076,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
     fn resolve_global_name_as_ref(&self, name: String) -> ParseResult<GlobalRef<'ctx, B>> {
-        if let Some(gv) = self.module.get_global(&name) {
-            Ok(GlobalRef::Variable(gv))
-        } else if let Some(fv) = self.module.function_by_name_dyn(&name) {
-            Ok(GlobalRef::Function(fv))
-        } else if let Some(a) = self.module.get_alias(&name) {
-            Ok(GlobalRef::Alias(a))
-        } else if let Some(i) = self.module.get_ifunc(&name) {
-            Ok(GlobalRef::IFunc(i))
+        if let Some(id) = self.module.get_global(&name) {
+            Ok(GlobalRef::Variable(self.module.view(id)))
+        } else if let Some(id) = self.module.function_by_name_dyn(&name) {
+            Ok(GlobalRef::Function(self.module.view(id)))
+        } else if let Some(id) = self.module.get_alias(&name) {
+            Ok(GlobalRef::Alias(self.module.view(id)))
+        } else if let Some(id) = self.module.get_ifunc(&name) {
+            Ok(GlobalRef::IFunc(self.module.view(id)))
         } else {
             Err(ParseError::UndefinedSymbol {
                 kind: crate::parse_error::SymbolKind::Global,
@@ -4128,8 +4132,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected(expected))?;
                 self.bump()?;
-                if let Some(function) = self.module.function_by_name_dyn(&name) {
-                    Ok(ParsedBlockAddressFunction::Resolved(function))
+                if let Some(id) = self.module.function_by_name_dyn(&name) {
+                    Ok(ParsedBlockAddressFunction::Resolved(self.module.view(id)))
                 } else if self.module.get_global(&name).is_some()
                     || self.module.get_alias(&name).is_some()
                     || self.module.get_ifunc(&name).is_some()
@@ -5325,7 +5329,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let existing_by_name = (!name.is_empty())
             .then(|| self.module.function_by_name_dyn(&name))
-            .flatten();
+            .flatten()
+            .map(|id| self.module.view(id));
         let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
             if existing.signature() != fn_ty || existing.basic_blocks().len() != 0 {
                 return Err(ParseError::Expected {
@@ -5537,7 +5542,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let existing_by_name = (!name.is_empty())
             .then(|| self.module.function_by_name_dyn(&name))
-            .flatten();
+            .flatten()
+            .map(|id| self.module.view(id));
         let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
             if existing.signature() != fn_ty || existing.basic_blocks().any(|bb| !bb.is_empty()) {
                 return Err(ParseError::Expected {
@@ -7767,7 +7773,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<ParsedCallee<'ctx, B>> {
         match parsed {
             ParsedDirectCallee::Name { name, loc } => {
-                if let Some(f) = self.module.function_by_name_dyn(&name) {
+                if let Some(f) = self
+                    .module
+                    .function_by_name_dyn(&name)
+                    .map(|id| self.module.view(id))
+                {
                     match resolve_intrinsic_name(&name) {
                         // A non-intrinsic direct callee resolves to the
                         // function regardless of whether the call-site type

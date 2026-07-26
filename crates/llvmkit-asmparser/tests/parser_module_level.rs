@@ -211,7 +211,7 @@ fn named_struct_forward_reference_resolves() {
 fn array_and_vector_types_parse() {
     let m = module_new!("aggregate_types").expect("fresh module");
     parse_into("declare void @takes([4 x i32], <8 x float>)\n", &m);
-    let f = m.function_by_name_dyn("takes").expect("function present");
+    let f = m.view(m.function_by_name_dyn("takes").expect("function present"));
     let params: Vec<_> = f.signature().params().collect();
     assert_eq!(params.len(), 2);
     assert!(matches!(
@@ -230,7 +230,7 @@ fn array_and_vector_types_parse() {
 fn scalable_vector_type_parses() {
     let m = module_new!("scalable_vec").expect("fresh module");
     parse_into("declare void @sv(<vscale x 4 x i32>)\n", &m);
-    let f = m.function_by_name_dyn("sv").expect("function present");
+    let f = m.view(m.function_by_name_dyn("sv").expect("function present"));
     let params: Vec<_> = f.signature().params().collect();
     let v = match AnyTypeEnum::from(params[0]) {
         AnyTypeEnum::Vector(v) => v,
