@@ -42,7 +42,7 @@ help: the following other types implement trait `FnAccess`
 note: required by a bound in `FnCx`
   --> src/pass_context.rs
    |
-   | pub struct FnCx<'pm, 'r, 'ctx, B, A, R>
+   | pub struct FnCx<'m, 'r, 'ctx, B, A, R>
    |            ---- required by a bound in this struct
 ...
    |     A: FnAccess,

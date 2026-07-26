@@ -318,22 +318,32 @@ pub trait ModuleAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
 
     /// Compute the analysis over `module`, using `am` to fetch any analyses it
     /// depends on.
-    fn run(
+    ///
+    /// The view region `'v` is the *caller's*, chosen per call and only required
+    /// to be outlived by the manager's `'ctx`. A driver that owns its module can
+    /// therefore mint the view at its own borrow; `Self::Result: 'static`, so
+    /// nothing borrowed at `'v` can escape into the cache.
+    fn run<'v>(
         &self,
-        module: ModuleView<'ctx, B>,
+        module: ModuleView<'v, B>,
         am: &mut ModuleAnalysisManager<'ctx, B>,
-    ) -> IrResult<Self::Result>;
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v;
 }
 
 /// Cached module-analysis result.
 pub trait ModuleAnalysisResult<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
     /// Return `true` when this result should be invalidated.
-    fn invalidate(
+    fn invalidate<'v>(
         &mut self,
-        _module: ModuleView<'ctx, B>,
+        _module: ModuleView<'v, B>,
         _pa: &PreservedAnalyses,
         _inv: &mut ModuleAnalysisInvalidator<'_, 'ctx, B>,
-    ) -> IrResult<bool> {
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
         Ok(true)
     }
 }
@@ -345,11 +355,16 @@ pub trait FunctionAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
 
     /// Compute the analysis over `function`, using `am` to fetch any analyses
     /// it depends on.
-    fn run(
+    ///
+    /// The view region `'v` is the *caller's*, chosen per call and only required
+    /// to be outlived by the manager's `'ctx` — see [`ModuleAnalysis::run`].
+    fn run<'v>(
         &self,
-        function: FunctionView<'ctx, B>,
+        function: FunctionView<'v, B>,
         am: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Self::Result>;
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v;
 }
 
 /// How a function analysis registers itself for prefetching, so a typed
@@ -381,12 +396,15 @@ pub trait PrefetchableAnalysis<'ctx, B: ModuleBrand = Brand<'ctx>>:
 /// Cached function-analysis result.
 pub trait FunctionAnalysisResult<'ctx, B: ModuleBrand = Brand<'ctx>>: 'static {
     /// Return `true` when this result should be invalidated.
-    fn invalidate(
+    fn invalidate<'v>(
         &mut self,
-        _function: FunctionView<'ctx, B>,
+        _function: FunctionView<'v, B>,
         _pa: &PreservedAnalyses,
         _inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
-    ) -> IrResult<bool> {
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
         Ok(true)
     }
 }
@@ -429,69 +447,216 @@ pub trait CfgIncremental<'ctx, B: ModuleBrand = Brand<'ctx>>: Sized {
     /// only if the result is now fully consistent with the edited CFG;
     /// otherwise return [`RepairOutcome::PreferRecompute`] and the framework
     /// recomputes (via [`Self::recompute`]) or evicts.
-    fn apply_updates(
+    fn apply_updates<'v>(
         &mut self,
         updates: &[CfgUpdate],
-        function: FunctionView<'ctx, B>,
-    ) -> RepairOutcome;
+        function: FunctionView<'v, B>,
+    ) -> RepairOutcome
+    where
+        'ctx: 'v;
 
     /// Recompute this analysis from scratch over `function`'s current CFG. The
     /// framework calls this whenever [`Self::apply_updates`] returns
     /// [`RepairOutcome::PreferRecompute`], so a mid-pass read of a CFG analysis
     /// after a reshape edit still yields a *correct* result rather than a stale
     /// cached one. Must equal a fresh construction of the analysis.
-    fn recompute(function: FunctionView<'ctx, B>) -> Self;
+    fn recompute<'v>(function: FunctionView<'v, B>) -> Self
+    where
+        'ctx: 'v;
 }
 
-type FunctionRunner<'ctx, B> = Rc<
-    dyn Fn(
-            FunctionView<'ctx, B>,
-            &mut FunctionAnalysisManager<'ctx, B>,
-        ) -> IrResult<CachedFunctionResult<'ctx, B>>
-        + 'ctx,
->;
+/// Type-erased per-analysis operations, stored once per registered function
+/// analysis and cloned onto each cached result.
+///
+/// This is a trait object rather than the `Rc<dyn Fn(..)>` / `fn(..)` pointers
+/// it replaces because those pin the *view* region to the manager's `'ctx`: a
+/// closure's argument types are fixed, and an `fn` pointer's argument lifetime
+/// is contravariant (a `fn(FunctionView<'ctx, _>)` cannot be called with a
+/// shorter view). A trait whose methods are generic over `'v` *with `'ctx: 'v`
+/// in scope* is object-safe (lifetime generics are allowed on `dyn` methods) and
+/// keeps `B: 'v` provable from `B: 'ctx`. That is what lets a driver holding an
+/// owned module feed the manager a view minted at its own borrow.
+trait FunctionAnalysisOps<'ctx, B: ModuleBrand + 'ctx> {
+    /// Run the analysis and box its result together with a clone of these ops.
+    fn run_erased<'v>(
+        &self,
+        function: FunctionView<'v, B>,
+        am: &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<Box<dyn Any>>
+    where
+        'ctx: 'v;
 
-type ModuleRunner<'ctx, B> = Rc<
-    dyn Fn(
-            ModuleView<'ctx, B>,
-            &mut ModuleAnalysisManager<'ctx, B>,
-        ) -> IrResult<CachedModuleResult<'ctx, B>>
-        + 'ctx,
->;
+    /// Consult the cached result's own invalidation hook.
+    fn invalidate_erased<'v>(
+        &self,
+        result: &mut dyn Any,
+        function: FunctionView<'v, B>,
+        pa: &PreservedAnalyses,
+        snapshot: &FunctionAnalysisSnapshot,
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v;
 
-type FunctionInvalidator<'ctx, B> = fn(
-    &mut dyn Any,
-    FunctionView<'ctx, B>,
-    &PreservedAnalyses,
-    &FunctionAnalysisSnapshot,
-) -> IrResult<bool>;
-
-type ModuleInvalidator<'ctx, B> = fn(
-    &mut dyn Any,
-    ModuleView<'ctx, B>,
-    &PreservedAnalyses,
-    &ModuleAnalysisSnapshot,
-) -> IrResult<bool>;
-
-/// Type-erased CFG-incremental repair hook stored on a cached result whose
-/// analysis opted in (its `A::Result: CfgIncremental`, registered via
-/// [`FunctionAnalysisManager::ensure_cfg_registered_default`]). The driver calls
-/// it at the reshape `done()`-flush to offer the recorded edits;
-/// [`RepairOutcome::Repaired`] means the result updated itself in place and may
-/// be kept preserved.
-type CfgApplyFn<'ctx, B> = fn(&mut dyn Any, &[CfgUpdate], FunctionView<'ctx, B>) -> RepairOutcome;
-
-struct CachedFunctionResult<'ctx, B: ModuleBrand> {
-    result: Box<dyn Any>,
-    invalidate: FunctionInvalidator<'ctx, B>,
-    /// `Some` iff this analysis's result implements [`CfgIncremental`]; the
-    /// framework-witnessed preservation hook (`None` for value analyses).
-    cfg_apply: Option<CfgApplyFn<'ctx, B>>,
+    /// Offer recorded CFG edits to a [`CfgIncremental`] result. `None` when this
+    /// analysis's result does not implement the hook (a value analysis).
+    fn cfg_apply_erased<'v>(
+        &self,
+        _result: &mut dyn Any,
+        _updates: &[CfgUpdate],
+        _function: FunctionView<'v, B>,
+    ) -> Option<RepairOutcome>
+    where
+        'ctx: 'v,
+    {
+        None
+    }
 }
 
-struct CachedModuleResult<'ctx, B: ModuleBrand> {
+/// Module-level mirror of [`FunctionAnalysisOps`].
+trait ModuleAnalysisOps<'ctx, B: ModuleBrand + 'ctx> {
+    fn run_erased<'v>(
+        &self,
+        module: ModuleView<'v, B>,
+        am: &mut ModuleAnalysisManager<'ctx, B>,
+    ) -> IrResult<Box<dyn Any>>
+    where
+        'ctx: 'v;
+
+    fn invalidate_erased<'v>(
+        &self,
+        result: &mut dyn Any,
+        module: ModuleView<'v, B>,
+        pa: &PreservedAnalyses,
+        snapshot: &ModuleAnalysisSnapshot,
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v;
+}
+
+/// [`FunctionAnalysisOps`] carrier for a plain (non-CFG-incremental) analysis.
+struct FunctionOpsOf<A>(A);
+
+impl<'ctx, B, A> FunctionAnalysisOps<'ctx, B> for FunctionOpsOf<A>
+where
+    B: ModuleBrand + 'ctx,
+    A: FunctionAnalysis<'ctx, B>,
+{
+    fn run_erased<'v>(
+        &self,
+        function: FunctionView<'v, B>,
+        am: &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<Box<dyn Any>>
+    where
+        'ctx: 'v,
+    {
+        Ok(Box::new(self.0.run(function, am)?))
+    }
+
+    fn invalidate_erased<'v>(
+        &self,
+        result: &mut dyn Any,
+        function: FunctionView<'v, B>,
+        pa: &PreservedAnalyses,
+        snapshot: &FunctionAnalysisSnapshot,
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
+        invalidate_function_result::<B, A>(result, function, pa, snapshot)
+    }
+}
+
+/// [`FunctionAnalysisOps`] carrier for an analysis whose result is
+/// [`CfgIncremental`] — the only difference is that `cfg_apply_erased` is live.
+struct CfgFunctionOpsOf<A>(A);
+
+impl<'ctx, B, A> FunctionAnalysisOps<'ctx, B> for CfgFunctionOpsOf<A>
+where
+    B: ModuleBrand + 'ctx,
+    A: FunctionAnalysis<'ctx, B>,
+    A::Result: CfgIncremental<'ctx, B>,
+{
+    fn run_erased<'v>(
+        &self,
+        function: FunctionView<'v, B>,
+        am: &mut FunctionAnalysisManager<'ctx, B>,
+    ) -> IrResult<Box<dyn Any>>
+    where
+        'ctx: 'v,
+    {
+        Ok(Box::new(self.0.run(function, am)?))
+    }
+
+    fn invalidate_erased<'v>(
+        &self,
+        result: &mut dyn Any,
+        function: FunctionView<'v, B>,
+        pa: &PreservedAnalyses,
+        snapshot: &FunctionAnalysisSnapshot,
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
+        invalidate_function_result::<B, A>(result, function, pa, snapshot)
+    }
+
+    fn cfg_apply_erased<'v>(
+        &self,
+        result: &mut dyn Any,
+        updates: &[CfgUpdate],
+        function: FunctionView<'v, B>,
+    ) -> Option<RepairOutcome>
+    where
+        'ctx: 'v,
+    {
+        Some(cfg_apply_result::<B, A::Result>(result, updates, function))
+    }
+}
+
+/// [`ModuleAnalysisOps`] carrier.
+struct ModuleOpsOf<A>(A);
+
+impl<'ctx, B, A> ModuleAnalysisOps<'ctx, B> for ModuleOpsOf<A>
+where
+    B: ModuleBrand + 'ctx,
+    A: ModuleAnalysis<'ctx, B>,
+{
+    fn run_erased<'v>(
+        &self,
+        module: ModuleView<'v, B>,
+        am: &mut ModuleAnalysisManager<'ctx, B>,
+    ) -> IrResult<Box<dyn Any>>
+    where
+        'ctx: 'v,
+    {
+        Ok(Box::new(self.0.run(module, am)?))
+    }
+
+    fn invalidate_erased<'v>(
+        &self,
+        result: &mut dyn Any,
+        module: ModuleView<'v, B>,
+        pa: &PreservedAnalyses,
+        snapshot: &ModuleAnalysisSnapshot,
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
+        invalidate_module_result::<B, A>(result, module, pa, snapshot)
+    }
+}
+
+type FunctionOps<'ctx, B> = Rc<dyn FunctionAnalysisOps<'ctx, B> + 'ctx>;
+type ModuleOps<'ctx, B> = Rc<dyn ModuleAnalysisOps<'ctx, B> + 'ctx>;
+
+struct CachedFunctionResult<'ctx, B: ModuleBrand + 'ctx> {
     result: Box<dyn Any>,
-    invalidate: ModuleInvalidator<'ctx, B>,
+    ops: FunctionOps<'ctx, B>,
+}
+
+struct CachedModuleResult<'ctx, B: ModuleBrand + 'ctx> {
+    result: Box<dyn Any>,
+    ops: ModuleOps<'ctx, B>,
 }
 
 #[derive(Clone)]
@@ -505,10 +670,19 @@ struct ModuleAnalysisSnapshot {
 }
 
 /// Invalidator passed to function-analysis results.
+///
+/// Holds the *key* of the function being invalidated rather than a
+/// [`FunctionView`], so the struct carries no view region: the view handed to
+/// [`FunctionAnalysisResult::invalidate`] lives at the caller-chosen `'v` (which
+/// an owned module mints at its borrow), while this invalidator stays at the
+/// manager's `'ctx`.
 pub struct FunctionAnalysisInvalidator<'a, 'ctx, B: ModuleBrand = Brand<'ctx>> {
-    function: FunctionView<'ctx, B>,
+    module_id: ModuleId,
+    function_slot: ValueSlot,
     pa: &'a PreservedAnalyses,
     snapshot: &'a FunctionAnalysisSnapshot,
+    _brand: PhantomData<fn(B) -> B>,
+    _ctx: PhantomData<&'ctx ()>,
 }
 
 impl<'a, 'ctx, B: ModuleBrand> FunctionAnalysisInvalidator<'a, 'ctx, B> {
@@ -520,7 +694,7 @@ impl<'a, 'ctx, B: ModuleBrand> FunctionAnalysisInvalidator<'a, 'ctx, B> {
     where
         A: FunctionAnalysis<'ctx, B>,
     {
-        let key = function_key::<A, B>(self.function);
+        let key = (self.module_id, TypeId::of::<A>(), self.function_slot);
         if !self.snapshot.cached.contains(&key) {
             return Err(IrError::AnalysisNotCached {
                 name: type_name::<A>(),
@@ -531,11 +705,15 @@ impl<'a, 'ctx, B: ModuleBrand> FunctionAnalysisInvalidator<'a, 'ctx, B> {
     }
 }
 
-/// Invalidator passed to module-analysis results.
+/// Invalidator passed to module-analysis results. Holds the module *key* rather
+/// than a [`ModuleView`], for the same reason as
+/// [`FunctionAnalysisInvalidator`].
 pub struct ModuleAnalysisInvalidator<'a, 'ctx, B: ModuleBrand = Brand<'ctx>> {
-    module: ModuleView<'ctx, B>,
+    module_id: ModuleId,
     pa: &'a PreservedAnalyses,
     snapshot: &'a ModuleAnalysisSnapshot,
+    _brand: PhantomData<fn(B) -> B>,
+    _ctx: PhantomData<&'ctx ()>,
 }
 
 impl<'a, 'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisInvalidator<'a, 'ctx, B> {
@@ -547,7 +725,7 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisInvalidator<'a, 'ctx, B> {
     where
         A: ModuleAnalysis<'ctx, B>,
     {
-        let key = module_key::<A, B>(self.module);
+        let key = (TypeId::of::<A>(), self.module_id);
         if !self.snapshot.cached.contains(&key) {
             return Err(IrError::AnalysisNotCached {
                 name: type_name::<A>(),
@@ -560,7 +738,7 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisInvalidator<'a, 'ctx, B> {
 
 /// Caches function analyses by `(module id, analysis type, function id)`.
 pub struct FunctionAnalysisManager<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    analyses: HashMap<TypeId, FunctionRunner<'ctx, B>>,
+    analyses: HashMap<TypeId, FunctionOps<'ctx, B>>,
     results: HashMap<(ModuleId, TypeId, ValueSlot), CachedFunctionResult<'ctx, B>>,
     instrumentation: Option<PassInstrumentationCallbacks>,
     _brand: PhantomData<fn(B) -> B>,
@@ -590,15 +768,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         A: FunctionAnalysis<'ctx, B>,
     {
         let id = TypeId::of::<A>();
-        let runner: FunctionRunner<'ctx, B> = Rc::new(move |function, am| {
-            let result = analysis.run(function, am)?;
-            Ok(CachedFunctionResult {
-                result: Box::new(result),
-                invalidate: invalidate_function_result::<B, A>,
-                cfg_apply: None,
-            })
-        });
-        self.analyses.insert(id, runner);
+        let ops: FunctionOps<'ctx, B> = Rc::new(FunctionOpsOf(analysis));
+        self.analyses.insert(id, ops);
     }
 
     /// Register a function-analysis pass whose result is CFG-incremental, keyed
@@ -611,15 +782,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         A::Result: CfgIncremental<'ctx, B>,
     {
         let id = TypeId::of::<A>();
-        let runner: FunctionRunner<'ctx, B> = Rc::new(move |function, am| {
-            let result = analysis.run(function, am)?;
-            Ok(CachedFunctionResult {
-                result: Box::new(result),
-                invalidate: invalidate_function_result::<B, A>,
-                cfg_apply: Some(cfg_apply_result::<B, A::Result>),
-            })
-        });
-        self.analyses.insert(id, runner);
+        let ops: FunctionOps<'ctx, B> = Rc::new(CfgFunctionOpsOf(analysis));
+        self.analyses.insert(id, ops);
     }
 
     /// Register `A` with its `Default` value unless an instance is already registered.
@@ -656,12 +820,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     /// step. A result that declines ([`RepairOutcome::PreferRecompute`], or has
     /// no hook) is left for `pa`'s floor to evict. Only the driver calls this,
     /// after a reshape pass and before [`Self::invalidate`].
-    pub(crate) fn flush_cfg_updates(
+    pub(crate) fn flush_cfg_updates<'v>(
         &mut self,
-        function: FunctionView<'ctx, B>,
+        function: FunctionView<'v, B>,
         updates: &[CfgUpdate],
         pa: &mut PreservedAnalyses,
-    ) {
+    ) where
+        'ctx: 'v,
+    {
         let handle = function.as_function();
         let module_id = handle.module().id();
         let function_id = handle.slot();
@@ -669,10 +835,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
             if key.0 != module_id || key.2 != function_id {
                 continue;
             }
-            let Some(apply) = cached.cfg_apply else {
-                continue;
-            };
-            if apply(&mut *cached.result, updates, function) == RepairOutcome::Repaired {
+            let ops = Rc::clone(&cached.ops);
+            if ops.cfg_apply_erased(&mut *cached.result, updates, function)
+                == Some(RepairOutcome::Repaired)
+            {
                 pa.preserve_type_id(key.1);
             }
         }
@@ -681,15 +847,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     /// Fetch `function`'s result for analysis `A`, running the pass and caching
     /// the result on the first request. Errors with
     /// [`IrError::AnalysisNotRegistered`] if `A` was never registered.
-    pub fn get_result<A, F>(&mut self, function: F) -> IrResult<&A::Result>
+    pub fn get_result<'v, A, F>(&mut self, function: F) -> IrResult<&A::Result>
     where
         A: FunctionAnalysis<'ctx, B>,
-        F: Into<FunctionView<'ctx, B>>,
+        F: Into<FunctionView<'v, B>>,
+        'ctx: 'v,
     {
         let function = function.into();
         let key = function_key::<A, B>(function);
         if !self.results.contains_key(&key) {
-            let Some(runner) = self.analyses.get(&key.1).cloned() else {
+            let Some(ops) = self.analyses.get(&key.1).cloned() else {
                 return Err(IrError::AnalysisNotRegistered {
                     name: type_name::<A>(),
                 });
@@ -697,8 +864,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
             if let Some(callbacks) = &self.instrumentation {
                 callbacks.run_before_analysis(type_name::<A>());
             }
-            let result = runner(function, self)?;
-            self.results.insert(key, result);
+            let result = ops.run_erased(function, self)?;
+            self.results
+                .insert(key, CachedFunctionResult { result, ops });
             if let Some(callbacks) = &self.instrumentation {
                 callbacks.run_after_analysis(type_name::<A>());
             }
@@ -711,10 +879,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
 
     /// Return `function`'s already-cached result for `A`, or `None` if it has
     /// not been computed. Never runs the pass.
-    pub fn get_cached_result<A, F>(&self, function: F) -> Option<&A::Result>
+    pub fn get_cached_result<'v, A, F>(&self, function: F) -> Option<&A::Result>
     where
         A: FunctionAnalysis<'ctx, B>,
-        F: Into<FunctionView<'ctx, B>>,
+        F: Into<FunctionView<'v, B>>,
+        'ctx: 'v,
     {
         let function = function.into();
         self.results
@@ -723,11 +892,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
             .downcast_ref::<A::Result>()
     }
 
-    pub(crate) fn get_cached_result_by_type<A, R, F>(&self, function: F) -> Option<&R>
+    pub(crate) fn get_cached_result_by_type<'v, A, R, F>(&self, function: F) -> Option<&R>
     where
         A: 'static,
         R: 'static,
-        F: Into<FunctionView<'ctx, B>>,
+        F: Into<FunctionView<'v, B>>,
+        'ctx: 'v,
     {
         let function = function.into();
         self.results
@@ -738,9 +908,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
 
     /// Drop every cached result for `function` that `pa` does not preserve,
     /// consulting each result's own `invalidate` hook.
-    pub fn invalidate<F>(&mut self, function: F, pa: &PreservedAnalyses) -> IrResult<()>
+    pub fn invalidate<'v, F>(&mut self, function: F, pa: &PreservedAnalyses) -> IrResult<()>
     where
-        F: Into<FunctionView<'ctx, B>>,
+        F: Into<FunctionView<'v, B>>,
+        'ctx: 'v,
     {
         let function = function.into();
         let function_handle = function.as_function();
@@ -753,7 +924,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
         for (key, cached) in &mut self.results {
             if key.0 == module_id
                 && key.2 == function_id
-                && (cached.invalidate)(&mut *cached.result, function, pa, &snapshot)?
+                && Rc::clone(&cached.ops).invalidate_erased(
+                    &mut *cached.result,
+                    function,
+                    pa,
+                    &snapshot,
+                )?
             {
                 dead.push(*key);
             }
@@ -768,11 +944,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     /// analyses: clears every cached result when the module→function proxy is
     /// not preserved, otherwise invalidates each function's non-preserved
     /// results (a no-op when the whole `AllAnalysesOnFunction` set survives).
-    pub fn invalidate_module(
+    pub fn invalidate_module<'v>(
         &mut self,
-        module: ModuleView<'ctx, B>,
+        module: ModuleView<'v, B>,
         pa: &PreservedAnalyses,
-    ) -> IrResult<()> {
+    ) -> IrResult<()>
+    where
+        'ctx: 'v,
+    {
         if pa.are_all_preserved() {
             return Ok(());
         }
@@ -799,10 +978,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     }
 
     /// Drop the cached result of analysis `A` for `function`, if present.
-    pub fn clear_analysis<A, F>(&mut self, function: F)
+    pub fn clear_analysis<'v, A, F>(&mut self, function: F)
     where
         A: FunctionAnalysis<'ctx, B>,
-        F: Into<FunctionView<'ctx, B>>,
+        F: Into<FunctionView<'v, B>>,
+        'ctx: 'v,
     {
         let function = function.into();
         self.results.remove(&function_key::<A, B>(function));
@@ -817,7 +997,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for FunctionAnalysisManager<'ctx, B> {
 
 /// Caches module analyses by `(analysis type, module id)`.
 pub struct ModuleAnalysisManager<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    analyses: HashMap<TypeId, ModuleRunner<'ctx, B>>,
+    analyses: HashMap<TypeId, ModuleOps<'ctx, B>>,
     results: HashMap<(TypeId, ModuleId), CachedModuleResult<'ctx, B>>,
     instrumentation: Option<PassInstrumentationCallbacks>,
     _brand: PhantomData<fn(B) -> B>,
@@ -847,14 +1027,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
         A: ModuleAnalysis<'ctx, B>,
     {
         let id = TypeId::of::<A>();
-        let runner: ModuleRunner<'ctx, B> = Rc::new(move |module, am| {
-            let result = analysis.run(module, am)?;
-            Ok(CachedModuleResult {
-                result: Box::new(result),
-                invalidate: invalidate_module_result::<B, A>,
-            })
-        });
-        self.analyses.insert(id, runner);
+        let ops: ModuleOps<'ctx, B> = Rc::new(ModuleOpsOf(analysis));
+        self.analyses.insert(id, ops);
     }
 
     /// Register `A` with its `Default` value unless an instance is already registered.
@@ -873,47 +1047,33 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
     /// Fetch the module's result for analysis `A`, running the pass and caching
     /// the result on the first request. Takes a verified module; errors with
     /// [`IrError::AnalysisNotRegistered`] if `A` was never registered.
-    pub fn get_result<A>(
+    pub fn get_result<'v, A>(
         &mut self,
-        module: &crate::module::Module<'ctx, B, crate::module::Verified>,
+        module: &'v crate::module::Module<'v, B, crate::module::Verified>,
     ) -> IrResult<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,
+        'ctx: 'v,
     {
         let module_view = module.as_view();
-        let key = module_key::<A, B>(module_view);
-        if !self.results.contains_key(&key) {
-            let Some(runner) = self.analyses.get(&key.0).cloned() else {
-                return Err(IrError::AnalysisNotRegistered {
-                    name: type_name::<A>(),
-                });
-            };
-            if let Some(callbacks) = &self.instrumentation {
-                callbacks.run_before_analysis(type_name::<A>());
-            }
-            let result = runner(module_view, self)?;
-            self.results.insert(key, result);
-            if let Some(callbacks) = &self.instrumentation {
-                callbacks.run_after_analysis(type_name::<A>());
-            }
-        }
-        self.get_cached_result::<A, _>(module_view)
-            .ok_or(IrError::AnalysisNotCached {
-                name: type_name::<A>(),
-            })
+        self.get_result_view::<A>(module_view)
     }
 
     /// [`Self::get_result`] variant for callers that already hold a [`ModuleView`]
     /// rather than a `&Module<Verified>` (the typed pipeline runner keys its
     /// [`ModuleRunner`] by `ModuleView` already). Not part of the public API:
     /// [`ModuleAnalysisList::prefetch`] is the only caller.
-    pub(crate) fn get_result_view<A>(&mut self, module: ModuleView<'ctx, B>) -> IrResult<&A::Result>
+    pub(crate) fn get_result_view<'v, A>(
+        &mut self,
+        module: ModuleView<'v, B>,
+    ) -> IrResult<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,
+        'ctx: 'v,
     {
         let key = module_key::<A, B>(module);
         if !self.results.contains_key(&key) {
-            let Some(runner) = self.analyses.get(&key.0).cloned() else {
+            let Some(ops) = self.analyses.get(&key.0).cloned() else {
                 return Err(IrError::AnalysisNotRegistered {
                     name: type_name::<A>(),
                 });
@@ -921,8 +1081,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
             if let Some(callbacks) = &self.instrumentation {
                 callbacks.run_before_analysis(type_name::<A>());
             }
-            let result = runner(module, self)?;
-            self.results.insert(key, result);
+            let result = ops.run_erased(module, self)?;
+            self.results.insert(key, CachedModuleResult { result, ops });
             if let Some(callbacks) = &self.instrumentation {
                 callbacks.run_after_analysis(type_name::<A>());
             }
@@ -935,10 +1095,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
 
     /// Return the module's already-cached result for `A`, or `None` if it has
     /// not been computed. Never runs the pass.
-    pub fn get_cached_result<A, M>(&self, module: M) -> Option<&A::Result>
+    pub fn get_cached_result<'v, A, M>(&self, module: M) -> Option<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,
-        M: Into<ModuleView<'ctx, B>>,
+        M: Into<ModuleView<'v, B>>,
+        'ctx: 'v,
     {
         let module = module.into();
         self.results
@@ -949,9 +1110,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
 
     /// Drop every cached result for `module` that `pa` does not preserve,
     /// consulting each result's own `invalidate` hook.
-    pub fn invalidate<M>(&mut self, module: M, pa: &PreservedAnalyses) -> IrResult<()>
+    pub fn invalidate<'v, M>(&mut self, module: M, pa: &PreservedAnalyses) -> IrResult<()>
     where
-        M: Into<ModuleView<'ctx, B>>,
+        M: Into<ModuleView<'v, B>>,
+        'ctx: 'v,
     {
         let module = module.into();
         let module_id = module.id();
@@ -961,7 +1123,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
         let mut dead = Vec::new();
         for (key, cached) in &mut self.results {
             if key.1 == module_id
-                && (cached.invalidate)(&mut *cached.result, module, pa, &snapshot)?
+                && Rc::clone(&cached.ops).invalidate_erased(
+                    &mut *cached.result,
+                    module,
+                    pa,
+                    &snapshot,
+                )?
             {
                 dead.push(*key);
             }
@@ -978,10 +1145,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
     }
 
     /// Drop the cached result of analysis `A` for `module`, if present.
-    pub fn clear_analysis<A, M>(&mut self, module: M)
+    pub fn clear_analysis<'v, A, M>(&mut self, module: M)
     where
         A: ModuleAnalysis<'ctx, B>,
-        M: Into<ModuleView<'ctx, B>>,
+        M: Into<ModuleView<'v, B>>,
+        'ctx: 'v,
     {
         let module = module.into();
         self.results.remove(&module_key::<A, B>(module));
@@ -1078,39 +1246,45 @@ where
     (TypeId::of::<A>(), module.id())
 }
 
-fn invalidate_function_result<'ctx, B, A>(
+fn invalidate_function_result<'v, 'ctx, B, A>(
     result: &mut dyn Any,
-    function: FunctionView<'ctx, B>,
+    function: FunctionView<'v, B>,
     pa: &PreservedAnalyses,
     snapshot: &FunctionAnalysisSnapshot,
 ) -> IrResult<bool>
 where
     B: ModuleBrand + 'ctx,
     A: FunctionAnalysis<'ctx, B>,
+    'ctx: 'v,
 {
     let Some(result) = result.downcast_mut::<A::Result>() else {
         return Ok(true);
     };
-    let mut invalidator = FunctionAnalysisInvalidator {
-        function,
+    let handle = function.as_function();
+    let mut invalidator = FunctionAnalysisInvalidator::<'_, 'ctx, B> {
+        module_id: handle.module().id(),
+        function_slot: handle.slot(),
         pa,
         snapshot,
+        _brand: PhantomData,
+        _ctx: PhantomData,
     };
     result.invalidate(function, pa, &mut invalidator)
 }
 
-/// Type-erased trampoline stored as a cached result's [`CfgApplyFn`]: downcast to
+/// Type-erased trampoline behind [`FunctionAnalysisOps::cfg_apply_erased`]: downcast to
 /// the concrete CFG-incremental result and offer it the recorded edits. Monotone
 /// per analysis result type `R`; a downcast miss (never expected — the hook is
 /// keyed to `R`) degrades safely to [`RepairOutcome::PreferRecompute`].
-fn cfg_apply_result<'ctx, B, R>(
+fn cfg_apply_result<'v, 'ctx, B, R>(
     result: &mut dyn Any,
     updates: &[CfgUpdate],
-    function: FunctionView<'ctx, B>,
+    function: FunctionView<'v, B>,
 ) -> RepairOutcome
 where
     B: ModuleBrand + 'ctx,
     R: CfgIncremental<'ctx, B> + 'static,
+    'ctx: 'v,
 {
     match result.downcast_mut::<R>() {
         Some(r) => r.apply_updates(updates, function),
@@ -1118,23 +1292,26 @@ where
     }
 }
 
-fn invalidate_module_result<'ctx, B, A>(
+fn invalidate_module_result<'v, 'ctx, B, A>(
     result: &mut dyn Any,
-    module: ModuleView<'ctx, B>,
+    module: ModuleView<'v, B>,
     pa: &PreservedAnalyses,
     snapshot: &ModuleAnalysisSnapshot,
 ) -> IrResult<bool>
 where
     B: ModuleBrand + 'ctx,
     A: ModuleAnalysis<'ctx, B>,
+    'ctx: 'v,
 {
     let Some(result) = result.downcast_mut::<A::Result>() else {
         return Ok(true);
     };
-    let mut invalidator = ModuleAnalysisInvalidator {
-        module,
+    let mut invalidator = ModuleAnalysisInvalidator::<'_, 'ctx, B> {
+        module_id: module.id(),
         pa,
         snapshot,
+        _brand: PhantomData,
+        _ctx: PhantomData,
     };
     result.invalidate(module, pa, &mut invalidator)
 }
@@ -1142,11 +1319,14 @@ where
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DominatorTreeAnalysis {
     type Result = DominatorTree;
 
-    fn run(
+    fn run<'v>(
         &self,
-        function: FunctionView<'ctx, B>,
+        function: FunctionView<'v, B>,
         _am: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Self::Result> {
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
         Ok(DominatorTree::new(function.as_function()))
     }
 }
@@ -1161,12 +1341,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> PrefetchableAnalysis<'ctx, B> for DominatorTre
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for DominatorTree {
-    fn invalidate(
+    fn invalidate<'v>(
         &mut self,
-        _function: FunctionView<'ctx, B>,
+        _function: FunctionView<'v, B>,
         pa: &PreservedAnalyses,
         _inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
-    ) -> IrResult<bool> {
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
         let checker = pa.checker::<DominatorTreeAnalysis>();
         Ok(!(checker.preserved()
             || checker.preserved_set::<AllAnalysesOnFunction>()
@@ -1188,17 +1371,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> CfgIncremental<'ctx, B> for DominatorTree {
     /// to a from-scratch recompute (the property `repaired ≡ recomputed`) guards
     /// every flush; today the two are identical by construction.
     #[inline]
-    fn apply_updates(
+    fn apply_updates<'v>(
         &mut self,
         _updates: &[CfgUpdate],
-        function: FunctionView<'ctx, B>,
-    ) -> RepairOutcome {
+        function: FunctionView<'v, B>,
+    ) -> RepairOutcome
+    where
+        'ctx: 'v,
+    {
         *self = DominatorTree::new(function.as_function());
         RepairOutcome::Repaired
     }
 
     #[inline]
-    fn recompute(function: FunctionView<'ctx, B>) -> Self {
+    fn recompute<'v>(function: FunctionView<'v, B>) -> Self
+    where
+        'ctx: 'v,
+    {
         DominatorTree::new(function.as_function())
     }
 }
@@ -1227,18 +1416,25 @@ pub trait FunctionAnalysisList<'ctx, B: ModuleBrand + 'ctx>: analysis_list_seale
         'ctx: 'r;
 
     /// Register (if needed) and compute every member for `function`.
-    fn prefetch(
+    ///
+    /// The view region `'v` is the driver's, not the manager's: a driver that
+    /// owns its module can only mint a view at its own borrow.
+    fn prefetch<'v>(
         fam: &mut FunctionAnalysisManager<'ctx, B>,
-        function: FunctionView<'ctx, B>,
-    ) -> IrResult<()>;
+        function: FunctionView<'v, B>,
+    ) -> IrResult<()>
+    where
+        'ctx: 'v;
 
     /// Collect cached references after [`Self::prefetch`]. The cache-miss branch
     /// is unreachable after a successful prefetch but reports
     /// [`IrError::AnalysisNotCached`] instead of panicking.
-    fn collect<'r>(
+    fn collect<'v, 'r>(
         fam: &'r FunctionAnalysisManager<'ctx, B>,
-        function: FunctionView<'ctx, B>,
-    ) -> IrResult<Self::ResultRefs<'r>>;
+        function: FunctionView<'v, B>,
+    ) -> IrResult<Self::ResultRefs<'r>>
+    where
+        'ctx: 'v;
 }
 
 impl analysis_list_sealed::Sealed for () {}
@@ -1250,17 +1446,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisList<'ctx, B> for () {
     where
         'ctx: 'r;
 
-    fn prefetch(
+    fn prefetch<'v>(
         _fam: &mut FunctionAnalysisManager<'ctx, B>,
-        _function: FunctionView<'ctx, B>,
-    ) -> IrResult<()> {
+        _function: FunctionView<'v, B>,
+    ) -> IrResult<()>
+    where
+        'ctx: 'v,
+    {
         Ok(())
     }
 
-    fn collect<'r>(
+    fn collect<'v, 'r>(
         _fam: &'r FunctionAnalysisManager<'ctx, B>,
-        _function: FunctionView<'ctx, B>,
-    ) -> IrResult<Self::ResultRefs<'r>> {
+        _function: FunctionView<'v, B>,
+    ) -> IrResult<Self::ResultRefs<'r>>
+    where
+        'ctx: 'v,
+    {
         Ok(())
     }
 }
@@ -1328,10 +1530,13 @@ macro_rules! impl_function_analysis_list {
             where
                 'ctx: 'r;
 
-            fn prefetch(
+            fn prefetch<'v>(
                 fam: &mut FunctionAnalysisManager<'ctx, B>,
-                function: FunctionView<'ctx, B>,
-            ) -> IrResult<()> {
+                function: FunctionView<'v, B>,
+            ) -> IrResult<()>
+            where
+                'ctx: 'v,
+            {
                 $(
                     <$member as PrefetchableAnalysis<'ctx, B>>::ensure_registered(fam);
                     fam.get_result::<$member, _>(function)?;
@@ -1339,10 +1544,13 @@ macro_rules! impl_function_analysis_list {
                 Ok(())
             }
 
-            fn collect<'r>(
+            fn collect<'v, 'r>(
                 fam: &'r FunctionAnalysisManager<'ctx, B>,
-                function: FunctionView<'ctx, B>,
-            ) -> IrResult<Self::ResultRefs<'r>> {
+                function: FunctionView<'v, B>,
+            ) -> IrResult<Self::ResultRefs<'r>>
+            where
+                'ctx: 'v,
+            {
                 Ok(($(
                     fam.get_cached_result::<$member, _>(function)
                         .ok_or(IrError::AnalysisNotCached {
@@ -1406,19 +1614,25 @@ pub trait ModuleAnalysisList<'ctx, B: ModuleBrand + 'ctx>: analysis_list_sealed:
     where
         'ctx: 'r;
 
-    /// Register (if needed) and compute every member for `module`.
-    fn prefetch(
+    /// Register (if needed) and compute every member for `module`. See
+    /// [`FunctionAnalysisList::prefetch`] for why the view region `'v` is the
+    /// driver's rather than the manager's.
+    fn prefetch<'v>(
         mam: &mut ModuleAnalysisManager<'ctx, B>,
-        module: ModuleView<'ctx, B>,
-    ) -> IrResult<()>;
+        module: ModuleView<'v, B>,
+    ) -> IrResult<()>
+    where
+        'ctx: 'v;
 
     /// Collect cached references after [`Self::prefetch`]. The cache-miss branch
     /// is unreachable after a successful prefetch but reports
     /// [`IrError::AnalysisNotCached`] instead of panicking.
-    fn collect<'r>(
+    fn collect<'v, 'r>(
         mam: &'r ModuleAnalysisManager<'ctx, B>,
-        module: ModuleView<'ctx, B>,
-    ) -> IrResult<Self::ResultRefs<'r>>;
+        module: ModuleView<'v, B>,
+    ) -> IrResult<Self::ResultRefs<'r>>
+    where
+        'ctx: 'v;
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisList<'ctx, B> for () {
@@ -1428,17 +1642,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisList<'ctx, B> for () {
     where
         'ctx: 'r;
 
-    fn prefetch(
+    fn prefetch<'v>(
         _mam: &mut ModuleAnalysisManager<'ctx, B>,
-        _module: ModuleView<'ctx, B>,
-    ) -> IrResult<()> {
+        _module: ModuleView<'v, B>,
+    ) -> IrResult<()>
+    where
+        'ctx: 'v,
+    {
         Ok(())
     }
 
-    fn collect<'r>(
+    fn collect<'v, 'r>(
         _mam: &'r ModuleAnalysisManager<'ctx, B>,
-        _module: ModuleView<'ctx, B>,
-    ) -> IrResult<Self::ResultRefs<'r>> {
+        _module: ModuleView<'v, B>,
+    ) -> IrResult<Self::ResultRefs<'r>>
+    where
+        'ctx: 'v,
+    {
         Ok(())
     }
 }
@@ -1479,10 +1699,13 @@ macro_rules! impl_module_analysis_list {
             where
                 'ctx: 'r;
 
-            fn prefetch(
+            fn prefetch<'v>(
                 mam: &mut ModuleAnalysisManager<'ctx, B>,
-                module: ModuleView<'ctx, B>,
-            ) -> IrResult<()> {
+                module: ModuleView<'v, B>,
+            ) -> IrResult<()>
+            where
+                'ctx: 'v,
+            {
                 $(
                     mam.ensure_registered_default::<$member>();
                     mam.get_result_view::<$member>(module)?;
@@ -1490,10 +1713,13 @@ macro_rules! impl_module_analysis_list {
                 Ok(())
             }
 
-            fn collect<'r>(
+            fn collect<'v, 'r>(
                 mam: &'r ModuleAnalysisManager<'ctx, B>,
-                module: ModuleView<'ctx, B>,
-            ) -> IrResult<Self::ResultRefs<'r>> {
+                module: ModuleView<'v, B>,
+            ) -> IrResult<Self::ResultRefs<'r>>
+            where
+                'ctx: 'v,
+            {
                 Ok(($(
                     mam.get_cached_result::<$member, _>(module)
                         .ok_or(IrError::AnalysisNotCached {
@@ -1648,11 +1874,14 @@ mod tests {
     impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for ThresholdResult {}
     impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for ThresholdAnalysis {
         type Result = ThresholdResult;
-        fn run(
+        fn run<'v>(
             &self,
-            _function: FunctionView<'ctx, B>,
+            _function: FunctionView<'v, B>,
             _am: &mut FunctionAnalysisManager<'ctx, B>,
-        ) -> IrResult<Self::Result> {
+        ) -> IrResult<Self::Result>
+        where
+            'ctx: 'v,
+        {
             Ok(ThresholdResult {
                 threshold: self.threshold,
             })

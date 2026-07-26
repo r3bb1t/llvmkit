@@ -9,8 +9,8 @@ error[E0382]: use of moved value: `cx`
 39 |         Ok(cx.done())
    |            ^^ value used here after move
    |
-note: `FnCx::<'pm, 'r, 'ctx, B, A, R>::mutate` takes ownership of the receiver `self`, which moves `cx`
+note: `FnCx::<'m, 'r, 'ctx, B, A, R>::mutate` takes ownership of the receiver `self`, which moves `cx`
   --> src/pass_context.rs
    |
-   |     pub fn mutate(self) -> <A as MutatingFn>::Mutator<'pm, 'r, 'ctx, B, R> {
+   |     pub fn mutate(self) -> <A as MutatingFn>::Mutator<'m, 'r, 'ctx, B, R> {
    |                   ^^^^

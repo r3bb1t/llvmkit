@@ -54,6 +54,7 @@
 #![deny(missing_docs)]
 
 use core::iter::FusedIterator;
+use core::marker::PhantomData;
 
 use super::BasicBlock;
 use super::IrResult;
@@ -340,6 +341,42 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<FunctionValue<'ctx, R, B
     }
 }
 
+/// Names one function of a module **without borrowing it** — the argument shape
+/// of every pass driver.
+///
+/// A driver consumes its `Module` by value (the `Verified` → `Unverified`
+/// typestate move) and mints the function view *inside*, against the module it
+/// now owns. A caller therefore cannot hand it a [`FunctionView`] carried across
+/// that move; it hands over the lifetime-free id instead, which is the cycle-B
+/// currency every declaration constructor already returns. Implemented for the
+/// ids and, for convenience at call sites that are not moving the module, for
+/// the borrowing handles too.
+pub trait IntoFunctionId<B: ModuleBrand>: Copy {
+    /// The named function's return-erased, module-tagged id.
+    fn into_function_id(self) -> FunctionId<Dyn, B>;
+}
+
+impl<R: ReturnMarker, B: ModuleBrand> IntoFunctionId<B> for FunctionId<R, B> {
+    #[inline]
+    fn into_function_id(self) -> FunctionId<Dyn, B> {
+        self.as_dyn()
+    }
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> IntoFunctionId<B> for FunctionView<'ctx, B> {
+    #[inline]
+    fn into_function_id(self) -> FunctionId<Dyn, B> {
+        self.id()
+    }
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoFunctionId<B> for FunctionValue<'ctx, R, B> {
+    #[inline]
+    fn into_function_id(self) -> FunctionId<Dyn, B> {
+        self.as_dyn().id()
+    }
+}
+
 /// Mutation-capable view of one function body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FunctionBody<'ctx, B: ModuleBrand = Brand<'ctx>> {
@@ -512,30 +549,30 @@ impl FnReport {
 /// the same consuming-handle discipline the crate already uses for terminated
 /// blocks (D1) and erased instructions (D2).
 ///
-/// The module `token` (`'pm`) and the
+/// The module `token` (`'m`) and the
 /// prefetched `results` (`'r`) carry distinct lifetimes: the token borrows the
 /// long-lived pipeline module while the results borrow the analysis manager only
 /// for the pass's scope. (llvmkit-specific capability-context lock — no upstream
 /// analog: LLVM pass contexts are untyped `Function&` + `FAM&`.)
-pub struct FnCx<'pm, 'r, 'ctx, B, A, R>
+pub struct FnCx<'m, 'r, 'ctx, B, A, R>
 where
     B: ModuleBrand + 'ctx,
     A: FnAccess,
     R: FunctionAnalysisList<'ctx, B>,
-    'ctx: 'pm,
+    'ctx: 'm,
     'ctx: 'r,
 {
-    token: A::Token<'pm, 'ctx, B>,
-    function: FunctionView<'ctx, B>,
+    token: A::Token<'m, B>,
+    function: FunctionView<'m, B>,
     results: R::ResultRefs<'r>,
 }
 
-impl<'pm, 'r, 'ctx, B, A, R> FnCx<'pm, 'r, 'ctx, B, A, R>
+impl<'m, 'r, 'ctx, B, A, R> FnCx<'m, 'r, 'ctx, B, A, R>
 where
     B: ModuleBrand + 'ctx,
     A: FnAccess,
     R: FunctionAnalysisList<'ctx, B>,
-    'ctx: 'pm,
+    'ctx: 'm,
     'ctx: 'r,
 {
     /// Assemble a context from the driver-prefetched parts. The driver-facing
@@ -545,8 +582,8 @@ where
     /// the single-pass driver is now its sole non-test caller.
     #[inline]
     pub(crate) fn new(
-        token: A::Token<'pm, 'ctx, B>,
-        function: FunctionView<'ctx, B>,
+        token: A::Token<'m, B>,
+        function: FunctionView<'m, B>,
         results: R::ResultRefs<'r>,
     ) -> Self {
         Self {
@@ -558,13 +595,13 @@ where
 
     /// Read-only function view.
     #[inline]
-    pub fn function(&self) -> FunctionView<'ctx, B> {
+    pub fn function(&self) -> FunctionView<'m, B> {
         self.function
     }
 
     /// Owning module view.
     #[inline]
-    pub fn module(&self) -> ModuleView<'ctx, B> {
+    pub fn module(&self) -> ModuleView<'m, B> {
         self.function.module()
     }
 
@@ -588,12 +625,12 @@ where
     }
 }
 
-impl<'pm, 'r, 'ctx, B, A, R> FnCx<'pm, 'r, 'ctx, B, A, R>
+impl<'m, 'r, 'ctx, B, A, R> FnCx<'m, 'r, 'ctx, B, A, R>
 where
     B: ModuleBrand + 'ctx,
     A: MutatingFn,
     R: FunctionAnalysisList<'ctx, B>,
-    'ctx: 'pm,
+    'ctx: 'm,
     'ctx: 'r,
 {
     /// Transition into mutation: **consumes** the context and moves its token,
@@ -602,7 +639,7 @@ where
     /// left is the mutator's `done()`, which carries the rung's preservation
     /// floor. This is the core honesty mechanism.
     #[inline]
-    pub fn mutate(self) -> <A as MutatingFn>::Mutator<'pm, 'r, 'ctx, B, R> {
+    pub fn mutate(self) -> <A as MutatingFn>::Mutator<'m, 'r, 'ctx, B, R> {
         A::into_mutator(self.token, self.function, self.results)
     }
 }
@@ -624,8 +661,8 @@ where
     'ctx: 'm,
     'ctx: 'r,
 {
-    module: &'m Module<'ctx, B, Unverified>,
-    function: FunctionView<'ctx, B>,
+    module: &'m Module<'m, B, Unverified>,
+    function: FunctionView<'m, B>,
     results: R::ResultRefs<'r>,
     /// Witnessed dirty flag: set by every mutating method, read by
     /// [`Self::done`]. A run that touches nothing reports everything
@@ -650,8 +687,8 @@ where
 {
     #[inline]
     pub(crate) fn new(
-        module: &'m Module<'ctx, B, Unverified>,
-        function: FunctionView<'ctx, B>,
+        module: &'m Module<'m, B, Unverified>,
+        function: FunctionView<'m, B>,
         results: R::ResultRefs<'r>,
     ) -> Self {
         Self {
@@ -671,13 +708,13 @@ where
 
     /// Read-only function view.
     #[inline]
-    pub fn function(&self) -> FunctionView<'ctx, B> {
+    pub fn function(&self) -> FunctionView<'m, B> {
         self.function
     }
 
     /// Mutation-capable function-body view.
     #[inline]
-    pub fn function_mut(&self) -> FunctionBody<'ctx, B> {
+    pub fn function_mut(&self) -> FunctionBody<'m, B> {
         FunctionBody::new(self.function.as_function())
     }
 
@@ -703,7 +740,7 @@ where
     /// floor, so they are unreachable rather than merely discouraged. Mirrors
     /// [`ModRewrite::module`].
     #[inline]
-    pub fn module(&self) -> ModuleView<'ctx, B> {
+    pub fn module(&self) -> ModuleView<'m, B> {
         self.module.as_view()
     }
 
@@ -716,7 +753,7 @@ where
     /// [`Self::builder_at`], and instruction construction through
     /// [`IRBuilder::at_end`].
     #[inline]
-    pub(crate) fn module_mut(&self) -> &'m Module<'ctx, B, Unverified> {
+    pub(crate) fn module_mut(&self) -> &'m Module<'m, B, Unverified> {
         self.module
     }
 
@@ -741,8 +778,8 @@ where
     #[inline]
     pub fn builder_at<R2>(
         &self,
-        ip: InsertPoint<'ctx, R2, B>,
-    ) -> IrResult<IRBuilder<'m, 'ctx, B, ConstantFolder, Positioned, R2>>
+        ip: InsertPoint<'m, R2, B>,
+    ) -> IrResult<IRBuilder<'m, 'm, B, ConstantFolder, Positioned, R2>>
     where
         R2: ReturnMarker,
     {
@@ -761,7 +798,7 @@ where
     /// error, not a runtime rejection. Infallible: erasing a non-terminator
     /// cannot fail.
     #[inline]
-    pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
+    pub fn erase(&self, target: &NonTerminator<'m, B>) {
         let id = target.slot();
         let inst = Instruction::<state::Attached, B>::from_parts(id, self.module.module_ref());
         // Capture operand ids before erasing (erase drops their uses). Push them
@@ -787,7 +824,7 @@ where
     /// never yields a terminator. Cascades (erasing instructions *ahead* of the
     /// cursor) are a worklist's job, not the cursor's.
     #[inline]
-    pub fn body_instructions(&self) -> impl Iterator<Item = NonTerminator<'ctx, B>> + '_ {
+    pub fn body_instructions(&self) -> impl Iterator<Item = NonTerminator<'m, B>> + '_ {
         let module = self.module.module_ref();
         self.function
             .as_function()
@@ -804,13 +841,9 @@ where
     /// handle *or* a storable id ([`IntoErasedValue`]) — a pass that holds a
     /// builder result needs no intervening `view`.
     #[inline]
-    pub fn replace_all_uses<V>(
-        &self,
-        view: &InstructionView<'ctx, B>,
-        replacement: V,
-    ) -> IrResult<()>
+    pub fn replace_all_uses<V>(&self, view: &InstructionView<'m, B>, replacement: V) -> IrResult<()>
     where
-        V: IntoErasedValue<'ctx, B>,
+        V: IntoErasedValue<'m, B>,
     {
         let replacement = replacement.into_erased_value(self.module.module_ref())?;
         let id = view.slot();
@@ -906,7 +939,7 @@ where
     /// reached. Skips terminators and erased ids (the latter never surface —
     /// `erase` removes them).
     #[inline]
-    pub fn next(&self) -> Option<NonTerminator<'ctx, B>> {
+    pub fn next(&self) -> Option<NonTerminator<'m, B>> {
         let module = self.patch.module.module_ref();
         self.patch.worklist.borrow_mut().as_mut()?.pop(module)
     }
@@ -1014,8 +1047,8 @@ where
 {
     #[inline]
     pub(crate) fn new(
-        module: &'m Module<'ctx, B, Unverified>,
-        function: FunctionView<'ctx, B>,
+        module: &'m Module<'m, B, Unverified>,
+        function: FunctionView<'m, B>,
         results: R::ResultRefs<'r>,
     ) -> Self {
         Self {
@@ -1048,13 +1081,13 @@ where
 
     /// Read-only function view. Delegated from the inner [`FnPatch`].
     #[inline]
-    pub fn function(&self) -> FunctionView<'ctx, B> {
+    pub fn function(&self) -> FunctionView<'m, B> {
         self.patch.function()
     }
 
     /// Mutation-capable function-body view. Delegated from the inner [`FnPatch`].
     #[inline]
-    pub fn function_mut(&self) -> FunctionBody<'ctx, B> {
+    pub fn function_mut(&self) -> FunctionBody<'m, B> {
         self.patch.function_mut()
     }
 
@@ -1069,7 +1102,7 @@ where
     /// preservation-neutral type constructors, not the module's declaration
     /// surface.
     #[inline]
-    pub fn module(&self) -> ModuleView<'ctx, B> {
+    pub fn module(&self) -> ModuleView<'m, B> {
         self.patch.module()
     }
 
@@ -1080,8 +1113,8 @@ where
     #[inline]
     pub fn builder_at<R2>(
         &self,
-        ip: InsertPoint<'ctx, R2, B>,
-    ) -> IrResult<IRBuilder<'m, 'ctx, B, ConstantFolder, Positioned, R2>>
+        ip: InsertPoint<'m, R2, B>,
+    ) -> IrResult<IRBuilder<'m, 'm, B, ConstantFolder, Positioned, R2>>
     where
         R2: ReturnMarker,
     {
@@ -1097,7 +1130,7 @@ where
     /// Erase a non-terminator instruction. Delegated from the inner [`FnPatch`];
     /// an in-block erase preserves the CFG, so it records no [`CfgUpdate`].
     #[inline]
-    pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
+    pub fn erase(&self, target: &NonTerminator<'m, B>) {
         self.patch.erase(target);
     }
 
@@ -1105,13 +1138,9 @@ where
     /// the inner [`FnPatch`]; preserves the CFG. Takes a handle or a storable
     /// id, exactly as [`FnPatch::replace_all_uses`] does.
     #[inline]
-    pub fn replace_all_uses<V>(
-        &self,
-        view: &InstructionView<'ctx, B>,
-        replacement: V,
-    ) -> IrResult<()>
+    pub fn replace_all_uses<V>(&self, view: &InstructionView<'m, B>, replacement: V) -> IrResult<()>
     where
-        V: IntoErasedValue<'ctx, B>,
+        V: IntoErasedValue<'m, B>,
     {
         self.patch.replace_all_uses(view, replacement)
     }
@@ -1173,7 +1202,7 @@ where
     /// reshape surface's block arguments: a foreign id is rejected here, before
     /// any successor scan, phi read, or arena write.
     #[inline]
-    fn resolve_block(&self, block: BlockId<Dyn, B>) -> IrResult<BasicBlockView<'ctx, B>> {
+    fn resolve_block(&self, block: BlockId<Dyn, B>) -> IrResult<BasicBlockView<'m, B>> {
         let module_ref = self.patch.module_mut().module_ref();
         let slot = block.into_basic_block_label(module_ref)?.slot();
         let label_ty = module_ref.module().label_type().as_type().id();
@@ -1203,9 +1232,9 @@ where
     pub fn split_block<Name>(
         &self,
         block: BlockId<Dyn, B>,
-        before: &InstructionView<'ctx, B>,
+        before: &InstructionView<'m, B>,
         name: Name,
-    ) -> IrResult<BasicBlock<'ctx, Dyn, Unterminated, B>>
+    ) -> IrResult<BasicBlock<'m, Dyn, Unterminated, B>>
     where
         Name: Into<String>,
     {
@@ -1231,7 +1260,7 @@ where
         // separate fixup call to forget (mirrors what
         // BasicBlock::replacePhiUsesWith does for upstream splitters).
         for succ in &successors {
-            let succ_block: BasicBlock<'ctx, Dyn, Terminated, B> =
+            let succ_block: BasicBlock<'m, Dyn, Terminated, B> =
                 BasicBlock::from_parts(succ.slot(), module_ref, label_ty);
             for inst_id in succ_block.instruction_ids() {
                 let data = module_ref.value_data(inst_id);
@@ -1296,7 +1325,7 @@ where
     /// immaterial.
     fn drop_incoming_from_pred(
         &self,
-        block: &BasicBlock<'ctx, Dyn, Terminated, B>,
+        block: &BasicBlock<'m, Dyn, Terminated, B>,
         pred_id: ValueSlot,
         keep: usize,
     ) -> IrResult<()> {
@@ -1382,7 +1411,7 @@ where
     /// the branch, read off the terminator before the collapse.
     fn remove_slot(
         &self,
-        from: &BasicBlockView<'ctx, B>,
+        from: &BasicBlockView<'m, B>,
         term_id: ValueSlot,
         slot: EditSlot,
     ) -> IrResult<()> {
@@ -1522,7 +1551,7 @@ where
     /// slot.
     fn redirect_slot(
         &self,
-        from: &BasicBlockView<'ctx, B>,
+        from: &BasicBlockView<'m, B>,
         term_id: ValueSlot,
         slot: EditSlot,
         new_to: BlockId<Dyn, B>,
@@ -1539,7 +1568,7 @@ where
         // against this module *before* any precondition scan, so a foreign id
         // is rejected while the terminator and every phi are still untouched.
         // These views are ephemeral — they live only for the rest of this call.
-        let phi_values: Vec<Value<'ctx, B>> = phi_values
+        let phi_values: Vec<Value<'m, B>> = phi_values
             .iter()
             .map(|id| {
                 id.resolve_in(from_block.module_ref())
@@ -1999,8 +2028,8 @@ where
         incomings: &[(Id, BlockId<Dyn, B>)],
     ) -> IrResult<Id>
     where
-        Id: ViewIn<'ctx, B>,
-        Id::View: IsValue<'ctx, B> + Typed<'ctx, B> + TryFrom<Value<'ctx, B>, Error = IrError>,
+        Id: ViewIn<'m, B>,
+        Id::View: IsValue<'m, B> + Typed<'m, B> + TryFrom<Value<'m, B>, Error = IrError>,
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
     {
         let module_ref = self.patch.module_mut().module_ref();
@@ -2010,8 +2039,7 @@ where
         })?;
         // Resolve each incoming id to its ephemeral handle (tag-checked) and
         // widen; a foreign id is rejected before any arena work.
-        let mut erased: Vec<(Value<'ctx, B>, BlockId<Dyn, B>)> =
-            Vec::with_capacity(incomings.len());
+        let mut erased: Vec<(Value<'m, B>, BlockId<Dyn, B>)> = Vec::with_capacity(incomings.len());
         for (id, pred) in incomings {
             let view = id.resolve_in(module_ref).ok_or(IrError::ForeignValueId)?;
             erased.push((view.into_erased(), *pred));
@@ -2077,7 +2105,7 @@ where
     pub fn insert_phi_dyn<I>(
         &mut self,
         block: BlockId<Dyn, B>,
-        ty: Type<'ctx, B>,
+        ty: Type<'m, B>,
         incomings: &[(ValueId<B>, BlockId<Dyn, B>)],
     ) -> IrResult<ValueId<B>>
     where
@@ -2087,7 +2115,7 @@ where
         // Resolve the caller's value ids to ephemeral handles (tag-checked)
         // before anything else; a foreign id is rejected with
         // `IrError::ForeignValueId` while nothing has been touched.
-        let mut resolved: Vec<(Value<'ctx, B>, BlockId<Dyn, B>)> =
+        let mut resolved: Vec<(Value<'m, B>, BlockId<Dyn, B>)> =
             Vec::with_capacity(incomings.len());
         for (id, pred) in incomings {
             resolved.push((
@@ -2107,9 +2135,9 @@ where
     fn insert_phi_value<I>(
         &mut self,
         block: BlockId<Dyn, B>,
-        ty: Type<'ctx, B>,
-        incomings: &[(Value<'ctx, B>, BlockId<Dyn, B>)],
-    ) -> IrResult<Value<'ctx, B>>
+        ty: Type<'m, B>,
+        incomings: &[(Value<'m, B>, BlockId<Dyn, B>)],
+    ) -> IrResult<Value<'m, B>>
     where
         R: AnalysisSelector<'ctx, B, DominatorTreeAnalysis, I>,
     {
@@ -2265,7 +2293,7 @@ where
     'ctx: 'r,
 {
     reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
-    from: BasicBlockView<'ctx, B>,
+    from: BasicBlockView<'m, B>,
     term_id: ValueSlot,
 }
 
@@ -2304,7 +2332,7 @@ where
     'ctx: 'r,
 {
     reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
-    from: BasicBlockView<'ctx, B>,
+    from: BasicBlockView<'m, B>,
     term_id: ValueSlot,
 }
 
@@ -2384,7 +2412,7 @@ where
     'ctx: 'r,
 {
     reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
-    from: BasicBlockView<'ctx, B>,
+    from: BasicBlockView<'m, B>,
     term_id: ValueSlot,
 }
 
@@ -2523,7 +2551,7 @@ where
     'ctx: 'r,
 {
     reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
-    from: BasicBlockView<'ctx, B>,
+    from: BasicBlockView<'m, B>,
     term_id: ValueSlot,
 }
 
@@ -2582,7 +2610,7 @@ where
     'ctx: 'r,
 {
     reshape: &'e FnReshape<'m, 'r, 'ctx, B, R>,
-    from: BasicBlockView<'ctx, B>,
+    from: BasicBlockView<'m, B>,
     term_id: ValueSlot,
 }
 
@@ -2658,7 +2686,7 @@ where
     /// A terminator this surface does not edge-edit (`ret`, `unreachable`,
     /// `indirectbr`, `resume`, `catchret`, `cleanupret`, `catchswitch`),
     /// carrying its raw read-only view.
-    Uneditable(InstructionView<'ctx, B>),
+    Uneditable(InstructionView<'m, B>),
 }
 
 impl MutatingFn for PatchBody {
@@ -2672,8 +2700,8 @@ impl MutatingFn for PatchBody {
 
     #[inline]
     fn into_mutator<'m, 'r, 'ctx, B, R>(
-        token: Self::Token<'m, 'ctx, B>,
-        function: FunctionView<'ctx, B>,
+        token: Self::Token<'m, B>,
+        function: FunctionView<'m, B>,
         results: R::ResultRefs<'r>,
     ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
     where
@@ -2697,8 +2725,8 @@ impl MutatingFn for ReshapeCfg {
 
     #[inline]
     fn into_mutator<'m, 'r, 'ctx, B, R>(
-        token: Self::Token<'m, 'ctx, B>,
-        function: FunctionView<'ctx, B>,
+        token: Self::Token<'m, B>,
+        function: FunctionView<'m, B>,
         results: R::ResultRefs<'r>,
     ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
     where
@@ -2769,34 +2797,34 @@ impl ModReport {
 /// rewrite is the heaviest rung and preserves nothing by default). `Inspect`
 /// module passes have no `mutate()` at all.
 ///
-/// The module `token` (`'pm`) borrows the
+/// The module `token` (`'m`) borrows the
 /// long-lived pipeline module, the prefetched `results` (`'r`) borrow the module
 /// analysis manager only for the pass's scope, `mam` (`'r`) is a shared
 /// cache-peek borrow, and `fam` (`'f`) is a reborrowed `&mut` for the fallible
 /// per-function queries. (llvmkit-specific capability-context lock — no upstream
 /// analog: LLVM module-pass contexts are untyped `Module&` + `MAM&`.)
-pub struct ModCx<'pm, 'r, 'f, 'ctx, B, A, R>
+pub struct ModCx<'m, 'r, 'f, 'ctx, B, A, R>
 where
     B: ModuleBrand + 'ctx,
     A: ModAccess,
     R: ModuleAnalysisList<'ctx, B>,
-    'ctx: 'pm,
+    'ctx: 'm,
     'ctx: 'r,
     'ctx: 'f,
 {
-    module: ModuleView<'ctx, B>,
-    token: A::Token<'pm, 'ctx, B>,
+    module: ModuleView<'m, B>,
+    token: A::Token<'m, B>,
     results: R::ResultRefs<'r>,
     mam: &'r ModuleAnalysisManager<'ctx, B>,
     fam: &'f mut FunctionAnalysisManager<'ctx, B>,
 }
 
-impl<'pm, 'r, 'f, 'ctx, B, A, R> ModCx<'pm, 'r, 'f, 'ctx, B, A, R>
+impl<'m, 'r, 'f, 'ctx, B, A, R> ModCx<'m, 'r, 'f, 'ctx, B, A, R>
 where
     B: ModuleBrand + 'ctx,
     A: ModAccess,
     R: ModuleAnalysisList<'ctx, B>,
-    'ctx: 'pm,
+    'ctx: 'm,
     'ctx: 'r,
     'ctx: 'f,
 {
@@ -2807,8 +2835,8 @@ where
     /// single-pass driver is now its sole non-test caller.
     #[inline]
     pub(crate) fn new(
-        module: ModuleView<'ctx, B>,
-        token: A::Token<'pm, 'ctx, B>,
+        module: ModuleView<'m, B>,
+        token: A::Token<'m, B>,
         results: R::ResultRefs<'r>,
         mam: &'r ModuleAnalysisManager<'ctx, B>,
         fam: &'f mut FunctionAnalysisManager<'ctx, B>,
@@ -2824,13 +2852,13 @@ where
 
     /// Read-only module view.
     #[inline]
-    pub fn module(&self) -> ModuleView<'ctx, B> {
+    pub fn module(&self) -> ModuleView<'m, B> {
         self.module
     }
 
     /// Function views in declaration order.
     #[inline]
-    pub fn functions(&self) -> ModuleFunctionViews<'ctx, B> {
+    pub fn functions(&self) -> ModuleFunctionViews<'m, B> {
         ModuleFunctionViews::new(self.module)
     }
 
@@ -2851,10 +2879,7 @@ where
     /// list of which functions a module pass will visit, so per-function analysis
     /// access cannot be prefetched into an infallible accessor.
     #[inline]
-    pub fn function_analysis<A2>(
-        &mut self,
-        function: FunctionView<'ctx, B>,
-    ) -> IrResult<&A2::Result>
+    pub fn function_analysis<A2>(&mut self, function: FunctionView<'m, B>) -> IrResult<&A2::Result>
     where
         A2: FunctionAnalysis<'ctx, B>,
     {
@@ -2878,12 +2903,12 @@ where
     }
 }
 
-impl<'pm, 'r, 'f, 'ctx, B, A, R> ModCx<'pm, 'r, 'f, 'ctx, B, A, R>
+impl<'m, 'r, 'f, 'ctx, B, A, R> ModCx<'m, 'r, 'f, 'ctx, B, A, R>
 where
     B: ModuleBrand + 'ctx,
     A: MutatingModule,
     R: ModuleAnalysisList<'ctx, B>,
-    'ctx: 'pm,
+    'ctx: 'm,
     'ctx: 'r,
     'ctx: 'f,
 {
@@ -2895,7 +2920,7 @@ where
     /// left is the mutator's `done()`, which carries the rung's preservation
     /// floor. This is the core honesty mechanism.
     #[inline]
-    pub fn mutate(self) -> <A as MutatingModule>::Mutator<'pm, 'r, 'ctx, B, R> {
+    pub fn mutate(self) -> <A as MutatingModule>::Mutator<'m, 'r, 'ctx, B, R> {
         A::into_mutator(self.token, self.results)
     }
 }
@@ -2922,7 +2947,7 @@ where
     'ctx: 'm,
     'ctx: 'r,
 {
-    token: &'m Module<'ctx, B, Unverified>,
+    token: &'m Module<'m, B, Unverified>,
     results: R::ResultRefs<'r>,
 }
 
@@ -2934,13 +2959,13 @@ where
     'ctx: 'r,
 {
     #[inline]
-    pub(crate) fn new(token: &'m Module<'ctx, B, Unverified>, results: R::ResultRefs<'r>) -> Self {
+    pub(crate) fn new(token: &'m Module<'m, B, Unverified>, results: R::ResultRefs<'r>) -> Self {
         Self { token, results }
     }
 
     /// Read-only module view.
     #[inline]
-    pub fn module(&self) -> ModuleView<'ctx, B> {
+    pub fn module(&self) -> ModuleView<'m, B> {
         self.token.as_view()
     }
 
@@ -2955,7 +2980,7 @@ where
     /// precisely because their floors *do* claim something; they see the module
     /// through [`FnPatch::module`] instead.
     #[inline]
-    pub fn module_mut(&self) -> &'m Module<'ctx, B, Unverified> {
+    pub fn module_mut(&self) -> &'m Module<'m, B, Unverified> {
         self.token
     }
 
@@ -3003,6 +3028,7 @@ where
         PatchFunctions {
             token: self.token,
             functions: ModuleFunctionViews::new(self.module()),
+            _ctx: PhantomData,
         }
     }
 
@@ -3022,6 +3048,7 @@ where
         ReshapeFunctions {
             token: self.token,
             functions: ModuleFunctionViews::new(self.module()),
+            _ctx: PhantomData,
         }
     }
 
@@ -3050,8 +3077,11 @@ pub struct PatchFunctions<'m, 'ctx, B: ModuleBrand + 'ctx>
 where
     'ctx: 'm,
 {
-    token: &'m Module<'ctx, B, Unverified>,
-    functions: ModuleFunctionViews<'ctx, B>,
+    token: &'m Module<'m, B, Unverified>,
+    functions: ModuleFunctionViews<'m, B>,
+    /// The yielded mutator's analysis region. Named only in `Item`, so it needs
+    /// a marker to stay a parameter of this struct.
+    _ctx: PhantomData<fn() -> &'ctx ()>,
 }
 
 impl<'m, 'ctx, B: ModuleBrand + 'ctx> Iterator for PatchFunctions<'m, 'ctx, B> {
@@ -3084,8 +3114,11 @@ pub struct ReshapeFunctions<'m, 'ctx, B: ModuleBrand + 'ctx>
 where
     'ctx: 'm,
 {
-    token: &'m Module<'ctx, B, Unverified>,
-    functions: ModuleFunctionViews<'ctx, B>,
+    token: &'m Module<'m, B, Unverified>,
+    functions: ModuleFunctionViews<'m, B>,
+    /// The yielded mutator's analysis region. Named only in `Item`, so it needs
+    /// a marker to stay a parameter of this struct.
+    _ctx: PhantomData<fn() -> &'ctx ()>,
 }
 
 impl<'m, 'ctx, B: ModuleBrand + 'ctx> Iterator for ReshapeFunctions<'m, 'ctx, B> {
@@ -3117,7 +3150,7 @@ impl MutatingModule for RewriteModule {
 
     #[inline]
     fn into_mutator<'m, 'r, 'ctx, B, R>(
-        token: Self::Token<'m, 'ctx, B>,
+        token: Self::Token<'m, B>,
         results: R::ResultRefs<'r>,
     ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
     where

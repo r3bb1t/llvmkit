@@ -364,7 +364,7 @@ impl<B: ModuleBrand> FunctionPass<B> for InsertMergePhiTyped<B> {
         let phi: IntValueId<i32, B> = reshape.insert_phi(merge.id(), &self.incomings)?;
         // The id is typed: viewing it yields the width-marked handle directly,
         // so reading its type needs no narrowing.
-        let _typed_ty: llvmkit_ir::IntType<'ctx, i32, B> = reshape.module().view(phi).ty();
+        let _typed_ty: llvmkit_ir::IntType<'_, i32, B> = reshape.module().view(phi).ty();
         Ok(reshape.done())
     }
 }

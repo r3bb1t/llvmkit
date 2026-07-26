@@ -66,10 +66,10 @@ fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
 /// erase every use-less non-terminator in the function. Both passes delegate
 /// here, so the *only* difference between them is the impl header the macro
 /// hides.
-fn erase_dead_instructions<'ctx, B: ModuleBrand + 'ctx>(
-    patch: &mut FnPatch<'_, '_, 'ctx, B, ()>,
+fn erase_dead_instructions<'m, 'ctx, B: ModuleBrand + 'ctx>(
+    patch: &mut FnPatch<'m, '_, 'ctx, B, ()>,
 ) -> IrResult<()> {
-    let mut dead: Vec<InstructionView<'ctx, B>> = Vec::new();
+    let mut dead: Vec<InstructionView<'m, B>> = Vec::new();
     for block in patch.function_mut().basic_blocks() {
         for view in block.instructions() {
             if !view.to_erased().has_uses() && !view.is_terminator() {

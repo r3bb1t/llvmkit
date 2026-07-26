@@ -30,11 +30,14 @@ struct CountFunctionResult {
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for CountFunctionAnalysis {
     type Result = CountFunctionResult;
 
-    fn run(
+    fn run<'v>(
         &self,
-        function: FunctionView<'ctx, B>,
+        function: FunctionView<'v, B>,
         _am: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Self::Result> {
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
         self.runs.set(self.runs.get() + 1);
         let instructions = function
             .basic_blocks()
@@ -45,12 +48,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for CountFunctionAna
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for CountFunctionResult {
-    fn invalidate(
+    fn invalidate<'v>(
         &mut self,
-        _function: FunctionView<'ctx, B>,
+        _function: FunctionView<'v, B>,
         pa: &PreservedAnalyses,
         _inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
-    ) -> IrResult<bool> {
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
         let checker = pa.checker::<CountFunctionAnalysis>();
         Ok(!(checker.preserved() || checker.preserved_set::<AllAnalysesOnFunction>()))
     }
@@ -69,11 +75,14 @@ struct CountModuleResult {
 impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysis<'ctx, B> for CountModuleAnalysis {
     type Result = CountModuleResult;
 
-    fn run(
+    fn run<'v>(
         &self,
-        module: ModuleView<'ctx, B>,
+        module: ModuleView<'v, B>,
         _am: &mut ModuleAnalysisManager<'ctx, B>,
-    ) -> IrResult<Self::Result> {
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
         self.runs.set(self.runs.get() + 1);
         Ok(CountModuleResult {
             functions: module.functions().len(),
@@ -82,12 +91,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysis<'ctx, B> for CountModuleAnalysi
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisResult<'ctx, B> for CountModuleResult {
-    fn invalidate(
+    fn invalidate<'v>(
         &mut self,
-        _module: ModuleView<'ctx, B>,
+        _module: ModuleView<'v, B>,
         pa: &PreservedAnalyses,
         _inv: &mut ModuleAnalysisInvalidator<'_, 'ctx, B>,
-    ) -> IrResult<bool> {
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
         let checker = pa.checker::<CountModuleAnalysis>();
         Ok(!(checker.preserved() || checker.preserved_set::<AllAnalysesOnModule>()))
     }
@@ -102,11 +114,14 @@ struct DependsOnMissingFunctionResult;
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DependsOnMissingFunctionAnalysis {
     type Result = DependsOnMissingFunctionResult;
 
-    fn run(
+    fn run<'v>(
         &self,
-        _function: FunctionView<'ctx, B>,
+        _function: FunctionView<'v, B>,
         _am: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Self::Result> {
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
         Ok(DependsOnMissingFunctionResult)
     }
 }
@@ -114,12 +129,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DependsOnMissing
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B>
     for DependsOnMissingFunctionResult
 {
-    fn invalidate(
+    fn invalidate<'v>(
         &mut self,
-        _function: FunctionView<'ctx, B>,
+        _function: FunctionView<'v, B>,
         _pa: &PreservedAnalyses,
         inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
-    ) -> IrResult<bool> {
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
         inv.invalidate::<CountFunctionAnalysis>()
     }
 }

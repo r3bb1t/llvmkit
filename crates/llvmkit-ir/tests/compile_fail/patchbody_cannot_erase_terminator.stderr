@@ -11,5 +11,5 @@ error[E0308]: mismatched types
 note: method defined here
   --> src/pass_context.rs
    |
-   |     pub fn erase(&self, target: &NonTerminator<'ctx, B>) {
+   |     pub fn erase(&self, target: &NonTerminator<'m, B>) {
    |            ^^^^^

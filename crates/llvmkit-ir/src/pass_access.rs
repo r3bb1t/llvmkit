@@ -125,9 +125,11 @@ pub trait FnAccess: access_sealed::Sealed + 'static {
     /// `&Module<Unverified>` for the mutating rungs — the interior-mutability
     /// mutation token that [`crate::pass_manager::run_function_pass`] builds from
     /// `module.unverify()`.
-    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>: Copy
-    where
-        'ctx: 'pm;
+    ///
+    /// `'m` is the DRIVER's borrow of the module value it owns; the token and
+    /// every handle minted through it live at that one region. It is deliberately
+    /// unrelated to a pass's analysis region (`'ctx`), which outlives it.
+    type Token<'m, B: ModuleBrand + 'm>: Copy;
     /// Preservation floor the driver applies after a mutating run at this rung.
     /// DERIVED, never author-supplied; always a SAFE under-approximation.
     #[doc(hidden)]
@@ -142,10 +144,9 @@ pub trait ModAccess: access_sealed::Sealed + 'static {
     /// The module capability this rung's context holds. `()` for read-only
     /// ([`Inspect`]); `&Module<Unverified>` for [`RewriteModule`], the mutation
     /// token [`crate::pass_manager::run_module_pass`] builds from
-    /// `module.unverify()` and hands to [`crate::pass_context::ModCx`].
-    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>: Copy
-    where
-        'ctx: 'pm;
+    /// `module.unverify()` and hands to [`crate::pass_context::ModCx`]. `'m` is
+    /// the driver's module borrow — see [`FnAccess::Token`].
+    type Token<'m, B: ModuleBrand + 'm>: Copy;
     /// Preservation floor the driver applies after a mutating run at this rung.
     /// DERIVED, never author-supplied; always a SAFE under-approximation.
     #[doc(hidden)]
@@ -154,10 +155,7 @@ pub trait ModAccess: access_sealed::Sealed + 'static {
 
 impl FnAccess for Inspect {
     type Verdict = StaysVerified;
-    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
-        = ()
-    where
-        'ctx: 'pm;
+    type Token<'m, B: ModuleBrand + 'm> = ();
 
     fn preserved_floor() -> PreservedAnalyses {
         PreservedAnalyses::all()
@@ -166,10 +164,7 @@ impl FnAccess for Inspect {
 
 impl ModAccess for Inspect {
     type Verdict = StaysVerified;
-    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
-        = ()
-    where
-        'ctx: 'pm;
+    type Token<'m, B: ModuleBrand + 'm> = ();
 
     fn preserved_floor() -> PreservedAnalyses {
         PreservedAnalyses::all()
@@ -178,10 +173,7 @@ impl ModAccess for Inspect {
 
 impl FnAccess for PatchBody {
     type Verdict = Downgrades;
-    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
-        = &'pm Module<'ctx, B, Unverified>
-    where
-        'ctx: 'pm;
+    type Token<'m, B: ModuleBrand + 'm> = &'m Module<'m, B, Unverified>;
 
     fn preserved_floor() -> PreservedAnalyses {
         PreservedAnalyses::all_in_set::<CFGAnalyses>()
@@ -190,10 +182,7 @@ impl FnAccess for PatchBody {
 
 impl FnAccess for ReshapeCfg {
     type Verdict = Downgrades;
-    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
-        = &'pm Module<'ctx, B, Unverified>
-    where
-        'ctx: 'pm;
+    type Token<'m, B: ModuleBrand + 'm> = &'m Module<'m, B, Unverified>;
 
     fn preserved_floor() -> PreservedAnalyses {
         PreservedAnalyses::none()
@@ -202,10 +191,7 @@ impl FnAccess for ReshapeCfg {
 
 impl ModAccess for RewriteModule {
     type Verdict = Downgrades;
-    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
-        = &'pm Module<'ctx, B, Unverified>
-    where
-        'ctx: 'pm;
+    type Token<'m, B: ModuleBrand + 'm> = &'m Module<'m, B, Unverified>;
 
     fn preserved_floor() -> PreservedAnalyses {
         PreservedAnalyses::none()
@@ -236,8 +222,8 @@ pub trait MutatingFn: FnAccess {
     /// impls live next to the mutator definitions in `pass_context`).
     #[doc(hidden)]
     fn into_mutator<'m, 'r, 'ctx, B, R>(
-        token: Self::Token<'m, 'ctx, B>,
-        function: FunctionView<'ctx, B>,
+        token: Self::Token<'m, B>,
+        function: FunctionView<'m, B>,
         results: R::ResultRefs<'r>,
     ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
     where
@@ -271,7 +257,7 @@ pub trait MutatingModule: ModAccess {
     /// lives next to the mutator definition in `pass_context`).
     #[doc(hidden)]
     fn into_mutator<'m, 'r, 'ctx, B, R>(
-        token: Self::Token<'m, 'ctx, B>,
+        token: Self::Token<'m, B>,
         results: R::ResultRefs<'r>,
     ) -> Self::Mutator<'m, 'r, 'ctx, B, R>
     where
