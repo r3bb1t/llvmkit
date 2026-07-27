@@ -14,6 +14,18 @@ Tracking **LLVM 22.1.4** (`llvmorg-22.1.4`, released 2026-04-21).
 
 Shipped today:
 
+- **Owned modules and storable ids** — the 0.1.0 handle model. `Module<B, S>`
+  has no lifetime parameter, owns its storage, and is `Send`, so it can be
+  returned, stored in a struct, collected into a `Vec`, and moved between
+  threads. Every declaration and every `build_*` returns a `Copy + Send`
+  **id** (`IntValueId<W, B>`, `BlockId<R, B, Params>`, `FunctionId<R, B>`,
+  `GlobalId<B>`, …) that carries the module's identity without borrowing it;
+  the borrowing handles are minted per operation from `m.view(id)` /
+  `m.try_view(id)`. A module's identity is the `B: ModuleBrand` *type*, in
+  three rungs — `module_new!` (unnameable, generated at the expansion site),
+  `Module::branded::<B>` (a named brand, at most one live module per brand),
+  and `Module::dynamic` (`DynBrand`, unlimited live modules, separated by the
+  runtime tag). See [Same-module safety](#same-module-safety).
 - **`.ll` lexer** — done. `llvmkit-asmparser` ports
   `llvm/lib/AsmParser/LLLexer.cpp` and borrows directly from the source slice,
   allocating only when escape decoding actually changes bytes.
@@ -436,7 +448,7 @@ and no runtime check to reach. Upstream accepts each of these as `Value *` and
 reports them from `Verifier.cpp`, later, if verification runs at all. The
 mapping from each upstream verifier message to the llvmkit type that forecloses
 it is tabulated in [Type Safety: llvmkit vs. LLVM C++](docs/type-safety-vs-llvm.md),
-and 80 compile-fail fixtures lock the guarantees.
+and 81 compile-fail fixtures lock the guarantees.
 
 **3. Verification is a typestate, not a function you must remember to call.**
 `Module::verify(self)` consumes `Module<B, Unverified>` and returns
@@ -453,6 +465,36 @@ The honest limits: these guarantees cover the *modeled* surface only, the
 erased `Dyn` forms deliberately trade them back for runtime checks so parsed and
 dynamic IR still works, and none of it helps if you need codegen — upstream is
 the only option there.
+
+### Bindings-readiness
+
+`llvmkit` ships no Python or Java bindings, and writing them is out of scope
+here. What *is* in scope — and is a standing constraint on every API decision —
+is that the surface stays shaped so a wrapper can be written later without
+fighting it. Concretely:
+
+- **Nothing is reachable only from inside a closure.** `Module::branded::<B>`,
+  `Module::dynamic`, and `module_new!` all return an owned module. A binding's
+  `Module.__init__` can call one and store the result; there is no
+  `with_new(|m| ...)` scope for a foreign call stack to sit inside.
+- **No lifetime appears in a storable type.** Every id is `Copy + Send` and
+  `'static`; a wrapper object can hold one in a field for as long as it likes.
+  The borrowing views (`IntValue<'ctx, ..>`) are minted per operation from
+  `m.view(id)` and never need to cross the boundary.
+- **`DynBrand` is the rung a binding uses.** A dynamic language has no place to
+  put a brand type, and `Module::dynamic` asks for none: it is exempt from the
+  uniqueness registry, so many live modules are legal, and separation falls
+  back to the runtime `ModuleId` tag with `IrError::ForeignValueId` as the
+  verdict — an error a wrapper can raise as an exception, not UB.
+- **Every misuse is an `IrError` or a deterministic panic, never a dangling
+  read.** `#![forbid(unsafe_code)]` holds across the workspace, so the worst a
+  forged or stale handle can do is get rejected.
+
+What a wrapper still has to build itself: an id table. Ids are opaque — their
+`(ModuleId, slot)` payload is private, and there is deliberately no
+`from_raw_parts` — so a binding keeps its own `Vec`/`HashMap` of live ids and
+hands the host language an index into it, which is what
+[wgpu](https://github.com/gfx-rs/wgpu)'s and MLIR's C APIs do anyway.
 
 ### Same-module safety
 

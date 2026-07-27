@@ -70,7 +70,8 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let rbx: IntValue<'_, i64, _> = m.view(add_fn).param(1)?.try_into()?;
     let rcx: IntValue<'_, i64, _> = m.view(add_fn).param(2)?.try_into()?;
     // `rdx` is part of the signature but unused in the priorities-section
-    // body; touch the slot so the lifetime brand keeps it live.
+    // body; read it anyway so the example shows all four register params
+    // arriving as typed `i64` values.
     let _rdx: IntValue<'_, i64, _> = m.view(add_fn).param(3)?.try_into()?;
 
     let t0 = b.build_trunc(rax, i32_ty, "")?;

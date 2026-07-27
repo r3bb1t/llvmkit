@@ -162,7 +162,7 @@ One branch per package, each cut from `dev` after the previous merges (per the e
 
 User-visible changes accumulate in the top-level [`CHANGELOG.md`](../CHANGELOG.md) under **Unreleased** until a release is tagged (started with the phi-guarantees work; earlier packages were recorded per-commit). CI runs on `master`+`dev`; every merge to `dev` was green first.
 
-> **Historical note.** This document once recorded "two pre-existing environmental `.stderr` mismatches" (`folder_typed_wrong_width`, `extract_value_empty_indices`) as an expected local failure. That caveat is **retired and was never real**: both fixtures pass on the pinned CI toolchain, and the mismatch only ever appeared when the suite was run on a newer rustc than the pinned one. Gate on `cargo +1.96.0` and the trybuild baseline is **0 failures of 80 fixtures**.
+> **Historical note.** This document once recorded "two pre-existing environmental `.stderr` mismatches" (`folder_typed_wrong_width`, `extract_value_empty_indices`) as an expected local failure. That caveat is **retired and was never real**: both fixtures pass on the pinned CI toolchain, and the mismatch only ever appeared when the suite was run on a newer rustc than the pinned one. Gate on `cargo +1.96.0` and the trybuild baseline is **0 failures of 82 registered fixtures** (81 `compile_fail` + 1 `pass`).
 
 ## Out of scope (recorded as considered/deferred with reasons)
 

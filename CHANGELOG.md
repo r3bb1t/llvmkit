@@ -64,13 +64,45 @@ produced.
   and an owned module (so a lifter can suspend, move threads, and resume),
   unrepresentable-versus-diagnosed error classes, and verification as a
   typestate rather than a function you must remember to call.
+- New README section, **Bindings-readiness**: the standing constraint 2.0 was
+  designed under — nothing reachable only from inside a closure, no lifetime in
+  any storable type, `DynBrand` as the rung a wrapper uses, and every misuse an
+  `IrError` or a deterministic panic rather than a dangling read. Bindings
+  themselves remain out of scope; what a wrapper still supplies is its own id
+  table, since an id's `(ModuleId, slot)` payload is private and there is
+  deliberately no `from_raw_parts`.
 - `docs/type-safety-vs-llvm.md` worked examples re-spelled against the
   lifetime-free `Module<B, S>`.
 - The **"2 environmental `.stderr` fixtures"** caveat is retired from
-  `docs/pass-facing-type-safety.md` and `docs/unforgeable-markers-design.md`.
+  `docs/pass-facing-type-safety.md`, `docs/unforgeable-markers-design.md`, and
+  the `docs/future-work.md` backlog item that asked for a canonical re-bless.
   It was never real: both fixtures pass on the pinned 1.96.0 toolchain, and the
-  mismatch only ever appeared under a newer rustc. The trybuild baseline is
-  **0 failures of 80**.
+  mismatch only ever appeared under a newer rustc. Gated on `cargo +1.96.0` the
+  trybuild baseline is **0 failures of 82 registered fixtures** (81
+  `compile_fail` + 1 `pass`).
+
+#### Added
+
+- Two compile-fail fixtures for 2.0 laws that had no lock.
+  `builder_cannot_terminate_twice.rs` proves the *linearity* half of "one
+  terminator per block" — every terminator-emitting build takes `self` by
+  value, so a second call is `E0382`, where upstream `IRBuilder` keeps its
+  insertion point after `CreateRetVoid()` and silently appends a second
+  terminator. `view_cannot_outlive_its_module.rs` proves a borrowing handle
+  cannot escape the scope of the owned module it was minted from (`E0597`) —
+  the compile-time law that makes the id family necessary rather than merely
+  convenient, since the `.id()` form of the identical program *does* compile.
+
+#### Known gaps (deliberately not closed before the freeze)
+
+- The debug-record sub-surface still speaks untagged slots:
+  `DebugMetadataOperand::Value` carries a bare `ValueSlot` with no `ModuleId`
+  tag and no brand, so a slot from one module can be pushed into another's
+  instruction and mis-resolve when printed. Pre-existing, not a 2.0 regression —
+  2.0 tagged the value currency and left this one behind. Closing it needs a `B`
+  parameter and a tagged payload on `DebugMetadataOperand`/`DebugRecord`, which
+  ripples into `InstructionData`, the `.ll` parser, and the printer: a cycle of
+  its own. See `docs/future-work.md`, "Type-system follow-ups".
 
 ### llvmkit 2.0 — the SSA session is a value (cycle D)
 

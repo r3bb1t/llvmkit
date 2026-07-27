@@ -5,10 +5,14 @@
 //! (e.g. `Module::i32_type`) stay infallible; validation constructors and
 //! all builder methods funnel through this enum.
 //!
-//! Variants are added phase-by-phase as new failure modes appear. Where
-//! `'ctx` lifetime branding catches a class of bugs at compile time
-//! (e.g. cross-Module mixing), the corresponding runtime variant is
-//! deliberately *not* present here — see the IR foundation plan, Pivot 4.
+//! Variants are added phase-by-phase as new failure modes appear. Where the
+//! `B: ModuleBrand` type parameter catches a class of bugs at compile time
+//! (e.g. mixing handles from two modules carrying *distinct* brand types),
+//! the corresponding runtime variant is deliberately *not* present here.
+//! The brand is a backstop, not a guarantee, for the rungs where it cannot
+//! separate two modules — two modules sharing a brand type (`DynBrand`, or a
+//! named brand reused after the first was dropped) fall back to the runtime
+//! `ModuleId` tag, which is what [`IrError::ForeignValueId`] reports.
 
 #![deny(missing_docs)]
 

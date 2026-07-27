@@ -117,6 +117,29 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
 
 ## Type-system follow-ups
 
+- **The debug-record sub-surface still speaks untagged slots** (found during the
+  2.0-E freeze sweep; **pre-existing, not a 2.0 regression** — 2.0 tagged the
+  *value* currency and left this one behind). `DebugMetadataOperand::Value`
+  carries a bare `ValueSlot` and `DebugVariableRecord`
+  carries bare `MetadataSlot`s; neither has a `ModuleId` tag or a brand, and
+  `Instruction::push_debug_record` performs no provenance check. A slot minted
+  from module A (`handle.slot()` is public, because `llvmkit-asmparser` needs it
+  for uselistorder and phi source locations) can therefore be pushed into module
+  B's instruction, where `asm_writer::fmt_debug_metadata_operand` resolves it via
+  `module.context().value_data(slot)` against **B's** arena — a silent
+  mis-resolve, or an out-of-range panic if B's arena is shorter. This is the one
+  place the 2.0 law "a foreign handle is an `IrError` or a deterministic panic,
+  never a silent mis-resolve" does not hold.
+  Closing it means giving `DebugMetadataOperand` (and transitively `DebugRecord`
+  and `DebugVariableRecord`) a `B` parameter and a tagged payload, so that the
+  public constructor takes a `ValueId<B>` and the tag check lands at the same
+  arena choke point every other id already goes through. That ripples into
+  `InstructionData`, the `.ll` parser's debug-record path, and the printer — a
+  cycle of its own, not a polish item, which is why 2.0 froze without it.
+  Deliberately deferred rather than papered over: a range check does **not**
+  substitute, because slots are plain arena indices and module A's slot 5 is
+  in-range in module B.
+
 - **Const-generic `VectorType<E, Len<N>>` / `ArrayType<E, ArrLen<N>>` — shipped**
   (`feature-17/const-generic-vec-array`, S1–S6). `VectorType`/`VectorValue` and
   `ArrayType`/`ArrayValue` now carry a scalar **element** marker (the scalar
@@ -382,13 +405,13 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   to `()` and never reaches a mutator. It is sound today by that argument, but
   a `pub(crate)` unverify with no caller marker is a footgun -- a sealed
   caller-marker token would pin that only the read-only drivers can mint it.
-- **Compile-fail `.stderr` canonical-rustc bless** -- the
-  `typestate_compile_fail` suite carries two pre-existing `.stderr` drifts
-  (`folder_typed_wrong_width`, `extract_value_empty_indices`) blessed against a
-  different (CI) rustc, plus the six new pass-API fixtures (including
-  `claim_preserved_after_mutate`) blessed on the local rustc. The whole set
-  should be re-blessed on the canonical CI rustc so every fixture matches on the
-  reference toolchain.
+- ~~**Compile-fail `.stderr` canonical-rustc bless**~~ -- **done (2026-07-26,
+  cycle 2.0-D/E)**. There were never two "environmental" drifts: gated on the
+  pinned CI toolchain (`cargo +1.96.0`), `folder_typed_wrong_width` and
+  `extract_value_empty_indices` both pass, and the whole suite's baseline is
+  **0 failures of 82 registered fixtures**. The mismatch only ever appeared
+  when the suite was run on a *newer* rustc than the pin. Every `.stderr` in
+  the tree is blessed on 1.96.0; re-bless there and nowhere else.
 
 ## Package 4 (analysis preservation) — deferred
 
