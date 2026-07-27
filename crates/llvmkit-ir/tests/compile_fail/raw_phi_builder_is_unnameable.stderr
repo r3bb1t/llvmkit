@@ -1,40 +1,53 @@
-error[E0624]: method `build_int_phi` is private
-  --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:28:18
+error[E0599]: no method named `build_int_phi` found for struct `IRBuilder<'m, 'ctx, B, F, S, R>` in the current scope
+  --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:34:18
    |
-28 |       let _int = b.build_int_phi::<i32, _>("p");
-   |                    ^^^^^^^^^^^^^ private method
+34 |     let _int = b.build_int_phi::<i32, _>("p");
+   |                  ^^^^^^^^^^^^^
    |
-  ::: src/ir_builder.rs
+help: there is a method `build_int_phi_dyn` with a similar name, but with different arguments
+  --> src/ir_builder.rs
    |
-   | /     pub(crate) fn build_int_phi<W, Name>(&self, name: Name) -> IrResult<PhiInstId<W, B>>
+   | /     pub fn build_int_phi_dyn<Name>(
+   | |         &self,
+   | |         ty: IntType<'ctx, IntDyn, B>,
+   | |         name: Name,
+   | |     ) -> IrResult<PhiInstId<IntDyn, B>>
    | |     where
    | |         Name: AsRef<str>,
-   | |         W: crate::int_width::StaticIntWidth,
-   | |____________________________________________- private method defined here
+   | |_________________________^
 
-error[E0624]: method `build_fp_phi` is private
-  --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:29:17
+error[E0599]: no method named `build_fp_phi` found for struct `IRBuilder<'m, 'ctx, B, F, S, R>` in the current scope
+  --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:35:17
    |
-29 |       let _fp = b.build_fp_phi::<f64, _>("q");
-   |                   ^^^^^^^^^^^^ private method
+35 |     let _fp = b.build_fp_phi::<f64, _>("q");
+   |                 ^^^^^^^^^^^^
    |
-  ::: src/ir_builder.rs
+help: there is a method `build_fp_phi_dyn` with a similar name, but with different arguments
+  --> src/ir_builder.rs
    |
-   | /     pub(crate) fn build_fp_phi<K, Name>(&self, name: Name) -> IrResult<FpPhiInstId<K, B>>
+   | /     pub fn build_fp_phi_dyn<Name>(
+   | |         &self,
+   | |         ty: FloatType<'ctx, FloatDyn, B>,
+   | |         name: Name,
+   | |     ) -> IrResult<FpPhiInstId<FloatDyn, B>>
    | |     where
    | |         Name: AsRef<str>,
-   | |         K: super::float_kind::StaticFloatKind,
-   | |______________________________________________- private method defined here
+   | |_________________________^
 
-error[E0624]: method `build_pointer_phi` is private
-  --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:30:18
+error[E0599]: no method named `build_pointer_phi` found for struct `IRBuilder<'m, 'ctx, B, F, S, R>` in the current scope
+  --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:36:18
    |
-30 |       let _ptr = b.build_pointer_phi("r");
-   |                    ^^^^^^^^^^^^^^^^^ private method
+36 |     let _ptr = b.build_pointer_phi("r");
+   |                  ^^^^^^^^^^^^^^^^^
    |
-  ::: src/ir_builder.rs
+help: there is a method `build_pointer_phi_in_addrspace` with a similar name, but with different arguments
+  --> src/ir_builder.rs
    |
-   | /     pub(crate) fn build_pointer_phi<Name>(&self, name: Name) -> IrResult<PointerPhiInstId<B>>
+   | /     pub fn build_pointer_phi_in_addrspace<Name>(
+   | |         &self,
+   | |         ty: PointerType<'ctx, B>,
+   | |         name: Name,
+   | |     ) -> IrResult<PointerPhiInstId<B>>
    | |     where
    | |         Name: AsRef<str>,
-   | |_________________________- private method defined here
+   | |_________________________^

@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::rc::Rc;
 
+use super::module::{Module, Verified};
 use crate::cfg_update::CfgUpdate;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::module::{ModuleBrand, ModuleId, ModuleView};
@@ -1045,10 +1046,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
     /// Fetch the module's result for analysis `A`, running the pass and caching
     /// the result on the first request. Takes a verified module; errors with
     /// [`IrError::AnalysisNotRegistered`] if `A` was never registered.
-    pub fn get_result<'v, A>(
-        &mut self,
-        module: &'v crate::module::Module<B, crate::module::Verified>,
-    ) -> IrResult<&A::Result>
+    pub fn get_result<'v, A>(&mut self, module: &'v Module<B, Verified>) -> IrResult<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,
         'ctx: 'v,

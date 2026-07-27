@@ -15,6 +15,9 @@
 
 use core::cell::{Cell, RefCell};
 
+use super::atomicrmw_binop::AtomicRMWBinOp;
+use super::cmp_predicate::{FloatPredicate, IntPredicate};
+use super::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::align::{Align, MaybeAlign};
 use crate::atomic_ordering::AtomicOrdering;
 use crate::attributes::AttributeStorage;
@@ -127,7 +130,7 @@ pub(crate) struct BinaryOpData {
     /// (`fadd` / `fsub` / `fmul` / `fdiv` / `frem`); empty for integer
     /// opcodes. Mirrors the `FastMathFlags` slot on `FPMathOperator`
     /// (`Operator.h`).
-    pub(crate) fmf: crate::fmf::FastMathFlags,
+    pub(crate) fmf: FastMathFlags,
     /// `disjoint` flag for `or`. Mirrors `PossiblyDisjointOperator` in
     /// `Operator.h`. When set, the two operands have no bits in common.
     pub(crate) disjoint: bool,
@@ -141,7 +144,7 @@ impl BinaryOpData {
             no_unsigned_wrap: false,
             no_signed_wrap: false,
             is_exact: false,
-            fmf: crate::fmf::FastMathFlags::empty(),
+            fmf: FastMathFlags::empty(),
             disjoint: false,
         }
     }
@@ -366,11 +369,11 @@ impl core::hash::Hash for CastOpData {
 #[derive(Debug)]
 pub(crate) struct FNegInstData {
     pub(crate) src: Cell<ValueSlot>,
-    pub(crate) fmf: crate::fmf::FastMathFlags,
+    pub(crate) fmf: FastMathFlags,
 }
 
 impl FNegInstData {
-    pub(crate) fn new(src: ValueSlot, fmf: crate::fmf::FastMathFlags) -> Self {
+    pub(crate) fn new(src: ValueSlot, fmf: FastMathFlags) -> Self {
         Self {
             src: Cell::new(src),
             fmf,
@@ -481,7 +484,7 @@ impl core::hash::Hash for VAArgInstData {
 /// once vector compares ship).
 #[derive(Debug)]
 pub(crate) struct CmpInstData {
-    pub(crate) predicate: crate::cmp_predicate::IntPredicate,
+    pub(crate) predicate: IntPredicate,
     pub(crate) lhs: Cell<ValueSlot>,
     pub(crate) rhs: Cell<ValueSlot>,
     /// `samesign` flag. LLVM 20+: asserts both operands have the same sign.
@@ -490,11 +493,7 @@ pub(crate) struct CmpInstData {
 }
 
 impl CmpInstData {
-    pub(crate) fn new(
-        predicate: crate::cmp_predicate::IntPredicate,
-        lhs: ValueSlot,
-        rhs: ValueSlot,
-    ) -> Self {
+    pub(crate) fn new(predicate: IntPredicate, lhs: ValueSlot, rhs: ValueSlot) -> Self {
         Self {
             predicate,
             lhs: Cell::new(lhs),
@@ -537,25 +536,21 @@ impl core::hash::Hash for CmpInstData {
 /// layer.
 #[derive(Debug)]
 pub(crate) struct FCmpInstData {
-    pub(crate) predicate: crate::cmp_predicate::FloatPredicate,
+    pub(crate) predicate: FloatPredicate,
     pub(crate) lhs: Cell<ValueSlot>,
     pub(crate) rhs: Cell<ValueSlot>,
     /// Per-instruction fast-math flags. `fcmp` is an `FPMathOperator`
     /// upstream, so the same FMF slot applies. Empty by default.
-    pub(crate) fmf: crate::fmf::FastMathFlags,
+    pub(crate) fmf: FastMathFlags,
 }
 
 impl FCmpInstData {
-    pub(crate) fn new(
-        predicate: crate::cmp_predicate::FloatPredicate,
-        lhs: ValueSlot,
-        rhs: ValueSlot,
-    ) -> Self {
+    pub(crate) fn new(predicate: FloatPredicate, lhs: ValueSlot, rhs: ValueSlot) -> Self {
         Self {
             predicate,
             lhs: Cell::new(lhs),
             rhs: Cell::new(rhs),
-            fmf: crate::fmf::FastMathFlags::empty(),
+            fmf: FastMathFlags::empty(),
         }
     }
 }
@@ -1111,7 +1106,7 @@ impl AllocaFlags {
 pub(crate) struct AllocaInstData {
     pub(crate) allocated_ty: crate::r#type::TypeSlot,
     pub(crate) num_elements: Cell<Option<ValueSlot>>,
-    pub(crate) align: crate::align::MaybeAlign,
+    pub(crate) align: MaybeAlign,
     pub(crate) addr_space: u32,
     pub(crate) flags: AllocaFlags,
 }
@@ -1120,7 +1115,7 @@ impl AllocaInstData {
     pub(crate) fn new_with_flags(
         allocated_ty: crate::r#type::TypeSlot,
         num_elements: Option<ValueSlot>,
-        align: crate::align::MaybeAlign,
+        align: MaybeAlign,
         addr_space: u32,
         flags: AllocaFlags,
     ) -> Self {
@@ -1173,20 +1168,20 @@ impl core::hash::Hash for AllocaInstData {
 pub(crate) struct LoadInstData {
     pub(crate) pointee_ty: crate::r#type::TypeSlot,
     pub(crate) ptr: Cell<ValueSlot>,
-    pub(crate) align: crate::align::MaybeAlign,
+    pub(crate) align: MaybeAlign,
     pub(crate) volatile: bool,
-    pub(crate) ordering: crate::atomic_ordering::AtomicOrdering,
-    pub(crate) sync_scope: crate::sync_scope::SyncScope,
+    pub(crate) ordering: AtomicOrdering,
+    pub(crate) sync_scope: SyncScope,
 }
 
 impl LoadInstData {
     pub(crate) fn new(
         pointee_ty: crate::r#type::TypeSlot,
         ptr: ValueSlot,
-        align: crate::align::MaybeAlign,
+        align: MaybeAlign,
         volatile: bool,
-        ordering: crate::atomic_ordering::AtomicOrdering,
-        sync_scope: crate::sync_scope::SyncScope,
+        ordering: AtomicOrdering,
+        sync_scope: SyncScope,
     ) -> Self {
         Self {
             pointee_ty,
@@ -1201,10 +1196,7 @@ impl LoadInstData {
     /// `true` when the load carries a non-`NotAtomic` ordering. Mirrors
     /// `LoadInst::isAtomic` in `Instructions.h`.
     pub(crate) fn is_atomic(&self) -> bool {
-        !matches!(
-            self.ordering,
-            crate::atomic_ordering::AtomicOrdering::NotAtomic,
-        )
+        !matches!(self.ordering, AtomicOrdering::NotAtomic,)
     }
 
     /// `true` when the load has no memory-ordering side effects: non-volatile
@@ -1213,8 +1205,7 @@ impl LoadInstData {
         !self.volatile
             && matches!(
                 self.ordering,
-                crate::atomic_ordering::AtomicOrdering::NotAtomic
-                    | crate::atomic_ordering::AtomicOrdering::Unordered,
+                AtomicOrdering::NotAtomic | AtomicOrdering::Unordered,
             )
     }
 }
@@ -1261,20 +1252,20 @@ impl core::hash::Hash for LoadInstData {
 pub(crate) struct StoreInstData {
     pub(crate) value: Cell<ValueSlot>,
     pub(crate) ptr: Cell<ValueSlot>,
-    pub(crate) align: crate::align::MaybeAlign,
+    pub(crate) align: MaybeAlign,
     pub(crate) volatile: bool,
-    pub(crate) ordering: crate::atomic_ordering::AtomicOrdering,
-    pub(crate) sync_scope: crate::sync_scope::SyncScope,
+    pub(crate) ordering: AtomicOrdering,
+    pub(crate) sync_scope: SyncScope,
 }
 
 impl StoreInstData {
     pub(crate) fn new(
         value: ValueSlot,
         ptr: ValueSlot,
-        align: crate::align::MaybeAlign,
+        align: MaybeAlign,
         volatile: bool,
-        ordering: crate::atomic_ordering::AtomicOrdering,
-        sync_scope: crate::sync_scope::SyncScope,
+        ordering: AtomicOrdering,
+        sync_scope: SyncScope,
     ) -> Self {
         Self {
             value: Cell::new(value),
@@ -1289,10 +1280,7 @@ impl StoreInstData {
     /// `true` when the store carries a non-`NotAtomic` ordering. Mirrors
     /// `StoreInst::isAtomic` in `Instructions.h`.
     pub(crate) fn is_atomic(&self) -> bool {
-        !matches!(
-            self.ordering,
-            crate::atomic_ordering::AtomicOrdering::NotAtomic,
-        )
+        !matches!(self.ordering, AtomicOrdering::NotAtomic,)
     }
 }
 impl Clone for StoreInstData {
@@ -1340,16 +1328,19 @@ pub(crate) struct GepInstData {
     pub(crate) source_ty: crate::r#type::TypeSlot,
     pub(crate) ptr: Cell<ValueSlot>,
     pub(crate) indices: Box<[Cell<ValueSlot>]>,
-    pub(crate) flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
+    pub(crate) flags: GepNoWrapFlags,
 }
 
 impl GepInstData {
-    pub(crate) fn new(
+    pub(crate) fn new<Indices>(
         source_ty: crate::r#type::TypeSlot,
         ptr: ValueSlot,
-        indices: impl IntoIterator<Item = ValueSlot>,
-        flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
-    ) -> Self {
+        indices: Indices,
+        flags: GepNoWrapFlags,
+    ) -> Self
+    where
+        Indices: IntoIterator<Item = ValueSlot>,
+    {
         Self {
             source_ty,
             ptr: Cell::new(ptr),
@@ -1593,13 +1584,16 @@ pub(crate) struct CallInstData {
 }
 
 impl CallInstData {
-    pub(crate) fn new(
+    pub(crate) fn new<Args>(
         callee: ValueSlot,
         fn_ty: crate::r#type::TypeSlot,
-        args: impl IntoIterator<Item = ValueSlot>,
+        args: Args,
         calling_conv: crate::CallingConv,
         tail_kind: TailCallKind,
-    ) -> Self {
+    ) -> Self
+    where
+        Args: IntoIterator<Item = ValueSlot>,
+    {
         Self::new_with_attrs(
             callee,
             fn_ty,
@@ -1610,14 +1604,17 @@ impl CallInstData {
         )
     }
 
-    pub(crate) fn new_with_attrs(
+    pub(crate) fn new_with_attrs<Args>(
         callee: ValueSlot,
         fn_ty: crate::r#type::TypeSlot,
-        args: impl IntoIterator<Item = ValueSlot>,
+        args: Args,
         calling_conv: crate::CallingConv,
         tail_kind: TailCallKind,
         attrs: CallAttributeData,
-    ) -> Self {
+    ) -> Self
+    where
+        Args: IntoIterator<Item = ValueSlot>,
+    {
         Self {
             callee: Cell::new(callee),
             fn_ty,
@@ -1733,7 +1730,10 @@ pub(crate) struct ExtractValueInstData {
 }
 
 impl ExtractValueInstData {
-    pub(crate) fn new(aggregate: ValueSlot, indices: impl IntoIterator<Item = u32>) -> Self {
+    pub(crate) fn new<Indices>(aggregate: ValueSlot, indices: Indices) -> Self
+    where
+        Indices: IntoIterator<Item = u32>,
+    {
         Self {
             aggregate: Cell::new(aggregate),
             indices: indices.into_iter().collect(),
@@ -1771,11 +1771,10 @@ pub(crate) struct InsertValueInstData {
 }
 
 impl InsertValueInstData {
-    pub(crate) fn new(
-        aggregate: ValueSlot,
-        value: ValueSlot,
-        indices: impl IntoIterator<Item = u32>,
-    ) -> Self {
+    pub(crate) fn new<Indices>(aggregate: ValueSlot, value: ValueSlot, indices: Indices) -> Self
+    where
+        Indices: IntoIterator<Item = u32>,
+    {
         Self {
             aggregate: Cell::new(aggregate),
             value: Cell::new(value),
@@ -1908,7 +1907,10 @@ pub(crate) struct ShuffleVectorInstData {
 }
 
 impl ShuffleVectorInstData {
-    pub(crate) fn new(lhs: ValueSlot, rhs: ValueSlot, mask: impl IntoIterator<Item = i32>) -> Self {
+    pub(crate) fn new<Mask>(lhs: ValueSlot, rhs: ValueSlot, mask: Mask) -> Self
+    where
+        Mask: IntoIterator<Item = i32>,
+    {
         Self {
             lhs: Cell::new(lhs),
             rhs: Cell::new(rhs),
@@ -1949,15 +1951,12 @@ impl core::hash::Hash for ShuffleVectorInstData {
 /// No SSA operands; ordering and sync-scope only.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct FenceInstData {
-    pub(crate) ordering: crate::atomic_ordering::AtomicOrdering,
-    pub(crate) sync_scope: crate::sync_scope::SyncScope,
+    pub(crate) ordering: AtomicOrdering,
+    pub(crate) sync_scope: SyncScope,
 }
 
 impl FenceInstData {
-    pub(crate) fn new(
-        ordering: crate::atomic_ordering::AtomicOrdering,
-        sync_scope: crate::sync_scope::SyncScope,
-    ) -> Self {
+    pub(crate) fn new(ordering: AtomicOrdering, sync_scope: SyncScope) -> Self {
         Self {
             ordering,
             sync_scope,
@@ -1973,10 +1972,10 @@ pub(crate) struct AtomicCmpXchgInstData {
     pub(crate) ptr: Cell<ValueSlot>,
     pub(crate) cmp: Cell<ValueSlot>,
     pub(crate) new_val: Cell<ValueSlot>,
-    pub(crate) align: crate::align::MaybeAlign,
-    pub(crate) success_ordering: crate::atomic_ordering::AtomicOrdering,
-    pub(crate) failure_ordering: crate::atomic_ordering::AtomicOrdering,
-    pub(crate) sync_scope: crate::sync_scope::SyncScope,
+    pub(crate) align: MaybeAlign,
+    pub(crate) success_ordering: AtomicOrdering,
+    pub(crate) failure_ordering: AtomicOrdering,
+    pub(crate) sync_scope: SyncScope,
     pub(crate) weak: bool,
     pub(crate) volatile: bool,
 }
@@ -2048,18 +2047,18 @@ impl core::hash::Hash for AtomicCmpXchgInstData {
 /// (`Instructions.h`).
 #[derive(Debug)]
 pub(crate) struct AtomicRMWInstData {
-    pub(crate) op: crate::atomicrmw_binop::AtomicRMWBinOp,
+    pub(crate) op: AtomicRMWBinOp,
     pub(crate) ptr: Cell<ValueSlot>,
     pub(crate) value: Cell<ValueSlot>,
-    pub(crate) align: crate::align::MaybeAlign,
-    pub(crate) ordering: crate::atomic_ordering::AtomicOrdering,
-    pub(crate) sync_scope: crate::sync_scope::SyncScope,
+    pub(crate) align: MaybeAlign,
+    pub(crate) ordering: AtomicOrdering,
+    pub(crate) sync_scope: SyncScope,
     pub(crate) volatile: bool,
 }
 
 impl AtomicRMWInstData {
     pub(crate) fn new(
-        op: crate::atomicrmw_binop::AtomicRMWBinOp,
+        op: AtomicRMWBinOp,
         ptr: ValueSlot,
         value: ValueSlot,
         config: crate::instr_types::AtomicRMWConfig,
@@ -2292,15 +2291,18 @@ pub(crate) struct InvokeInstData {
 }
 
 impl InvokeInstData {
-    pub(crate) fn new_with_attrs(
+    pub(crate) fn new_with_attrs<Args>(
         callee: ValueSlot,
         fn_ty: crate::r#type::TypeSlot,
-        args: impl IntoIterator<Item = ValueSlot>,
+        args: Args,
         calling_conv: crate::CallingConv,
         normal_dest: ValueSlot,
         unwind_dest: ValueSlot,
         attrs: CallAttributeData,
-    ) -> Self {
+    ) -> Self
+    where
+        Args: IntoIterator<Item = ValueSlot>,
+    {
         Self {
             callee: Cell::new(callee),
             fn_ty,
@@ -2373,15 +2375,19 @@ pub(crate) struct CallBrInstData {
 }
 
 impl CallBrInstData {
-    pub(crate) fn new_with_attrs(
+    pub(crate) fn new_with_attrs<Args, IndirectDests>(
         callee: ValueSlot,
         fn_ty: crate::r#type::TypeSlot,
-        args: impl IntoIterator<Item = ValueSlot>,
+        args: Args,
         calling_conv: crate::CallingConv,
         default_dest: ValueSlot,
-        indirect_dests: impl IntoIterator<Item = ValueSlot>,
+        indirect_dests: IndirectDests,
         attrs: CallAttributeData,
-    ) -> Self {
+    ) -> Self
+    where
+        Args: IntoIterator<Item = ValueSlot>,
+        IndirectDests: IntoIterator<Item = ValueSlot>,
+    {
         Self {
             callee: Cell::new(callee),
             fn_ty,
@@ -2570,10 +2576,10 @@ pub(crate) struct CleanupPadInstData {
 }
 
 impl CleanupPadInstData {
-    pub(crate) fn new(
-        parent_pad: Option<ValueSlot>,
-        args: impl IntoIterator<Item = ValueSlot>,
-    ) -> Self {
+    pub(crate) fn new<Args>(parent_pad: Option<ValueSlot>, args: Args) -> Self
+    where
+        Args: IntoIterator<Item = ValueSlot>,
+    {
         Self {
             parent_pad: Cell::new(parent_pad),
             args: args.into_iter().map(Cell::new).collect(),
@@ -2619,10 +2625,10 @@ pub(crate) struct CatchPadInstData {
 }
 
 impl CatchPadInstData {
-    pub(crate) fn new(
-        parent_pad: Option<ValueSlot>,
-        args: impl IntoIterator<Item = ValueSlot>,
-    ) -> Self {
+    pub(crate) fn new<Args>(parent_pad: Option<ValueSlot>, args: Args) -> Self
+    where
+        Args: IntoIterator<Item = ValueSlot>,
+    {
         Self {
             parent_pad: Cell::new(parent_pad),
             args: args.into_iter().map(Cell::new).collect(),

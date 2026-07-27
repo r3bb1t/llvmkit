@@ -118,7 +118,7 @@ pub(crate) fn check_phi_incoming(
 pub struct PhiCoherenceError {
     /// Arena id of the offending phi instruction, so the caller can anchor a
     /// diagnostic at that phi regardless of whether it is named or numbered.
-    pub phi_id: crate::value::ValueSlot,
+    pub phi_id: ValueSlot,
     /// Rendered coherence-failure message.
     pub message: String,
 }

@@ -28,6 +28,7 @@ use super::value_id::GlobalId;
 
 use super::constants::ConstantIntValue;
 use super::metadata::MetadataAttachmentSet;
+use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use core::cell::{Cell, RefCell};
 
 // --------------------------------------------------------------------------
@@ -59,7 +60,7 @@ pub(super) struct GlobalVariableData {
     /// Comdat name (no leading `$`). The actual `ComdatData` lives in
     /// the owning module's comdat storage.
     pub(super) comdat: RefCell<Option<String>>,
-    pub(super) metadata: RefCell<MetadataAttachmentSet>,
+    pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
 }
 
 // Construction goes through `GlobalBuilder::into_data`.
@@ -106,7 +107,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         }
     }
 
-    /// Storable, module-tagged [`GlobalId`] for this global (llvmkit 2.0),
+    /// Storable, module-tagged [`GlobalId`] for this global (0.0.4),
     /// resolvable via [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view).
     #[inline]
@@ -479,17 +480,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         *self.data().comdat.borrow_mut() = None;
     }
 
-    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
+    pub fn metadata(self) -> MetadataAttachmentSet<B> {
+        MetadataAttachmentSet::from_stored(&self.data().metadata.borrow())
+    }
+
+    /// Crate-internal: the stored attachment set, for the printer and the
+    /// verifier, which already work inside the owning module.
+    pub(crate) fn metadata_stored(
+        self,
+    ) -> core::cell::Ref<'ctx, MetadataAttachmentSet<StoredBrand>> {
         self.data().metadata.borrow()
     }
 
+    /// Set or replace one metadata attachment.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
+    /// module — the module token proves *which* module may be mutated, and the
+    /// id's tag is what proves the node belongs to it.
     pub fn set_metadata(
         self,
-        _module: &'ctx Module<B, Unverified>,
-        kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataSlot,
-    ) {
+        module: &'ctx Module<B, Unverified>,
+        kind: MetadataAttachmentKind,
+        id: MetadataId<B>,
+    ) -> IrResult<()> {
+        let id = id.into_stored(module.id())?;
         self.data().metadata.borrow_mut().insert(kind, id);
+        Ok(())
     }
 }
 
@@ -610,9 +626,10 @@ pub struct GlobalBuilder<'ctx, B: ModuleBrand> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
-    pub(super) fn new<M>(module: M, name: impl Into<String>, value_type: Type<'ctx, B>) -> Self
+    pub(super) fn new<M, N>(module: M, name: N, value_type: Type<'ctx, B>) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
+        N: Into<String>,
     {
         Self {
             module: module.into(),

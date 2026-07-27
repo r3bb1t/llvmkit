@@ -22,8 +22,8 @@
 //!
 //! | Constructor | Brand | Live modules per brand |
 //! |---|---|---|
-//! | [`Module::branded::<B>`](Module::branded) | a type you name | one at a time |
-//! | [`Module::branded_once::<B>`](Module::branded_once) | a type you name | one, ever |
+//! | [`Module::branded::<B, _>`](Module::branded) | a type you name | one at a time |
+//! | [`Module::branded_once::<B, _>`](Module::branded_once) | a type you name | one, ever |
 //! | [`module_new!`](crate::module_new) | fresh, unnameable, per expansion site | one at a time |
 //! | [`Module::dynamic`] | [`DynBrand`] | unlimited (registry-exempt) |
 //!
@@ -67,7 +67,9 @@ use super::derived_types::{
 use super::element::{ElemDyn, StaticVecElem};
 use super::error::{IrError, IrResult, TypeKindLabel};
 use super::float_kind::{BFloat, Fp128, Half, PpcFp128, X86Fp80};
+use super::function::FunctionData;
 use super::function::{FunctionBuilder, FunctionValue};
+use super::function_signature::TypedVarArgsFunctionValue;
 use super::function_signature::{
     FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
 };
@@ -75,26 +77,35 @@ use super::global_alias::{GlobalAlias, GlobalAliasBuilder};
 use super::global_ifunc::{GlobalIFunc, GlobalIFuncBuilder};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
 use super::global_variable::{GlobalBuilder, GlobalVariable};
+use super::inline_asm::{InlineAsm, InlineAsmData, InlineAsmOptions};
 use super::int_width::{IntDyn, Width};
+use super::intrinsics::IntrinsicFunctionData;
 use super::intrinsics::{
     IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution, descriptor_for_name,
     resolve_intrinsic_name,
 };
 use super::llvm_context::Context;
 use super::marker::Dyn;
+use super::marker::ReturnMarker;
 use super::metadata::{
-    MetadataAttachmentSet, MetadataKind, MetadataRef, MetadataSlot, MetadataStore,
-    SpecializedMetadataNode,
+    MetadataAttachmentSet, MetadataId, MetadataKind, MetadataSlot, MetadataStore,
+    SpecializedMetadataNode, StoredBrand,
 };
 use super::named_md_node::NamedMDNode;
+use super::pass_context::{FunctionView, ModuleFunctionViews};
 use super::struct_body_state::StructBodyDyn;
+use super::struct_body_state::{BodySet, Opaque};
 use super::struct_schema::StructSchema;
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot};
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{Value, ValueData, ValueKindData, ValueSlot, ValueUse};
-use super::value_id::{FunctionId, GlobalId, TypedFunctionId, TypedVarArgsFunctionId, ViewIn};
+use super::value_id::{
+    FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, TypedFunctionId, TypedVarArgsFunctionId,
+    ValueId, ViewIn,
+};
 use super::vec_len::{Len, LenDyn};
+use super::verifier::Verifier;
 
 #[cfg(test)]
 mod brand_registry_tests;
@@ -398,7 +409,7 @@ macro_rules! module_new {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         struct __LlvmkitGeneratedBrand;
         impl $crate::ModuleBrand for __LlvmkitGeneratedBrand {}
-        $crate::Module::branded::<__LlvmkitGeneratedBrand>($name)
+        $crate::Module::branded::<__LlvmkitGeneratedBrand, _>($name)
     }};
 }
 
@@ -411,6 +422,33 @@ macro_rules! module_new {
 /// The reference carries the invariant module brand `B`, but it points at
 /// crate-private `ModuleCore` storage rather than a `Module<..., State>` token,
 /// so handles do not borrow the verification state.
+///
+/// # Why this is not [`ModuleView`]
+///
+/// The two are **representationally identical** — both are
+/// `(&'ctx ModuleCore, Invariant<B>)` — and cycle E considered merging them.
+/// They are kept apart because they differ in *capability*, which in this crate
+/// is what a type is for:
+///
+/// - `ModuleRef` is the **storage pointer**. It is the `module` field embedded
+///   in every borrowing handle, and its entire public surface is
+///   [`id`](Self::id). It says "I can find the arena", nothing more.
+/// - [`ModuleView`] is the **read capability**. It is what a user receives from
+///   a handle's `module()` accessor, and it carries the full read surface plus
+///   all 35 type constructors.
+///
+/// A function that takes a `ModuleRef` is therefore stating that it only needs
+/// to resolve slots — not that it may read the module or intern new types. That
+/// is the same capability-by-type pattern the crate uses for
+/// [`Instruction`](crate::Instruction) versus
+/// [`InstructionView`](crate::InstructionView) (one value, two capabilities) and
+/// for [`Module<B, Verified>`](Module) versus `Module<B, Unverified>` (one
+/// storage, two capabilities). Identical layout with a different method set is
+/// how Rust encodes a capability grade; it is not accidental duplication.
+///
+/// The "one concept, one representation" principle in the README is about not
+/// implementing a *concept* twice, which is not what these do: there is exactly
+/// one module-storage concept here, exposed at two capability grades.
 pub struct ModuleRef<'ctx, B: ModuleBrand> {
     core: &'ctx ModuleCore,
     _brand: Invariant<B>,
@@ -503,7 +541,14 @@ impl<B: ModuleBrand> core::fmt::Debug for ModuleRef<'_, B> {
 /// crate-private storage or the linear verification-state token. Beyond reads
 /// it carries the full type-constructor surface (see the `Type constructors`
 /// section below for why that is not a loosening), which is what the
-/// user-implementable schema traits are declared against.
+/// user-implementable schema traits ([`IrField::ir_type`](crate::IrField),
+/// [`StructSchema`], the `FunctionReturn` /
+/// `FunctionParam` family) are declared against.
+///
+/// This is the **read capability** grade over a module's storage;
+/// [`ModuleRef`] is the bare **storage pointer** grade. The two have the same
+/// layout on purpose — see [`ModuleRef`]'s "Why this is not `ModuleView`"
+/// section for why they stay distinct types.
 #[derive(Clone, Copy)]
 pub struct ModuleView<'ctx, B: ModuleBrand> {
     core: &'ctx ModuleCore,
@@ -618,7 +663,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariableView<'ctx, B> {
     }
 
     #[inline]
-    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
+    pub fn metadata(self) -> MetadataAttachmentSet<B> {
         self.global.metadata()
     }
 }
@@ -691,7 +736,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasView<'ctx, B> {
     }
 
     #[inline]
-    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
+    pub fn metadata(self) -> MetadataAttachmentSet<B> {
         self.alias.metadata()
     }
 
@@ -754,7 +799,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncView<'ctx, B> {
     }
 
     #[inline]
-    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
+    pub fn metadata(self) -> MetadataAttachmentSet<B> {
         self.ifunc.metadata()
     }
 
@@ -1212,9 +1257,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// The *typestate* body setters — [`Module::set_struct_body`] and
     /// [`Module::set_struct_body_dyn`], which drive an `Opaque` struct handle
     /// to `BodySet` — stay on the token alone.
-    pub fn get_or_set_named_struct_body<S>(
-        self,
-    ) -> IrResult<StructType<'ctx, crate::struct_body_state::BodySet, B>>
+    pub fn get_or_set_named_struct_body<S>(self) -> IrResult<StructType<'ctx, BodySet, B>>
     where
         S: StructSchema,
     {
@@ -1236,10 +1279,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
             let body = data.body.borrow();
             if let Some(body) = body.as_ref() {
                 if body.packed == S::PACKED && body.elements.as_ref() == elements.as_ref() {
-                    return Ok(StructType::<crate::struct_body_state::BodySet, B>::new(
-                        id,
-                        ModuleRef::new(self.core),
-                    ));
+                    return Ok(StructType::<BodySet, B>::new(id, ModuleRef::new(self.core)));
                 }
                 return Err(IrError::StructBodyMismatch {
                     name: S::NAME.to_owned(),
@@ -1253,10 +1293,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
                 packed: S::PACKED,
             },
         )?;
-        Ok(StructType::<crate::struct_body_state::BodySet, B>::new(
-            id,
-            ModuleRef::new(self.core),
-        ))
+        Ok(StructType::<BodySet, B>::new(id, ModuleRef::new(self.core)))
     }
 
     /// Target extension type `target("name", type_params..., int_params...)`.
@@ -1286,13 +1323,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     #[inline]
     pub fn functions(
         self,
-    ) -> impl ExactSizeIterator<Item = crate::pass_context::FunctionView<'ctx, B>>
-    + DoubleEndedIterator
-    + FusedIterator
-    + 'ctx {
-        self.core
-            .iter_functions::<B>()
-            .map(crate::pass_context::FunctionView::new)
+    ) -> impl ExactSizeIterator<Item = FunctionView<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
+        self.core.iter_functions::<B>().map(FunctionView::new)
     }
 
     /// Iterate globals in declaration order.
@@ -1349,12 +1382,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
 /// because it boxes its inner iterator to name a single concrete type. For
 /// reverse iteration go through the named method — `functions().rev()`.
 impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for ModuleView<'ctx, B> {
-    type Item = crate::pass_context::FunctionView<'ctx, B>;
-    type IntoIter = crate::pass_context::ModuleFunctionViews<'ctx, B>;
+    type Item = FunctionView<'ctx, B>;
+    type IntoIter = ModuleFunctionViews<'ctx, B>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        crate::pass_context::ModuleFunctionViews::new(self)
+        ModuleFunctionViews::new(self)
     }
 }
 
@@ -1505,18 +1538,17 @@ pub(super) struct ModuleCore {
     /// held by call sites.
     functions: core::cell::RefCell<Vec<ValueSlot>>,
     /// Module-level name -> function value-id table.
-    function_by_name:
-        core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueSlot>>,
+    function_by_name: core::cell::RefCell<std::collections::HashMap<String, ValueSlot>>,
     /// Globals defined in this module, in declaration order.
     /// Mirrors `Module::GlobalList`. Stored under the same shape as
     /// `functions` so the AsmWriter can iterate in source order.
     globals: core::cell::RefCell<Vec<ValueSlot>>,
     /// Module-level name -> global value-id table.
-    global_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueSlot>>,
+    global_by_name: core::cell::RefCell<std::collections::HashMap<String, ValueSlot>>,
     aliases: core::cell::RefCell<Vec<ValueSlot>>,
-    alias_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueSlot>>,
+    alias_by_name: core::cell::RefCell<std::collections::HashMap<String, ValueSlot>>,
     ifuncs: core::cell::RefCell<Vec<ValueSlot>>,
-    ifunc_by_name: core::cell::RefCell<std::collections::HashMap<String, crate::value::ValueSlot>>,
+    ifunc_by_name: core::cell::RefCell<std::collections::HashMap<String, ValueSlot>>,
     /// Module-level COMDAT entries. Mirrors `Module::ComdatSymTab`.
     /// Stored in a `boxcar::Vec` for stable `&ComdatData` references
     /// under `&self`, so [`ComdatRef`](ComdatRef) can
@@ -1528,7 +1560,7 @@ pub(super) struct ModuleCore {
     /// Parsed `target datalayout = "..."` directive. Default
     /// (empty string) when the module has no directive. Mirrors
     /// `Module::DL` in `IR/Module.h`.
-    data_layout: core::cell::RefCell<crate::data_layout::DataLayout>,
+    data_layout: core::cell::RefCell<DataLayout>,
     /// `target triple = "..."` directive. Optional.
     target_triple: core::cell::RefCell<Option<String>>,
     /// Module-level inline assembly. Mirrors `Module::ModuleAsm`.
@@ -1536,21 +1568,20 @@ pub(super) struct ModuleCore {
     /// per `module asm "..."` directive).
     module_asm: core::cell::RefCell<String>,
     use_list_orders: core::cell::RefCell<Vec<UseListOrderRecord>>,
-    attribute_groups: core::cell::RefCell<Vec<(u32, crate::attributes::AttributeStorage)>>,
+    attribute_groups: core::cell::RefCell<Vec<(u32, AttributeStorage)>>,
     use_list_order_bbs: core::cell::RefCell<Vec<UseListOrderBBRecord>>,
     /// Module-level metadata node arena. Mirrors `LLVMContextImpl`'s
     /// metadata store (scoped to the module for simplicity).
     metadata: core::cell::RefCell<MetadataStore>,
     /// Named metadata nodes (`!llvm.module.flags`, `!llvm.ident`, ...).
     /// Mirrors `Module::NamedMDList`. Insertion order is preserved.
-    named_metadata: core::cell::RefCell<Vec<NamedMDNode>>,
+    named_metadata: core::cell::RefCell<Vec<NamedMDNode<StoredBrand>>>,
     /// Uniquing cache for [`metadata_as_value`](Self::metadata_as_value):
     /// maps a metadata node to its wrapping value so repeated wraps of the
     /// same node return the identical `Value`. Mirrors LLVM's uniqued
     /// `MetadataAsValue::get`.
-    metadata_as_value_cache: core::cell::RefCell<
-        std::collections::HashMap<crate::metadata::MetadataSlot, crate::value::ValueSlot>,
-    >,
+    metadata_as_value_cache:
+        core::cell::RefCell<std::collections::HashMap<MetadataSlot, ValueSlot>>,
     /// Monotonic id source for [`crate::ssa_builder::SsaBuilder`] instances
     /// created against this module. Mirrors the module-scoped counter shape
     /// of [`ModuleId::fresh`], but per-module (an `SsaBuilderId` only needs
@@ -1604,7 +1635,10 @@ pub struct Module<B: ModuleBrand, S = Unverified> {
 impl<'ctx> ModuleCore {
     /// Construct a fresh, empty module with a freshly-allocated
     /// [`ModuleId`].
-    pub(super) fn new(name: impl Into<String>) -> Self {
+    pub(super) fn new<N>(name: N) -> Self
+    where
+        N: Into<String>,
+    {
         Self {
             id: ModuleId::fresh(),
             name: name.into(),
@@ -1620,7 +1654,7 @@ impl<'ctx> ModuleCore {
             ifunc_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
             comdats: boxcar::Vec::new(),
             comdat_by_name: core::cell::RefCell::new(std::collections::HashMap::new()),
-            data_layout: core::cell::RefCell::new(crate::data_layout::DataLayout::default()),
+            data_layout: core::cell::RefCell::new(DataLayout::default()),
             target_triple: core::cell::RefCell::new(None),
             module_asm: core::cell::RefCell::new(String::new()),
             use_list_orders: core::cell::RefCell::new(Vec::new()),
@@ -1787,12 +1821,16 @@ impl<'ctx> ModuleCore {
     // ---- Array / vector ----
 
     /// Fixed `<N x T>` or scalable `<vscale x N x T>` vector.
-    pub fn vector_type<B: ModuleBrand + 'ctx>(
+    pub fn vector_type<B, T>(
         &'ctx self,
-        elem: impl Into<Type<'ctx, B>>,
+        elem: T,
         n: u32,
         scalable: bool,
-    ) -> VectorType<'ctx, ElemDyn, LenDyn, B> {
+    ) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+    where
+        B: ModuleBrand + 'ctx,
+        T: Into<Type<'ctx, B>>,
+    {
         let elem_id = elem.into().id();
         let id = if scalable {
             self.ctx.scalable_vector_type(elem_id, n)
@@ -1822,10 +1860,10 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         name: Name,
         signature: FunctionType<'ctx, B>,
-        linkage: crate::global_value::Linkage,
+        linkage: Linkage,
     ) -> IrResult<FunctionValue<'ctx, R, B>>
     where
-        R: crate::marker::ReturnMarker,
+        R: ReturnMarker,
         Name: AsRef<str>,
     {
         let name = name.as_ref();
@@ -1859,24 +1897,24 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         name: &str,
         signature: FunctionType<'ctx, B>,
-        linkage: crate::global_value::Linkage,
+        linkage: Linkage,
         calling_conv: crate::CallingConv,
-        intrinsic: Option<crate::intrinsics::IntrinsicFunctionData>,
+        intrinsic: Option<IntrinsicFunctionData>,
         attributes: Option<AttributeStorage>,
     ) -> IrResult<FunctionValue<'ctx, R, B>>
     where
-        R: crate::marker::ReturnMarker,
+        R: ReturnMarker,
     {
         let signature_id = signature.id;
 
-        let fn_data = crate::function::FunctionData::new(
+        let fn_data = FunctionData::new(
             name.to_owned(),
             signature_id,
             linkage,
             calling_conv,
             intrinsic,
         );
-        let fn_id = self.ctx.push_value(crate::value::ValueData {
+        let fn_id = self.ctx.push_value(ValueData {
             ty: signature_id,
             name: core::cell::RefCell::new((!name.is_empty()).then(|| name.to_owned())),
             debug_loc: None,
@@ -1889,7 +1927,7 @@ impl<'ctx> ModuleCore {
         for (slot, &ty) in param_types.iter().enumerate() {
             let slot_u32 = u32::try_from(slot)
                 .unwrap_or_else(|_| unreachable!("function parameter slot exceeds u32::MAX"));
-            let id = self.ctx.push_value(crate::value::ValueData {
+            let id = self.ctx.push_value(ValueData {
                 ty,
                 name: core::cell::RefCell::new(None),
                 debug_loc: None,
@@ -1904,7 +1942,7 @@ impl<'ctx> ModuleCore {
 
         let fn_value_data = self.ctx.value_data(fn_id);
         let fn_inner = match &fn_value_data.kind {
-            crate::value::ValueKindData::Function(f) => f,
+            ValueKindData::Function(f) => f,
             _ => unreachable!("function arena push returned the inserted function variant"),
         };
         *fn_inner.args.borrow_mut() = arg_ids.into_boxed_slice();
@@ -2018,7 +2056,7 @@ impl<'ctx> ModuleCore {
         signature: FunctionType<'ctx, B>,
     ) -> FunctionBuilder<'ctx, R, B>
     where
-        R: crate::marker::ReturnMarker,
+        R: ReturnMarker,
         Name: Into<String>,
     {
         FunctionBuilder::new(ModuleRef::<B>::new(self), name, signature)
@@ -2091,7 +2129,7 @@ impl<'ctx> ModuleCore {
         // the cached id directly. (Construction APIs only hand out
         // typed ids belonging to this module.)
         let _ = value_type;
-        let value_id = self.ctx.push_value(crate::value::ValueData {
+        let value_id = self.ctx.push_value(ValueData {
             ty: pointer_ty,
             name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
             debug_loc: None,
@@ -2118,7 +2156,7 @@ impl<'ctx> ModuleCore {
             return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
-        let value_id = self.ctx.push_value(crate::value::ValueData {
+        let value_id = self.ctx.push_value(ValueData {
             ty: pointer_ty,
             name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
             debug_loc: None,
@@ -2145,7 +2183,7 @@ impl<'ctx> ModuleCore {
             return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
-        let value_id = self.ctx.push_value(crate::value::ValueData {
+        let value_id = self.ctx.push_value(ValueData {
             ty: pointer_ty,
             name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
             debug_loc: None,
@@ -2185,7 +2223,7 @@ impl<'ctx> ModuleCore {
     where
         Layout: AsRef<str>,
     {
-        let parsed = crate::data_layout::DataLayout::parse(layout.as_ref())?;
+        let parsed = DataLayout::parse(layout.as_ref())?;
         *self.data_layout.borrow_mut() = parsed;
         Ok(())
     }
@@ -2280,46 +2318,80 @@ impl<'ctx> ModuleCore {
     }
 
     // ---- Metadata ----
+    //
+    // `ModuleCore` is brand-free, so these are generic in `B`: the brand rides
+    // on the caller's ids and on the ids handed back, while the arena speaks
+    // the crate-private storage form. Every one of them that *accepts* an id
+    // routes it through `MetadataId::into_stored`, which compares the module
+    // tag — the single choke point for the metadata currency, the same role
+    // `ViewIn::resolve_in` plays for the value currency.
 
     /// Intern a metadata string node. Returns an existing id if an
     /// identical string was already interned. Mirrors `MDString::get`.
-    pub fn metadata_string<S>(&self, s: S) -> MetadataSlot
+    pub fn metadata_string<B, S>(&self, s: S) -> MetadataId<B>
     where
+        B: ModuleBrand,
         S: Into<String>,
     {
-        self.metadata.borrow_mut().get_string(s)
+        let slot = self.metadata.borrow_mut().get_string(s);
+        MetadataId::from_raw(self.id, slot)
     }
 
     /// Create a metadata tuple node. Mirrors `MDTuple::get` (distinct).
     ///
     /// Accepts anything that borrows as a slice of
-    /// [`MetadataRef`](crate::metadata::MetadataRef) — both an owned
-    /// `Vec` and a borrowed `&[..]` work.
-    pub fn metadata_tuple<Ops>(&self, operands: Ops) -> MetadataSlot
+    /// [`MetadataId`](crate::MetadataId) — both an owned `Vec` and a borrowed
+    /// `&[..]` work.
+    pub fn metadata_tuple<B, Ops>(&self, operands: Ops) -> IrResult<MetadataId<B>>
     where
-        Ops: AsRef<[crate::metadata::MetadataRef]>,
+        B: ModuleBrand,
+        Ops: AsRef<[MetadataId<B>]>,
     {
-        self.metadata
-            .borrow_mut()
-            .get_tuple(operands.as_ref().to_vec())
+        self.metadata_tuple_with_distinct(false, operands)
     }
+
     /// Create a tuple node with explicit distinctness.
-    pub fn metadata_tuple_with_distinct<Ops>(&self, distinct: bool, operands: Ops) -> MetadataSlot
+    pub fn metadata_tuple_with_distinct<B, Ops>(
+        &self,
+        distinct: bool,
+        operands: Ops,
+    ) -> IrResult<MetadataId<B>>
     where
-        Ops: AsRef<[MetadataRef]>,
+        B: ModuleBrand,
+        Ops: AsRef<[MetadataId<B>]>,
     {
-        self.metadata
+        let operands = operands
+            .as_ref()
+            .iter()
+            .map(|id| id.into_stored(self.id))
+            .collect::<IrResult<Vec<_>>>()?;
+        let slot = self
+            .metadata
             .borrow_mut()
-            .get_tuple_with_distinct(distinct, operands.as_ref().to_vec())
+            .get_tuple_with_distinct(distinct, operands);
+        Ok(MetadataId::from_raw(self.id, slot))
     }
 
     /// Create a specialized debug metadata node.
-    pub fn metadata_specialized(&self, node: SpecializedMetadataNode) -> MetadataSlot {
-        self.metadata.borrow_mut().get_specialized(node)
+    pub fn metadata_specialized<B>(
+        &self,
+        node: SpecializedMetadataNode<B>,
+    ) -> IrResult<MetadataId<B>>
+    where
+        B: ModuleBrand,
+    {
+        let node = node.into_stored(self.id)?;
+        let slot = self.metadata.borrow_mut().get_specialized(node);
+        Ok(MetadataId::from_raw(self.id, slot))
     }
+
     /// Store an already-parsed metadata node and return its id.
-    pub fn metadata_node(&self, kind: MetadataKind) -> MetadataSlot {
-        let (id, value_use) = {
+    pub fn metadata_node<B>(&self, kind: MetadataKind<B>) -> IrResult<MetadataId<B>>
+    where
+        B: ModuleBrand,
+    {
+        let kind = kind.into_stored(self.id)?;
+        let (slot, value_use) = {
             let mut store = self.metadata.borrow_mut();
             match kind {
                 MetadataKind::String(s) => (store.get_string(s), None),
@@ -2328,90 +2400,141 @@ impl<'ctx> ModuleCore {
                 }
                 MetadataKind::Specialized(node) => (store.get_specialized(node), None),
                 MetadataKind::Constant(value_id) => {
-                    let id = store.get_constant(value_id);
-                    (id, Some(value_id))
+                    let slot = store.get_constant(value_id);
+                    (slot, Some(value_id.slot()))
                 }
-                MetadataKind::Ref(id) => (id, None),
+                MetadataKind::Ref(id) => (id.slot(), None),
                 MetadataKind::Null => {
-                    let id = store.reserve();
-                    store.set(id, MetadataKind::Null);
-                    (id, None)
+                    let slot = store.reserve();
+                    store.set(slot, MetadataKind::Null);
+                    (slot, None)
                 }
             }
         };
-        if let Some(value_id) = value_use {
-            self.register_metadata_value_use(id, value_id);
+        if let Some(value_slot) = value_use {
+            self.register_metadata_value_use(slot, value_slot);
         }
-        id
+        Ok(MetadataId::from_raw(self.id, slot))
     }
 
     /// Reserve a fresh metadata node id with placeholder content, to be
     /// filled via [`metadata_set`](Self::metadata_set). Used by the parser
     /// to resolve forward references without assuming textual `!N` slots
     /// equal arena indices.
-    pub fn metadata_reserve(&self) -> MetadataSlot {
-        self.metadata.borrow_mut().reserve()
+    pub fn metadata_reserve<B>(&self) -> MetadataId<B>
+    where
+        B: ModuleBrand,
+    {
+        let slot = self.metadata.borrow_mut().reserve();
+        MetadataId::from_raw(self.id, slot)
     }
 
     /// Overwrite a reserved metadata node with concrete content. Pairs
     /// with [`metadata_reserve`](Self::metadata_reserve).
-    pub fn metadata_set(&self, id: MetadataSlot, kind: MetadataKind) {
-        if let Some(MetadataKind::Constant(value_id)) = self.metadata.borrow().get(id).cloned() {
-            self.deregister_metadata_value_use(id, value_id);
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
+    /// module, `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    pub fn metadata_set<B>(&self, id: MetadataId<B>, kind: MetadataKind<B>) -> IrResult<()>
+    where
+        B: ModuleBrand,
+    {
+        let slot = self.metadata_slot_of(id)?;
+        let kind = kind.into_stored(self.id)?;
+        if let Some(MetadataKind::Constant(value_id)) = self.metadata.borrow().get(slot).cloned() {
+            self.deregister_metadata_value_use(slot, value_id.slot());
         }
         let value_use = match kind {
-            MetadataKind::Constant(value_id) => Some(value_id),
+            MetadataKind::Constant(value_id) => Some(value_id.slot()),
             MetadataKind::Null
             | MetadataKind::String(_)
             | MetadataKind::Tuple { .. }
             | MetadataKind::Ref(_)
             | MetadataKind::Specialized(_) => None,
         };
-        self.metadata.borrow_mut().set(id, kind);
-        if let Some(value_id) = value_use {
-            self.register_metadata_value_use(id, value_id);
+        self.metadata.borrow_mut().set(slot, kind);
+        if let Some(value_slot) = value_use {
+            self.register_metadata_value_use(slot, value_slot);
         }
+        Ok(())
     }
 
-    pub(super) fn metadata_constant_value(&self, value_id: ValueSlot) -> MetadataSlot {
-        let id = self.metadata.borrow_mut().get_constant(value_id);
-        self.register_metadata_value_use(id, value_id);
-        id
+    /// The metadata arena's boundary: compare `id`'s module tag against this
+    /// module, then range-check the slot it names.
+    ///
+    /// Nothing else in the crate turns a caller's [`MetadataId`] into a
+    /// [`MetadataSlot`] — `MetadataId::slot` exists only on the storage brand —
+    /// so the tag check cannot be skipped one level up.
+    fn metadata_slot_of<B>(&self, id: MetadataId<B>) -> IrResult<MetadataSlot>
+    where
+        B: ModuleBrand,
+    {
+        let slot = id.into_stored(self.id)?.slot();
+        let store = self.metadata.borrow();
+        if store.get(slot).is_none() {
+            return Err(IrError::UnknownMetadataSlot {
+                index: slot.index(),
+                len: store.len(),
+            });
+        }
+        Ok(slot)
     }
 
-    pub(super) fn rewrite_metadata_value(&self, id: MetadataSlot, from: ValueSlot, to: ValueSlot) {
+    pub(super) fn metadata_constant_value<B>(&self, value_id: ValueSlot) -> MetadataId<B>
+    where
+        B: ModuleBrand,
+    {
+        let slot = self
+            .metadata
+            .borrow_mut()
+            .get_constant(ValueId::from_raw(self.id, value_id));
+        self.register_metadata_value_use(slot, value_id);
+        MetadataId::from_raw(self.id, slot)
+    }
+
+    pub(super) fn rewrite_metadata_value(
+        &self,
+        slot: MetadataSlot,
+        from: ValueSlot,
+        to: ValueSlot,
+    ) {
         let mut store = self.metadata.borrow_mut();
-        if let Some(MetadataKind::Constant(value_id)) = store.get_mut(id)
-            && *value_id == from
+        if let Some(MetadataKind::Constant(value_id)) = store.get_mut(slot)
+            && value_id.slot() == from
         {
-            *value_id = to;
+            let tag = value_id.tag();
+            *value_id = ValueId::from_raw(tag, to);
         }
     }
 
-    fn register_metadata_value_use(&self, metadata_id: MetadataSlot, value_id: ValueSlot) {
+    fn register_metadata_value_use(&self, metadata_slot: MetadataSlot, value_id: ValueSlot) {
         self.ctx
             .value_data(value_id)
             .use_list
             .borrow_mut()
-            .push(ValueUse::Metadata(metadata_id));
+            .push(ValueUse::Metadata(metadata_slot));
     }
 
-    fn deregister_metadata_value_use(&self, metadata_id: MetadataSlot, value_id: ValueSlot) {
+    fn deregister_metadata_value_use(&self, metadata_slot: MetadataSlot, value_id: ValueSlot) {
         let mut uses = self.ctx.value_data(value_id).use_list.borrow_mut();
         if let Some(pos) = uses
             .iter()
-            .position(|edge| *edge == ValueUse::Metadata(metadata_id))
+            .position(|edge| *edge == ValueUse::Metadata(metadata_slot))
         {
             uses.remove(pos);
         }
     }
 
-    /// Look up a metadata node by id.
-    pub fn metadata_get(
-        &self,
-        id: crate::metadata::MetadataSlot,
-    ) -> Option<crate::metadata::MetadataKind> {
-        self.metadata.borrow().get(id).cloned()
+    /// Look up a metadata node by id. `None` for a foreign id or one whose
+    /// slot names nothing here — never another module's node.
+    pub fn metadata_get<B>(&self, id: MetadataId<B>) -> Option<MetadataKind<B>>
+    where
+        B: ModuleBrand,
+    {
+        let slot = id.into_stored(self.id).ok()?.slot();
+        self.metadata
+            .borrow()
+            .get(slot)
+            .map(MetadataKind::from_stored)
     }
 
     /// Number of numbered metadata nodes. `MDString`s are uniqued metadata
@@ -2421,7 +2544,7 @@ impl<'ctx> ModuleCore {
             .borrow()
             .nodes()
             .iter()
-            .filter(|node| !matches!(node, crate::metadata::MetadataKind::String(_)))
+            .filter(|node| !matches!(node, MetadataKind::String(_)))
             .count()
     }
 
@@ -2449,8 +2572,29 @@ impl<'ctx> ModuleCore {
     }
 
     /// Append an operand to a named metadata node (by index).
-    pub fn named_metadata_add_operand(&self, index: usize, op: MetadataRef) {
-        self.named_metadata.borrow_mut()[index].add_operand(op);
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `op` was minted by another
+    /// module. `Err(IrError::UnknownMetadataSlot)` when `index` names no node
+    /// here: the index comes from
+    /// [`get_or_insert_named_metadata`](Self::get_or_insert_named_metadata) and
+    /// is a plain position carrying no module tag, so an index minted against
+    /// another module used to panic (out of range) or silently append to the
+    /// wrong node (in range) — neither of which an infallible signature may
+    /// hide.
+    pub fn named_metadata_add_operand<B>(&self, index: usize, op: MetadataId<B>) -> IrResult<()>
+    where
+        B: ModuleBrand,
+    {
+        let op = op.into_stored(self.id)?;
+        let mut nmd = self.named_metadata.borrow_mut();
+        let len = nmd.len();
+        match nmd.get_mut(index) {
+            Some(node) => {
+                node.add_operand(op);
+                Ok(())
+            }
+            None => Err(IrError::UnknownMetadataSlot { index, len }),
+        }
     }
 
     /// Number of named metadata nodes.
@@ -2459,7 +2603,7 @@ impl<'ctx> ModuleCore {
     }
 
     /// Crate-internal: borrow named metadata list for printing.
-    pub(super) fn named_metadata_list(&self) -> core::cell::Ref<'_, Vec<NamedMDNode>> {
+    pub(super) fn named_metadata_list(&self) -> core::cell::Ref<'_, Vec<NamedMDNode<StoredBrand>>> {
         self.named_metadata.borrow()
     }
 
@@ -2484,10 +2628,9 @@ impl<'ctx> ModuleCore {
                 id,
             };
         }
-        let index = self.comdats.push(ComdatData::new(
-            name.to_owned(),
-            crate::comdat::SelectionKind::Any,
-        ));
+        let index = self
+            .comdats
+            .push(ComdatData::new(name.to_owned(), SelectionKind::Any));
         let id = ComdatId::from_index(index);
         self.comdat_by_name.borrow_mut().insert(name.to_owned(), id);
         ComdatRef {
@@ -2542,14 +2685,14 @@ impl Module<DynBrand, Unverified> {
     /// struct LiftedBin;
     /// impl llvmkit_ir::ModuleBrand for LiftedBin {}
     ///
-    /// let m = Module::branded::<LiftedBin>("lifted")?;
+    /// let m = Module::branded::<LiftedBin, _>("lifted")?;
     /// assert!(matches!(
-    ///     Module::branded::<LiftedBin>("again"),
+    ///     Module::branded::<LiftedBin, _>("again"),
     ///     Err(IrError::BrandInUse { .. })
     /// ));
     ///
     /// drop(m);
-    /// let _reused = Module::branded::<LiftedBin>("again")?;
+    /// let _reused = Module::branded::<LiftedBin, _>("again")?;
     /// # Ok::<(), IrError>(())
     /// ```
     ///
@@ -2568,8 +2711,12 @@ impl Module<DynBrand, Unverified> {
     /// [`IrError::BrandInUse`] if a live module already holds `B`;
     /// [`IrError::BrandRetired`] if `B` was retired by
     /// [`branded_once`](Self::branded_once).
-    pub fn branded<B: ModuleBrand>(name: impl Into<String>) -> IrResult<Module<B, Unverified>> {
-        Self::registered::<B>(name, false)
+    pub fn branded<B, N>(name: N) -> IrResult<Module<B, Unverified>>
+    where
+        B: ModuleBrand,
+        N: Into<String>,
+    {
+        Self::registered::<B, N>(name, false)
     }
 
     /// Construct a fresh module under the named brand `B`, **retiring `B`
@@ -2589,9 +2736,9 @@ impl Module<DynBrand, Unverified> {
     /// struct BuiltOnce;
     /// impl llvmkit_ir::ModuleBrand for BuiltOnce {}
     ///
-    /// drop(Module::branded_once::<BuiltOnce>("once")?);
+    /// drop(Module::branded_once::<BuiltOnce, _>("once")?);
     /// assert!(matches!(
-    ///     Module::branded_once::<BuiltOnce>("twice"),
+    ///     Module::branded_once::<BuiltOnce, _>("twice"),
     ///     Err(IrError::BrandRetired { .. })
     /// ));
     /// # Ok::<(), IrError>(())
@@ -2601,10 +2748,12 @@ impl Module<DynBrand, Unverified> {
     ///
     /// [`IrError::BrandInUse`] if a live module already holds `B`;
     /// [`IrError::BrandRetired`] if `B` has already been retired.
-    pub fn branded_once<B: ModuleBrand>(
-        name: impl Into<String>,
-    ) -> IrResult<Module<B, Unverified>> {
-        Self::registered::<B>(name, true)
+    pub fn branded_once<B, N>(name: N) -> IrResult<Module<B, Unverified>>
+    where
+        B: ModuleBrand,
+        N: Into<String>,
+    {
+        Self::registered::<B, N>(name, true)
     }
 
     /// Shared body of [`branded`](Self::branded) and
@@ -2622,10 +2771,11 @@ impl Module<DynBrand, Unverified> {
     ///    partially-constructed module can never strand a brand as `InUse`. (If
     ///    it could, the guard's `Drop` would still release it on unwind — but
     ///    the ordering means that never has to happen.)
-    fn registered<B: ModuleBrand>(
-        name: impl Into<String>,
-        retire_on_drop: bool,
-    ) -> IrResult<Module<B, Unverified>> {
+    fn registered<B, N>(name: N, retire_on_drop: bool) -> IrResult<Module<B, Unverified>>
+    where
+        B: ModuleBrand,
+        N: Into<String>,
+    {
         let name: String = name.into();
         let core = Box::new(ModuleCore::new(name));
         let registration = BrandGuard::<B>::claim(retire_on_drop)?;
@@ -2650,7 +2800,10 @@ impl Module<DynBrand, Unverified> {
     /// let modules: Vec<_> = (0..4).map(|i| Module::dynamic(format!("m{i}"))).collect();
     /// assert_eq!(modules.len(), 4);
     /// ```
-    pub fn dynamic(name: impl Into<String>) -> Module<DynBrand, Unverified> {
+    pub fn dynamic<N>(name: N) -> Module<DynBrand, Unverified>
+    where
+        N: Into<String>,
+    {
         let name: String = name.into();
         Module {
             core: Box::new(ModuleCore::new(name)),
@@ -2782,35 +2935,35 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     }
 
     /// Look up a function by name with this module token's brand,
-    /// widened to [`Dyn`].
-    pub fn function_by_name_dyn(&'ctx self, name: &str) -> Option<FunctionValue<'ctx, Dyn, B>> {
-        self.core()
-            .function_by_name
-            .borrow()
-            .get(name)
-            .copied()
-            .map(|id| {
-                FunctionValue::<'ctx, Dyn, B>::from_parts_unchecked(
-                    id,
-                    ModuleRef::<B>::new(self.core()),
-                )
-            })
+    /// widened to [`Dyn`], returning its storable [`FunctionId`].
+    ///
+    /// Symmetric with [`add_function_dyn`](Self::add_function_dyn): a lookup
+    /// hands back the same currency a declaration does. Reach the borrowing
+    /// [`FunctionValue`] with [`view`](Self::view) when you need one.
+    ///
+    /// The id borrows nothing, so this takes `&self` rather than `&'ctx self` —
+    /// a lookup can be interleaved with other borrows of the module.
+    pub fn function_by_name_dyn(&self, name: &str) -> Option<FunctionId<Dyn, B>> {
+        let slot = self.core().function_by_name.borrow().get(name).copied()?;
+        Some(FunctionId::from_raw(self.core().id, slot))
     }
 
-    /// Look up a function by name and narrow to a specific return marker.
-    pub fn function_by_name<R>(
-        &'ctx self,
-        name: &str,
-    ) -> IrResult<Option<FunctionValue<'ctx, R, B>>>
+    /// Look up a function by name and narrow to a specific return marker,
+    /// returning its storable [`FunctionId`].
+    ///
+    /// Symmetric with the `add_*` family. The marker check is unchanged: a
+    /// signature that does not match `R` is
+    /// [`IrError::ReturnTypeMismatch`], not a silently-widened id.
+    pub fn function_by_name<R>(&self, name: &str) -> IrResult<Option<FunctionId<R, B>>>
     where
-        R: crate::marker::ReturnMarker,
+        R: ReturnMarker,
     {
         let Some(id) = self.core().function_by_name.borrow().get(name).copied() else {
             return Ok(None);
         };
         let value_data = self.core().ctx.value_data(id);
         let signature_id = match &value_data.kind {
-            crate::value::ValueKindData::Function(f) => f.signature,
+            ValueKindData::Function(f) => f.signature,
             _ => unreachable!("function_by_name table only stores function ids"),
         };
         let ret_id = self
@@ -2830,23 +2983,21 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
                 got,
             });
         }
-        Ok(Some(FunctionValue::<'ctx, R, B>::from_parts_unchecked(
-            id,
-            ModuleRef::<B>::new(self.core()),
-        )))
+        Ok(Some(FunctionId::<R, B>::from_raw(self.core().id, id)))
     }
+
     /// Verify the module's structural invariants without consuming it.
     pub fn verify_borrowed(&self) -> IrResult<()> {
         // Deliberately not `self.as_view()`: that is a `&'ctx self` method (it
         // mints a `'ctx`-anchored view), while this only needs a view for the
         // duration of the call. Building it from a short borrow keeps
         // `verify_borrowed` callable on a token the caller is about to move.
-        crate::verifier::Verifier::new(ModuleView::<B>::new(self.core())).run()
+        Verifier::new(ModuleView::<B>::new(self.core())).run()
     }
 
     /// Resolve a storable value id (from [`Value::id`](crate::Value::id)
     /// and its per-kind siblings) back into its borrowing handle — the
-    /// resolution boundary for the llvmkit 2.0 id family.
+    /// resolution boundary for the 0.0.4 id family.
     ///
     /// This is the module-tag choke point: the id's tag is compared against
     /// this module's [`ModuleId`] *before* the arena is touched, so an id
@@ -2896,6 +3047,57 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     {
         id.resolve_in(self.module_ref())
     }
+
+    // ---- By-name lookups ----
+    //
+    // State-generic since cycle E. These return either a capability-free
+    // `Copy + Send` id or, for comdats, a read-only handle — nothing that can
+    // mutate — so restricting them to `Module<B, Unverified>` bought no safety
+    // and left a verified module with no O(1) route to a symbol at all: the
+    // only alternative was a linear scan of `as_view().globals()` comparing
+    // names. `function_by_name` / `function_by_name_dyn` already lived here.
+
+    /// Look up a global variable by name, returning its storable
+    /// [`GlobalId`].
+    ///
+    /// Symmetric with [`add_global`](Self::add_global) and the rest of the
+    /// `add_global_*` family: a lookup hands back the same currency a
+    /// declaration does. Reach the borrowing [`GlobalVariable`] with
+    /// [`view`](Self::view).
+    ///
+    /// The id borrows nothing, so this takes `&self`.
+    pub fn get_global(&self, name: &str) -> Option<GlobalId<B>> {
+        let slot = self.core().global_by_name.borrow().get(name).copied()?;
+        Some(GlobalId::from_raw(self.core().id, slot))
+    }
+
+    /// Look up a global alias by name, returning its storable
+    /// [`GlobalAliasId`]. Symmetric with
+    /// [`alias_builder`](Self::alias_builder)'s `build()`.
+    pub fn get_alias(&self, name: &str) -> Option<GlobalAliasId<B>> {
+        let slot = self.core().alias_by_name.borrow().get(name).copied()?;
+        Some(GlobalAliasId::from_raw(self.core().id, slot))
+    }
+
+    /// Look up an ifunc by name, returning its storable [`GlobalIFuncId`].
+    /// Symmetric with [`ifunc_builder`](Self::ifunc_builder)'s `build()`.
+    pub fn get_ifunc(&self, name: &str) -> Option<GlobalIFuncId<B>> {
+        let slot = self.core().ifunc_by_name.borrow().get(name).copied()?;
+        Some(GlobalIFuncId::from_raw(self.core().id, slot))
+    }
+
+    /// Look up a comdat by name.
+    ///
+    /// Deliberately **not** part of the `get_* -> Option<Id>` symmetry the rest
+    /// of the lookups follow. A comdat is not a `Value`: it lives in its own
+    /// table, and [`ComdatId`] is a bare `u32` index carrying neither a
+    /// [`ModuleId`] tag nor a brand, so it is not a member of the 0.0.4 id
+    /// family and [`view`](Self::view) cannot resolve it. Returning it here
+    /// would hand back something strictly *weaker* than the handle — untagged,
+    /// unbranded, and unresolvable — so the handle stays.
+    pub fn get_comdat(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
+        self.core().get_comdat::<B>(name)
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
@@ -2911,7 +3113,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         signature: FunctionType<'ctx, B>,
     ) -> FunctionBuilder<'ctx, R, B>
     where
-        R: crate::marker::ReturnMarker,
+        R: ReturnMarker,
         Name: Into<String>,
     {
         self.core().function_builder::<B, R, Name>(name, signature)
@@ -2932,7 +3134,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Mask: IntoIterator<Item = i32>,
     {
         self.core()
-            .constant_expr::<B>(result_ty, opcode, operands, indices, mask, flags)
+            .constant_expr::<B, _, _, _>(result_ty, opcode, operands, indices, mask, flags)
     }
 
     pub fn constant_expr_with_options<Operands, Indices, Mask>(
@@ -2949,8 +3151,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Indices: IntoIterator<Item = u32>,
         Mask: IntoIterator<Item = i32>,
     {
-        self.core()
-            .constant_expr_with_options::<B>(result_ty, opcode, operands, indices, mask, options)
+        self.core().constant_expr_with_options::<B, _, _, _>(
+            result_ty, opcode, operands, indices, mask, options,
+        )
     }
 
     pub fn block_address<R, S>(
@@ -2994,15 +3197,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().no_cfi_global::<B>(global)
     }
 
-    pub fn ptr_auth(
+    pub fn ptr_auth<Pointer, Key, Discriminator, AddrDiscriminator, DeactivationSymbol>(
         &'ctx self,
-        pointer: impl IsConstant<'ctx, B>,
-        key: impl IsConstant<'ctx, B>,
-        discriminator: impl IsConstant<'ctx, B>,
-        addr_discriminator: impl IsConstant<'ctx, B>,
-        deactivation_symbol: impl IsConstant<'ctx, B>,
-    ) -> IrResult<Constant<'ctx, B>> {
-        self.core().ptr_auth::<B>(
+        pointer: Pointer,
+        key: Key,
+        discriminator: Discriminator,
+        addr_discriminator: AddrDiscriminator,
+        deactivation_symbol: DeactivationSymbol,
+    ) -> IrResult<Constant<'ctx, B>>
+    where
+        Pointer: IsConstant<'ctx, B>,
+        Key: IsConstant<'ctx, B>,
+        Discriminator: IsConstant<'ctx, B>,
+        AddrDiscriminator: IsConstant<'ctx, B>,
+        DeactivationSymbol: IsConstant<'ctx, B>,
+    {
+        self.core().ptr_auth::<B, _, _, _, _, _>(
             pointer,
             key,
             discriminator,
@@ -3255,10 +3465,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.as_view().named_struct(name)
     }
 
-    pub fn opaque_struct(
-        &'ctx self,
-        name: &str,
-    ) -> IrResult<StructType<'ctx, crate::struct_body_state::Opaque, B>> {
+    pub fn opaque_struct(&'ctx self, name: &str) -> IrResult<StructType<'ctx, Opaque, B>> {
         let (id, existed) = self.core().ctx.get_or_create_named_struct(name);
         if existed {
             let s = self
@@ -3285,9 +3492,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// Idempotently intern schema `S`'s named struct type. Delegates to
     /// [`ModuleView::get_or_set_named_struct_body`], which is where the schema
     /// traits reach it.
-    pub fn get_or_set_named_struct_body<S>(
-        &'ctx self,
-    ) -> IrResult<StructType<'ctx, crate::struct_body_state::BodySet, B>>
+    pub fn get_or_set_named_struct_body<S>(&'ctx self) -> IrResult<StructType<'ctx, BodySet, B>>
     where
         S: StructSchema,
     {
@@ -3326,10 +3531,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
 
     pub fn set_struct_body<I, T>(
         &'ctx self,
-        opaque: StructType<'ctx, crate::struct_body_state::Opaque, B>,
+        opaque: StructType<'ctx, Opaque, B>,
         elements: I,
         packed: bool,
-    ) -> IrResult<StructType<'ctx, crate::struct_body_state::BodySet, B>>
+    ) -> IrResult<StructType<'ctx, BodySet, B>>
     where
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
@@ -3340,7 +3545,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             packed,
         };
         self.core().ctx.set_named_struct_body(opaque.id, body)?;
-        Ok(opaque.retag::<crate::struct_body_state::BodySet>())
+        Ok(opaque.retag::<BodySet>())
     }
 
     pub fn fn_type<I, R, T>(
@@ -3493,10 +3698,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     {
         let signature = self.typed_varargs_function_type::<Ret, Params>()?;
         let function = self.declare_function::<Ret::Marker>(name.as_ref(), signature, linkage)?;
-        crate::function_signature::TypedVarArgsFunctionValue::<Ret, Params, B>::try_from_function(
-            function,
-        )
-        .map(|f| f.id())
+        TypedVarArgsFunctionValue::<Ret, Params, B>::try_from_function(function).map(|f| f.id())
     }
 
     /// Declare a variadic typed function from a Rust function-pointer schema,
@@ -3516,10 +3718,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             signature,
             linkage,
         )?;
-        crate::function_signature::TypedVarArgsFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(
-            function,
-        )
-        .map(|f| f.id())
+        TypedVarArgsFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(function)
+            .map(|f| f.id())
     }
 
     /// Shared declaration tail for every public constructor: name
@@ -3539,10 +3739,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         &'ctx self,
         name: &str,
         signature: FunctionType<'ctx, B>,
-        linkage: crate::global_value::Linkage,
+        linkage: Linkage,
     ) -> IrResult<FunctionValue<'ctx, R, B>>
     where
-        R: crate::marker::ReturnMarker,
+        R: ReturnMarker,
     {
         reject_reserved_intrinsic_name(name)?;
         if !name.is_empty() && self.core().global_name_exists(name) {
@@ -3576,13 +3776,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         &'ctx self,
         name: Name,
         signature: FunctionType<'ctx, B>,
-        linkage: crate::global_value::Linkage,
-    ) -> IrResult<FunctionId<crate::marker::Dyn, B>>
+        linkage: Linkage,
+    ) -> IrResult<FunctionId<Dyn, B>>
     where
         Name: AsRef<str>,
     {
         // `R = Dyn` matches every signature, so no return-marker check is needed.
-        self.declare_function::<crate::marker::Dyn>(name.as_ref(), signature, linkage)
+        self.declare_function::<Dyn>(name.as_ref(), signature, linkage)
             .map(|f| f.id())
     }
 
@@ -3650,13 +3850,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         C: IntoConstantValue<'ctx, B>,
     {
         let constant = initializer.into_constant(self.module_ref());
-        crate::global_variable::GlobalBuilder::<B>::new(
-            self.module_ref(),
-            name.as_ref().to_owned(),
-            constant.ty(),
-        )
-        .initializer(constant)
-        .build()
+        GlobalBuilder::<B>::new(self.module_ref(), name.as_ref().to_owned(), constant.ty())
+            .initializer(constant)
+            .build()
     }
 
     /// Add a `constant` whose type is derived from its `initializer`.
@@ -3669,14 +3865,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         C: IntoConstantValue<'ctx, B>,
     {
         let constant = initializer.into_constant(self.module_ref());
-        crate::global_variable::GlobalBuilder::<B>::new(
-            self.module_ref(),
-            name.as_ref().to_owned(),
-            constant.ty(),
-        )
-        .constant(true)
-        .initializer(constant)
-        .build()
+        GlobalBuilder::<B>::new(self.module_ref(), name.as_ref().to_owned(), constant.ty())
+            .constant(true)
+            .initializer(constant)
+            .build()
     }
 
     /// Add a global with no initializer, declared at `value_type`.
@@ -3695,7 +3887,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         N: AsRef<str>,
         T: Into<Type<'ctx, B>>,
     {
-        crate::global_variable::GlobalBuilder::<B>::new(
+        GlobalBuilder::<B>::new(
             self.module_ref(),
             name.as_ref().to_owned(),
             value_type.into(),
@@ -3708,12 +3900,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         N: AsRef<str>,
         T: Into<Type<'ctx, B>>,
     {
-        crate::global_variable::GlobalBuilder::<B>::new(
+        GlobalBuilder::<B>::new(
             self.module_ref(),
             name.as_ref().to_owned(),
             value_type.into(),
         )
-        .linkage(crate::global_value::Linkage::External)
+        .linkage(Linkage::External)
         .build()
     }
 
@@ -3721,21 +3913,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         &'ctx self,
         name: N,
         value_type: Type<'ctx, B>,
-    ) -> crate::global_variable::GlobalBuilder<'ctx, B>
+    ) -> GlobalBuilder<'ctx, B>
     where
         N: Into<String>,
     {
-        crate::global_variable::GlobalBuilder::new(self.module_ref(), name, value_type)
-    }
-
-    pub fn get_global(&'ctx self, name: &str) -> Option<GlobalVariable<'ctx, B>> {
-        let id = self.core().global_by_name.borrow().get(name).copied()?;
-        let value_data = self.core().ctx.value_data(id);
-        Some(GlobalVariable::from_parts_unchecked(
-            id,
-            self.module_ref(),
-            value_data.ty,
-        ))
+        GlobalBuilder::new(self.module_ref(), name, value_type)
     }
 
     pub fn alias_builder<C, Name>(
@@ -3749,16 +3931,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Name: Into<String>,
     {
         GlobalAliasBuilder::new(self.module_ref(), name, value_type, aliasee)
-    }
-
-    pub fn get_alias(&'ctx self, name: &str) -> Option<GlobalAlias<'ctx, B>> {
-        let id = self.core().alias_by_name.borrow().get(name).copied()?;
-        let value_data = self.core().ctx.value_data(id);
-        Some(GlobalAlias::from_parts_unchecked(
-            id,
-            self.module_ref(),
-            value_data.ty,
-        ))
     }
 
     pub fn alias_empty(&'ctx self) -> bool {
@@ -3776,16 +3948,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Name: Into<String>,
     {
         GlobalIFuncBuilder::new(self.module_ref(), name, value_type, resolver)
-    }
-
-    pub fn get_ifunc(&'ctx self, name: &str) -> Option<GlobalIFunc<'ctx, B>> {
-        let id = self.core().ifunc_by_name.borrow().get(name).copied()?;
-        let value_data = self.core().ctx.value_data(id);
-        Some(GlobalIFunc::from_parts_unchecked(
-            id,
-            self.module_ref(),
-            value_data.ty,
-        ))
     }
 
     pub fn ifunc_empty(&'ctx self) -> bool {
@@ -3847,23 +4009,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().get_or_insert_comdat::<B, _>(name)
     }
 
-    pub fn get_comdat(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
-        self.core().get_comdat::<B>(name)
-    }
-
     pub fn inline_asm<Asm, Constraints>(
         &'ctx self,
         fn_ty: FunctionType<'ctx, B>,
         asm: Asm,
         constraints: Constraints,
-        options: crate::inline_asm::InlineAsmOptions,
-    ) -> crate::inline_asm::InlineAsm<'ctx, B>
+        options: InlineAsmOptions,
+    ) -> InlineAsm<'ctx, B>
     where
         Asm: Into<String>,
         Constraints: Into<String>,
     {
         let ptr_ty = self.ptr_type(0).as_type().id();
-        let data = crate::inline_asm::InlineAsmData {
+        let data = InlineAsmData {
             asm_string: asm.into(),
             constraint_string: constraints.into(),
             fn_ty: fn_ty.as_type().id(),
@@ -3872,95 +4030,142 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             can_unwind: options.can_unwind(),
             dialect: options.dialect(),
         };
-        let id = self.core().ctx.push_value(crate::value::ValueData {
+        let id = self.core().ctx.push_value(ValueData {
             ty: ptr_ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::InlineAsm(data),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
-        crate::inline_asm::InlineAsm::from_parts(id, self.module_ref(), ptr_ty)
+        InlineAsm::from_parts(id, self.module_ref(), ptr_ty)
     }
 
-    pub fn metadata_string<S>(&'ctx self, s: S) -> MetadataSlot
+    // ---- Metadata ----
+    //
+    // The public face of the metadata currency. Every entry point that accepts
+    // a [`MetadataId`] is fallible, because a caller can always hand over an id
+    // minted by a *different* module: that is `IrError::ForeignMetadataId`,
+    // never a silent mis-resolve against this module's arena. The two that
+    // cannot fail — interning a string and reserving a fresh node — say so by
+    // returning the id directly.
+
+    /// Intern a metadata string node, returning its storable
+    /// [`MetadataId`]. Mirrors `MDString::get`.
+    pub fn metadata_string<S>(&'ctx self, s: S) -> MetadataId<B>
     where
         S: Into<String>,
     {
         self.core().metadata_string(s)
     }
 
-    pub fn metadata_tuple<Ops>(&'ctx self, operands: Ops) -> MetadataSlot
+    /// Create a metadata tuple node. Mirrors `MDTuple::get`.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` if any operand was minted by another
+    /// module.
+    pub fn metadata_tuple<Ops>(&'ctx self, operands: Ops) -> IrResult<MetadataId<B>>
     where
-        Ops: AsRef<[MetadataRef]>,
+        Ops: AsRef<[MetadataId<B>]>,
     {
         self.core().metadata_tuple(operands)
     }
 
+    /// Create a metadata tuple node with explicit distinctness.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` if any operand was minted by another
+    /// module.
     pub fn metadata_tuple_with_distinct<Ops>(
         &'ctx self,
         distinct: bool,
         operands: Ops,
-    ) -> MetadataSlot
+    ) -> IrResult<MetadataId<B>>
     where
-        Ops: AsRef<[MetadataRef]>,
+        Ops: AsRef<[MetadataId<B>]>,
     {
         self.core().metadata_tuple_with_distinct(distinct, operands)
     }
 
-    pub fn metadata_constant<C>(&'ctx self, c: C) -> MetadataSlot
+    /// Wrap a constant as a typed metadata operand (`i64 1`, `ptr null`, ...).
+    ///
+    /// `Err(IrError::ForeignValueId)` when `c` belongs to another module. Under
+    /// a shared brand ([`DynBrand`], or a re-issued named brand) the handle's
+    /// type says nothing about *which* module minted it, so the node would
+    /// otherwise be interned here pointing at a value slot that means something
+    /// else in this arena.
+    pub fn metadata_constant<C>(&'ctx self, c: C) -> IrResult<MetadataId<B>>
     where
         C: IsConstant<'ctx, B>,
     {
-        let id = c.as_constant().id;
-        self.core().metadata_constant_value(id)
+        let constant = c.as_constant();
+        if constant.module.id() != self.core().id() {
+            return Err(IrError::ForeignValueId);
+        }
+        Ok(self.core().metadata_constant_value(constant.id))
     }
 
-    pub fn metadata_specialized(&'ctx self, node: SpecializedMetadataNode) -> MetadataSlot {
+    /// Create a specialized `DI*` metadata node.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` if any field references a node minted
+    /// by another module.
+    pub fn metadata_specialized(
+        &'ctx self,
+        node: SpecializedMetadataNode<B>,
+    ) -> IrResult<MetadataId<B>> {
         self.core().metadata_specialized(node)
     }
 
-    pub fn metadata_node(&'ctx self, kind: MetadataKind) -> MetadataSlot {
+    /// Store an already-built metadata node and return its id.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` if the node references a node — or a
+    /// value — minted by another module.
+    pub fn metadata_node(&'ctx self, kind: MetadataKind<B>) -> IrResult<MetadataId<B>> {
         self.core().metadata_node(kind)
     }
 
-    pub fn metadata_as_value(
-        &'ctx self,
-        md: crate::metadata::MetadataSlot,
-    ) -> crate::value::Value<'ctx, B> {
+    /// Wrap a metadata node so it can appear where a [`Value`] is expected.
+    /// Mirrors LLVM's uniqued `MetadataAsValue::get`.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `md` was minted by another
+    /// module, `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    pub fn metadata_as_value(&'ctx self, md: MetadataId<B>) -> IrResult<Value<'ctx, B>> {
+        let slot = self.core().metadata_slot_of(md)?;
         let ty = self.core().ctx.metadata();
-        if let Some(&id) = self.core().metadata_as_value_cache.borrow().get(&md) {
-            return crate::value::Value::from_parts(id, self.module_ref(), ty);
+        if let Some(&id) = self.core().metadata_as_value_cache.borrow().get(&slot) {
+            return Ok(Value::from_parts(id, self.module_ref(), ty));
         }
-        let id = self.core().ctx.push_value(crate::value::ValueData {
+        let id = self.core().ctx.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
-            kind: ValueKindData::MetadataAsValue(md),
+            kind: ValueKindData::MetadataAsValue(slot),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.core()
             .metadata_as_value_cache
             .borrow_mut()
-            .insert(md, id);
-        crate::value::Value::from_parts(id, self.module_ref(), ty)
+            .insert(slot, id);
+        Ok(Value::from_parts(id, self.module_ref(), ty))
     }
 
-    pub fn metadata_reserve(&'ctx self) -> MetadataSlot {
+    /// Reserve a fresh metadata node id with placeholder content, to be filled
+    /// via [`metadata_set`](Self::metadata_set). Used by the parser to resolve
+    /// forward references without assuming textual `!N` slots equal arena
+    /// indices.
+    pub fn metadata_reserve(&'ctx self) -> MetadataId<B> {
         self.core().metadata_reserve()
     }
 
-    pub fn metadata_set(
-        &'ctx self,
-        id: crate::metadata::MetadataSlot,
-        kind: crate::metadata::MetadataKind,
-    ) {
-        self.core().metadata_set(id, kind);
+    /// Overwrite a reserved metadata node, pairing with `metadata_reserve`.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
+    /// module; `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    /// It used to no-op silently, which the 2.0 contract forbids.
+    pub fn metadata_set(&'ctx self, id: MetadataId<B>, kind: MetadataKind<B>) -> IrResult<()> {
+        self.core().metadata_set(id, kind)
     }
 
-    pub fn metadata_get(
-        &'ctx self,
-        id: crate::metadata::MetadataSlot,
-    ) -> Option<crate::metadata::MetadataKind> {
+    /// Look up a metadata node by id. `None` when `id` belongs to another
+    /// module or names nothing here — never another module's node.
+    pub fn metadata_get(&'ctx self, id: MetadataId<B>) -> Option<MetadataKind<B>> {
         self.core().metadata_get(id)
     }
 
@@ -3975,8 +4180,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().get_or_insert_named_metadata(name)
     }
 
-    pub fn named_metadata_add_operand(&'ctx self, index: usize, op: MetadataRef) {
-        self.core().named_metadata_add_operand(index, op);
+    /// Append an operand to a named metadata node.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `op` was minted by another
+    /// module. `Err(IrError::UnknownMetadataSlot)` when `index` names no node
+    /// here: the index comes from `get_or_insert_named_metadata` and carries no
+    /// module tag, so an index minted against another module used to panic (out
+    /// of range) or silently append to the wrong node (in range) — neither of
+    /// which an infallible signature may hide.
+    pub fn named_metadata_add_operand(&'ctx self, index: usize, op: MetadataId<B>) -> IrResult<()> {
+        self.core().named_metadata_add_operand(index, op)
     }
 
     pub fn named_metadata_count(&'ctx self) -> usize {
@@ -4004,7 +4217,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     pub fn verify(self) -> IrResult<Module<B, Verified>> {
         // A *short* view, not `as_view()`: `self` is about to be moved from, so
         // it cannot lend a `'ctx`-long borrow of itself.
-        crate::verifier::Verifier::new(ModuleView::<B>::new(self.core())).run()?;
+        Verifier::new(ModuleView::<B>::new(self.core())).run()?;
         Ok(Module {
             core: self.core,
             registration: self.registration,

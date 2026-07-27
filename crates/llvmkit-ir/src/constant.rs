@@ -29,6 +29,12 @@
 //! [`ConstantIntValue`]: crate::constants::ConstantIntValue
 //! [`ConstantFloatValue`]: crate::constants::ConstantFloatValue
 
+use super::derived_types::{FloatType, IntType};
+use super::error::ValueCategoryLabel;
+use super::float_kind::IntoConstantFloat;
+use super::int_width::IntoConstantInt;
+use super::module::ModuleBrand;
+use super::value::ValueKindData;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::module::{Module, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeSlot};
@@ -348,7 +354,10 @@ pub(crate) enum ConstantData {
 }
 
 impl ConstantData {
-    pub(crate) fn for_each_operand(&self, mut f: impl FnMut(ValueSlot)) {
+    pub(crate) fn for_each_operand<F>(&self, mut f: F)
+    where
+        F: FnMut(ValueSlot),
+    {
         match self {
             Self::Expr(data) => {
                 for operand in data.operands.iter().copied() {
@@ -396,11 +405,11 @@ impl ConstantData {
 ///
 /// The erased [`Constant`] view may be embedded in parsed constants and
 /// instructions, but only this parser-only handle can resolve the placeholder.
-pub struct BlockAddressPlaceholder<'ctx, B: crate::module::ModuleBrand> {
+pub struct BlockAddressPlaceholder<'ctx, B: ModuleBrand> {
     constant: Constant<'ctx, B>,
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> BlockAddressPlaceholder<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> BlockAddressPlaceholder<'ctx, B> {
     #[inline]
     pub(crate) fn from_constant(constant: Constant<'ctx, B>) -> Self {
         Self { constant }
@@ -428,13 +437,13 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> BlockAddressPlaceholder<'ctx, B
 ///
 /// [`ConstantIntValue`]: crate::constants::ConstantIntValue
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Constant<'ctx, B: crate::module::ModuleBrand> {
+pub struct Constant<'ctx, B: ModuleBrand> {
     pub(crate) id: ValueSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) ty: TypeSlot,
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// Construct from raw parts. Crate-internal: only the constant
     /// constructors hand these out.
     #[inline]
@@ -463,7 +472,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Constant<'ctx, B> {
     }
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> core::fmt::Display for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for Constant<'ctx, B> {
     /// Print the operand form `<type> <literal>`, identical to what the
     /// erased [`Value`] handle from [`Constant::into_erased`] prints.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -471,21 +480,21 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> core::fmt::Display for Constant
     }
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> sealed::Sealed for Constant<'ctx, B> {}
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IsValue<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for Constant<'ctx, B> {}
+impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Constant<'ctx, B> {
     #[inline]
     fn into_erased(self) -> Value<'ctx, B> {
         Constant::into_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(Constant);
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Typed<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for Constant<'ctx, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
         Constant::ty(self)
     }
 }
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'ctx, B> {
     #[inline]
     fn name(self) -> Option<String> {
         self.into_erased().name()
@@ -502,28 +511,28 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'
         self.into_erased().clear_name(module_token);
     }
 }
-impl<B: crate::module::ModuleBrand + 'static> HasDebugLoc for Constant<'_, B> {
+impl<B: ModuleBrand + 'static> HasDebugLoc for Constant<'_, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
         self.into_erased().debug_loc()
     }
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> From<Constant<'ctx, B>> for Value<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> From<Constant<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(c: Constant<'ctx, B>) -> Self {
         c.into_erased()
     }
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Constant<'ctx, B> {
     type Error = IrError;
     fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
-        if let crate::value::ValueKindData::Constant(_) = v.data().kind {
+        if let ValueKindData::Constant(_) = v.data().kind {
             Ok(Self::from_parts(v))
         } else {
             Err(IrError::ValueCategoryMismatch {
-                expected: crate::error::ValueCategoryLabel::Constant,
+                expected: ValueCategoryLabel::Constant,
                 got: v.category().into(),
             })
         }
@@ -538,14 +547,12 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Con
 /// (`ConstantIntValue`, `ConstantFloatValue`, ...) plus the erased
 /// [`Constant`] itself. Bound generic code with this trait when a
 /// function should accept any constant.
-pub trait IsConstant<'ctx, B: crate::module::ModuleBrand>:
-    sealed::Sealed + IsValue<'ctx, B>
-{
+pub trait IsConstant<'ctx, B: ModuleBrand>: sealed::Sealed + IsValue<'ctx, B> {
     /// Widen to the erased [`Constant`] handle.
     fn as_constant(self) -> Constant<'ctx, B>;
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constant<'ctx, B> {
     #[inline]
     fn as_constant(self) -> Constant<'ctx, B> {
         self
@@ -566,16 +573,14 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constan
 /// matching IR constant through the module and erase it to [`Constant`].
 /// One literal maps to exactly one IR width, with no widening: `0i32` is
 /// an `i32`, `0i64` an `i64`. Ints route through
-/// [`IntoConstantInt`](crate::IntoConstantInt), floats through
-/// [`IntoConstantFloat`](crate::IntoConstantFloat).
-pub trait IntoConstantValue<'ctx, B: crate::module::ModuleBrand> {
+/// [`IntoConstantInt`], floats through
+/// [`IntoConstantFloat`].
+pub trait IntoConstantValue<'ctx, B: ModuleBrand> {
     /// Materialize `self` as an erased [`Constant`] owned by `module`.
     fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B>;
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx, C: IsConstant<'ctx, B>> IntoConstantValue<'ctx, B>
-    for C
-{
+impl<'ctx, B: ModuleBrand + 'ctx, C: IsConstant<'ctx, B>> IntoConstantValue<'ctx, B> for C {
     #[inline]
     fn into_constant(self, _module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
         self.as_constant()
@@ -584,14 +589,14 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx, C: IsConstant<'ctx, B>> IntoCon
 
 macro_rules! impl_into_constant_value_int {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
-        impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
+        impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
             #[inline]
             fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
-                let ty = crate::derived_types::IntType::<$marker, B>::new(
+                let ty = IntType::<$marker, B>::new(
                     module.module().$ty_method::<B>().as_type().id(),
                     module,
                 );
-                crate::int_width::IntoConstantInt::into_constant_int(self, ty)
+                IntoConstantInt::into_constant_int(self, ty)
                     .unwrap_or_else(|_| {
                         unreachable!("exact-width scalar literal is an infallible IR constant")
                     })
@@ -616,14 +621,14 @@ impl_into_constant_value_int!(u128, i128, i128_type);
 
 macro_rules! impl_into_constant_value_float {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
-        impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
+        impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
             #[inline]
             fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
-                let ty = crate::derived_types::FloatType::<$marker, B>::new(
+                let ty = FloatType::<$marker, B>::new(
                     module.module().$ty_method::<B>().as_type().id(),
                     module,
                 );
-                crate::float_kind::IntoConstantFloat::into_constant_float(self, ty)
+                IntoConstantFloat::into_constant_float(self, ty)
                     .unwrap_or_else(|_| {
                         unreachable!("exact-width scalar literal is an infallible IR constant")
                     })

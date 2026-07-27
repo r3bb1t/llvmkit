@@ -1,4 +1,4 @@
-//! Public-surface coverage for the llvmkit 2.0 value-id family (cycle A):
+//! Public-surface coverage for the 0.0.4 value-id family (cycle A):
 //! `handle.id()` mints a storable, module-tagged id, and
 //! [`Module::view`] / [`Module::try_view`] resolve it back into a borrowing
 //! handle.
@@ -8,7 +8,7 @@
 //! (`handle -> id -> handle`) for each id in the family, the `Copy + Send`
 //! storability of the ids, and the runtime foreign-tag rejection — which needs
 //! two modules sharing one brand *type* ([`llvmkit_ir::DynBrand`]), because
-//! under the generative lifetime brand the mistake is a compile error and the
+//! under two *distinct* brand types the mistake is a compile error and the
 //! runtime check is unreachable.
 
 use llvmkit_ir::{
@@ -122,10 +122,10 @@ fn view_works_on_verified_module() -> Result<(), IrError> {
     Ok(())
 }
 
-/// The ids are `Copy` (a stored id can be re-viewed repeatedly) and `Send`
-/// (the invariant `fn(B) -> B` brand phantom is `Send` even though the cycle-A
-/// brand `B = Brand<'brand>` is not `'static`). This is a *compile-time*
-/// assertion instantiated with the closure's own brand.
+/// The ids are `Copy` (a stored id can be re-viewed repeatedly) and `Send` —
+/// the brand rides as the invariant phantom `fn(B) -> B`, which is `Send`
+/// regardless of whether `B` itself is. This is a *compile-time* assertion,
+/// instantiated below with a brand-generic helper so it holds for every brand.
 #[test]
 fn ids_are_copy_and_send() {
     fn assert_copy_send<T: Copy + Send>() {}

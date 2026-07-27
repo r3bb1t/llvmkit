@@ -10,11 +10,12 @@
 //!
 //! ## Storage model
 //!
-//! Comdats are owned by the [`Module`](crate::Module) and addressed
+//! Comdats are owned by the [`Module`] and addressed
 //! by name. A [`ComdatRef<'ctx>`] borrows the comdat for the lifetime
 //! of the module. Globals store the comdat by name (`Option<String>`)
 //! to avoid arena cross-references.
 
+use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use core::fmt;
 
 /// Comdat arena index. Stable for the lifetime of the owning
@@ -98,12 +99,12 @@ impl ComdatData {
 /// passes `Comdat *` around: cheap, copy-able. Identity is
 /// (module, ComdatId).
 #[derive(Clone, Copy)]
-pub struct ComdatRef<'ctx, B: crate::module::ModuleBrand> {
-    pub(crate) module: crate::module::ModuleRef<'ctx, B>,
+pub struct ComdatRef<'ctx, B: ModuleBrand> {
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) id: ComdatId,
 }
 
-impl<'ctx, B: crate::module::ModuleBrand> ComdatRef<'ctx, B> {
+impl<'ctx, B: ModuleBrand> ComdatRef<'ctx, B> {
     #[inline]
     pub(crate) fn data(self) -> &'ctx ComdatData {
         self.module.module().comdat_at(self.id)
@@ -115,41 +116,48 @@ impl<'ctx, B: crate::module::ModuleBrand> ComdatRef<'ctx, B> {
         &self.data().name
     }
 
-    /// Comdat arena id. Stable for the lifetime of the owning
-    /// module.
-    #[inline]
-    pub fn id(self) -> ComdatId {
-        self.id
-    }
+    // No public `id()`. `ComdatId` is a bare `u32` index carrying neither a
+    // `ModuleId` tag nor a brand, so it is not a member of the 2.0 id family
+    // and `Module::view` cannot resolve it — which is exactly why
+    // `Module::get_comdat` returns this handle rather than an id. Handing the
+    // raw index out anyway would have published a token no public API accepts,
+    // strictly weaker than the handle it came from. It is crate-internal
+    // storage, reachable through `ComdatRef` and nothing else.
 
     /// Selection kind currently stored under this comdat.
     pub fn selection_kind(self) -> SelectionKind {
         self.data().selection_kind.get()
     }
 
-    /// Update the selection kind. Mirrors
-    /// `Comdat::setSelectionKind`.
-    pub fn set_selection_kind(self, kind: SelectionKind) {
+    /// Update the selection kind. Mirrors `Comdat::setSelectionKind`.
+    ///
+    /// Takes the `Unverified` module token, like every other mutator in the
+    /// crate, so `verify(self)` really does consume mutation capability. The
+    /// selection kind is printed (`$name = comdat <kind>`), so without the
+    /// token a [`Module<B, Verified>`](crate::Module)'s IR could be changed
+    /// after verification — `Module::get_comdat` is state-generic, so a
+    /// verified module does hand out a `ComdatRef`.
+    pub fn set_selection_kind(self, _module_token: &Module<B, Unverified>, kind: SelectionKind) {
         self.data().selection_kind.set(kind);
     }
 }
 
-impl<B: crate::module::ModuleBrand> PartialEq for ComdatRef<'_, B> {
+impl<B: ModuleBrand> PartialEq for ComdatRef<'_, B> {
     fn eq(&self, other: &Self) -> bool {
         self.module == other.module && self.id == other.id
     }
 }
 
-impl<B: crate::module::ModuleBrand> Eq for ComdatRef<'_, B> {}
+impl<B: ModuleBrand> Eq for ComdatRef<'_, B> {}
 
-impl<B: crate::module::ModuleBrand> core::hash::Hash for ComdatRef<'_, B> {
+impl<B: ModuleBrand> core::hash::Hash for ComdatRef<'_, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.module.hash(h);
         self.id.hash(h);
     }
 }
 
-impl<B: crate::module::ModuleBrand> fmt::Debug for ComdatRef<'_, B> {
+impl<B: ModuleBrand> fmt::Debug for ComdatRef<'_, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ComdatRef")
             .field("name", &self.name())

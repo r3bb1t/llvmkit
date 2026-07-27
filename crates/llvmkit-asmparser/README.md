@@ -14,9 +14,9 @@ Tracking **LLVM 22.1.4**.
 
 - **`.ll` lexer** — borrows from a pre-loaded `&[u8]`; tokens carry `Cow<[u8]>`
   payloads that allocate only when an escape sequence actually changes bytes.
-- **`.ll` parser** — recursive-descent, one-token lookahead. Builds into an
-  existing `Module<'ctx, _, Unverified>` from `llvmkit-ir`; the `'ctx` brand
-  prevents cross-module mixing at compile time. Covers `target datalayout` /
+- **`.ll` parser** — recursive-descent, one-token lookahead. Produces a
+  `Module<_, Unverified>` from `llvmkit-ir`; the module's brand *type* prevents
+  cross-module mixing at compile time. Covers `target datalayout` /
   `target triple`, `source_filename`, `module asm`, type definitions, globals,
   declarations, definitions, function attributes/comdats/header operands,
   metadata and debug records, use-list directives, summaries, every shipped
@@ -27,7 +27,33 @@ Tracking **LLVM 22.1.4**.
 Bitcode is out of scope for this crate today; see the workspace
 [`README`](https://github.com/r3bb1t/llvmkit#readme) for the roadmap.
 
-## Usage
+## Parser usage
+
+Reach for the closure-free entry points. `parse_branded::<B>`, `parse_dynamic`,
+`parse_file_branded::<B>`, and `parse_file_dynamic` mint the module for you and
+hand back the owned `Module<B, Unverified>`; `parse_into` parses into a module
+you already own and returns it. On failure the module is dropped along with
+whatever was parsed into it, so a half-built module never escapes.
+
+```rust
+use llvmkit_asmparser::parse_dynamic;
+
+let m = parse_dynamic("define void @f() {\nentry:\n  ret void\n}\n")?;
+let m = m.verify()?;
+assert!(m.to_string().contains("define void @f()"));
+```
+
+The `parse_assembly` / `parse_assembly_string` / `parse_assembly_file` family
+still takes a closure. That is not a brand restriction: the `ParsedModule`
+by-product holds borrowing handles into the module (slot mapping, summary
+index), so returning both would be a self-reference. Use these when you need
+the slot mapping; use the closure-free forms otherwise.
+
+Also public: `parse_type` / `parse_type_at_beginning` / `parse_constant_value`
+for single fragments, and `parse_summary_index_assembly*` for a standalone
+summary index.
+
+## Lexer usage
 
 ```rust
 use llvmkit_asmparser::ll_lexer::Lexer;
@@ -46,7 +72,6 @@ use std::fs::File;
 
 let bytes = read_to_owned(File::open("foo.ll")?)?;
 let lex   = Lexer::new(&bytes);
-# Ok::<_, std::io::Error>(())
 ```
 
 End-to-end examples:

@@ -7,6 +7,7 @@
 //! The handle caches the parent-function id and parameter slot so the
 //! common accessors do not round-trip through the value arena.
 
+use super::error::ValueCategoryLabel;
 use super::function::FunctionValue;
 use super::marker::Dyn;
 use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
@@ -16,7 +17,7 @@ use super::{DebugLoc, IrError, IrResult};
 
 /// Typed handle for a function parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Argument<'ctx, B: crate::module::ModuleBrand> {
+pub struct Argument<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
@@ -163,7 +164,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Argument<'ctx, B> 
                 slot,
             }),
             _ => Err(IrError::ValueCategoryMismatch {
-                expected: crate::error::ValueCategoryLabel::Argument,
+                expected: ValueCategoryLabel::Argument,
                 got: v.category().into(),
             }),
         }

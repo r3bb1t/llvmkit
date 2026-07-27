@@ -32,6 +32,10 @@ use core::marker::PhantomData;
 use llvmkit_ir::attributes::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, MemoryEffects, MemoryLocation, ModRefInfo,
 };
+use llvmkit_ir::metadata::{
+    DebugMetadataOperand, DebugRecord, MetadataAttachmentKind, MetadataFieldValue, MetadataId,
+    MetadataKind,
+};
 use std::collections::HashMap;
 
 use llvmkit_ir::{
@@ -48,11 +52,29 @@ use llvmkit_ir::{
 };
 use llvmkit_support::{Span, Spanned};
 
+use super::asm_parser_context::AsmParserContext;
 use super::ll_lexer::{LexError, Lexer};
+use super::ll_token::Opcode;
 use super::ll_token::{IntLit, Keyword, NumBase, PrimitiveTy, Sign, Token};
+use super::module_summary::ModuleSummaryIndex;
+use super::numbered_values::AddError;
 use super::numbered_values::NumberedValues;
 use super::parse_error::{DiagLoc, ParseError, ParseResult};
+use super::parse_error::{SymbolId, SymbolKind};
 use super::slot_mapping::{GlobalRef, SlotMapping};
+
+/// Unwrap an `IrResult` from a metadata API the parser drives against **its own**
+/// module.
+///
+/// Every metadata id the parser hands back to `self.module` was minted by that
+/// same module a moment earlier (`metadata_reserve`, `metadata_string`,
+/// `metadata_node`, ...), so the module-tag check on the way in cannot fail and
+/// the slot cannot be out of range. Naming that once here keeps the parser free
+/// of a raw-slot escape hatch: it speaks the tagged currency like any other
+/// caller and simply has no foreign ids to hand over.
+fn own_metadata<T>(result: IrResult<T>) -> T {
+    result.expect("metadata id minted by the module the parser is populating")
+}
 
 type ParsedGlobalInitializer<'ctx, B> = (
     Option<Constant<'ctx, B>>,
@@ -174,8 +196,8 @@ struct TypeEntry<'ctx, B: ModuleBrand> {
     ty: Type<'ctx, B>,
 }
 
-struct MetadataSlotEntry {
-    id: llvmkit_ir::metadata::MetadataSlot,
+struct MetadataSlotEntry<B: ModuleBrand> {
+    id: MetadataId<B>,
     defined: bool,
     first_ref: Span,
 }
@@ -190,10 +212,7 @@ struct FunctionSuffix<'ctx, B: ModuleBrand> {
     prefix_data: Option<llvmkit_ir::Constant<'ctx, B>>,
     prologue_data: Option<llvmkit_ir::Constant<'ctx, B>>,
     personality_fn: Option<ParsedPersonalityFn<'ctx, B>>,
-    metadata: Vec<(
-        llvmkit_ir::metadata::MetadataAttachmentKind,
-        llvmkit_ir::metadata::MetadataSlot,
-    )>,
+    metadata: Vec<(MetadataAttachmentKind, MetadataId<B>)>,
     _marker: core::marker::PhantomData<&'ctx ()>,
 }
 
@@ -247,9 +266,9 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     numbered_globals: NumberedValues<GlobalRef<'ctx, B>>,
     numbered_attr_groups: NumberedValues<llvmkit_ir::attributes::AttributeStorage>,
 
-    /// Maps a textual metadata slot (`!N`) to the `MetadataSlot` it names and
+    /// Maps a textual metadata slot (`!N`) to the [`MetadataId`] it names and
     /// whether a matching `!N = ...` definition was seen.
-    metadata_slots: HashMap<u32, MetadataSlotEntry>,
+    metadata_slots: HashMap<u32, MetadataSlotEntry<B>>,
     deferred_global_initializers: Vec<DeferredGlobalInitializer<'ctx, B>>,
     deferred_block_addresses: Vec<DeferredBlockAddress<'ctx, B>>,
     deferred_personality_fns: Vec<DeferredPersonalityFn<'ctx, B>>,
@@ -265,7 +284,7 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
 #[derive(Debug, Default)]
 pub struct ParsedModule<'ctx, B: ModuleBrand> {
     pub slot_mapping: SlotMapping<'ctx, B>,
-    pub summary_index: Option<crate::module_summary::ModuleSummaryIndex>,
+    pub summary_index: Option<ModuleSummaryIndex>,
 }
 
 enum DeferredConstantKind<'ctx, B: ModuleBrand> {
@@ -419,22 +438,22 @@ fn parsed_apsint_to_i128(parsed: &ParsedApsInt) -> Option<i128> {
     }
 }
 
-fn is_supported_constant_expr_opcode(op: crate::ll_token::Opcode) -> bool {
+fn is_supported_constant_expr_opcode(op: Opcode) -> bool {
     matches!(
         op,
-        crate::ll_token::Opcode::GetElementPtr
-            | crate::ll_token::Opcode::BitCast
-            | crate::ll_token::Opcode::AddrSpaceCast
-            | crate::ll_token::Opcode::IntToPtr
-            | crate::ll_token::Opcode::PtrToInt
-            | crate::ll_token::Opcode::PtrToAddr
-            | crate::ll_token::Opcode::Trunc
-            | crate::ll_token::Opcode::Add
-            | crate::ll_token::Opcode::Sub
-            | crate::ll_token::Opcode::Xor
-            | crate::ll_token::Opcode::ExtractElement
-            | crate::ll_token::Opcode::InsertElement
-            | crate::ll_token::Opcode::ShuffleVector
+        Opcode::GetElementPtr
+            | Opcode::BitCast
+            | Opcode::AddrSpaceCast
+            | Opcode::IntToPtr
+            | Opcode::PtrToInt
+            | Opcode::PtrToAddr
+            | Opcode::Trunc
+            | Opcode::Add
+            | Opcode::Sub
+            | Opcode::Xor
+            | Opcode::ExtractElement
+            | Opcode::InsertElement
+            | Opcode::ShuffleVector
     )
 }
 
@@ -895,12 +914,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     pub fn with_context(
         src: &'src [u8],
         module: &'ctx Module<B, Unverified>,
-        _context: &'ctx mut crate::asm_parser_context::AsmParserContext<'ctx, B>,
+        _context: &'ctx mut AsmParserContext<'ctx, B>,
     ) -> ParseResult<Self> {
         Self::new(src, module)
     }
 
-    fn resolve_md_slot(&mut self, slot: u32, loc: Span) -> llvmkit_ir::metadata::MetadataSlot {
+    fn resolve_md_slot(&mut self, slot: u32, loc: Span) -> MetadataId<B> {
         if let Some(entry) = self.metadata_slots.get(&slot) {
             return entry.id;
         }
@@ -919,24 +938,30 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn define_md_slot(
         &mut self,
         slot: u32,
-        content: llvmkit_ir::metadata::MetadataKind,
+        content: MetadataKind<B>,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::metadata::MetadataSlot> {
+    ) -> ParseResult<MetadataId<B>> {
         if let Some(entry) = self.metadata_slots.get_mut(&slot) {
             if entry.defined {
                 return Err(ParseError::Redefinition {
-                    kind: crate::parse_error::SymbolKind::Metadata,
-                    id: crate::parse_error::SymbolId::Numbered(slot),
+                    kind: SymbolKind::Metadata,
+                    id: SymbolId::Numbered(slot),
                     loc: DiagLoc::span(loc),
                 });
             }
-            self.module.metadata_set(entry.id, content);
+            // The id was reserved by *this* module (`resolve_md_slot` ->
+            // `metadata_reserve`), so its tag matches and its slot is in range.
+            self.module
+                .metadata_set(entry.id, content)
+                .expect("metadata id was reserved by this module");
             entry.defined = true;
             return Ok(entry.id);
         }
 
         let id = self.module.metadata_reserve();
-        self.module.metadata_set(id, content);
+        self.module
+            .metadata_set(id, content)
+            .expect("id returned by metadata_reserve on this module");
         self.metadata_slots.insert(
             slot,
             MetadataSlotEntry {
@@ -986,8 +1011,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         for (slot, entry) in &self.metadata_slots {
             if !entry.defined {
                 return Err(ParseError::UndefinedSymbol {
-                    kind: crate::parse_error::SymbolKind::Metadata,
-                    id: crate::parse_error::SymbolId::Numbered(*slot),
+                    kind: SymbolKind::Metadata,
+                    id: SymbolId::Numbered(*slot),
                     loc: DiagLoc::span(entry.first_ref),
                 });
             }
@@ -1040,7 +1065,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let deferred = std::mem::take(&mut self.deferred_block_addresses);
         for item in deferred {
             let function = match &item.function {
-                NameOrId::Name(name) => self.module.function_by_name_dyn(name),
+                NameOrId::Name(name) => self
+                    .module
+                    .function_by_name_dyn(name)
+                    .map(|id| self.module.view(id)),
                 NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
                     GlobalRef::Function(f) => Some(*f),
                     _ => None,
@@ -1159,8 +1187,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn validate_forward_function_decls(&self) -> ParseResult<()> {
         if let Some((name, loc)) = self.forward_function_decls.iter().next() {
             return Err(ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Named(name.clone()),
+                kind: SymbolKind::Global,
+                id: SymbolId::Named(name.clone()),
                 loc: DiagLoc::span(*loc),
             });
         }
@@ -1386,11 +1414,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn expect_primitive(
-        &mut self,
-        p: crate::ll_token::PrimitiveTy,
-        expected: &str,
-    ) -> ParseResult<Span> {
+    fn expect_primitive(&mut self, p: PrimitiveTy, expected: &str) -> ParseResult<Span> {
         if matches!(self.peek(), Token::PrimitiveType(got) if *got == p) {
             self.bump()
         } else {
@@ -1701,7 +1725,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(self.expected("comdat selection kind"));
         };
         let comdat = self.module.get_or_insert_comdat(&name);
-        comdat.set_selection_kind(kind);
+        comdat.set_selection_kind(self.module, kind);
         Ok(())
     }
 
@@ -1781,13 +1805,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected("function name in uselistorder_bb"))?;
                 self.bump()?;
-                self.module.function_by_name_dyn(&name).ok_or_else(|| {
+                let fn_id = self.module.function_by_name_dyn(&name).ok_or_else(|| {
                     ParseError::UndefinedSymbol {
-                        kind: crate::parse_error::SymbolKind::Global,
-                        id: crate::parse_error::SymbolId::Named(name),
+                        kind: SymbolKind::Global,
+                        id: SymbolId::Named(name),
                         loc: DiagLoc::span(loc),
                     }
-                })?
+                })?;
+                self.module.view(fn_id)
             }
             Token::GlobalId(id) => {
                 let id = *id;
@@ -1807,8 +1832,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .basic_blocks()
                     .find(|bb| bb.name().as_deref() == Some(name.as_str()))
                     .ok_or_else(|| ParseError::UndefinedSymbol {
-                        kind: crate::parse_error::SymbolKind::Block,
-                        id: crate::parse_error::SymbolId::Named(name),
+                        kind: SymbolKind::Block,
+                        id: SymbolId::Named(name),
                         loc: DiagLoc::span(loc),
                     })?
             }
@@ -1837,8 +1862,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                 }
                 found.ok_or_else(|| ParseError::UndefinedSymbol {
-                    kind: crate::parse_error::SymbolKind::Block,
-                    id: crate::parse_error::SymbolId::Numbered(id),
+                    kind: SymbolKind::Block,
+                    id: SymbolId::Numbered(id),
                     loc: DiagLoc::span(loc),
                 })?
             }
@@ -1913,8 +1938,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     /// `!name = !{ !N, !N, ... }`. Mirrors `LLParser::parseNamedMetadata`.
     fn parse_named_metadata(&mut self) -> ParseResult<()> {
-        use llvmkit_ir::metadata::MetadataRef;
-
         let name = match self.peek() {
             Token::MetadataVar(bytes) => std::str::from_utf8(bytes.as_ref())
                 .map_err(|_| self.expected("valid UTF-8 metadata name"))?
@@ -1937,8 +1960,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let loc = self.loc();
                 let slot = self.parse_uint32("metadata operand number")?;
                 let id = self.resolve_md_slot(slot, loc);
+                // `nmd_idx` came from `get_or_insert_named_metadata` on this
+                // same module, so the node always exists.
                 self.module
-                    .named_metadata_add_operand(nmd_idx, MetadataRef(id));
+                    .named_metadata_add_operand(nmd_idx, id)
+                    .expect("named metadata index and id minted by this module");
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
                 }
@@ -1957,8 +1983,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_metadata_value_operand(&mut self) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         if matches!(self.peek(), Token::MetadataVar(_)) {
             let kind = self.parse_md_node_after_bang(false)?;
-            let id = self.module.metadata_node(kind);
-            return Ok(self.module.metadata_as_value(id));
+            let id = own_metadata(self.module.metadata_node(kind));
+            return Ok(own_metadata(self.module.metadata_as_value(id)));
         }
 
         self.expect_exclaim("'!' in metadata operand")?;
@@ -1979,11 +2005,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                 }
                 self.expect_punct(PunctKind::RBrace, "'}' closing metadata tuple")?;
-                self.module.metadata_tuple(operands)
+                own_metadata(self.module.metadata_tuple(operands))
             }
             Token::SpecializedMetadata(_) | Token::MetadataVar(_) => {
                 let kind = self.parse_md_node_after_bang(false)?;
-                self.module.metadata_node(kind)
+                own_metadata(self.module.metadata_node(kind))
             }
             _ => {
                 let loc = self.loc();
@@ -1991,23 +2017,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.resolve_md_slot(slot, loc)
             }
         };
-        Ok(self.module.metadata_as_value(id))
+        Ok(own_metadata(self.module.metadata_as_value(id)))
     }
 
-    fn parse_metadata_attachment_operand(
-        &mut self,
-    ) -> ParseResult<llvmkit_ir::metadata::MetadataSlot> {
+    fn parse_metadata_attachment_operand(&mut self) -> ParseResult<MetadataId<B>> {
         match self.peek() {
             Token::MetadataVar(_) => {
                 let kind = self.parse_md_node_after_bang(false)?;
-                Ok(self.module.metadata_node(kind))
+                Ok(own_metadata(self.module.metadata_node(kind)))
             }
             Token::Exclaim => {
                 self.bump()?;
                 match self.peek() {
                     Token::LBrace | Token::SpecializedMetadata(_) | Token::MetadataVar(_) => {
                         let kind = self.parse_md_node_after_bang(false)?;
-                        Ok(self.module.metadata_node(kind))
+                        Ok(own_metadata(self.module.metadata_node(kind)))
                     }
                     _ => {
                         let loc = self.loc();
@@ -2022,10 +2046,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn parse_named_metadata_attachment(
         &mut self,
-    ) -> ParseResult<(
-        llvmkit_ir::metadata::MetadataAttachmentKind,
-        llvmkit_ir::metadata::MetadataSlot,
-    )> {
+    ) -> ParseResult<(MetadataAttachmentKind, MetadataId<B>)> {
         let name = match self.peek() {
             Token::MetadataVar(bytes) => std::str::from_utf8(bytes.as_ref())
                 .map_err(|_| self.expected("valid UTF-8 metadata attachment name"))?
@@ -2034,10 +2055,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         self.bump()?;
         let id = self.parse_metadata_attachment_operand()?;
-        Ok((
-            llvmkit_ir::metadata::MetadataAttachmentKind::from_name(&name),
-            id,
-        ))
+        Ok((MetadataAttachmentKind::from_name(&name), id))
     }
 
     /// Parse a single metadata tuple operand: an inline `!"string"`
@@ -2045,20 +2063,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// inline-string form is what the AsmWriter emits for `MDString`
     /// tuple operands (`!{!"rsp"}`), so this keeps writer output
     /// round-trippable.
-    fn parse_md_tuple_operand(&mut self) -> ParseResult<llvmkit_ir::metadata::MetadataRef> {
-        use llvmkit_ir::metadata::MetadataRef;
+    fn parse_md_tuple_operand(&mut self) -> ParseResult<MetadataId<B>> {
         if matches!(self.peek(), Token::Kw(Keyword::Null)) {
             self.bump()?;
-            let id = self
-                .module
-                .metadata_node(llvmkit_ir::metadata::MetadataKind::Null);
-            return Ok(MetadataRef(id));
+            return Ok(own_metadata(self.module.metadata_node(MetadataKind::Null)));
         }
 
         if matches!(self.peek(), Token::MetadataVar(_)) {
             let content = self.parse_md_node_after_bang(false)?;
-            let id = self.module.metadata_node(content);
-            return Ok(MetadataRef(id));
+            return Ok(own_metadata(self.module.metadata_node(content)));
         }
 
         if matches!(
@@ -2074,33 +2087,28 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let constant = self
                 .parse_constant(ty)?
                 .ok_or_else(|| self.expected("typed metadata constant"))?;
-            let id = self.module.metadata_constant(constant);
-            return Ok(MetadataRef(id));
+            return Ok(own_metadata(self.module.metadata_constant(constant)));
         }
 
         self.expect_exclaim("'!' in metadata tuple operand")?;
         match self.peek() {
             Token::StringConstant(_) => {
                 let s = self.parse_string_constant("metadata string operand")?;
-                Ok(MetadataRef(self.module.metadata_string(s)))
+                Ok(self.module.metadata_string(s))
             }
             Token::LBrace | Token::SpecializedMetadata(_) | Token::MetadataVar(_) => {
                 let content = self.parse_md_node_after_bang(false)?;
-                let id = self.module.metadata_node(content);
-                Ok(MetadataRef(id))
+                Ok(own_metadata(self.module.metadata_node(content)))
             }
             _ => {
                 let loc = self.loc();
                 let slot = self.parse_uint32("metadata operand number")?;
-                Ok(MetadataRef(self.resolve_md_slot(slot, loc)))
+                Ok(self.resolve_md_slot(slot, loc))
             }
         }
     }
 
-    fn parse_md_node_after_bang(
-        &mut self,
-        distinct: bool,
-    ) -> ParseResult<llvmkit_ir::metadata::MetadataKind> {
+    fn parse_md_node_after_bang(&mut self, distinct: bool) -> ParseResult<MetadataKind<B>> {
         match self.peek() {
             Token::LBrace => {
                 self.bump()?;
@@ -2184,10 +2192,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn parse_metadata_field_value(
-        &mut self,
-    ) -> ParseResult<llvmkit_ir::metadata::MetadataFieldValue> {
-        use llvmkit_ir::metadata::{MetadataFieldValue, MetadataRef};
+    fn parse_metadata_field_value(&mut self) -> ParseResult<MetadataFieldValue<B>> {
+        use llvmkit_ir::metadata::MetadataFieldValue;
         match self.peek() {
             Token::Kw(Keyword::Null) => {
                 self.bump()?;
@@ -2212,7 +2218,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             Token::MetadataVar(_) => {
                 let content = self.parse_md_node_after_bang(false)?;
-                Ok(MetadataFieldValue::Metadata(MetadataRef(
+                Ok(MetadataFieldValue::Metadata(own_metadata(
                     self.module.metadata_node(content),
                 )))
             }
@@ -2235,22 +2241,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                     Token::StringConstant(_) => {
                         let s = self.parse_string_constant("metadata string")?;
-                        Ok(MetadataFieldValue::Metadata(MetadataRef(
-                            self.module.metadata_string(s),
-                        )))
+                        Ok(MetadataFieldValue::Metadata(self.module.metadata_string(s)))
                     }
                     Token::SpecializedMetadata(_) | Token::MetadataVar(_) => {
                         let content = self.parse_md_node_after_bang(false)?;
-                        Ok(MetadataFieldValue::Metadata(MetadataRef(
+                        Ok(MetadataFieldValue::Metadata(own_metadata(
                             self.module.metadata_node(content),
                         )))
                     }
                     _ => {
                         let loc = self.loc();
                         let slot = self.parse_uint32("metadata field metadata reference")?;
-                        Ok(MetadataFieldValue::Metadata(MetadataRef(
+                        Ok(MetadataFieldValue::Metadata(
                             self.resolve_md_slot(slot, loc),
-                        )))
+                        ))
                     }
                 }
             }
@@ -2291,28 +2295,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_debug_metadata_operand(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-    ) -> ParseResult<llvmkit_ir::metadata::DebugMetadataOperand> {
+    ) -> ParseResult<DebugMetadataOperand<B>> {
         if matches!(
             self.peek(),
             Token::Exclaim | Token::SpecializedMetadata(_) | Token::MetadataVar(_)
         ) {
             let id = self.parse_metadata_attachment_operand()?;
-            return Ok(llvmkit_ir::metadata::DebugMetadataOperand::Metadata(
-                llvmkit_ir::metadata::MetadataRef(id),
-            ));
+            return Ok(DebugMetadataOperand::Metadata(id));
         }
 
         let ty = self.parse_type(false)?;
         let value = self.parse_value(state, ty)?;
-        Ok(llvmkit_ir::metadata::DebugMetadataOperand::Value(
-            value.slot(),
-        ))
+        Ok(DebugMetadataOperand::Value(value.id()))
     }
 
     fn parse_debug_record(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-    ) -> ParseResult<llvmkit_ir::metadata::DebugRecord> {
+    ) -> ParseResult<DebugRecord<B>> {
         use llvmkit_ir::metadata::{DebugRecord, DebugVariableRecord, DebugVariableRecordKind};
 
         let record_type = match self.peek() {
@@ -2381,7 +2381,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &mut self,
         state: &PerFunctionState<'ctx, B>,
         bb_value: llvmkit_ir::Value<'ctx, B>,
-        pending_debug_records: &mut Vec<llvmkit_ir::metadata::DebugRecord>,
+        pending_debug_records: &mut Vec<DebugRecord<B>>,
     ) -> ParseResult<()> {
         let bb = state.value_as_block_view(bb_value, self.loc())?;
         self.skip_trailing_metadata(&bb)?;
@@ -2394,7 +2394,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     loc: DiagLoc::span(self.loc()),
                 })?;
             for record in pending_debug_records.drain(..) {
-                inst.push_debug_record(record);
+                own_metadata(inst.push_debug_record(self.module, record));
             }
         }
         Ok(())
@@ -2420,10 +2420,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.bump()?;
             let id = self.parse_metadata_attachment_operand()?;
             if let Some(inst) = bb.instructions().last() {
-                inst.set_metadata(
-                    llvmkit_ir::metadata::MetadataAttachmentKind::from_name(&name),
+                own_metadata(inst.set_metadata(
+                    self.module,
+                    MetadataAttachmentKind::from_name(&name),
                     id,
-                );
+                ));
             }
         }
         Ok(())
@@ -3186,7 +3187,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // slot-numbering tables, so resolve the freshly minted id once here.
         let g = self.module.view(g);
         for (kind, id) in metadata {
-            g.set_metadata(self.module, kind, id);
+            own_metadata(g.set_metadata(self.module, kind, id));
         }
         if let Some(value) = deferred_initializer {
             self.deferred_global_initializers
@@ -3459,37 +3460,37 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn unsupported_constant_expr_at(&self, loc: Span, op: crate::ll_token::Opcode) -> ParseError {
+    fn unsupported_constant_expr_at(&self, loc: Span, op: Opcode) -> ParseError {
         let opcode = match op {
-            crate::ll_token::Opcode::ExtractValue => "extractvalue",
-            crate::ll_token::Opcode::InsertValue => "insertvalue",
-            crate::ll_token::Opcode::UDiv => "udiv",
-            crate::ll_token::Opcode::SDiv => "sdiv",
-            crate::ll_token::Opcode::URem => "urem",
-            crate::ll_token::Opcode::SRem => "srem",
-            crate::ll_token::Opcode::FAdd => "fadd",
-            crate::ll_token::Opcode::FSub => "fsub",
-            crate::ll_token::Opcode::FMul => "fmul",
-            crate::ll_token::Opcode::FDiv => "fdiv",
-            crate::ll_token::Opcode::FRem => "frem",
-            crate::ll_token::Opcode::And => "and",
-            crate::ll_token::Opcode::Or => "or",
-            crate::ll_token::Opcode::LShr => "lshr",
-            crate::ll_token::Opcode::AShr => "ashr",
-            crate::ll_token::Opcode::Shl => "shl",
-            crate::ll_token::Opcode::Mul => "mul",
-            crate::ll_token::Opcode::FNeg => "fneg",
-            crate::ll_token::Opcode::Select => "select",
-            crate::ll_token::Opcode::ZExt => "zext",
-            crate::ll_token::Opcode::SExt => "sext",
-            crate::ll_token::Opcode::FPTrunc => "fptrunc",
-            crate::ll_token::Opcode::FPExt => "fpext",
-            crate::ll_token::Opcode::UIToFP => "uitofp",
-            crate::ll_token::Opcode::SIToFP => "sitofp",
-            crate::ll_token::Opcode::FPToUI => "fptoui",
-            crate::ll_token::Opcode::FPToSI => "fptosi",
-            crate::ll_token::Opcode::ICmp => "icmp",
-            crate::ll_token::Opcode::FCmp => "fcmp",
+            Opcode::ExtractValue => "extractvalue",
+            Opcode::InsertValue => "insertvalue",
+            Opcode::UDiv => "udiv",
+            Opcode::SDiv => "sdiv",
+            Opcode::URem => "urem",
+            Opcode::SRem => "srem",
+            Opcode::FAdd => "fadd",
+            Opcode::FSub => "fsub",
+            Opcode::FMul => "fmul",
+            Opcode::FDiv => "fdiv",
+            Opcode::FRem => "frem",
+            Opcode::And => "and",
+            Opcode::Or => "or",
+            Opcode::LShr => "lshr",
+            Opcode::AShr => "ashr",
+            Opcode::Shl => "shl",
+            Opcode::Mul => "mul",
+            Opcode::FNeg => "fneg",
+            Opcode::Select => "select",
+            Opcode::ZExt => "zext",
+            Opcode::SExt => "sext",
+            Opcode::FPTrunc => "fptrunc",
+            Opcode::FPExt => "fpext",
+            Opcode::UIToFP => "uitofp",
+            Opcode::SIToFP => "sitofp",
+            Opcode::FPToUI => "fptoui",
+            Opcode::FPToSI => "fptosi",
+            Opcode::ICmp => "icmp",
+            Opcode::FCmp => "fcmp",
             _ => return self.unsupported_constant_value_form_at(loc),
         };
         ParseError::Expected {
@@ -3815,7 +3816,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .copied()
                 .ok_or_else(|| ParseError::UndefinedSymbol {
                     kind: SYMBOL_KIND_LOCAL,
-                    id: crate::parse_error::SymbolId::Named(name),
+                    id: SymbolId::Named(name),
                     loc: DiagLoc::span(self.loc()),
                 }),
             ValId::LocalId(id) => pfs
@@ -3825,7 +3826,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .copied()
                 .ok_or_else(|| ParseError::UndefinedSymbol {
                     kind: SYMBOL_KIND_LOCAL,
-                    id: crate::parse_error::SymbolId::Numbered(id),
+                    id: SymbolId::Numbered(id),
                     loc: DiagLoc::span(self.loc()),
                 }),
             ValId::GlobalName(name) => self.resolve_global_name_as_value(name),
@@ -3987,18 +3988,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(self.loc()),
             });
         }
-        if let Some(gv) = self.module.get_global(&name) {
-            Ok(gv.into_erased())
-        } else if let Some(fv) = self.module.function_by_name_dyn(&name) {
-            Ok(fv.into_erased())
-        } else if let Some(a) = self.module.get_alias(&name) {
-            Ok(a.into_erased())
-        } else if let Some(i) = self.module.get_ifunc(&name) {
-            Ok(i.into_erased())
+        if let Some(id) = self.module.get_global(&name) {
+            Ok(self.module.view(id).into_erased())
+        } else if let Some(id) = self.module.function_by_name_dyn(&name) {
+            Ok(self.module.view(id).into_erased())
+        } else if let Some(id) = self.module.get_alias(&name) {
+            Ok(self.module.view(id).into_erased())
+        } else if let Some(id) = self.module.get_ifunc(&name) {
+            Ok(self.module.view(id).into_erased())
         } else {
             Err(ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Named(name),
+                kind: SymbolKind::Global,
+                id: SymbolId::Named(name),
                 loc: DiagLoc::span(self.loc()),
             })
         }
@@ -4015,8 +4016,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 GlobalRef::IFunc(i) => i.into_erased(),
             })
             .ok_or_else(|| ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Numbered(id),
+                kind: SymbolKind::Global,
+                id: SymbolId::Numbered(id),
                 loc: DiagLoc::span(self.loc()),
             })
     }
@@ -4034,18 +4035,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(self.loc()),
             });
         }
-        if let Some(g) = self.module.get_global(&name) {
-            Ok(g.as_global_constant_ptr())
-        } else if let Some(f) = self.module.function_by_name_dyn(&name) {
-            Ok(f.as_global_constant_ptr())
-        } else if let Some(a) = self.module.get_alias(&name) {
-            Ok(a.as_global_constant_ptr())
-        } else if let Some(i) = self.module.get_ifunc(&name) {
-            Ok(i.as_global_constant_ptr())
+        if let Some(id) = self.module.get_global(&name) {
+            Ok(self.module.view(id).as_global_constant_ptr())
+        } else if let Some(id) = self.module.function_by_name_dyn(&name) {
+            Ok(self.module.view(id).as_global_constant_ptr())
+        } else if let Some(id) = self.module.get_alias(&name) {
+            Ok(self.module.view(id).as_global_constant_ptr())
+        } else if let Some(id) = self.module.get_ifunc(&name) {
+            Ok(self.module.view(id).as_global_constant_ptr())
         } else {
             Err(ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Named(name),
+                kind: SymbolKind::Global,
+                id: SymbolId::Named(name),
                 loc: DiagLoc::span(self.loc()),
             })
         }
@@ -4057,8 +4058,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .copied()
             .map(|r| self.global_ref_to_constant(r))
             .ok_or_else(|| ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Numbered(id),
+                kind: SymbolKind::Global,
+                id: SymbolId::Numbered(id),
                 loc: DiagLoc::span(self.loc()),
             })
     }
@@ -4072,18 +4073,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
     fn resolve_global_name_as_ref(&self, name: String) -> ParseResult<GlobalRef<'ctx, B>> {
-        if let Some(gv) = self.module.get_global(&name) {
-            Ok(GlobalRef::Variable(gv))
-        } else if let Some(fv) = self.module.function_by_name_dyn(&name) {
-            Ok(GlobalRef::Function(fv))
-        } else if let Some(a) = self.module.get_alias(&name) {
-            Ok(GlobalRef::Alias(a))
-        } else if let Some(i) = self.module.get_ifunc(&name) {
-            Ok(GlobalRef::IFunc(i))
+        if let Some(id) = self.module.get_global(&name) {
+            Ok(GlobalRef::Variable(self.module.view(id)))
+        } else if let Some(id) = self.module.function_by_name_dyn(&name) {
+            Ok(GlobalRef::Function(self.module.view(id)))
+        } else if let Some(id) = self.module.get_alias(&name) {
+            Ok(GlobalRef::Alias(self.module.view(id)))
+        } else if let Some(id) = self.module.get_ifunc(&name) {
+            Ok(GlobalRef::IFunc(self.module.view(id)))
         } else {
             Err(ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Named(name),
+                kind: SymbolKind::Global,
+                id: SymbolId::Named(name),
                 loc: DiagLoc::span(self.loc()),
             })
         }
@@ -4094,8 +4095,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .get(id)
             .copied()
             .ok_or_else(|| ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Numbered(id),
+                kind: SymbolKind::Global,
+                id: SymbolId::Numbered(id),
                 loc: DiagLoc::span(self.loc()),
             })
     }
@@ -4111,8 +4112,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 _ => None,
             })
             .ok_or_else(|| ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Numbered(id),
+                kind: SymbolKind::Global,
+                id: SymbolId::Numbered(id),
                 loc: DiagLoc::span(self.loc()),
             })
     }
@@ -4128,8 +4129,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected(expected))?;
                 self.bump()?;
-                if let Some(function) = self.module.function_by_name_dyn(&name) {
-                    Ok(ParsedBlockAddressFunction::Resolved(function))
+                if let Some(id) = self.module.function_by_name_dyn(&name) {
+                    Ok(ParsedBlockAddressFunction::Resolved(self.module.view(id)))
                 } else if self.module.get_global(&name).is_some()
                     || self.module.get_alias(&name).is_some()
                     || self.module.get_ifunc(&name).is_some()
@@ -4316,19 +4317,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         self.bump()?;
         let opcode = match op {
-            crate::ll_token::Opcode::Add => ConstantExprOpcode::Add,
-            crate::ll_token::Opcode::Sub => ConstantExprOpcode::Sub,
-            crate::ll_token::Opcode::Xor => ConstantExprOpcode::Xor,
-            crate::ll_token::Opcode::GetElementPtr => ConstantExprOpcode::GetElementPtr,
-            crate::ll_token::Opcode::ShuffleVector => ConstantExprOpcode::ShuffleVector,
-            crate::ll_token::Opcode::InsertElement => ConstantExprOpcode::InsertElement,
-            crate::ll_token::Opcode::ExtractElement => ConstantExprOpcode::ExtractElement,
-            crate::ll_token::Opcode::Trunc => ConstantExprOpcode::Trunc,
-            crate::ll_token::Opcode::PtrToAddr => ConstantExprOpcode::PtrToAddr,
-            crate::ll_token::Opcode::PtrToInt => ConstantExprOpcode::PtrToInt,
-            crate::ll_token::Opcode::IntToPtr => ConstantExprOpcode::IntToPtr,
-            crate::ll_token::Opcode::BitCast => ConstantExprOpcode::BitCast,
-            crate::ll_token::Opcode::AddrSpaceCast => ConstantExprOpcode::AddrSpaceCast,
+            Opcode::Add => ConstantExprOpcode::Add,
+            Opcode::Sub => ConstantExprOpcode::Sub,
+            Opcode::Xor => ConstantExprOpcode::Xor,
+            Opcode::GetElementPtr => ConstantExprOpcode::GetElementPtr,
+            Opcode::ShuffleVector => ConstantExprOpcode::ShuffleVector,
+            Opcode::InsertElement => ConstantExprOpcode::InsertElement,
+            Opcode::ExtractElement => ConstantExprOpcode::ExtractElement,
+            Opcode::Trunc => ConstantExprOpcode::Trunc,
+            Opcode::PtrToAddr => ConstantExprOpcode::PtrToAddr,
+            Opcode::PtrToInt => ConstantExprOpcode::PtrToInt,
+            Opcode::IntToPtr => ConstantExprOpcode::IntToPtr,
+            Opcode::BitCast => ConstantExprOpcode::BitCast,
+            Opcode::AddrSpaceCast => ConstantExprOpcode::AddrSpaceCast,
             _ => return Err(self.unsupported_constant_value_form_at(self.loc())),
         };
 
@@ -5325,7 +5326,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let existing_by_name = (!name.is_empty())
             .then(|| self.module.function_by_name_dyn(&name))
-            .flatten();
+            .flatten()
+            .map(|id| self.module.view(id));
         let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
             if existing.signature() != fn_ty || existing.basic_blocks().len() != 0 {
                 return Err(ParseError::Expected {
@@ -5419,7 +5421,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
         }
         for (kind, id) in suffix.metadata {
-            f.set_metadata(self.module, kind, id);
+            own_metadata(f.set_metadata(self.module, kind, id));
         }
         if let NameOrId::Id(id) = name_id
             && self.numbered_globals.get(id).is_none()
@@ -5537,7 +5539,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let existing_by_name = (!name.is_empty())
             .then(|| self.module.function_by_name_dyn(&name))
-            .flatten();
+            .flatten()
+            .map(|id| self.module.view(id));
         let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
             if existing.signature() != fn_ty || existing.basic_blocks().any(|bb| !bb.is_empty()) {
                 return Err(ParseError::Expected {
@@ -5631,7 +5634,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
         }
         for (kind, id) in suffix.metadata {
-            f.set_metadata(self.module, kind, id);
+            own_metadata(f.set_metadata(self.module, kind, id));
         }
         if let NameOrId::Id(id) = name_id
             && self.numbered_globals.get(id).is_none()
@@ -5664,7 +5667,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Some(ParamName::Numbered(id)) => {
                     if state.local_numbered.contains_key(&id) || id != state.next_unnamed_value_id {
                         return Err(ParseError::InvalidSlotId {
-                            source: crate::numbered_values::AddError::StaleId {
+                            source: AddError::StaleId {
                                 id,
                                 next: state.next_unnamed_value_id,
                             },
@@ -5772,26 +5775,26 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
             // Terminator — these consume the builder.
             match self.peek() {
-                Token::Instruction(crate::ll_token::Opcode::Ret) => {
+                Token::Instruction(Opcode::Ret) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_ret(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::Unreachable) => {
+                Token::Instruction(Opcode::Unreachable) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     let _ = b.build_unreachable();
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::Br) => {
+                Token::Instruction(Opcode::Br) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_br(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::Store) => {
+                Token::Instruction(Opcode::Store) => {
                     let b_ref = borrow_live_builder(&builder, self.loc())?;
                     self.bump()?;
                     self.parse_store(state, b_ref)?;
@@ -5799,7 +5802,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     seen_non_phi = true;
                     continue;
                 }
-                Token::Instruction(crate::ll_token::Opcode::Fence) => {
+                Token::Instruction(Opcode::Fence) => {
                     let b_ref = borrow_live_builder(&builder, self.loc())?;
                     self.bump()?;
                     self.parse_fence(b_ref)?;
@@ -5807,19 +5810,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     seen_non_phi = true;
                     continue;
                 }
-                Token::Instruction(crate::ll_token::Opcode::Switch) => {
+                Token::Instruction(Opcode::Switch) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_switch(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::IndirectBr) => {
+                Token::Instruction(Opcode::IndirectBr) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_indirectbr(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::Invoke) => {
+                Token::Instruction(Opcode::Invoke) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     let result_loc = self.loc();
                     let result_name = self.parse_lhs_before_invoke()?;
@@ -5830,28 +5833,28 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::Resume) => {
+                Token::Instruction(Opcode::Resume) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_resume(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::CleanupRet) => {
+                Token::Instruction(Opcode::CleanupRet) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_cleanupret(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::CatchRet) => {
+                Token::Instruction(Opcode::CatchRet) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_catchret(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::CatchSwitch) => {
+                Token::Instruction(Opcode::CatchSwitch) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     let result_loc = self.loc();
                     let result_name = self.parse_lhs_assignment()?;
@@ -5860,7 +5863,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     state.bind_local(&result_name, v, result_loc)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::CallBr) => {
+                Token::Instruction(Opcode::CallBr) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     let result_loc = self.loc();
                     let result_name = self.parse_lhs_assignment()?;
@@ -5888,10 +5891,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 seen_non_phi = true;
                 continue;
             }
-            if matches!(
-                self.peek(),
-                Token::Instruction(crate::ll_token::Opcode::Invoke)
-            ) {
+            if matches!(self.peek(), Token::Instruction(Opcode::Invoke)) {
                 let b = take_live_builder(&mut builder, self.loc())?;
                 self.bump()?;
                 let value = self.parse_invoke(state, b, &result_name)?;
@@ -5908,7 +5908,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // A `phi` must be grouped at the top of its block: reject one that
             // follows any non-phi instruction. Every other (non-terminator)
             // opcode marks the boundary past which phis are no longer allowed.
-            if matches!(opcode, crate::ll_token::Opcode::Phi) {
+            if matches!(opcode, Opcode::Phi) {
                 if seen_non_phi {
                     return Err(self.expected("phi must be grouped at the top of its basic block"));
                 }
@@ -5918,143 +5918,67 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.bump()?;
             let b_ref = borrow_live_builder(&builder, self.loc())?;
             let value = match opcode {
-                crate::ll_token::Opcode::Add => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::Add, &result_name)?
-                }
-                crate::ll_token::Opcode::Sub => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::Sub, &result_name)?
-                }
-                crate::ll_token::Opcode::Mul => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::Mul, &result_name)?
-                }
-                crate::ll_token::Opcode::UDiv => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::UDiv, &result_name)?
-                }
-                crate::ll_token::Opcode::SDiv => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::SDiv, &result_name)?
-                }
-                crate::ll_token::Opcode::URem => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::URem, &result_name)?
-                }
-                crate::ll_token::Opcode::SRem => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::SRem, &result_name)?
-                }
-                crate::ll_token::Opcode::Shl => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::Shl, &result_name)?
-                }
-                crate::ll_token::Opcode::LShr => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::LShr, &result_name)?
-                }
-                crate::ll_token::Opcode::AShr => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::AShr, &result_name)?
-                }
-                crate::ll_token::Opcode::And => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::And, &result_name)?
-                }
-                crate::ll_token::Opcode::Or => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::Or, &result_name)?
-                }
-                crate::ll_token::Opcode::Xor => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::Xor, &result_name)?
-                }
-                crate::ll_token::Opcode::ICmp => self.parse_icmp(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::Trunc => {
-                    self.parse_int_cast(state, b_ref, IntCast::Trunc, &result_name)?
-                }
-                crate::ll_token::Opcode::ZExt => {
-                    self.parse_int_cast(state, b_ref, IntCast::ZExt, &result_name)?
-                }
-                crate::ll_token::Opcode::SExt => {
-                    self.parse_int_cast(state, b_ref, IntCast::SExt, &result_name)?
-                }
-                crate::ll_token::Opcode::PtrToInt => {
-                    self.parse_ptr_to_int(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::IntToPtr => {
-                    self.parse_int_to_ptr(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::FNeg => self.parse_fneg(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::FAdd => {
-                    self.parse_fp_binop(state, b_ref, FpBinOp::Add, &result_name)?
-                }
-                crate::ll_token::Opcode::FSub => {
-                    self.parse_fp_binop(state, b_ref, FpBinOp::Sub, &result_name)?
-                }
-                crate::ll_token::Opcode::FMul => {
-                    self.parse_fp_binop(state, b_ref, FpBinOp::Mul, &result_name)?
-                }
-                crate::ll_token::Opcode::FDiv => {
-                    self.parse_fp_binop(state, b_ref, FpBinOp::Div, &result_name)?
-                }
-                crate::ll_token::Opcode::FRem => {
-                    self.parse_fp_binop(state, b_ref, FpBinOp::Rem, &result_name)?
-                }
-                crate::ll_token::Opcode::FCmp => self.parse_fcmp(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::Alloca => self.parse_alloca(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::Load => self.parse_load(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::GetElementPtr => {
-                    self.parse_gep(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::Select => self.parse_select(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::FPToUI => {
+                Opcode::Add => self.parse_int_binop(state, b_ref, IntBinOp::Add, &result_name)?,
+                Opcode::Sub => self.parse_int_binop(state, b_ref, IntBinOp::Sub, &result_name)?,
+                Opcode::Mul => self.parse_int_binop(state, b_ref, IntBinOp::Mul, &result_name)?,
+                Opcode::UDiv => self.parse_int_binop(state, b_ref, IntBinOp::UDiv, &result_name)?,
+                Opcode::SDiv => self.parse_int_binop(state, b_ref, IntBinOp::SDiv, &result_name)?,
+                Opcode::URem => self.parse_int_binop(state, b_ref, IntBinOp::URem, &result_name)?,
+                Opcode::SRem => self.parse_int_binop(state, b_ref, IntBinOp::SRem, &result_name)?,
+                Opcode::Shl => self.parse_int_binop(state, b_ref, IntBinOp::Shl, &result_name)?,
+                Opcode::LShr => self.parse_int_binop(state, b_ref, IntBinOp::LShr, &result_name)?,
+                Opcode::AShr => self.parse_int_binop(state, b_ref, IntBinOp::AShr, &result_name)?,
+                Opcode::And => self.parse_int_binop(state, b_ref, IntBinOp::And, &result_name)?,
+                Opcode::Or => self.parse_int_binop(state, b_ref, IntBinOp::Or, &result_name)?,
+                Opcode::Xor => self.parse_int_binop(state, b_ref, IntBinOp::Xor, &result_name)?,
+                Opcode::ICmp => self.parse_icmp(state, b_ref, &result_name)?,
+                Opcode::Trunc => self.parse_int_cast(state, b_ref, IntCast::Trunc, &result_name)?,
+                Opcode::ZExt => self.parse_int_cast(state, b_ref, IntCast::ZExt, &result_name)?,
+                Opcode::SExt => self.parse_int_cast(state, b_ref, IntCast::SExt, &result_name)?,
+                Opcode::PtrToInt => self.parse_ptr_to_int(state, b_ref, &result_name)?,
+                Opcode::IntToPtr => self.parse_int_to_ptr(state, b_ref, &result_name)?,
+                Opcode::FNeg => self.parse_fneg(state, b_ref, &result_name)?,
+                Opcode::FAdd => self.parse_fp_binop(state, b_ref, FpBinOp::Add, &result_name)?,
+                Opcode::FSub => self.parse_fp_binop(state, b_ref, FpBinOp::Sub, &result_name)?,
+                Opcode::FMul => self.parse_fp_binop(state, b_ref, FpBinOp::Mul, &result_name)?,
+                Opcode::FDiv => self.parse_fp_binop(state, b_ref, FpBinOp::Div, &result_name)?,
+                Opcode::FRem => self.parse_fp_binop(state, b_ref, FpBinOp::Rem, &result_name)?,
+                Opcode::FCmp => self.parse_fcmp(state, b_ref, &result_name)?,
+                Opcode::Alloca => self.parse_alloca(state, b_ref, &result_name)?,
+                Opcode::Load => self.parse_load(state, b_ref, &result_name)?,
+                Opcode::GetElementPtr => self.parse_gep(state, b_ref, &result_name)?,
+                Opcode::Select => self.parse_select(state, b_ref, &result_name)?,
+                Opcode::FPToUI => {
                     self.parse_fp_to_int(state, b_ref, FpToInt::FpToUI, &result_name)?
                 }
-                crate::ll_token::Opcode::FPToSI => {
+                Opcode::FPToSI => {
                     self.parse_fp_to_int(state, b_ref, FpToInt::FpToSI, &result_name)?
                 }
-                crate::ll_token::Opcode::UIToFP => {
+                Opcode::UIToFP => {
                     self.parse_int_to_fp(state, b_ref, IntToFp::UIToFp, &result_name)?
                 }
-                crate::ll_token::Opcode::SIToFP => {
+                Opcode::SIToFP => {
                     self.parse_int_to_fp(state, b_ref, IntToFp::SIToFp, &result_name)?
                 }
-                crate::ll_token::Opcode::AddrSpaceCast => {
-                    self.parse_addrspace_cast(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::BitCast => {
-                    self.parse_bitcast(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::FPTrunc => {
-                    self.parse_fptrunc(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::FPExt => self.parse_fpext(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::PtrToAddr => {
-                    self.parse_ptrtoaddr(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::ExtractElement => {
-                    self.parse_extractelement(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::InsertElement => {
-                    self.parse_insertelement(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::ShuffleVector => {
-                    self.parse_shufflevector(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::ExtractValue => {
-                    self.parse_extractvalue(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::InsertValue => {
-                    self.parse_insertvalue(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::Phi => self.parse_phi(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::Call => self.parse_call(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::VAArg => self.parse_vaarg(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::Freeze => self.parse_freeze(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::AtomicCmpXchg => {
-                    self.parse_cmpxchg(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::AtomicRMW => {
-                    self.parse_atomicrmw(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::LandingPad => {
-                    self.parse_landingpad(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::CleanupPad => {
-                    self.parse_cleanuppad(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::CatchPad => {
-                    self.parse_catchpad(state, b_ref, &result_name)?
-                }
+                Opcode::AddrSpaceCast => self.parse_addrspace_cast(state, b_ref, &result_name)?,
+                Opcode::BitCast => self.parse_bitcast(state, b_ref, &result_name)?,
+                Opcode::FPTrunc => self.parse_fptrunc(state, b_ref, &result_name)?,
+                Opcode::FPExt => self.parse_fpext(state, b_ref, &result_name)?,
+                Opcode::PtrToAddr => self.parse_ptrtoaddr(state, b_ref, &result_name)?,
+                Opcode::ExtractElement => self.parse_extractelement(state, b_ref, &result_name)?,
+                Opcode::InsertElement => self.parse_insertelement(state, b_ref, &result_name)?,
+                Opcode::ShuffleVector => self.parse_shufflevector(state, b_ref, &result_name)?,
+                Opcode::ExtractValue => self.parse_extractvalue(state, b_ref, &result_name)?,
+                Opcode::InsertValue => self.parse_insertvalue(state, b_ref, &result_name)?,
+                Opcode::Phi => self.parse_phi(state, b_ref, &result_name)?,
+                Opcode::Call => self.parse_call(state, b_ref, &result_name)?,
+                Opcode::VAArg => self.parse_vaarg(state, b_ref, &result_name)?,
+                Opcode::Freeze => self.parse_freeze(state, b_ref, &result_name)?,
+                Opcode::AtomicCmpXchg => self.parse_cmpxchg(state, b_ref, &result_name)?,
+                Opcode::AtomicRMW => self.parse_atomicrmw(state, b_ref, &result_name)?,
+                Opcode::LandingPad => self.parse_landingpad(state, b_ref, &result_name)?,
+                Opcode::CleanupPad => self.parse_cleanuppad(state, b_ref, &result_name)?,
+                Opcode::CatchPad => self.parse_catchpad(state, b_ref, &result_name)?,
                 _ => {
                     return Err(ParseError::Expected {
                         expected: format!(
@@ -6099,7 +6023,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: ParsedBlockBuilder<'ctx, 'ctx, B>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `ret`
-        if let Token::PrimitiveType(crate::ll_token::PrimitiveTy::Void) = self.peek() {
+        if let Token::PrimitiveType(PrimitiveTy::Void) = self.peek() {
             self.bump()?;
             let _ = b.build_ret_void().map_err(|e| ParseError::Expected {
                 expected: format!("valid ret void: {e}"),
@@ -6124,10 +6048,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: ParsedBlockBuilder<'ctx, 'ctx, B>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `br`
-        if matches!(
-            self.peek(),
-            Token::PrimitiveType(crate::ll_token::PrimitiveTy::Label)
-        ) {
+        if matches!(self.peek(), Token::PrimitiveType(PrimitiveTy::Label)) {
             self.bump()?;
             let target = self.parse_block_ref(state)?;
             let _ = b.build_br(target).map_err(|e| ParseError::Expected {
@@ -6146,16 +6067,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let cond_v = self.parse_value(state, cond_ty)?;
         self.expect_punct(PunctKind::Comma, "',' after br condition")?;
-        self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
-            "'label' for then-target",
-        )?;
+        self.expect_primitive(PrimitiveTy::Label, "'label' for then-target")?;
         let then_bb = self.parse_block_ref(state)?;
         self.expect_punct(PunctKind::Comma, "',' between br targets")?;
-        self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
-            "'label' for else-target",
-        )?;
+        self.expect_primitive(PrimitiveTy::Label, "'label' for else-target")?;
         let else_bb = self.parse_block_ref(state)?;
         let cond_iv: IntValue<'ctx, IntDyn, B> = cond_v
             .try_into()
@@ -7539,10 +7454,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else {
             llvmkit_ir::instr_types::TailCallKind::None
         };
-        if matches!(
-            self.peek(),
-            Token::Instruction(crate::ll_token::Opcode::Call)
-        ) {
+        if matches!(self.peek(), Token::Instruction(Opcode::Call)) {
             self.bump()?;
         }
         let calling_conv = self.parse_optional_calling_conv()?;
@@ -7767,7 +7679,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<ParsedCallee<'ctx, B>> {
         match parsed {
             ParsedDirectCallee::Name { name, loc } => {
-                if let Some(f) = self.module.function_by_name_dyn(&name) {
+                if let Some(f) = self
+                    .module
+                    .function_by_name_dyn(&name)
+                    .map(|id| self.module.view(id))
+                {
                     match resolve_intrinsic_name(&name) {
                         // A non-intrinsic direct callee resolves to the
                         // function regardless of whether the call-site type
@@ -7850,8 +7766,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 })
                 .map(ParsedCallee::Function)
                 .ok_or_else(|| ParseError::UndefinedSymbol {
-                    kind: crate::parse_error::SymbolKind::Global,
-                    id: crate::parse_error::SymbolId::Numbered(id),
+                    kind: SymbolKind::Global,
+                    id: SymbolId::Numbered(id),
                     loc: DiagLoc::span(loc),
                 }),
             ParsedDirectCallee::InlineAsm(data) => Ok(ParsedCallee::InlineAsm(
@@ -7946,10 +7862,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let cond_ty = self.parse_type(false)?;
         let cond_v = self.parse_value(state, cond_ty)?;
         self.expect_punct(PunctKind::Comma, "',' after switch condition")?;
-        self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
-            "'label' for switch default",
-        )?;
+        self.expect_primitive(PrimitiveTy::Label, "'label' for switch default")?;
         let default_bb = self.parse_block_ref(state)?;
         let (_, mut sw) = b
             .build_switch_dyn(cond_v, default_bb, "")
@@ -7967,10 +7880,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .try_into()
                 .map_err(|_| self.expected("integer switch case value"))?;
             self.expect_punct(PunctKind::Comma, "',' between case value and label")?;
-            self.expect_primitive(
-                crate::ll_token::PrimitiveTy::Label,
-                "'label' for switch case destination",
-            )?;
+            self.expect_primitive(PrimitiveTy::Label, "'label' for switch case destination")?;
             let case_bb = self.parse_block_ref(state)?;
             sw = sw
                 .add_case(case_int, case_bb)
@@ -8009,10 +7919,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 break;
             }
-            self.expect_primitive(
-                crate::ll_token::PrimitiveTy::Label,
-                "'label' in indirectbr destination",
-            )?;
+            self.expect_primitive(PrimitiveTy::Label, "'label' in indirectbr destination")?;
             let dest_bb = self.parse_block_ref(state)?;
             ibr = ibr
                 .add_destination(dest_bb)
@@ -8137,18 +8044,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         use AtomicRMWBinOp as Op;
         let op = match self.peek() {
             Token::Kw(Keyword::Xchg) => Op::Xchg,
-            Token::Instruction(crate::ll_token::Opcode::Add) => Op::Add,
-            Token::Instruction(crate::ll_token::Opcode::Sub) => Op::Sub,
-            Token::Instruction(crate::ll_token::Opcode::And) => Op::And,
+            Token::Instruction(Opcode::Add) => Op::Add,
+            Token::Instruction(Opcode::Sub) => Op::Sub,
+            Token::Instruction(Opcode::And) => Op::And,
             Token::Kw(Keyword::Nand) => Op::Nand,
-            Token::Instruction(crate::ll_token::Opcode::Or) => Op::Or,
-            Token::Instruction(crate::ll_token::Opcode::Xor) => Op::Xor,
+            Token::Instruction(Opcode::Or) => Op::Or,
+            Token::Instruction(Opcode::Xor) => Op::Xor,
             Token::Kw(Keyword::Max) => Op::Max,
             Token::Kw(Keyword::Min) => Op::Min,
             Token::Kw(Keyword::Umax) => Op::UMax,
             Token::Kw(Keyword::Umin) => Op::UMin,
-            Token::Instruction(crate::ll_token::Opcode::FAdd) => Op::FAdd,
-            Token::Instruction(crate::ll_token::Opcode::FSub) => Op::FSub,
+            Token::Instruction(Opcode::FAdd) => Op::FAdd,
+            Token::Instruction(Opcode::FSub) => Op::FSub,
             Token::Kw(Keyword::Fmax) => Op::FMax,
             Token::Kw(Keyword::Fmin) => Op::FMin,
             Token::Kw(Keyword::Fmaximum) => Op::FMaximum,
@@ -8281,7 +8188,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 None
             } else {
                 self.expect_primitive(
-                    crate::ll_token::PrimitiveTy::Label,
+                    PrimitiveTy::Label,
                     "'label' in cleanupret unwind destination",
                 )?;
                 Some(self.parse_block_ref(state)?)
@@ -8310,10 +8217,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let pad_ty = self.parse_type(false)?;
         let pad_v = self.parse_value(state, pad_ty)?;
         self.expect_keyword(Keyword::To, "'to' in catchret")?;
-        self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
-            "'label' in catchret destination",
-        )?;
+        self.expect_primitive(PrimitiveTy::Label, "'label' in catchret destination")?;
         let dest = self.parse_block_ref(state)?;
         let _ = b
             .build_catch_ret(pad_v, dest, "")
@@ -8343,10 +8247,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 break;
             }
-            self.expect_primitive(
-                crate::ll_token::PrimitiveTy::Label,
-                "'label' in catchswitch handler",
-            )?;
+            self.expect_primitive(PrimitiveTy::Label, "'label' in catchswitch handler")?;
             let bb = self.parse_block_ref(state)?;
             handlers.push(bb);
             let _ = self.eat_punct(PunctKind::Comma)?;
@@ -8358,7 +8259,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             None
         } else {
             self.expect_primitive(
-                crate::ll_token::PrimitiveTy::Label,
+                PrimitiveTy::Label,
                 "'label' in catchswitch unwind destination",
             )?;
             Some(self.parse_block_ref(state)?)
@@ -8433,16 +8334,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         .function_attr_groups(function_attr_groups.into_boxed_slice())
         .operand_bundles(operand_bundles);
         self.expect_keyword(Keyword::To, "'to' in invoke")?;
-        self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
-            "'label' for invoke normal destination",
-        )?;
+        self.expect_primitive(PrimitiveTy::Label, "'label' for invoke normal destination")?;
         let normal_bb = self.parse_block_ref(state)?;
         self.expect_keyword(Keyword::Unwind, "'unwind' in invoke")?;
-        self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
-            "'label' for invoke unwind destination",
-        )?;
+        self.expect_primitive(PrimitiveTy::Label, "'label' for invoke unwind destination")?;
         let unwind_bb = self.parse_block_ref(state)?;
         // Upstream `resolveFunctionType`: an explicitly written function
         // type IS the call-site type; otherwise infer from the arguments.
@@ -8561,7 +8456,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         .operand_bundles(operand_bundles);
         self.expect_keyword(Keyword::To, "'to' in callbr")?;
         self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
+            PrimitiveTy::Label,
             "'label' for callbr fallthrough destination",
         )?;
         let fallthrough = self.parse_block_ref(state)?;
@@ -8577,10 +8472,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     self.bump()?;
                     break;
                 }
-                self.expect_primitive(
-                    crate::ll_token::PrimitiveTy::Label,
-                    "'label' in callbr indirect target",
-                )?;
+                self.expect_primitive(PrimitiveTy::Label, "'label' in callbr indirect target")?;
                 let bb = self.parse_block_ref(state)?;
                 indirect.push(bb);
                 let _ = self.eat_punct(PunctKind::Comma)?;
@@ -8917,7 +8809,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
 
     fn invalid_numbered_slot(&self, id: u32, loc: Span) -> ParseError {
         ParseError::InvalidSlotId {
-            source: crate::numbered_values::AddError::StaleId {
+            source: AddError::StaleId {
                 id,
                 next: self.next_unnamed_value_id,
             },
@@ -8990,8 +8882,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     {
         if self.defined_numbered_blocks.contains(&id) {
             return Err(ParseError::Redefinition {
-                kind: crate::parse_error::SymbolKind::Block,
-                id: crate::parse_error::SymbolId::Numbered(id),
+                kind: SymbolKind::Block,
+                id: SymbolId::Numbered(id),
                 loc: DiagLoc::span(loc),
             });
         }
@@ -9010,8 +8902,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     {
         if self.defined_numbered_blocks.contains(&id) {
             return Err(ParseError::Redefinition {
-                kind: crate::parse_error::SymbolKind::Block,
-                id: crate::parse_error::SymbolId::Numbered(id),
+                kind: SymbolKind::Block,
+                id: SymbolId::Numbered(id),
                 loc: DiagLoc::span(loc),
             });
         }
@@ -9141,7 +9033,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 if self.local_named.insert(n.clone(), v).is_some() {
                     return Err(ParseError::Redefinition {
                         kind: SYMBOL_KIND_LOCAL,
-                        id: crate::parse_error::SymbolId::Named(n.clone()),
+                        id: SymbolId::Named(n.clone()),
                         loc: DiagLoc::span(loc),
                     });
                 }
@@ -9167,15 +9059,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
 
     /// Resolve all deferred phi incoming edges after the function body has
     /// been fully parsed. Called by `Parser::parse_define` before `}`.
-    fn finish(
-        mut self,
-        module: &'ctx Module<B, Unverified>,
-    ) -> crate::parse_error::ParseResult<()> {
+    fn finish(mut self, module: &'ctx Module<B, Unverified>) -> ParseResult<()> {
         for (name, loc) in &self.block_refs {
             if !self.defined_blocks.contains(name) {
                 return Err(ParseError::UndefinedSymbol {
-                    kind: crate::parse_error::SymbolKind::Block,
-                    id: crate::parse_error::SymbolId::Named(name.clone()),
+                    kind: SymbolKind::Block,
+                    id: SymbolId::Named(name.clone()),
                     loc: DiagLoc::span(*loc),
                 });
             }
@@ -9183,8 +9072,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         for (id, loc) in &self.numbered_block_refs {
             if !self.defined_numbered_blocks.contains(id) {
                 return Err(ParseError::UndefinedSymbol {
-                    kind: crate::parse_error::SymbolKind::Block,
-                    id: crate::parse_error::SymbolId::Numbered(*id),
+                    kind: SymbolKind::Block,
+                    id: SymbolId::Numbered(*id),
                     loc: DiagLoc::span(*loc),
                 });
             }
@@ -9192,48 +9081,52 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         let atomicrmw_values = std::mem::take(&mut self.deferred_atomicrmw_values);
         for deferred in atomicrmw_values {
             let val = match deferred.val_ref {
-                DeferredLocalValueRef::Named(ref n) => {
-                    self.local_named.get(n).copied().ok_or_else(|| {
-                        crate::parse_error::ParseError::UndefinedSymbol {
-                            kind: SYMBOL_KIND_LOCAL,
-                            id: crate::parse_error::SymbolId::Named(n.clone()),
-                            loc: DiagLoc::span(deferred.loc),
-                        }
-                    })?
-                }
+                DeferredLocalValueRef::Named(ref n) => self
+                    .local_named
+                    .get(n)
+                    .copied()
+                    .ok_or_else(|| ParseError::UndefinedSymbol {
+                        kind: SYMBOL_KIND_LOCAL,
+                        id: SymbolId::Named(n.clone()),
+                        loc: DiagLoc::span(deferred.loc),
+                    })?,
                 DeferredLocalValueRef::Numbered(id) => {
                     self.local_numbered.get(&id).copied().ok_or_else(|| {
-                        crate::parse_error::ParseError::UndefinedSymbol {
+                        ParseError::UndefinedSymbol {
                             kind: SYMBOL_KIND_LOCAL,
-                            id: crate::parse_error::SymbolId::Numbered(id),
+                            id: SymbolId::Numbered(id),
                             loc: DiagLoc::span(deferred.loc),
                         }
                     })?
                 }
             };
-            deferred.inst.set_value_operand(module, val).map_err(|e| {
-                crate::parse_error::ParseError::Expected {
+            deferred
+                .inst
+                .set_value_operand(module, val)
+                .map_err(|e| ParseError::Expected {
                     expected: format!("valid atomicrmw forward value: {e}"),
                     loc: DiagLoc::span(deferred.loc),
-                }
-            })?;
+                })?;
         }
         let edges = std::mem::take(&mut self.deferred_phi);
         for edge in edges {
             let val = match edge.val_ref {
                 PhiValRef::Resolved(v) => v,
-                PhiValRef::Named(ref n) => self.local_named.get(n).copied().ok_or_else(|| {
-                    crate::parse_error::ParseError::UndefinedSymbol {
-                        kind: SYMBOL_KIND_LOCAL,
-                        id: crate::parse_error::SymbolId::Named(n.clone()),
-                        loc: DiagLoc::span(edge.loc),
-                    }
-                })?,
+                PhiValRef::Named(ref n) => {
+                    self.local_named
+                        .get(n)
+                        .copied()
+                        .ok_or_else(|| ParseError::UndefinedSymbol {
+                            kind: SYMBOL_KIND_LOCAL,
+                            id: SymbolId::Named(n.clone()),
+                            loc: DiagLoc::span(edge.loc),
+                        })?
+                }
                 PhiValRef::Numbered(id) => {
                     self.local_numbered.get(&id).copied().ok_or_else(|| {
-                        crate::parse_error::ParseError::UndefinedSymbol {
+                        ParseError::UndefinedSymbol {
                             kind: SYMBOL_KIND_LOCAL,
-                            id: crate::parse_error::SymbolId::Numbered(id),
+                            id: SymbolId::Numbered(id),
                             loc: DiagLoc::span(edge.loc),
                         }
                     })?
@@ -9253,7 +9146,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             let tmp_b = llvmkit_ir::IRBuilder::new(module);
             tmp_b
                 .phi_add_incoming_from_value(edge.phi_val, val, bb)
-                .map_err(|e| crate::parse_error::ParseError::Expected {
+                .map_err(|e| ParseError::Expected {
                     expected: format!("valid phi add_incoming: {e}"),
                     loc: DiagLoc::span(edge.loc),
                 })?;
@@ -9383,7 +9276,7 @@ fn borrow_live_builder<'b, 'm, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Local symbol kind label used in [`crate::parse_error::ParseError::UndefinedSymbol`].
-const SYMBOL_KIND_LOCAL: crate::parse_error::SymbolKind = crate::parse_error::SymbolKind::Local;
+const SYMBOL_KIND_LOCAL: SymbolKind = SymbolKind::Local;
 
 #[derive(Clone, Debug)]
 enum NameOrId {

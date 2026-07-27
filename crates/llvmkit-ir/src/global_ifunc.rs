@@ -8,6 +8,7 @@ use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::global_value::{Linkage, Visibility};
 use super::metadata::MetadataAttachmentSet;
+use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeKind, TypeSlot};
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
@@ -22,7 +23,7 @@ pub(super) struct GlobalIFuncData {
     pub(super) linkage: Cell<Linkage>,
     pub(super) visibility: Cell<Visibility>,
     pub(super) partition: RefCell<Option<String>>,
-    pub(super) metadata: RefCell<MetadataAttachmentSet>,
+    pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -160,17 +161,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
         self.data().visibility.set(visibility);
     }
 
-    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
+    pub fn metadata(self) -> MetadataAttachmentSet<B> {
+        MetadataAttachmentSet::from_stored(&self.data().metadata.borrow())
+    }
+
+    /// Crate-internal: the stored attachment set, for the printer and the
+    /// verifier, which already work inside the owning module.
+    pub(crate) fn metadata_stored(
+        self,
+    ) -> core::cell::Ref<'ctx, MetadataAttachmentSet<StoredBrand>> {
         self.data().metadata.borrow()
     }
 
+    /// Set or replace one metadata attachment.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
+    /// module — the module token proves *which* module may be mutated, and the
+    /// id's tag is what proves the node belongs to it.
     pub fn set_metadata(
         self,
-        _module: &'ctx Module<B, Unverified>,
-        kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataSlot,
-    ) {
+        module: &'ctx Module<B, Unverified>,
+        kind: MetadataAttachmentKind,
+        id: MetadataId<B>,
+    ) -> IrResult<()> {
+        let id = id.into_stored(module.id())?;
         self.data().metadata.borrow_mut().insert(kind, id);
+        Ok(())
     }
 
     pub fn partition(self) -> Option<String> {
@@ -270,15 +286,11 @@ pub struct GlobalIFuncBuilder<'ctx, B: ModuleBrand> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
-    pub(super) fn new<M, C>(
-        module: M,
-        name: impl Into<String>,
-        value_type: Type<'ctx, B>,
-        resolver: C,
-    ) -> Self
+    pub(super) fn new<M, C, N>(module: M, name: N, value_type: Type<'ctx, B>, resolver: C) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
         C: IsConstant<'ctx, B>,
+        N: Into<String>,
     {
         let module = module.into();
         let resolver = resolver.as_constant();

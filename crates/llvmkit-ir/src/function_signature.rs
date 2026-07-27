@@ -11,6 +11,7 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
+use super::value_id::ViewIn;
 use crate::argument::Argument;
 use crate::basic_block::BasicBlock;
 use crate::block_state::Unterminated;
@@ -313,7 +314,7 @@ where
     }
 
     /// Storable, module-tagged [`TypedFunctionId<Ret, Params>`] for this
-    /// function (llvmkit 2.0), resolvable via
+    /// function (0.0.4), resolvable via
     /// [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view). The full schema rides on
     /// the id, so the view re-mints this facade rather than a raw
@@ -478,7 +479,7 @@ where
     }
 
     /// Storable, module-tagged [`TypedVarArgsFunctionId<Ret, Params>`] for
-    /// this function (llvmkit 2.0), resolvable via
+    /// this function (0.0.4), resolvable via
     /// [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view).
     #[inline]
@@ -632,7 +633,7 @@ macro_rules! impl_into_typed_callee {
                 self,
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<$facade<'ctx, Ret, Params, B>> {
-                crate::value_id::ViewIn::resolve_in(self, module).ok_or(IrError::ForeignValueId)
+                ViewIn::resolve_in(self, module).ok_or(IrError::ForeignValueId)
             }
         }
     };
@@ -1292,11 +1293,17 @@ impl_function_signature!(
 
 /// Inputs that can fill the call-argument slot described by schema
 /// token `P` in a typed call. Mirrors the multi-source posture of
-/// [`IntoIrField`](crate::IntoIrField): typed handles, constants, Rust
-/// literals, `Argument`, and erased `Value` all lift through the
-/// underlying operand traits. Cross-module rejection lives inside
-/// those traits' `into_*_value(module)` methods (D7), not at the call
-/// site.
+/// [`IntoIrField`](crate::IntoIrField): typed handles, their storable
+/// ids, constants, and Rust literals all lift through the underlying
+/// operand traits. Cross-module rejection lives inside those traits'
+/// `into_*_value(module)` methods (D7), not at the call site.
+///
+/// An **erased** `Value` does *not* lift here. The no-silent-erasure cut
+/// removed those impls: widening a typed argument to `Value` at a typed
+/// call site would discard exactly the width/kind the schema exists to
+/// check. Spell the narrowing (`TryFrom`) if you are starting from an
+/// erased handle, or use the `_dyn` call builders, which take erased
+/// arguments by design and check them at build time.
 ///
 /// ## Diagnostic behavior
 ///

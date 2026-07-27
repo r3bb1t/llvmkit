@@ -22,8 +22,8 @@ struct Right;
 impl ModuleBrand for Right {}
 
 fn main() {
-    let left = Module::branded::<Left>("left").unwrap();
+    let left = Module::branded::<Left, _>("left").unwrap();
     let left_init = left.i32_type().const_int(1_i32);
-    let right = Module::branded::<Right>("right").unwrap();
+    let right = Module::branded::<Right, _>("right").unwrap();
     let _ = right.add_global("g", left_init);
 }

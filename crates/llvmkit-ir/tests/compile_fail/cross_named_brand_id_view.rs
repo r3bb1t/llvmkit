@@ -29,14 +29,14 @@ struct Right;
 impl ModuleBrand for Right {}
 
 fn main() {
-    let left = Module::branded::<Left>("left").unwrap();
+    let left = Module::branded::<Left, _>("left").unwrap();
     let void_ty = left.void_type();
     let fn_ty = left.fn_type_no_params(void_ty, false);
     let left_fn = left
         .add_function_dyn("f", fn_ty, Linkage::External)
         .unwrap();
 
-    let right = Module::branded::<Right>("right").unwrap();
+    let right = Module::branded::<Right, _>("right").unwrap();
     // `left_fn` is a `FunctionId<Dyn, Left>`; `right` resolves only `…, Right`.
     let _ = right.view(left_fn);
 }

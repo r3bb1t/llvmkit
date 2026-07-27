@@ -28,16 +28,31 @@ use super::IrResult;
 use super::align::Align;
 use super::atomic_ordering::AtomicOrdering;
 use super::atomicrmw_binop::AtomicRMWBinOp;
-use super::basic_block::IntoBasicBlockLabel;
+use super::basic_block::{BasicBlockLabel, IntoBasicBlockLabel, require_no_block_parameters};
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::derived_types::FunctionType;
-use super::float_kind::{FloatKind, IntoFloatValue};
+use super::float_kind::FloatKind;
+// Only the crate-internal raw-phi authoring surface lifts through these, and
+// that surface is `#[cfg(test)]` — block arguments are the public way to
+// author a phi. See `docs/design/phi-type-guarantees-design.md`, slice 7.
+#[cfg(test)]
+use super::float_kind::IntoFloatValue;
+use super::float_kind::{BFloat, FloatDyn, Fp128, Half, PpcFp128, X86Fp80};
 use super::fmf::FastMathFlags;
 use super::function::FunctionValue;
 use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::instr_types::TailCallKind;
+use super::instr_types::{
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
+    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FCmpInstData,
+    FNegInstData, FenceInstData, FreezeInstData, GepInstData, IndirectBrInstData,
+    InsertElementInstData, InsertValueInstData, InvokeInstData, LandingPadInstData, LoadInstData,
+    ResumeInstData, SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData,
+    VAArgInstData,
+};
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
     LandingPadClauseKind, PhiData, ReturnOpData,
@@ -49,9 +64,10 @@ use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed as TermClosed, Open as TermOpen, TermOpenState};
 use super::r#type::{Type, TypeData, TypeSlot};
+#[cfg(test)]
+use super::value::IntoPointerValue;
 use super::value::{
-    FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot,
-    ValueUse,
+    FloatValue, IntValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot, ValueUse,
 };
 use super::value_id::{
     AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FpPhiInstId, FreezeInstId,
@@ -436,7 +452,7 @@ macro_rules! decl_handle_scaffold {
 }
 
 /// Give a marker-free opcode handle the two id accessors every handle in the
-/// crate shares (llvmkit 2.0): `.id()` mints the storable, module-tagged
+/// crate shares (0.0.4): `.id()` mints the storable, module-tagged
 /// instruction id its builder hands back — so a handle recovered through
 /// [`Module::view`](crate::Module::view) or an [`InstructionKind`] match can go
 /// back into a side table — and `.slot()` is the bare arena index.
@@ -485,7 +501,7 @@ pub struct AllocaInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(AllocaInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> AllocaInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::AllocaInstData {
+    fn payload(self) -> &'ctx AllocaInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -527,7 +543,7 @@ pub struct LoadInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(LoadInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> LoadInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::LoadInstData {
+    fn payload(self) -> &'ctx LoadInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -590,7 +606,7 @@ pub struct StoreInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(StoreInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> StoreInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::StoreInstData {
+    fn payload(self) -> &'ctx StoreInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -649,7 +665,7 @@ pub struct GepInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(GepInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::GepInstData {
+    fn payload(self) -> &'ctx GepInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -797,7 +813,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         self.retag::<Dyn>()
     }
 
-    fn payload(self) -> &'ctx crate::instr_types::CallInstData {
+    fn payload(self) -> &'ctx CallInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -894,26 +910,13 @@ macro_rules! call_inst_float_return {
         }
     )+ };
 }
-call_inst_float_return!(
-    f32,
-    f64,
-    crate::float_kind::Half,
-    crate::float_kind::BFloat,
-    crate::float_kind::Fp128,
-    crate::float_kind::X86Fp80,
-    crate::float_kind::PpcFp128,
-    crate::float_kind::FloatDyn,
-);
+call_inst_float_return!(f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CallInst<'ctx, Ptr, B> {
     /// Typed result handle for a pointer-returning call.
     #[inline]
     pub fn return_pointer_value(self) -> PointerValue<'ctx, B> {
-        crate::value::PointerValue::from_value_unchecked(Value::from_parts(
-            self.id,
-            self.module,
-            self.ty,
-        ))
+        PointerValue::from_value_unchecked(Value::from_parts(self.id, self.module, self.ty))
     }
 }
 
@@ -1024,7 +1027,7 @@ pub struct SelectInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(SelectInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> SelectInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::SelectInstData {
+    fn payload(self) -> &'ctx SelectInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -1273,7 +1276,7 @@ pub struct FCmpInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(FCmpInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> FCmpInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::FCmpInstData {
+    fn payload(self) -> &'ctx FCmpInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -1607,7 +1610,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
 // today — the parser and SSA builder add incomings through the erased
 // `phi_add_incoming_from_value` path — so `dead_code` is allowed in non-test
 // builds; the in-crate raw-phi tests exercise it.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Returns `Self` so calls chain.
@@ -1826,7 +1829,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Errors if `value`'s type does not match
@@ -1968,7 +1971,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     #[inline]
     pub fn as_pointer_value(&self) -> PointerValue<'ctx, B> {
         let v = Value::from_parts(self.id, self.module, self.ty);
-        crate::value::PointerValue::from_value_unchecked(v)
+        PointerValue::from_value_unchecked(v)
     }
 
     pub fn incoming_count(&self) -> u32 {
@@ -2039,7 +2042,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     /// Append `(value, block)` to the incoming list. Rejects a second entry
     /// for the same block with a different value
@@ -2230,7 +2233,7 @@ pub struct FNegInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(FNegInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> FNegInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::FNegInstData {
+    fn payload(self) -> &'ctx FNegInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2265,7 +2268,7 @@ pub struct FreezeInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(FreezeInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> FreezeInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::FreezeInstData {
+    fn payload(self) -> &'ctx FreezeInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2297,7 +2300,7 @@ pub struct VAArgInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(VAArgInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> VAArgInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::VAArgInstData {
+    fn payload(self) -> &'ctx VAArgInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2338,7 +2341,7 @@ pub struct ExtractValueInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(ExtractValueInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> ExtractValueInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::ExtractValueInstData {
+    fn payload(self) -> &'ctx ExtractValueInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2373,7 +2376,7 @@ pub struct InsertValueInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(InsertValueInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> InsertValueInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::InsertValueInstData {
+    fn payload(self) -> &'ctx InsertValueInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2416,7 +2419,7 @@ pub struct ExtractElementInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(ExtractElementInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> ExtractElementInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::ExtractElementInstData {
+    fn payload(self) -> &'ctx ExtractElementInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2452,7 +2455,7 @@ pub struct InsertElementInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(InsertElementInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> InsertElementInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::InsertElementInstData {
+    fn payload(self) -> &'ctx InsertElementInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2495,7 +2498,7 @@ pub struct ShuffleVectorInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(ShuffleVectorInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::ShuffleVectorInstData {
+    fn payload(self) -> &'ctx ShuffleVectorInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2540,7 +2543,7 @@ pub struct FenceInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(FenceInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> FenceInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::FenceInstData {
+    fn payload(self) -> &'ctx FenceInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2573,7 +2576,7 @@ pub struct AtomicCmpXchgInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(AtomicCmpXchgInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> AtomicCmpXchgInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::AtomicCmpXchgInstData {
+    fn payload(self) -> &'ctx AtomicCmpXchgInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2635,7 +2638,7 @@ pub struct AtomicRMWInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(AtomicRMWInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::AtomicRMWInstData {
+    fn payload(self) -> &'ctx AtomicRMWInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2801,7 +2804,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
     pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
-    fn payload(&self) -> &'ctx crate::instr_types::SwitchInstData {
+    fn payload(&self) -> &'ctx SwitchInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2860,20 +2863,67 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
         self.retag()
     }
 
-    /// Shared case-append body: push `(case_value_id, target)` and register
-    /// the switch as a user of the case value. Both `add_case` flavours
-    /// funnel through here once their width discipline (compile-time for
-    /// static `W`, runtime for [`IntDyn`]) has been discharged.
+    /// Shared case-append body for the *public* `add_case` flavours: validate,
+    /// reject a parameterised target, then record. Both flavours funnel
+    /// through here once their width discipline (compile-time for static `W`,
+    /// runtime for [`IntDyn`]) has been discharged.
+    ///
+    /// A case edge added this way carries no block arguments, so its target
+    /// must not be a **parameterised** block — the same guard the plain
+    /// terminator builders apply, reported as
+    /// [`crate::IrError::PhiArgArityMismatch`]. The argument-carrying route is
+    /// [`IRBuilder::build_switch_with_args`](crate::IRBuilder::build_switch_with_args)
+    /// (and its erased twin), which spells every case at the call and hands
+    /// back an already-[`TermClosed`] switch — so a `switch` reaching a
+    /// parameterised block either carries that block's arguments or does not
+    /// build.
     fn push_case_checked<R, Target>(self, v: Value<'ctx, B>, target: Target) -> IrResult<Self>
     where
         R: ReturnMarker,
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        let target = self.validate_case(v, target)?;
+        require_no_block_parameters(self.module, target.slot())?;
+        Ok(self.record_case(v, target))
+    }
+
+    /// Append a case whose target's block parameters this call's caller has
+    /// **already seeded**, skipping the parameterised-target rejection
+    /// `push_case_checked` applies. Crate-internal: only
+    /// [`IRBuilder::build_switch_with_args`](crate::IRBuilder::build_switch_with_args)
+    /// and its erased twin reach for it, after `add_block_args` has recorded
+    /// each edge's incomings.
+    pub(crate) fn push_case_seeded<R, Target>(
+        self,
+        v: Value<'ctx, B>,
+        target: Target,
+    ) -> IrResult<Self>
+    where
+        R: ReturnMarker,
+        Target: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let target = self.validate_case(v, target)?;
+        Ok(self.record_case(v, target))
+    }
+
+    /// Check a case value against the switch condition and resolve its target
+    /// label. Runs before anything is recorded, so a rejected case leaves the
+    /// case list untouched.
+    ///
+    /// Defence in depth: the case value's runtime type must still equal the
+    /// condition's. For a typed switch this is guaranteed by the
+    /// `IntoIntValue<'ctx, W, B>` bound; for the erased switch it is the
+    /// primary check (mirrors `Verifier::visitSwitchInst`).
+    fn validate_case<R, Target>(
+        &self,
+        v: Value<'ctx, B>,
+        target: Target,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B>>
+    where
+        R: ReturnMarker,
+        Target: IntoBasicBlockLabel<'ctx, R, B>,
+    {
         let module = self.module.module();
-        // Defence in depth: the case value's runtime type must still equal
-        // the condition's. For a typed switch this is guaranteed by the
-        // `IntoIntValue<'ctx, W, B>` bound; for the erased switch it is the
-        // primary check (mirrors `Verifier::visitSwitchInst`).
         let cond_ty = self.payload().cond.get();
         let cond_ty = module.context().value_data(cond_ty).ty;
         if v.ty != cond_ty {
@@ -2882,20 +2932,30 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
                 got: v.ty().kind_label(),
             });
         }
+        target.into_basic_block_label(self.module)
+    }
+
+    /// Push `(case_value_id, target)` onto the case list and register the
+    /// switch as a user of the case value. Infallible: every check the case
+    /// has to pass ran in `validate_case` / the caller's guard.
+    fn record_case<R: ReturnMarker>(
+        self,
+        v: Value<'ctx, B>,
+        target: BasicBlockLabel<'ctx, R, B>,
+    ) -> Self {
         let v_id = v.id;
-        let bb_id = target.into_basic_block_label(self.module)?.slot();
         self.payload()
             .cases
             .borrow_mut()
-            .push((core::cell::Cell::new(v_id), bb_id));
-        // Register the switch as a user of the case value.
-        module
+            .push((core::cell::Cell::new(v_id), target.slot()));
+        self.module
+            .module()
             .context()
             .value_data(v_id)
             .use_list
             .borrow_mut()
             .push(ValueUse::Instruction(self.id));
-        Ok(self)
+        self
     }
 }
 
@@ -3001,7 +3061,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
     pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
-    fn payload(&self) -> &'ctx crate::instr_types::IndirectBrInstData {
+    fn payload(&self) -> &'ctx IndirectBrInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3037,15 +3097,25 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
 
 impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
     /// Append a destination block. Mirrors `IndirectBrInst::addDestination`.
+    ///
+    /// An `indirectbr` edge carries no block arguments and has no
+    /// argument-carrying form — the address picks the destination at run time,
+    /// so there is nothing to attach a per-edge argument list to. A
+    /// **parameterised** destination (one from
+    /// [`IRBuilder::append_block_with_params`](crate::IRBuilder::append_block_with_params)
+    /// or its siblings) is therefore rejected outright with
+    /// [`crate::IrError::PhiArgArityMismatch`], the documented restriction the
+    /// block-argument design called for. A block that merely *contains* phis is
+    /// unaffected, so the classic phi-with-`indirectbr` shape still parses and
+    /// round-trips from `.ll`.
     pub fn add_destination<R, Target>(self, target: Target) -> IrResult<Self>
     where
         R: ReturnMarker,
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        self.payload()
-            .destinations
-            .borrow_mut()
-            .push(target.into_basic_block_label(self.module)?.slot());
+        let target = target.into_basic_block_label(self.module)?;
+        require_no_block_parameters(self.module, target.slot())?;
+        self.payload().destinations.borrow_mut().push(target.slot());
         Ok(self)
     }
     /// Consume the open `indirectbr` and return its [`TermClosed`] view.
@@ -3135,7 +3205,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     pub fn as_dyn(self) -> InvokeInst<'ctx, Dyn, B> {
         self.retag::<Dyn>()
     }
-    fn payload(self) -> &'ctx crate::instr_types::InvokeInstData {
+    fn payload(self) -> &'ctx InvokeInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3189,7 +3259,7 @@ pub struct CallBrInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(CallBrInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::CallBrInstData {
+    fn payload(self) -> &'ctx CallBrInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3305,7 +3375,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
     pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
-    fn payload(&self) -> &'ctx crate::instr_types::LandingPadInstData {
+    fn payload(&self) -> &'ctx LandingPadInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3406,7 +3476,7 @@ pub struct ResumeInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(ResumeInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> ResumeInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::ResumeInstData {
+    fn payload(self) -> &'ctx ResumeInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3440,7 +3510,7 @@ pub struct CleanupPadInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(CleanupPadInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CleanupPadInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::CleanupPadInstData {
+    fn payload(self) -> &'ctx CleanupPadInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3484,7 +3554,7 @@ pub struct CatchPadInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(CatchPadInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CatchPadInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::CatchPadInstData {
+    fn payload(self) -> &'ctx CatchPadInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3524,7 +3594,7 @@ pub struct CatchReturnInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(CatchReturnInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CatchReturnInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::CatchReturnInstData {
+    fn payload(self) -> &'ctx CatchReturnInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3556,7 +3626,7 @@ pub struct CleanupReturnInst<'ctx, B: ModuleBrand> {
 decl_handle_scaffold!(CleanupReturnInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CleanupReturnInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::CleanupReturnInstData {
+    fn payload(self) -> &'ctx CleanupReturnInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3637,7 +3707,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
     pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
-    fn payload(&self) -> &'ctx crate::instr_types::CatchSwitchInstData {
+    fn payload(&self) -> &'ctx CatchSwitchInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {

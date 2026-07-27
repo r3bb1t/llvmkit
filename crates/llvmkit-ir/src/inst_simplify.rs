@@ -7,11 +7,13 @@
 
 use super::IrResult;
 use super::constant_folding::constant_fold_instruction;
+use super::instruction::{InstructionKind, InstructionView};
 use super::module::ModuleBrand;
 use super::pass_access::PatchBody;
 use super::pass_context::{FnCx, FnReport};
 use super::pass_manager::FunctionPass;
 use super::pass_pipeline::INSTSIMPLIFY;
+use super::value::Value;
 
 /// Function transform that folds instructions to constants already expressible
 /// in the existing module, then erases the original instruction.
@@ -74,13 +76,13 @@ impl<B: ModuleBrand> FunctionPass<B> for InstSimplifyPass {
 /// folds `[X, undef]` to `X`) is deliberately not mirrored here; it is
 /// documented as out of scope.
 fn uniform_phi_value<'ctx, B: ModuleBrand + 'ctx>(
-    view: &crate::instruction::InstructionView<'ctx, B>,
-) -> Option<crate::value::Value<'ctx, B>> {
-    let crate::instruction::InstructionKind::Phi(kind) = view.kind()? else {
+    view: &InstructionView<'ctx, B>,
+) -> Option<Value<'ctx, B>> {
+    let InstructionKind::Phi(kind) = view.kind()? else {
         return None;
     };
     let self_value = view.to_erased();
-    let mut common: Option<crate::value::Value<'ctx, B>> = None;
+    let mut common: Option<Value<'ctx, B>> = None;
     for (value, _block) in kind.incomings() {
         if value == self_value {
             continue; // self-reference: neutral

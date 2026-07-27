@@ -1,4 +1,4 @@
-//! The consumer proof for llvmkit 2.0, locked.
+//! The consumer proof for 0.0.4, locked.
 //!
 //! `examples/lifter_session.rs` and `examples/module_per_batch.rs` are the two
 //! shapes the pre-2.0 API could not express. This file pins what they actually

@@ -57,7 +57,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntrinsicInst<'ctx, R, B> {
     }
 
     /// Storable, module-tagged [`IntrinsicInstId<R>`](crate::IntrinsicInstId)
-    /// for this call (llvmkit 2.0) — the id its builder handed back,
+    /// for this call (0.0.4) — the id its builder handed back,
     /// re-mintable from a handle recovered through
     /// [`Module::view`](crate::Module::view).
     ///

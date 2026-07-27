@@ -23,7 +23,7 @@ fn manager_for<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 fn main() {
-    let left = Module::branded::<Left>("left").unwrap();
+    let left = Module::branded::<Left, _>("left").unwrap();
     let left_function = left
         .view(
             left.add_typed_function::<(), (), _>("left", Linkage::External)
@@ -31,7 +31,7 @@ fn main() {
         )
         .as_function();
 
-    let right = Module::branded::<Right>("right").unwrap();
+    let right = Module::branded::<Right, _>("right").unwrap();
     let mut fam = manager_for(right.as_view());
     let _ = fam.get_result::<DominatorTreeAnalysis, _>(left_function.as_view());
 }

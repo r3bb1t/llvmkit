@@ -20,14 +20,14 @@ struct Right;
 impl ModuleBrand for Right {}
 
 fn main() {
-    let left = Module::branded::<Left>("left").unwrap();
+    let left = Module::branded::<Left, _>("left").unwrap();
     let f = left
         .add_typed_function::<(), (), _>("left_f", Linkage::External)
         .unwrap()
         .as_function();
     let left_target = left.view(f).append_basic_block(&left, "target");
 
-    let right = Module::branded::<Right>("right").unwrap();
+    let right = Module::branded::<Right, _>("right").unwrap();
     let f = right
         .add_typed_function::<(), (), _>("right_f", Linkage::External)
         .unwrap()

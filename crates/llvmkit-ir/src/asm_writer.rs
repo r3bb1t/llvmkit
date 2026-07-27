@@ -22,13 +22,27 @@ use core::fmt;
 use core::fmt::Write as _;
 use std::collections::HashMap;
 
+use super::atomic_ordering::AtomicOrdering;
 use super::attributes::{AttributeStorage, AttributeStored};
 use super::basic_block::BasicBlock;
 use super::block_state::BlockTerminationState;
+use super::comdat::ComdatRef;
 use super::constant::{ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode};
 use super::function::FunctionValue;
 use super::global_alias::GlobalAlias;
 use super::global_ifunc::GlobalIFunc;
+use super::global_value::Linkage;
+use super::global_variable::GlobalVariable;
+use super::inline_asm::{AsmDialect, InlineAsmData};
+use super::instr_types::{
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    CatchReturnInstData, CatchSwitchInstData, CleanupReturnInstData, ExtractElementInstData,
+    ExtractValueInstData, FCmpInstData, FNegInstData, FenceInstData, FreezeInstData, GepInstData,
+    IndirectBrInstData, InsertElementInstData, InsertValueInstData, InvokeInstData,
+    LandingPadClauseKind, LandingPadInstData, LoadInstData, OperandBundleData, OperandBundleTag,
+    POISON_MASK_ELEM, ResumeInstData, SelectInstData, ShuffleVectorInstData, StoreInstData,
+    SwitchInstData, TailCallKind, VAArgInstData,
+};
 use super::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, PhiData,
     ReturnOpData,
@@ -36,9 +50,14 @@ use super::instr_types::{
 use super::instruction::{InstructionKindData, InstructionView};
 use super::intrinsics::{PrettyPrintArg, descriptor_for_callee};
 use super::marker::Dyn;
+use super::metadata::{
+    DebugMetadataOperand, DebugRecord, MetadataAttachmentSet, MetadataKind, MetadataSlot,
+    MetadataStore, SpecializedMetadataKind, SpecializedMetadataNode, StoredBrand,
+};
 use super::module::{
     DynBrand, ModuleBrand, ModuleCore, ModuleView, UseListOrderBBRecord, UseListOrderRecord,
 };
+use super::sync_scope::SyncScope;
 use super::r#type::{StructBody, Type, TypeData, TypeSlot};
 use super::value::{IsValue, Value, ValueKindData, ValueSlot};
 use super::{ApInt, ApIntSignedness, AttrIndex};
@@ -293,7 +312,7 @@ fn fmt_use_list_order_bb(
 /// `AssemblyWriter::writeOperand`'s `InlineAsm` arm in
 /// `lib/IR/AsmWriter.cpp`; the strings are escaped exactly like a
 /// `module asm` line (see [`print_escaped_string`]).
-fn fmt_inline_asm(f: &mut fmt::Formatter<'_>, d: &crate::inline_asm::InlineAsmData) -> fmt::Result {
+fn fmt_inline_asm(f: &mut fmt::Formatter<'_>, d: &InlineAsmData) -> fmt::Result {
     f.write_str("asm ")?;
     if d.has_side_effects {
         f.write_str("sideeffect ")?;
@@ -301,7 +320,7 @@ fn fmt_inline_asm(f: &mut fmt::Formatter<'_>, d: &crate::inline_asm::InlineAsmDa
     if d.is_align_stack {
         f.write_str("alignstack ")?;
     }
-    if matches!(d.dialect, crate::inline_asm::AsmDialect::Intel) {
+    if matches!(d.dialect, AsmDialect::Intel) {
         f.write_str("inteldialect ")?;
     }
     if d.can_unwind {
@@ -777,7 +796,7 @@ fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx>(
 
 fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     let mut next = 0_u32;
-    for global in module.iter_globals::<crate::module::DynBrand>() {
+    for global in module.iter_globals::<DynBrand>() {
         if global.into_erased().name().is_none() {
             if global.slot() == id {
                 return Some(next);
@@ -785,7 +804,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
             next = next.saturating_add(1);
         }
     }
-    for alias in module.iter_aliases::<crate::module::DynBrand>() {
+    for alias in module.iter_aliases::<DynBrand>() {
         if alias.into_erased().name().is_none() {
             if alias.slot() == id {
                 return Some(next);
@@ -793,7 +812,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
             next = next.saturating_add(1);
         }
     }
-    for ifunc in module.iter_ifuncs::<crate::module::DynBrand>() {
+    for ifunc in module.iter_ifuncs::<DynBrand>() {
         if ifunc.into_erased().name().is_none() {
             if ifunc.slot() == id {
                 return Some(next);
@@ -801,7 +820,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
             next = next.saturating_add(1);
         }
     }
-    for function in module.iter_functions::<crate::module::DynBrand>() {
+    for function in module.iter_functions::<DynBrand>() {
         if function.into_erased().name().is_none() {
             if function.slot() == id {
                 return Some(next);
@@ -817,7 +836,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
 /// Mirrors `ConstantDataArray::isString` (in C++ this is a runtime
 /// downcast plus a per-element check).
 fn collect_byte_string<B: ModuleBrand>(
-    module: &crate::module::ModuleCore,
+    module: &ModuleCore,
     ty: Type<'_, B>,
     elem_ids: &[ValueSlot],
 ) -> Option<Vec<u8>> {
@@ -1015,7 +1034,13 @@ pub(super) fn fmt_instruction(
     let module_view = inst.module();
     let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
-    fmt_metadata_attachments(f, &inst.metadata(), module_view.core_ref(), &md, &md_slots)
+    fmt_metadata_attachments(
+        f,
+        &inst.metadata_stored(),
+        module_view.core_ref(),
+        &md,
+        &md_slots,
+    )
 }
 
 fn fmt_binop(
@@ -1089,7 +1114,7 @@ fn fmt_cast(
 fn fmt_fneg(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    u: &crate::instr_types::FNegInstData,
+    u: &FNegInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `fneg [<fmf>] <ty> <src>` --- mirrors `printInstruction` /
@@ -1109,7 +1134,7 @@ fn fmt_fneg(
 fn fmt_freeze(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    u: &crate::instr_types::FreezeInstData,
+    u: &FreezeInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `freeze <ty> <src>`
@@ -1124,7 +1149,7 @@ fn fmt_freeze(
 fn fmt_va_arg(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    u: &crate::instr_types::VAArgInstData,
+    u: &VAArgInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `va_arg <list-ty> <list-val>, <result-ty>`
@@ -1140,7 +1165,7 @@ fn fmt_va_arg(
 fn fmt_extract_value(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::ExtractValueInstData,
+    d: &ExtractValueInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `extractvalue <agg-ty> <agg>, idx0, idx1, ...`
@@ -1162,7 +1187,7 @@ fn fmt_extract_value(
 fn fmt_insert_value(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::InsertValueInstData,
+    d: &InsertValueInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, idx0, idx1, ...`
@@ -1188,7 +1213,7 @@ fn fmt_insert_value(
 fn fmt_extract_element(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::ExtractElementInstData,
+    d: &ExtractElementInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `extractelement <vec-ty> <vec>, <idx-ty> <idx>`
@@ -1212,7 +1237,7 @@ fn fmt_extract_element(
 fn fmt_insert_element(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::InsertElementInstData,
+    d: &InsertElementInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `insertelement <vec-ty> <vec>, <elt-ty> <elt>, <idx-ty> <idx>`
@@ -1240,7 +1265,7 @@ fn fmt_insert_element(
 fn fmt_shuffle_vector(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::ShuffleVectorInstData,
+    d: &ShuffleVectorInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `shufflevector <ty> <v1>, <ty> <v2>, <mask>` --- the mask is
@@ -1274,10 +1299,7 @@ fn print_shuffle_mask<B: ModuleBrand>(
     }
     write!(f, "{} x i32> ", mask.len())?;
     let all_zero = !mask.is_empty() && mask.iter().all(|&e| e == 0);
-    let all_poison = !mask.is_empty()
-        && mask
-            .iter()
-            .all(|&e| e == crate::instr_types::POISON_MASK_ELEM);
+    let all_poison = !mask.is_empty() && mask.iter().all(|&e| e == POISON_MASK_ELEM);
     if all_zero {
         f.write_str("zeroinitializer")?;
     } else if all_poison {
@@ -1289,7 +1311,7 @@ fn print_shuffle_mask<B: ModuleBrand>(
                 f.write_str(", ")?;
             }
             f.write_str("i32 ")?;
-            if e == crate::instr_types::POISON_MASK_ELEM {
+            if e == POISON_MASK_ELEM {
                 f.write_str("poison")?;
             } else {
                 write!(f, "{e}")?;
@@ -1302,12 +1324,12 @@ fn print_shuffle_mask<B: ModuleBrand>(
 
 fn write_atomic_suffix(
     f: &mut fmt::Formatter<'_>,
-    ordering: crate::atomic_ordering::AtomicOrdering,
-    sync_scope: &crate::sync_scope::SyncScope,
+    ordering: AtomicOrdering,
+    sync_scope: &SyncScope,
 ) -> fmt::Result {
     // Mirrors `AssemblyWriter::writeAtomic` in `lib/IR/AsmWriter.cpp`:
     //   ` syncscope("...") <ordering>` (system scope omits the qualifier).
-    if matches!(ordering, crate::atomic_ordering::AtomicOrdering::NotAtomic) {
+    if matches!(ordering, AtomicOrdering::NotAtomic) {
         return Ok(());
     }
     if !sync_scope.is_default() {
@@ -1316,7 +1338,7 @@ fn write_atomic_suffix(
     write!(f, " {ordering}")
 }
 
-fn fmt_fence(f: &mut fmt::Formatter<'_>, d: &crate::instr_types::FenceInstData) -> fmt::Result {
+fn fmt_fence(f: &mut fmt::Formatter<'_>, d: &FenceInstData) -> fmt::Result {
     // `fence [syncscope("...")] <ordering>`
     f.write_str("fence")?;
     write_atomic_suffix(f, d.ordering, &d.sync_scope)
@@ -1325,7 +1347,7 @@ fn fmt_fence(f: &mut fmt::Formatter<'_>, d: &crate::instr_types::FenceInstData) 
 fn fmt_cmpxchg(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::AtomicCmpXchgInstData,
+    d: &AtomicCmpXchgInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `cmpxchg [weak] [volatile] <ptr-ty> <ptr>, <cmp-ty> <cmp>, <new-ty> <new>
@@ -1368,7 +1390,7 @@ fn fmt_cmpxchg(
 fn fmt_atomicrmw(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::AtomicRMWInstData,
+    d: &AtomicRMWInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `atomicrmw [volatile] <op> <ptr-ty> <ptr>, <val-ty> <val>
@@ -1438,7 +1460,7 @@ fn fmt_icmp(
 fn fmt_fcmp(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    c: &crate::instr_types::FCmpInstData,
+    c: &FCmpInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `fcmp [<fmf>] <pred> <ty> <lhs>, <rhs>`. The optional FMF block
@@ -1460,7 +1482,7 @@ fn fmt_fcmp(
 fn fmt_alloca(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    a: &crate::instr_types::AllocaInstData,
+    a: &AllocaInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     let module = inst.module();
@@ -1504,7 +1526,7 @@ fn fmt_alloca(
 fn fmt_load(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    l: &crate::instr_types::LoadInstData,
+    l: &LoadInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // Mirrors `AssemblyWriter::printInstruction` LoadInst arm in
@@ -1534,7 +1556,7 @@ fn fmt_load(
 fn fmt_store(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    s: &crate::instr_types::StoreInstData,
+    s: &StoreInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // Mirrors `AssemblyWriter::printInstruction` StoreInst arm in
@@ -1568,7 +1590,7 @@ fn fmt_store(
 fn fmt_gep(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    g: &crate::instr_types::GepInstData,
+    g: &GepInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     let module = inst.module();
@@ -1597,7 +1619,7 @@ fn fmt_gep(
 fn fmt_call(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    c: &crate::instr_types::CallInstData,
+    c: &CallInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     if let Some(kw) = c.tail_kind.keyword() {
@@ -1661,7 +1683,7 @@ fn fmt_call(
     // A musttail call in a varargs function forwards the varargs with a
     // trailing `...` (AsmWriter's CallInst arm:
     // `isMustTailCall() && getParent()->getParent()->isVarArg()`).
-    if matches!(c.tail_kind, crate::instr_types::TailCallKind::MustTail) {
+    if matches!(c.tail_kind, TailCallKind::MustTail) {
         let enclosing_varargs =
             inst.into_erased()
                 .local_parent_function_id()
@@ -1803,28 +1825,28 @@ fn constant_int_zext_u128<B: ModuleBrand>(value: Value<'_, B>) -> Option<u128> {
     ApInt::from_words(*bits, words).try_zext_u128()
 }
 
-fn operand_bundle_tag_name(tag: &crate::instr_types::OperandBundleTag) -> &str {
+fn operand_bundle_tag_name(tag: &OperandBundleTag) -> &str {
     match tag {
-        crate::instr_types::OperandBundleTag::Deopt => "deopt",
-        crate::instr_types::OperandBundleTag::Funclet => "funclet",
-        crate::instr_types::OperandBundleTag::GcTransition => "gc-transition",
-        crate::instr_types::OperandBundleTag::CfGuardTarget => "cfguardtarget",
-        crate::instr_types::OperandBundleTag::Preallocated => "preallocated",
-        crate::instr_types::OperandBundleTag::GcLive => "gc-live",
-        crate::instr_types::OperandBundleTag::ClangArcAttachedCall => "clang.arc.attachedcall",
-        crate::instr_types::OperandBundleTag::PtrAuth => "ptrauth",
-        crate::instr_types::OperandBundleTag::Kcfi => "kcfi",
-        crate::instr_types::OperandBundleTag::ConvergenceCtrl => "convergencectrl",
-        crate::instr_types::OperandBundleTag::Align => "align",
-        crate::instr_types::OperandBundleTag::DeactivationSymbol => "deactivation",
-        crate::instr_types::OperandBundleTag::Custom(name) => name.as_str(),
+        OperandBundleTag::Deopt => "deopt",
+        OperandBundleTag::Funclet => "funclet",
+        OperandBundleTag::GcTransition => "gc-transition",
+        OperandBundleTag::CfGuardTarget => "cfguardtarget",
+        OperandBundleTag::Preallocated => "preallocated",
+        OperandBundleTag::GcLive => "gc-live",
+        OperandBundleTag::ClangArcAttachedCall => "clang.arc.attachedcall",
+        OperandBundleTag::PtrAuth => "ptrauth",
+        OperandBundleTag::Kcfi => "kcfi",
+        OperandBundleTag::ConvergenceCtrl => "convergencectrl",
+        OperandBundleTag::Align => "align",
+        OperandBundleTag::DeactivationSymbol => "deactivation",
+        OperandBundleTag::Custom(name) => name.as_str(),
     }
 }
 
 fn fmt_operand_bundles(
     f: &mut fmt::Formatter<'_>,
-    bundles: &[crate::instr_types::OperandBundleData],
-    module: &crate::module::ModuleCore,
+    bundles: &[OperandBundleData],
+    module: &ModuleCore,
     slots: &SlotTracker,
 ) -> fmt::Result {
     if bundles.is_empty() {
@@ -1854,7 +1876,7 @@ fn fmt_operand_bundles(
 fn fmt_landingpad(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::LandingPadInstData,
+    d: &LandingPadInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // Mirrors `printInstruction`'s `LandingPadInst` arm:
@@ -1877,8 +1899,8 @@ fn fmt_landingpad(
             f.write_str("\n")?;
         }
         let kw = match kind {
-            crate::instr_types::LandingPadClauseKind::Catch => "          catch ",
-            crate::instr_types::LandingPadClauseKind::Filter => "          filter ",
+            LandingPadClauseKind::Catch => "          catch ",
+            LandingPadClauseKind::Filter => "          filter ",
         };
         f.write_str(kw)?;
         let op_id = op_cell.get();
@@ -1893,7 +1915,7 @@ fn fmt_landingpad(
 fn fmt_resume(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::ResumeInstData,
+    d: &ResumeInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `resume <ty> <value>`
@@ -1910,8 +1932,8 @@ fn fmt_funclet_pad(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
     keyword: &str,
-    parent_pad: &core::cell::Cell<Option<crate::value::ValueSlot>>,
-    args: &[core::cell::Cell<crate::value::ValueSlot>],
+    parent_pad: &core::cell::Cell<Option<ValueSlot>>,
+    args: &[core::cell::Cell<ValueSlot>],
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `<keyword> within <parent> [<arg-ty> <arg>, ...]`
@@ -1945,7 +1967,7 @@ fn fmt_funclet_pad(
 fn fmt_catchret(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::CatchReturnInstData,
+    d: &CatchReturnInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `catchret from <catchpad> to label <bb>`
@@ -1965,7 +1987,7 @@ fn fmt_catchret(
 fn fmt_cleanupret(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::CleanupReturnInstData,
+    d: &CleanupReturnInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `cleanupret from <cleanuppad> unwind [to caller | label <bb>]`
@@ -1990,7 +2012,7 @@ fn fmt_cleanupret(
 fn fmt_catchswitch(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::CatchSwitchInstData,
+    d: &CatchSwitchInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `catchswitch within <parent> [label <h1>, label <h2>, ...] unwind [to caller | label <bb>]`
@@ -2032,7 +2054,7 @@ fn fmt_catchswitch(
 fn fmt_invoke(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::InvokeInstData,
+    d: &InvokeInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `invoke [<cc>] <ret-ty> <callee>(<args>)\n          to label %normal unwind label %unwind`
@@ -2112,7 +2134,7 @@ fn fmt_invoke(
 fn fmt_callbr(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::CallBrInstData,
+    d: &CallBrInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `callbr [<cc>] <ret-ty> <callee>(<args>)\n          to label %default [label %indirect1, ...]`
@@ -2229,7 +2251,7 @@ fn fmt_phi(
 fn fmt_switch(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::SwitchInstData,
+    d: &SwitchInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // Mirrors the `SwitchInst` arm of `printInstruction`
@@ -2268,7 +2290,7 @@ fn fmt_switch(
 fn fmt_indirectbr(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &crate::instr_types::IndirectBrInstData,
+    d: &IndirectBrInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `indirectbr <addr-ty> <addr>, [label <bb1>, label <bb2>, ...]`
@@ -2387,21 +2409,22 @@ fn fmt_attribute_stored<'ctx, B: ModuleBrand + 'ctx>(
 
 fn fmt_debug_metadata_operand(
     f: &mut fmt::Formatter<'_>,
-    operand: crate::metadata::DebugMetadataOperand,
+    operand: DebugMetadataOperand<StoredBrand>,
     module: &ModuleCore,
-    store: &crate::metadata::MetadataStore,
+    store: &MetadataStore,
     md_slots: &[Option<usize>],
     slots: &SlotTracker,
 ) -> fmt::Result {
     match operand {
-        crate::metadata::DebugMetadataOperand::Metadata(md) => {
-            fmt_metadata_operand(f, md.0, module, store, md_slots)
+        DebugMetadataOperand::Metadata(md) => {
+            fmt_metadata_operand(f, md.slot(), module, store, md_slots)
         }
-        crate::metadata::DebugMetadataOperand::Value(id) => {
-            let data = module.context().value_data(id);
+        DebugMetadataOperand::Value(id) => {
+            let slot = id.slot();
+            let data = module.context().value_data(slot);
             fmt_operand(
                 f,
-                Value::<DynBrand>::from_parts(id, module, data.ty),
+                Value::<DynBrand>::from_parts(slot, module, data.ty),
                 Some(slots),
             )
         }
@@ -2410,24 +2433,24 @@ fn fmt_debug_metadata_operand(
 
 fn fmt_debug_record(
     f: &mut fmt::Formatter<'_>,
-    record: &crate::metadata::DebugRecord,
+    record: &DebugRecord<StoredBrand>,
     module: &ModuleCore,
-    store: &crate::metadata::MetadataStore,
+    store: &MetadataStore,
     md_slots: &[Option<usize>],
     slots: &SlotTracker,
 ) -> fmt::Result {
     f.write_str("  ")?;
     match record {
-        crate::metadata::DebugRecord::Variable(record) => {
+        DebugRecord::Variable(record) => {
             write!(f, "#dbg_{}(", record.kind().name())?;
             fmt_debug_metadata_operand(f, record.location(), module, store, md_slots, slots)?;
             f.write_str(", ")?;
-            fmt_metadata_operand(f, record.variable(), module, store, md_slots)?;
+            fmt_metadata_operand(f, record.variable().slot(), module, store, md_slots)?;
             f.write_str(", ")?;
-            fmt_metadata_operand(f, record.expression(), module, store, md_slots)?;
+            fmt_metadata_operand(f, record.expression().slot(), module, store, md_slots)?;
             f.write_str(", ")?;
             if let Some(assign_id) = record.assign_id() {
-                fmt_metadata_operand(f, assign_id, module, store, md_slots)?;
+                fmt_metadata_operand(f, assign_id.slot(), module, store, md_slots)?;
                 f.write_str(", ")?;
             }
             if let Some(address_location) = record.address_location() {
@@ -2435,17 +2458,17 @@ fn fmt_debug_record(
                 f.write_str(", ")?;
             }
             if let Some(address_expression) = record.address_expression() {
-                fmt_metadata_operand(f, address_expression, module, store, md_slots)?;
+                fmt_metadata_operand(f, address_expression.slot(), module, store, md_slots)?;
                 f.write_str(", ")?;
             }
-            fmt_metadata_operand(f, record.debug_loc(), module, store, md_slots)?;
+            fmt_metadata_operand(f, record.debug_loc().slot(), module, store, md_slots)?;
             f.write_str(")")
         }
-        crate::metadata::DebugRecord::Label { label, debug_loc } => {
+        DebugRecord::Label { label, debug_loc } => {
             f.write_str("#dbg_label(")?;
-            fmt_metadata_operand(f, *label, module, store, md_slots)?;
+            fmt_metadata_operand(f, label.slot(), module, store, md_slots)?;
             f.write_str(", ")?;
-            fmt_metadata_operand(f, *debug_loc, module, store, md_slots)?;
+            fmt_metadata_operand(f, debug_loc.slot(), module, store, md_slots)?;
             f.write_str(")")
         }
     }
@@ -2473,7 +2496,7 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
     let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
     for inst in bb.instructions() {
-        for record in inst.debug_records().iter() {
+        for record in inst.debug_records_stored().iter() {
             fmt_debug_record(f, record, module_view.core_ref(), &md, &md_slots, slots)?;
             f.write_str("\n")?;
         }
@@ -2610,7 +2633,13 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         let module_view = func.module();
         let md = module_view.metadata_store();
         let md_slots = metadata_slot_map(md.nodes());
-        fmt_metadata_attachments(f, &func.metadata(), module_view.core_ref(), &md, &md_slots)?;
+        fmt_metadata_attachments(
+            f,
+            &func.metadata_stored(),
+            module_view.core_ref(),
+            &md,
+            &md_slots,
+        )?;
     }
     if header == "declare" {
         return f.write_str("\n");
@@ -2738,7 +2767,7 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
     // M->globals())` loop in `printModule`.
     if !m.global_empty() {
         f.write_str("\n")?;
-        for g in m.iter_globals::<crate::module::DynBrand>() {
+        for g in m.iter_globals::<DynBrand>() {
             fmt_global(f, g)?;
             f.write_str("\n")?;
         }
@@ -2746,20 +2775,20 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
 
     if !m.alias_empty() {
         f.write_str("\n")?;
-        for a in m.iter_aliases::<crate::module::DynBrand>() {
+        for a in m.iter_aliases::<DynBrand>() {
             fmt_alias(f, a)?;
         }
     }
 
     if !m.ifunc_empty() {
         f.write_str("\n")?;
-        for i in m.iter_ifuncs::<crate::module::DynBrand>() {
+        for i in m.iter_ifuncs::<DynBrand>() {
             fmt_ifunc(f, i)?;
         }
     }
 
     let mut first = true;
-    for func in m.iter_functions::<crate::module::DynBrand>() {
+    for func in m.iter_functions::<DynBrand>() {
         if !first || !m.global_empty() || !m.alias_empty() || !m.ifunc_empty() || has_named_structs
         {
             f.write_str("\n")?;
@@ -2833,7 +2862,7 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
                     if j > 0 {
                         f.write_str(", ")?;
                     }
-                    fmt_metadata_operand(f, op.0, m, &md, &slots)?;
+                    fmt_metadata_operand(f, op.slot(), m, &md, &slots)?;
                 }
                 f.write_str("}\n")?;
             }
@@ -2858,9 +2887,9 @@ fn fmt_md_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
 /// never assigns standalone metadata slots to `MDString`s.
 fn fmt_metadata_node(
     f: &mut fmt::Formatter<'_>,
-    node: &crate::metadata::MetadataKind,
+    node: &MetadataKind<StoredBrand>,
     module: &ModuleCore,
-    store: &crate::metadata::MetadataStore,
+    store: &MetadataStore,
     slots: &[Option<usize>],
 ) -> fmt::Result {
     use super::metadata::MetadataKind;
@@ -2876,26 +2905,27 @@ fn fmt_metadata_node(
                 if i > 0 {
                     f.write_str(", ")?;
                 }
-                fmt_metadata_operand(f, op.0, module, store, slots)?;
+                fmt_metadata_operand(f, op.slot(), module, store, slots)?;
             }
             f.write_str("}")
         }
-        MetadataKind::Ref(id) => fmt_metadata_operand(f, *id, module, store, slots),
+        MetadataKind::Ref(id) => fmt_metadata_operand(f, id.slot(), module, store, slots),
         MetadataKind::Specialized(node) => {
             fmt_specialized_metadata_node(f, node, module, store, slots)
         }
         MetadataKind::Constant(id) => {
-            let data = module.context().value_data(*id);
-            let value = Value::<DynBrand>::from_parts(*id, module, data.ty);
+            let slot = id.slot();
+            let data = module.context().value_data(slot);
+            let value = Value::<DynBrand>::from_parts(slot, module, data.ty);
             fmt_operand(f, value, None)
         }
     }
 }
 fn fmt_specialized_metadata_node(
     f: &mut fmt::Formatter<'_>,
-    node: &crate::metadata::SpecializedMetadataNode,
+    node: &SpecializedMetadataNode<StoredBrand>,
     module: &ModuleCore,
-    store: &crate::metadata::MetadataStore,
+    store: &MetadataStore,
     slots: &[Option<usize>],
 ) -> fmt::Result {
     use super::metadata::MetadataFieldValue;
@@ -2919,7 +2949,7 @@ fn fmt_specialized_metadata_node(
             }
             MetadataFieldValue::Enum(s) => f.write_str(s)?,
             MetadataFieldValue::Metadata(md) => {
-                fmt_metadata_operand(f, md.0, module, store, slots)?
+                fmt_metadata_operand(f, md.slot(), module, store, slots)?
             }
             MetadataFieldValue::MetadataList(items) => {
                 f.write_str("!{")?;
@@ -2927,7 +2957,7 @@ fn fmt_specialized_metadata_node(
                     if j > 0 {
                         f.write_str(", ")?;
                     }
-                    fmt_metadata_operand(f, md.0, module, store, slots)?;
+                    fmt_metadata_operand(f, md.slot(), module, store, slots)?;
                 }
                 f.write_str("}")?;
             }
@@ -2938,14 +2968,14 @@ fn fmt_specialized_metadata_node(
 
 fn fmt_metadata_attachments(
     f: &mut fmt::Formatter<'_>,
-    attachments: &crate::metadata::MetadataAttachmentSet,
+    attachments: &MetadataAttachmentSet<StoredBrand>,
     module: &ModuleCore,
-    store: &crate::metadata::MetadataStore,
+    store: &MetadataStore,
     slots: &[Option<usize>],
 ) -> fmt::Result {
     for (kind, id) in attachments.iter() {
         write!(f, ", !{} ", kind.name())?;
-        fmt_metadata_operand(f, *id, module, store, slots)?;
+        fmt_metadata_operand(f, id.slot(), module, store, slots)?;
     }
     Ok(())
 }
@@ -2955,13 +2985,13 @@ fn fmt_metadata_attachments(
 /// referenced by the module metadata slot map.
 fn fmt_metadata_operand(
     f: &mut fmt::Formatter<'_>,
-    id: crate::metadata::MetadataSlot,
+    id: MetadataSlot,
     module: &ModuleCore,
-    store: &crate::metadata::MetadataStore,
+    store: &MetadataStore,
     slots: &[Option<usize>],
 ) -> fmt::Result {
     if let Some(node) = store.get(id) {
-        if let crate::metadata::MetadataKind::String(s) = node {
+        if let MetadataKind::String(s) = node {
             return fmt_md_string(f, s);
         }
         if is_inline_metadata_node(node) {
@@ -2974,24 +3004,20 @@ fn fmt_metadata_operand(
     }
 }
 
-fn is_inline_metadata_node(node: &crate::metadata::MetadataKind) -> bool {
-    matches!(
-        node,
-        crate::metadata::MetadataKind::Null | crate::metadata::MetadataKind::Constant(_)
-    ) || matches!(
-        node,
-        crate::metadata::MetadataKind::Specialized(s)
-            if s.kind() == crate::metadata::SpecializedMetadataKind::DIExpression
-    )
+fn is_inline_metadata_node(node: &MetadataKind<StoredBrand>) -> bool {
+    matches!(node, MetadataKind::Null | MetadataKind::Constant(_))
+        || matches!(
+            node,
+            MetadataKind::Specialized(s)
+                if s.kind() == SpecializedMetadataKind::DIExpression
+        )
 }
 
-fn metadata_slot_map(nodes: &[crate::metadata::MetadataKind]) -> Vec<Option<usize>> {
+fn metadata_slot_map(nodes: &[MetadataKind<StoredBrand>]) -> Vec<Option<usize>> {
     let mut slots = vec![None; nodes.len()];
     let mut next = 0;
     for (i, node) in nodes.iter().enumerate() {
-        if !matches!(node, crate::metadata::MetadataKind::String(_))
-            && !is_inline_metadata_node(node)
-        {
+        if !matches!(node, MetadataKind::String(_)) && !is_inline_metadata_node(node) {
             slots[i] = Some(next);
             next += 1;
         }
@@ -2999,10 +3025,7 @@ fn metadata_slot_map(nodes: &[crate::metadata::MetadataKind]) -> Vec<Option<usiz
     slots
 }
 
-fn fmt_comdat(
-    f: &mut fmt::Formatter<'_>,
-    c: crate::comdat::ComdatRef<'_, DynBrand>,
-) -> fmt::Result {
+fn fmt_comdat(f: &mut fmt::Formatter<'_>, c: ComdatRef<'_, DynBrand>) -> fmt::Result {
     // `$<name> = comdat <kind>\n`. Mirrors
     // `Comdat::print` in `lib/IR/AsmWriter.cpp`.
     fmt_llvm_name(f, "$", c.name())?;
@@ -3011,7 +3034,7 @@ fn fmt_comdat(
 
 pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
-    g: crate::global_variable::GlobalVariable<'ctx, B>,
+    g: GlobalVariable<'ctx, B>,
 ) -> fmt::Result {
     // Mirrors `AssemblyWriter::printGlobal` in
     // `lib/IR/AsmWriter.cpp`.
@@ -3020,7 +3043,7 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
 
     // `external` keyword in front of decl-only globals with
     // External linkage. Mirrors the special case in `printGlobal`.
-    if !g.has_initializer() && g.linkage() == crate::global_value::Linkage::External {
+    if !g.has_initializer() && g.linkage() == Linkage::External {
         f.write_str("external ")?;
     }
 
@@ -3103,7 +3126,13 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
     let module_view = g.module();
     let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
-    fmt_metadata_attachments(f, &g.metadata(), g.module().core_ref(), &md, &md_slots)
+    fmt_metadata_attachments(
+        f,
+        &g.metadata_stored(),
+        g.module().core_ref(),
+        &md,
+        &md_slots,
+    )
 }
 
 pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
@@ -3144,7 +3173,13 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     let module_view = a.module();
     let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
-    fmt_metadata_attachments(f, &a.metadata(), a.module().core_ref(), &md, &md_slots)?;
+    fmt_metadata_attachments(
+        f,
+        &a.metadata_stored(),
+        a.module().core_ref(),
+        &md,
+        &md_slots,
+    )?;
     f.write_str("\n")
 }
 
@@ -3174,14 +3209,20 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     let module_view = i.module();
     let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
-    fmt_metadata_attachments(f, &i.metadata(), i.module().core_ref(), &md, &md_slots)?;
+    fmt_metadata_attachments(
+        f,
+        &i.metadata_stored(),
+        i.module().core_ref(),
+        &md,
+        &md_slots,
+    )?;
     f.write_str("\n")
 }
 
 fn fmt_select(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    s: &crate::instr_types::SelectInstData,
+    s: &SelectInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     let module = inst.module();

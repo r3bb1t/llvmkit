@@ -760,7 +760,8 @@ fn range_metadata_known_bits<'ctx, B: ModuleBrand + 'ctx>(
     let module = module_view.core_ref();
     let store = module_view.metadata_store();
     let expected_ty = scalar_type_id(module, value.ty().id);
-    let Some(ranges) = constant_ranges_from_metadata(module, &store, range_id, expected_ty) else {
+    let Some(ranges) = constant_ranges_from_metadata(module, &store, range_id.slot(), expected_ty)
+    else {
         return KnownBits::unknown(bit_width);
     };
     ranges_known_bits(ranges, bit_width)
@@ -786,7 +787,10 @@ fn range_attribute_known_bits<'ctx, B: ModuleBrand + 'ctx>(
     ranges_known_bits(ranges, bit_width)
 }
 
-fn ranges_known_bits(ranges: impl IntoIterator<Item = ConstantRange>, bit_width: u32) -> KnownBits {
+fn ranges_known_bits<I>(ranges: I, bit_width: u32) -> KnownBits
+where
+    I: IntoIterator<Item = ConstantRange>,
+{
     let mut seen = false;
     let mut known = KnownBits::unknown(bit_width);
     known.set_all_conflict();

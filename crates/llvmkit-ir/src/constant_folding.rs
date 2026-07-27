@@ -2080,14 +2080,15 @@ fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
     Ok(None)
 }
 
-fn folded_constants_from_ids<'ctx, B>(
+fn folded_constants_from_ids<'ctx, B, I>(
     module: ModuleView<'ctx, B>,
-    ids: impl IntoIterator<Item = ValueSlot>,
+    ids: I,
     dl: &DataLayout,
     tli: Option<&TargetLibraryInfo>,
 ) -> IrResult<Option<Vec<Constant<'ctx, B>>>>
 where
     B: ModuleBrand + 'ctx,
+    I: IntoIterator<Item = ValueSlot>,
 {
     let mut folded = Vec::new();
     for id in ids {

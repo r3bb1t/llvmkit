@@ -23,11 +23,11 @@ struct Right;
 impl ModuleBrand for Right {}
 
 fn main() -> Result<(), IrError> {
-    let left = Module::branded::<Left>("left")?;
+    let left = Module::branded::<Left, _>("left")?;
     let left_fn = left.add_typed_function::<(), (Point,), _>("left", Linkage::External)?;
     let (left_point,) = left.view(left_fn).params();
 
-    let right = Module::branded::<Right>("right")?;
+    let right = Module::branded::<Right, _>("right")?;
     let right_fn = right
         .add_typed_function::<(), (), _>("right", Linkage::External)?
         .as_function();

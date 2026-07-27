@@ -5,10 +5,14 @@
 //! (e.g. `Module::i32_type`) stay infallible; validation constructors and
 //! all builder methods funnel through this enum.
 //!
-//! Variants are added phase-by-phase as new failure modes appear. Where
-//! `'ctx` lifetime branding catches a class of bugs at compile time
-//! (e.g. cross-Module mixing), the corresponding runtime variant is
-//! deliberately *not* present here — see the IR foundation plan, Pivot 4.
+//! Variants are added phase-by-phase as new failure modes appear. Where the
+//! `B: ModuleBrand` type parameter catches a class of bugs at compile time
+//! (e.g. mixing handles from two modules carrying *distinct* brand types),
+//! the corresponding runtime variant is deliberately *not* present here.
+//! The brand is a backstop, not a guarantee, for the rungs where it cannot
+//! separate two modules — two modules sharing a brand type (`DynBrand`, or a
+//! named brand reused after the first was dropped) fall back to the runtime
+//! `ModuleId` tag, which is what [`IrError::ForeignValueId`] reports.
 
 #![deny(missing_docs)]
 
@@ -904,6 +908,42 @@ pub enum IrError {
     /// [`IntoPointerValue`](crate::IntoPointerValue)) when handed a foreign id.
     #[error("value id belongs to a different Module")]
     ForeignValueId,
+
+    /// A [`MetadataId`](crate::MetadataId) or a named-metadata index named
+    /// nothing in the target [`Module`](crate::Module) — the id's tag matched,
+    /// but its slot is past the end of the arena.
+    ///
+    /// Raised by [`Module::metadata_set`](crate::Module::metadata_set),
+    /// [`Module::metadata_as_value`](crate::Module::metadata_as_value), and
+    /// [`Module::named_metadata_add_operand`](crate::Module::named_metadata_add_operand)
+    /// (whose `index` is a plain named-node position, not a tagged id). A
+    /// *foreign* id is [`ForeignMetadataId`](Self::ForeignMetadataId) instead:
+    /// the tag separates the two cases, so an in-range slot from another module
+    /// is rejected rather than silently mis-resolved.
+    #[error("metadata slot {index} names nothing in this Module (holds {len})")]
+    UnknownMetadataSlot {
+        /// The index that was out of range.
+        index: usize,
+        /// How many entries the target store actually holds.
+        len: usize,
+    },
+
+    /// A [`MetadataId`](crate::MetadataId) was used against a different
+    /// [`Module`](crate::Module) than the one that minted it. The id's module
+    /// tag did not match the target module, so it cannot name a node there.
+    ///
+    /// The metadata twin of [`ForeignValueId`](Self::ForeignValueId), raised by
+    /// every module-level metadata API that accepts an id
+    /// ([`Module::metadata_tuple`](crate::Module::metadata_tuple),
+    /// [`metadata_node`](crate::Module::metadata_node),
+    /// [`metadata_set`](crate::Module::metadata_set),
+    /// [`named_metadata_add_operand`](crate::Module::named_metadata_add_operand),
+    /// …) and by the attachment setters
+    /// ([`InstructionView::set_metadata`](crate::InstructionView::set_metadata),
+    /// [`push_debug_record`](crate::InstructionView::push_debug_record), and
+    /// the `FunctionValue` / global siblings).
+    #[error("metadata id belongs to a different Module")]
+    ForeignMetadataId,
 
     /// [`crate::SsaState::for_function`] was given a function that
     /// already has a body. The layer must observe every CFG edge from

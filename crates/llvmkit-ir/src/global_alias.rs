@@ -8,6 +8,7 @@ use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
 use super::metadata::MetadataAttachmentSet;
+use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeKind, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
@@ -26,7 +27,7 @@ pub(super) struct GlobalAliasData {
     pub(super) thread_local_mode: Cell<ThreadLocalMode>,
     pub(super) unnamed_addr: Cell<UnnamedAddr>,
     pub(super) partition: RefCell<Option<String>>,
-    pub(super) metadata: RefCell<MetadataAttachmentSet>,
+    pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -58,7 +59,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
         }
     }
 
-    /// Storable, module-tagged [`GlobalAliasId`] for this alias (llvmkit 2.0),
+    /// Storable, module-tagged [`GlobalAliasId`] for this alias (0.0.4),
     /// resolvable via [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view).
     #[inline]
@@ -194,17 +195,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
         self.data().unnamed_addr.set(value);
     }
 
-    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
+    pub fn metadata(self) -> MetadataAttachmentSet<B> {
+        MetadataAttachmentSet::from_stored(&self.data().metadata.borrow())
+    }
+
+    /// Crate-internal: the stored attachment set, for the printer and the
+    /// verifier, which already work inside the owning module.
+    pub(crate) fn metadata_stored(
+        self,
+    ) -> core::cell::Ref<'ctx, MetadataAttachmentSet<StoredBrand>> {
         self.data().metadata.borrow()
     }
 
+    /// Set or replace one metadata attachment.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
+    /// module — the module token proves *which* module may be mutated, and the
+    /// id's tag is what proves the node belongs to it.
     pub fn set_metadata(
         self,
-        _module: &'ctx Module<B, Unverified>,
-        kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataSlot,
-    ) {
+        module: &'ctx Module<B, Unverified>,
+        kind: MetadataAttachmentKind,
+        id: MetadataId<B>,
+    ) -> IrResult<()> {
+        let id = id.into_stored(module.id())?;
         self.data().metadata.borrow_mut().insert(kind, id);
+        Ok(())
     }
 
     pub fn partition(self) -> Option<String> {
@@ -307,15 +323,11 @@ pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
-    pub(super) fn new<M, C>(
-        module: M,
-        name: impl Into<String>,
-        value_type: Type<'ctx, B>,
-        aliasee: C,
-    ) -> Self
+    pub(super) fn new<M, C, N>(module: M, name: N, value_type: Type<'ctx, B>, aliasee: C) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
         C: IsConstant<'ctx, B>,
+        N: Into<String>,
     {
         let module = module.into();
         let aliasee = aliasee.as_constant();

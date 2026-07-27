@@ -23,8 +23,17 @@ use core::iter::FusedIterator;
 use super::asm_writer::{SlotTracker, fmt_instruction};
 use super::basic_block::BasicBlock;
 use super::block_state::Unterminated;
+use super::error::ValueCategoryLabel;
 use super::float_kind::FloatDyn;
 use super::function::FunctionValue;
+use super::instr_types::{
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
+    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FNegInstData,
+    FenceInstData, FreezeInstData, GepInstData, IndirectBrInstData, InsertElementInstData,
+    InsertValueInstData, InvokeInstData, LandingPadInstData, LoadInstData, ResumeInstData,
+    SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VAArgInstData,
+};
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
     FCmpInstData, PhiData, ReturnOpData, UnreachableInstData,
@@ -43,7 +52,9 @@ use super::instructions::{
 };
 use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
-use super::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataSlot};
+use super::metadata::{
+    DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataId, StoredBrand,
+};
 use super::module::{Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
 use super::term_open_state::Closed as TermClosed;
 use super::r#type::TypeSlot;
@@ -66,8 +77,8 @@ use super::{DebugLoc, IrError, IrResult, Type, TypeKind};
 pub(super) struct InstructionData {
     pub(super) parent: core::cell::Cell<ValueSlot>,
     pub(super) kind: InstructionKindData,
-    pub(super) metadata: core::cell::RefCell<MetadataAttachmentSet>,
-    pub(super) debug_records: core::cell::RefCell<Vec<DebugRecord>>,
+    pub(super) metadata: core::cell::RefCell<MetadataAttachmentSet<StoredBrand>>,
+    pub(super) debug_records: core::cell::RefCell<Vec<DebugRecord<StoredBrand>>>,
 }
 
 impl InstructionData {
@@ -75,7 +86,7 @@ impl InstructionData {
         Self {
             parent: core::cell::Cell::new(parent),
             kind,
-            metadata: core::cell::RefCell::new(crate::metadata::MetadataAttachmentSet::new()),
+            metadata: core::cell::RefCell::new(MetadataAttachmentSet::new()),
             debug_records: core::cell::RefCell::new(Vec::new()),
         }
     }
@@ -106,37 +117,37 @@ pub(super) enum InstructionKindData {
     FDiv(BinaryOpData),
     FRem(BinaryOpData),
     FCmp(FCmpInstData),
-    Alloca(crate::instr_types::AllocaInstData),
-    Load(crate::instr_types::LoadInstData),
-    Store(crate::instr_types::StoreInstData),
-    Gep(crate::instr_types::GepInstData),
-    Call(crate::instr_types::CallInstData),
-    Select(crate::instr_types::SelectInstData),
+    Alloca(AllocaInstData),
+    Load(LoadInstData),
+    Store(StoreInstData),
+    Gep(GepInstData),
+    Call(CallInstData),
+    Select(SelectInstData),
     Cast(CastOpData),
     ICmp(CmpInstData),
     Phi(PhiData),
-    FNeg(crate::instr_types::FNegInstData),
-    Freeze(crate::instr_types::FreezeInstData),
-    VAArg(crate::instr_types::VAArgInstData),
-    ExtractValue(crate::instr_types::ExtractValueInstData),
-    InsertValue(crate::instr_types::InsertValueInstData),
-    ExtractElement(crate::instr_types::ExtractElementInstData),
-    InsertElement(crate::instr_types::InsertElementInstData),
-    ShuffleVector(crate::instr_types::ShuffleVectorInstData),
-    Fence(crate::instr_types::FenceInstData),
-    AtomicCmpXchg(crate::instr_types::AtomicCmpXchgInstData),
-    AtomicRMW(crate::instr_types::AtomicRMWInstData),
-    Switch(crate::instr_types::SwitchInstData),
-    IndirectBr(crate::instr_types::IndirectBrInstData),
-    Invoke(crate::instr_types::InvokeInstData),
-    CallBr(crate::instr_types::CallBrInstData),
-    LandingPad(crate::instr_types::LandingPadInstData),
-    Resume(crate::instr_types::ResumeInstData),
-    CleanupPad(crate::instr_types::CleanupPadInstData),
-    CatchPad(crate::instr_types::CatchPadInstData),
-    CatchReturn(crate::instr_types::CatchReturnInstData),
-    CleanupReturn(crate::instr_types::CleanupReturnInstData),
-    CatchSwitch(crate::instr_types::CatchSwitchInstData),
+    FNeg(FNegInstData),
+    Freeze(FreezeInstData),
+    VAArg(VAArgInstData),
+    ExtractValue(ExtractValueInstData),
+    InsertValue(InsertValueInstData),
+    ExtractElement(ExtractElementInstData),
+    InsertElement(InsertElementInstData),
+    ShuffleVector(ShuffleVectorInstData),
+    Fence(FenceInstData),
+    AtomicCmpXchg(AtomicCmpXchgInstData),
+    AtomicRMW(AtomicRMWInstData),
+    Switch(SwitchInstData),
+    IndirectBr(IndirectBrInstData),
+    Invoke(InvokeInstData),
+    CallBr(CallBrInstData),
+    LandingPad(LandingPadInstData),
+    Resume(ResumeInstData),
+    CleanupPad(CleanupPadInstData),
+    CatchPad(CatchPadInstData),
+    CatchReturn(CatchReturnInstData),
+    CleanupReturn(CleanupReturnInstData),
+    CatchSwitch(CatchSwitchInstData),
     Ret(ReturnOpData),
     Br(BranchInstData),
     Unreachable(UnreachableInstData),
@@ -428,21 +439,34 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
     }
 
     /// Metadata attachments on this instruction.
-    pub fn metadata(&self) -> core::cell::Ref<'_, MetadataAttachmentSet> {
-        self.data().metadata.borrow()
+    pub fn metadata(&self) -> MetadataAttachmentSet<B> {
+        self.as_view().metadata()
     }
 
-    /// Set or replace one metadata attachment.
-    pub fn set_metadata(&self, kind: MetadataAttachmentKind, id: MetadataSlot) {
-        self.as_view().set_metadata(kind, id);
+    /// Set or replace one metadata attachment. Takes the `Unverified` module
+    /// token — see [`InstructionView::set_metadata`].
+    pub fn set_metadata(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        kind: MetadataAttachmentKind,
+        id: MetadataId<B>,
+    ) -> IrResult<()> {
+        self.as_view().set_metadata(module_token, kind, id)
     }
 
-    pub fn debug_records(&self) -> core::cell::Ref<'_, [DebugRecord]> {
-        core::cell::Ref::map(self.data().debug_records.borrow(), Vec::as_slice)
+    /// Debug records attached ahead of this instruction.
+    pub fn debug_records(&self) -> Vec<DebugRecord<B>> {
+        self.as_view().debug_records()
     }
 
-    pub fn push_debug_record(&self, record: DebugRecord) {
-        self.as_view().push_debug_record(record);
+    /// Append a debug record. Takes the `Unverified` module token — see
+    /// [`InstructionView::push_debug_record`].
+    pub fn push_debug_record(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        record: DebugRecord<B>,
+    ) -> IrResult<()> {
+        self.as_view().push_debug_record(module_token, record)
     }
 
     /// Set the textual name.
@@ -525,7 +549,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     /// Owning module reference.
     #[inline]
     pub fn module(&self) -> ModuleView<'ctx, B> {
-        crate::module::ModuleView::new(self.module.module())
+        ModuleView::new(self.module.module())
     }
 
     /// Result type. `void` for terminators and stores.
@@ -541,24 +565,74 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     }
 
     /// Metadata attachments on this instruction.
-    pub fn metadata(&self) -> core::cell::Ref<'_, MetadataAttachmentSet> {
+    pub fn metadata(&self) -> MetadataAttachmentSet<B> {
+        MetadataAttachmentSet::from_stored(&self.data().metadata.borrow())
+    }
+
+    /// Crate-internal: the stored attachment set, for the printer and the
+    /// verifier, which already work inside the owning module.
+    pub(crate) fn metadata_stored(
+        &self,
+    ) -> core::cell::Ref<'ctx, MetadataAttachmentSet<StoredBrand>> {
         self.data().metadata.borrow()
     }
 
     /// Set or replace one metadata attachment.
-    pub fn set_metadata(&self, kind: MetadataAttachmentKind, id: MetadataSlot) {
+    ///
+    /// Takes the `Unverified` module token, like every other mutator on this
+    /// type and like the metadata setters on
+    /// [`FunctionValue`] and
+    /// [`GlobalVariable`](crate::GlobalVariable), so `verify(self)` really does
+    /// consume mutation capability: an attachment cannot be rewritten through a
+    /// [`Module<B, Verified>`](crate::Module), and an `Inspect`-rung pass —
+    /// which only ever holds read-only views — cannot reach it at all.
+    ///
+    /// The token also supplies the module identity the attachment must belong
+    /// to: [`MetadataId`] carries a `ModuleId` tag, and this is where it is
+    /// compared. A node minted by a *different* module is
+    /// `Err(IrError::ForeignMetadataId)` — never an in-range slot silently
+    /// resolved against this module's arena.
+    pub fn set_metadata(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        kind: MetadataAttachmentKind,
+        id: MetadataId<B>,
+    ) -> IrResult<()> {
+        let id = id.into_stored(module_token.id())?;
         self.data().metadata.borrow_mut().insert(kind, id);
+        Ok(())
     }
 
-    pub fn debug_records(&self) -> core::cell::Ref<'_, [DebugRecord]> {
+    /// Debug records attached ahead of this instruction.
+    pub fn debug_records(&self) -> Vec<DebugRecord<B>> {
+        self.data()
+            .debug_records
+            .borrow()
+            .iter()
+            .map(DebugRecord::from_stored)
+            .collect()
+    }
+
+    /// Crate-internal: the stored debug records, for the printer, which already
+    /// works inside the owning module.
+    pub(crate) fn debug_records_stored(&self) -> core::cell::Ref<'ctx, [DebugRecord<StoredBrand>]> {
         core::cell::Ref::map(self.data().debug_records.borrow(), Vec::as_slice)
     }
 
-    pub fn push_debug_record(&self, record: DebugRecord) {
+    /// Append a debug record. Takes the `Unverified` module token for the same
+    /// reason as [`set_metadata`](Self::set_metadata), and tag-checks every
+    /// metadata and value operand the record carries against it.
+    pub fn push_debug_record(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        record: DebugRecord<B>,
+    ) -> IrResult<()> {
+        let record = record.into_stored(module_token.id())?;
         let mut records = self.data().debug_records.borrow_mut();
         let record_index = records.len();
         register_debug_record_uses(self.id, record_index, &record, self.module.module());
         records.push(record);
+        Ok(())
     }
 
     /// Set the textual name.
@@ -1357,7 +1431,7 @@ fn deregister_operand_uses(inst_id: ValueSlot, kind: &InstructionKindData, modul
 fn register_debug_record_uses(
     inst_id: ValueSlot,
     record_index: usize,
-    record: &DebugRecord,
+    record: &DebugRecord<StoredBrand>,
     module: &ModuleCore,
 ) {
     record.for_each_value(|value_id| {
@@ -1404,7 +1478,7 @@ pub(super) fn rewrite_debug_record_value(
         return;
     };
     if let Some(record) = inst.debug_records.borrow_mut().get_mut(record_index) {
-        record.replace_value_id(from, to);
+        record.replace_value_slot(from, to);
     }
 }
 
@@ -1557,7 +1631,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for InstructionView<'c
                 ty: v.ty,
             }),
             _ => Err(IrError::ValueCategoryMismatch {
-                expected: crate::error::ValueCategoryLabel::Instruction,
+                expected: ValueCategoryLabel::Instruction,
                 got: v.category().into(),
             }),
         }

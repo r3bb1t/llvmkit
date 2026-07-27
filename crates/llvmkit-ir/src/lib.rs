@@ -269,8 +269,8 @@ pub use ir_builder::{
 pub use known_bits::KnownBits;
 pub use marker::{Dyn, Ptr, ReturnMarker};
 pub use metadata::{
-    MetadataAttachmentKind, MetadataAttachmentSet, MetadataField, MetadataFieldValue, MetadataKind,
-    MetadataRef, MetadataSlot, SpecializedMetadataKind, SpecializedMetadataNode,
+    MetadataAttachmentKind, MetadataAttachmentSet, MetadataField, MetadataFieldValue, MetadataId,
+    MetadataKind, SpecializedMetadataKind, SpecializedMetadataNode,
 };
 pub use module::{
     ComdatView, DynBrand, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module,

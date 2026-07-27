@@ -1,4 +1,4 @@
-//! **The consumer proof for llvmkit 2.0.** A binary lifter as a plain,
+//! **The consumer proof for 0.0.4.** A binary lifter as a plain,
 //! re-entrant, movable value.
 //!
 //! This example is the shape the pre-2.0 API could not express at all, and
@@ -488,7 +488,7 @@ const _: () = {
 };
 
 fn emit() -> Result<(), IrError> {
-    let mut session = LifterSession::new(Module::branded::<Cpu>("lifted")?, PROGRAM)?;
+    let mut session = LifterSession::new(Module::branded::<Cpu, _>("lifted")?, PROGRAM)?;
 
     println!("-- lifting on the main thread --");
     for _ in 0..3 {

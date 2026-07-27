@@ -28,6 +28,21 @@
 
 use std::collections::HashMap;
 
+use super::cfg::FunctionCfg;
+use super::constant::{Constant, ConstantData};
+use super::global_value::Linkage;
+use super::global_variable::GlobalVariable;
+use super::inline_asm::InlineAsm;
+use super::instr_types::{
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    ExtractElementInstData, ExtractValueInstData, FNegInstData, FenceInstData, FreezeInstData,
+    IndirectBrInstData, InsertElementInstData, InsertValueInstData, InvokeInstData, LoadInstData,
+    SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VAArgInstData,
+};
+use super::instruction::{InstructionKind, TerminatorKind};
+use super::intrinsics::IntrinsicNameResolution;
+use super::module::ModuleRef;
+use super::value::Value;
 use crate::attributes::AttributeStorage;
 use crate::basic_block::BasicBlock;
 use crate::block_state::Unterminated;
@@ -104,10 +119,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// invariants, scalable-type rejection). The intrinsic-globals
     /// (`llvm.global_ctors` / `llvm.used` / etc.) and metadata
     /// attachment rules are deferred -- they need the metadata layer.
-    fn visit_global_variable(
-        &self,
-        g: crate::global_variable::GlobalVariable<'ctx, B>,
-    ) -> IrResult<()> {
+    fn visit_global_variable(&self, g: GlobalVariable<'ctx, B>) -> IrResult<()> {
         let value_ty = g.value_type();
 
         if type_contains_scalable(self.module, value_ty.id()) {
@@ -138,18 +150,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     format!("@{}: initializer must be sized", g.name()),
                 ));
             }
-            if g.linkage() == crate::global_value::Linkage::Common {
+            if g.linkage() == Linkage::Common {
                 let init_data = self.module.context().value_data(init.slot());
                 let zero = matches!(
                     &init_data.kind,
-                    ValueKindData::Constant(crate::constant::ConstantData::Int(words))
+                    ValueKindData::Constant(ConstantData::Int(words))
                         if words.iter().all(|w| *w == 0)
                 ) || matches!(
                     &init_data.kind,
-                    ValueKindData::Constant(crate::constant::ConstantData::Float(0))
+                    ValueKindData::Constant(ConstantData::Float(0))
                 ) || matches!(
                     &init_data.kind,
-                    ValueKindData::Constant(crate::constant::ConstantData::PointerNull)
+                    ValueKindData::Constant(ConstantData::PointerNull)
                 );
                 if !zero || g.is_constant() || g.comdat().is_some() {
                     return Err(self.fail_global(
@@ -164,7 +176,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             self.verify_constant_tree(init)?;
         }
-        if let Some(range_id) = g.metadata().get(&MetadataAttachmentKind::AbsoluteSymbol) {
+        if let Some(range_id) = g
+            .metadata_stored()
+            .get(&MetadataAttachmentKind::AbsoluteSymbol)
+        {
             let pointer_width = self
                 .module
                 .data_layout()
@@ -172,7 +187,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             let pointer_int_ty = self.module.context().int_type(pointer_width);
             self.verify_range_like_metadata_global(
                 g,
-                range_id,
+                range_id.slot(),
                 pointer_int_ty,
                 RangeLikeMetadataKind::AbsoluteSymbol,
             )?;
@@ -181,30 +196,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         Ok(())
     }
 
-    fn verify_constant_tree(&self, constant: crate::constant::Constant<'ctx, B>) -> IrResult<()> {
+    fn verify_constant_tree(&self, constant: Constant<'ctx, B>) -> IrResult<()> {
         let value_data = self.module.context().value_data(constant.slot());
         let ValueKindData::Constant(data) = &value_data.kind else {
             return Ok(());
         };
         match data {
-            crate::constant::ConstantData::Expr(expr) => {
+            ConstantData::Expr(expr) => {
                 crate::constants::verify_constant_expr_data(self.module, expr)?;
                 for operand in expr.operands.iter() {
                     let operand_data = self.module.context().value_data(*operand);
                     if matches!(operand_data.kind, ValueKindData::Constant(_)) {
-                        self.verify_constant_tree(crate::constant::Constant::try_from(
-                            crate::value::Value::from_parts(*operand, self.module, operand_data.ty),
-                        )?)?;
+                        self.verify_constant_tree(Constant::try_from(Value::from_parts(
+                            *operand,
+                            self.module,
+                            operand_data.ty,
+                        ))?)?;
                     }
                 }
             }
-            crate::constant::ConstantData::BlockAddress { function, block } => {
-                let block = crate::basic_block::BasicBlock::<
-                    'ctx,
-                    crate::marker::Dyn,
-                    Unterminated,
-                    B,
-                >::from_parts(
+            ConstantData::BlockAddress { function, block } => {
+                let block = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
                     *block,
                     self.module,
                     self.module.label_type::<B>().as_type().id(),
@@ -215,12 +227,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     });
                 }
             }
-            crate::constant::ConstantData::DSOLocalEquivalent { function } => {
-                let value = crate::value::Value::<B>::from_parts(
-                    *function,
-                    self.module,
-                    self.value_type(*function),
-                );
+            ConstantData::DSOLocalEquivalent { function } => {
+                let value =
+                    Value::<B>::from_parts(*function, self.module, self.value_type(*function));
                 match &value.data().kind {
                     ValueKindData::Function(_) => {}
                     ValueKindData::GlobalAlias(_) => {
@@ -250,12 +259,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     }
                 }
             }
-            crate::constant::ConstantData::NoCfi { function } => {
-                let value = crate::value::Value::<B>::from_parts(
-                    *function,
-                    self.module,
-                    self.value_type(*function),
-                );
+            ConstantData::NoCfi { function } => {
+                let value =
+                    Value::<B>::from_parts(*function, self.module, self.value_type(*function));
                 match &value.data().kind {
                     ValueKindData::Function(_)
                     | ValueKindData::GlobalVariable(_)
@@ -268,45 +274,40 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     }
                 }
             }
-            crate::constant::ConstantData::TokenNone => {
+            ConstantData::TokenNone => {
                 if !constant.ty().is_token() {
                     return Err(IrError::InvalidOperation {
                         message: "token none must have token type",
                     });
                 }
             }
-            crate::constant::ConstantData::TargetExtNone => {
+            ConstantData::TargetExtNone => {
                 if !constant.ty().is_target_ext() {
                     return Err(IrError::InvalidOperation {
                         message: "target extension none must have target extension type",
                     });
                 }
             }
-            crate::constant::ConstantData::PtrAuth {
+            ConstantData::PtrAuth {
                 pointer,
                 key,
                 discriminator,
                 addr_discriminator,
                 deactivation_symbol,
             } => {
-                let pointer = crate::value::Value::from_parts(
-                    *pointer,
-                    self.module,
-                    self.value_type(*pointer),
-                );
-                let key =
-                    crate::value::Value::<B>::from_parts(*key, self.module, self.value_type(*key));
-                let discriminator = crate::value::Value::<B>::from_parts(
+                let pointer = Value::from_parts(*pointer, self.module, self.value_type(*pointer));
+                let key = Value::<B>::from_parts(*key, self.module, self.value_type(*key));
+                let discriminator = Value::<B>::from_parts(
                     *discriminator,
                     self.module,
                     self.value_type(*discriminator),
                 );
-                let addr_discriminator = crate::value::Value::<B>::from_parts(
+                let addr_discriminator = Value::<B>::from_parts(
                     *addr_discriminator,
                     self.module,
                     self.value_type(*addr_discriminator),
                 );
-                let deactivation_symbol = crate::value::Value::<B>::from_parts(
+                let deactivation_symbol = Value::<B>::from_parts(
                     *deactivation_symbol,
                     self.module,
                     self.value_type(*deactivation_symbol),
@@ -324,8 +325,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                             .value_data(deactivation_symbol.id)
                             .kind,
                         ValueKindData::Constant(
-                            crate::constant::ConstantData::GlobalValueRef { .. }
-                                | crate::constant::ConstantData::PointerNull
+                            ConstantData::GlobalValueRef { .. } | ConstantData::PointerNull
                         )
                     )
                 {
@@ -334,37 +334,39 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     });
                 }
             }
-            crate::constant::ConstantData::Aggregate(ids) => {
+            ConstantData::Aggregate(ids) => {
                 for id in ids.iter() {
                     let operand_data = self.module.context().value_data(*id);
                     if matches!(operand_data.kind, ValueKindData::Constant(_)) {
-                        self.verify_constant_tree(crate::constant::Constant::try_from(
-                            crate::value::Value::from_parts(*id, self.module, operand_data.ty),
-                        )?)?;
+                        self.verify_constant_tree(Constant::try_from(Value::from_parts(
+                            *id,
+                            self.module,
+                            operand_data.ty,
+                        ))?)?;
                     }
                 }
             }
-            crate::constant::ConstantData::BlockAddressPlaceholder => {
+            ConstantData::BlockAddressPlaceholder => {
                 return Err(IrError::InvalidOperation {
                     message: "unresolved forward blockaddress placeholder",
                 });
             }
-            crate::constant::ConstantData::GlobalValueRef { .. }
-            | crate::constant::ConstantData::PointerNull
-            | crate::constant::ConstantData::GepOffset { .. }
-            | crate::constant::ConstantData::SymbolDelta { .. }
-            | crate::constant::ConstantData::SymbolDeltaPlus { .. }
-            | crate::constant::ConstantData::Int(_)
-            | crate::constant::ConstantData::Float(_)
-            | crate::constant::ConstantData::Undef
-            | crate::constant::ConstantData::Poison => {}
+            ConstantData::GlobalValueRef { .. }
+            | ConstantData::PointerNull
+            | ConstantData::GepOffset { .. }
+            | ConstantData::SymbolDelta { .. }
+            | ConstantData::SymbolDeltaPlus { .. }
+            | ConstantData::Int(_)
+            | ConstantData::Float(_)
+            | ConstantData::Undef
+            | ConstantData::Poison => {}
         }
         Ok(())
     }
 
     fn fail_global(
         &self,
-        g: crate::global_variable::GlobalVariable<'ctx, B>,
+        g: GlobalVariable<'ctx, B>,
         rule: VerifierRule,
         message: String,
     ) -> IrError {
@@ -405,7 +407,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             dom_tree: &dom_tree,
         };
         for bb in f.basic_blocks() {
-            let bb = bb.retag_termination::<crate::block_state::Unterminated>();
+            let bb = bb.retag_termination::<Unterminated>();
             self.visit_block(f, &bb, &cx)?;
         }
         Ok(())
@@ -414,13 +416,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     fn verify_intrinsic_function(&self, f: FunctionValue<'ctx, Dyn, B>) -> IrResult<()> {
         let name = f.name();
         match crate::intrinsics::resolve_intrinsic_name(name) {
-            crate::intrinsics::IntrinsicNameResolution::NonIntrinsic => return Ok(()),
-            crate::intrinsics::IntrinsicNameResolution::UnknownIntrinsic => {
+            IntrinsicNameResolution::NonIntrinsic => return Ok(()),
+            IntrinsicNameResolution::UnknownIntrinsic => {
                 return Err(IrError::UnknownIntrinsic {
                     name: name.to_owned(),
                 });
             }
-            crate::intrinsics::IntrinsicNameResolution::Known(_) => {}
+            IntrinsicNameResolution::Known(_) => {}
         }
         let descriptor =
             self.module
@@ -465,14 +467,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let intrinsic_value = f.into_erased();
         for user in intrinsic_value.users() {
             let used_as_callee = match user.kind() {
-                Some(crate::instruction::InstructionKind::Call(call)) => {
-                    call.callee().slot() == intrinsic_value.slot()
-                }
+                Some(InstructionKind::Call(call)) => call.callee().slot() == intrinsic_value.slot(),
                 _ => match user.terminator_kind() {
-                    Some(crate::instruction::TerminatorKind::Invoke(invoke)) => {
+                    Some(TerminatorKind::Invoke(invoke)) => {
                         invoke.callee().slot() == intrinsic_value.slot()
                     }
-                    Some(crate::instruction::TerminatorKind::CallBr(callbr)) => {
+                    Some(TerminatorKind::CallBr(callbr)) => {
                         callbr.callee().slot() == intrinsic_value.slot()
                     }
                     _ => false,
@@ -691,7 +691,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         inst: &InstructionView<'ctx, B>,
         kind: &InstructionKindData,
     ) -> IrResult<()> {
-        let Some(range_id) = inst.metadata().get(&MetadataAttachmentKind::Range) else {
+        let Some(range_id) = inst.metadata_stored().get(&MetadataAttachmentKind::Range) else {
             return Ok(());
         };
         if !matches!(
@@ -711,7 +711,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             f,
             bb,
             inst,
-            range_id,
+            range_id.slot(),
             scalar_type_id(self.module, inst.ty().id),
             RangeLikeMetadataKind::Range,
         )
@@ -733,7 +733,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 
     fn verify_range_like_metadata_global(
         &self,
-        g: crate::global_variable::GlobalVariable<'ctx, B>,
+        g: GlobalVariable<'ctx, B>,
         id: MetadataSlot,
         expected_scalar_ty: TypeSlot,
         kind: RangeLikeMetadataKind,
@@ -777,13 +777,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let mut first_range = None;
         let mut last_range = None;
         for (idx, pair) in operands.chunks_exact(2).enumerate() {
-            let Some((low_ty, low)) = metadata_constant_int(self.module, &store, pair[0].0) else {
+            let Some((low_ty, low)) = metadata_constant_int(self.module, &store, pair[0].slot())
+            else {
                 return Err(fail(
                     VerifierRule::RangeMetadataMalformed,
                     "The lower limit must be an integer!".to_string(),
                 ));
             };
-            let Some((high_ty, high)) = metadata_constant_int(self.module, &store, pair[1].0)
+            let Some((high_ty, high)) = metadata_constant_int(self.module, &store, pair[1].slot())
             else {
                 return Err(fail(
                     VerifierRule::RangeMetadataMalformed,
@@ -968,7 +969,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        u: &crate::instr_types::FNegInstData,
+        u: &FNegInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
         if !is_fp_or_fp_vector(self.module, src_ty) {
@@ -1005,7 +1006,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        u: &crate::instr_types::FreezeInstData,
+        u: &FreezeInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
         if inst.ty().id != src_ty {
@@ -1030,7 +1031,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         _inst: &InstructionView<'ctx, B>,
-        u: &crate::instr_types::VAArgInstData,
+        u: &VAArgInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
         if !self.module.context().type_data(src_ty).is_pointer_data() {
@@ -1051,7 +1052,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        d: &crate::instr_types::ExtractValueInstData,
+        d: &ExtractValueInstData,
     ) -> IrResult<()> {
         let agg_ty = self.value_type(d.aggregate.get());
         let leaf_ty =
@@ -1090,7 +1091,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        d: &crate::instr_types::InsertValueInstData,
+        d: &InsertValueInstData,
     ) -> IrResult<()> {
         let agg_ty = self.value_type(d.aggregate.get());
         let val_ty = self.value_type(d.value.get());
@@ -1143,7 +1144,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        d: &crate::instr_types::ExtractElementInstData,
+        d: &ExtractElementInstData,
     ) -> IrResult<()> {
         let vec_ty = self.value_type(d.vector.get());
         let idx_ty = self.value_type(d.index.get());
@@ -1193,7 +1194,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        d: &crate::instr_types::InsertElementInstData,
+        d: &InsertElementInstData,
     ) -> IrResult<()> {
         let vec_ty = self.value_type(d.vector.get());
         let val_ty = self.value_type(d.value.get());
@@ -1257,7 +1258,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        d: &crate::instr_types::ShuffleVectorInstData,
+        d: &ShuffleVectorInstData,
     ) -> IrResult<()> {
         let l_ty = self.value_type(d.lhs.get());
         let r_ty = self.value_type(d.rhs.get());
@@ -1335,7 +1336,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         _inst: &InstructionView<'ctx, B>,
-        d: &crate::instr_types::FenceInstData,
+        d: &FenceInstData,
     ) -> IrResult<()> {
         use crate::atomic_ordering::AtomicOrdering as AO;
         if !matches!(
@@ -1361,7 +1362,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         _inst: &InstructionView<'ctx, B>,
-        d: &crate::instr_types::AtomicCmpXchgInstData,
+        d: &AtomicCmpXchgInstData,
     ) -> IrResult<()> {
         use crate::atomic_ordering::AtomicOrdering as AO;
         let ptr_ty = self.value_type(d.ptr.get());
@@ -1431,7 +1432,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        d: &crate::instr_types::AtomicRMWInstData,
+        d: &AtomicRMWInstData,
     ) -> IrResult<()> {
         use crate::atomic_ordering::AtomicOrdering as AO;
         let ptr_ty = self.value_type(d.ptr.get());
@@ -1868,7 +1869,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        a: &crate::instr_types::AllocaInstData,
+        a: &AllocaInstData,
     ) -> IrResult<()> {
         let allocated = Type::<B>::new(a.allocated_ty, self.module);
         if SizedType::try_from(allocated).is_err() {
@@ -1956,7 +1957,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        l: &crate::instr_types::LoadInstData,
+        l: &LoadInstData,
     ) -> IrResult<()> {
         let ptr_ty = self.value_type(l.ptr.get());
         if !is_pointer_or_pointer_vector(self.module, ptr_ty) {
@@ -2028,7 +2029,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         _inst: &InstructionView<'ctx, B>,
-        s: &crate::instr_types::StoreInstData,
+        s: &StoreInstData,
     ) -> IrResult<()> {
         let ptr_ty = self.value_type(s.ptr.get());
         if !is_pointer_or_pointer_vector(self.module, ptr_ty) {
@@ -2201,7 +2202,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         _inst: &InstructionView<'ctx, B>,
-        c: &crate::instr_types::CallInstData,
+        c: &CallInstData,
     ) -> IrResult<()> {
         // Callee must be a function value, OR a pointer of address
         // space 0 with a separately-tracked function-type (LLVM 17+
@@ -2271,11 +2272,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         self.check_intrinsic_call(f, bb, c.callee.get(), c.fn_ty, &c.args)?;
         if let ValueKindData::InlineAsm(_) = &self.module.context().value_data(c.callee.get()).kind
         {
-            let inline_asm = crate::inline_asm::InlineAsm::<B>::from_parts(
-                c.callee.get(),
-                self.module,
-                callee_ty,
-            );
+            let inline_asm = InlineAsm::<B>::from_parts(c.callee.get(), self.module, callee_ty);
             let summary = inline_asm.constraint_summary();
             let _arg_constraints = summary.arg_constraints;
             if summary.label_count != 0 {
@@ -2305,12 +2302,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let ValueKindData::Function(_) = &callee_data.kind else {
             return Ok(());
         };
-        let callee = crate::value::Value::<B>::from_parts(callee_id, self.module, callee_data.ty);
+        let callee = Value::<B>::from_parts(callee_id, self.module, callee_data.ty);
         let Some(descriptor) = crate::intrinsics::descriptor_for_callee(callee) else {
             return Ok(());
         };
         let expected = descriptor
-            .function_type_ref(crate::module::ModuleRef::new(self.module))
+            .function_type_ref(ModuleRef::new(self.module))
             .map_err(|_| {
                 self.fail(
                     f,
@@ -2338,9 +2335,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             };
             if !matches!(
                 self.module.context().value_data(arg.get()).kind,
-                ValueKindData::Constant(
-                    crate::constant::ConstantData::Int(_) | crate::constant::ConstantData::Float(_)
-                )
+                ValueKindData::Constant(ConstantData::Int(_) | ConstantData::Float(_))
             ) {
                 return Err(self.fail(
                     f,
@@ -2359,7 +2354,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        s: &crate::instr_types::SelectInstData,
+        s: &SelectInstData,
     ) -> IrResult<()> {
         let cond_ty = self.value_type(s.cond.get());
         let result_ty = inst.ty().id;
@@ -2586,7 +2581,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         _inst: &InstructionView<'ctx, B>,
-        d: &crate::instr_types::SwitchInstData,
+        d: &SwitchInstData,
         block_index: &HashMap<ValueSlot, usize>,
     ) -> IrResult<()> {
         let cond_ty = self.value_type(d.cond.get());
@@ -2648,7 +2643,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         _inst: &InstructionView<'ctx, B>,
-        d: &crate::instr_types::IndirectBrInstData,
+        d: &IndirectBrInstData,
         block_index: &HashMap<ValueSlot, usize>,
     ) -> IrResult<()> {
         let addr_ty = self.value_type(d.addr.get());
@@ -2685,7 +2680,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         _inst: &InstructionView<'ctx, B>,
-        d: &crate::instr_types::InvokeInstData,
+        d: &InvokeInstData,
         block_index: &HashMap<ValueSlot, usize>,
     ) -> IrResult<()> {
         if !block_index.contains_key(&d.normal_dest.get())
@@ -2709,7 +2704,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         _inst: &InstructionView<'ctx, B>,
-        d: &crate::instr_types::CallBrInstData,
+        d: &CallBrInstData,
         block_index: &HashMap<ValueSlot, usize>,
     ) -> IrResult<()> {
         if !block_index.contains_key(&d.default_dest.get()) {
@@ -2931,7 +2926,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
 fn build_predecessors<B: ModuleBrand>(
     f: FunctionValue<'_, Dyn, B>,
 ) -> HashMap<ValueSlot, Vec<ValueSlot>> {
-    let cfg = crate::cfg::FunctionCfg::new(f);
+    let cfg = FunctionCfg::new(f);
     let mut preds: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
     for edge in cfg.edges() {
         preds
@@ -3302,7 +3297,7 @@ mod tests {
             let f = m
                 .get_or_insert_intrinsic_declaration_by_name("llvm.abs.i32")
                 .expect("intrinsic declaration");
-            *m.view(f).data().attributes.borrow_mut() = crate::attributes::AttributeStorage::new();
+            *m.view(f).data().attributes.borrow_mut() = AttributeStorage::new();
             m.verify_borrowed()
                 .expect_err("missing generated attrs rejected")
         };
@@ -3678,7 +3673,7 @@ mod tests {
             &m,
             entry.slot(),
             i32_ty.id(),
-            InstructionKindData::Call(crate::instr_types::CallInstData::new(
+            InstructionKindData::Call(CallInstData::new(
                 m.view(callee).slot(),
                 callee_fn_ty.as_type().id(),
                 [arg_id],

@@ -20,10 +20,10 @@ struct Right;
 impl ModuleBrand for Right {}
 
 fn main() {
-    let left = Module::branded::<Left>("left").unwrap();
+    let left = Module::branded::<Left, _>("left").unwrap();
     let left_value = left.i64_type().const_int(1_i64);
 
-    let right = Module::branded::<Right>("right").unwrap();
+    let right = Module::branded::<Right, _>("right").unwrap();
     let function = right
         .add_typed_function::<i64, (), _>("f", Linkage::External)
         .unwrap()

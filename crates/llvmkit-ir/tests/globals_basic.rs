@@ -459,13 +459,13 @@ fn comdat_all_selection_kinds() {
     let m = module_new!("m").expect("fresh module");
     m.get_or_insert_comdat("comdat.any");
     m.get_or_insert_comdat("comdat.exactmatch")
-        .set_selection_kind(SelectionKind::ExactMatch);
+        .set_selection_kind(&m, SelectionKind::ExactMatch);
     m.get_or_insert_comdat("comdat.largest")
-        .set_selection_kind(SelectionKind::Largest);
+        .set_selection_kind(&m, SelectionKind::Largest);
     m.get_or_insert_comdat("comdat.noduplicates")
-        .set_selection_kind(SelectionKind::NoDeduplicate);
+        .set_selection_kind(&m, SelectionKind::NoDeduplicate);
     m.get_or_insert_comdat("comdat.samesize")
-        .set_selection_kind(SelectionKind::SameSize);
+        .set_selection_kind(&m, SelectionKind::SameSize);
     let text = module_text(&m);
     assert!(text.contains("$comdat.any = comdat any\n"), "got:\n{text}");
     assert!(
@@ -934,8 +934,11 @@ fn module_named_global_lookup_round_trip() {
     let i32_ty = m.i32_type();
     let zero = i32_ty.const_int(0i32);
     let g = m.add_global("foo", zero).expect("add");
+    // The lookup returns the *same id* the declaration handed back — that is
+    // the whole point of the `add_* -> Id` / `get_* -> Option<Id>` symmetry.
     let looked_up = m.get_global("foo").expect("found");
-    assert_eq!(m.view(g), looked_up);
+    assert_eq!(g, looked_up);
+    assert_eq!(m.view(g), m.view(looked_up));
     assert!(m.get_global("missing").is_none());
 }
 
@@ -963,9 +966,13 @@ fn comdat_get_or_insert_is_idempotent() {
     let m = module_new!("m").expect("fresh module");
     let a = m.get_or_insert_comdat("c1");
     let b = m.get_or_insert_comdat("c1");
-    assert_eq!(a.id(), b.id());
+    // Identity is `(module, ComdatId)` and is compared through the handle's
+    // own `PartialEq`. The raw index has no public accessor: it carries no
+    // module tag and no brand, so publishing it would hand out a token weaker
+    // than the handle and no public API accepts one.
+    assert_eq!(a, b);
     let c = m.get_or_insert_comdat("c2");
-    assert_ne!(a.id(), c.id());
+    assert_ne!(a, c);
 }
 
 /// `llvmkit-specific`: ports the explicit Rust API split for global

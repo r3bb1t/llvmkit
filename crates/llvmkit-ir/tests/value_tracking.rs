@@ -2,9 +2,9 @@ use llvmkit_ir::{
     Align, ApInt, AttrIndex, AttrKind, Attribute, AttributeStorage, CFGAnalyses, CallAttributeData,
     ConstantExprOpcode, ConstantExprOptions, DominatorTreeAnalysis, Dyn, DynBrand,
     FunctionAnalysisManager, IRBuilder, InstructionView, IntValue, IrError, KnownBits,
-    KnownBitsAnalysis, LShrFlags, Linkage, MetadataAttachmentKind, MetadataRef, ModuleBrand,
-    MulFlags, NoFolder, PointerValue, PreservedAnalyses, Value, ValueTrackingQuery, Width,
-    compute_known_bits, is_known_non_zero, is_known_one, is_known_zero, module_new,
+    KnownBitsAnalysis, LShrFlags, Linkage, MetadataAttachmentKind, ModuleBrand, MulFlags, NoFolder,
+    PointerValue, PreservedAnalyses, Value, ValueTrackingQuery, Width, compute_known_bits,
+    is_known_non_zero, is_known_one, is_known_zero, module_new,
 };
 
 fn zeros(width: usize) -> String {
@@ -274,11 +274,11 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
     let b0 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry0);
     let p0: PointerValue<'_, _> = m.view(f0).param(0)?.try_into()?;
     let val0 = b0.build_int_load::<i8, _, _>(p0, "val")?;
-    let lo0 = m.metadata_constant(i8_ty.const_int(-50_i8));
-    let hi0 = m.metadata_constant(i8_ty.const_int(0_i8));
-    let range0 = m.metadata_tuple([MetadataRef(lo0), MetadataRef(hi0)]);
+    let lo0 = m.metadata_constant(i8_ty.const_int(-50_i8))?;
+    let hi0 = m.metadata_constant(i8_ty.const_int(0_i8))?;
+    let range0 = m.metadata_tuple([lo0, hi0])?;
     let val0_inst = InstructionView::try_from(b0.view(val0).into_erased())?;
-    val0_inst.set_metadata(MetadataAttachmentKind::Range, range0);
+    val0_inst.set_metadata(&m, MetadataAttachmentKind::Range, range0)?;
     let mask128 = i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?;
     let and0 = b0.build_int_and::<i8, _, _, _>(val0, mask128, "and")?;
     let cmp0 = b0.build_icmp_eq::<i8, _, _, _>(and0, mask128, "is.eq")?;
@@ -289,11 +289,11 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
     let b1 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry1);
     let p1: PointerValue<'_, _> = m.view(f1).param(0)?.try_into()?;
     let val1 = b1.build_int_load::<i8, _, _>(p1, "val")?;
-    let lo1 = m.metadata_constant(i8_ty.const_int(64_i8));
-    let hi1 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?);
-    let range1 = m.metadata_tuple([MetadataRef(lo1), MetadataRef(hi1)]);
+    let lo1 = m.metadata_constant(i8_ty.const_int(64_i8))?;
+    let hi1 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[128]))?)?;
+    let range1 = m.metadata_tuple([lo1, hi1])?;
     let val1_inst = InstructionView::try_from(b1.view(val1).into_erased())?;
-    val1_inst.set_metadata(MetadataAttachmentKind::Range, range1);
+    val1_inst.set_metadata(&m, MetadataAttachmentKind::Range, range1)?;
     let mask64 = i8_ty.const_int(64_i8);
     let and1 = b1.build_int_and::<i8, _, _, _>(val1, mask64, "and")?;
     let cmp1 = b1.build_icmp_eq::<i8, _, _, _>(and1, mask64, "is.eq")?;
@@ -304,11 +304,11 @@ fn load_range_metadata_matches_known_bits_fixture() -> Result<(), IrError> {
     let b2 = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry2);
     let p2: PointerValue<'_, _> = m.view(f2).param(0)?.try_into()?;
     let val2 = b2.build_int_load::<i8, _, _>(p2, "val")?;
-    let lo2 = m.metadata_constant(i8_ty.const_int(64_i8));
-    let hi2 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[129]))?);
-    let range2 = m.metadata_tuple([MetadataRef(lo2), MetadataRef(hi2)]);
+    let lo2 = m.metadata_constant(i8_ty.const_int(64_i8))?;
+    let hi2 = m.metadata_constant(i8_ty.const_ap_int(&ApInt::from_words(8, &[129]))?)?;
+    let range2 = m.metadata_tuple([lo2, hi2])?;
     let val2_inst = InstructionView::try_from(b2.view(val2).into_erased())?;
-    val2_inst.set_metadata(MetadataAttachmentKind::Range, range2);
+    val2_inst.set_metadata(&m, MetadataAttachmentKind::Range, range2)?;
     let and2 = b2.build_int_and::<i8, _, _, _>(val2, mask64, "and")?;
     let cmp2 = b2.build_icmp_eq::<i8, _, _, _>(and2, mask64, "is.eq")?;
     b2.build_ret(cmp2)?;

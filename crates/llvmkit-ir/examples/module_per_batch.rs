@@ -70,7 +70,7 @@ pub fn run_batches(count: i32) -> Result<Vec<String>, IrError> {
     for n in 0..count {
         // Claiming `Jit` succeeds every round *because* the previous round's
         // module was consumed by value and dropped.
-        let module = Module::branded::<Jit>(format!("batch{n}"))?;
+        let module = Module::branded::<Jit, _>(format!("batch{n}"))?;
         let verified = compile_batch(module, n)?;
         submitted.push(submit(verified));
     }
@@ -83,10 +83,12 @@ pub fn run_batches(count: i32) -> Result<Vec<String>, IrError> {
 pub fn stale_id_is_refused_by_the_next_batch() -> Result<bool, IrError> {
     // `first` drops at the end of this block: the brand claim is released and
     // the storage is freed. The id outlives it — ids are `'static`.
-    let first = compile_batch(Module::branded::<Jit>("batch0")?, 0)?;
-    let stale: ValueId<Jit> = first
+    let first = compile_batch(Module::branded::<Jit, _>("batch0")?, 0)?;
+    let batch_fn = first
         .function_by_name_dyn("batch")
-        .expect("declared just above")
+        .expect("declared just above");
+    let stale: ValueId<Jit> = first
+        .view(batch_fn)
         .basic_blocks()
         .next()
         .expect("entry")
@@ -97,7 +99,7 @@ pub fn stale_id_is_refused_by_the_next_batch() -> Result<bool, IrError> {
         .id();
     drop(first);
 
-    let second = compile_batch(Module::branded::<Jit>("batch1")?, 1)?;
+    let second = compile_batch(Module::branded::<Jit, _>("batch1")?, 1)?;
     // Same brand, same *type*; different generation, so the runtime tag
     // refuses it rather than resolving against whatever now occupies the slot.
     Ok(second.try_view(stale).is_none())

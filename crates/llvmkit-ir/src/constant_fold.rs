@@ -289,10 +289,14 @@ fn constant_from_id<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-fn constants_from_ids<'ctx, B: ModuleBrand + 'ctx>(
+fn constants_from_ids<'ctx, B, I>(
     module: ModuleView<'ctx, B>,
-    ids: impl IntoIterator<Item = ValueSlot>,
-) -> Option<Vec<Constant<'ctx, B>>> {
+    ids: I,
+) -> Option<Vec<Constant<'ctx, B>>>
+where
+    B: ModuleBrand + 'ctx,
+    I: IntoIterator<Item = ValueSlot>,
+{
     let mut constants = Vec::new();
     for id in ids {
         constants.push(constant_from_id(module, id)?);
@@ -2258,11 +2262,10 @@ fn fold_int_binary<'ctx, B: ModuleBrand + 'ctx>(
     Ok(Some(lhs.ty().const_ap_int(&result)?.as_constant()))
 }
 
-fn fold_shift(
-    lhs: &ApInt,
-    rhs: &ApInt,
-    f: impl FnOnce(&ApInt, u32) -> Option<ApInt>,
-) -> Option<ApInt> {
+fn fold_shift<F>(lhs: &ApInt, rhs: &ApInt, f: F) -> Option<ApInt>
+where
+    F: FnOnce(&ApInt, u32) -> Option<ApInt>,
+{
     let amount = rhs.try_zext_u64()?;
     let amount = u32::try_from(amount).ok()?;
     f(lhs, amount)

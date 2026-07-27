@@ -14,8 +14,11 @@ use llvmkit_ir::{Constant, DynBrand, IrError, Module, ModuleBrand, Type, Unverif
 use super::file_loc::{FileLoc, FileLocRange};
 
 use super::asm_parser_context::AsmParserContext;
+use super::asm_parser_context::LocationError;
+use super::ll_lexer::LexError;
 use super::ll_parser::{ParsedModule, Parser};
 use super::module_summary::{self, ModuleSummaryIndex};
+use super::parse_error::DiagLoc;
 use super::parse_error::{ParseError, ParseResult};
 use super::slot_mapping::SlotMapping;
 
@@ -161,7 +164,7 @@ where
 
 /// Claim brand `B`, translating the registry's refusal into a [`ParseError`].
 fn branded_module<B: ModuleBrand>(name: &str) -> ParseResult<Module<B, Unverified>> {
-    Module::branded::<B>(name).map_err(|err| match err {
+    Module::branded::<B, _>(name).map_err(|err| match err {
         IrError::BrandRetired { brand } => ParseError::BrandRetired { brand },
         // `Module::branded` reports exactly `BrandInUse` or `BrandRetired`.
         IrError::BrandInUse { brand } => ParseError::BrandInUse { brand },
@@ -286,9 +289,9 @@ pub fn parse_type<'ctx, B: ModuleBrand + 'ctx>(
         None => Parser::new(src, module)?,
     };
     parser.parse_standalone_type().map_err(|err| match err {
-        ParseError::Lex(crate::ll_lexer::LexError::UnknownToken { span }) => ParseError::Expected {
+        ParseError::Lex(LexError::UnknownToken { span }) => ParseError::Expected {
             expected: "end of string".into(),
-            loc: crate::parse_error::DiagLoc::span(span),
+            loc: DiagLoc::span(span),
         },
         other => other,
     })
@@ -328,7 +331,10 @@ fn record_parser_context<'ctx, B: ModuleBrand + 'ctx>(
 ) -> ParseResult<()> {
     let lines = source_lines(src);
     for function_view in module.as_view().functions() {
-        let Some(function) = module.function_by_name_dyn(function_view.name()) else {
+        let Some(function) = module
+            .function_by_name_dyn(function_view.name())
+            .map(|id| module.view(id))
+        else {
             continue;
         };
         let Some((start, end)) = function_range(&lines, Some(function.name())) else {
@@ -368,10 +374,10 @@ fn record_parser_context<'ctx, B: ModuleBrand + 'ctx>(
     Ok(())
 }
 
-fn location_error(_: crate::asm_parser_context::LocationError) -> ParseError {
+fn location_error(_: LocationError) -> ParseError {
     ParseError::Expected {
         expected: "unique parser source location".into(),
-        loc: crate::parse_error::DiagLoc::span(llvmkit_support::Span::new(0, 0)),
+        loc: DiagLoc::span(llvmkit_support::Span::new(0, 0)),
     }
 }
 

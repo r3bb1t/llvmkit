@@ -40,17 +40,23 @@ use core::marker::PhantomData;
 use super::align::{Align, MaybeAlign};
 use super::array_len::ArrayLen;
 use super::atomic_ordering::AtomicOrdering;
-use super::basic_block::{BasicBlock, BlockCall, IntoBasicBlockLabel};
+use super::atomicrmw_binop::AtomicRMWBinOp;
+use super::basic_block::{
+    BasicBlock, BasicBlockLabel, BlockCall, IntoBasicBlockLabel, block_parameter_phis,
+    require_no_block_parameters,
+};
 use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{Terminated, Unterminated};
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::CmpPredicate;
+use super::cmp_predicate::{FloatPredicate, IntPredicate};
 use super::constant::{Constant, ConstantExprFlags, ConstantExprOpcode};
 use super::constant_fold;
 use super::constants::ConstantExprOptions;
 use super::derived_types::{FloatType, FunctionType, IntType, PointerType, StructType};
 use super::element::{ElemDyn, StaticVecElem, VecElem, WrapWitness};
 use super::error::{IrError, IrResult, TypeKindLabel};
+use super::float_kind::{BFloat, Fp128, Half, PpcFp128, StaticFloatKind, X86Fp80};
 use super::float_kind::{FloatDyn, FloatKind, FloatWiderThan, IntoFloatValue};
 use super::fmf::FastMathFlags;
 use super::function::{FunctionValue, IntoCallee};
@@ -63,6 +69,17 @@ use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::inline_asm::InlineAsm;
 use super::instr_types::FNegInstData;
 use super::instr_types::{
+    AShrFlags, AddFlags, AllocaFlags, AllocaInstData, AtomicCmpXchgConfig, AtomicCmpXchgInstData,
+    AtomicRMWConfig, AtomicRMWInstData, BranchInstData, BranchKind, CallBrInstData, CallInstData,
+    CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
+    CleanupReturnInstData, CmpInstData, ExtractElementInstData, ExtractValueInstData, FCmpInstData,
+    FenceInstData, FreezeInstData, GepInstData, ICmpFlags, IndirectBrInstData,
+    InsertElementInstData, InsertValueInstData, InvokeInstData, LShrFlags, LandingPadInstData,
+    MulFlags, OrFlags, PhiData, ResumeInstData, SDivFlags, SelectInstData, ShlFlags,
+    ShuffleVectorInstData, SubFlags, SwitchInstData, TailCallKind, TruncFlags, UDivFlags,
+    UIToFpFlags, UnreachableInstData, VAArgInstData, WriteBinopFlags, ZExtFlags,
+};
+use super::instr_types::{
     BinaryOpData, BinaryOpcode, CallAttributeData, CastOpData, CastOpcode, LoadInstData,
     OverflowFlags, POISON_MASK_ELEM, ReturnOpData, StoreInstData, UnaryOpcode,
 };
@@ -70,15 +87,18 @@ use super::instruction::{
     Instruction, InstructionKind, InstructionKindData, InstructionView, build_instruction_value,
     state::Attached,
 };
+use super::instructions::FenceInst;
 use super::instructions::{
     CallBrInst, CallInst, CatchPadInst, CatchSwitchInst, CleanupPadInst, IndirectBrInst,
     InvokeInst, LandingPadInst, StoreInst, SwitchInst,
 };
+use super::int_width::WiderThan;
 use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::intrinsic_inst::IntrinsicInst;
 use super::intrinsics::{BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IRBuilderFolder;
+use super::marker::ExpectedRetKind;
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{
     DynBrand, Invariant, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified,
@@ -86,7 +106,7 @@ use super::module::{
 use super::struct_body_state::StructBodyDyn;
 use super::struct_schema::{FieldOf, IntoIrField, IrField, StructFieldAt, StructSchema};
 use super::sync_scope::SyncScope;
-use super::term_open_state::Open;
+use super::term_open_state::{Closed, Open};
 use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlot};
 use super::typed_pointer_value::TypedPointerValue;
 use super::value::{
@@ -139,6 +159,37 @@ pub type TerminatedBlockSwitch<'ctx, R, B> = (
 pub type TerminatedBlockSwitchTyped<'ctx, R, W, B> = (
     BasicBlock<'ctx, R, Terminated, B>,
     SwitchInst<'ctx, Open, B, W>,
+);
+
+/// Pair returned by the width-erased block-argument switch builder
+/// [`IRBuilder::build_switch_dyn_with_args`]. The case list arrives complete —
+/// every case is spelled at the call, with its own block arguments — so the
+/// switch comes back already [`Closed`]: there is no `add_case` on it, and
+/// therefore no way to bolt on a later case whose target's block parameters
+/// nothing seeds. Erased sibling of [`TerminatedBlockSwitchTypedClosed`].
+pub type TerminatedBlockSwitchClosed<'ctx, R, B> = (
+    BasicBlock<'ctx, R, Terminated, B>,
+    SwitchInst<'ctx, Closed, B>,
+);
+
+/// Pair returned by the TYPED block-argument switch builder
+/// [`IRBuilder::build_switch_with_args`]: the terminated parent block plus a
+/// [`Closed`], width-`W` [`SwitchInst`]. Typed sibling of
+/// [`TerminatedBlockSwitchClosed`]; see it for why the case list is closed.
+pub type TerminatedBlockSwitchTypedClosed<'ctx, R, W, B> = (
+    BasicBlock<'ctx, R, Terminated, B>,
+    SwitchInst<'ctx, Closed, B, W>,
+);
+
+/// One `switch` case edge after the block-argument switch builders have
+/// lowered it: the erased case value, its resolved target label, and the block
+/// arguments that edge carries into the target's parameters. Crate-internal —
+/// the shared seeding tail's working shape, named so the signature stays
+/// readable.
+type LoweredSwitchCase<'ctx, 'args, R, B> = (
+    Value<'ctx, B>,
+    BasicBlockLabel<'ctx, R, B>,
+    &'args [Value<'ctx, B>],
 );
 
 /// Pair returned by `indirectbr` builders before destination insertion closes.
@@ -195,7 +246,7 @@ mod state_sealed {
 /// external crates cannot invent new states. Public so a caller writing
 /// its own state-generic wrapper over an `IRBuilder` field can name the
 /// bound. (The in-crate Braun-SSA [`SsaBuilder`](crate::SsaBuilder) used
-/// to be such a caller; since llvmkit 2.0 cycle D it is one type whose
+/// to be such a caller; since 0.0.4 cycle D it is one type whose
 /// cursor is data, and always stores a `Positioned` inner builder.)
 pub trait BuilderPositionState: state_sealed::Sealed + 'static {}
 
@@ -757,7 +808,7 @@ where
     /// already carry the builder brand `B`; remaining predecessor-set
     /// coherence is verified by [`Module::verify`](crate::Module::verify).
     ///
-    /// Every parameter speaks the storable-id currency (llvmkit 2.0): `phi_val`
+    /// Every parameter speaks the storable-id currency (0.0.4): `phi_val`
     /// and `val` take anything that lifts to an erased value — including the
     /// phi ids the phi builders hand back and any value id — and `block` takes
     /// any [`IntoBasicBlockLabel`], so a [`BlockId`] recovered from a
@@ -776,7 +827,7 @@ where
         block: Block,
     ) -> IrResult<()>
     where
-        RBb: crate::marker::ReturnMarker,
+        RBb: ReturnMarker,
         Phi: IntoErasedValue<'ctx, B>,
         Val: IntoErasedValue<'ctx, B>,
         Block: IntoBasicBlockLabel<'ctx, RBb, B>,
@@ -859,7 +910,7 @@ where
         ty: TypeSlot,
         name: &str,
     ) -> Value<'ctx, B> {
-        let payload = crate::instr_types::PhiData::new();
+        let payload = PhiData::new();
         let value = build_instruction_value(ty, block_id, InstructionKindData::Phi(payload), None);
         // Snapshot operand ids before the value moves into the arena so the
         // new phi can be registered in each operand's reverse use-list --
@@ -932,6 +983,7 @@ where
         for ty in param_types {
             params.push(self.make_phi_in_block(bb_id, ty.id(), ""));
         }
+        bb.set_parameter_count(param_types.len());
         Ok((bb, params))
     }
 
@@ -964,6 +1016,7 @@ where
         for (ty, param_name) in params {
             out.push(self.make_phi_in_block(bb_id, ty.id(), param_name));
         }
+        bb.set_parameter_count(params.len());
         Ok((bb, out))
     }
 
@@ -1014,6 +1067,7 @@ where
         for ty in &param_types {
             phi_values.push(self.make_phi_in_block(bb_id, ty.id(), ""));
         }
+        bb.set_parameter_count(param_types.len());
         // One head-phi per `ir_types` entry was built in order, so the
         // per-position `values_from_phi_values` wraps cannot mistype; the
         // capability token is minted here exactly as `TypedFunctionValue`
@@ -1201,7 +1255,7 @@ where
             lhs,
             rhs,
             name,
-            crate::instr_types::MulFlags::new(),
+            MulFlags::new(),
             InstructionKindData::Mul,
         )
         .map(|v| v.id())
@@ -1317,7 +1371,7 @@ where
             lhs,
             rhs,
             name,
-            crate::instr_types::ShlFlags::new(),
+            ShlFlags::new(),
             InstructionKindData::Shl,
         )
         .map(|v| v.id())
@@ -1410,7 +1464,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::OrFlags,
+        flags: OrFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1455,7 +1509,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::AddFlags,
+        flags: AddFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1480,7 +1534,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::SubFlags,
+        flags: SubFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1505,7 +1559,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::MulFlags,
+        flags: MulFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1530,7 +1584,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::ShlFlags,
+        flags: ShlFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1555,7 +1609,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::UDivFlags,
+        flags: UDivFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1580,7 +1634,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::SDivFlags,
+        flags: SDivFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1605,7 +1659,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::LShrFlags,
+        flags: LShrFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1630,7 +1684,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::AShrFlags,
+        flags: AShrFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1693,12 +1747,12 @@ where
     /// type's `WriteBinopFlags` impl writes its bits onto the
     /// payload; the kind constructor lifts the payload into the
     /// matching `InstructionKindData` variant.
-    fn build_int_binop_flagged<W, Lhs, Rhs, Flags, Kind>(
+    fn build_int_binop_flagged<W, Lhs, Rhs, Flags, Kind, N>(
         &self,
         opcode: BinaryOpcode,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: N,
         flags: Flags,
         kind_ctor: Kind,
     ) -> IrResult<IntValue<'ctx, W, B>>
@@ -1706,8 +1760,9 @@ where
         W: IntWidth,
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
-        Flags: crate::instr_types::WriteBinopFlags,
+        Flags: WriteBinopFlags,
         Kind: FnOnce(BinaryOpData) -> InstructionKindData,
+        N: AsRef<str>,
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
@@ -1735,12 +1790,12 @@ where
     /// wraps the payload into an [`InstructionKindData`] variant.
     /// All integer binary opcodes route through the folder before materialising
     /// an instruction.
-    fn build_int_binop<W, Lhs, Rhs, F2>(
+    fn build_int_binop<W, Lhs, Rhs, F2, N>(
         &self,
         opcode: BinaryOpcode,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: N,
         kind_ctor: F2,
     ) -> IrResult<IntValue<'ctx, W, B>>
     where
@@ -1748,6 +1803,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
+        N: AsRef<str>,
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
@@ -1781,16 +1837,17 @@ where
     /// (scalar `iN` or integer vector `<N x iM>`), the result taking the LHS
     /// operand's type. Skips the scalar-only `IntoIntValue` conversion the
     /// typed `build_int_*` family performs, so it accepts vector operands.
-    fn build_int_binop_dyn<F2>(
+    fn build_int_binop_dyn<F2, N>(
         &self,
         opcode: BinaryOpcode,
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
-        name: impl AsRef<str>,
+        name: N,
         kind_ctor: F2,
     ) -> IrResult<Value<'ctx, B>>
     where
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
+        N: AsRef<str>,
     {
         if let Some(folded) = self.folder.fold_bin_op_dyn(opcode, lhs, rhs)? {
             return self.checked_folded_value(folded, lhs.ty);
@@ -2121,12 +2178,12 @@ where
 
     /// Crate-internal helper for float binops. Same shape as
     /// `build_int_binop` but parameterised by `K: FloatKind`.
-    fn build_fp_binop<K, Lhs, Rhs, F2>(
+    fn build_fp_binop<K, Lhs, Rhs, F2, N>(
         &self,
         opcode: BinaryOpcode,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: N,
         kind_ctor: F2,
     ) -> IrResult<FloatValue<'ctx, K, B>>
     where
@@ -2134,6 +2191,7 @@ where
         Lhs: IntoFloatValue<'ctx, K, B>,
         Rhs: IntoFloatValue<'ctx, K, B>,
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
+        N: AsRef<str>,
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
@@ -2151,13 +2209,13 @@ where
     /// Crate-internal helper for float binops with an explicit
     /// [`crate::fmf::FastMathFlags`] parameter rather than the builder-context
     /// FMF. Used by the `build_fp_*_fmf` family.
-    fn build_fp_binop_with_fmf<K, Lhs, Rhs, F2>(
+    fn build_fp_binop_with_fmf<K, Lhs, Rhs, F2, N>(
         &self,
         opcode: BinaryOpcode,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
-        name: impl AsRef<str>,
+        fmf: FastMathFlags,
+        name: N,
         kind_ctor: F2,
     ) -> IrResult<FloatValue<'ctx, K, B>>
     where
@@ -2165,6 +2223,7 @@ where
         Lhs: IntoFloatValue<'ctx, K, B>,
         Rhs: IntoFloatValue<'ctx, K, B>,
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
+        N: AsRef<str>,
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
@@ -2182,7 +2241,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -2207,7 +2266,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -2232,7 +2291,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -2257,7 +2316,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -2282,7 +2341,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -2306,10 +2365,10 @@ where
     /// Bypasses the builder-context FMF. Result is `i1`.
     pub fn build_fp_cmp_fmf<K, Lhs, Rhs, Name>(
         &self,
-        pred: crate::cmp_predicate::FloatPredicate,
+        pred: FloatPredicate,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<IntValueId<bool, B>>
     where
@@ -2324,7 +2383,7 @@ where
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
             return Ok(folded.id());
         }
-        let mut payload = crate::instr_types::FCmpInstData::new(pred, lhs.slot(), rhs.slot());
+        let mut payload = FCmpInstData::new(pred, lhs.slot(), rhs.slot());
         payload.fmf = fmf;
         Ok(self
             .append_int_at(i1, InstructionKindData::FCmp(payload), name)
@@ -2335,7 +2394,7 @@ where
     /// `IRBuilder::CreateFCmp`. Result is `i1`.
     pub fn build_fp_cmp<K, Lhs, Rhs, Name>(
         &self,
-        pred: crate::cmp_predicate::FloatPredicate,
+        pred: FloatPredicate,
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
@@ -2352,7 +2411,7 @@ where
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
             return Ok(folded.id());
         }
-        let mut payload = crate::instr_types::FCmpInstData::new(pred, lhs.slot(), rhs.slot());
+        let mut payload = FCmpInstData::new(pred, lhs.slot(), rhs.slot());
         // Apply builder-context FMF (`fcmp` is an `FPMathOperator` upstream).
         payload.fmf = self.fmf;
         Ok(self
@@ -2680,7 +2739,7 @@ where
     pub fn build_float_neg_with_flags<K, V, Name>(
         &self,
         value: V,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -2708,7 +2767,7 @@ where
         V: IntoErasedValue<'ctx, B>,
     {
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
-        let payload = crate::instr_types::FreezeInstData::new(v.id);
+        let payload = FreezeInstData::new(v.id);
         let inst = self.append_instruction(v.ty, InstructionKindData::Freeze(payload), name);
         Ok(FreezeInstId::from_raw(self.module.id(), inst.slot()))
     }
@@ -2729,7 +2788,7 @@ where
     {
         let list_ptr = list_ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(list_ptr);
-        let payload = crate::instr_types::VAArgInstData::new(v.id);
+        let payload = VAArgInstData::new(v.id);
         let inst = self.append_instruction(result_ty.id, InstructionKindData::VAArg(payload), name);
         Ok(VAArgInstId::from_raw(self.module.id(), inst.slot()))
     }
@@ -2790,7 +2849,7 @@ where
         if let Some(folded) = self.folder.fold_extract_value_dyn(agg, indices)? {
             return self.checked_folded_value(folded, leaf_ty).map(|v| v.id());
         }
-        let payload = crate::instr_types::ExtractValueInstData::new(agg.id, indices.to_vec());
+        let payload = ExtractValueInstData::new(agg.id, indices.to_vec());
         let inst =
             self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name);
         Ok(inst.to_erased().id())
@@ -2863,8 +2922,7 @@ where
         if let Some(folded) = self.folder.fold_insert_value_dyn(agg, val, indices)? {
             return self.checked_folded_value(folded, agg.ty).map(|v| v.id());
         }
-        let payload =
-            crate::instr_types::InsertValueInstData::new(agg.id, val.id, indices.to_vec());
+        let payload = InsertValueInstData::new(agg.id, val.id, indices.to_vec());
         let inst = self.append_instruction(agg.ty, InstructionKindData::InsertValue(payload), name);
         Ok(inst.to_erased().id())
     }
@@ -2931,7 +2989,7 @@ where
     where
         Name: AsRef<str>,
         V: IntoErasedValue<'ctx, B>,
-        W: crate::int_width::IntWidth,
+        W: IntWidth,
         I: IntoIntValue<'ctx, W, B>,
     {
         let vec = vector.into_erased_value(ModuleRef::new(self.module))?;
@@ -2941,7 +2999,7 @@ where
             Some((e, _, _)) => e,
             None => {
                 return Err(IrError::TypeMismatch {
-                    expected: crate::error::TypeKindLabel::FixedVector,
+                    expected: TypeKindLabel::FixedVector,
                     got: vec.ty().kind_label(),
                 });
             }
@@ -2949,7 +3007,7 @@ where
         if let Some(folded) = self.folder.fold_extract_element_dyn(vec, idx)? {
             return self.checked_folded_value(folded, elem_ty).map(|v| v.id());
         }
-        let payload = crate::instr_types::ExtractElementInstData::new(vec.id, idx.id);
+        let payload = ExtractElementInstData::new(vec.id, idx.id);
         let inst =
             self.append_instruction(elem_ty, InstructionKindData::ExtractElement(payload), name);
         Ok(inst.to_erased().id())
@@ -2968,7 +3026,7 @@ where
         Name: AsRef<str>,
         V: IntoErasedValue<'ctx, B>,
         E: IntoErasedValue<'ctx, B>,
-        W: crate::int_width::IntWidth,
+        W: IntWidth,
         I: IntoIntValue<'ctx, W, B>,
     {
         let vec = vector.into_erased_value(ModuleRef::new(self.module))?;
@@ -2978,7 +3036,7 @@ where
         if let Some(folded) = self.folder.fold_insert_element_dyn(vec, val, idx)? {
             return self.checked_folded_value(folded, vec.ty).map(|v| v.id());
         }
-        let payload = crate::instr_types::InsertElementInstData::new(vec.id, val.id, idx.id);
+        let payload = InsertElementInstData::new(vec.id, val.id, idx.id);
         let inst =
             self.append_instruction(vec.ty, InstructionKindData::InsertElement(payload), name);
         Ok(inst.to_erased().id())
@@ -3019,7 +3077,7 @@ where
             }
             None => {
                 return Err(IrError::TypeMismatch {
-                    expected: crate::error::TypeKindLabel::FixedVector,
+                    expected: TypeKindLabel::FixedVector,
                     got: l.ty().kind_label(),
                 });
             }
@@ -3033,8 +3091,7 @@ where
                 .checked_folded_value(folded, result_ty_id)
                 .map(|v| v.id());
         }
-        let payload =
-            crate::instr_types::ShuffleVectorInstData::new(l.id, r.id, mask.iter().copied());
+        let payload = ShuffleVectorInstData::new(l.id, r.id, mask.iter().copied());
         let inst = self.append_instruction(
             result_ty_id,
             InstructionKindData::ShuffleVector(payload),
@@ -3371,18 +3428,14 @@ where
         ordering: AtomicOrdering,
         sync_scope: SyncScope,
         name: Name,
-    ) -> IrResult<crate::instructions::FenceInst<'ctx, B>>
+    ) -> IrResult<FenceInst<'ctx, B>>
     where
         Name: AsRef<str>,
     {
-        let payload = crate::instr_types::FenceInstData::new(ordering, sync_scope);
+        let payload = FenceInstData::new(ordering, sync_scope);
         let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Fence(payload), name);
-        Ok(crate::instructions::FenceInst::from_raw(
-            inst.slot(),
-            self.module,
-            void_ty,
-        ))
+        Ok(FenceInst::from_raw(inst.slot(), self.module, void_ty))
     }
 
     /// Produce `cmpxchg [weak] [volatile] <ptr-ty> <ptr>, <cmp-ty> <cmp>,
@@ -3396,7 +3449,7 @@ where
         ptr: P,
         cmp: C,
         new_val: N,
-        config: crate::instr_types::AtomicCmpXchgConfig,
+        config: AtomicCmpXchgConfig,
         name: Name,
     ) -> IrResult<AtomicCmpXchgInstId<B>>
     where
@@ -3416,7 +3469,7 @@ where
         }
         let module_view = ModuleView::<B>::new(self.module);
         let result_ty = module_view.struct_type([c.ty(), module_view.bool_type().as_type()], false);
-        let payload = crate::instr_types::AtomicCmpXchgInstData::new(p.id, c.id, n.id, config);
+        let payload = AtomicCmpXchgInstData::new(p.id, c.id, n.id, config);
         let result_id = result_ty.as_type().id();
         let inst =
             self.append_instruction(result_id, InstructionKindData::AtomicCmpXchg(payload), name);
@@ -3431,10 +3484,10 @@ where
     /// the storable [`AtomicRMWInstId<B>`](crate::AtomicRMWInstId).
     pub fn build_atomicrmw<P, V, Name>(
         &self,
-        op: crate::atomicrmw_binop::AtomicRMWBinOp,
+        op: AtomicRMWBinOp,
         ptr: P,
         value: V,
-        config: crate::instr_types::AtomicRMWConfig,
+        config: AtomicRMWConfig,
         name: Name,
     ) -> IrResult<AtomicRMWInstId<B>>
     where
@@ -3444,7 +3497,7 @@ where
     {
         let p = ptr.into_erased_value(ModuleRef::new(self.module))?;
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
-        let payload = crate::instr_types::AtomicRMWInstData::new(op, p.id, v.id, config);
+        let payload = AtomicRMWInstData::new(op, p.id, v.id, config);
         let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRMW(payload), name);
         Ok(AtomicRMWInstId::from_raw(self.module.id(), inst.slot()))
     }
@@ -3478,19 +3531,18 @@ where
     ) -> IrResult<IntValueId<Dst, B>>
     where
         Name: AsRef<str>,
-        Src: crate::int_width::WiderThan<Dst>,
+        Src: WiderThan<Dst>,
         Dst: IntWidth,
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_cast_to_int(
-            crate::instr_types::CastOpcode::Trunc,
-            value.into_erased(),
-            dst_ty,
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_int(CastOpcode::Trunc, value.into_erased(), dst_ty)?
+        {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
+        let payload = CastOpData::new(CastOpcode::Trunc, value.slot());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -3512,24 +3564,23 @@ where
         &self,
         value: V,
         dst_ty: IntType<'ctx, Dst, B>,
-        flags: crate::instr_types::TruncFlags,
+        flags: TruncFlags,
         name: Name,
     ) -> IrResult<IntValueId<Dst, B>>
     where
         Name: AsRef<str>,
-        Src: crate::int_width::WiderThan<Dst>,
+        Src: WiderThan<Dst>,
         Dst: IntWidth,
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_cast_to_int(
-            crate::instr_types::CastOpcode::Trunc,
-            value.into_erased(),
-            dst_ty,
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_int(CastOpcode::Trunc, value.into_erased(), dst_ty)?
+        {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
+        let payload = CastOpData::new(CastOpcode::Trunc, value.slot());
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
         Ok(self
@@ -3552,18 +3603,17 @@ where
     where
         Name: AsRef<str>,
         Src: IntWidth,
-        Dst: crate::int_width::WiderThan<Src>,
+        Dst: WiderThan<Src>,
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_cast_to_int(
-            crate::instr_types::CastOpcode::ZExt,
-            value.into_erased(),
-            dst_ty,
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_int(CastOpcode::ZExt, value.into_erased(), dst_ty)?
+        {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.slot());
+        let payload = CastOpData::new(CastOpcode::ZExt, value.slot());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -3579,24 +3629,23 @@ where
         &self,
         value: V,
         dst_ty: IntType<'ctx, Dst, B>,
-        flags: crate::instr_types::ZExtFlags,
+        flags: ZExtFlags,
         name: Name,
     ) -> IrResult<IntValueId<Dst, B>>
     where
         Name: AsRef<str>,
         Src: IntWidth,
-        Dst: crate::int_width::WiderThan<Src>,
+        Dst: WiderThan<Src>,
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_cast_to_int(
-            crate::instr_types::CastOpcode::ZExt,
-            value.into_erased(),
-            dst_ty,
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_int(CastOpcode::ZExt, value.into_erased(), dst_ty)?
+        {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.slot());
+        let payload = CastOpData::new(CastOpcode::ZExt, value.slot());
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
@@ -3618,18 +3667,17 @@ where
     where
         Name: AsRef<str>,
         Src: IntWidth,
-        Dst: crate::int_width::WiderThan<Src>,
+        Dst: WiderThan<Src>,
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_cast_to_int(
-            crate::instr_types::CastOpcode::SExt,
-            value.into_erased(),
-            dst_ty,
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_int(CastOpcode::SExt, value.into_erased(), dst_ty)?
+        {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::SExt, value.slot());
+        let payload = CastOpData::new(CastOpcode::SExt, value.slot());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -3659,15 +3707,14 @@ where
                 rhs: dst_w,
             });
         }
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::Trunc,
-            value.into_erased(),
-            dst_ty.as_type(),
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_dyn(CastOpcode::Trunc, value.into_erased(), dst_ty.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
+        let payload = CastOpData::new(CastOpcode::Trunc, value.slot());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -3680,7 +3727,7 @@ where
         &self,
         value: V,
         dst_ty: IntType<'ctx, IntDyn, B>,
-        flags: crate::instr_types::TruncFlags,
+        flags: TruncFlags,
         name: Name,
     ) -> IrResult<IntValueId<IntDyn, B>>
     where
@@ -3696,15 +3743,14 @@ where
                 rhs: dst_w,
             });
         }
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::Trunc,
-            value.into_erased(),
-            dst_ty.as_type(),
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_dyn(CastOpcode::Trunc, value.into_erased(), dst_ty.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
+        let payload = CastOpData::new(CastOpcode::Trunc, value.slot());
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
         Ok(self
@@ -3726,7 +3772,7 @@ where
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        self.build_int_extend_dyn(value, dst_ty, name, crate::instr_types::CastOpcode::ZExt)
+        self.build_int_extend_dyn(value, dst_ty, name, CastOpcode::ZExt)
             .map(|v| v.id())
     }
 
@@ -3737,7 +3783,7 @@ where
         &self,
         src: V,
         dst: IntType<'ctx, IntDyn, B>,
-        flags: crate::instr_types::ZExtFlags,
+        flags: ZExtFlags,
         name: Name,
     ) -> IrResult<IntValueId<IntDyn, B>>
     where
@@ -3753,15 +3799,14 @@ where
                 rhs: dst_w,
             });
         }
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::ZExt,
-            src.into_erased(),
-            dst.as_type(),
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_dyn(CastOpcode::ZExt, src.into_erased(), dst.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, src.slot());
+        let payload = CastOpData::new(CastOpcode::ZExt, src.slot());
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_int_at(dst, InstructionKindData::Cast(payload), name)
@@ -3782,18 +3827,21 @@ where
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        self.build_int_extend_dyn(value, dst_ty, name, crate::instr_types::CastOpcode::SExt)
+        self.build_int_extend_dyn(value, dst_ty, name, CastOpcode::SExt)
             .map(|v| v.id())
     }
 
     /// Crate-internal helper for `build_zext_dyn` / `build_sext_dyn`.
-    fn build_int_extend_dyn(
+    fn build_int_extend_dyn<N>(
         &self,
         value: IntValue<'ctx, IntDyn, B>,
         dst_ty: IntType<'ctx, IntDyn, B>,
-        name: impl AsRef<str>,
-        opcode: crate::instr_types::CastOpcode,
-    ) -> IrResult<IntValue<'ctx, IntDyn, B>> {
+        name: N,
+        opcode: CastOpcode,
+    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
+    where
+        N: AsRef<str>,
+    {
         let src_w = value.ty().bit_width();
         let dst_w = dst_ty.bit_width();
         if dst_w <= src_w {
@@ -3851,7 +3899,7 @@ where
             None,
             MaybeAlign::NONE,
             self.alloca_addr_space(),
-            crate::instr_types::AllocaFlags::none(),
+            AllocaFlags::none(),
             name,
         )
     }
@@ -3875,7 +3923,7 @@ where
             Some(n.slot()),
             MaybeAlign::NONE,
             self.alloca_addr_space(),
-            crate::instr_types::AllocaFlags::none(),
+            AllocaFlags::none(),
             name,
         )
     }
@@ -3900,7 +3948,7 @@ where
             Some(n.slot()),
             MaybeAlign::new(align),
             self.alloca_addr_space(),
-            crate::instr_types::AllocaFlags::none(),
+            AllocaFlags::none(),
             name,
         )
     }
@@ -3922,20 +3970,23 @@ where
             None,
             MaybeAlign::new(align),
             self.alloca_addr_space(),
-            crate::instr_types::AllocaFlags::none(),
+            AllocaFlags::none(),
             name,
         )
     }
 
-    fn build_alloca_inner(
+    fn build_alloca_inner<N>(
         &self,
         allocated_ty: TypeSlot,
         num_elements: Option<ValueSlot>,
         align: MaybeAlign,
         addr_space: u32,
-        flags: crate::instr_types::AllocaFlags,
-        name: impl AsRef<str>,
-    ) -> IrResult<PointerValueId<B>> {
+        flags: AllocaFlags,
+        name: N,
+    ) -> IrResult<PointerValueId<B>>
+    where
+        N: AsRef<str>,
+    {
         // Materialise the DataLayout preferred alignment when omitted, like
         // upstream — every alloca funnels through here
         // (`computeAllocaDefaultAlign`).
@@ -3944,13 +3995,8 @@ where
         } else {
             align
         };
-        let payload = crate::instr_types::AllocaInstData::new_with_flags(
-            allocated_ty,
-            num_elements,
-            align,
-            addr_space,
-            flags,
-        );
+        let payload =
+            AllocaInstData::new_with_flags(allocated_ty, num_elements, align, addr_space, flags);
         let ptr_ty = ModuleView::<B>::new(self.module).ptr_type(addr_space);
         Ok(self
             .append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name)
@@ -3968,7 +4014,7 @@ where
         num_elements: Option<IntValue<'ctx, IntDyn, B>>,
         align: MaybeAlign,
         addr_space: Option<u32>,
-        flags: crate::instr_types::AllocaFlags,
+        flags: AllocaFlags,
         name: Name,
     ) -> IrResult<PointerValueId<B>>
     where
@@ -4054,7 +4100,7 @@ where
     pub fn build_int_load<W, P, Name>(&self, ptr: P, name: Name) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
-        W: crate::int_width::StaticIntWidth,
+        W: StaticIntWidth,
         P: IntoPointerValue<'ctx, B>,
     {
         let ty = W::ir_type(ModuleRef::<B>::new(self.module));
@@ -4098,7 +4144,7 @@ where
     pub fn build_fp_load<K, P, Name>(&self, ptr: P, name: Name) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::StaticFloatKind,
+        K: StaticFloatKind,
         P: IntoPointerValue<'ctx, B>,
     {
         let ty = K::ir_type(ModuleRef::<B>::new(self.module));
@@ -4169,7 +4215,7 @@ where
     ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
-        W: crate::int_width::StaticIntWidth,
+        W: StaticIntWidth,
         P: IntoPointerValue<'ctx, B>,
     {
         let ty = W::ir_type(ModuleRef::<B>::new(self.module));
@@ -4218,11 +4264,14 @@ where
         T::value_from_ir_value(raw)
     }
 
-    fn build_load_inner(
+    fn build_load_inner<N>(
         &self,
         mut payload: LoadInstData,
-        name: impl AsRef<str>,
-    ) -> IrResult<Instruction<'ctx, Attached, B>> {
+        name: N,
+    ) -> IrResult<Instruction<'ctx, Attached, B>>
+    where
+        N: AsRef<str>,
+    {
         let pointee_ty = payload.pointee_ty;
         // Materialise the DataLayout default like upstream — every load
         // (plain / volatile / atomic) funnels through here, so an omitted
@@ -4608,12 +4657,12 @@ where
             .into_typed_callee(ModuleRef::new(self.module))?
             .as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
-        let payload = crate::instr_types::CallInstData::new(
+        let payload = CallInstData::new(
             f.slot(),
             f.signature().as_type().id(),
             arg_ids,
             f.calling_conv(),
-            crate::instr_types::TailCallKind::None,
+            TailCallKind::None,
         );
         let inst = self.append_instruction(
             f.return_type().id(),
@@ -4643,12 +4692,12 @@ where
             .as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let (name, calling_conv, attrs) = config.into_parts();
-        let payload = crate::instr_types::CallInstData::new_with_attrs(
+        let payload = CallInstData::new_with_attrs(
             f.slot(),
             f.signature().as_type().id(),
             arg_ids,
             calling_conv,
-            crate::instr_types::TailCallKind::None,
+            TailCallKind::None,
             attrs,
         );
         let inst = self.append_instruction(
@@ -4678,7 +4727,7 @@ where
             parent: self,
             callee: callee.into_typed_callee(ModuleRef::new(self.module)),
             args,
-            tail_kind: crate::instr_types::TailCallKind::None,
+            tail_kind: TailCallKind::None,
             calling_conv: None,
             attrs: CallAttributeData::default(),
             name: String::new(),
@@ -4714,12 +4763,12 @@ where
         for v in varargs {
             arg_ids.push(v.into_erased_value(ModuleRef::new(self.module))?.slot());
         }
-        let payload = crate::instr_types::CallInstData::new(
+        let payload = CallInstData::new(
             f.slot(),
             f.signature().as_type().id(),
             arg_ids,
             f.calling_conv(),
-            crate::instr_types::TailCallKind::None,
+            TailCallKind::None,
         );
         let inst = self.append_instruction(
             f.return_type().id(),
@@ -4745,7 +4794,7 @@ where
     ) -> IrResult<CallInstId<R2, B>>
     where
         Name: AsRef<str>,
-        R2: crate::marker::ReturnMarker,
+        R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
         Callee: IntoCallee<'ctx, R2, B>,
@@ -4865,8 +4914,8 @@ where
             return_ty: callee.return_type().id(),
             args: Vec::new(),
             calling_conv: callee.calling_conv(),
-            tail_kind: crate::instr_types::TailCallKind::None,
-            attrs: crate::instr_types::CallAttributeData::default(),
+            tail_kind: TailCallKind::None,
+            attrs: CallAttributeData::default(),
             name: String::new(),
             intrinsic_descriptor: None,
             arg_error: None,
@@ -4911,12 +4960,12 @@ where
         let fn_ty = module.fn_type(ret, params, false);
         let callee_v = IsValue::into_erased(callee);
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
-        let payload = crate::instr_types::CallInstData::new(
+        let payload = CallInstData::new(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
             crate::CallingConv::C,
-            crate::instr_types::TailCallKind::None,
+            TailCallKind::None,
         );
         let inst = self.append_instruction(
             fn_ty.return_type().id(),
@@ -4944,7 +4993,7 @@ where
     ) -> IrResult<CallInstId<R2, B>>
     where
         Name: AsRef<str>,
-        R2: crate::marker::ReturnMarker,
+        R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
         Callee: IntoPointerValue<'ctx, B>,
@@ -4965,12 +5014,12 @@ where
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = crate::instr_types::CallInstData::new(
+        let payload = CallInstData::new(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids.into_boxed_slice(),
             crate::CallingConv::C,
-            crate::instr_types::TailCallKind::None,
+            TailCallKind::None,
         );
         let inst = self.append_instruction(
             fn_ty.return_type().id(),
@@ -5000,7 +5049,7 @@ where
     ) -> IrResult<CallInstId<R2, B>>
     where
         Name: AsRef<str>,
-        R2: crate::marker::ReturnMarker,
+        R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
     {
@@ -5023,13 +5072,13 @@ where
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = crate::instr_types::CallInstData::new_with_attrs(
+        let payload = CallInstData::new_with_attrs(
             asm_v.id,
             fn_ty.as_type().id(),
             arg_ids.into_boxed_slice(),
             crate::CallingConv::C,
-            crate::instr_types::TailCallKind::None,
-            crate::instr_types::CallAttributeData::default(),
+            TailCallKind::None,
+            CallAttributeData::default(),
         );
         let inst = self.append_instruction(
             fn_ty.return_type().id(),
@@ -5057,13 +5106,7 @@ where
         I: IntoIterator<Item = V>,
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
-        self.build_gep_inner(
-            source_ty,
-            ptr,
-            indices,
-            crate::gep_no_wrap_flags::GepNoWrapFlags::empty(),
-            name,
-        )
+        self.build_gep_inner(source_ty, ptr, indices, GepNoWrapFlags::empty(), name)
     }
 
     /// Produce `getelementptr inbounds <source-ty>, ptr <ptr>,
@@ -5082,13 +5125,7 @@ where
         I: IntoIterator<Item = V>,
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
-        self.build_gep_inner(
-            source_ty,
-            ptr,
-            indices,
-            crate::gep_no_wrap_flags::GepNoWrapFlags::inbounds(),
-            name,
-        )
+        self.build_gep_inner(source_ty, ptr, indices, GepNoWrapFlags::inbounds(), name)
     }
 
     /// Produce `getelementptr inbounds nuw <struct-ty>, ptr <ptr>,
@@ -5119,8 +5156,7 @@ where
             struct_ty,
             ptr,
             [zero, idx_val],
-            crate::gep_no_wrap_flags::GepNoWrapFlags::inbounds()
-                | crate::gep_no_wrap_flags::GepNoWrapFlags::NUW,
+            GepNoWrapFlags::inbounds() | GepNoWrapFlags::NUW,
             name,
         )
     }
@@ -5206,7 +5242,7 @@ where
         source_ty: T,
         ptr: P,
         indices: I,
-        flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
+        flags: GepNoWrapFlags,
         name: Name,
     ) -> IrResult<PointerValueId<B>>
     where
@@ -5219,19 +5255,20 @@ where
         self.build_gep_inner(source_ty, ptr, indices, flags, name)
     }
 
-    fn build_gep_inner<T, P, I, V>(
+    fn build_gep_inner<T, P, I, V, N>(
         &self,
         source_ty: T,
         ptr: P,
         indices: I,
-        flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
-        name: impl AsRef<str>,
+        flags: GepNoWrapFlags,
+        name: N,
     ) -> IrResult<PointerValueId<B>>
     where
         T: IrType<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
         I: IntoIterator<Item = V>,
         V: IntoIntValue<'ctx, IntDyn, B>,
+        N: AsRef<str>,
     {
         let source_ty = source_ty.as_type();
         let source_ty_id = source_ty.id();
@@ -5263,7 +5300,7 @@ where
             let folded = self.checked_folded_value(folded, result_ty)?;
             return Ok(PointerValue::from_value_unchecked(folded).id());
         }
-        let payload = crate::instr_types::GepInstData::new(
+        let payload = GepInstData::new(
             source_ty_id,
             ptr_value.id,
             idx_ids.into_boxed_slice(),
@@ -5291,7 +5328,7 @@ where
         V: IntoFloatValue<'ctx, Src, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
-        self.build_fp_cast(value, dst_ty, name, crate::instr_types::CastOpcode::FpExt)
+        self.build_fp_cast(value, dst_ty, name, CastOpcode::FpExt)
             .map(|v| v.id())
     }
 
@@ -5310,7 +5347,7 @@ where
         V: IntoFloatValue<'ctx, Src, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
-        self.build_fp_cast(value, dst_ty, name, crate::instr_types::CastOpcode::FpTrunc)
+        self.build_fp_cast(value, dst_ty, name, CastOpcode::FpTrunc)
             .map(|v| v.id())
     }
 
@@ -5333,15 +5370,14 @@ where
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(value);
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::FpTrunc,
-            v,
-            dst_ty.as_type(),
-        )? {
+        if let Some(folded) = self
+            .folder
+            .fold_cast_dyn(CastOpcode::FpTrunc, v, dst_ty.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::FpTrunc, v.id);
+        let payload = CastOpData::new(CastOpcode::FpTrunc, v.id);
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -5366,30 +5402,31 @@ where
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(value);
-        if let Some(folded) =
-            self.folder
-                .fold_cast_dyn(crate::instr_types::CastOpcode::FpExt, v, dst_ty.as_type())?
+        if let Some(folded) = self
+            .folder
+            .fold_cast_dyn(CastOpcode::FpExt, v, dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::FpExt, v.id);
+        let payload = CastOpData::new(CastOpcode::FpExt, v.id);
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
     /// Crate-internal helper for `build_fp_ext` / `build_fp_trunc`.
-    fn build_fp_cast<Src, Dst>(
+    fn build_fp_cast<Src, Dst, N>(
         &self,
         value: FloatValue<'ctx, Src, B>,
         dst_ty: FloatType<'ctx, Dst, B>,
-        name: impl AsRef<str>,
-        opcode: crate::instr_types::CastOpcode,
+        name: N,
+        opcode: CastOpcode,
     ) -> IrResult<FloatValue<'ctx, Dst, B>>
     where
         Src: FloatKind,
         Dst: FloatKind,
+        N: AsRef<str>,
     {
         let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
@@ -5414,7 +5451,7 @@ where
         V: IntoFloatValue<'ctx, K, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
-        self.build_fp_to_int(value, dst_ty, name, crate::instr_types::CastOpcode::FpToUI)
+        self.build_fp_to_int(value, dst_ty, name, CastOpcode::FpToUI)
             .map(|v| v.id())
     }
 
@@ -5433,20 +5470,21 @@ where
         V: IntoFloatValue<'ctx, K, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
-        self.build_fp_to_int(value, dst_ty, name, crate::instr_types::CastOpcode::FpToSI)
+        self.build_fp_to_int(value, dst_ty, name, CastOpcode::FpToSI)
             .map(|v| v.id())
     }
 
-    fn build_fp_to_int<K, W>(
+    fn build_fp_to_int<K, W, N>(
         &self,
         value: FloatValue<'ctx, K, B>,
         dst_ty: IntType<'ctx, W, B>,
-        name: impl AsRef<str>,
-        opcode: crate::instr_types::CastOpcode,
+        name: N,
+        opcode: CastOpcode,
     ) -> IrResult<IntValue<'ctx, W, B>>
     where
         K: FloatKind,
         W: IntWidth,
+        N: AsRef<str>,
     {
         let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_to_int(opcode, v, dst_ty)? {
@@ -5471,7 +5509,7 @@ where
         V: IntoIntValue<'ctx, W, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        self.build_int_to_fp(value, dst_ty, name, crate::instr_types::CastOpcode::UIToFp)
+        self.build_int_to_fp(value, dst_ty, name, CastOpcode::UIToFp)
             .map(|v| v.id())
     }
 
@@ -5482,7 +5520,7 @@ where
         &self,
         value: V,
         dst_ty: FloatType<'ctx, K, B>,
-        flags: crate::instr_types::UIToFpFlags,
+        flags: UIToFpFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -5493,13 +5531,10 @@ where
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
         let v = value.into_erased();
-        if let Some(folded) =
-            self.folder
-                .fold_cast_to_fp(crate::instr_types::CastOpcode::UIToFp, v, dst_ty)?
-        {
+        if let Some(folded) = self.folder.fold_cast_to_fp(CastOpcode::UIToFp, v, dst_ty)? {
             return self.accept_folded_cast_fp(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, v.id);
+        let payload = CastOpData::new(CastOpcode::UIToFp, v.id);
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
@@ -5521,7 +5556,7 @@ where
         V: IntoIntValue<'ctx, W, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        self.build_int_to_fp(value, dst_ty, name, crate::instr_types::CastOpcode::SIToFp)
+        self.build_int_to_fp(value, dst_ty, name, CastOpcode::SIToFp)
             .map(|v| v.id())
     }
 
@@ -5532,7 +5567,7 @@ where
         &self,
         src: V,
         dst: FloatType<'ctx, FloatDyn, B>,
-        flags: crate::instr_types::UIToFpFlags,
+        flags: UIToFpFlags,
         name: Name,
     ) -> IrResult<FloatValueId<FloatDyn, B>>
     where
@@ -5540,31 +5575,31 @@ where
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
         let src = src.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::UIToFp,
-            src.into_erased(),
-            dst.as_type(),
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_dyn(CastOpcode::UIToFp, src.into_erased(), dst.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, src.slot());
+        let payload = CastOpData::new(CastOpcode::UIToFp, src.slot());
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_fp_at(dst, InstructionKindData::Cast(payload), name)
             .id())
     }
 
-    fn build_int_to_fp<W, K>(
+    fn build_int_to_fp<W, K, N>(
         &self,
         value: IntValue<'ctx, W, B>,
         dst_ty: FloatType<'ctx, K, B>,
-        name: impl AsRef<str>,
-        opcode: crate::instr_types::CastOpcode,
+        name: N,
+        opcode: CastOpcode,
     ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         W: IntWidth,
         K: FloatKind,
+        N: AsRef<str>,
     {
         let v = value.into_erased();
         if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
@@ -5645,13 +5680,13 @@ where
     {
         let value = value.into_pointer_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(value);
-        if let Some(folded) =
-            self.folder
-                .fold_cast_to_int(crate::instr_types::CastOpcode::PtrToInt, v, dst_ty)?
+        if let Some(folded) = self
+            .folder
+            .fold_cast_to_int(CastOpcode::PtrToInt, v, dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::PtrToInt, v.id);
+        let payload = CastOpData::new(CastOpcode::PtrToInt, v.id);
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -5672,15 +5707,14 @@ where
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
         let v = value.into_erased();
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::IntToPtr,
-            v,
-            dst_ty.as_type(),
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_dyn(CastOpcode::IntToPtr, v, dst_ty.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(PointerValue::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::IntToPtr, v.id);
+        let payload = CastOpData::new(CastOpcode::IntToPtr, v.id);
         Ok(self
             .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -5884,15 +5918,14 @@ where
     {
         let value = value.into_pointer_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(value);
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::AddrSpaceCast,
-            v,
-            dst_ty.as_type(),
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_dyn(CastOpcode::AddrSpaceCast, v, dst_ty.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(PointerValue::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::AddrSpaceCast, v.id);
+        let payload = CastOpData::new(CastOpcode::AddrSpaceCast, v.id);
         Ok(self
             .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -6123,7 +6156,7 @@ where
     /// [`IntValueId<bool, B>`](crate::IntValueId).
     pub fn build_int_cmp<W, Lhs, Rhs, Name>(
         &self,
-        pred: crate::cmp_predicate::IntPredicate,
+        pred: IntPredicate,
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
@@ -6140,7 +6173,7 @@ where
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
             return Ok(folded.id());
         }
-        let payload = crate::instr_types::CmpInstData::new(pred, lhs.slot(), rhs.slot());
+        let payload = CmpInstData::new(pred, lhs.slot(), rhs.slot());
         Ok(self
             .append_int_at(i1, InstructionKindData::ICmp(payload), name)
             .id())
@@ -6157,10 +6190,10 @@ where
     /// is no window where an `ICmpInst` is live with a stale `samesign` bit.
     pub fn build_int_cmp_with_flags<W, Lhs, Rhs, Name>(
         &self,
-        predicate: crate::cmp_predicate::IntPredicate,
+        predicate: IntPredicate,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::ICmpFlags,
+        flags: ICmpFlags,
         name: Name,
     ) -> IrResult<IntValueId<bool, B>>
     where
@@ -6175,7 +6208,7 @@ where
         if let Some(folded) = self.folder.fold_int_cmp(predicate, lhs, rhs)? {
             return Ok(folded.id());
         }
-        let mut payload = crate::instr_types::CmpInstData::new(predicate, lhs.slot(), rhs.slot());
+        let mut payload = CmpInstData::new(predicate, lhs.slot(), rhs.slot());
         payload.samesign = flags.samesign;
         Ok(self
             .append_int_at(i1, InstructionKindData::ICmp(payload), name)
@@ -6187,10 +6220,10 @@ where
     /// both operands carry the same sign (LLVM 20+).
     pub fn build_int_cmp_with_flags_dyn<Lhs, Rhs, Name>(
         &self,
-        pred: crate::cmp_predicate::IntPredicate,
+        pred: IntPredicate,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::ICmpFlags,
+        flags: ICmpFlags,
         name: Name,
     ) -> IrResult<IntValueId<bool, B>>
     where
@@ -6204,7 +6237,7 @@ where
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
             return Ok(folded.id());
         }
-        let mut payload = crate::instr_types::CmpInstData::new(pred, lhs.slot(), rhs.slot());
+        let mut payload = CmpInstData::new(pred, lhs.slot(), rhs.slot());
         payload.samesign = flags.samesign;
         Ok(self
             .append_int_at(i1, InstructionKindData::ICmp(payload), name)
@@ -6235,7 +6268,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(crate::cmp_predicate::IntPredicate::Eq, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Eq, lhs, rhs, name)
     }
 
     /// `icmp ne` -- not equal. Signedness-irrelevant. Mirrors
@@ -6253,7 +6286,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(crate::cmp_predicate::IntPredicate::Ne, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Ne, lhs, rhs, name)
     }
 
     /// `icmp ult` -- unsigned less than. Mirrors
@@ -6271,12 +6304,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Ult,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Ult, lhs, rhs, name)
     }
 
     /// `icmp ule` -- unsigned less than or equal. Mirrors
@@ -6294,12 +6322,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Ule,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Ule, lhs, rhs, name)
     }
 
     /// `icmp ugt` -- unsigned greater than. Mirrors
@@ -6317,12 +6340,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Ugt,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Ugt, lhs, rhs, name)
     }
 
     /// `icmp uge` -- unsigned greater than or equal. Mirrors
@@ -6340,12 +6358,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Uge,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Uge, lhs, rhs, name)
     }
 
     /// `icmp slt` -- signed less than. Mirrors
@@ -6363,12 +6376,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Slt,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Slt, lhs, rhs, name)
     }
 
     /// `icmp sle` -- signed less than or equal. Mirrors
@@ -6386,12 +6394,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Sle,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Sle, lhs, rhs, name)
     }
 
     /// `icmp sgt` -- signed greater than. Mirrors
@@ -6409,12 +6412,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Sgt,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Sgt, lhs, rhs, name)
     }
 
     /// `icmp sge` -- signed greater than or equal. Mirrors
@@ -6432,12 +6430,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Sge,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Sge, lhs, rhs, name)
     }
 
     // ---- Phi ----
@@ -6458,14 +6451,14 @@ where
     /// No production caller today (parser/SSA use the `_dyn`/erased paths), so
     /// `dead_code` is allowed in non-test builds; the in-crate raw-phi tests
     /// exercise it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn build_int_phi<W, Name>(&self, name: Name) -> IrResult<PhiInstId<W, B>>
     where
         Name: AsRef<str>,
-        W: crate::int_width::StaticIntWidth,
+        W: StaticIntWidth,
     {
         let ty = W::ir_type(ModuleRef::<B>::new(self.module));
-        let payload = crate::instr_types::PhiData::new();
+        let payload = PhiData::new();
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(PhiInstId::from_raw(self.module.id(), inst.slot()))
@@ -6487,7 +6480,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let payload = crate::instr_types::PhiData::new();
+        let payload = PhiData::new();
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(PhiInstId::from_raw(self.module.id(), inst.slot()))
@@ -6504,7 +6497,7 @@ where
     /// No production caller today (parser/SSA use the `_dyn`/erased paths), so
     /// `dead_code` is allowed in non-test builds; the in-crate raw-phi tests
     /// exercise it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn build_fp_phi<K, Name>(&self, name: Name) -> IrResult<FpPhiInstId<K, B>>
     where
         Name: AsRef<str>,
@@ -6549,7 +6542,7 @@ where
     /// No production caller today (parser/SSA use the `_dyn`/erased paths), so
     /// `dead_code` is allowed in non-test builds; the in-crate raw-phi tests
     /// exercise it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn build_pointer_phi<Name>(&self, name: Name) -> IrResult<PointerPhiInstId<B>>
     where
         Name: AsRef<str>,
@@ -6617,12 +6610,35 @@ where
     where
         Name: AsRef<str>,
     {
-        let payload = crate::instr_types::PhiData::new();
+        let payload = PhiData::new();
         let inst = self.append_phi_instruction(ty.id(), InstructionKindData::Phi(payload), name);
         Ok(OtherPhiInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     // ---- Branch / Unreachable ----
+
+    /// Resolve a branch target for an edge that carries **no** block
+    /// arguments, rejecting a target created with block parameters.
+    ///
+    /// The plain terminator builders funnel their every successor through
+    /// here, so "this edge seeds nothing, therefore its target must need
+    /// nothing seeded" is checked once, in one place. Returns the resolved
+    /// label so the caller can go straight on to emitting the terminator —
+    /// the check runs *before* any instruction is appended, so a rejected
+    /// edge leaves no half-formed terminator behind.
+    ///
+    /// See [`require_no_block_parameters`] for the cost story: an ordinary
+    /// (param-less) target costs one `Cell` read on top of the label
+    /// resolution the builder had to do anyway.
+    fn plain_edge_target<T>(&self, target: T) -> IrResult<BasicBlockLabel<'ctx, R, B>>
+    where
+        T: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let target = target.into_basic_block_label(module_ref)?;
+        require_no_block_parameters(module_ref, target.slot())?;
+        Ok(target)
+    }
 
     /// Produce `br label %target`. Mirrors `IRBuilder::CreateBr`.
     ///
@@ -6630,15 +6646,46 @@ where
     /// returned alongside the new terminator instruction. The branch
     /// target may be in any termination state -- backward edges (loop
     /// back-edges) target already-terminated blocks.
+    ///
+    /// A plain `br` carries no block arguments, so `target` must not be a
+    /// **parameterised** block — one created by
+    /// [`append_block_with_params`](Self::append_block_with_params), its naming
+    /// twin, or [`append_block_typed`](Self::append_block_typed). Such an edge
+    /// would seed none of the target's parameters and leave an incomplete phi
+    /// for a distant [`Module::verify`](crate::Module::verify) to find, so it is
+    /// rejected here with [`IrError::PhiArgArityMismatch`] — the same error a
+    /// wrong argument *count* gets from
+    /// [`build_br_with_args`](Self::build_br_with_args), which is what to reach
+    /// for instead. Blocks that merely *contain* phis (parsed `.ll`, auto-SSA,
+    /// pass-created) are not parameterised and are unaffected: their incomings
+    /// arrive through their own checked paths.
+    ///
+    /// The check runs before the terminator is emitted, so a rejected branch
+    /// appends nothing. `self` is consumed either way, exactly as when the
+    /// target fails to resolve ([`IrError::ForeignValueId`]) or as when
+    /// `build_br_with_args` rejects an argument: the insertion block is left
+    /// unterminated and a fresh builder must be positioned at it to retry.
     pub fn build_br<T>(self, target: T) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
     where
         T: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        let target = self.plain_edge_target(target)?;
+        self.build_br_seeded(target)
+    }
+
+    /// Emit `br label %target` with the parameterised-target guard already
+    /// discharged: either the caller has just seeded `target`'s block
+    /// parameters ([`build_br_with_args`](Self::build_br_with_args),
+    /// [`build_br_call`](Self::build_br_call)) or it ran
+    /// [`plain_edge_target`](Self::plain_edge_target) first
+    /// ([`build_br`](Self::build_br)).
+    fn build_br_seeded<T>(self, target: T) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+    where
+        T: IntoBasicBlockLabel<'ctx, R, B>,
+    {
         let target = target.into_basic_block_label(ModuleRef::new(self.module))?;
-        let payload = crate::instr_types::BranchInstData {
-            kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Unconditional(
-                target.slot(),
-            )),
+        let payload = BranchInstData {
+            kind: core::cell::RefCell::new(BranchKind::Unconditional(target.slot())),
         };
         let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
@@ -6650,7 +6697,35 @@ where
     /// `IRBuilder::CreateCondBr`.
     ///
     /// Consumes `self`; both target blocks may be in any termination state.
+    ///
+    /// Neither arm carries block arguments, so neither target may be a
+    /// **parameterised** block — both are checked, before the terminator is
+    /// emitted, exactly as [`build_br`](Self::build_br) checks its single
+    /// target and with the same [`IrError::PhiArgArityMismatch`]. Use
+    /// [`build_cond_br_with_args`](Self::build_cond_br_with_args) when either
+    /// successor has parameters; it takes a per-edge argument list, so one
+    /// parameterised and one ordinary arm is spelled with an empty slice for
+    /// the ordinary one.
     pub fn build_cond_br<C, Then, Else>(
+        self,
+        cond: C,
+        then_bb: Then,
+        else_bb: Else,
+    ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+    where
+        C: IntoIntValue<'ctx, bool, B>,
+        Then: IntoBasicBlockLabel<'ctx, R, B>,
+        Else: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let then_bb = self.plain_edge_target(then_bb)?;
+        let else_bb = self.plain_edge_target(else_bb)?;
+        self.build_cond_br_seeded(cond, then_bb, else_bb)
+    }
+
+    /// Emit `br i1 <cond>, label %then, label %else` with the
+    /// parameterised-target guard already discharged on both arms — the
+    /// conditional twin of [`build_br_seeded`](Self::build_br_seeded).
+    fn build_cond_br_seeded<C, Then, Else>(
         self,
         cond: C,
         then_bb: Then,
@@ -6664,8 +6739,8 @@ where
         let then_bb = then_bb.into_basic_block_label(ModuleRef::new(self.module))?;
         let else_bb = else_bb.into_basic_block_label(ModuleRef::new(self.module))?;
         let cond = cond.into_int_value(ModuleRef::new(self.module))?;
-        let payload = crate::instr_types::BranchInstData {
-            kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Conditional {
+        let payload = BranchInstData {
+            kind: core::cell::RefCell::new(BranchKind::Conditional {
                 cond: core::cell::Cell::new(cond.slot()),
                 then_bb: then_bb.slot(),
                 else_bb: else_bb.slot(),
@@ -6711,7 +6786,7 @@ where
         // `self` — the incoming edges name *this* block as their predecessor.
         let pred = self.insert_block().id();
         self.add_block_args(target, pred, args)?;
-        self.build_br(target)
+        self.build_br_seeded(target)
     }
 
     /// Produce `br i1 <cond>, label %then, label %else` while carrying block
@@ -6757,7 +6832,7 @@ where
         let pred = self.insert_block().id();
         self.add_block_args(then_bb, pred, then_args)?;
         self.add_block_args(else_bb, pred, else_args)?;
-        self.build_cond_br(cond, then_bb, else_bb)
+        self.build_cond_br_seeded(cond, then_bb, else_bb)
     }
 
     /// Seed a target block's parameters with the values a branch carries into
@@ -6789,22 +6864,11 @@ where
         let label_ty = self.module.label_type::<B>().as_type().id();
         let target = target.into_basic_block_label(module_ref)?;
 
-        // The target block's parameters are its leading head-phis, in order.
-        // Scan from the block top and stop at the first non-phi (phis are
-        // grouped at the head) — the pattern the CFG splitter uses.
-        let target_block =
-            BasicBlock::<Dyn, Terminated, B>::from_parts(target.slot(), module_ref, label_ty);
-        let mut param_phis: Vec<ValueSlot> = Vec::new();
-        for inst_id in target_block.instruction_ids() {
-            let data = self.module.context().value_data(inst_id);
-            let ValueKindData::Instruction(inst) = &data.kind else {
-                continue;
-            };
-            let InstructionKindData::Phi(_) = &inst.kind else {
-                break;
-            };
-            param_phis.push(inst_id);
-        }
+        // The target block's parameters are its leading head-phis, in order —
+        // the shared scan the plain-branch guard also reads, so the arity
+        // enforced here and the arity a plain branch is rejected for are one
+        // fact.
+        let param_phis: Vec<ValueSlot> = block_parameter_phis(module_ref, target.slot());
 
         // Arity: exactly one argument per parameter. Caught here so a wrong
         // count fails at the branch rather than at a distant `verify()`.
@@ -6897,7 +6961,7 @@ where
         // `self` — the incoming edges name *this* block as their predecessor.
         let pred = self.insert_block().id();
         self.add_block_args(target, pred, &args)?;
-        self.build_br(target)
+        self.build_br_seeded(target)
     }
 
     /// Produce `br i1 <cond>, label %then, label %else` for two **typed**
@@ -6935,7 +6999,7 @@ where
         let pred = self.insert_block().id();
         self.add_block_args(then_target, pred, &then_args)?;
         self.add_block_args(else_target, pred, &else_args)?;
-        self.build_cond_br(cond, then_target, else_target)
+        self.build_cond_br_seeded(cond, then_target, else_target)
     }
 
     /// Produce a TYPED `switch <cond>, label <default> [...]` whose
@@ -6958,6 +7022,15 @@ where
     /// [`build_call`](Self::build_call) / [`build_call_dyn`](Self::build_call_dyn)
     /// and [`build_invoke`](Self::build_invoke) /
     /// [`build_invoke_dyn`](Self::build_invoke_dyn).
+    /// The default target carries no block arguments, so it must not be a
+    /// **parameterised** block — the same guard, and the same
+    /// [`IrError::PhiArgArityMismatch`], that
+    /// [`build_br`](Self::build_br) applies. Every case target added through
+    /// the returned handle is guarded identically by
+    /// [`SwitchInst::add_case`]. Use
+    /// [`build_switch_with_args`](Self::build_switch_with_args) when the
+    /// default or any case reaches a parameterised block: it spells the whole
+    /// case list at the call, each edge with its own arguments.
     pub fn build_switch<W, C, DefaultTarget, Name>(
         self,
         cond: C,
@@ -6972,15 +7045,196 @@ where
     {
         let module_ref = ModuleRef::<B>::new(self.module);
         let cond_id = cond.into_int_value(module_ref)?.slot();
-        let default_target = default_target.into_basic_block_label(ModuleRef::new(self.module))?;
+        let default_target = self.plain_edge_target(default_target)?;
+        self.build_switch_seeded::<W, _, _>(cond_id, default_target, name)
+    }
+
+    /// Emit `switch <cond>, label <default> [...]` with the
+    /// parameterised-target guard already discharged on the default edge:
+    /// either the caller has just seeded it
+    /// ([`build_switch_with_args`](Self::build_switch_with_args) and its erased
+    /// twin) or it ran [`plain_edge_target`](Self::plain_edge_target) first.
+    ///
+    /// `W` is the condition width the returned [`Open`] handle carries; the
+    /// erased builders instantiate it at [`IntDyn`], which is what makes this
+    /// one body serve both flavours. The condition arrives pre-lowered as a
+    /// [`ValueSlot`] because the typed and erased callers reach it through
+    /// different bounds ([`IntoIntValue`] vs [`IntoErasedValue`]).
+    fn build_switch_seeded<W, DefaultTarget, Name>(
+        self,
+        cond_id: ValueSlot,
+        default_target: DefaultTarget,
+        name: Name,
+    ) -> IrResult<TerminatedBlockSwitchTyped<'ctx, R, W, B>>
+    where
+        W: IntWidth,
+        Name: AsRef<str>,
+        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let default_target = default_target.into_basic_block_label(module_ref)?;
         let void_ty = self.module.void_type::<B>().as_type().id();
-        let payload = crate::instr_types::SwitchInstData::new(cond_id, default_target.slot());
+        let payload = SwitchInstData::new(cond_id, default_target.slot());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
         let bb = self.into_insert_block();
         Ok((
             bb.retag_termination::<Terminated>(),
             SwitchInst::<Open, B, W>::from_raw(inst.slot(), module_ref, void_ty),
         ))
+    }
+
+    /// Produce a TYPED `switch` whose default edge **and every case edge**
+    /// carry block arguments into their target's parameters. The switch
+    /// generalisation of
+    /// [`build_cond_br_with_args`](Self::build_cond_br_with_args): where a
+    /// `cond_br` has two edges each with its own argument list, a `switch` has
+    /// a default plus N cases.
+    ///
+    /// **Every edge is one parameter, bundled with the values it carries** —
+    /// `default` is a `(target, args)` pair and each entry of `cases` a
+    /// `(case_value, target, args)` triple. The case list forces that shape
+    /// (an iterator has to yield one item per case), and applying it to the
+    /// default too keeps the whole call reading the same way. The frozen
+    /// [`build_br_with_args`](Self::build_br_with_args) /
+    /// [`build_cond_br_with_args`](Self::build_cond_br_with_args) keep their
+    /// flat `target, args` parameter pairs; their edge count is fixed at one
+    /// and two.
+    ///
+    /// The whole case list is spelled here rather than chained through
+    /// [`SwitchInst::add_case`], because an edge and the values it carries have
+    /// to move together: the returned [`SwitchInst`] is therefore already
+    /// [`Closed`], and there is no way to bolt on a later case whose target's
+    /// parameters nothing seeds.
+    ///
+    /// Each edge's arity ([`IrError::PhiArgArityMismatch`]) and argument types
+    /// ([`IrError::TypeMismatch`]) are checked before that edge's
+    /// parameter-phis are seeded, and every case value and target is lowered
+    /// up front — so a malformed case fails before any incoming is recorded and
+    /// before the terminator is emitted. As with
+    /// [`build_cond_br_with_args`](Self::build_cond_br_with_args) this is *not*
+    /// one atomic transaction across edges: two edges into the *same* target
+    /// with differing arguments record the first and then reject the second
+    /// ([`IrError::AmbiguousPhiIncoming`]), leaving the block unterminated for
+    /// [`verify()`](crate::Module::verify) to catch. Two edges into the same
+    /// target with the *same* arguments are legal — that is the ordinary
+    /// multi-case-to-one-block shape.
+    ///
+    /// Typed member of the pair, so it takes the unsuffixed name and its erased
+    /// sibling is
+    /// [`build_switch_dyn_with_args`](Self::build_switch_dyn_with_args): the
+    /// condition width `W` is inferred from `cond` and every case value shares
+    /// it, so a wrong-width case is a *compile* error exactly as in
+    /// [`build_switch`](Self::build_switch).
+    ///
+    /// Consumes `self`; every target may be in any termination state.
+    pub fn build_switch_with_args<'args, W, C, DefaultTarget, Cases, CaseValue, CaseTarget, Name>(
+        self,
+        cond: C,
+        default: (DefaultTarget, &'args [Value<'ctx, B>]),
+        cases: Cases,
+        name: Name,
+    ) -> IrResult<TerminatedBlockSwitchTypedClosed<'ctx, R, W, B>>
+    where
+        'ctx: 'args,
+        W: IntWidth,
+        C: IntoIntValue<'ctx, W, B>,
+        Name: AsRef<str>,
+        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
+        Cases: IntoIterator<Item = (CaseValue, CaseTarget, &'args [Value<'ctx, B>])>,
+        CaseValue: IntoIntValue<'ctx, W, B>,
+        CaseTarget: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let cond_id = cond.into_int_value(module_ref)?.slot();
+        let lowered = cases
+            .into_iter()
+            .map(|(case_value, case_target, case_args)| {
+                let value = IsValue::into_erased(case_value.into_int_value(module_ref)?);
+                let target = case_target.into_basic_block_label(module_ref)?;
+                Ok((value, target, case_args))
+            })
+            .collect::<IrResult<Vec<_>>>()?;
+        self.build_switch_over_seeded_edges(cond_id, default, lowered, name)
+    }
+
+    /// Produce a width-ERASED `switch` whose default edge and every case edge
+    /// carry block arguments. Erased sibling of
+    /// [`build_switch_with_args`](Self::build_switch_with_args) — see it for
+    /// the edge/argument contract, which is identical.
+    ///
+    /// `cond` and each case value are bound by [`IntoErasedValue`], so the
+    /// condition's width is not pinned and each case value's width is checked
+    /// against it at *runtime* ([`IrError::TypeMismatch`]), exactly as
+    /// [`build_switch_dyn`](Self::build_switch_dyn) + [`SwitchInst::add_case`]
+    /// do. Prefer the typed form where the width is statically known.
+    pub fn build_switch_dyn_with_args<'args, C, DefaultTarget, Cases, CaseValue, CaseTarget, Name>(
+        self,
+        cond: C,
+        default: (DefaultTarget, &'args [Value<'ctx, B>]),
+        cases: Cases,
+        name: Name,
+    ) -> IrResult<TerminatedBlockSwitchClosed<'ctx, R, B>>
+    where
+        'ctx: 'args,
+        C: IntoErasedValue<'ctx, B>,
+        Name: AsRef<str>,
+        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
+        Cases: IntoIterator<Item = (CaseValue, CaseTarget, &'args [Value<'ctx, B>])>,
+        CaseValue: IntoErasedValue<'ctx, B>,
+        CaseTarget: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let cond_id = cond.into_erased_value(module_ref)?.id;
+        let lowered = cases
+            .into_iter()
+            .map(|(case_value, case_target, case_args)| {
+                let value = case_value.into_erased_value(module_ref)?;
+                let target = case_target.into_basic_block_label(module_ref)?;
+                Ok((value, target, case_args))
+            })
+            .collect::<IrResult<Vec<_>>>()?;
+        self.build_switch_over_seeded_edges::<IntDyn, _, _>(cond_id, default, lowered, name)
+    }
+
+    /// Seed every edge of a `switch` and then emit it, cases included.
+    ///
+    /// Shared tail of [`build_switch_with_args`](Self::build_switch_with_args)
+    /// and [`build_switch_dyn_with_args`](Self::build_switch_dyn_with_args),
+    /// which differ only in how they lower the condition and the case values.
+    /// The default edge is seeded first, then each case in order; the
+    /// terminator is emitted only once every edge's arguments have been
+    /// accepted, and the cases go on through the pre-seeded
+    /// [`SwitchInst::push_case_seeded`] so the plain-branch guard does not
+    /// reject the very targets this call just supplied arguments for.
+    fn build_switch_over_seeded_edges<'args, W, DefaultTarget, Name>(
+        self,
+        cond_id: ValueSlot,
+        default: (DefaultTarget, &'args [Value<'ctx, B>]),
+        cases: Vec<LoweredSwitchCase<'ctx, 'args, R, B>>,
+        name: Name,
+    ) -> IrResult<TerminatedBlockSwitchTypedClosed<'ctx, R, W, B>>
+    where
+        'ctx: 'args,
+        W: IntWidth,
+        Name: AsRef<str>,
+        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let (default_target, default_args) = default;
+        let default_target = default_target.into_basic_block_label(module_ref)?;
+        // Capture the predecessor id before the terminator builder consumes
+        // `self` — every incoming this call records names *this* block.
+        let pred = self.insert_block().id();
+        self.add_block_args(default_target.id(), pred, default_args)?;
+        for (_, target, args) in &cases {
+            self.add_block_args(target.id(), pred, args)?;
+        }
+        let (bb, open) = self.build_switch_seeded::<W, _, _>(cond_id, default_target, name)?;
+        let mut open = open;
+        for (value, target, _) in cases {
+            open = open.push_case_seeded(value, target)?;
+        }
+        Ok((bb, open.finish()))
     }
 
     /// Produce a width-ERASED `switch <cond>, label <default> [...]`.
@@ -6999,6 +7253,11 @@ where
     /// known — it makes a wrong-width case a compile error. This form is
     /// what the `.ll` parser and the auto-SSA builder land on, since
     /// neither knows the condition's width until run time.
+    ///
+    /// The default target is guarded against **parameterised** blocks exactly
+    /// as [`build_switch`](Self::build_switch)'s is; reach for
+    /// [`build_switch_dyn_with_args`](Self::build_switch_dyn_with_args) when an
+    /// edge needs to carry block arguments.
     pub fn build_switch_dyn<C, DefaultTarget, Name>(
         self,
         cond: C,
@@ -7010,17 +7269,9 @@ where
         C: IntoErasedValue<'ctx, B>,
         DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let default_target = default_target.into_basic_block_label(ModuleRef::new(self.module))?;
+        let default_target = self.plain_edge_target(default_target)?;
         let cond_v = cond.into_erased_value(ModuleRef::new(self.module))?;
-        let void_ty = self.module.void_type::<B>().as_type().id();
-        let payload = crate::instr_types::SwitchInstData::new(cond_v.id, default_target.slot());
-        let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
-        let module_ref = ModuleRef::<B>::new(self.module);
-        let bb = self.into_insert_block();
-        Ok((
-            bb.retag_termination::<Terminated>(),
-            SwitchInst::<Open, B>::from_raw(inst.slot(), module_ref, void_ty),
-        ))
+        self.build_switch_seeded::<IntDyn, _, _>(cond_v.id, default_target, name)
     }
 
     /// Produce `indirectbr <addr>, [...]`. Mirrors
@@ -7049,7 +7300,7 @@ where
     {
         let addr_v = IsValue::into_erased(address.into_pointer_value(ModuleRef::new(self.module))?);
         let void_ty = self.module.void_type::<B>().as_type().id();
-        let payload = crate::instr_types::IndirectBrInstData::new(addr_v.id);
+        let payload = IndirectBrInstData::new(addr_v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::IndirectBr(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
         let bb = self.into_insert_block();
@@ -7090,7 +7341,102 @@ where
     }
 
     /// Produce a TYPED `invoke` with explicit call-site configuration.
+    ///
+    /// Neither the normal nor the unwind edge carries block arguments, so
+    /// neither destination may be a **parameterised** block — both are checked
+    /// before the terminator is emitted, with the same
+    /// [`IrError::PhiArgArityMismatch`] [`build_br`](Self::build_br) reports.
+    /// [`build_invoke_with_args`](Self::build_invoke_with_args) is the
+    /// argument-carrying form; both `invoke` edges are mandatory, so it takes
+    /// an argument list for each.
     pub fn build_invoke_with_config<Ret, Params, A, Normal, Unwind>(
+        self,
+        callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+        args: A,
+        normal_dest: Normal,
+        unwind_dest: Unwind,
+        config: CallSiteConfig,
+    ) -> IrResult<TerminatedBlockTypedInvoke<'ctx, R, Ret, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+        A: CallArgs<'ctx, Params, B>,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let normal_dest = self.plain_edge_target(normal_dest)?;
+        let unwind_dest = self.plain_edge_target(unwind_dest)?;
+        self.build_invoke_seeded(callee, args, normal_dest, unwind_dest, config)
+    }
+
+    /// Produce a TYPED `invoke` whose normal and unwind edges each carry block
+    /// arguments into their destination's parameters. The `invoke` member of
+    /// the [`build_br_with_args`](Self::build_br_with_args) family: an edge and
+    /// the values it carries move together, so a destination's parameter-phis
+    /// cannot be left one incoming short.
+    ///
+    /// Both edges are mandatory on an `invoke`, so both are supplied, each as a
+    /// `(destination, args)` pair — the same bundled-edge shape
+    /// [`build_switch_with_args`](Self::build_switch_with_args) uses, and what
+    /// keeps `invoke`'s own call arguments and result name from crowding the
+    /// signature. Pass an empty slice for a destination that has no parameters.
+    ///
+    /// `args` is the *call*'s argument list (compile-time-checked against the
+    /// callee schema `Params`, as in [`build_invoke`](Self::build_invoke));
+    /// the slice inside each edge pair holds that edge's *block* arguments,
+    /// checked for arity ([`IrError::PhiArgArityMismatch`]) and type
+    /// ([`IrError::TypeMismatch`]) against the destination's leading head-phis
+    /// before either edge is seeded and before the terminator is emitted.
+    ///
+    /// The normal edge is seeded first; as with
+    /// [`build_cond_br_with_args`](Self::build_cond_br_with_args), this is not
+    /// one atomic transaction across the two edges — a differing-value
+    /// duplicate on a shared destination is rejected
+    /// ([`IrError::AmbiguousPhiIncoming`]) after the first edge is recorded,
+    /// and the `invoke` is never emitted.
+    ///
+    /// Consumes `self`; both destinations may be in any termination state.
+    pub fn build_invoke_with_args<Ret, Params, A, Normal, Unwind, Name>(
+        self,
+        callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+        args: A,
+        normal: (Normal, &[Value<'ctx, B>]),
+        unwind: (Unwind, &[Value<'ctx, B>]),
+        name: Name,
+    ) -> IrResult<TerminatedBlockTypedInvoke<'ctx, R, Ret, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+        A: CallArgs<'ctx, Params, B>,
+        Name: AsRef<str>,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let (normal_dest, normal_args) = normal;
+        let (unwind_dest, unwind_args) = unwind;
+        let normal_dest = normal_dest.into_basic_block_label(module_ref)?;
+        let unwind_dest = unwind_dest.into_basic_block_label(module_ref)?;
+        // Capture the predecessor id before the terminator builder consumes
+        // `self` — the incoming edges name *this* block as their predecessor.
+        let pred = self.insert_block().id();
+        self.add_block_args(normal_dest.id(), pred, normal_args)?;
+        self.add_block_args(unwind_dest.id(), pred, unwind_args)?;
+        self.build_invoke_seeded(
+            callee,
+            args,
+            normal_dest,
+            unwind_dest,
+            CallSiteConfig::new(name.as_ref()),
+        )
+    }
+
+    /// Emit a TYPED `invoke` with the parameterised-destination guard already
+    /// discharged on both edges: either the caller has just seeded them
+    /// ([`build_invoke_with_args`](Self::build_invoke_with_args)) or it ran
+    /// [`plain_edge_target`](Self::plain_edge_target) on each
+    /// ([`build_invoke_with_config`](Self::build_invoke_with_config)).
+    fn build_invoke_seeded<Ret, Params, A, Normal, Unwind>(
         self,
         callee: TypedFunctionValue<'ctx, Ret, Params, B>,
         args: A,
@@ -7110,7 +7456,7 @@ where
         let f = callee.as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let (name, calling_conv, attrs) = config.into_parts();
-        let payload = crate::instr_types::InvokeInstData::new_with_attrs(
+        let payload = InvokeInstData::new_with_attrs(
             f.slot(),
             f.signature().as_type().id(),
             arg_ids,
@@ -7176,7 +7522,75 @@ where
     }
 
     /// Produce `invoke` with explicit call-site configuration.
+    ///
+    /// Both destinations are guarded against **parameterised** blocks exactly
+    /// as [`build_invoke_with_config`](Self::build_invoke_with_config)'s are;
+    /// [`build_invoke_dyn_with_args`](Self::build_invoke_dyn_with_args) is the
+    /// argument-carrying form.
     pub fn build_invoke_dyn_with_config<R2, I, V, Normal, Unwind>(
+        self,
+        callee: FunctionValue<'ctx, R2, B>,
+        args: I,
+        normal_dest: Normal,
+        unwind_dest: Unwind,
+        config: CallSiteConfig,
+    ) -> IrResult<TerminatedBlockInvoke<'ctx, R, R2, B>>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: IntoErasedValue<'ctx, B>,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let normal_dest = self.plain_edge_target(normal_dest)?;
+        let unwind_dest = self.plain_edge_target(unwind_dest)?;
+        self.build_invoke_dyn_seeded(callee, args, normal_dest, unwind_dest, config)
+    }
+
+    /// Produce an `invoke` whose normal and unwind edges each carry block
+    /// arguments into their destination's parameters. Erased sibling of
+    /// [`build_invoke_with_args`](Self::build_invoke_with_args) — see it for
+    /// the edge/argument contract, which is identical; only the callee's
+    /// schema is erased (the call arguments are checked against the callee's
+    /// declared signature at run time, as in
+    /// [`build_invoke_dyn`](Self::build_invoke_dyn)).
+    pub fn build_invoke_dyn_with_args<R2, I, V, Normal, Unwind, Name>(
+        self,
+        callee: FunctionValue<'ctx, R2, B>,
+        args: I,
+        normal: (Normal, &[Value<'ctx, B>]),
+        unwind: (Unwind, &[Value<'ctx, B>]),
+        name: Name,
+    ) -> IrResult<TerminatedBlockInvoke<'ctx, R, R2, B>>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: IntoErasedValue<'ctx, B>,
+        Name: AsRef<str>,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let (normal_dest, normal_args) = normal;
+        let (unwind_dest, unwind_args) = unwind;
+        let normal_dest = normal_dest.into_basic_block_label(module_ref)?;
+        let unwind_dest = unwind_dest.into_basic_block_label(module_ref)?;
+        let pred = self.insert_block().id();
+        self.add_block_args(normal_dest.id(), pred, normal_args)?;
+        self.add_block_args(unwind_dest.id(), pred, unwind_args)?;
+        self.build_invoke_dyn_seeded(
+            callee,
+            args,
+            normal_dest,
+            unwind_dest,
+            CallSiteConfig::new(name.as_ref()),
+        )
+    }
+
+    /// Emit an erased `invoke` with the parameterised-destination guard
+    /// already discharged on both edges — the erased twin of
+    /// [`build_invoke_seeded`](Self::build_invoke_seeded).
+    fn build_invoke_dyn_seeded<R2, I, V, Normal, Unwind>(
         self,
         callee: FunctionValue<'ctx, R2, B>,
         args: I,
@@ -7204,7 +7618,7 @@ where
             })
             .collect::<IrResult<_>>()?;
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = crate::instr_types::InvokeInstData::new_with_attrs(
+        let payload = InvokeInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
@@ -7227,6 +7641,13 @@ where
     /// is supplied explicitly, mirroring `IRBuilder::CreateInvoke(FunctionType*,
     /// Value* Callee, ...)`. Used by the parser for `invoke ... %fp(...)`.
     /// Arguments are validated against the spelled `fn_ty`.
+    ///
+    /// Both destinations are guarded against **parameterised** blocks like
+    /// every other plain terminator edge. There is no argument-carrying twin
+    /// for the *indirect*-callee shape (recorded in `docs/future-work.md`), so
+    /// a parameterised destination is reachable only through
+    /// [`build_invoke_dyn_with_args`](Self::build_invoke_dyn_with_args), whose
+    /// callee is a named function.
     pub fn build_indirect_invoke_dyn_with_config<R2, I, V, Normal, Unwind, Callee>(
         self,
         callee: Callee,
@@ -7245,8 +7666,8 @@ where
         Callee: IntoPointerValue<'ctx, B>,
     {
         let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
-        let normal_dest = normal_dest.into_basic_block_label(ModuleRef::new(self.module))?;
-        let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
+        let normal_dest = self.plain_edge_target(normal_dest)?;
+        let unwind_dest = self.plain_edge_target(unwind_dest)?;
         let callee_v = IsValue::into_erased(callee);
         let ret_ty = fn_ty.return_type().id();
         let (name, calling_conv, attrs) = config.into_parts();
@@ -7258,7 +7679,7 @@ where
             })
             .collect::<IrResult<_>>()?;
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = crate::instr_types::InvokeInstData::new_with_attrs(
+        let payload = InvokeInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
@@ -7303,6 +7724,10 @@ where
     }
 
     /// Produce an inline-assembly `invoke` with explicit call-site configuration.
+    ///
+    /// Both destinations are guarded against **parameterised** blocks like
+    /// every other plain terminator edge; as with the indirect-callee form
+    /// there is no argument-carrying twin for an inline-asm callee.
     pub fn build_inline_asm_invoke_with_config<R2, I, V, Normal, Unwind>(
         self,
         asm: InlineAsm<'ctx, B>,
@@ -7318,8 +7743,8 @@ where
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let normal_dest = normal_dest.into_basic_block_label(ModuleRef::new(self.module))?;
-        let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
+        let normal_dest = self.plain_edge_target(normal_dest)?;
+        let unwind_dest = self.plain_edge_target(unwind_dest)?;
         let asm_v = asm.into_erased();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
@@ -7338,7 +7763,7 @@ where
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let (name, calling_conv, attrs) = config.into_parts();
-        let payload = crate::instr_types::InvokeInstData::new_with_attrs(
+        let payload = InvokeInstData::new_with_attrs(
             asm_v.id,
             fn_ty.as_type().id(),
             arg_ids,
@@ -7387,6 +7812,14 @@ where
     }
 
     /// Produce `callbr` with explicit call-site configuration.
+    ///
+    /// The default destination and every indirect destination are guarded
+    /// against **parameterised** blocks like every other plain terminator
+    /// edge. `callbr` has no argument-carrying form — its indirect edges are
+    /// taken by inline assembly at run time, so there is nothing to hang a
+    /// per-edge argument list on — so a parameterised destination is rejected
+    /// outright ([`IrError::PhiArgArityMismatch`]), the same way an
+    /// `indirectbr` destination is.
     pub fn build_callbr_with_config<R2, I, V, Default, Indirects, Indirect>(
         self,
         callee: FunctionValue<'ctx, R2, B>,
@@ -7403,7 +7836,7 @@ where
         Indirects: IntoIterator<Item = Indirect>,
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let default_dest = default_dest.into_basic_block_label(ModuleRef::new(self.module))?;
+        let default_dest = self.plain_edge_target(default_dest)?;
         let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
@@ -7417,12 +7850,9 @@ where
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueSlot> = indirect_dests
             .into_iter()
-            .map(|d| {
-                d.into_basic_block_label(ModuleRef::new(self.module))
-                    .map(|l| l.slot())
-            })
+            .map(|d| self.plain_edge_target(d).map(|l| l.slot()))
             .collect::<IrResult<_>>()?;
-        let payload = crate::instr_types::CallBrInstData::new_with_attrs(
+        let payload = CallBrInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
@@ -7468,6 +7898,9 @@ where
     }
 
     /// Produce an inline-assembly `callbr` with explicit call-site configuration.
+    ///
+    /// Every destination is guarded against **parameterised** blocks, exactly
+    /// as in [`build_callbr_with_config`](Self::build_callbr_with_config).
     pub fn build_inline_asm_callbr_with_config<R2, I, V, Default, Indirects, Indirect>(
         self,
         asm: InlineAsm<'ctx, B>,
@@ -7484,7 +7917,7 @@ where
         Indirects: IntoIterator<Item = Indirect>,
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let default_dest = default_dest.into_basic_block_label(ModuleRef::new(self.module))?;
+        let default_dest = self.plain_edge_target(default_dest)?;
         let asm_v = asm.into_erased();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
@@ -7504,13 +7937,10 @@ where
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueSlot> = indirect_dests
             .into_iter()
-            .map(|d| {
-                d.into_basic_block_label(ModuleRef::new(self.module))
-                    .map(|l| l.slot())
-            })
+            .map(|d| self.plain_edge_target(d).map(|l| l.slot()))
             .collect::<IrResult<_>>()?;
         let (name, calling_conv, attrs) = config.into_parts();
-        let payload = crate::instr_types::CallBrInstData::new_with_attrs(
+        let payload = CallBrInstData::new_with_attrs(
             asm_v.id,
             fn_ty.as_type().id(),
             arg_ids,
@@ -7544,7 +7974,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let payload = crate::instr_types::LandingPadInstData::new(cleanup);
+        let payload = LandingPadInstData::new(cleanup);
         let inst =
             self.append_instruction(result_ty.id, InstructionKindData::LandingPad(payload), name);
         Ok(LandingPadInst::<Open, B>::from_raw(
@@ -7567,7 +7997,7 @@ where
     {
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let void_ty = self.module.void_type::<B>().as_type().id();
-        let payload = crate::instr_types::ResumeInstData::new(v.id);
+        let payload = ResumeInstData::new(v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::Resume(payload), name);
         let bb = self.into_insert_block();
         Ok((bb.retag_termination::<Terminated>(), inst))
@@ -7624,7 +8054,7 @@ where
                     .map(|v| v.slot())
             })
             .collect::<IrResult<_>>()?;
-        let payload = crate::instr_types::CleanupPadInstData::new(parent_id, arg_ids);
+        let payload = CleanupPadInstData::new(parent_id, arg_ids);
         let token_ty = self.module.token_type::<B>().as_type().id();
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CleanupPad(payload), name);
@@ -7657,7 +8087,7 @@ where
                     .map(|v| v.slot())
             })
             .collect::<IrResult<_>>()?;
-        let payload = crate::instr_types::CatchPadInstData::new(Some(catch_switch.id), arg_ids);
+        let payload = CatchPadInstData::new(Some(catch_switch.id), arg_ids);
         let token_ty = self.module.token_type::<B>().as_type().id();
         let inst = self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name);
         Ok(CatchPadInst::<B>::from_raw(
@@ -7683,7 +8113,7 @@ where
         let catch_pad = catch_pad.into_erased_value(ModuleRef::new(self.module))?;
         let target = target.into_basic_block_label(ModuleRef::new(self.module))?;
         let void_ty = self.module.void_type::<B>().as_type().id();
-        let payload = crate::instr_types::CatchReturnInstData::new(catch_pad.id, target.slot());
+        let payload = CatchReturnInstData::new(catch_pad.id, target.slot());
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CatchReturn(payload), name);
         let bb = self.into_insert_block();
@@ -7733,7 +8163,7 @@ where
         Name: AsRef<str>,
     {
         let void_ty = self.module.void_type::<B>().as_type().id();
-        let payload = crate::instr_types::CleanupReturnInstData::new(cleanup_pad_id, unwind_id);
+        let payload = CleanupReturnInstData::new(cleanup_pad_id, unwind_id);
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CleanupReturn(payload), name);
         let bb = self.into_insert_block();
@@ -7810,7 +8240,7 @@ where
         Name: AsRef<str>,
     {
         let token_ty = self.module.token_type::<B>().as_type().id();
-        let payload = crate::instr_types::CatchSwitchInstData::new(parent_id, unwind_id);
+        let payload = CatchSwitchInstData::new(parent_id, unwind_id);
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CatchSwitch(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
@@ -7827,7 +8257,7 @@ where
         BasicBlock<'ctx, R, Terminated, B>,
         Instruction<'ctx, Attached, B>,
     ) {
-        let payload = crate::instr_types::UnreachableInstData;
+        let payload = UnreachableInstData;
         let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Unreachable(payload), "");
         let bb = self.into_insert_block();
@@ -7900,7 +8330,7 @@ where
     /// `like: IntValue<'ctx, W, B>` is W-typed, so the result is W-typed. This is the
     /// only sanctioned way to attach an `IntValue<W>` marker to a freshly-appended
     /// instruction whose type comes from an operand -- it removes the `from_value_unchecked`
-    /// assertion at the call site (see docs/unforgeable-markers-design.md, census pattern 1).
+    /// assertion at the call site (see docs/design/unforgeable-markers-design.md, census pattern 1).
     fn append_int_like<W: IntWidth, N: AsRef<str>>(
         &self,
         like: IntValue<'ctx, W, B>,
@@ -7930,7 +8360,7 @@ where
     /// narrow), so the result is W-typed. The sanctioned constructor for results whose type
     /// comes from a typed DESTINATION handle -- casts, comparisons at a fixed `i1`, loads --
     /// removing the `from_value_unchecked` assertion at the call site
-    /// (docs/unforgeable-markers-design.md, census pattern 2).
+    /// (docs/design/unforgeable-markers-design.md, census pattern 2).
     fn append_int_at<W: IntWidth, N: AsRef<str>>(
         &self,
         ty: IntType<'ctx, W, B>,
@@ -7962,7 +8392,7 @@ where
     /// Routes through [`Self::build_load_inner`] so the DataLayout default-align fill
     /// is preserved (a raw `append_int_at` would skip it and emit `align 0`). This
     /// removes the `from_value_unchecked` assertion at the load site
-    /// (docs/unforgeable-markers-design.md, census pattern 2 -- load variant).
+    /// (docs/design/unforgeable-markers-design.md, census pattern 2 -- load variant).
     fn append_int_load<W: IntWidth, N: AsRef<str>>(
         &self,
         ty: IntType<'ctx, W, B>,
@@ -7994,7 +8424,7 @@ where
     /// so provably a pointer type), and `PointerValue` asserts only pointer-ness — which
     /// `ptr_ty` supplies. The sanctioned constructor for pointer-result builders
     /// (alloca / GEP / int→ptr / addrspacecast / pointer bitcast); removes the
-    /// `from_value_unchecked` assertion (docs/unforgeable-markers-design.md, census pattern 6).
+    /// `from_value_unchecked` assertion (docs/design/unforgeable-markers-design.md, census pattern 6).
     fn append_ptr<N: AsRef<str>>(
         &self,
         ptr_ty: PointerType<'ctx, B>,
@@ -8279,16 +8709,7 @@ macro_rules! impl_into_return_value_float {
         }
     )+ };
 }
-impl_into_return_value_float!(
-    f32,
-    f64,
-    crate::float_kind::Half,
-    crate::float_kind::BFloat,
-    crate::float_kind::Fp128,
-    crate::float_kind::X86Fp80,
-    crate::float_kind::PpcFp128,
-    FloatDyn,
-);
+impl_into_return_value_float!(f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
 
 // Pointer-marker impl: `Ptr` accepts any pointer-valued operand source.
 impl<'ctx, B: ModuleBrand + 'ctx, V> IntoReturnValue<'ctx, Ptr, B> for V
@@ -8333,7 +8754,7 @@ where
     {
         let v = value.into_return_value(ModuleRef::new(self.module))?;
         // Runtime-check for the fully-erased `Dyn` marker.
-        if R::expected_kind() == crate::marker::ExpectedRetKind::Dyn {
+        if R::expected_kind() == ExpectedRetKind::Dyn {
             let parent_fn = self.parent_function_dyn();
             let expected = parent_fn.return_type();
             if v.ty().id() != expected.id() {
@@ -8427,8 +8848,8 @@ where
     return_ty: TypeSlot,
     args: Vec<ValueSlot>,
     calling_conv: crate::CallingConv,
-    tail_kind: crate::instr_types::TailCallKind,
-    attrs: crate::instr_types::CallAttributeData,
+    tail_kind: TailCallKind,
+    attrs: CallAttributeData,
     name: String,
     intrinsic_descriptor: Option<IntrinsicDescriptor<'ctx, B>>,
     /// First error raised by an [`arg`](CallBuilder::arg) operand, replayed by
@@ -8466,17 +8887,17 @@ where
     }
 
     pub fn tail(mut self) -> Self {
-        self.tail_kind = crate::instr_types::TailCallKind::Tail;
+        self.tail_kind = TailCallKind::Tail;
         self
     }
 
     pub fn must_tail(mut self) -> Self {
-        self.tail_kind = crate::instr_types::TailCallKind::MustTail;
+        self.tail_kind = TailCallKind::MustTail;
         self
     }
 
     pub fn no_tail(mut self) -> Self {
-        self.tail_kind = crate::instr_types::TailCallKind::NoTail;
+        self.tail_kind = TailCallKind::NoTail;
         self
     }
 
@@ -8544,7 +8965,7 @@ where
         let fn_ty =
             FunctionType::<'ctx, B>::new(self.fn_ty, ModuleRef::<B>::new(self.parent.module));
         self.parent.validate_call_site_args(fn_ty, &self.args)?;
-        let payload = crate::instr_types::CallInstData::new_with_attrs(
+        let payload = CallInstData::new_with_attrs(
             self.callee_id,
             self.fn_ty,
             self.args.into_boxed_slice(),
@@ -8611,7 +9032,7 @@ where
     /// *foreign* module can set it — the borrowing facade lifts infallibly.
     callee: IrResult<TypedFunctionValue<'ctx, Ret, Params, B>>,
     args: A,
-    tail_kind: crate::instr_types::TailCallKind,
+    tail_kind: TailCallKind,
     calling_conv: Option<CallingConv>,
     attrs: CallAttributeData,
     name: String,
@@ -8628,17 +9049,17 @@ where
     A: CallArgs<'ctx, Params, B>,
 {
     pub fn tail(mut self) -> Self {
-        self.tail_kind = crate::instr_types::TailCallKind::Tail;
+        self.tail_kind = TailCallKind::Tail;
         self
     }
 
     pub fn must_tail(mut self) -> Self {
-        self.tail_kind = crate::instr_types::TailCallKind::MustTail;
+        self.tail_kind = TailCallKind::MustTail;
         self
     }
 
     pub fn no_tail(mut self) -> Self {
-        self.tail_kind = crate::instr_types::TailCallKind::NoTail;
+        self.tail_kind = TailCallKind::NoTail;
         self
     }
 
@@ -8666,7 +9087,7 @@ where
         let f = self.callee?.as_function();
         let arg_ids = self.args.lower(ModuleRef::new(self.parent.module))?;
         let calling_conv = self.calling_conv.unwrap_or_else(|| f.calling_conv());
-        let payload = crate::instr_types::CallInstData::new_with_attrs(
+        let payload = CallInstData::new_with_attrs(
             f.slot(),
             f.signature().as_type().id(),
             arg_ids,
@@ -8968,7 +9389,7 @@ where
             let folded = self.checked_folded_value(folded, true_ty)?;
             return Ok(A::from_select_value(folded, &SelectNarrow::new()));
         }
-        let payload = crate::instr_types::SelectInstData::new(c.slot(), true_v.id, false_v.id);
+        let payload = SelectInstData::new(c.slot(), true_v.id, false_v.id);
         let inst = self.append_instruction(true_ty, InstructionKindData::Select(payload), name);
         Ok(A::from_select_value(inst.to_erased(), &SelectNarrow::new()))
     }
@@ -9032,7 +9453,7 @@ fn walk_aggregate_for_builder(
                     }
                     None => {
                         return Err(IrError::TypeMismatch {
-                            expected: crate::error::TypeKindLabel::Struct,
+                            expected: TypeKindLabel::Struct,
                             got: Type::<DynBrand>::new(cur, m).kind_label(),
                         });
                     }
@@ -9040,7 +9461,7 @@ fn walk_aggregate_for_builder(
             }
             _ => {
                 return Err(IrError::TypeMismatch {
-                    expected: crate::error::TypeKindLabel::Struct,
+                    expected: TypeKindLabel::Struct,
                     got: Type::<DynBrand>::new(cur, m).kind_label(),
                 });
             }
@@ -9334,8 +9755,8 @@ mod tests {
         assert_eq!(
             err,
             IrError::TypeMismatch {
-                expected: crate::error::TypeKindLabel::Float,
-                got: crate::error::TypeKindLabel::Double,
+                expected: TypeKindLabel::Float,
+                got: TypeKindLabel::Double,
             }
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -9373,8 +9794,8 @@ mod tests {
         assert_eq!(
             err,
             IrError::TypeMismatch {
-                expected: crate::error::TypeKindLabel::Float,
-                got: crate::error::TypeKindLabel::Double,
+                expected: TypeKindLabel::Float,
+                got: TypeKindLabel::Double,
             }
         );
         assert_eq!(b.insert_block().instructions().len(), 0);

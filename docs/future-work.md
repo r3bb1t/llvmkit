@@ -1,11 +1,16 @@
 # Future work
 
-This document captures everything the `feature-1/irbuilder-type-safety`
-session's audits found but did not implement. Each item cites the audit
-source (source file or upstream reference) so a later session can pick it
-up cold. Transcribed faithfully from that session's approved design and
-plan documents (kept outside the repository), plus a "Session follow-ups"
-section for items individual tasks punted during execution.
+The live backlog: what is known-missing, what was deliberately deferred, and
+**why** in each case. Several rustdoc comments in `crates/` point here rather
+than restating a deferral inline, so entries are written to be read cold.
+
+Each item cites its source — a file and symbol, an upstream reference, or the
+cycle that decided it. Items that later shipped are struck through and dated
+rather than deleted, so a reader can tell "never done" from "done, here is what
+actually landed".
+
+It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
+accumulated every cycle since; the oldest sections are still organised that way.
 
 ## Killer-feature designs (deferred)
 
@@ -116,6 +121,144 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   see the session's archived plan for the sweep's methodology and rerun it.
 
 ## Type-system follow-ups
+
+- ~~**Block-argument edges are only half-guarded, and only on half the
+  terminators**~~ (found 2026-07-27 re-reading
+  `docs/design/phi-type-guarantees-design.md` against the tree; the design
+  promised both halves and neither was noticed missing for 17 days, through the
+  0.0.4 freeze) — **done (2026-07-27, `feature-34/polish-freeze`).** Both gaps
+  were closed in one change, as the entry insisted they had to be: closing
+  either alone would have left `br`/`cond_br` guarded while `switch`/`invoke`
+  silently were not.
+
+  1. **A plain branch into a parameterised block is now rejected.**
+     `IRBuilder::build_br` / `build_cond_br` / `build_switch(_dyn)` (default
+     edge) / `SwitchInst::add_case` / every `build_invoke*` (both edges) /
+     `build_callbr*` (default and indirect edges) /
+     `IndirectBrInst::add_destination` all route their successors through one
+     guard, `basic_block.rs::require_no_block_parameters`, which reports the
+     existing `IrError::PhiArgArityMismatch` — the same error a wrong argument
+     *count* already got from `build_br_with_args`, so one mistake reads the
+     same wherever it is caught. The check runs before the terminator is
+     emitted, so a rejected edge leaves no half-formed instruction.
+
+     **The early-out is not the one this entry proposed, and the difference is
+     load-bearing.** "Is the target's first instruction a phi?" would have
+     broken the two authoring paths that legitimately branch into a block whose
+     head-phis are not block *parameters*: the `.ll` parser (a back-edge to an
+     already-parsed loop header) and `SsaBuilder` (a back-edge to an unsealed
+     header whose reads have minted operandless phis, completed later at
+     `seal_block`). Both seed those phis through their own checked paths, and
+     neither can spell an argument list. So a block instead records the
+     parameter count it was *created* with — a `Cell<usize>` on
+     `BasicBlockData`, set only by `append_block_with_params`,
+     `append_block_with_named_params`, and `append_block_typed` — and the guard
+     early-outs on that single read. It is cheaper than the proposed scan-gate
+     (no instruction-list touch at all on the hot path) and it is the more
+     honest predicate: *parameterised* is a property of how the block was
+     authored, not of what its first instruction happens to be. The scan
+     survives as the shared `block_parameter_phis`, which both `add_block_args`
+     and the guard's error message read, so "how many parameters" has one
+     definition. `plain_branch_into_auto_ssa_phi_block_still_builds`
+     (`tests/block_args_terminators.rs`) pins the distinction.
+
+  2. **`switch` and `invoke` have argument-carrying forms.**
+     `build_switch_with_args` / `build_switch_dyn_with_args` take the default
+     edge as a `(target, args)` pair plus a `(case_value, target, args)` triple
+     per case — the whole case list at the call, so the returned `SwitchInst`
+     is already `TermClosed` and no later `add_case` can bolt on an unseeded
+     edge. `build_invoke_with_args` / `build_invoke_dyn_with_args` take a
+     `(destination, args)` pair for each of the two mandatory edges. All four
+     bundle each edge with its arguments into one parameter (the case list
+     forces that shape, and it keeps `invoke`'s call arguments and result name
+     out of an eight-parameter signature), and all four validate arity and
+     argument types up front, per edge, exactly as `build_cond_br_with_args`
+     does — sharing its documented non-atomicity across edges.
+
+  **Residual, deliberately reject-only:** `indirectbr`, `callbr`, and the
+  *indirect-callee* and *inline-asm-callee* `invoke` shapes have no
+  argument-carrying twin — an `indirectbr`/`callbr` indirect edge is selected at
+  run time, so there is nothing to hang a per-edge argument list on, and the two
+  exotic invoke callees would need their own signature explosion for no known
+  consumer. A parameterised destination is rejected there rather than silently
+  under-seeded; authoring a phi in such a block goes through `SsaBuilder` or
+  `FnReshape::insert_phi`, on a block created with plain `append_basic_block`.
+  For `indirectbr` this is precisely the restriction the design asked for.
+
+- ~~**Six `#[cfg_attr(not(test), allow(dead_code))]` violate the `#[allow]` ban**~~
+  — **done (2026-07-27, at the 0.0.4 freeze).** AGENTS.md bans `#[allow(...)]`
+  unconditionally — "not anything else" — and a `cfg_attr` wrapper does not
+  exempt it. All six sat on the crate-internal raw-phi authoring surface
+  (`PhiInst`/`FpPhiInst`/`PointerPhiInst::add_incoming` in `instructions.rs`,
+  and `IRBuilder::build_int_phi`/`build_fp_phi`/`build_pointer_phi`), which went
+  dead in non-test builds when block arguments took over as the public
+  phi-authoring surface.
+
+  Fixed the way the law prescribes — drop the dead code — by marking all six
+  `#[cfg(test)]`, since their only callers were ever `src/phi_raw_tests/`. Two
+  imports (`IntoFloatValue`, `IntoPointerValue`) became test-only with them and
+  are gated the same way rather than suppressed.
+
+  This re-pointed `tests/compile_fail/raw_phi_builder_is_unnameable.rs`: it used
+  to prove the builders are *private* (`E0624`) and now proves they *do not
+  exist* in a dependent crate's build (`E0599`). That is the stronger claim — a
+  private method still exists and a later `pub` slip would expose it, whereas a
+  method compiled out cannot be reached at all. Fixture doc comment rewritten
+  and `.stderr` regenerated on 1.96.0.
+
+- ~~**Metadata is the one currency 2.0 did not tag**~~ — **done (2026-07-27, at
+  the 0.0.4 freeze).** Found during the cycle E freeze sweep and pre-existing
+  rather than a 2.0 regression: 2.0 tagged the *value* currency and left this
+  one behind. `MetadataSlot` was a bare `usize` arena index and the `ValueSlot`
+  inside `DebugMetadataOperand::Value` was likewise bare, so **neither half of
+  D7 reached metadata** — no `B` for two modules' handles to differ in, and no
+  tag for the arena boundary to check. An *in-range* slot minted in module A and
+  attached in module B resolved against **B's** arena in
+  `asm_writer::fmt_debug_metadata_operand` / `fmt_metadata_operand` and printed
+  the wrong node, silently. Cycle E had bounded the *reachability* of that
+  mistake (every attach point demands the target module's `Unverified` token,
+  and out-of-range slots became `IrError::UnknownMetadataSlot`) without closing
+  the hole.
+
+  Closed by mirroring cycle A's value split exactly:
+
+  - `MetadataSlot` stays the bare arena index and became **crate-internal**,
+    alongside `MetadataStore`. It is reachable only from the storage side.
+  - **`MetadataId<B: ModuleBrand>`** is the public currency —
+    `{ tag: ModuleId, slot: MetadataSlot }`, `Copy + Send + 'static`, brand
+    phantom `PhantomData<fn(B) -> B>`. `MetadataRef` (a `pub` newtype with a
+    `pub` field — a forgery hole of its own) is gone; `MetadataId` replaces it
+    everywhere.
+  - Every vocabulary type that carries a metadata reference gained the `B`:
+    `MetadataKind`, `SpecializedMetadataNode`, `MetadataField`,
+    `MetadataFieldValue`, `DebugRecord`, `DebugVariableRecord`,
+    `DebugMetadataOperand` (whose `Value` arm now carries `ValueId<B>`), and
+    `MetadataAttachmentSet`. `ModuleCore` is brand-free and cannot store a
+    generic, so the arena holds those same types at a crate-private
+    `StoredBrand`; the two forms meet at exactly two crate-internal
+    conversions — `into_stored`, which performs the tag check, and
+    `from_stored`, a pure retag of ids the arena already owns.
+  - The check lands at **one** choke point. `MetadataId::slot` exists only on
+    `MetadataId<StoredBrand>`, so the only route from a caller's id to an arena
+    index is `MetadataId::into_stored` / `ModuleCore::metadata_slot_of`, which
+    compares the `ModuleId` first. Forgetting the check one level up is not
+    expressible.
+  - A foreign id is **`IrError::ForeignMetadataId`** (new; the metadata twin of
+    `ForeignValueId`) on every entry point that accepts one, which made
+    `metadata_tuple` / `metadata_tuple_with_distinct` / `metadata_specialized` /
+    `metadata_node` / `metadata_as_value`, every `set_metadata` setter
+    (instruction, function, and the three globals), and `push_debug_record`
+    fallible. `metadata_constant` joined them for the same reason on the value
+    side. `UnknownMetadataSlot` keeps the
+    out-of-range case, now reachable only for a *native* id.
+
+  The `.ll` parser holds `MetadataId<B>` in its `!N` bookkeeping and needed no
+  raw-slot escape hatch: every id it hands back was minted by the module it is
+  populating. Printed IR is byte-identical — the byte-locked example suites and
+  the parser round-trip corpus are unchanged. Locked by
+  `tests/module_ownership.rs::a_metadata_id_from_another_module_is_refused_everywhere`
+  (runtime tag, two `DynBrand` modules with identically-shaped arenas) and
+  `tests/compile_fail/cross_module_metadata_attachment.rs` (two named brands).
 
 - **Const-generic `VectorType<E, Len<N>>` / `ArrayType<E, ArrLen<N>>` — shipped**
   (`feature-17/const-generic-vec-array`, S1–S6). `VectorType`/`VectorValue` and
@@ -228,13 +371,14 @@ deferred it.
   `ret_void`/`unreachable` terminators only. Aggregate variable categories
   (per-field fan-out through `StructSchema`) and `invoke`/`callbr`/EH
   terminators are the documented future scope in the module's own doc comment.
-- **`IrField::ir_type` accepting `ModuleRef`** -- `IrField::ir_type` and
-  `StructSchema::ir_type` currently demand `&Module<'ctx, B, Unverified>`.
-  `build_field_gep` (`ir_builder.rs`) has to construct a temporary
-  `Module::from_core(self.module)` wrapper solely to call `S::ir_type(...)`.
-  Widening the trait method to accept `ModuleRef`/`&ModuleCore` directly
-  would remove the need for `Module::from_core` entirely. Flagged during
-  Task 6's review as a candidate for this document.
+- **`IrField::ir_type` accepting a module view -- done** (0.0.4 cycle C,
+  `feature-32/owned-modules`). `IrField::ir_type`, `StructSchema::field_types` /
+  `ir_type`, `FunctionReturn::ir_type`, `FunctionParam::ir_type` and
+  `FunctionParamList::ir_types` now take `ModuleView<'ctx, B>` instead of
+  `&Module<..., Unverified>`, so `build_field_gep` no longer wraps a temporary
+  module token to call `S::ir_type(...)` — `Module::from_core` is gone with it.
+  Type construction is preservation-neutral, which is why the view already
+  carried the constructor surface.
 - **`proptest` `undef_var` index randomization** -- the auto-SSA property
   test suite's undefined-variable-read fixture hardcodes `Some(0)` as the
   undefined variable index instead of drawing from `0..var_count`; a one-line
@@ -374,20 +518,28 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   that pattern -- `declare_runtime_fn` / `append_ctor` / `add_global` helpers
   plus the `llvm.global_ctors` machinery -- is deferred until an in-tree
   consumer needs it.
-- **`Module::scratch_unverified` footgun** -- the read-only `Dyn` containers
-  (`pass_manager.rs`) call the `pub(crate)` `Module::scratch_unverified`
-  (`module.rs` ~2977) to mint a throwaway `Unverified` alias purely to satisfy
-  the erased pass signature; every member is `Inspect`, so the token projects
-  to `()` and never reaches a mutator. It is sound today by that argument, but
-  a `pub(crate)` unverify with no caller marker is a footgun -- a sealed
-  caller-marker token would pin that only the read-only drivers can mint it.
-- **Compile-fail `.stderr` canonical-rustc bless** -- the
-  `typestate_compile_fail` suite carries two pre-existing `.stderr` drifts
-  (`folder_typed_wrong_width`, `extract_value_empty_indices`) blessed against a
-  different (CI) rustc, plus the six new pass-API fixtures (including
-  `claim_preserved_after_mutate`) blessed on the local rustc. The whole set
-  should be re-blessed on the canonical CI rustc so every fixture matches on the
-  reference toolchain.
+- ~~**`Module::scratch_unverified` footgun**~~ -- **done (2026-07-26, cycle
+  cycle C1)**. `scratch_unverified` doesn't exist anymore. `feat(cycle C1): Module
+  owns its ModuleCore` replaced it with `Module<B, Unverified>::assume_verified`
+  (`module.rs` ~4090, still `pub(crate)`), called from the read-only `Dyn`
+  pipelines' `run` methods (`DynReadOnlyFunctionPipeline::run` /
+  `DynReadOnlyModulePipeline::run`, `pass_manager.rs` ~1819-1825 and
+  ~1968-1976): `module.unverify()` hands out the token, every queued pass is
+  `Inspect` so it projects to `()` and never reaches a mutator, and
+  `unverified.assume_verified()` re-stamps that same token `Verified` with no
+  re-verification. The original footgun doesn't apply anymore: a `Module` now
+  *owns* its core by move rather than pointing at shared storage, so there is
+  no way to mint a second live token over the same data. `assume_verified`
+  round-trips the one token the pipeline already holds -- it doesn't conjure a
+  throwaway one, so the caller-marker gap the old bullet worried about has
+  nothing left to guard against.
+- ~~**Compile-fail `.stderr` canonical-rustc bless**~~ -- **done (2026-07-26,
+  cycle cycle D/E)**. There were never two "environmental" drifts: gated on the
+  pinned CI toolchain (`cargo +1.96.0`), `folder_typed_wrong_width` and
+  `extract_value_empty_indices` both pass, and the whole suite's baseline is
+  **0 failures of 83 registered fixtures**. The mismatch only ever appeared
+  when the suite was run on a *newer* rustc than the pin. Every `.stderr` in
+  the tree is blessed on 1.96.0; re-bless there and nowhere else.
 
 ## Package 4 (analysis preservation) — deferred
 
@@ -519,11 +671,8 @@ shipped, the **"branching bugs impossible at the type level"** program's typed
 surfaces are largely complete. What remains is deliberately out of scope rather
 than pending:
 
-- **Universal per-function branding (`build_body`)** — designed and spec'd
-  (`docs/superpowers/specs/2026-07-20-per-fn-branding-design.md`: a defaulted
-  `Fb: FnBrand = FnErased`, a generative `FnScoped<'fid>` opted into via
-  `func.build_body(|fb| …)`, with `build_br` requiring a matching brand so
-  branded labels cannot escape the body), then **deferred out of the type-safety
+- **Universal per-function branding (`build_body`)** — designed in full, then
+  **deferred out of the type-safety
   program** after re-analysis against the actual consumers. The evidence points
   one way: (1) regular authoring gains nothing — the default is `FnErased`, so
   existing `position_at_end` sites stay byte-identical and untouched, leaving the
@@ -531,8 +680,28 @@ than pending:
   lifter, stores SSA registers as **function arguments** (for concolic
   constant-visibility) and **rebuilds CFGs from runtime-recovered structure**, so
   a compile-time, un-nameable per-function `'fid` fights its model rather than
-  helping it — its edges are recovered, not statically authored. The locked API
-  decisions survive in the spec; the rung is not pursued in this program.
+  helping it — its edges are recovered, not statically authored.
+
+  **The locked design, recorded here because its spec does not ship.** The
+  original write-up lives under `docs/superpowers/`, which is gitignored, so it
+  is unreachable for anyone reading the repository; these are the decisions
+  worth keeping. `FunctionValue` gains a defaulted brand parameter
+  `Fb: FnBrand = FnErased`, so every existing call site is unchanged. Opting in
+  goes through `func.build_body(|fb| …)`, which mints a generative
+  `FnScoped<'fid>` for the closure body; `build_br` (and the other
+  branch builders) require the target label's `Fb` to match the builder's, so a
+  label minted in one function's body is not the right *type* to branch to from
+  another's. That is what makes a cross-function branch — LLVM's "Referring to a
+  basic block in another function!" — a compile error instead of a verifier
+  finding.
+
+  Two things changed under it since: 0.0.4 deleted the closure-scoped
+  module constructor, so `build_body` would reintroduce the one shape the
+  redesign removed; and block targets are now storable `BlockId<R, B, Params>`
+  ids rather than borrowed labels, so a per-function *lifetime* has nothing to
+  attach to. A 2.0-shaped revival would need a per-function marker on `BlockId`
+  itself. Until then the rule stays a `Module::verify()` check — see the "br
+  target is not a basic block of the parent function" family in `verifier.rs`.
   Revisit only as its own opt-in cycle if a concrete authoring need appears.
 - **Whole-graph verifier territory** — phi-incoming completeness against the
   final predecessor set for builder-constructed IR, and dominance, are permanent
