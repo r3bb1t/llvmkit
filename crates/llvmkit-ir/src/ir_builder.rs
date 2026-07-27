@@ -40,17 +40,20 @@ use core::marker::PhantomData;
 use super::align::{Align, MaybeAlign};
 use super::array_len::ArrayLen;
 use super::atomic_ordering::AtomicOrdering;
+use super::atomicrmw_binop::AtomicRMWBinOp;
 use super::basic_block::{BasicBlock, BlockCall, IntoBasicBlockLabel};
 use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{Terminated, Unterminated};
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::CmpPredicate;
+use super::cmp_predicate::{FloatPredicate, IntPredicate};
 use super::constant::{Constant, ConstantExprFlags, ConstantExprOpcode};
 use super::constant_fold;
 use super::constants::ConstantExprOptions;
 use super::derived_types::{FloatType, FunctionType, IntType, PointerType, StructType};
 use super::element::{ElemDyn, StaticVecElem, VecElem, WrapWitness};
 use super::error::{IrError, IrResult, TypeKindLabel};
+use super::float_kind::{BFloat, Fp128, Half, PpcFp128, StaticFloatKind, X86Fp80};
 use super::float_kind::{FloatDyn, FloatKind, FloatWiderThan, IntoFloatValue};
 use super::fmf::FastMathFlags;
 use super::function::{FunctionValue, IntoCallee};
@@ -63,6 +66,17 @@ use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::inline_asm::InlineAsm;
 use super::instr_types::FNegInstData;
 use super::instr_types::{
+    AShrFlags, AddFlags, AllocaFlags, AllocaInstData, AtomicCmpXchgConfig, AtomicCmpXchgInstData,
+    AtomicRMWConfig, AtomicRMWInstData, BranchInstData, BranchKind, CallBrInstData, CallInstData,
+    CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
+    CleanupReturnInstData, CmpInstData, ExtractElementInstData, ExtractValueInstData, FCmpInstData,
+    FenceInstData, FreezeInstData, GepInstData, ICmpFlags, IndirectBrInstData,
+    InsertElementInstData, InsertValueInstData, InvokeInstData, LShrFlags, LandingPadInstData,
+    MulFlags, OrFlags, PhiData, ResumeInstData, SDivFlags, SelectInstData, ShlFlags,
+    ShuffleVectorInstData, SubFlags, SwitchInstData, TailCallKind, TruncFlags, UDivFlags,
+    UIToFpFlags, UnreachableInstData, VAArgInstData, WriteBinopFlags, ZExtFlags,
+};
+use super::instr_types::{
     BinaryOpData, BinaryOpcode, CallAttributeData, CastOpData, CastOpcode, LoadInstData,
     OverflowFlags, POISON_MASK_ELEM, ReturnOpData, StoreInstData, UnaryOpcode,
 };
@@ -70,15 +84,18 @@ use super::instruction::{
     Instruction, InstructionKind, InstructionKindData, InstructionView, build_instruction_value,
     state::Attached,
 };
+use super::instructions::FenceInst;
 use super::instructions::{
     CallBrInst, CallInst, CatchPadInst, CatchSwitchInst, CleanupPadInst, IndirectBrInst,
     InvokeInst, LandingPadInst, StoreInst, SwitchInst,
 };
+use super::int_width::WiderThan;
 use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::intrinsic_inst::IntrinsicInst;
 use super::intrinsics::{BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::folder::IRBuilderFolder;
+use super::marker::ExpectedRetKind;
 use super::marker::{Dyn, Ptr, ReturnMarker};
 use super::module::{
     DynBrand, Invariant, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified,
@@ -776,7 +793,7 @@ where
         block: Block,
     ) -> IrResult<()>
     where
-        RBb: crate::marker::ReturnMarker,
+        RBb: ReturnMarker,
         Phi: IntoErasedValue<'ctx, B>,
         Val: IntoErasedValue<'ctx, B>,
         Block: IntoBasicBlockLabel<'ctx, RBb, B>,
@@ -859,7 +876,7 @@ where
         ty: TypeSlot,
         name: &str,
     ) -> Value<'ctx, B> {
-        let payload = crate::instr_types::PhiData::new();
+        let payload = PhiData::new();
         let value = build_instruction_value(ty, block_id, InstructionKindData::Phi(payload), None);
         // Snapshot operand ids before the value moves into the arena so the
         // new phi can be registered in each operand's reverse use-list --
@@ -1201,7 +1218,7 @@ where
             lhs,
             rhs,
             name,
-            crate::instr_types::MulFlags::new(),
+            MulFlags::new(),
             InstructionKindData::Mul,
         )
         .map(|v| v.id())
@@ -1317,7 +1334,7 @@ where
             lhs,
             rhs,
             name,
-            crate::instr_types::ShlFlags::new(),
+            ShlFlags::new(),
             InstructionKindData::Shl,
         )
         .map(|v| v.id())
@@ -1410,7 +1427,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::OrFlags,
+        flags: OrFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1455,7 +1472,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::AddFlags,
+        flags: AddFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1480,7 +1497,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::SubFlags,
+        flags: SubFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1505,7 +1522,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::MulFlags,
+        flags: MulFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1530,7 +1547,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::ShlFlags,
+        flags: ShlFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1555,7 +1572,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::UDivFlags,
+        flags: UDivFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1580,7 +1597,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::SDivFlags,
+        flags: SDivFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1605,7 +1622,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::LShrFlags,
+        flags: LShrFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1630,7 +1647,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::AShrFlags,
+        flags: AShrFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1693,12 +1710,12 @@ where
     /// type's `WriteBinopFlags` impl writes its bits onto the
     /// payload; the kind constructor lifts the payload into the
     /// matching `InstructionKindData` variant.
-    fn build_int_binop_flagged<W, Lhs, Rhs, Flags, Kind>(
+    fn build_int_binop_flagged<W, Lhs, Rhs, Flags, Kind, N>(
         &self,
         opcode: BinaryOpcode,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: N,
         flags: Flags,
         kind_ctor: Kind,
     ) -> IrResult<IntValue<'ctx, W, B>>
@@ -1706,8 +1723,9 @@ where
         W: IntWidth,
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
-        Flags: crate::instr_types::WriteBinopFlags,
+        Flags: WriteBinopFlags,
         Kind: FnOnce(BinaryOpData) -> InstructionKindData,
+        N: AsRef<str>,
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
@@ -1735,12 +1753,12 @@ where
     /// wraps the payload into an [`InstructionKindData`] variant.
     /// All integer binary opcodes route through the folder before materialising
     /// an instruction.
-    fn build_int_binop<W, Lhs, Rhs, F2>(
+    fn build_int_binop<W, Lhs, Rhs, F2, N>(
         &self,
         opcode: BinaryOpcode,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: N,
         kind_ctor: F2,
     ) -> IrResult<IntValue<'ctx, W, B>>
     where
@@ -1748,6 +1766,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
+        N: AsRef<str>,
     {
         let lhs = lhs.into_int_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_int_value(ModuleRef::new(self.module))?;
@@ -1781,16 +1800,17 @@ where
     /// (scalar `iN` or integer vector `<N x iM>`), the result taking the LHS
     /// operand's type. Skips the scalar-only `IntoIntValue` conversion the
     /// typed `build_int_*` family performs, so it accepts vector operands.
-    fn build_int_binop_dyn<F2>(
+    fn build_int_binop_dyn<F2, N>(
         &self,
         opcode: BinaryOpcode,
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
-        name: impl AsRef<str>,
+        name: N,
         kind_ctor: F2,
     ) -> IrResult<Value<'ctx, B>>
     where
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
+        N: AsRef<str>,
     {
         if let Some(folded) = self.folder.fold_bin_op_dyn(opcode, lhs, rhs)? {
             return self.checked_folded_value(folded, lhs.ty);
@@ -2121,12 +2141,12 @@ where
 
     /// Crate-internal helper for float binops. Same shape as
     /// `build_int_binop` but parameterised by `K: FloatKind`.
-    fn build_fp_binop<K, Lhs, Rhs, F2>(
+    fn build_fp_binop<K, Lhs, Rhs, F2, N>(
         &self,
         opcode: BinaryOpcode,
         lhs: Lhs,
         rhs: Rhs,
-        name: impl AsRef<str>,
+        name: N,
         kind_ctor: F2,
     ) -> IrResult<FloatValue<'ctx, K, B>>
     where
@@ -2134,6 +2154,7 @@ where
         Lhs: IntoFloatValue<'ctx, K, B>,
         Rhs: IntoFloatValue<'ctx, K, B>,
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
+        N: AsRef<str>,
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
@@ -2151,13 +2172,13 @@ where
     /// Crate-internal helper for float binops with an explicit
     /// [`crate::fmf::FastMathFlags`] parameter rather than the builder-context
     /// FMF. Used by the `build_fp_*_fmf` family.
-    fn build_fp_binop_with_fmf<K, Lhs, Rhs, F2>(
+    fn build_fp_binop_with_fmf<K, Lhs, Rhs, F2, N>(
         &self,
         opcode: BinaryOpcode,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
-        name: impl AsRef<str>,
+        fmf: FastMathFlags,
+        name: N,
         kind_ctor: F2,
     ) -> IrResult<FloatValue<'ctx, K, B>>
     where
@@ -2165,6 +2186,7 @@ where
         Lhs: IntoFloatValue<'ctx, K, B>,
         Rhs: IntoFloatValue<'ctx, K, B>,
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
+        N: AsRef<str>,
     {
         let lhs = lhs.into_float_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_float_value(ModuleRef::new(self.module))?;
@@ -2182,7 +2204,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -2207,7 +2229,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -2232,7 +2254,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -2257,7 +2279,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -2282,7 +2304,7 @@ where
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -2306,10 +2328,10 @@ where
     /// Bypasses the builder-context FMF. Result is `i1`.
     pub fn build_fp_cmp_fmf<K, Lhs, Rhs, Name>(
         &self,
-        pred: crate::cmp_predicate::FloatPredicate,
+        pred: FloatPredicate,
         lhs: Lhs,
         rhs: Rhs,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<IntValueId<bool, B>>
     where
@@ -2324,7 +2346,7 @@ where
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
             return Ok(folded.id());
         }
-        let mut payload = crate::instr_types::FCmpInstData::new(pred, lhs.slot(), rhs.slot());
+        let mut payload = FCmpInstData::new(pred, lhs.slot(), rhs.slot());
         payload.fmf = fmf;
         Ok(self
             .append_int_at(i1, InstructionKindData::FCmp(payload), name)
@@ -2335,7 +2357,7 @@ where
     /// `IRBuilder::CreateFCmp`. Result is `i1`.
     pub fn build_fp_cmp<K, Lhs, Rhs, Name>(
         &self,
-        pred: crate::cmp_predicate::FloatPredicate,
+        pred: FloatPredicate,
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
@@ -2352,7 +2374,7 @@ where
         if let Some(folded) = self.folder.fold_fp_cmp(pred, lhs, rhs)? {
             return Ok(folded.id());
         }
-        let mut payload = crate::instr_types::FCmpInstData::new(pred, lhs.slot(), rhs.slot());
+        let mut payload = FCmpInstData::new(pred, lhs.slot(), rhs.slot());
         // Apply builder-context FMF (`fcmp` is an `FPMathOperator` upstream).
         payload.fmf = self.fmf;
         Ok(self
@@ -2680,7 +2702,7 @@ where
     pub fn build_float_neg_with_flags<K, V, Name>(
         &self,
         value: V,
-        fmf: crate::fmf::FastMathFlags,
+        fmf: FastMathFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -2708,7 +2730,7 @@ where
         V: IntoErasedValue<'ctx, B>,
     {
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
-        let payload = crate::instr_types::FreezeInstData::new(v.id);
+        let payload = FreezeInstData::new(v.id);
         let inst = self.append_instruction(v.ty, InstructionKindData::Freeze(payload), name);
         Ok(FreezeInstId::from_raw(self.module.id(), inst.slot()))
     }
@@ -2729,7 +2751,7 @@ where
     {
         let list_ptr = list_ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(list_ptr);
-        let payload = crate::instr_types::VAArgInstData::new(v.id);
+        let payload = VAArgInstData::new(v.id);
         let inst = self.append_instruction(result_ty.id, InstructionKindData::VAArg(payload), name);
         Ok(VAArgInstId::from_raw(self.module.id(), inst.slot()))
     }
@@ -2790,7 +2812,7 @@ where
         if let Some(folded) = self.folder.fold_extract_value_dyn(agg, indices)? {
             return self.checked_folded_value(folded, leaf_ty).map(|v| v.id());
         }
-        let payload = crate::instr_types::ExtractValueInstData::new(agg.id, indices.to_vec());
+        let payload = ExtractValueInstData::new(agg.id, indices.to_vec());
         let inst =
             self.append_instruction(leaf_ty, InstructionKindData::ExtractValue(payload), name);
         Ok(inst.to_erased().id())
@@ -2863,8 +2885,7 @@ where
         if let Some(folded) = self.folder.fold_insert_value_dyn(agg, val, indices)? {
             return self.checked_folded_value(folded, agg.ty).map(|v| v.id());
         }
-        let payload =
-            crate::instr_types::InsertValueInstData::new(agg.id, val.id, indices.to_vec());
+        let payload = InsertValueInstData::new(agg.id, val.id, indices.to_vec());
         let inst = self.append_instruction(agg.ty, InstructionKindData::InsertValue(payload), name);
         Ok(inst.to_erased().id())
     }
@@ -2931,7 +2952,7 @@ where
     where
         Name: AsRef<str>,
         V: IntoErasedValue<'ctx, B>,
-        W: crate::int_width::IntWidth,
+        W: IntWidth,
         I: IntoIntValue<'ctx, W, B>,
     {
         let vec = vector.into_erased_value(ModuleRef::new(self.module))?;
@@ -2941,7 +2962,7 @@ where
             Some((e, _, _)) => e,
             None => {
                 return Err(IrError::TypeMismatch {
-                    expected: crate::error::TypeKindLabel::FixedVector,
+                    expected: TypeKindLabel::FixedVector,
                     got: vec.ty().kind_label(),
                 });
             }
@@ -2949,7 +2970,7 @@ where
         if let Some(folded) = self.folder.fold_extract_element_dyn(vec, idx)? {
             return self.checked_folded_value(folded, elem_ty).map(|v| v.id());
         }
-        let payload = crate::instr_types::ExtractElementInstData::new(vec.id, idx.id);
+        let payload = ExtractElementInstData::new(vec.id, idx.id);
         let inst =
             self.append_instruction(elem_ty, InstructionKindData::ExtractElement(payload), name);
         Ok(inst.to_erased().id())
@@ -2968,7 +2989,7 @@ where
         Name: AsRef<str>,
         V: IntoErasedValue<'ctx, B>,
         E: IntoErasedValue<'ctx, B>,
-        W: crate::int_width::IntWidth,
+        W: IntWidth,
         I: IntoIntValue<'ctx, W, B>,
     {
         let vec = vector.into_erased_value(ModuleRef::new(self.module))?;
@@ -2978,7 +2999,7 @@ where
         if let Some(folded) = self.folder.fold_insert_element_dyn(vec, val, idx)? {
             return self.checked_folded_value(folded, vec.ty).map(|v| v.id());
         }
-        let payload = crate::instr_types::InsertElementInstData::new(vec.id, val.id, idx.id);
+        let payload = InsertElementInstData::new(vec.id, val.id, idx.id);
         let inst =
             self.append_instruction(vec.ty, InstructionKindData::InsertElement(payload), name);
         Ok(inst.to_erased().id())
@@ -3019,7 +3040,7 @@ where
             }
             None => {
                 return Err(IrError::TypeMismatch {
-                    expected: crate::error::TypeKindLabel::FixedVector,
+                    expected: TypeKindLabel::FixedVector,
                     got: l.ty().kind_label(),
                 });
             }
@@ -3033,8 +3054,7 @@ where
                 .checked_folded_value(folded, result_ty_id)
                 .map(|v| v.id());
         }
-        let payload =
-            crate::instr_types::ShuffleVectorInstData::new(l.id, r.id, mask.iter().copied());
+        let payload = ShuffleVectorInstData::new(l.id, r.id, mask.iter().copied());
         let inst = self.append_instruction(
             result_ty_id,
             InstructionKindData::ShuffleVector(payload),
@@ -3371,18 +3391,14 @@ where
         ordering: AtomicOrdering,
         sync_scope: SyncScope,
         name: Name,
-    ) -> IrResult<crate::instructions::FenceInst<'ctx, B>>
+    ) -> IrResult<FenceInst<'ctx, B>>
     where
         Name: AsRef<str>,
     {
-        let payload = crate::instr_types::FenceInstData::new(ordering, sync_scope);
+        let payload = FenceInstData::new(ordering, sync_scope);
         let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Fence(payload), name);
-        Ok(crate::instructions::FenceInst::from_raw(
-            inst.slot(),
-            self.module,
-            void_ty,
-        ))
+        Ok(FenceInst::from_raw(inst.slot(), self.module, void_ty))
     }
 
     /// Produce `cmpxchg [weak] [volatile] <ptr-ty> <ptr>, <cmp-ty> <cmp>,
@@ -3396,7 +3412,7 @@ where
         ptr: P,
         cmp: C,
         new_val: N,
-        config: crate::instr_types::AtomicCmpXchgConfig,
+        config: AtomicCmpXchgConfig,
         name: Name,
     ) -> IrResult<AtomicCmpXchgInstId<B>>
     where
@@ -3416,7 +3432,7 @@ where
         }
         let module_view = ModuleView::<B>::new(self.module);
         let result_ty = module_view.struct_type([c.ty(), module_view.bool_type().as_type()], false);
-        let payload = crate::instr_types::AtomicCmpXchgInstData::new(p.id, c.id, n.id, config);
+        let payload = AtomicCmpXchgInstData::new(p.id, c.id, n.id, config);
         let result_id = result_ty.as_type().id();
         let inst =
             self.append_instruction(result_id, InstructionKindData::AtomicCmpXchg(payload), name);
@@ -3431,10 +3447,10 @@ where
     /// the storable [`AtomicRMWInstId<B>`](crate::AtomicRMWInstId).
     pub fn build_atomicrmw<P, V, Name>(
         &self,
-        op: crate::atomicrmw_binop::AtomicRMWBinOp,
+        op: AtomicRMWBinOp,
         ptr: P,
         value: V,
-        config: crate::instr_types::AtomicRMWConfig,
+        config: AtomicRMWConfig,
         name: Name,
     ) -> IrResult<AtomicRMWInstId<B>>
     where
@@ -3444,7 +3460,7 @@ where
     {
         let p = ptr.into_erased_value(ModuleRef::new(self.module))?;
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
-        let payload = crate::instr_types::AtomicRMWInstData::new(op, p.id, v.id, config);
+        let payload = AtomicRMWInstData::new(op, p.id, v.id, config);
         let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRMW(payload), name);
         Ok(AtomicRMWInstId::from_raw(self.module.id(), inst.slot()))
     }
@@ -3478,19 +3494,18 @@ where
     ) -> IrResult<IntValueId<Dst, B>>
     where
         Name: AsRef<str>,
-        Src: crate::int_width::WiderThan<Dst>,
+        Src: WiderThan<Dst>,
         Dst: IntWidth,
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_cast_to_int(
-            crate::instr_types::CastOpcode::Trunc,
-            value.into_erased(),
-            dst_ty,
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_int(CastOpcode::Trunc, value.into_erased(), dst_ty)?
+        {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
+        let payload = CastOpData::new(CastOpcode::Trunc, value.slot());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -3512,24 +3527,23 @@ where
         &self,
         value: V,
         dst_ty: IntType<'ctx, Dst, B>,
-        flags: crate::instr_types::TruncFlags,
+        flags: TruncFlags,
         name: Name,
     ) -> IrResult<IntValueId<Dst, B>>
     where
         Name: AsRef<str>,
-        Src: crate::int_width::WiderThan<Dst>,
+        Src: WiderThan<Dst>,
         Dst: IntWidth,
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_cast_to_int(
-            crate::instr_types::CastOpcode::Trunc,
-            value.into_erased(),
-            dst_ty,
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_int(CastOpcode::Trunc, value.into_erased(), dst_ty)?
+        {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
+        let payload = CastOpData::new(CastOpcode::Trunc, value.slot());
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
         Ok(self
@@ -3552,18 +3566,17 @@ where
     where
         Name: AsRef<str>,
         Src: IntWidth,
-        Dst: crate::int_width::WiderThan<Src>,
+        Dst: WiderThan<Src>,
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_cast_to_int(
-            crate::instr_types::CastOpcode::ZExt,
-            value.into_erased(),
-            dst_ty,
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_int(CastOpcode::ZExt, value.into_erased(), dst_ty)?
+        {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.slot());
+        let payload = CastOpData::new(CastOpcode::ZExt, value.slot());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -3579,24 +3592,23 @@ where
         &self,
         value: V,
         dst_ty: IntType<'ctx, Dst, B>,
-        flags: crate::instr_types::ZExtFlags,
+        flags: ZExtFlags,
         name: Name,
     ) -> IrResult<IntValueId<Dst, B>>
     where
         Name: AsRef<str>,
         Src: IntWidth,
-        Dst: crate::int_width::WiderThan<Src>,
+        Dst: WiderThan<Src>,
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_cast_to_int(
-            crate::instr_types::CastOpcode::ZExt,
-            value.into_erased(),
-            dst_ty,
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_int(CastOpcode::ZExt, value.into_erased(), dst_ty)?
+        {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, value.slot());
+        let payload = CastOpData::new(CastOpcode::ZExt, value.slot());
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
@@ -3618,18 +3630,17 @@ where
     where
         Name: AsRef<str>,
         Src: IntWidth,
-        Dst: crate::int_width::WiderThan<Src>,
+        Dst: WiderThan<Src>,
         V: IntoIntValue<'ctx, Src, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_cast_to_int(
-            crate::instr_types::CastOpcode::SExt,
-            value.into_erased(),
-            dst_ty,
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_to_int(CastOpcode::SExt, value.into_erased(), dst_ty)?
+        {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::SExt, value.slot());
+        let payload = CastOpData::new(CastOpcode::SExt, value.slot());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -3659,15 +3670,14 @@ where
                 rhs: dst_w,
             });
         }
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::Trunc,
-            value.into_erased(),
-            dst_ty.as_type(),
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_dyn(CastOpcode::Trunc, value.into_erased(), dst_ty.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
+        let payload = CastOpData::new(CastOpcode::Trunc, value.slot());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -3680,7 +3690,7 @@ where
         &self,
         value: V,
         dst_ty: IntType<'ctx, IntDyn, B>,
-        flags: crate::instr_types::TruncFlags,
+        flags: TruncFlags,
         name: Name,
     ) -> IrResult<IntValueId<IntDyn, B>>
     where
@@ -3696,15 +3706,14 @@ where
                 rhs: dst_w,
             });
         }
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::Trunc,
-            value.into_erased(),
-            dst_ty.as_type(),
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_dyn(CastOpcode::Trunc, value.into_erased(), dst_ty.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::Trunc, value.slot());
+        let payload = CastOpData::new(CastOpcode::Trunc, value.slot());
         payload.nuw.set(flags.nuw);
         payload.nsw.set(flags.nsw);
         Ok(self
@@ -3726,7 +3735,7 @@ where
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        self.build_int_extend_dyn(value, dst_ty, name, crate::instr_types::CastOpcode::ZExt)
+        self.build_int_extend_dyn(value, dst_ty, name, CastOpcode::ZExt)
             .map(|v| v.id())
     }
 
@@ -3737,7 +3746,7 @@ where
         &self,
         src: V,
         dst: IntType<'ctx, IntDyn, B>,
-        flags: crate::instr_types::ZExtFlags,
+        flags: ZExtFlags,
         name: Name,
     ) -> IrResult<IntValueId<IntDyn, B>>
     where
@@ -3753,15 +3762,14 @@ where
                 rhs: dst_w,
             });
         }
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::ZExt,
-            src.into_erased(),
-            dst.as_type(),
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_dyn(CastOpcode::ZExt, src.into_erased(), dst.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::ZExt, src.slot());
+        let payload = CastOpData::new(CastOpcode::ZExt, src.slot());
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_int_at(dst, InstructionKindData::Cast(payload), name)
@@ -3782,18 +3790,21 @@ where
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        self.build_int_extend_dyn(value, dst_ty, name, crate::instr_types::CastOpcode::SExt)
+        self.build_int_extend_dyn(value, dst_ty, name, CastOpcode::SExt)
             .map(|v| v.id())
     }
 
     /// Crate-internal helper for `build_zext_dyn` / `build_sext_dyn`.
-    fn build_int_extend_dyn(
+    fn build_int_extend_dyn<N>(
         &self,
         value: IntValue<'ctx, IntDyn, B>,
         dst_ty: IntType<'ctx, IntDyn, B>,
-        name: impl AsRef<str>,
-        opcode: crate::instr_types::CastOpcode,
-    ) -> IrResult<IntValue<'ctx, IntDyn, B>> {
+        name: N,
+        opcode: CastOpcode,
+    ) -> IrResult<IntValue<'ctx, IntDyn, B>>
+    where
+        N: AsRef<str>,
+    {
         let src_w = value.ty().bit_width();
         let dst_w = dst_ty.bit_width();
         if dst_w <= src_w {
@@ -3851,7 +3862,7 @@ where
             None,
             MaybeAlign::NONE,
             self.alloca_addr_space(),
-            crate::instr_types::AllocaFlags::none(),
+            AllocaFlags::none(),
             name,
         )
     }
@@ -3875,7 +3886,7 @@ where
             Some(n.slot()),
             MaybeAlign::NONE,
             self.alloca_addr_space(),
-            crate::instr_types::AllocaFlags::none(),
+            AllocaFlags::none(),
             name,
         )
     }
@@ -3900,7 +3911,7 @@ where
             Some(n.slot()),
             MaybeAlign::new(align),
             self.alloca_addr_space(),
-            crate::instr_types::AllocaFlags::none(),
+            AllocaFlags::none(),
             name,
         )
     }
@@ -3922,20 +3933,23 @@ where
             None,
             MaybeAlign::new(align),
             self.alloca_addr_space(),
-            crate::instr_types::AllocaFlags::none(),
+            AllocaFlags::none(),
             name,
         )
     }
 
-    fn build_alloca_inner(
+    fn build_alloca_inner<N>(
         &self,
         allocated_ty: TypeSlot,
         num_elements: Option<ValueSlot>,
         align: MaybeAlign,
         addr_space: u32,
-        flags: crate::instr_types::AllocaFlags,
-        name: impl AsRef<str>,
-    ) -> IrResult<PointerValueId<B>> {
+        flags: AllocaFlags,
+        name: N,
+    ) -> IrResult<PointerValueId<B>>
+    where
+        N: AsRef<str>,
+    {
         // Materialise the DataLayout preferred alignment when omitted, like
         // upstream — every alloca funnels through here
         // (`computeAllocaDefaultAlign`).
@@ -3944,13 +3958,8 @@ where
         } else {
             align
         };
-        let payload = crate::instr_types::AllocaInstData::new_with_flags(
-            allocated_ty,
-            num_elements,
-            align,
-            addr_space,
-            flags,
-        );
+        let payload =
+            AllocaInstData::new_with_flags(allocated_ty, num_elements, align, addr_space, flags);
         let ptr_ty = ModuleView::<B>::new(self.module).ptr_type(addr_space);
         Ok(self
             .append_ptr(ptr_ty, InstructionKindData::Alloca(payload), name)
@@ -3968,7 +3977,7 @@ where
         num_elements: Option<IntValue<'ctx, IntDyn, B>>,
         align: MaybeAlign,
         addr_space: Option<u32>,
-        flags: crate::instr_types::AllocaFlags,
+        flags: AllocaFlags,
         name: Name,
     ) -> IrResult<PointerValueId<B>>
     where
@@ -4054,7 +4063,7 @@ where
     pub fn build_int_load<W, P, Name>(&self, ptr: P, name: Name) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
-        W: crate::int_width::StaticIntWidth,
+        W: StaticIntWidth,
         P: IntoPointerValue<'ctx, B>,
     {
         let ty = W::ir_type(ModuleRef::<B>::new(self.module));
@@ -4098,7 +4107,7 @@ where
     pub fn build_fp_load<K, P, Name>(&self, ptr: P, name: Name) -> IrResult<FloatValueId<K, B>>
     where
         Name: AsRef<str>,
-        K: crate::float_kind::StaticFloatKind,
+        K: StaticFloatKind,
         P: IntoPointerValue<'ctx, B>,
     {
         let ty = K::ir_type(ModuleRef::<B>::new(self.module));
@@ -4169,7 +4178,7 @@ where
     ) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
-        W: crate::int_width::StaticIntWidth,
+        W: StaticIntWidth,
         P: IntoPointerValue<'ctx, B>,
     {
         let ty = W::ir_type(ModuleRef::<B>::new(self.module));
@@ -4218,11 +4227,14 @@ where
         T::value_from_ir_value(raw)
     }
 
-    fn build_load_inner(
+    fn build_load_inner<N>(
         &self,
         mut payload: LoadInstData,
-        name: impl AsRef<str>,
-    ) -> IrResult<Instruction<'ctx, Attached, B>> {
+        name: N,
+    ) -> IrResult<Instruction<'ctx, Attached, B>>
+    where
+        N: AsRef<str>,
+    {
         let pointee_ty = payload.pointee_ty;
         // Materialise the DataLayout default like upstream — every load
         // (plain / volatile / atomic) funnels through here, so an omitted
@@ -4608,12 +4620,12 @@ where
             .into_typed_callee(ModuleRef::new(self.module))?
             .as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
-        let payload = crate::instr_types::CallInstData::new(
+        let payload = CallInstData::new(
             f.slot(),
             f.signature().as_type().id(),
             arg_ids,
             f.calling_conv(),
-            crate::instr_types::TailCallKind::None,
+            TailCallKind::None,
         );
         let inst = self.append_instruction(
             f.return_type().id(),
@@ -4643,12 +4655,12 @@ where
             .as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let (name, calling_conv, attrs) = config.into_parts();
-        let payload = crate::instr_types::CallInstData::new_with_attrs(
+        let payload = CallInstData::new_with_attrs(
             f.slot(),
             f.signature().as_type().id(),
             arg_ids,
             calling_conv,
-            crate::instr_types::TailCallKind::None,
+            TailCallKind::None,
             attrs,
         );
         let inst = self.append_instruction(
@@ -4678,7 +4690,7 @@ where
             parent: self,
             callee: callee.into_typed_callee(ModuleRef::new(self.module)),
             args,
-            tail_kind: crate::instr_types::TailCallKind::None,
+            tail_kind: TailCallKind::None,
             calling_conv: None,
             attrs: CallAttributeData::default(),
             name: String::new(),
@@ -4714,12 +4726,12 @@ where
         for v in varargs {
             arg_ids.push(v.into_erased_value(ModuleRef::new(self.module))?.slot());
         }
-        let payload = crate::instr_types::CallInstData::new(
+        let payload = CallInstData::new(
             f.slot(),
             f.signature().as_type().id(),
             arg_ids,
             f.calling_conv(),
-            crate::instr_types::TailCallKind::None,
+            TailCallKind::None,
         );
         let inst = self.append_instruction(
             f.return_type().id(),
@@ -4745,7 +4757,7 @@ where
     ) -> IrResult<CallInstId<R2, B>>
     where
         Name: AsRef<str>,
-        R2: crate::marker::ReturnMarker,
+        R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
         Callee: IntoCallee<'ctx, R2, B>,
@@ -4865,8 +4877,8 @@ where
             return_ty: callee.return_type().id(),
             args: Vec::new(),
             calling_conv: callee.calling_conv(),
-            tail_kind: crate::instr_types::TailCallKind::None,
-            attrs: crate::instr_types::CallAttributeData::default(),
+            tail_kind: TailCallKind::None,
+            attrs: CallAttributeData::default(),
             name: String::new(),
             intrinsic_descriptor: None,
             arg_error: None,
@@ -4911,12 +4923,12 @@ where
         let fn_ty = module.fn_type(ret, params, false);
         let callee_v = IsValue::into_erased(callee);
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
-        let payload = crate::instr_types::CallInstData::new(
+        let payload = CallInstData::new(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
             crate::CallingConv::C,
-            crate::instr_types::TailCallKind::None,
+            TailCallKind::None,
         );
         let inst = self.append_instruction(
             fn_ty.return_type().id(),
@@ -4944,7 +4956,7 @@ where
     ) -> IrResult<CallInstId<R2, B>>
     where
         Name: AsRef<str>,
-        R2: crate::marker::ReturnMarker,
+        R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
         Callee: IntoPointerValue<'ctx, B>,
@@ -4965,12 +4977,12 @@ where
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = crate::instr_types::CallInstData::new(
+        let payload = CallInstData::new(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids.into_boxed_slice(),
             crate::CallingConv::C,
-            crate::instr_types::TailCallKind::None,
+            TailCallKind::None,
         );
         let inst = self.append_instruction(
             fn_ty.return_type().id(),
@@ -5000,7 +5012,7 @@ where
     ) -> IrResult<CallInstId<R2, B>>
     where
         Name: AsRef<str>,
-        R2: crate::marker::ReturnMarker,
+        R2: ReturnMarker,
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
     {
@@ -5023,13 +5035,13 @@ where
             arg_ids.push(v.id);
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = crate::instr_types::CallInstData::new_with_attrs(
+        let payload = CallInstData::new_with_attrs(
             asm_v.id,
             fn_ty.as_type().id(),
             arg_ids.into_boxed_slice(),
             crate::CallingConv::C,
-            crate::instr_types::TailCallKind::None,
-            crate::instr_types::CallAttributeData::default(),
+            TailCallKind::None,
+            CallAttributeData::default(),
         );
         let inst = self.append_instruction(
             fn_ty.return_type().id(),
@@ -5057,13 +5069,7 @@ where
         I: IntoIterator<Item = V>,
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
-        self.build_gep_inner(
-            source_ty,
-            ptr,
-            indices,
-            crate::gep_no_wrap_flags::GepNoWrapFlags::empty(),
-            name,
-        )
+        self.build_gep_inner(source_ty, ptr, indices, GepNoWrapFlags::empty(), name)
     }
 
     /// Produce `getelementptr inbounds <source-ty>, ptr <ptr>,
@@ -5082,13 +5088,7 @@ where
         I: IntoIterator<Item = V>,
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
-        self.build_gep_inner(
-            source_ty,
-            ptr,
-            indices,
-            crate::gep_no_wrap_flags::GepNoWrapFlags::inbounds(),
-            name,
-        )
+        self.build_gep_inner(source_ty, ptr, indices, GepNoWrapFlags::inbounds(), name)
     }
 
     /// Produce `getelementptr inbounds nuw <struct-ty>, ptr <ptr>,
@@ -5119,8 +5119,7 @@ where
             struct_ty,
             ptr,
             [zero, idx_val],
-            crate::gep_no_wrap_flags::GepNoWrapFlags::inbounds()
-                | crate::gep_no_wrap_flags::GepNoWrapFlags::NUW,
+            GepNoWrapFlags::inbounds() | GepNoWrapFlags::NUW,
             name,
         )
     }
@@ -5206,7 +5205,7 @@ where
         source_ty: T,
         ptr: P,
         indices: I,
-        flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
+        flags: GepNoWrapFlags,
         name: Name,
     ) -> IrResult<PointerValueId<B>>
     where
@@ -5219,19 +5218,20 @@ where
         self.build_gep_inner(source_ty, ptr, indices, flags, name)
     }
 
-    fn build_gep_inner<T, P, I, V>(
+    fn build_gep_inner<T, P, I, V, N>(
         &self,
         source_ty: T,
         ptr: P,
         indices: I,
-        flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
-        name: impl AsRef<str>,
+        flags: GepNoWrapFlags,
+        name: N,
     ) -> IrResult<PointerValueId<B>>
     where
         T: IrType<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
         I: IntoIterator<Item = V>,
         V: IntoIntValue<'ctx, IntDyn, B>,
+        N: AsRef<str>,
     {
         let source_ty = source_ty.as_type();
         let source_ty_id = source_ty.id();
@@ -5263,7 +5263,7 @@ where
             let folded = self.checked_folded_value(folded, result_ty)?;
             return Ok(PointerValue::from_value_unchecked(folded).id());
         }
-        let payload = crate::instr_types::GepInstData::new(
+        let payload = GepInstData::new(
             source_ty_id,
             ptr_value.id,
             idx_ids.into_boxed_slice(),
@@ -5291,7 +5291,7 @@ where
         V: IntoFloatValue<'ctx, Src, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
-        self.build_fp_cast(value, dst_ty, name, crate::instr_types::CastOpcode::FpExt)
+        self.build_fp_cast(value, dst_ty, name, CastOpcode::FpExt)
             .map(|v| v.id())
     }
 
@@ -5310,7 +5310,7 @@ where
         V: IntoFloatValue<'ctx, Src, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
-        self.build_fp_cast(value, dst_ty, name, crate::instr_types::CastOpcode::FpTrunc)
+        self.build_fp_cast(value, dst_ty, name, CastOpcode::FpTrunc)
             .map(|v| v.id())
     }
 
@@ -5333,15 +5333,14 @@ where
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(value);
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::FpTrunc,
-            v,
-            dst_ty.as_type(),
-        )? {
+        if let Some(folded) = self
+            .folder
+            .fold_cast_dyn(CastOpcode::FpTrunc, v, dst_ty.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::FpTrunc, v.id);
+        let payload = CastOpData::new(CastOpcode::FpTrunc, v.id);
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -5366,30 +5365,31 @@ where
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(value);
-        if let Some(folded) =
-            self.folder
-                .fold_cast_dyn(crate::instr_types::CastOpcode::FpExt, v, dst_ty.as_type())?
+        if let Some(folded) = self
+            .folder
+            .fold_cast_dyn(CastOpcode::FpExt, v, dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::FpExt, v.id);
+        let payload = CastOpData::new(CastOpcode::FpExt, v.id);
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
     }
 
     /// Crate-internal helper for `build_fp_ext` / `build_fp_trunc`.
-    fn build_fp_cast<Src, Dst>(
+    fn build_fp_cast<Src, Dst, N>(
         &self,
         value: FloatValue<'ctx, Src, B>,
         dst_ty: FloatType<'ctx, Dst, B>,
-        name: impl AsRef<str>,
-        opcode: crate::instr_types::CastOpcode,
+        name: N,
+        opcode: CastOpcode,
     ) -> IrResult<FloatValue<'ctx, Dst, B>>
     where
         Src: FloatKind,
         Dst: FloatKind,
+        N: AsRef<str>,
     {
         let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
@@ -5414,7 +5414,7 @@ where
         V: IntoFloatValue<'ctx, K, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
-        self.build_fp_to_int(value, dst_ty, name, crate::instr_types::CastOpcode::FpToUI)
+        self.build_fp_to_int(value, dst_ty, name, CastOpcode::FpToUI)
             .map(|v| v.id())
     }
 
@@ -5433,20 +5433,21 @@ where
         V: IntoFloatValue<'ctx, K, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
-        self.build_fp_to_int(value, dst_ty, name, crate::instr_types::CastOpcode::FpToSI)
+        self.build_fp_to_int(value, dst_ty, name, CastOpcode::FpToSI)
             .map(|v| v.id())
     }
 
-    fn build_fp_to_int<K, W>(
+    fn build_fp_to_int<K, W, N>(
         &self,
         value: FloatValue<'ctx, K, B>,
         dst_ty: IntType<'ctx, W, B>,
-        name: impl AsRef<str>,
-        opcode: crate::instr_types::CastOpcode,
+        name: N,
+        opcode: CastOpcode,
     ) -> IrResult<IntValue<'ctx, W, B>>
     where
         K: FloatKind,
         W: IntWidth,
+        N: AsRef<str>,
     {
         let v = IsValue::into_erased(value);
         if let Some(folded) = self.folder.fold_cast_to_int(opcode, v, dst_ty)? {
@@ -5471,7 +5472,7 @@ where
         V: IntoIntValue<'ctx, W, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        self.build_int_to_fp(value, dst_ty, name, crate::instr_types::CastOpcode::UIToFp)
+        self.build_int_to_fp(value, dst_ty, name, CastOpcode::UIToFp)
             .map(|v| v.id())
     }
 
@@ -5482,7 +5483,7 @@ where
         &self,
         value: V,
         dst_ty: FloatType<'ctx, K, B>,
-        flags: crate::instr_types::UIToFpFlags,
+        flags: UIToFpFlags,
         name: Name,
     ) -> IrResult<FloatValueId<K, B>>
     where
@@ -5493,13 +5494,10 @@ where
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
         let v = value.into_erased();
-        if let Some(folded) =
-            self.folder
-                .fold_cast_to_fp(crate::instr_types::CastOpcode::UIToFp, v, dst_ty)?
-        {
+        if let Some(folded) = self.folder.fold_cast_to_fp(CastOpcode::UIToFp, v, dst_ty)? {
             return self.accept_folded_cast_fp(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, v.id);
+        let payload = CastOpData::new(CastOpcode::UIToFp, v.id);
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
@@ -5521,7 +5519,7 @@ where
         V: IntoIntValue<'ctx, W, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        self.build_int_to_fp(value, dst_ty, name, crate::instr_types::CastOpcode::SIToFp)
+        self.build_int_to_fp(value, dst_ty, name, CastOpcode::SIToFp)
             .map(|v| v.id())
     }
 
@@ -5532,7 +5530,7 @@ where
         &self,
         src: V,
         dst: FloatType<'ctx, FloatDyn, B>,
-        flags: crate::instr_types::UIToFpFlags,
+        flags: UIToFpFlags,
         name: Name,
     ) -> IrResult<FloatValueId<FloatDyn, B>>
     where
@@ -5540,31 +5538,31 @@ where
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
         let src = src.into_int_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::UIToFp,
-            src.into_erased(),
-            dst.as_type(),
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_dyn(CastOpcode::UIToFp, src.into_erased(), dst.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::UIToFp, src.slot());
+        let payload = CastOpData::new(CastOpcode::UIToFp, src.slot());
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_fp_at(dst, InstructionKindData::Cast(payload), name)
             .id())
     }
 
-    fn build_int_to_fp<W, K>(
+    fn build_int_to_fp<W, K, N>(
         &self,
         value: IntValue<'ctx, W, B>,
         dst_ty: FloatType<'ctx, K, B>,
-        name: impl AsRef<str>,
-        opcode: crate::instr_types::CastOpcode,
+        name: N,
+        opcode: CastOpcode,
     ) -> IrResult<FloatValue<'ctx, K, B>>
     where
         W: IntWidth,
         K: FloatKind,
+        N: AsRef<str>,
     {
         let v = value.into_erased();
         if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
@@ -5645,13 +5643,13 @@ where
     {
         let value = value.into_pointer_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(value);
-        if let Some(folded) =
-            self.folder
-                .fold_cast_to_int(crate::instr_types::CastOpcode::PtrToInt, v, dst_ty)?
+        if let Some(folded) = self
+            .folder
+            .fold_cast_to_int(CastOpcode::PtrToInt, v, dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::PtrToInt, v.id);
+        let payload = CastOpData::new(CastOpcode::PtrToInt, v.id);
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -5672,15 +5670,14 @@ where
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
         let v = value.into_erased();
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::IntToPtr,
-            v,
-            dst_ty.as_type(),
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_dyn(CastOpcode::IntToPtr, v, dst_ty.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(PointerValue::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::IntToPtr, v.id);
+        let payload = CastOpData::new(CastOpcode::IntToPtr, v.id);
         Ok(self
             .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -5884,15 +5881,14 @@ where
     {
         let value = value.into_pointer_value(ModuleRef::new(self.module))?;
         let v = IsValue::into_erased(value);
-        if let Some(folded) = self.folder.fold_cast_dyn(
-            crate::instr_types::CastOpcode::AddrSpaceCast,
-            v,
-            dst_ty.as_type(),
-        )? {
+        if let Some(folded) =
+            self.folder
+                .fold_cast_dyn(CastOpcode::AddrSpaceCast, v, dst_ty.as_type())?
+        {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(PointerValue::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(crate::instr_types::CastOpcode::AddrSpaceCast, v.id);
+        let payload = CastOpData::new(CastOpcode::AddrSpaceCast, v.id);
         Ok(self
             .append_ptr(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -6123,7 +6119,7 @@ where
     /// [`IntValueId<bool, B>`](crate::IntValueId).
     pub fn build_int_cmp<W, Lhs, Rhs, Name>(
         &self,
-        pred: crate::cmp_predicate::IntPredicate,
+        pred: IntPredicate,
         lhs: Lhs,
         rhs: Rhs,
         name: Name,
@@ -6140,7 +6136,7 @@ where
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
             return Ok(folded.id());
         }
-        let payload = crate::instr_types::CmpInstData::new(pred, lhs.slot(), rhs.slot());
+        let payload = CmpInstData::new(pred, lhs.slot(), rhs.slot());
         Ok(self
             .append_int_at(i1, InstructionKindData::ICmp(payload), name)
             .id())
@@ -6157,10 +6153,10 @@ where
     /// is no window where an `ICmpInst` is live with a stale `samesign` bit.
     pub fn build_int_cmp_with_flags<W, Lhs, Rhs, Name>(
         &self,
-        predicate: crate::cmp_predicate::IntPredicate,
+        predicate: IntPredicate,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::ICmpFlags,
+        flags: ICmpFlags,
         name: Name,
     ) -> IrResult<IntValueId<bool, B>>
     where
@@ -6175,7 +6171,7 @@ where
         if let Some(folded) = self.folder.fold_int_cmp(predicate, lhs, rhs)? {
             return Ok(folded.id());
         }
-        let mut payload = crate::instr_types::CmpInstData::new(predicate, lhs.slot(), rhs.slot());
+        let mut payload = CmpInstData::new(predicate, lhs.slot(), rhs.slot());
         payload.samesign = flags.samesign;
         Ok(self
             .append_int_at(i1, InstructionKindData::ICmp(payload), name)
@@ -6187,10 +6183,10 @@ where
     /// both operands carry the same sign (LLVM 20+).
     pub fn build_int_cmp_with_flags_dyn<Lhs, Rhs, Name>(
         &self,
-        pred: crate::cmp_predicate::IntPredicate,
+        pred: IntPredicate,
         lhs: Lhs,
         rhs: Rhs,
-        flags: crate::instr_types::ICmpFlags,
+        flags: ICmpFlags,
         name: Name,
     ) -> IrResult<IntValueId<bool, B>>
     where
@@ -6204,7 +6200,7 @@ where
         if let Some(folded) = self.folder.fold_int_cmp(pred, lhs, rhs)? {
             return Ok(folded.id());
         }
-        let mut payload = crate::instr_types::CmpInstData::new(pred, lhs.slot(), rhs.slot());
+        let mut payload = CmpInstData::new(pred, lhs.slot(), rhs.slot());
         payload.samesign = flags.samesign;
         Ok(self
             .append_int_at(i1, InstructionKindData::ICmp(payload), name)
@@ -6235,7 +6231,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(crate::cmp_predicate::IntPredicate::Eq, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Eq, lhs, rhs, name)
     }
 
     /// `icmp ne` -- not equal. Signedness-irrelevant. Mirrors
@@ -6253,7 +6249,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(crate::cmp_predicate::IntPredicate::Ne, lhs, rhs, name)
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Ne, lhs, rhs, name)
     }
 
     /// `icmp ult` -- unsigned less than. Mirrors
@@ -6271,12 +6267,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Ult,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Ult, lhs, rhs, name)
     }
 
     /// `icmp ule` -- unsigned less than or equal. Mirrors
@@ -6294,12 +6285,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Ule,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Ule, lhs, rhs, name)
     }
 
     /// `icmp ugt` -- unsigned greater than. Mirrors
@@ -6317,12 +6303,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Ugt,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Ugt, lhs, rhs, name)
     }
 
     /// `icmp uge` -- unsigned greater than or equal. Mirrors
@@ -6340,12 +6321,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Uge,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Uge, lhs, rhs, name)
     }
 
     /// `icmp slt` -- signed less than. Mirrors
@@ -6363,12 +6339,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Slt,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Slt, lhs, rhs, name)
     }
 
     /// `icmp sle` -- signed less than or equal. Mirrors
@@ -6386,12 +6357,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Sle,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Sle, lhs, rhs, name)
     }
 
     /// `icmp sgt` -- signed greater than. Mirrors
@@ -6409,12 +6375,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Sgt,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Sgt, lhs, rhs, name)
     }
 
     /// `icmp sge` -- signed greater than or equal. Mirrors
@@ -6432,12 +6393,7 @@ where
         Lhs: IntoIntValue<'ctx, W, B>,
         Rhs: IntoIntValue<'ctx, W, B>,
     {
-        self.build_int_cmp::<W, Lhs, Rhs, _>(
-            crate::cmp_predicate::IntPredicate::Sge,
-            lhs,
-            rhs,
-            name,
-        )
+        self.build_int_cmp::<W, Lhs, Rhs, _>(IntPredicate::Sge, lhs, rhs, name)
     }
 
     // ---- Phi ----
@@ -6462,10 +6418,10 @@ where
     pub(crate) fn build_int_phi<W, Name>(&self, name: Name) -> IrResult<PhiInstId<W, B>>
     where
         Name: AsRef<str>,
-        W: crate::int_width::StaticIntWidth,
+        W: StaticIntWidth,
     {
         let ty = W::ir_type(ModuleRef::<B>::new(self.module));
-        let payload = crate::instr_types::PhiData::new();
+        let payload = PhiData::new();
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(PhiInstId::from_raw(self.module.id(), inst.slot()))
@@ -6487,7 +6443,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let payload = crate::instr_types::PhiData::new();
+        let payload = PhiData::new();
         let inst =
             self.append_phi_instruction(ty.as_type().id(), InstructionKindData::Phi(payload), name);
         Ok(PhiInstId::from_raw(self.module.id(), inst.slot()))
@@ -6617,7 +6573,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let payload = crate::instr_types::PhiData::new();
+        let payload = PhiData::new();
         let inst = self.append_phi_instruction(ty.id(), InstructionKindData::Phi(payload), name);
         Ok(OtherPhiInstId::from_raw(self.module.id(), inst.slot()))
     }
@@ -6635,10 +6591,8 @@ where
         T: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let target = target.into_basic_block_label(ModuleRef::new(self.module))?;
-        let payload = crate::instr_types::BranchInstData {
-            kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Unconditional(
-                target.slot(),
-            )),
+        let payload = BranchInstData {
+            kind: core::cell::RefCell::new(BranchKind::Unconditional(target.slot())),
         };
         let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Br(payload), "");
@@ -6664,8 +6618,8 @@ where
         let then_bb = then_bb.into_basic_block_label(ModuleRef::new(self.module))?;
         let else_bb = else_bb.into_basic_block_label(ModuleRef::new(self.module))?;
         let cond = cond.into_int_value(ModuleRef::new(self.module))?;
-        let payload = crate::instr_types::BranchInstData {
-            kind: core::cell::RefCell::new(crate::instr_types::BranchKind::Conditional {
+        let payload = BranchInstData {
+            kind: core::cell::RefCell::new(BranchKind::Conditional {
                 cond: core::cell::Cell::new(cond.slot()),
                 then_bb: then_bb.slot(),
                 else_bb: else_bb.slot(),
@@ -6974,7 +6928,7 @@ where
         let cond_id = cond.into_int_value(module_ref)?.slot();
         let default_target = default_target.into_basic_block_label(ModuleRef::new(self.module))?;
         let void_ty = self.module.void_type::<B>().as_type().id();
-        let payload = crate::instr_types::SwitchInstData::new(cond_id, default_target.slot());
+        let payload = SwitchInstData::new(cond_id, default_target.slot());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
         let bb = self.into_insert_block();
         Ok((
@@ -7013,7 +6967,7 @@ where
         let default_target = default_target.into_basic_block_label(ModuleRef::new(self.module))?;
         let cond_v = cond.into_erased_value(ModuleRef::new(self.module))?;
         let void_ty = self.module.void_type::<B>().as_type().id();
-        let payload = crate::instr_types::SwitchInstData::new(cond_v.id, default_target.slot());
+        let payload = SwitchInstData::new(cond_v.id, default_target.slot());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
         let bb = self.into_insert_block();
@@ -7049,7 +7003,7 @@ where
     {
         let addr_v = IsValue::into_erased(address.into_pointer_value(ModuleRef::new(self.module))?);
         let void_ty = self.module.void_type::<B>().as_type().id();
-        let payload = crate::instr_types::IndirectBrInstData::new(addr_v.id);
+        let payload = IndirectBrInstData::new(addr_v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::IndirectBr(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
         let bb = self.into_insert_block();
@@ -7110,7 +7064,7 @@ where
         let f = callee.as_function();
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let (name, calling_conv, attrs) = config.into_parts();
-        let payload = crate::instr_types::InvokeInstData::new_with_attrs(
+        let payload = InvokeInstData::new_with_attrs(
             f.slot(),
             f.signature().as_type().id(),
             arg_ids,
@@ -7204,7 +7158,7 @@ where
             })
             .collect::<IrResult<_>>()?;
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = crate::instr_types::InvokeInstData::new_with_attrs(
+        let payload = InvokeInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
@@ -7258,7 +7212,7 @@ where
             })
             .collect::<IrResult<_>>()?;
         self.validate_call_site_args(fn_ty, &arg_ids)?;
-        let payload = crate::instr_types::InvokeInstData::new_with_attrs(
+        let payload = InvokeInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
@@ -7338,7 +7292,7 @@ where
         }
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let (name, calling_conv, attrs) = config.into_parts();
-        let payload = crate::instr_types::InvokeInstData::new_with_attrs(
+        let payload = InvokeInstData::new_with_attrs(
             asm_v.id,
             fn_ty.as_type().id(),
             arg_ids,
@@ -7422,7 +7376,7 @@ where
                     .map(|l| l.slot())
             })
             .collect::<IrResult<_>>()?;
-        let payload = crate::instr_types::CallBrInstData::new_with_attrs(
+        let payload = CallBrInstData::new_with_attrs(
             callee_v.id,
             fn_ty.as_type().id(),
             arg_ids,
@@ -7510,7 +7464,7 @@ where
             })
             .collect::<IrResult<_>>()?;
         let (name, calling_conv, attrs) = config.into_parts();
-        let payload = crate::instr_types::CallBrInstData::new_with_attrs(
+        let payload = CallBrInstData::new_with_attrs(
             asm_v.id,
             fn_ty.as_type().id(),
             arg_ids,
@@ -7544,7 +7498,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let payload = crate::instr_types::LandingPadInstData::new(cleanup);
+        let payload = LandingPadInstData::new(cleanup);
         let inst =
             self.append_instruction(result_ty.id, InstructionKindData::LandingPad(payload), name);
         Ok(LandingPadInst::<Open, B>::from_raw(
@@ -7567,7 +7521,7 @@ where
     {
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let void_ty = self.module.void_type::<B>().as_type().id();
-        let payload = crate::instr_types::ResumeInstData::new(v.id);
+        let payload = ResumeInstData::new(v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::Resume(payload), name);
         let bb = self.into_insert_block();
         Ok((bb.retag_termination::<Terminated>(), inst))
@@ -7624,7 +7578,7 @@ where
                     .map(|v| v.slot())
             })
             .collect::<IrResult<_>>()?;
-        let payload = crate::instr_types::CleanupPadInstData::new(parent_id, arg_ids);
+        let payload = CleanupPadInstData::new(parent_id, arg_ids);
         let token_ty = self.module.token_type::<B>().as_type().id();
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CleanupPad(payload), name);
@@ -7657,7 +7611,7 @@ where
                     .map(|v| v.slot())
             })
             .collect::<IrResult<_>>()?;
-        let payload = crate::instr_types::CatchPadInstData::new(Some(catch_switch.id), arg_ids);
+        let payload = CatchPadInstData::new(Some(catch_switch.id), arg_ids);
         let token_ty = self.module.token_type::<B>().as_type().id();
         let inst = self.append_instruction(token_ty, InstructionKindData::CatchPad(payload), name);
         Ok(CatchPadInst::<B>::from_raw(
@@ -7683,7 +7637,7 @@ where
         let catch_pad = catch_pad.into_erased_value(ModuleRef::new(self.module))?;
         let target = target.into_basic_block_label(ModuleRef::new(self.module))?;
         let void_ty = self.module.void_type::<B>().as_type().id();
-        let payload = crate::instr_types::CatchReturnInstData::new(catch_pad.id, target.slot());
+        let payload = CatchReturnInstData::new(catch_pad.id, target.slot());
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CatchReturn(payload), name);
         let bb = self.into_insert_block();
@@ -7733,7 +7687,7 @@ where
         Name: AsRef<str>,
     {
         let void_ty = self.module.void_type::<B>().as_type().id();
-        let payload = crate::instr_types::CleanupReturnInstData::new(cleanup_pad_id, unwind_id);
+        let payload = CleanupReturnInstData::new(cleanup_pad_id, unwind_id);
         let inst =
             self.append_instruction(void_ty, InstructionKindData::CleanupReturn(payload), name);
         let bb = self.into_insert_block();
@@ -7810,7 +7764,7 @@ where
         Name: AsRef<str>,
     {
         let token_ty = self.module.token_type::<B>().as_type().id();
-        let payload = crate::instr_types::CatchSwitchInstData::new(parent_id, unwind_id);
+        let payload = CatchSwitchInstData::new(parent_id, unwind_id);
         let inst =
             self.append_instruction(token_ty, InstructionKindData::CatchSwitch(payload), name);
         let module_ref = ModuleRef::<B>::new(self.module);
@@ -7827,7 +7781,7 @@ where
         BasicBlock<'ctx, R, Terminated, B>,
         Instruction<'ctx, Attached, B>,
     ) {
-        let payload = crate::instr_types::UnreachableInstData;
+        let payload = UnreachableInstData;
         let void_ty = self.module.void_type::<B>().as_type().id();
         let inst = self.append_instruction(void_ty, InstructionKindData::Unreachable(payload), "");
         let bb = self.into_insert_block();
@@ -8279,16 +8233,7 @@ macro_rules! impl_into_return_value_float {
         }
     )+ };
 }
-impl_into_return_value_float!(
-    f32,
-    f64,
-    crate::float_kind::Half,
-    crate::float_kind::BFloat,
-    crate::float_kind::Fp128,
-    crate::float_kind::X86Fp80,
-    crate::float_kind::PpcFp128,
-    FloatDyn,
-);
+impl_into_return_value_float!(f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
 
 // Pointer-marker impl: `Ptr` accepts any pointer-valued operand source.
 impl<'ctx, B: ModuleBrand + 'ctx, V> IntoReturnValue<'ctx, Ptr, B> for V
@@ -8333,7 +8278,7 @@ where
     {
         let v = value.into_return_value(ModuleRef::new(self.module))?;
         // Runtime-check for the fully-erased `Dyn` marker.
-        if R::expected_kind() == crate::marker::ExpectedRetKind::Dyn {
+        if R::expected_kind() == ExpectedRetKind::Dyn {
             let parent_fn = self.parent_function_dyn();
             let expected = parent_fn.return_type();
             if v.ty().id() != expected.id() {
@@ -8427,8 +8372,8 @@ where
     return_ty: TypeSlot,
     args: Vec<ValueSlot>,
     calling_conv: crate::CallingConv,
-    tail_kind: crate::instr_types::TailCallKind,
-    attrs: crate::instr_types::CallAttributeData,
+    tail_kind: TailCallKind,
+    attrs: CallAttributeData,
     name: String,
     intrinsic_descriptor: Option<IntrinsicDescriptor<'ctx, B>>,
     /// First error raised by an [`arg`](CallBuilder::arg) operand, replayed by
@@ -8466,17 +8411,17 @@ where
     }
 
     pub fn tail(mut self) -> Self {
-        self.tail_kind = crate::instr_types::TailCallKind::Tail;
+        self.tail_kind = TailCallKind::Tail;
         self
     }
 
     pub fn must_tail(mut self) -> Self {
-        self.tail_kind = crate::instr_types::TailCallKind::MustTail;
+        self.tail_kind = TailCallKind::MustTail;
         self
     }
 
     pub fn no_tail(mut self) -> Self {
-        self.tail_kind = crate::instr_types::TailCallKind::NoTail;
+        self.tail_kind = TailCallKind::NoTail;
         self
     }
 
@@ -8544,7 +8489,7 @@ where
         let fn_ty =
             FunctionType::<'ctx, B>::new(self.fn_ty, ModuleRef::<B>::new(self.parent.module));
         self.parent.validate_call_site_args(fn_ty, &self.args)?;
-        let payload = crate::instr_types::CallInstData::new_with_attrs(
+        let payload = CallInstData::new_with_attrs(
             self.callee_id,
             self.fn_ty,
             self.args.into_boxed_slice(),
@@ -8611,7 +8556,7 @@ where
     /// *foreign* module can set it — the borrowing facade lifts infallibly.
     callee: IrResult<TypedFunctionValue<'ctx, Ret, Params, B>>,
     args: A,
-    tail_kind: crate::instr_types::TailCallKind,
+    tail_kind: TailCallKind,
     calling_conv: Option<CallingConv>,
     attrs: CallAttributeData,
     name: String,
@@ -8628,17 +8573,17 @@ where
     A: CallArgs<'ctx, Params, B>,
 {
     pub fn tail(mut self) -> Self {
-        self.tail_kind = crate::instr_types::TailCallKind::Tail;
+        self.tail_kind = TailCallKind::Tail;
         self
     }
 
     pub fn must_tail(mut self) -> Self {
-        self.tail_kind = crate::instr_types::TailCallKind::MustTail;
+        self.tail_kind = TailCallKind::MustTail;
         self
     }
 
     pub fn no_tail(mut self) -> Self {
-        self.tail_kind = crate::instr_types::TailCallKind::NoTail;
+        self.tail_kind = TailCallKind::NoTail;
         self
     }
 
@@ -8666,7 +8611,7 @@ where
         let f = self.callee?.as_function();
         let arg_ids = self.args.lower(ModuleRef::new(self.parent.module))?;
         let calling_conv = self.calling_conv.unwrap_or_else(|| f.calling_conv());
-        let payload = crate::instr_types::CallInstData::new_with_attrs(
+        let payload = CallInstData::new_with_attrs(
             f.slot(),
             f.signature().as_type().id(),
             arg_ids,
@@ -8968,7 +8913,7 @@ where
             let folded = self.checked_folded_value(folded, true_ty)?;
             return Ok(A::from_select_value(folded, &SelectNarrow::new()));
         }
-        let payload = crate::instr_types::SelectInstData::new(c.slot(), true_v.id, false_v.id);
+        let payload = SelectInstData::new(c.slot(), true_v.id, false_v.id);
         let inst = self.append_instruction(true_ty, InstructionKindData::Select(payload), name);
         Ok(A::from_select_value(inst.to_erased(), &SelectNarrow::new()))
     }
@@ -9032,7 +8977,7 @@ fn walk_aggregate_for_builder(
                     }
                     None => {
                         return Err(IrError::TypeMismatch {
-                            expected: crate::error::TypeKindLabel::Struct,
+                            expected: TypeKindLabel::Struct,
                             got: Type::<DynBrand>::new(cur, m).kind_label(),
                         });
                     }
@@ -9040,7 +8985,7 @@ fn walk_aggregate_for_builder(
             }
             _ => {
                 return Err(IrError::TypeMismatch {
-                    expected: crate::error::TypeKindLabel::Struct,
+                    expected: TypeKindLabel::Struct,
                     got: Type::<DynBrand>::new(cur, m).kind_label(),
                 });
             }
@@ -9334,8 +9279,8 @@ mod tests {
         assert_eq!(
             err,
             IrError::TypeMismatch {
-                expected: crate::error::TypeKindLabel::Float,
-                got: crate::error::TypeKindLabel::Double,
+                expected: TypeKindLabel::Float,
+                got: TypeKindLabel::Double,
             }
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
@@ -9373,8 +9318,8 @@ mod tests {
         assert_eq!(
             err,
             IrError::TypeMismatch {
-                expected: crate::error::TypeKindLabel::Float,
-                got: crate::error::TypeKindLabel::Double,
+                expected: TypeKindLabel::Float,
+                got: TypeKindLabel::Double,
             }
         );
         assert_eq!(b.insert_block().instructions().len(), 0);

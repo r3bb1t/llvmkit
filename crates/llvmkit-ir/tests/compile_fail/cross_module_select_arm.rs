@@ -20,7 +20,7 @@ struct Right;
 impl ModuleBrand for Right {}
 
 fn main() {
-    let left = Module::branded::<Left>("left").unwrap();
+    let left = Module::branded::<Left, _>("left").unwrap();
     let i32_ty = left.i32_type();
     let f = left
         .add_typed_function::<i32, (), _>("left_f", Linkage::External)
@@ -34,7 +34,7 @@ fn main() {
             .unwrap(),
     );
 
-    let right = Module::branded::<Right>("right").unwrap();
+    let right = Module::branded::<Right, _>("right").unwrap();
     let i1_ty = right.bool_type();
     let i32_ty = right.i32_type();
     let cond = i1_ty.const_int(true);

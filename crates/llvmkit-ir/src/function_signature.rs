@@ -11,6 +11,7 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
+use super::value_id::ViewIn;
 use crate::argument::Argument;
 use crate::basic_block::BasicBlock;
 use crate::block_state::Unterminated;
@@ -632,7 +633,7 @@ macro_rules! impl_into_typed_callee {
                 self,
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<$facade<'ctx, Ret, Params, B>> {
-                crate::value_id::ViewIn::resolve_in(self, module).ok_or(IrError::ForeignValueId)
+                ViewIn::resolve_in(self, module).ok_or(IrError::ForeignValueId)
             }
         }
     };

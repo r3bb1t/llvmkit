@@ -23,8 +23,17 @@ use core::iter::FusedIterator;
 use super::asm_writer::{SlotTracker, fmt_instruction};
 use super::basic_block::BasicBlock;
 use super::block_state::Unterminated;
+use super::error::ValueCategoryLabel;
 use super::float_kind::FloatDyn;
 use super::function::FunctionValue;
+use super::instr_types::{
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
+    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FNegInstData,
+    FenceInstData, FreezeInstData, GepInstData, IndirectBrInstData, InsertElementInstData,
+    InsertValueInstData, InvokeInstData, LandingPadInstData, LoadInstData, ResumeInstData,
+    SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VAArgInstData,
+};
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
     FCmpInstData, PhiData, ReturnOpData, UnreachableInstData,
@@ -75,7 +84,7 @@ impl InstructionData {
         Self {
             parent: core::cell::Cell::new(parent),
             kind,
-            metadata: core::cell::RefCell::new(crate::metadata::MetadataAttachmentSet::new()),
+            metadata: core::cell::RefCell::new(MetadataAttachmentSet::new()),
             debug_records: core::cell::RefCell::new(Vec::new()),
         }
     }
@@ -106,37 +115,37 @@ pub(super) enum InstructionKindData {
     FDiv(BinaryOpData),
     FRem(BinaryOpData),
     FCmp(FCmpInstData),
-    Alloca(crate::instr_types::AllocaInstData),
-    Load(crate::instr_types::LoadInstData),
-    Store(crate::instr_types::StoreInstData),
-    Gep(crate::instr_types::GepInstData),
-    Call(crate::instr_types::CallInstData),
-    Select(crate::instr_types::SelectInstData),
+    Alloca(AllocaInstData),
+    Load(LoadInstData),
+    Store(StoreInstData),
+    Gep(GepInstData),
+    Call(CallInstData),
+    Select(SelectInstData),
     Cast(CastOpData),
     ICmp(CmpInstData),
     Phi(PhiData),
-    FNeg(crate::instr_types::FNegInstData),
-    Freeze(crate::instr_types::FreezeInstData),
-    VAArg(crate::instr_types::VAArgInstData),
-    ExtractValue(crate::instr_types::ExtractValueInstData),
-    InsertValue(crate::instr_types::InsertValueInstData),
-    ExtractElement(crate::instr_types::ExtractElementInstData),
-    InsertElement(crate::instr_types::InsertElementInstData),
-    ShuffleVector(crate::instr_types::ShuffleVectorInstData),
-    Fence(crate::instr_types::FenceInstData),
-    AtomicCmpXchg(crate::instr_types::AtomicCmpXchgInstData),
-    AtomicRMW(crate::instr_types::AtomicRMWInstData),
-    Switch(crate::instr_types::SwitchInstData),
-    IndirectBr(crate::instr_types::IndirectBrInstData),
-    Invoke(crate::instr_types::InvokeInstData),
-    CallBr(crate::instr_types::CallBrInstData),
-    LandingPad(crate::instr_types::LandingPadInstData),
-    Resume(crate::instr_types::ResumeInstData),
-    CleanupPad(crate::instr_types::CleanupPadInstData),
-    CatchPad(crate::instr_types::CatchPadInstData),
-    CatchReturn(crate::instr_types::CatchReturnInstData),
-    CleanupReturn(crate::instr_types::CleanupReturnInstData),
-    CatchSwitch(crate::instr_types::CatchSwitchInstData),
+    FNeg(FNegInstData),
+    Freeze(FreezeInstData),
+    VAArg(VAArgInstData),
+    ExtractValue(ExtractValueInstData),
+    InsertValue(InsertValueInstData),
+    ExtractElement(ExtractElementInstData),
+    InsertElement(InsertElementInstData),
+    ShuffleVector(ShuffleVectorInstData),
+    Fence(FenceInstData),
+    AtomicCmpXchg(AtomicCmpXchgInstData),
+    AtomicRMW(AtomicRMWInstData),
+    Switch(SwitchInstData),
+    IndirectBr(IndirectBrInstData),
+    Invoke(InvokeInstData),
+    CallBr(CallBrInstData),
+    LandingPad(LandingPadInstData),
+    Resume(ResumeInstData),
+    CleanupPad(CleanupPadInstData),
+    CatchPad(CatchPadInstData),
+    CatchReturn(CatchReturnInstData),
+    CleanupReturn(CleanupReturnInstData),
+    CatchSwitch(CatchSwitchInstData),
     Ret(ReturnOpData),
     Br(BranchInstData),
     Unreachable(UnreachableInstData),
@@ -537,7 +546,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     /// Owning module reference.
     #[inline]
     pub fn module(&self) -> ModuleView<'ctx, B> {
-        crate::module::ModuleView::new(self.module.module())
+        ModuleView::new(self.module.module())
     }
 
     /// Result type. `void` for terminators and stores.
@@ -1595,7 +1604,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for InstructionView<'c
                 ty: v.ty,
             }),
             _ => Err(IrError::ValueCategoryMismatch {
-                expected: crate::error::ValueCategoryLabel::Instruction,
+                expected: ValueCategoryLabel::Instruction,
                 got: v.category().into(),
             }),
         }

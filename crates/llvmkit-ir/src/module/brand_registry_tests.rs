@@ -34,7 +34,8 @@ fn a_poisoned_registry_still_claims_and_releases() {
     poison_the_registry();
 
     // Claim ...
-    let module = Module::branded::<AfterPoison>("after-poison").expect("claim despite poisoning");
+    let module =
+        Module::branded::<AfterPoison, _>("after-poison").expect("claim despite poisoning");
     assert_eq!(module.name(), "after-poison");
     assert!(matches!(
         lock_brands().get(&core::any::TypeId::of::<AfterPoison>()),
@@ -42,7 +43,7 @@ fn a_poisoned_registry_still_claims_and_releases() {
     ));
 
     // ... uniqueness still enforced ...
-    assert!(Module::branded::<AfterPoison>("again").is_err());
+    assert!(Module::branded::<AfterPoison, _>("again").is_err());
 
     // ... and release still works.
     drop(module);
@@ -52,7 +53,7 @@ fn a_poisoned_registry_still_claims_and_releases() {
             .is_none(),
         "the release must remove the key, not leave it InUse",
     );
-    let _reclaimed = Module::branded::<AfterPoison>("again").expect("reclaim after release");
+    let _reclaimed = Module::branded::<AfterPoison, _>("again").expect("reclaim after release");
 }
 
 /// `branded_once` leaves the key present as `Retired` rather than removing it —
@@ -66,7 +67,7 @@ fn retirement_leaves_the_key_behind() {
 
     let key = core::any::TypeId::of::<RetiredKey>();
 
-    let module = Module::branded_once::<RetiredKey>("once").expect("claim");
+    let module = Module::branded_once::<RetiredKey, _>("once").expect("claim");
     assert!(matches!(lock_brands().get(&key), Some(BrandState::InUse)));
 
     drop(module);

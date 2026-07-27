@@ -47,10 +47,19 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
+use super::ap_int::ApInt;
 use super::array_len::{ArrLen, ArrLenDyn, ArrayLen};
+use super::constants::ConstantIntValue;
 use super::element::{ElemDyn, StaticVecElem, VecElem};
 use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
+use super::function::FunctionValue;
+use super::global_alias::GlobalAliasData;
+use super::global_ifunc::GlobalIFuncData;
+use super::global_variable::GlobalVariableData;
+use super::inline_asm::InlineAsmData;
 use super::int_width::{IntDyn, IntWidth, Width};
+use super::marker::Dyn;
+use super::metadata::MetadataSlot;
 use super::vec_len::{Len, LenDyn, VecLen};
 
 // --------------------------------------------------------------------------
@@ -121,7 +130,7 @@ pub(super) struct ValueData {
 pub(super) enum ValueUse {
     Instruction(ValueSlot),
     Constant(ValueSlot),
-    Metadata(crate::metadata::MetadataSlot),
+    Metadata(MetadataSlot),
     DebugRecord { inst: ValueSlot, record: usize },
 }
 
@@ -141,23 +150,23 @@ pub(super) enum ValueKindData {
     BasicBlock(BasicBlockData),
     Function(Box<FunctionData>),
     Instruction(InstructionData),
-    GlobalAlias(crate::global_alias::GlobalAliasData),
-    GlobalIFunc(crate::global_ifunc::GlobalIFuncData),
-    GlobalVariable(crate::global_variable::GlobalVariableData),
+    GlobalAlias(GlobalAliasData),
+    GlobalIFunc(GlobalIFuncData),
+    GlobalVariable(GlobalVariableData),
     /// A metadata node used in a value context. Mirrors LLVM's
     /// `MetadataAsValue` (`llvm/include/llvm/IR/Metadata.h`): it lets a
     /// metadata node (e.g. `!0`) appear where a `Value` is expected,
     /// such as a `call` argument of `metadata` type. Like a constant,
     /// it is context-global — it has no function-local SSA definition
     /// and is never assigned a `%N` slot.
-    MetadataAsValue(crate::metadata::MetadataSlot),
+    MetadataAsValue(MetadataSlot),
     /// An inline-assembly value used as a `call` callee. Mirrors LLVM's
     /// `InlineAsm` (`llvm/include/llvm/IR/InlineAsm.h`). Like a
     /// `Function` or `Constant`, it is context-global — it has no
     /// function-local SSA definition and is never assigned a `%N` slot;
     /// a `call` whose callee is one of these prints the `asm ...` form
     /// instead of an `@name` operand.
-    InlineAsm(crate::inline_asm::InlineAsmData),
+    InlineAsm(InlineAsmData),
 }
 
 // --------------------------------------------------------------------------
@@ -292,10 +301,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
         }
         if let Some(parent_fn_id) = self.local_parent_function_id() {
             let parent_fn =
-                crate::function::FunctionValue::<crate::marker::Dyn, B>::from_parts_unchecked(
-                    parent_fn_id,
-                    self.module,
-                );
+                FunctionValue::<Dyn, B>::from_parts_unchecked(parent_fn_id, self.module);
             parent_fn.set_local_value_name(self.id, Some(requested.as_str()));
             return;
         }
@@ -317,10 +323,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
         }
         if let Some(parent_fn_id) = self.local_parent_function_id() {
             let parent_fn =
-                crate::function::FunctionValue::<crate::marker::Dyn, B>::from_parts_unchecked(
-                    parent_fn_id,
-                    self.module,
-                );
+                FunctionValue::<Dyn, B>::from_parts_unchecked(parent_fn_id, self.module);
             parent_fn.set_local_value_name(self.id, None);
             return;
         }
@@ -454,10 +457,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// Mirrors reading a `ConstantInt`'s `getValue()`; backs the matcher
     /// constant predicates (`m_zero`, `m_all_ones`, `m_ap_int`, ...).
     /// Scalar only — vector splats are not unwrapped here.
-    pub fn as_const_int(self) -> Option<crate::ap_int::ApInt> {
+    pub fn as_const_int(self) -> Option<ApInt> {
         let constant = Constant::try_from(self).ok()?;
-        let int: crate::constants::ConstantIntValue<'_, crate::int_width::IntDyn, B> =
-            crate::constants::ConstantIntValue::try_from(constant).ok()?;
+        let int: ConstantIntValue<'_, IntDyn, B> = ConstantIntValue::try_from(constant).ok()?;
         Some(int.ap_int())
     }
 }
@@ -475,7 +477,7 @@ pub enum ValueCategory {
     InlineAsm,
 }
 
-impl From<ValueCategory> for crate::error::ValueCategoryLabel {
+impl From<ValueCategory> for ValueCategoryLabel {
     fn from(c: ValueCategory) -> Self {
         match c {
             ValueCategory::Constant => Self::Constant,

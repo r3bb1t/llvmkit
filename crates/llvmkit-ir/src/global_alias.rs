@@ -8,6 +8,7 @@ use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
 use super::metadata::MetadataAttachmentSet;
+use super::metadata::{MetadataAttachmentKind, MetadataSlot};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeKind, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
@@ -201,8 +202,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     pub fn set_metadata(
         self,
         _module: &'ctx Module<B, Unverified>,
-        kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataSlot,
+        kind: MetadataAttachmentKind,
+        id: MetadataSlot,
     ) {
         self.data().metadata.borrow_mut().insert(kind, id);
     }
@@ -307,15 +308,11 @@ pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
-    pub(super) fn new<M, C>(
-        module: M,
-        name: impl Into<String>,
-        value_type: Type<'ctx, B>,
-        aliasee: C,
-    ) -> Self
+    pub(super) fn new<M, C, N>(module: M, name: N, value_type: Type<'ctx, B>, aliasee: C) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
         C: IsConstant<'ctx, B>,
+        N: Into<String>,
     {
         let module = module.into();
         let aliasee = aliasee.as_constant();

@@ -195,7 +195,7 @@ borrowing handle to read from.
 |Inkwell|llvmkit|Notes|
 |---|---|---|
 |`Context::create()`|`module_new!(name)?`|owned, branded module token; no separate context|
-|`context.create_module(n)`|`module_new!(n)?` / `Module::branded::<B>(n)?` / `Module::dynamic(n)`|same, three brand policies. Only `dynamic` is infallible — the other two claim a brand in the process-global registry (`IrError::BrandInUse` / `BrandRetired`)|
+|`context.create_module(n)`|`module_new!(n)?` / `Module::branded::<B, _>(n)?` / `Module::dynamic(n)`|same, three brand policies. Only `dynamic` is infallible — the other two claim a brand in the process-global registry (`IrError::BrandInUse` / `BrandRetired`)|
 |storing an `IntValue<'ctx>` in a struct or `HashMap`|store the id (`IntValueId<W, B>`, `FunctionId<R, B>`, `BlockId<R, B, Params>`, …); read through `m.view(id)` / `m.try_view(id)`|ids are `Copy + Send + 'static` and borrow nothing. `handle.id()` mints one from a handle. A stale or foreign id is `IrError::ForeignValueId`, `None`, or a panic — never a dangling read (`#![forbid(unsafe_code)]` workspace-wide)|
 |`context.i32_type()`|`m.i32_type()`|on the module (or its `ModuleView`), not on a context|
 |`context.custom_width_int_type(n)`|`m.custom_width_int_type(n)?`|fallible (returns `IrResult<IntType<'ctx, IntDyn, B>>`)|
@@ -288,7 +288,7 @@ supertraits, and they are load-bearing rather than decorative:
 struct LiftedBin;
 impl llvmkit_ir::ModuleBrand for LiftedBin {}
 
-let m = llvmkit_ir::Module::branded::<LiftedBin>("lifted")?;
+let m = llvmkit_ir::Module::branded::<LiftedBin, _>("lifted")?;
 ```
 
 `ModuleBrand: Copy + Debug + Eq + Hash + 'static`. The four data supertraits are

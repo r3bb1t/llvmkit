@@ -10,11 +10,12 @@
 //!
 //! ## Storage model
 //!
-//! Comdats are owned by the [`Module`](crate::Module) and addressed
+//! Comdats are owned by the [`Module`] and addressed
 //! by name. A [`ComdatRef<'ctx>`] borrows the comdat for the lifetime
 //! of the module. Globals store the comdat by name (`Option<String>`)
 //! to avoid arena cross-references.
 
+use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use core::fmt;
 
 /// Comdat arena index. Stable for the lifetime of the owning
@@ -98,12 +99,12 @@ impl ComdatData {
 /// passes `Comdat *` around: cheap, copy-able. Identity is
 /// (module, ComdatId).
 #[derive(Clone, Copy)]
-pub struct ComdatRef<'ctx, B: crate::module::ModuleBrand> {
-    pub(crate) module: crate::module::ModuleRef<'ctx, B>,
+pub struct ComdatRef<'ctx, B: ModuleBrand> {
+    pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) id: ComdatId,
 }
 
-impl<'ctx, B: crate::module::ModuleBrand> ComdatRef<'ctx, B> {
+impl<'ctx, B: ModuleBrand> ComdatRef<'ctx, B> {
     #[inline]
     pub(crate) fn data(self) -> &'ctx ComdatData {
         self.module.module().comdat_at(self.id)
@@ -136,31 +137,27 @@ impl<'ctx, B: crate::module::ModuleBrand> ComdatRef<'ctx, B> {
     /// token a [`Module<B, Verified>`](crate::Module)'s IR could be changed
     /// after verification — `Module::get_comdat` is state-generic, so a
     /// verified module does hand out a `ComdatRef`.
-    pub fn set_selection_kind(
-        self,
-        _module_token: &crate::module::Module<B, crate::module::Unverified>,
-        kind: SelectionKind,
-    ) {
+    pub fn set_selection_kind(self, _module_token: &Module<B, Unverified>, kind: SelectionKind) {
         self.data().selection_kind.set(kind);
     }
 }
 
-impl<B: crate::module::ModuleBrand> PartialEq for ComdatRef<'_, B> {
+impl<B: ModuleBrand> PartialEq for ComdatRef<'_, B> {
     fn eq(&self, other: &Self) -> bool {
         self.module == other.module && self.id == other.id
     }
 }
 
-impl<B: crate::module::ModuleBrand> Eq for ComdatRef<'_, B> {}
+impl<B: ModuleBrand> Eq for ComdatRef<'_, B> {}
 
-impl<B: crate::module::ModuleBrand> core::hash::Hash for ComdatRef<'_, B> {
+impl<B: ModuleBrand> core::hash::Hash for ComdatRef<'_, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.module.hash(h);
         self.id.hash(h);
     }
 }
 
-impl<B: crate::module::ModuleBrand> fmt::Debug for ComdatRef<'_, B> {
+impl<B: ModuleBrand> fmt::Debug for ComdatRef<'_, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ComdatRef")
             .field("name", &self.name())

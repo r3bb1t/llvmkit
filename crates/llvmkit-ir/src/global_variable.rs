@@ -28,6 +28,7 @@ use super::value_id::GlobalId;
 
 use super::constants::ConstantIntValue;
 use super::metadata::MetadataAttachmentSet;
+use super::metadata::{MetadataAttachmentKind, MetadataSlot};
 use core::cell::{Cell, RefCell};
 
 // --------------------------------------------------------------------------
@@ -486,8 +487,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     pub fn set_metadata(
         self,
         _module: &'ctx Module<B, Unverified>,
-        kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataSlot,
+        kind: MetadataAttachmentKind,
+        id: MetadataSlot,
     ) {
         self.data().metadata.borrow_mut().insert(kind, id);
     }
@@ -610,9 +611,10 @@ pub struct GlobalBuilder<'ctx, B: ModuleBrand> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
-    pub(super) fn new<M>(module: M, name: impl Into<String>, value_type: Type<'ctx, B>) -> Self
+    pub(super) fn new<M, N>(module: M, name: N, value_type: Type<'ctx, B>) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
+        N: Into<String>,
     {
         Self {
             module: module.into(),

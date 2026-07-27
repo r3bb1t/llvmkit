@@ -55,6 +55,7 @@ use super::int_width::IntWidth;
 use super::intrinsics::{IntrinsicDescriptor, IntrinsicFunctionData, IntrinsicId};
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::MetadataAttachmentSet;
+use super::metadata::{MetadataAttachmentKind, MetadataSlot};
 use super::module::{
     Module, ModuleBrand, ModuleRef, ModuleView, Unverified, UseListOrderRecord,
     validate_use_list_order_indexes,
@@ -65,6 +66,7 @@ use super::unnamed_addr::UnnamedAddr;
 use super::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot, sealed,
 };
+use super::value_id::ViewIn;
 use super::value_id::{FunctionId, TypedFunctionId};
 use super::value_symbol_table::ValueSymbolTable;
 
@@ -259,7 +261,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// Read-only function view for analysis and pass contexts.
     #[inline]
     pub fn as_view(self) -> FunctionView<'ctx, B> {
-        crate::pass_context::FunctionView::from(self)
+        FunctionView::from(self)
     }
 
     /// Borrow the storage payload.
@@ -580,8 +582,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     pub fn set_metadata(
         self,
         _module: &'ctx Module<B, Unverified>,
-        kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataSlot,
+        kind: MetadataAttachmentKind,
+        id: MetadataSlot,
     ) {
         self.data().metadata.borrow_mut().insert(kind, id);
     }
@@ -955,7 +957,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         let id = module
             .context()
             .intern_constant_global_value_ref(ptr_ty, self.id);
-        crate::constant::Constant {
+        Constant {
             id,
             module: self.module,
             ty: ptr_ty,
@@ -979,7 +981,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         let id = module
             .context()
             .intern_constant_gep_offset(ptr_ty, self.id, 0);
-        crate::constant::Constant {
+        Constant {
             id,
             module: self.module,
             ty: ptr_ty,
@@ -1212,7 +1214,7 @@ impl<R: ReturnMarker, B: ModuleBrand> into_callee_sealed::Sealed for FunctionId<
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B> for FunctionId<R, B> {
     #[inline]
     fn into_callee(self, module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>> {
-        crate::value_id::ViewIn::resolve_in(self, module).ok_or(IrError::ForeignValueId)
+        ViewIn::resolve_in(self, module).ok_or(IrError::ForeignValueId)
     }
 }
 
@@ -1269,11 +1271,14 @@ pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand> {
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     /// Crate-internal constructor; users start through
     /// [`Module::function_builder`].
-    pub(super) fn new(
+    pub(super) fn new<N>(
         module: ModuleRef<'ctx, B>,
-        name: impl Into<String>,
+        name: N,
         signature: FunctionType<'ctx, B>,
-    ) -> Self {
+    ) -> Self
+    where
+        N: Into<String>,
+    {
         Self {
             module,
             name: name.into(),
@@ -1514,7 +1519,7 @@ impl<'ctx, W: IntWidth + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx
     #[inline]
     pub fn return_int_type(self) -> IntType<'ctx, W, B> {
         let signature = self.signature();
-        crate::derived_types::IntType::new(signature.return_type().id(), self.module)
+        IntType::new(signature.return_type().id(), self.module)
     }
 }
 
@@ -1523,7 +1528,7 @@ impl<'ctx, K: FloatKind + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ct
     #[inline]
     pub fn return_float_type(self) -> FloatType<'ctx, K, B> {
         let signature = self.signature();
-        crate::derived_types::FloatType::new(signature.return_type().id(), self.module)
+        FloatType::new(signature.return_type().id(), self.module)
     }
 }
 

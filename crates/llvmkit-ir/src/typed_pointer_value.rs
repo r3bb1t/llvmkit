@@ -11,6 +11,7 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
+use super::value::into_pointer_value_sealed::Sealed;
 use crate::error::IrResult;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::struct_schema::IrField;
@@ -86,10 +87,7 @@ impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> TypedPointerValue<'ctx, T, B> {
     }
 }
 
-impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> crate::value::into_pointer_value_sealed::Sealed
-    for TypedPointerValue<'ctx, T, B>
-{
-}
+impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> Sealed for TypedPointerValue<'ctx, T, B> {}
 
 impl<'ctx, T: IrField, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B>
     for TypedPointerValue<'ctx, T, B>

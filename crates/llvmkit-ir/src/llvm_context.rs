@@ -22,6 +22,7 @@
 use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
+use super::value::ValueUse;
 use crate::constant::{ConstantData, ConstantExprData};
 use crate::r#type::{StructBody, TypeData, TypeSlot};
 use crate::value::{ValueData, ValueKindData, ValueSlot};
@@ -519,7 +520,7 @@ impl Context {
             self.value_data(operand)
                 .use_list
                 .borrow_mut()
-                .push(crate::value::ValueUse::Constant(user));
+                .push(ValueUse::Constant(user));
         });
     }
 
@@ -528,7 +529,7 @@ impl Context {
     /// only the lifecycle primitives in [`crate::instruction`] reach for this.
     pub(crate) fn set_instruction_parent(&self, inst_id: ValueSlot, new_parent: ValueSlot) {
         let data = self.value_data(inst_id);
-        if let crate::value::ValueKindData::Instruction(idata) = &data.kind {
+        if let ValueKindData::Instruction(idata) = &data.kind {
             idata.parent.set(new_parent);
         }
     }

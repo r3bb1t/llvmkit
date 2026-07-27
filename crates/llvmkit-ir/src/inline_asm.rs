@@ -25,6 +25,7 @@
 
 use core::marker::PhantomData;
 
+use super::value::ValueKindData;
 use crate::derived_types::FunctionType;
 use crate::module::{ModuleBrand, ModuleRef, ModuleView};
 use crate::r#type::TypeSlot;
@@ -153,7 +154,7 @@ pub(crate) struct InlineAsmData {
 /// / [`FunctionValue`](crate::function::FunctionValue): a `(ValueSlot,
 /// ModuleRef, TypeSlot)` triple plus the cached pointer type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct InlineAsm<'ctx, B: crate::module::ModuleBrand> {
+pub struct InlineAsm<'ctx, B: ModuleBrand> {
     pub(crate) id: ValueSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
     /// Cached pointer type id (`ptr`). The value's value-arena type is
@@ -214,7 +215,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
     #[inline]
     pub fn function_type(self) -> FunctionType<'ctx, B> {
         let fn_ty = self.payload().fn_ty;
-        crate::derived_types::FunctionType::new(fn_ty, self.module)
+        FunctionType::new(fn_ty, self.module)
     }
 
     /// The assembly template string. Mirrors `InlineAsm::getAsmString()`.
@@ -277,7 +278,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
     #[inline]
     fn payload(&self) -> &'ctx InlineAsmData {
         match &self.module.module().context().value_data(self.id).kind {
-            crate::value::ValueKindData::InlineAsm(d) => d,
+            ValueKindData::InlineAsm(d) => d,
             _ => unreachable!("InlineAsm handle invariant: kind is InlineAsm"),
         }
     }

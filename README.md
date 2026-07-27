@@ -550,7 +550,7 @@ the separation is static:
 | Constructor | Brand | Separation |
 |---|---|---|
 | `module_new!("name")` | a fresh, **unnameable** type per expansion site | compile-time |
-| `Module::branded::<MyBrand>("name")` | a `'static` type you declare and can name | compile-time |
+| `Module::branded::<MyBrand, _>("name")` | a `'static` type you declare and can name | compile-time |
 | `Module::dynamic("name")` | `DynBrand`, shared by every such module | run-time only |
 
 `module_new!` is the default: it declares a brand inside its own block scope, so

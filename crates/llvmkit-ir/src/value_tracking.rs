@@ -786,7 +786,10 @@ fn range_attribute_known_bits<'ctx, B: ModuleBrand + 'ctx>(
     ranges_known_bits(ranges, bit_width)
 }
 
-fn ranges_known_bits(ranges: impl IntoIterator<Item = ConstantRange>, bit_width: u32) -> KnownBits {
+fn ranges_known_bits<I>(ranges: I, bit_width: u32) -> KnownBits
+where
+    I: IntoIterator<Item = ConstantRange>,
+{
     let mut seen = false;
     let mut known = KnownBits::unknown(bit_width);
     known.set_all_conflict();

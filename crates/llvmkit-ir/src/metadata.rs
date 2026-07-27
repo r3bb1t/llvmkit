@@ -372,7 +372,10 @@ pub enum DebugRecord {
 }
 
 impl DebugRecord {
-    pub(crate) fn for_each_value(&self, mut f: impl FnMut(ValueSlot)) {
+    pub(crate) fn for_each_value<F>(&self, mut f: F)
+    where
+        F: FnMut(ValueSlot),
+    {
         match self {
             Self::Variable(record) => {
                 if let Some(id) = record.location.value_id() {

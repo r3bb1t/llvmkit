@@ -238,9 +238,9 @@ boundary. Identity moves from a generative lifetime to a `'static` **type**.
 - **`ModuleBrand` requires `'static`.** It was already required by the brand
   registry, which keys by `TypeId`; the bound simply moves from the individual
   constructors onto the trait. A brand names a module, it never borrows one.
-- **Brands are types.** `Module::branded::<B>(name)` claims a brand you name (at
-  most one live module per brand, released on drop);
-  `Module::branded_once::<B>(name)` retires it permanently on drop, so no
+- **Brands are types.** `Module::branded::<B, _>(name)` claims a brand you name
+  (at most one live module per brand, released on drop);
+  `Module::branded_once::<B, _>(name)` retires it permanently on drop, so no
   successor can ever replay a stale `'static` id against fresh storage;
   `module_new!(name)` mints an unnameable brand per expansion site;
   `Module::dynamic(name)` is registry-exempt for a run-time module count.

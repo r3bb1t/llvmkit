@@ -49,7 +49,7 @@ of them predate 2.0. Where the two disagree, this subsection wins.
 
 - Three ways to make a module, all returning an owned value:
   `module_new!("name")` (emits the struct above under an unnameable name, one
-  fresh brand per expansion site), `Module::branded::<B>(name) ->
+  fresh brand per expansion site), `Module::branded::<B, _>(name) ->
   IrResult<Module<B, Unverified>>` (named brand; a process-global registry
   admits at most one live module per brand — `IrError::BrandInUse`, and
   `branded_once::<B>` retires it permanently — `IrError::BrandRetired`), and

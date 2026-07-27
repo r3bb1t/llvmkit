@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use super::basic_block::{BasicBlock, IntoBasicBlockLabel};
 use super::block_state::{BlockTerminationState, Unterminated};
 use super::function::FunctionValue;
+use super::instr_types::{BranchInstData, BranchKind};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{ModuleBrand, ModuleRef};
@@ -262,10 +263,10 @@ pub(super) fn kind_successor_ids(kind: &InstructionKindData) -> Vec<ValueSlot> {
     }
 }
 
-fn branch_successor_ids(d: &crate::instr_types::BranchInstData) -> Vec<ValueSlot> {
+fn branch_successor_ids(d: &BranchInstData) -> Vec<ValueSlot> {
     match &*d.kind.borrow() {
-        crate::instr_types::BranchKind::Unconditional(target) => vec![*target],
-        crate::instr_types::BranchKind::Conditional {
+        BranchKind::Unconditional(target) => vec![*target],
+        BranchKind::Conditional {
             then_bb, else_bb, ..
         } => vec![*then_bb, *else_bb],
     }

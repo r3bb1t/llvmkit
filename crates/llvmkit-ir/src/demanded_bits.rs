@@ -10,6 +10,7 @@ use super::analysis::{
 };
 use super::constant::ConstantData;
 use super::data_layout::DataLayout;
+use super::derived_types::IntType;
 use super::instr_types::{BinaryOpData, CallInstData, CastOpData, CastOpcode, InvokeInstData};
 use super::instruction::{Instruction, InstructionData, InstructionKindData, state};
 use super::int_width::IntDyn;
@@ -97,7 +98,7 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let known_mask = known.zero_mask().bitor(known.one_mask());
     let unknown_demanded = demanded.bitand(&known_mask.not());
     let replacement = if unknown_demanded.is_zero() {
-        let int_ty = crate::derived_types::IntType::<IntDyn, B>::try_from(value.ty())?;
+        let int_ty = IntType::<IntDyn, B>::try_from(value.ty())?;
         // Mint the *typed* id: an int constant is an int value, so the
         // narrowing is total here (the type came from `value.ty()`), and a
         // typed id keeps the no-silent-erasure law's guarantee that a caller
@@ -1208,7 +1209,7 @@ fn simplify_xor_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(false);
     }
     if rhs_bits.bitor(&demanded.not()).is_all_ones() {
-        let int_ty = crate::derived_types::IntType::<IntDyn, B>::try_from(rhs.ty())?;
+        let int_ty = IntType::<IntDyn, B>::try_from(rhs.ty())?;
         let all_ones = int_ty.const_ap_int(&ApInt::all_ones(demanded.bit_width()))?;
         return replace_instruction_operand(value, &bin.rhs, all_ones.into_erased());
     }
@@ -1229,7 +1230,7 @@ fn shrink_demanded_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
     if shrunk.eq_ap_int(&current_bits) {
         return Ok(false);
     }
-    let int_ty = crate::derived_types::IntType::<IntDyn, B>::try_from(current.ty())?;
+    let int_ty = IntType::<IntDyn, B>::try_from(current.ty())?;
     let replacement = int_ty.const_ap_int(&shrunk)?;
     replace_instruction_operand(user, operand, replacement.into_erased())
 }

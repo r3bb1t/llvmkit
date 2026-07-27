@@ -8,6 +8,7 @@ use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::global_value::{Linkage, Visibility};
 use super::metadata::MetadataAttachmentSet;
+use super::metadata::{MetadataAttachmentKind, MetadataSlot};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeKind, TypeSlot};
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
@@ -167,8 +168,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
     pub fn set_metadata(
         self,
         _module: &'ctx Module<B, Unverified>,
-        kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataSlot,
+        kind: MetadataAttachmentKind,
+        id: MetadataSlot,
     ) {
         self.data().metadata.borrow_mut().insert(kind, id);
     }
@@ -270,15 +271,11 @@ pub struct GlobalIFuncBuilder<'ctx, B: ModuleBrand> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
-    pub(super) fn new<M, C>(
-        module: M,
-        name: impl Into<String>,
-        value_type: Type<'ctx, B>,
-        resolver: C,
-    ) -> Self
+    pub(super) fn new<M, C, N>(module: M, name: N, value_type: Type<'ctx, B>, resolver: C) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
         C: IsConstant<'ctx, B>,
+        N: Into<String>,
     {
         let module = module.into();
         let resolver = resolver.as_constant();

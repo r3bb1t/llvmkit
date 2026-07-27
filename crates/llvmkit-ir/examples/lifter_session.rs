@@ -488,7 +488,7 @@ const _: () = {
 };
 
 fn emit() -> Result<(), IrError> {
-    let mut session = LifterSession::new(Module::branded::<Cpu>("lifted")?, PROGRAM)?;
+    let mut session = LifterSession::new(Module::branded::<Cpu, _>("lifted")?, PROGRAM)?;
 
     println!("-- lifting on the main thread --");
     for _ in 0..3 {

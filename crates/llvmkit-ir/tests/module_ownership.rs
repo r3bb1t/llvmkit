@@ -82,7 +82,7 @@ const _: () = {
 /// `NotSendBrand` is registry-registered, so this test owns it exclusively.
 #[test]
 fn a_module_under_a_not_send_brand_still_crosses_a_thread() -> Result<(), IrError> {
-    let module = Module::branded::<NotSendBrand>("not-send-brand")?;
+    let module = Module::branded::<NotSendBrand, _>("not-send-brand")?;
     let name = thread::spawn(move || module.name().to_owned())
         .join()
         .expect("worker thread completed");
@@ -107,7 +107,7 @@ fn a_module_under_a_not_send_brand_still_crosses_a_thread() -> Result<(), IrErro
 fn a_half_authored_module_is_finished_on_another_thread() -> Result<(), IrError> {
     brand!(Handoff);
 
-    let module = Module::branded::<Handoff>("handoff")?;
+    let module = Module::branded::<Handoff, _>("handoff")?;
 
     // --- thread A: declare, open a block, emit part of the body ---
     let i32_ty = module.i32_type();
@@ -316,7 +316,7 @@ fn a_stale_id_from_a_dead_generation_is_refused_by_its_successor() -> Result<(),
 
     // --- generation 1: mint an id, then die ---
     let (stale, stale_block): (FunctionId<Dyn, Generation>, BlockId<Dyn, Generation>) = {
-        let gen1 = Module::branded::<Generation>("gen1")?;
+        let gen1 = Module::branded::<Generation, _>("gen1")?;
         let void_ty = gen1.void_type();
         let fn_ty = gen1.fn_type_no_params(void_ty, false);
         let f = gen1.add_function_dyn("predecessor", fn_ty, Linkage::External)?;
@@ -326,7 +326,7 @@ fn a_stale_id_from_a_dead_generation_is_refused_by_its_successor() -> Result<(),
     };
 
     // --- generation 2: same brand, fresh storage ---
-    let gen2 = Module::branded::<Generation>("gen2")?;
+    let gen2 = Module::branded::<Generation, _>("gen2")?;
     // Occupy the same arena slot shape, so a tag-blind resolver would find
     // *something* plausible rather than an empty slot.
     let void_ty = gen2.void_type();
@@ -361,14 +361,14 @@ fn viewing_a_stale_id_panics_rather_than_mis_resolving() {
     brand!(GenerationPanic);
 
     let stale: FunctionId<Dyn, GenerationPanic> = {
-        let gen1 = Module::branded::<GenerationPanic>("gen1").expect("fresh brand");
+        let gen1 = Module::branded::<GenerationPanic, _>("gen1").expect("fresh brand");
         let void_ty = gen1.void_type();
         let fn_ty = gen1.fn_type_no_params(void_ty, false);
         gen1.add_function_dyn("predecessor", fn_ty, Linkage::External)
             .expect("declaration succeeds")
     };
 
-    let gen2 = Module::branded::<GenerationPanic>("gen2").expect("brand released on drop");
+    let gen2 = Module::branded::<GenerationPanic, _>("gen2").expect("brand released on drop");
     let _ = gen2.view(stale);
 }
 
@@ -379,7 +379,7 @@ fn branded_once_retires_the_brand_so_no_successor_can_exist() -> Result<(), IrEr
     brand!(OnceOnly);
 
     let stale: FunctionId<Dyn, OnceOnly> = {
-        let only = Module::branded_once::<OnceOnly>("only")?;
+        let only = Module::branded_once::<OnceOnly, _>("only")?;
         let void_ty = only.void_type();
         let fn_ty = only.fn_type_no_params(void_ty, false);
         only.add_function_dyn("gone", fn_ty, Linkage::External)?
@@ -389,11 +389,11 @@ fn branded_once_retires_the_brand_so_no_successor_can_exist() -> Result<(), IrEr
     // against: every later claim on the brand is refused, forever.
     let _ = stale;
     assert!(matches!(
-        Module::branded::<OnceOnly>("successor"),
+        Module::branded::<OnceOnly, _>("successor"),
         Err(IrError::BrandRetired { .. })
     ));
     assert!(matches!(
-        Module::branded_once::<OnceOnly>("successor"),
+        Module::branded_once::<OnceOnly, _>("successor"),
         Err(IrError::BrandRetired { .. })
     ));
     Ok(())

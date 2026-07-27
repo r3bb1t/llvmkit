@@ -248,10 +248,10 @@ where
 Bad Rust program, from `tests/compile_fail/cross_module_value_brand.rs`:
 
 ```rust
-let left = Module::branded::<Left>("left").unwrap();
+let left = Module::branded::<Left, _>("left").unwrap();
 let left_value = left.i64_type().const_int(1_i64);
 
-let right = Module::branded::<Right>("right").unwrap();
+let right = Module::branded::<Right, _>("right").unwrap();
 let function = right
     .add_typed_function::<i64, (), _>("f", Linkage::External)
     .unwrap()
@@ -328,14 +328,14 @@ by the `BlockCall` edge only — see §9.
 Bad Rust program, from `tests/compile_fail/cross_module_branch_target.rs`:
 
 ```rust
-let left = Module::branded::<Left>("left").unwrap();
+let left = Module::branded::<Left, _>("left").unwrap();
 let f = left
     .add_typed_function::<(), (), _>("left_f", Linkage::External)
     .unwrap()
     .as_function();
 let left_target = left.view(f).append_basic_block(&left, "target");
 
-let right = Module::branded::<Right>("right").unwrap();
+let right = Module::branded::<Right, _>("right").unwrap();
 let f = right
     .add_typed_function::<(), (), _>("right_f", Linkage::External)
     .unwrap()
@@ -403,10 +403,10 @@ Bad Rust program, from
 `tests/compile_fail/cross_module_global_initializer_brand.rs`:
 
 ```rust
-let left = Module::branded::<Left>("left").unwrap();
+let left = Module::branded::<Left, _>("left").unwrap();
 let left_init = left.i32_type().const_int(1_i32);
 
-let right = Module::branded::<Right>("right").unwrap();
+let right = Module::branded::<Right, _>("right").unwrap();
 let _ = right.add_global("g", left_init);
 ```
 

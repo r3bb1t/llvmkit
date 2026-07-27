@@ -59,6 +59,7 @@ use core::marker::PhantomData;
 use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
 use super::int_width::IntoConstantInt;
 use super::int_width::{IntDyn, IntWidth};
+use super::struct_body_state::StructBodyState;
 
 // --------------------------------------------------------------------------
 // Per-kind handles
@@ -906,9 +907,7 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L,
     }
 }
 
-impl<'ctx, Body: crate::struct_body_state::StructBodyState, B: ModuleBrand + 'ctx>
-    StructType<'ctx, Body, B>
-{
+impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, B> {
     /// `T { ... }`. Element types must match the struct's declared
     /// body. Mirrors `ConstantStruct::get`.
     pub fn const_struct<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
@@ -1023,15 +1022,21 @@ impl<'ctx, B: ModuleBrand> ConstantExprOptions<'ctx, B> {
 
 impl<'ctx> ModuleCore {
     /// Construct a parser-needed LLVM `ConstantExpr`.
-    pub fn constant_expr<B: ModuleBrand + 'ctx>(
+    pub fn constant_expr<B, Operands, Indices, Mask>(
         &'ctx self,
         result_ty: Type<'ctx, B>,
         opcode: ConstantExprOpcode,
-        operands: impl IntoIterator<Item = Value<'ctx, B>>,
-        indices: impl IntoIterator<Item = u32>,
-        mask: impl IntoIterator<Item = i32>,
+        operands: Operands,
+        indices: Indices,
+        mask: Mask,
         flags: ConstantExprFlags,
-    ) -> IrResult<Constant<'ctx, B>> {
+    ) -> IrResult<Constant<'ctx, B>>
+    where
+        B: ModuleBrand + 'ctx,
+        Operands: IntoIterator<Item = Value<'ctx, B>>,
+        Indices: IntoIterator<Item = u32>,
+        Mask: IntoIterator<Item = i32>,
+    {
         self.constant_expr_with_options(
             result_ty,
             opcode,
@@ -1044,15 +1049,21 @@ impl<'ctx> ModuleCore {
 
     /// Construct a parser-needed LLVM `ConstantExpr` with options such as an
     /// explicit `getelementptr` source element type.
-    pub fn constant_expr_with_options<B: ModuleBrand + 'ctx>(
+    pub fn constant_expr_with_options<B, Operands, Indices, Mask>(
         &'ctx self,
         result_ty: Type<'ctx, B>,
         opcode: ConstantExprOpcode,
-        operands: impl IntoIterator<Item = Value<'ctx, B>>,
-        indices: impl IntoIterator<Item = u32>,
-        mask: impl IntoIterator<Item = i32>,
+        operands: Operands,
+        indices: Indices,
+        mask: Mask,
         options: ConstantExprOptions<'ctx, B>,
-    ) -> IrResult<Constant<'ctx, B>> {
+    ) -> IrResult<Constant<'ctx, B>>
+    where
+        B: ModuleBrand + 'ctx,
+        Operands: IntoIterator<Item = Value<'ctx, B>>,
+        Indices: IntoIterator<Item = u32>,
+        Mask: IntoIterator<Item = i32>,
+    {
         let source_ty_id = options.source_type().map(|ty| ty.id());
         let mut ids = Vec::new();
         for operand in operands {
@@ -1216,14 +1227,22 @@ impl<'ctx> ModuleCore {
     }
 
     /// `ptrauth (ptr <pointer>, i32 <key>, i64 <discriminator>, ptr <addr-discriminator>, ptr <deactivation-symbol>)`.
-    pub fn ptr_auth<B: ModuleBrand + 'ctx>(
+    pub fn ptr_auth<B, Pointer, Key, Discriminator, AddrDiscriminator, DeactivationSymbol>(
         &'ctx self,
-        pointer: impl IsConstant<'ctx, B>,
-        key: impl IsConstant<'ctx, B>,
-        discriminator: impl IsConstant<'ctx, B>,
-        addr_discriminator: impl IsConstant<'ctx, B>,
-        deactivation_symbol: impl IsConstant<'ctx, B>,
-    ) -> IrResult<Constant<'ctx, B>> {
+        pointer: Pointer,
+        key: Key,
+        discriminator: Discriminator,
+        addr_discriminator: AddrDiscriminator,
+        deactivation_symbol: DeactivationSymbol,
+    ) -> IrResult<Constant<'ctx, B>>
+    where
+        B: ModuleBrand + 'ctx,
+        Pointer: IsConstant<'ctx, B>,
+        Key: IsConstant<'ctx, B>,
+        Discriminator: IsConstant<'ctx, B>,
+        AddrDiscriminator: IsConstant<'ctx, B>,
+        DeactivationSymbol: IsConstant<'ctx, B>,
+    {
         let pointer = pointer.as_constant().into_erased();
         let key = key.as_constant().into_erased();
         let discriminator = discriminator.as_constant().into_erased();
@@ -1542,7 +1561,7 @@ fn vector_splat_constant(
     })?;
     let elem_ty = module.context().value_data(scalar).ty;
     let vector_ty = module
-        .vector_type::<DynBrand>(Type::new(elem_ty, module), lanes, scalable)
+        .vector_type::<DynBrand, _>(Type::new(elem_ty, module), lanes, scalable)
         .as_type();
     Ok(intern_aggregate(vector_ty, vec![scalar; lane_count].into_boxed_slice()).id)
 }
@@ -1753,7 +1772,7 @@ fn constant_with_replaced_operand(
             if !changed {
                 return Ok(None);
             }
-            let rebuilt = module.ptr_auth::<DynBrand>(
+            let rebuilt = module.ptr_auth::<DynBrand, _, _, _, _, _>(
                 constant_handle(pointer, module, module.context().value_data(pointer).ty),
                 constant_handle(key, module, module.context().value_data(key).ty),
                 constant_handle(

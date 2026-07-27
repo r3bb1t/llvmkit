@@ -43,10 +43,10 @@ macro_rules! brand {
 fn a_brand_admits_one_live_module_at_a_time() -> Result<(), IrError> {
     brand!(OneAtATime);
 
-    let first = Module::branded::<OneAtATime>("first")?;
+    let first = Module::branded::<OneAtATime, _>("first")?;
     assert!(
         matches!(
-            Module::branded::<OneAtATime>("second"),
+            Module::branded::<OneAtATime, _>("second"),
             Err(IrError::BrandInUse { .. })
         ),
         "a second live module must not share the brand",
@@ -54,7 +54,7 @@ fn a_brand_admits_one_live_module_at_a_time() -> Result<(), IrError> {
 
     drop(first);
 
-    let second = Module::branded::<OneAtATime>("second")?;
+    let second = Module::branded::<OneAtATime, _>("second")?;
     assert_eq!(second.name(), "second");
     Ok(())
 }
@@ -65,8 +65,8 @@ fn distinct_brands_coexist() -> Result<(), IrError> {
     brand!(Left);
     brand!(Right);
 
-    let left = Module::branded::<Left>("left")?;
-    let right = Module::branded::<Right>("right")?;
+    let left = Module::branded::<Left, _>("left")?;
+    let right = Module::branded::<Right, _>("right")?;
     assert_ne!(left.id(), right.id());
     Ok(())
 }
@@ -78,10 +78,10 @@ fn distinct_brands_coexist() -> Result<(), IrError> {
 fn branded_once_retires_its_brand_permanently() -> Result<(), IrError> {
     brand!(RetiredForever);
 
-    let once = Module::branded_once::<RetiredForever>("once")?;
+    let once = Module::branded_once::<RetiredForever, _>("once")?;
     assert!(
         matches!(
-            Module::branded::<RetiredForever>("nope"),
+            Module::branded::<RetiredForever, _>("nope"),
             Err(IrError::BrandInUse { .. })
         ),
         "while alive it is merely in use, not yet retired",
@@ -92,11 +92,11 @@ fn branded_once_retires_its_brand_permanently() -> Result<(), IrError> {
     // "Forever" is the whole point, so check it more than once.
     for _ in 0..3 {
         assert!(matches!(
-            Module::branded::<RetiredForever>("nope"),
+            Module::branded::<RetiredForever, _>("nope"),
             Err(IrError::BrandRetired { .. })
         ));
         assert!(matches!(
-            Module::branded_once::<RetiredForever>("nope"),
+            Module::branded_once::<RetiredForever, _>("nope"),
             Err(IrError::BrandRetired { .. })
         ));
     }
@@ -110,11 +110,11 @@ fn branded_once_retires_its_brand_permanently() -> Result<(), IrError> {
 fn the_claim_rides_through_the_typestate_transitions() -> Result<(), IrError> {
     brand!(Typestate);
 
-    let unverified = Module::branded::<Typestate>("ts")?;
+    let unverified = Module::branded::<Typestate, _>("ts")?;
     let verified = unverified.verify()?;
     assert!(
         matches!(
-            Module::branded::<Typestate>("x"),
+            Module::branded::<Typestate, _>("x"),
             Err(IrError::BrandInUse { .. })
         ),
         "verify() moved the module, not its claim",
@@ -122,12 +122,12 @@ fn the_claim_rides_through_the_typestate_transitions() -> Result<(), IrError> {
 
     let back = verified.unverify();
     assert!(matches!(
-        Module::branded::<Typestate>("x"),
+        Module::branded::<Typestate, _>("x"),
         Err(IrError::BrandInUse { .. })
     ));
 
     drop(back);
-    let _reclaimed = Module::branded::<Typestate>("x")?;
+    let _reclaimed = Module::branded::<Typestate, _>("x")?;
     Ok(())
 }
 
@@ -139,11 +139,11 @@ fn the_claim_rides_through_the_typestate_transitions() -> Result<(), IrError> {
 fn leaking_a_module_consumes_its_brand_forever() {
     brand!(Leaked);
 
-    let module = Module::branded::<Leaked>("leaked").expect("first claim");
+    let module = Module::branded::<Leaked, _>("leaked").expect("first claim");
     core::mem::forget(module);
 
     assert!(matches!(
-        Module::branded::<Leaked>("again"),
+        Module::branded::<Leaked, _>("again"),
         Err(IrError::BrandInUse { .. })
     ));
 }
@@ -159,15 +159,15 @@ fn a_brand_freed_on_one_thread_is_claimable_on_another() {
     brand!(CrossThread);
 
     std::thread::spawn(|| {
-        let module = Module::branded::<CrossThread>("a").expect("first claim");
+        let module = Module::branded::<CrossThread, _>("a").expect("first claim");
         assert_eq!(module.name(), "a");
     })
     .join()
     .expect("first worker panicked");
 
     std::thread::spawn(|| {
-        let module =
-            Module::branded::<CrossThread>("b").expect("the other thread's drop freed the brand");
+        let module = Module::branded::<CrossThread, _>("b")
+            .expect("the other thread's drop freed the brand");
         assert_eq!(module.name(), "b");
     })
     .join()
@@ -191,7 +191,7 @@ fn concurrent_claims_elect_exactly_one_winner() {
             let tried = Arc::clone(&tried);
             std::thread::spawn(move || {
                 start.wait();
-                let claimed = Module::branded::<Contended>("contended");
+                let claimed = Module::branded::<Contended, _>("contended");
                 let won = claimed.is_ok();
                 // Hold the claim until every thread has had its turn, so the
                 // losers really did race a *live* winner.
@@ -218,13 +218,13 @@ fn an_unwind_releases_the_brand() {
 
     // The panic message this prints on stderr is expected, not a failure.
     let outcome = std::panic::catch_unwind(|| {
-        let _live = Module::branded::<Unwound>("unwound").expect("first claim");
+        let _live = Module::branded::<Unwound, _>("unwound").expect("first claim");
         panic!("simulated failure with a live branded module");
     });
     assert!(outcome.is_err(), "the closure was supposed to panic");
 
     let recovered =
-        Module::branded::<Unwound>("recovered").expect("unwinding must release the brand");
+        Module::branded::<Unwound, _>("recovered").expect("unwinding must release the brand");
     assert_eq!(recovered.name(), "recovered");
 }
 
@@ -329,7 +329,7 @@ fn a_named_brand_emits_byte_identical_ir() -> Result<(), IrError> {
     let generated = module_new!("same")?;
     let via_generated_brand = build(&generated)?;
 
-    let named = Module::branded::<Emitting>("same")?;
+    let named = Module::branded::<Emitting, _>("same")?;
     let via_named_brand = build(&named)?;
 
     assert_eq!(via_named_brand, via_generated_brand);

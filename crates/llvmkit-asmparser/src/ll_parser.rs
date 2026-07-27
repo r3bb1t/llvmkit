@@ -48,10 +48,15 @@ use llvmkit_ir::{
 };
 use llvmkit_support::{Span, Spanned};
 
+use super::asm_parser_context::AsmParserContext;
 use super::ll_lexer::{LexError, Lexer};
+use super::ll_token::Opcode;
 use super::ll_token::{IntLit, Keyword, NumBase, PrimitiveTy, Sign, Token};
+use super::module_summary::ModuleSummaryIndex;
+use super::numbered_values::AddError;
 use super::numbered_values::NumberedValues;
 use super::parse_error::{DiagLoc, ParseError, ParseResult};
+use super::parse_error::{SymbolId, SymbolKind};
 use super::slot_mapping::{GlobalRef, SlotMapping};
 
 type ParsedGlobalInitializer<'ctx, B> = (
@@ -265,7 +270,7 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
 #[derive(Debug, Default)]
 pub struct ParsedModule<'ctx, B: ModuleBrand> {
     pub slot_mapping: SlotMapping<'ctx, B>,
-    pub summary_index: Option<crate::module_summary::ModuleSummaryIndex>,
+    pub summary_index: Option<ModuleSummaryIndex>,
 }
 
 enum DeferredConstantKind<'ctx, B: ModuleBrand> {
@@ -419,22 +424,22 @@ fn parsed_apsint_to_i128(parsed: &ParsedApsInt) -> Option<i128> {
     }
 }
 
-fn is_supported_constant_expr_opcode(op: crate::ll_token::Opcode) -> bool {
+fn is_supported_constant_expr_opcode(op: Opcode) -> bool {
     matches!(
         op,
-        crate::ll_token::Opcode::GetElementPtr
-            | crate::ll_token::Opcode::BitCast
-            | crate::ll_token::Opcode::AddrSpaceCast
-            | crate::ll_token::Opcode::IntToPtr
-            | crate::ll_token::Opcode::PtrToInt
-            | crate::ll_token::Opcode::PtrToAddr
-            | crate::ll_token::Opcode::Trunc
-            | crate::ll_token::Opcode::Add
-            | crate::ll_token::Opcode::Sub
-            | crate::ll_token::Opcode::Xor
-            | crate::ll_token::Opcode::ExtractElement
-            | crate::ll_token::Opcode::InsertElement
-            | crate::ll_token::Opcode::ShuffleVector
+        Opcode::GetElementPtr
+            | Opcode::BitCast
+            | Opcode::AddrSpaceCast
+            | Opcode::IntToPtr
+            | Opcode::PtrToInt
+            | Opcode::PtrToAddr
+            | Opcode::Trunc
+            | Opcode::Add
+            | Opcode::Sub
+            | Opcode::Xor
+            | Opcode::ExtractElement
+            | Opcode::InsertElement
+            | Opcode::ShuffleVector
     )
 }
 
@@ -895,7 +900,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     pub fn with_context(
         src: &'src [u8],
         module: &'ctx Module<B, Unverified>,
-        _context: &'ctx mut crate::asm_parser_context::AsmParserContext<'ctx, B>,
+        _context: &'ctx mut AsmParserContext<'ctx, B>,
     ) -> ParseResult<Self> {
         Self::new(src, module)
     }
@@ -925,8 +930,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if let Some(entry) = self.metadata_slots.get_mut(&slot) {
             if entry.defined {
                 return Err(ParseError::Redefinition {
-                    kind: crate::parse_error::SymbolKind::Metadata,
-                    id: crate::parse_error::SymbolId::Numbered(slot),
+                    kind: SymbolKind::Metadata,
+                    id: SymbolId::Numbered(slot),
                     loc: DiagLoc::span(loc),
                 });
             }
@@ -993,8 +998,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         for (slot, entry) in &self.metadata_slots {
             if !entry.defined {
                 return Err(ParseError::UndefinedSymbol {
-                    kind: crate::parse_error::SymbolKind::Metadata,
-                    id: crate::parse_error::SymbolId::Numbered(*slot),
+                    kind: SymbolKind::Metadata,
+                    id: SymbolId::Numbered(*slot),
                     loc: DiagLoc::span(entry.first_ref),
                 });
             }
@@ -1169,8 +1174,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn validate_forward_function_decls(&self) -> ParseResult<()> {
         if let Some((name, loc)) = self.forward_function_decls.iter().next() {
             return Err(ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Named(name.clone()),
+                kind: SymbolKind::Global,
+                id: SymbolId::Named(name.clone()),
                 loc: DiagLoc::span(*loc),
             });
         }
@@ -1396,11 +1401,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn expect_primitive(
-        &mut self,
-        p: crate::ll_token::PrimitiveTy,
-        expected: &str,
-    ) -> ParseResult<Span> {
+    fn expect_primitive(&mut self, p: PrimitiveTy, expected: &str) -> ParseResult<Span> {
         if matches!(self.peek(), Token::PrimitiveType(got) if *got == p) {
             self.bump()
         } else {
@@ -1793,8 +1794,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 let fn_id = self.module.function_by_name_dyn(&name).ok_or_else(|| {
                     ParseError::UndefinedSymbol {
-                        kind: crate::parse_error::SymbolKind::Global,
-                        id: crate::parse_error::SymbolId::Named(name),
+                        kind: SymbolKind::Global,
+                        id: SymbolId::Named(name),
                         loc: DiagLoc::span(loc),
                     }
                 })?;
@@ -1818,8 +1819,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .basic_blocks()
                     .find(|bb| bb.name().as_deref() == Some(name.as_str()))
                     .ok_or_else(|| ParseError::UndefinedSymbol {
-                        kind: crate::parse_error::SymbolKind::Block,
-                        id: crate::parse_error::SymbolId::Named(name),
+                        kind: SymbolKind::Block,
+                        id: SymbolId::Named(name),
                         loc: DiagLoc::span(loc),
                     })?
             }
@@ -1848,8 +1849,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                 }
                 found.ok_or_else(|| ParseError::UndefinedSymbol {
-                    kind: crate::parse_error::SymbolKind::Block,
-                    id: crate::parse_error::SymbolId::Numbered(id),
+                    kind: SymbolKind::Block,
+                    id: SymbolId::Numbered(id),
                     loc: DiagLoc::span(loc),
                 })?
             }
@@ -3474,37 +3475,37 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn unsupported_constant_expr_at(&self, loc: Span, op: crate::ll_token::Opcode) -> ParseError {
+    fn unsupported_constant_expr_at(&self, loc: Span, op: Opcode) -> ParseError {
         let opcode = match op {
-            crate::ll_token::Opcode::ExtractValue => "extractvalue",
-            crate::ll_token::Opcode::InsertValue => "insertvalue",
-            crate::ll_token::Opcode::UDiv => "udiv",
-            crate::ll_token::Opcode::SDiv => "sdiv",
-            crate::ll_token::Opcode::URem => "urem",
-            crate::ll_token::Opcode::SRem => "srem",
-            crate::ll_token::Opcode::FAdd => "fadd",
-            crate::ll_token::Opcode::FSub => "fsub",
-            crate::ll_token::Opcode::FMul => "fmul",
-            crate::ll_token::Opcode::FDiv => "fdiv",
-            crate::ll_token::Opcode::FRem => "frem",
-            crate::ll_token::Opcode::And => "and",
-            crate::ll_token::Opcode::Or => "or",
-            crate::ll_token::Opcode::LShr => "lshr",
-            crate::ll_token::Opcode::AShr => "ashr",
-            crate::ll_token::Opcode::Shl => "shl",
-            crate::ll_token::Opcode::Mul => "mul",
-            crate::ll_token::Opcode::FNeg => "fneg",
-            crate::ll_token::Opcode::Select => "select",
-            crate::ll_token::Opcode::ZExt => "zext",
-            crate::ll_token::Opcode::SExt => "sext",
-            crate::ll_token::Opcode::FPTrunc => "fptrunc",
-            crate::ll_token::Opcode::FPExt => "fpext",
-            crate::ll_token::Opcode::UIToFP => "uitofp",
-            crate::ll_token::Opcode::SIToFP => "sitofp",
-            crate::ll_token::Opcode::FPToUI => "fptoui",
-            crate::ll_token::Opcode::FPToSI => "fptosi",
-            crate::ll_token::Opcode::ICmp => "icmp",
-            crate::ll_token::Opcode::FCmp => "fcmp",
+            Opcode::ExtractValue => "extractvalue",
+            Opcode::InsertValue => "insertvalue",
+            Opcode::UDiv => "udiv",
+            Opcode::SDiv => "sdiv",
+            Opcode::URem => "urem",
+            Opcode::SRem => "srem",
+            Opcode::FAdd => "fadd",
+            Opcode::FSub => "fsub",
+            Opcode::FMul => "fmul",
+            Opcode::FDiv => "fdiv",
+            Opcode::FRem => "frem",
+            Opcode::And => "and",
+            Opcode::Or => "or",
+            Opcode::LShr => "lshr",
+            Opcode::AShr => "ashr",
+            Opcode::Shl => "shl",
+            Opcode::Mul => "mul",
+            Opcode::FNeg => "fneg",
+            Opcode::Select => "select",
+            Opcode::ZExt => "zext",
+            Opcode::SExt => "sext",
+            Opcode::FPTrunc => "fptrunc",
+            Opcode::FPExt => "fpext",
+            Opcode::UIToFP => "uitofp",
+            Opcode::SIToFP => "sitofp",
+            Opcode::FPToUI => "fptoui",
+            Opcode::FPToSI => "fptosi",
+            Opcode::ICmp => "icmp",
+            Opcode::FCmp => "fcmp",
             _ => return self.unsupported_constant_value_form_at(loc),
         };
         ParseError::Expected {
@@ -3830,7 +3831,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .copied()
                 .ok_or_else(|| ParseError::UndefinedSymbol {
                     kind: SYMBOL_KIND_LOCAL,
-                    id: crate::parse_error::SymbolId::Named(name),
+                    id: SymbolId::Named(name),
                     loc: DiagLoc::span(self.loc()),
                 }),
             ValId::LocalId(id) => pfs
@@ -3840,7 +3841,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .copied()
                 .ok_or_else(|| ParseError::UndefinedSymbol {
                     kind: SYMBOL_KIND_LOCAL,
-                    id: crate::parse_error::SymbolId::Numbered(id),
+                    id: SymbolId::Numbered(id),
                     loc: DiagLoc::span(self.loc()),
                 }),
             ValId::GlobalName(name) => self.resolve_global_name_as_value(name),
@@ -4012,8 +4013,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Ok(self.module.view(id).into_erased())
         } else {
             Err(ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Named(name),
+                kind: SymbolKind::Global,
+                id: SymbolId::Named(name),
                 loc: DiagLoc::span(self.loc()),
             })
         }
@@ -4030,8 +4031,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 GlobalRef::IFunc(i) => i.into_erased(),
             })
             .ok_or_else(|| ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Numbered(id),
+                kind: SymbolKind::Global,
+                id: SymbolId::Numbered(id),
                 loc: DiagLoc::span(self.loc()),
             })
     }
@@ -4059,8 +4060,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Ok(self.module.view(id).as_global_constant_ptr())
         } else {
             Err(ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Named(name),
+                kind: SymbolKind::Global,
+                id: SymbolId::Named(name),
                 loc: DiagLoc::span(self.loc()),
             })
         }
@@ -4072,8 +4073,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .copied()
             .map(|r| self.global_ref_to_constant(r))
             .ok_or_else(|| ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Numbered(id),
+                kind: SymbolKind::Global,
+                id: SymbolId::Numbered(id),
                 loc: DiagLoc::span(self.loc()),
             })
     }
@@ -4097,8 +4098,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Ok(GlobalRef::IFunc(self.module.view(id)))
         } else {
             Err(ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Named(name),
+                kind: SymbolKind::Global,
+                id: SymbolId::Named(name),
                 loc: DiagLoc::span(self.loc()),
             })
         }
@@ -4109,8 +4110,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .get(id)
             .copied()
             .ok_or_else(|| ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Numbered(id),
+                kind: SymbolKind::Global,
+                id: SymbolId::Numbered(id),
                 loc: DiagLoc::span(self.loc()),
             })
     }
@@ -4126,8 +4127,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 _ => None,
             })
             .ok_or_else(|| ParseError::UndefinedSymbol {
-                kind: crate::parse_error::SymbolKind::Global,
-                id: crate::parse_error::SymbolId::Numbered(id),
+                kind: SymbolKind::Global,
+                id: SymbolId::Numbered(id),
                 loc: DiagLoc::span(self.loc()),
             })
     }
@@ -4331,19 +4332,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         self.bump()?;
         let opcode = match op {
-            crate::ll_token::Opcode::Add => ConstantExprOpcode::Add,
-            crate::ll_token::Opcode::Sub => ConstantExprOpcode::Sub,
-            crate::ll_token::Opcode::Xor => ConstantExprOpcode::Xor,
-            crate::ll_token::Opcode::GetElementPtr => ConstantExprOpcode::GetElementPtr,
-            crate::ll_token::Opcode::ShuffleVector => ConstantExprOpcode::ShuffleVector,
-            crate::ll_token::Opcode::InsertElement => ConstantExprOpcode::InsertElement,
-            crate::ll_token::Opcode::ExtractElement => ConstantExprOpcode::ExtractElement,
-            crate::ll_token::Opcode::Trunc => ConstantExprOpcode::Trunc,
-            crate::ll_token::Opcode::PtrToAddr => ConstantExprOpcode::PtrToAddr,
-            crate::ll_token::Opcode::PtrToInt => ConstantExprOpcode::PtrToInt,
-            crate::ll_token::Opcode::IntToPtr => ConstantExprOpcode::IntToPtr,
-            crate::ll_token::Opcode::BitCast => ConstantExprOpcode::BitCast,
-            crate::ll_token::Opcode::AddrSpaceCast => ConstantExprOpcode::AddrSpaceCast,
+            Opcode::Add => ConstantExprOpcode::Add,
+            Opcode::Sub => ConstantExprOpcode::Sub,
+            Opcode::Xor => ConstantExprOpcode::Xor,
+            Opcode::GetElementPtr => ConstantExprOpcode::GetElementPtr,
+            Opcode::ShuffleVector => ConstantExprOpcode::ShuffleVector,
+            Opcode::InsertElement => ConstantExprOpcode::InsertElement,
+            Opcode::ExtractElement => ConstantExprOpcode::ExtractElement,
+            Opcode::Trunc => ConstantExprOpcode::Trunc,
+            Opcode::PtrToAddr => ConstantExprOpcode::PtrToAddr,
+            Opcode::PtrToInt => ConstantExprOpcode::PtrToInt,
+            Opcode::IntToPtr => ConstantExprOpcode::IntToPtr,
+            Opcode::BitCast => ConstantExprOpcode::BitCast,
+            Opcode::AddrSpaceCast => ConstantExprOpcode::AddrSpaceCast,
             _ => return Err(self.unsupported_constant_value_form_at(self.loc())),
         };
 
@@ -5681,7 +5682,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Some(ParamName::Numbered(id)) => {
                     if state.local_numbered.contains_key(&id) || id != state.next_unnamed_value_id {
                         return Err(ParseError::InvalidSlotId {
-                            source: crate::numbered_values::AddError::StaleId {
+                            source: AddError::StaleId {
                                 id,
                                 next: state.next_unnamed_value_id,
                             },
@@ -5789,26 +5790,26 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
             // Terminator — these consume the builder.
             match self.peek() {
-                Token::Instruction(crate::ll_token::Opcode::Ret) => {
+                Token::Instruction(Opcode::Ret) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_ret(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::Unreachable) => {
+                Token::Instruction(Opcode::Unreachable) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     let _ = b.build_unreachable();
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::Br) => {
+                Token::Instruction(Opcode::Br) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_br(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::Store) => {
+                Token::Instruction(Opcode::Store) => {
                     let b_ref = borrow_live_builder(&builder, self.loc())?;
                     self.bump()?;
                     self.parse_store(state, b_ref)?;
@@ -5816,7 +5817,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     seen_non_phi = true;
                     continue;
                 }
-                Token::Instruction(crate::ll_token::Opcode::Fence) => {
+                Token::Instruction(Opcode::Fence) => {
                     let b_ref = borrow_live_builder(&builder, self.loc())?;
                     self.bump()?;
                     self.parse_fence(b_ref)?;
@@ -5824,19 +5825,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     seen_non_phi = true;
                     continue;
                 }
-                Token::Instruction(crate::ll_token::Opcode::Switch) => {
+                Token::Instruction(Opcode::Switch) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_switch(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::IndirectBr) => {
+                Token::Instruction(Opcode::IndirectBr) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.parse_indirectbr(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::Invoke) => {
+                Token::Instruction(Opcode::Invoke) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     let result_loc = self.loc();
                     let result_name = self.parse_lhs_before_invoke()?;
@@ -5847,28 +5848,28 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::Resume) => {
+                Token::Instruction(Opcode::Resume) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_resume(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::CleanupRet) => {
+                Token::Instruction(Opcode::CleanupRet) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_cleanupret(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::CatchRet) => {
+                Token::Instruction(Opcode::CatchRet) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
                     self.parse_catchret(state, b)?;
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::CatchSwitch) => {
+                Token::Instruction(Opcode::CatchSwitch) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     let result_loc = self.loc();
                     let result_name = self.parse_lhs_assignment()?;
@@ -5877,7 +5878,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     state.bind_local(&result_name, v, result_loc)?;
                     return Ok(());
                 }
-                Token::Instruction(crate::ll_token::Opcode::CallBr) => {
+                Token::Instruction(Opcode::CallBr) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     let result_loc = self.loc();
                     let result_name = self.parse_lhs_assignment()?;
@@ -5905,10 +5906,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 seen_non_phi = true;
                 continue;
             }
-            if matches!(
-                self.peek(),
-                Token::Instruction(crate::ll_token::Opcode::Invoke)
-            ) {
+            if matches!(self.peek(), Token::Instruction(Opcode::Invoke)) {
                 let b = take_live_builder(&mut builder, self.loc())?;
                 self.bump()?;
                 let value = self.parse_invoke(state, b, &result_name)?;
@@ -5925,7 +5923,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // A `phi` must be grouped at the top of its block: reject one that
             // follows any non-phi instruction. Every other (non-terminator)
             // opcode marks the boundary past which phis are no longer allowed.
-            if matches!(opcode, crate::ll_token::Opcode::Phi) {
+            if matches!(opcode, Opcode::Phi) {
                 if seen_non_phi {
                     return Err(self.expected("phi must be grouped at the top of its basic block"));
                 }
@@ -5935,143 +5933,67 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.bump()?;
             let b_ref = borrow_live_builder(&builder, self.loc())?;
             let value = match opcode {
-                crate::ll_token::Opcode::Add => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::Add, &result_name)?
-                }
-                crate::ll_token::Opcode::Sub => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::Sub, &result_name)?
-                }
-                crate::ll_token::Opcode::Mul => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::Mul, &result_name)?
-                }
-                crate::ll_token::Opcode::UDiv => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::UDiv, &result_name)?
-                }
-                crate::ll_token::Opcode::SDiv => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::SDiv, &result_name)?
-                }
-                crate::ll_token::Opcode::URem => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::URem, &result_name)?
-                }
-                crate::ll_token::Opcode::SRem => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::SRem, &result_name)?
-                }
-                crate::ll_token::Opcode::Shl => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::Shl, &result_name)?
-                }
-                crate::ll_token::Opcode::LShr => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::LShr, &result_name)?
-                }
-                crate::ll_token::Opcode::AShr => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::AShr, &result_name)?
-                }
-                crate::ll_token::Opcode::And => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::And, &result_name)?
-                }
-                crate::ll_token::Opcode::Or => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::Or, &result_name)?
-                }
-                crate::ll_token::Opcode::Xor => {
-                    self.parse_int_binop(state, b_ref, IntBinOp::Xor, &result_name)?
-                }
-                crate::ll_token::Opcode::ICmp => self.parse_icmp(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::Trunc => {
-                    self.parse_int_cast(state, b_ref, IntCast::Trunc, &result_name)?
-                }
-                crate::ll_token::Opcode::ZExt => {
-                    self.parse_int_cast(state, b_ref, IntCast::ZExt, &result_name)?
-                }
-                crate::ll_token::Opcode::SExt => {
-                    self.parse_int_cast(state, b_ref, IntCast::SExt, &result_name)?
-                }
-                crate::ll_token::Opcode::PtrToInt => {
-                    self.parse_ptr_to_int(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::IntToPtr => {
-                    self.parse_int_to_ptr(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::FNeg => self.parse_fneg(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::FAdd => {
-                    self.parse_fp_binop(state, b_ref, FpBinOp::Add, &result_name)?
-                }
-                crate::ll_token::Opcode::FSub => {
-                    self.parse_fp_binop(state, b_ref, FpBinOp::Sub, &result_name)?
-                }
-                crate::ll_token::Opcode::FMul => {
-                    self.parse_fp_binop(state, b_ref, FpBinOp::Mul, &result_name)?
-                }
-                crate::ll_token::Opcode::FDiv => {
-                    self.parse_fp_binop(state, b_ref, FpBinOp::Div, &result_name)?
-                }
-                crate::ll_token::Opcode::FRem => {
-                    self.parse_fp_binop(state, b_ref, FpBinOp::Rem, &result_name)?
-                }
-                crate::ll_token::Opcode::FCmp => self.parse_fcmp(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::Alloca => self.parse_alloca(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::Load => self.parse_load(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::GetElementPtr => {
-                    self.parse_gep(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::Select => self.parse_select(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::FPToUI => {
+                Opcode::Add => self.parse_int_binop(state, b_ref, IntBinOp::Add, &result_name)?,
+                Opcode::Sub => self.parse_int_binop(state, b_ref, IntBinOp::Sub, &result_name)?,
+                Opcode::Mul => self.parse_int_binop(state, b_ref, IntBinOp::Mul, &result_name)?,
+                Opcode::UDiv => self.parse_int_binop(state, b_ref, IntBinOp::UDiv, &result_name)?,
+                Opcode::SDiv => self.parse_int_binop(state, b_ref, IntBinOp::SDiv, &result_name)?,
+                Opcode::URem => self.parse_int_binop(state, b_ref, IntBinOp::URem, &result_name)?,
+                Opcode::SRem => self.parse_int_binop(state, b_ref, IntBinOp::SRem, &result_name)?,
+                Opcode::Shl => self.parse_int_binop(state, b_ref, IntBinOp::Shl, &result_name)?,
+                Opcode::LShr => self.parse_int_binop(state, b_ref, IntBinOp::LShr, &result_name)?,
+                Opcode::AShr => self.parse_int_binop(state, b_ref, IntBinOp::AShr, &result_name)?,
+                Opcode::And => self.parse_int_binop(state, b_ref, IntBinOp::And, &result_name)?,
+                Opcode::Or => self.parse_int_binop(state, b_ref, IntBinOp::Or, &result_name)?,
+                Opcode::Xor => self.parse_int_binop(state, b_ref, IntBinOp::Xor, &result_name)?,
+                Opcode::ICmp => self.parse_icmp(state, b_ref, &result_name)?,
+                Opcode::Trunc => self.parse_int_cast(state, b_ref, IntCast::Trunc, &result_name)?,
+                Opcode::ZExt => self.parse_int_cast(state, b_ref, IntCast::ZExt, &result_name)?,
+                Opcode::SExt => self.parse_int_cast(state, b_ref, IntCast::SExt, &result_name)?,
+                Opcode::PtrToInt => self.parse_ptr_to_int(state, b_ref, &result_name)?,
+                Opcode::IntToPtr => self.parse_int_to_ptr(state, b_ref, &result_name)?,
+                Opcode::FNeg => self.parse_fneg(state, b_ref, &result_name)?,
+                Opcode::FAdd => self.parse_fp_binop(state, b_ref, FpBinOp::Add, &result_name)?,
+                Opcode::FSub => self.parse_fp_binop(state, b_ref, FpBinOp::Sub, &result_name)?,
+                Opcode::FMul => self.parse_fp_binop(state, b_ref, FpBinOp::Mul, &result_name)?,
+                Opcode::FDiv => self.parse_fp_binop(state, b_ref, FpBinOp::Div, &result_name)?,
+                Opcode::FRem => self.parse_fp_binop(state, b_ref, FpBinOp::Rem, &result_name)?,
+                Opcode::FCmp => self.parse_fcmp(state, b_ref, &result_name)?,
+                Opcode::Alloca => self.parse_alloca(state, b_ref, &result_name)?,
+                Opcode::Load => self.parse_load(state, b_ref, &result_name)?,
+                Opcode::GetElementPtr => self.parse_gep(state, b_ref, &result_name)?,
+                Opcode::Select => self.parse_select(state, b_ref, &result_name)?,
+                Opcode::FPToUI => {
                     self.parse_fp_to_int(state, b_ref, FpToInt::FpToUI, &result_name)?
                 }
-                crate::ll_token::Opcode::FPToSI => {
+                Opcode::FPToSI => {
                     self.parse_fp_to_int(state, b_ref, FpToInt::FpToSI, &result_name)?
                 }
-                crate::ll_token::Opcode::UIToFP => {
+                Opcode::UIToFP => {
                     self.parse_int_to_fp(state, b_ref, IntToFp::UIToFp, &result_name)?
                 }
-                crate::ll_token::Opcode::SIToFP => {
+                Opcode::SIToFP => {
                     self.parse_int_to_fp(state, b_ref, IntToFp::SIToFp, &result_name)?
                 }
-                crate::ll_token::Opcode::AddrSpaceCast => {
-                    self.parse_addrspace_cast(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::BitCast => {
-                    self.parse_bitcast(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::FPTrunc => {
-                    self.parse_fptrunc(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::FPExt => self.parse_fpext(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::PtrToAddr => {
-                    self.parse_ptrtoaddr(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::ExtractElement => {
-                    self.parse_extractelement(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::InsertElement => {
-                    self.parse_insertelement(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::ShuffleVector => {
-                    self.parse_shufflevector(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::ExtractValue => {
-                    self.parse_extractvalue(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::InsertValue => {
-                    self.parse_insertvalue(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::Phi => self.parse_phi(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::Call => self.parse_call(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::VAArg => self.parse_vaarg(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::Freeze => self.parse_freeze(state, b_ref, &result_name)?,
-                crate::ll_token::Opcode::AtomicCmpXchg => {
-                    self.parse_cmpxchg(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::AtomicRMW => {
-                    self.parse_atomicrmw(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::LandingPad => {
-                    self.parse_landingpad(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::CleanupPad => {
-                    self.parse_cleanuppad(state, b_ref, &result_name)?
-                }
-                crate::ll_token::Opcode::CatchPad => {
-                    self.parse_catchpad(state, b_ref, &result_name)?
-                }
+                Opcode::AddrSpaceCast => self.parse_addrspace_cast(state, b_ref, &result_name)?,
+                Opcode::BitCast => self.parse_bitcast(state, b_ref, &result_name)?,
+                Opcode::FPTrunc => self.parse_fptrunc(state, b_ref, &result_name)?,
+                Opcode::FPExt => self.parse_fpext(state, b_ref, &result_name)?,
+                Opcode::PtrToAddr => self.parse_ptrtoaddr(state, b_ref, &result_name)?,
+                Opcode::ExtractElement => self.parse_extractelement(state, b_ref, &result_name)?,
+                Opcode::InsertElement => self.parse_insertelement(state, b_ref, &result_name)?,
+                Opcode::ShuffleVector => self.parse_shufflevector(state, b_ref, &result_name)?,
+                Opcode::ExtractValue => self.parse_extractvalue(state, b_ref, &result_name)?,
+                Opcode::InsertValue => self.parse_insertvalue(state, b_ref, &result_name)?,
+                Opcode::Phi => self.parse_phi(state, b_ref, &result_name)?,
+                Opcode::Call => self.parse_call(state, b_ref, &result_name)?,
+                Opcode::VAArg => self.parse_vaarg(state, b_ref, &result_name)?,
+                Opcode::Freeze => self.parse_freeze(state, b_ref, &result_name)?,
+                Opcode::AtomicCmpXchg => self.parse_cmpxchg(state, b_ref, &result_name)?,
+                Opcode::AtomicRMW => self.parse_atomicrmw(state, b_ref, &result_name)?,
+                Opcode::LandingPad => self.parse_landingpad(state, b_ref, &result_name)?,
+                Opcode::CleanupPad => self.parse_cleanuppad(state, b_ref, &result_name)?,
+                Opcode::CatchPad => self.parse_catchpad(state, b_ref, &result_name)?,
                 _ => {
                     return Err(ParseError::Expected {
                         expected: format!(
@@ -6116,7 +6038,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: ParsedBlockBuilder<'ctx, 'ctx, B>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `ret`
-        if let Token::PrimitiveType(crate::ll_token::PrimitiveTy::Void) = self.peek() {
+        if let Token::PrimitiveType(PrimitiveTy::Void) = self.peek() {
             self.bump()?;
             let _ = b.build_ret_void().map_err(|e| ParseError::Expected {
                 expected: format!("valid ret void: {e}"),
@@ -6141,10 +6063,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: ParsedBlockBuilder<'ctx, 'ctx, B>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `br`
-        if matches!(
-            self.peek(),
-            Token::PrimitiveType(crate::ll_token::PrimitiveTy::Label)
-        ) {
+        if matches!(self.peek(), Token::PrimitiveType(PrimitiveTy::Label)) {
             self.bump()?;
             let target = self.parse_block_ref(state)?;
             let _ = b.build_br(target).map_err(|e| ParseError::Expected {
@@ -6163,16 +6082,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let cond_v = self.parse_value(state, cond_ty)?;
         self.expect_punct(PunctKind::Comma, "',' after br condition")?;
-        self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
-            "'label' for then-target",
-        )?;
+        self.expect_primitive(PrimitiveTy::Label, "'label' for then-target")?;
         let then_bb = self.parse_block_ref(state)?;
         self.expect_punct(PunctKind::Comma, "',' between br targets")?;
-        self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
-            "'label' for else-target",
-        )?;
+        self.expect_primitive(PrimitiveTy::Label, "'label' for else-target")?;
         let else_bb = self.parse_block_ref(state)?;
         let cond_iv: IntValue<'ctx, IntDyn, B> = cond_v
             .try_into()
@@ -7556,10 +7469,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else {
             llvmkit_ir::instr_types::TailCallKind::None
         };
-        if matches!(
-            self.peek(),
-            Token::Instruction(crate::ll_token::Opcode::Call)
-        ) {
+        if matches!(self.peek(), Token::Instruction(Opcode::Call)) {
             self.bump()?;
         }
         let calling_conv = self.parse_optional_calling_conv()?;
@@ -7871,8 +7781,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 })
                 .map(ParsedCallee::Function)
                 .ok_or_else(|| ParseError::UndefinedSymbol {
-                    kind: crate::parse_error::SymbolKind::Global,
-                    id: crate::parse_error::SymbolId::Numbered(id),
+                    kind: SymbolKind::Global,
+                    id: SymbolId::Numbered(id),
                     loc: DiagLoc::span(loc),
                 }),
             ParsedDirectCallee::InlineAsm(data) => Ok(ParsedCallee::InlineAsm(
@@ -7967,10 +7877,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let cond_ty = self.parse_type(false)?;
         let cond_v = self.parse_value(state, cond_ty)?;
         self.expect_punct(PunctKind::Comma, "',' after switch condition")?;
-        self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
-            "'label' for switch default",
-        )?;
+        self.expect_primitive(PrimitiveTy::Label, "'label' for switch default")?;
         let default_bb = self.parse_block_ref(state)?;
         let (_, mut sw) = b
             .build_switch_dyn(cond_v, default_bb, "")
@@ -7988,10 +7895,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .try_into()
                 .map_err(|_| self.expected("integer switch case value"))?;
             self.expect_punct(PunctKind::Comma, "',' between case value and label")?;
-            self.expect_primitive(
-                crate::ll_token::PrimitiveTy::Label,
-                "'label' for switch case destination",
-            )?;
+            self.expect_primitive(PrimitiveTy::Label, "'label' for switch case destination")?;
             let case_bb = self.parse_block_ref(state)?;
             sw = sw
                 .add_case(case_int, case_bb)
@@ -8030,10 +7934,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 break;
             }
-            self.expect_primitive(
-                crate::ll_token::PrimitiveTy::Label,
-                "'label' in indirectbr destination",
-            )?;
+            self.expect_primitive(PrimitiveTy::Label, "'label' in indirectbr destination")?;
             let dest_bb = self.parse_block_ref(state)?;
             ibr = ibr
                 .add_destination(dest_bb)
@@ -8158,18 +8059,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         use AtomicRMWBinOp as Op;
         let op = match self.peek() {
             Token::Kw(Keyword::Xchg) => Op::Xchg,
-            Token::Instruction(crate::ll_token::Opcode::Add) => Op::Add,
-            Token::Instruction(crate::ll_token::Opcode::Sub) => Op::Sub,
-            Token::Instruction(crate::ll_token::Opcode::And) => Op::And,
+            Token::Instruction(Opcode::Add) => Op::Add,
+            Token::Instruction(Opcode::Sub) => Op::Sub,
+            Token::Instruction(Opcode::And) => Op::And,
             Token::Kw(Keyword::Nand) => Op::Nand,
-            Token::Instruction(crate::ll_token::Opcode::Or) => Op::Or,
-            Token::Instruction(crate::ll_token::Opcode::Xor) => Op::Xor,
+            Token::Instruction(Opcode::Or) => Op::Or,
+            Token::Instruction(Opcode::Xor) => Op::Xor,
             Token::Kw(Keyword::Max) => Op::Max,
             Token::Kw(Keyword::Min) => Op::Min,
             Token::Kw(Keyword::Umax) => Op::UMax,
             Token::Kw(Keyword::Umin) => Op::UMin,
-            Token::Instruction(crate::ll_token::Opcode::FAdd) => Op::FAdd,
-            Token::Instruction(crate::ll_token::Opcode::FSub) => Op::FSub,
+            Token::Instruction(Opcode::FAdd) => Op::FAdd,
+            Token::Instruction(Opcode::FSub) => Op::FSub,
             Token::Kw(Keyword::Fmax) => Op::FMax,
             Token::Kw(Keyword::Fmin) => Op::FMin,
             Token::Kw(Keyword::Fmaximum) => Op::FMaximum,
@@ -8302,7 +8203,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 None
             } else {
                 self.expect_primitive(
-                    crate::ll_token::PrimitiveTy::Label,
+                    PrimitiveTy::Label,
                     "'label' in cleanupret unwind destination",
                 )?;
                 Some(self.parse_block_ref(state)?)
@@ -8331,10 +8232,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let pad_ty = self.parse_type(false)?;
         let pad_v = self.parse_value(state, pad_ty)?;
         self.expect_keyword(Keyword::To, "'to' in catchret")?;
-        self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
-            "'label' in catchret destination",
-        )?;
+        self.expect_primitive(PrimitiveTy::Label, "'label' in catchret destination")?;
         let dest = self.parse_block_ref(state)?;
         let _ = b
             .build_catch_ret(pad_v, dest, "")
@@ -8364,10 +8262,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 break;
             }
-            self.expect_primitive(
-                crate::ll_token::PrimitiveTy::Label,
-                "'label' in catchswitch handler",
-            )?;
+            self.expect_primitive(PrimitiveTy::Label, "'label' in catchswitch handler")?;
             let bb = self.parse_block_ref(state)?;
             handlers.push(bb);
             let _ = self.eat_punct(PunctKind::Comma)?;
@@ -8379,7 +8274,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             None
         } else {
             self.expect_primitive(
-                crate::ll_token::PrimitiveTy::Label,
+                PrimitiveTy::Label,
                 "'label' in catchswitch unwind destination",
             )?;
             Some(self.parse_block_ref(state)?)
@@ -8454,16 +8349,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         .function_attr_groups(function_attr_groups.into_boxed_slice())
         .operand_bundles(operand_bundles);
         self.expect_keyword(Keyword::To, "'to' in invoke")?;
-        self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
-            "'label' for invoke normal destination",
-        )?;
+        self.expect_primitive(PrimitiveTy::Label, "'label' for invoke normal destination")?;
         let normal_bb = self.parse_block_ref(state)?;
         self.expect_keyword(Keyword::Unwind, "'unwind' in invoke")?;
-        self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
-            "'label' for invoke unwind destination",
-        )?;
+        self.expect_primitive(PrimitiveTy::Label, "'label' for invoke unwind destination")?;
         let unwind_bb = self.parse_block_ref(state)?;
         // Upstream `resolveFunctionType`: an explicitly written function
         // type IS the call-site type; otherwise infer from the arguments.
@@ -8582,7 +8471,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         .operand_bundles(operand_bundles);
         self.expect_keyword(Keyword::To, "'to' in callbr")?;
         self.expect_primitive(
-            crate::ll_token::PrimitiveTy::Label,
+            PrimitiveTy::Label,
             "'label' for callbr fallthrough destination",
         )?;
         let fallthrough = self.parse_block_ref(state)?;
@@ -8598,10 +8487,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     self.bump()?;
                     break;
                 }
-                self.expect_primitive(
-                    crate::ll_token::PrimitiveTy::Label,
-                    "'label' in callbr indirect target",
-                )?;
+                self.expect_primitive(PrimitiveTy::Label, "'label' in callbr indirect target")?;
                 let bb = self.parse_block_ref(state)?;
                 indirect.push(bb);
                 let _ = self.eat_punct(PunctKind::Comma)?;
@@ -8938,7 +8824,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
 
     fn invalid_numbered_slot(&self, id: u32, loc: Span) -> ParseError {
         ParseError::InvalidSlotId {
-            source: crate::numbered_values::AddError::StaleId {
+            source: AddError::StaleId {
                 id,
                 next: self.next_unnamed_value_id,
             },
@@ -9011,8 +8897,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     {
         if self.defined_numbered_blocks.contains(&id) {
             return Err(ParseError::Redefinition {
-                kind: crate::parse_error::SymbolKind::Block,
-                id: crate::parse_error::SymbolId::Numbered(id),
+                kind: SymbolKind::Block,
+                id: SymbolId::Numbered(id),
                 loc: DiagLoc::span(loc),
             });
         }
@@ -9031,8 +8917,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     {
         if self.defined_numbered_blocks.contains(&id) {
             return Err(ParseError::Redefinition {
-                kind: crate::parse_error::SymbolKind::Block,
-                id: crate::parse_error::SymbolId::Numbered(id),
+                kind: SymbolKind::Block,
+                id: SymbolId::Numbered(id),
                 loc: DiagLoc::span(loc),
             });
         }
@@ -9162,7 +9048,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 if self.local_named.insert(n.clone(), v).is_some() {
                     return Err(ParseError::Redefinition {
                         kind: SYMBOL_KIND_LOCAL,
-                        id: crate::parse_error::SymbolId::Named(n.clone()),
+                        id: SymbolId::Named(n.clone()),
                         loc: DiagLoc::span(loc),
                     });
                 }
@@ -9188,15 +9074,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
 
     /// Resolve all deferred phi incoming edges after the function body has
     /// been fully parsed. Called by `Parser::parse_define` before `}`.
-    fn finish(
-        mut self,
-        module: &'ctx Module<B, Unverified>,
-    ) -> crate::parse_error::ParseResult<()> {
+    fn finish(mut self, module: &'ctx Module<B, Unverified>) -> ParseResult<()> {
         for (name, loc) in &self.block_refs {
             if !self.defined_blocks.contains(name) {
                 return Err(ParseError::UndefinedSymbol {
-                    kind: crate::parse_error::SymbolKind::Block,
-                    id: crate::parse_error::SymbolId::Named(name.clone()),
+                    kind: SymbolKind::Block,
+                    id: SymbolId::Named(name.clone()),
                     loc: DiagLoc::span(*loc),
                 });
             }
@@ -9204,8 +9087,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         for (id, loc) in &self.numbered_block_refs {
             if !self.defined_numbered_blocks.contains(id) {
                 return Err(ParseError::UndefinedSymbol {
-                    kind: crate::parse_error::SymbolKind::Block,
-                    id: crate::parse_error::SymbolId::Numbered(*id),
+                    kind: SymbolKind::Block,
+                    id: SymbolId::Numbered(*id),
                     loc: DiagLoc::span(*loc),
                 });
             }
@@ -9213,48 +9096,52 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         let atomicrmw_values = std::mem::take(&mut self.deferred_atomicrmw_values);
         for deferred in atomicrmw_values {
             let val = match deferred.val_ref {
-                DeferredLocalValueRef::Named(ref n) => {
-                    self.local_named.get(n).copied().ok_or_else(|| {
-                        crate::parse_error::ParseError::UndefinedSymbol {
-                            kind: SYMBOL_KIND_LOCAL,
-                            id: crate::parse_error::SymbolId::Named(n.clone()),
-                            loc: DiagLoc::span(deferred.loc),
-                        }
-                    })?
-                }
+                DeferredLocalValueRef::Named(ref n) => self
+                    .local_named
+                    .get(n)
+                    .copied()
+                    .ok_or_else(|| ParseError::UndefinedSymbol {
+                        kind: SYMBOL_KIND_LOCAL,
+                        id: SymbolId::Named(n.clone()),
+                        loc: DiagLoc::span(deferred.loc),
+                    })?,
                 DeferredLocalValueRef::Numbered(id) => {
                     self.local_numbered.get(&id).copied().ok_or_else(|| {
-                        crate::parse_error::ParseError::UndefinedSymbol {
+                        ParseError::UndefinedSymbol {
                             kind: SYMBOL_KIND_LOCAL,
-                            id: crate::parse_error::SymbolId::Numbered(id),
+                            id: SymbolId::Numbered(id),
                             loc: DiagLoc::span(deferred.loc),
                         }
                     })?
                 }
             };
-            deferred.inst.set_value_operand(module, val).map_err(|e| {
-                crate::parse_error::ParseError::Expected {
+            deferred
+                .inst
+                .set_value_operand(module, val)
+                .map_err(|e| ParseError::Expected {
                     expected: format!("valid atomicrmw forward value: {e}"),
                     loc: DiagLoc::span(deferred.loc),
-                }
-            })?;
+                })?;
         }
         let edges = std::mem::take(&mut self.deferred_phi);
         for edge in edges {
             let val = match edge.val_ref {
                 PhiValRef::Resolved(v) => v,
-                PhiValRef::Named(ref n) => self.local_named.get(n).copied().ok_or_else(|| {
-                    crate::parse_error::ParseError::UndefinedSymbol {
-                        kind: SYMBOL_KIND_LOCAL,
-                        id: crate::parse_error::SymbolId::Named(n.clone()),
-                        loc: DiagLoc::span(edge.loc),
-                    }
-                })?,
+                PhiValRef::Named(ref n) => {
+                    self.local_named
+                        .get(n)
+                        .copied()
+                        .ok_or_else(|| ParseError::UndefinedSymbol {
+                            kind: SYMBOL_KIND_LOCAL,
+                            id: SymbolId::Named(n.clone()),
+                            loc: DiagLoc::span(edge.loc),
+                        })?
+                }
                 PhiValRef::Numbered(id) => {
                     self.local_numbered.get(&id).copied().ok_or_else(|| {
-                        crate::parse_error::ParseError::UndefinedSymbol {
+                        ParseError::UndefinedSymbol {
                             kind: SYMBOL_KIND_LOCAL,
-                            id: crate::parse_error::SymbolId::Numbered(id),
+                            id: SymbolId::Numbered(id),
                             loc: DiagLoc::span(edge.loc),
                         }
                     })?
@@ -9274,7 +9161,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             let tmp_b = llvmkit_ir::IRBuilder::new(module);
             tmp_b
                 .phi_add_incoming_from_value(edge.phi_val, val, bb)
-                .map_err(|e| crate::parse_error::ParseError::Expected {
+                .map_err(|e| ParseError::Expected {
                     expected: format!("valid phi add_incoming: {e}"),
                     loc: DiagLoc::span(edge.loc),
                 })?;
@@ -9404,7 +9291,7 @@ fn borrow_live_builder<'b, 'm, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Local symbol kind label used in [`crate::parse_error::ParseError::UndefinedSymbol`].
-const SYMBOL_KIND_LOCAL: crate::parse_error::SymbolKind = crate::parse_error::SymbolKind::Local;
+const SYMBOL_KIND_LOCAL: SymbolKind = SymbolKind::Local;
 
 #[derive(Clone, Debug)]
 enum NameOrId {

@@ -18,8 +18,10 @@
 //!
 //! [`IRBuilder`]: crate::ir_builder::IRBuilder
 
+use super::asm_writer::SlotTracker;
 use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{BlockTerminationState, Unterminated};
+use super::error::ValueCategoryLabel;
 use super::function::FunctionValue;
 use super::function_signature::{CallArgs, FunctionParamList};
 use super::instruction::{InstructionKindData, InstructionView};
@@ -30,6 +32,7 @@ use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::TypeSlot;
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
 use super::value_id::BlockId;
+use super::value_id::ViewIn;
 use super::{DebugLoc, IrError, IrResult, Type};
 use core::cell::RefCell;
 use core::iter::FusedIterator;
@@ -292,7 +295,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
         self,
         module: ModuleRef<'ctx, B>,
     ) -> IrResult<BasicBlockLabel<'ctx, R, B>> {
-        crate::value_id::ViewIn::resolve_in(self, module)
+        ViewIn::resolve_in(self, module)
             .map(BasicBlockLabel::erase_params)
             .ok_or(IrError::ForeignValueId)
     }
@@ -1004,7 +1007,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>>
                 _params: PhantomData,
             }),
             _ => Err(IrError::ValueCategoryMismatch {
-                expected: crate::error::ValueCategoryLabel::BasicBlock,
+                expected: ValueCategoryLabel::BasicBlock,
                 got: v.category().into(),
             }),
         }
@@ -1021,11 +1024,11 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
         // ad hoc.
         if let Some(parent_id) = self.parent_id() {
             let parent = FunctionValue::<'_, Dyn, B>::from_parts_unchecked(parent_id, self.module);
-            let slots = crate::asm_writer::SlotTracker::for_function(parent);
+            let slots = SlotTracker::for_function(parent);
             crate::asm_writer::fmt_basic_block(f, self.as_dyn(), &slots, true)
         } else {
             // Orphan block: no slot tracker.
-            let slots = crate::asm_writer::SlotTracker::empty();
+            let slots = SlotTracker::empty();
             crate::asm_writer::fmt_basic_block(f, self.as_dyn(), &slots, true)
         }
     }

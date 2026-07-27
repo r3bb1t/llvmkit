@@ -835,7 +835,7 @@ impl<'src> SummaryParser<'src> {
         Ok(())
     }
 
-    fn expected(&self, expected: impl Into<String>) -> ParseError {
+    fn expected<E: Into<String>>(&self, expected: E) -> ParseError {
         ParseError::Expected {
             expected: expected.into(),
             loc: DiagLoc::span(self.current.span),

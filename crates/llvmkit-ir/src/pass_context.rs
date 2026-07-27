@@ -68,6 +68,8 @@ use super::cfg_update::CfgUpdate;
 use super::dominator_tree::DominatorTreeAnalysis;
 use super::error::IrError;
 use super::function::{FunctionBasicBlocks, FunctionValue};
+use super::instr_types::BranchKind;
+use super::instruction::InstructionKindData;
 use super::instruction::{Instruction, InstructionView, NonTerminator, TerminatorKind, state};
 use super::ir_builder::constant_folder::ConstantFolder;
 use super::ir_builder::{IRBuilder, InsertPoint, Positioned};
@@ -79,6 +81,7 @@ use super::pass_access::{
 use super::phi_check::{check_phi_incoming, render_phi_violation};
 use super::r#type::{Type, TypeSlot};
 use super::value::{IntoErasedValue, IsValue, Typed, Value, ValueSlot};
+use super::value::{ValueKindData, ValueUse};
 use super::value_id::{BlockId, FunctionId, ValueId, ViewIn};
 use super::worklist::Worklist;
 
@@ -1263,10 +1266,10 @@ where
                 BasicBlock::from_parts(succ.slot(), module_ref, label_ty);
             for inst_id in succ_block.instruction_ids() {
                 let data = module_ref.value_data(inst_id);
-                let crate::value::ValueKindData::Instruction(inst) = &data.kind else {
+                let ValueKindData::Instruction(inst) = &data.kind else {
                     continue;
                 };
-                let crate::instruction::InstructionKindData::Phi(p) = &inst.kind else {
+                let InstructionKindData::Phi(p) = &inst.kind else {
                     // Phis are grouped at the block top; stop at the first
                     // non-phi instead of scanning the whole block.
                     break;
@@ -1333,11 +1336,10 @@ where
         // phis left with none.
         let mut emptied: Vec<ValueSlot> = Vec::new();
         for inst_id in block.instruction_ids() {
-            let crate::value::ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind
-            else {
+            let ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind else {
                 continue;
             };
-            let crate::instruction::InstructionKindData::Phi(p) = &inst.kind else {
+            let InstructionKindData::Phi(p) = &inst.kind else {
                 break;
             };
             let mut dropped_values: Vec<ValueSlot> = Vec::new();
@@ -1364,7 +1366,7 @@ where
                 let mut uses = ctx.value_data(val_id).use_list.borrow_mut();
                 if let Some(pos) = uses
                     .iter()
-                    .position(|e| *e == crate::value::ValueUse::Instruction(inst_id))
+                    .position(|e| *e == ValueUse::Instruction(inst_id))
                 {
                     uses.remove(pos);
                 }
@@ -1384,7 +1386,7 @@ where
         // first (redirect users), erase second (unlink from the block).
         let module = self.patch.module_mut().module_ref();
         for inst_id in emptied {
-            let view = crate::instruction::InstructionView::from_parts(inst_id, module);
+            let view = InstructionView::from_parts(inst_id, module);
             let poison = view.ty().get_poison();
             self.replace_all_uses(&view, poison)?;
             self.erase(&view.as_non_terminator().expect("a phi is a non-terminator"));
@@ -1421,11 +1423,10 @@ where
         // Mutate the terminator and learn the removed target block.
         let target_id = match slot {
             EditSlot::SwitchCase(id) => {
-                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
-                else {
+                let ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
                     unreachable!("remove_slot: terminator is not an instruction");
                 };
-                let crate::instruction::InstructionKindData::Switch(switch) = &i.kind else {
+                let InstructionKindData::Switch(switch) = &i.kind else {
                     unreachable!("remove_slot: `SwitchCase` slot on a non-switch terminator");
                 };
                 // Drop every case targeting `to`, deregistering the switch from
@@ -1444,7 +1445,7 @@ where
                     let mut uses = ctx.value_data(val_id).use_list.borrow_mut();
                     if let Some(pos) = uses
                         .iter()
-                        .position(|e| *e == crate::value::ValueUse::Instruction(term_id))
+                        .position(|e| *e == ValueUse::Instruction(term_id))
                     {
                         uses.remove(pos);
                     }
@@ -1452,11 +1453,10 @@ where
                 id
             }
             EditSlot::BrThen | EditSlot::BrElse => {
-                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
-                else {
+                let ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
                     unreachable!("remove_slot: terminator is not an instruction");
                 };
-                let crate::instruction::InstructionKindData::Br(branch) = &i.kind else {
+                let InstructionKindData::Br(branch) = &i.kind else {
                     unreachable!("remove_slot: branch-arm slot on a non-branch terminator");
                 };
                 // Collapse the `cond_br` to an unconditional `br` to the
@@ -1464,7 +1464,7 @@ where
                 // sink and the dead condition operand is deregistered.
                 let (cond_id, removed, surviving) = {
                     let kind = branch.kind.borrow();
-                    let crate::instr_types::BranchKind::Conditional {
+                    let BranchKind::Conditional {
                         cond,
                         then_bb,
                         else_bb,
@@ -1478,12 +1478,11 @@ where
                         _ => unreachable!("remove_slot: outer arm restricts slot to a branch arm"),
                     }
                 };
-                *branch.kind.borrow_mut() =
-                    crate::instr_types::BranchKind::Unconditional(surviving);
+                *branch.kind.borrow_mut() = BranchKind::Unconditional(surviving);
                 let mut uses = ctx.value_data(cond_id).use_list.borrow_mut();
                 if let Some(pos) = uses
                     .iter()
-                    .position(|e| *e == crate::value::ValueUse::Instruction(term_id))
+                    .position(|e| *e == ValueUse::Instruction(term_id))
                 {
                     uses.remove(pos);
                 }
@@ -1601,11 +1600,10 @@ where
             BasicBlock::<Dyn, Terminated, B>::from_parts(new_to.id, new_to.module, new_to.ty);
         let mut param_phis: Vec<ValueSlot> = Vec::new();
         for inst_id in new_block.instruction_ids() {
-            let crate::value::ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind
-            else {
+            let ValueKindData::Instruction(inst) = &ctx.value_data(inst_id).kind else {
                 continue;
             };
-            let crate::instruction::InstructionKindData::Phi(_) = &inst.kind else {
+            let InstructionKindData::Phi(_) = &inst.kind else {
                 break;
             };
             param_phis.push(inst_id);
@@ -1633,11 +1631,10 @@ where
         // intervening mutation).
         let old_id = match slot {
             EditSlot::SwitchDefault => {
-                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
-                else {
+                let ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
                     unreachable!("redirect_slot: terminator is not an instruction");
                 };
-                let crate::instruction::InstructionKindData::Switch(switch) = &i.kind else {
+                let InstructionKindData::Switch(switch) = &i.kind else {
                     unreachable!("redirect_slot: switch slot on a non-switch terminator");
                 };
                 let old = switch.default_bb.get();
@@ -1645,11 +1642,10 @@ where
                 old
             }
             EditSlot::SwitchCase(old) => {
-                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
-                else {
+                let ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
                     unreachable!("redirect_slot: terminator is not an instruction");
                 };
-                let crate::instruction::InstructionKindData::Switch(switch) = &i.kind else {
+                let InstructionKindData::Switch(switch) = &i.kind else {
                     unreachable!("redirect_slot: switch slot on a non-switch terminator");
                 };
                 for entry in switch.cases.borrow_mut().iter_mut() {
@@ -1660,32 +1656,25 @@ where
                 old
             }
             EditSlot::BrThen | EditSlot::BrElse | EditSlot::BrUncond => {
-                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
-                else {
+                let ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
                     unreachable!("redirect_slot: terminator is not an instruction");
                 };
-                let crate::instruction::InstructionKindData::Br(branch) = &i.kind else {
+                let InstructionKindData::Br(branch) = &i.kind else {
                     unreachable!("redirect_slot: branch slot on a non-branch terminator");
                 };
                 let mut kind = branch.kind.borrow_mut();
                 match (&mut *kind, slot) {
-                    (crate::instr_types::BranchKind::Unconditional(target), EditSlot::BrUncond) => {
+                    (BranchKind::Unconditional(target), EditSlot::BrUncond) => {
                         let old = *target;
                         *target = new_id;
                         old
                     }
-                    (
-                        crate::instr_types::BranchKind::Conditional { then_bb, .. },
-                        EditSlot::BrThen,
-                    ) => {
+                    (BranchKind::Conditional { then_bb, .. }, EditSlot::BrThen) => {
                         let old = *then_bb;
                         *then_bb = new_id;
                         old
                     }
-                    (
-                        crate::instr_types::BranchKind::Conditional { else_bb, .. },
-                        EditSlot::BrElse,
-                    ) => {
+                    (BranchKind::Conditional { else_bb, .. }, EditSlot::BrElse) => {
                         let old = *else_bb;
                         *else_bb = new_id;
                         old
@@ -1694,11 +1683,10 @@ where
                 }
             }
             EditSlot::InvokeNormal | EditSlot::InvokeUnwind => {
-                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
-                else {
+                let ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
                     unreachable!("redirect_slot: terminator is not an instruction");
                 };
-                let crate::instruction::InstructionKindData::Invoke(invoke) = &i.kind else {
+                let InstructionKindData::Invoke(invoke) = &i.kind else {
                     unreachable!("redirect_slot: invoke slot on a non-invoke terminator");
                 };
                 match slot {
@@ -1716,11 +1704,10 @@ where
                 }
             }
             EditSlot::CallBrDefault => {
-                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
-                else {
+                let ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
                     unreachable!("redirect_slot: terminator is not an instruction");
                 };
-                let crate::instruction::InstructionKindData::CallBr(callbr) = &i.kind else {
+                let InstructionKindData::CallBr(callbr) = &i.kind else {
                     unreachable!("redirect_slot: callbr slot on a non-callbr terminator");
                 };
                 let old = callbr.default_dest.get();
@@ -1728,11 +1715,10 @@ where
                 old
             }
             EditSlot::CallBrIndirect(idx) => {
-                let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind
-                else {
+                let ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
                     unreachable!("redirect_slot: terminator is not an instruction");
                 };
-                let crate::instruction::InstructionKindData::CallBr(callbr) = &i.kind else {
+                let InstructionKindData::CallBr(callbr) = &i.kind else {
                     unreachable!("redirect_slot: callbr slot on a non-callbr terminator");
                 };
                 // Bounds-check the caller-supplied index before mutating: an
@@ -1791,10 +1777,10 @@ where
     /// the default edge (a `switch` must keep its default).
     fn switch_default_dest(&self, term_id: ValueSlot) -> ValueSlot {
         let ctx = self.patch.module_mut().core_ref().context();
-        let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
+        let ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
             unreachable!("switch_default_dest: terminator is not an instruction");
         };
-        let crate::instruction::InstructionKindData::Switch(switch) = &i.kind else {
+        let InstructionKindData::Switch(switch) = &i.kind else {
             unreachable!("switch_default_dest: `SwitchEdit` term is not a switch");
         };
         switch.default_bb.get()
@@ -1809,10 +1795,10 @@ where
     /// default edge is deliberately not a case, so this returns `false` for it.
     fn switch_has_case_successor(&self, term_id: ValueSlot, dest_id: ValueSlot) -> bool {
         let ctx = self.patch.module_mut().core_ref().context();
-        let crate::value::ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
+        let ValueKindData::Instruction(i) = &ctx.value_data(term_id).kind else {
             unreachable!("switch_has_case_successor: terminator is not an instruction");
         };
-        let crate::instruction::InstructionKindData::Switch(switch) = &i.kind else {
+        let InstructionKindData::Switch(switch) = &i.kind else {
             unreachable!("switch_has_case_successor: `SwitchEdit` term is not a switch");
         };
         switch.cases.borrow().iter().any(|entry| entry.1 == dest_id)
