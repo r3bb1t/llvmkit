@@ -43,6 +43,12 @@ Shipped today:
   zeroinitializer, global/function references, and represented `ConstantExpr`
   forms for parser-needed opcodes, including upstream vector GEP, bitcast, cast,
   and select folding fixtures). Round-trip tested via `format!("{module}")`.
+  **Not yet ordinary `clang` output:** roughly 21 attribute keywords are
+  missing — `byval(T)` and `sret(T)` among them — and `dso_local` is accepted on
+  `define` / `declare` but not on globals, which is enough to reject a plain
+  `clang -O0` or `-O2` dump. The structure around them parses; see
+  [Milestone 0](ROADMAP.md#milestone-0-textual-ll-parser-completeness) for the
+  measured inventory. Closing it is the next thing on the roadmap.
 - **Typed IR data model** — done. `llvmkit-ir` ships interned types, typed
   values, typed constants, functions, basic blocks, globals, comdats, data
   layout, target triple, module asm directives, and LLVM-style function-local

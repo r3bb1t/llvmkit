@@ -29,6 +29,20 @@ let f = m.add_typed_function::<i32, (i32, i32), _>  // declarations return ids
 let entry = m.view(f).append_basic_block(&m, "entry");   // ids resolve to handles
 ```
 
+### Packaging
+
+#### Fixed
+
+- **Every published crate now contains the license text.** `LICENSE` lived only
+  at the workspace root, and Cargo auto-includes a license file only from the
+  *package* directory, so all five `.crate` tarballs shipped with the `license`
+  field set and no license in them. For a derivative work of the LLVM Project
+  that is a defect rather than an oversight: Apache-2.0 section 4(a) requires
+  that recipients of a distribution receive a copy of the License, and a
+  crates.io tarball is a distribution. Each package directory now carries a
+  verbatim copy of the root `LICENSE`, and CI compares all five against the root
+  so they cannot drift.
+
 ### The polish and freeze cycle (cycle E)
 
 The API surface is frozen for the release: the remaining asymmetry is closed,
