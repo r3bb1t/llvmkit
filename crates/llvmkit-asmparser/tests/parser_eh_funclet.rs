@@ -11,13 +11,12 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 
 fn parse_snippet(src: &str) -> String {
-    Module::with_new("test", |module| {
-        let _ = Parser::new(src.as_bytes(), &module)
-            .expect("parse constructor")
-            .parse_module()
-            .expect("parse succeeded");
-        format!("{module}")
-    })
+    let module = Module::dynamic("test");
+    let _ = Parser::new(src.as_bytes(), &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect("parse succeeded");
+    format!("{module}")
 }
 
 // ── landingpad / resume ───────────────────────────────────────────────────────

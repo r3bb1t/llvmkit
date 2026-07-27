@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_asmparser::parse_error::ParseError;
 use llvmkit_asmparser::read_to_owned;
-use llvmkit_ir::Module;
+use llvmkit_ir::module_new;
 use llvmkit_support::{SourceMap, Span};
 
 fn main() -> ExitCode {
@@ -38,32 +38,31 @@ fn main() -> ExitCode {
         }
     };
 
-    // A generative module brand keeps parser state from leaking past this
-    // closure (mirrors upstream `LLVMContext` ownership).
+    // The module owns every arena the parse fills, so parser state dies with
+    // it (mirrors upstream `LLVMContext` ownership).
     let module_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("input");
-    Module::with_new::<_, _, _>(module_name, |module| {
-        let parser = match Parser::new(&bytes, &module) {
-            Ok(p) => p,
-            Err(err) => {
-                report_error(&path, &bytes, &err);
-                return ExitCode::from(1);
-            }
-        };
-
-        match parser.parse_module() {
-            Ok(_parsed) => {
-                // `_parsed.slot_mapping` carries the numbered-global table for
-                // follow-on `parse_constant_value` / `parse_type` calls; this
-                // example just round-trips the module.
-                print!("{module}");
-                ExitCode::SUCCESS
-            }
-            Err(err) => {
-                report_error(&path, &bytes, &err);
-                ExitCode::from(1)
-            }
+    let module = module_new!(module_name).expect("fresh module");
+    let parser = match Parser::new(&bytes, &module) {
+        Ok(p) => p,
+        Err(err) => {
+            report_error(&path, &bytes, &err);
+            return ExitCode::from(1);
         }
-    })
+    };
+
+    match parser.parse_module() {
+        Ok(_parsed) => {
+            // `_parsed.slot_mapping` carries the numbered-global table for
+            // follow-on `parse_constant_value` / `parse_type` calls; this
+            // example just round-trips the module.
+            print!("{module}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            report_error(&path, &bytes, &err);
+            ExitCode::from(1)
+        }
+    }
 }
 
 fn report_error(path: &Path, src: &[u8], err: &ParseError) {

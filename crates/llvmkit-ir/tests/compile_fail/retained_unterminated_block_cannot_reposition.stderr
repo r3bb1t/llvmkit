@@ -1,11 +1,11 @@
 error[E0382]: use of moved value: `entry`
-  --> tests/compile_fail/retained_unterminated_block_cannot_reposition.rs:20:62
+  --> tests/compile_fail/retained_unterminated_block_cannot_reposition.rs:20:58
    |
-15 |         let entry = f.append_basic_block(&m, "entry");
-   |             ----- move occurs because `entry` has type `llvmkit_ir::BasicBlock<'_, (), Unterminated, Brand<'_>>`, which does not implement the `Copy` trait
+15 |     let entry = m.view(f).append_basic_block(&m, "entry");
+   |         ----- move occurs because `entry` has type `llvmkit_ir::BasicBlock<'_, (), Unterminated, DynBrand>`, which does not implement the `Copy` trait
 16 |
-17 |         let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-   |                                                              ----- value moved here
+17 |     let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+   |                                                          ----- value moved here
 ...
-20 |         let _ = IRBuilder::new_for::<()>(&m).position_at_end(entry);
-   |                                                              ^^^^^ value used here after move
+20 |     let _ = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+   |                                                          ^^^^^ value used here after move

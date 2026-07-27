@@ -1,0 +1,23 @@
+error[E0277]: the trait bound `FunctionId<Dyn, Left>: ViewIn<'_, Right>` is not satisfied
+  --> tests/compile_fail/cross_named_brand_id_view.rs:41:24
+   |
+41 |     let _ = right.view(left_fn);
+   |                   ---- ^^^^^^^ the trait `ViewIn<'_, Right>` is not implemented for `FunctionId<Dyn, Left>`
+   |                   |
+   |                   required by a bound introduced by this call
+   |
+help: the trait `ViewIn<'_, Right>` is not implemented for `FunctionId<Dyn, Left>`
+      but trait `ViewIn<'_, Left>` is implemented for it
+  --> src/value_id.rs
+   |
+   | impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FunctionId<R, B> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `Left`, found `Right`
+note: required by a bound in `Module::<B, S>::view`
+  --> src/module.rs
+   |
+   |     pub fn view<I>(&'ctx self, id: I) -> I::View
+   |            ---- required by a bound in this associated function
+   |     where
+   |         I: ViewIn<'ctx, B>,
+   |            ^^^^^^^^^^^^^^^ required by this bound in `Module::<B, S>::view`

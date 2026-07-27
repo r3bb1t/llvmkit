@@ -25,6 +25,8 @@
 
 use core::fmt;
 
+use super::float_kind::{BFloat, FloatDyn, Fp128, Half, PpcFp128, X86Fp80};
+use super::int_width::{IntDyn, Width};
 use crate::error::TypeKindLabel;
 use crate::float_kind::FloatKind;
 use crate::int_width::IntWidth;
@@ -59,7 +61,7 @@ pub trait ReturnMarker: sealed::Sealed + Copy + 'static + fmt::Debug {
     /// Crate-internal: project the marker into the
     /// [`ExpectedRetKind`] discriminator so the runtime
     /// signature-validation path can inspect it without resorting to
-    /// `core::any::TypeId`.
+    /// `core::any::TypeSlot`.
     #[doc(hidden)]
     fn expected_kind() -> ExpectedRetKind;
 }
@@ -138,22 +140,13 @@ macro_rules! impl_float_return_marker {
         }
     )+ };
 }
-impl_int_return_marker!(bool, i8, i16, i32, i64, i128, crate::int_width::IntDyn);
-impl_float_return_marker!(
-    f32,
-    f64,
-    crate::float_kind::Half,
-    crate::float_kind::BFloat,
-    crate::float_kind::Fp128,
-    crate::float_kind::X86Fp80,
-    crate::float_kind::PpcFp128,
-    crate::float_kind::FloatDyn,
-);
+impl_int_return_marker!(bool, i8, i16, i32, i64, i128, IntDyn);
+impl_float_return_marker!(f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
 
 // `Width<N>` participates as a return marker. Const-generic blanket
 // is sound because `Width<N>` doesn't implement `FloatKind`, so no
 // overlap with the float-marker impls.
-impl<const N: u32> ReturnMarker for crate::int_width::Width<N> {
+impl<const N: u32> ReturnMarker for Width<N> {
     #[inline]
     fn expected_kind() -> ExpectedRetKind {
         ExpectedRetKind::IntStatic(N)

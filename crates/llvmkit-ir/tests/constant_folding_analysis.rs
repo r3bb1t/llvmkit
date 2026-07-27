@@ -11,70 +11,68 @@ use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     ApFloat, ApFloatSemantics, ApInt, AttrIndex, Attribute, BinaryIntrinsic, BinaryOpcode,
     CmpPredicate, ConstantExprFlags, ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue,
-    ConstantIntValue, DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, FastMathFlags,
-    FoldNonDeterminism, GepNoWrapFlags, IRBuilder, InstructionView, IntDyn, IntPredicate, IrError,
-    LibFunc, Linkage, Module, NoFolder, PreservedCastFlags, RoundingMode, TargetLibraryInfo,
-    UnaryOpcode, attributes::AttributeStorage, constant_fold_binary_intrinsic,
+    ConstantIntValue, DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, DynBrand,
+    FastMathFlags, FoldNonDeterminism, GepNoWrapFlags, IRBuilder, InstructionView, IntDyn,
+    IntPredicate, IrError, LibFunc, Linkage, NoFolder, PreservedCastFlags, RoundingMode,
+    TargetLibraryInfo, UnaryOpcode, attributes::AttributeStorage, constant_fold_binary_intrinsic,
     constant_fold_binary_op_operands, constant_fold_compare_inst_operands, constant_fold_constant,
     constant_fold_extract_element_instruction, constant_fold_fp_inst_operands,
     constant_fold_inst_operands, constant_fold_integer_cast, constant_fold_load_from_uniform_value,
     constant_fold_load_through_bitcast, constant_fold_unary_op_operand,
     constant_offset_from_global, is_constant_offset_from_global, lossless_inv_cast,
-    lossless_signed_trunc, lossless_unsigned_trunc,
+    lossless_signed_trunc, lossless_unsigned_trunc, module_new,
 };
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldLoadFromConstPtr`:
 /// byte extraction from constant globals uses the module `DataLayout` endianness.
 #[test]
 fn load_from_const_ptr_uses_little_endian_layout() -> Result<(), IrError> {
-    Module::with_new("analysis-load-le", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i8_ty = m.i8_type();
-        let i16_ty = m.i16_type();
-        let arr_ty = m.array_type(i8_ty.as_type(), 2);
-        let init = arr_ty.const_array::<ConstantIntValue<'_, i8>, _>([
-            i8_ty.const_int(0x34_i8),
-            i8_ty.const_int(0x12_i8),
-        ])?;
-        let g = m.add_global_constant("bytes", init)?;
+    let m = module_new!("analysis-load-le")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i16_ty = m.i16_type();
+    let arr_ty = m.array_type(i8_ty.as_type(), 2);
+    let init = arr_ty.const_array::<ConstantIntValue<'_, i8, _>, _>([
+        i8_ty.const_int(0x34_i8),
+        i8_ty.const_int(0x12_i8),
+    ])?;
+    let g = m.add_global_constant("bytes", init)?;
 
-        let folded = constant_fold_load_from_const_ptr(
-            g.as_global_constant_ptr(),
-            i16_ty.as_type(),
-            ApInt::zero(64),
-            &dl,
-        )?
-        .expect("constant load folds");
-        let int = ConstantIntValue::<IntDyn>::try_from(folded)?;
+    let folded = constant_fold_load_from_const_ptr(
+        m.view(g).as_global_constant_ptr(),
+        i16_ty.as_type(),
+        ApInt::zero(64),
+        &dl,
+    )?
+    .expect("constant load folds");
+    let int = ConstantIntValue::<IntDyn, _>::try_from(folded)?;
 
-        assert_eq!(int.ap_int(), ApInt::from_words(16, &[0x1234]));
-        Ok(())
-    })
+    assert_eq!(int.ap_int(), ApInt::from_words(16, &[0x1234]));
+    Ok(())
 }
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldLoadFromConst`:
 /// bytes past the end of a constant aggregate load as poison.
 #[test]
 fn load_from_const_ptr_oob_returns_poison() -> Result<(), IrError> {
-    Module::with_new("analysis-load-oob", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i8_ty = m.i8_type();
-        let i32_ty = m.i32_type();
-        let arr_ty = m.array_type(i8_ty.as_type(), 1);
-        let init = arr_ty.const_array::<ConstantIntValue<'_, i8>, _>([i8_ty.const_int(7_i8)])?;
-        let g = m.add_global_constant("one", init)?;
+    let m = module_new!("analysis-load-oob")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let arr_ty = m.array_type(i8_ty.as_type(), 1);
+    let init = arr_ty.const_array::<ConstantIntValue<'_, i8, _>, _>([i8_ty.const_int(7_i8)])?;
+    let g = m.add_global_constant("one", init)?;
 
-        let folded = constant_fold_load_from_const_ptr(
-            g.as_global_constant_ptr(),
-            i32_ty.as_type(),
-            ApInt::zero(64),
-            &dl,
-        )?
-        .expect("oob constant load folds to poison");
+    let folded = constant_fold_load_from_const_ptr(
+        m.view(g).as_global_constant_ptr(),
+        i32_ty.as_type(),
+        ApInt::zero(64),
+        &dl,
+    )?
+    .expect("oob constant load folds to poison");
 
-        assert_eq!(folded, i32_ty.as_type().get_poison().as_constant());
-        Ok(())
-    })
+    assert_eq!(folded, i32_ty.as_type().get_poison().as_constant());
+    Ok(())
 }
 
 /// Port of `CastInst::isEliminableCastPair` case 11 (`llvm/lib/IR/Instructions.cpp`):
@@ -86,28 +84,27 @@ fn load_from_const_ptr_oob_returns_poison() -> Result<(), IrError> {
 /// index-size-based switch-fallback in `ConstantFoldCastOperand`.
 #[test]
 fn ptrtoint_of_inttoptr_uses_pointer_size() -> Result<(), IrError> {
-    Module::with_new("analysis-ptr-index", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64:32")?;
-        let i64_ty = m.i64_type();
-        let ptr_ty = m.ptr_type(0);
-        let wide = i64_ty.const_ap_int(&ApInt::from_words(64, &[0x1_0000_0001]))?;
-        let ptr = constant_fold_cast_operand(
-            CastOpcode::IntToPtr,
-            wide.as_constant(),
-            ptr_ty.as_type(),
-            &dl,
-        )?
-        .expect("inttoptr folds through analysis layer");
-        let folded = constant_fold_cast_operand(CastOpcode::PtrToInt, ptr, i64_ty.as_type(), &dl)?
-            .expect("ptrtoint folds through analysis layer");
+    let m = module_new!("analysis-ptr-index")?;
+    let dl = DataLayout::parse("e-p:64:64:64:32")?;
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type(0);
+    let wide = i64_ty.const_ap_int(&ApInt::from_words(64, &[0x1_0000_0001]))?;
+    let ptr = constant_fold_cast_operand(
+        CastOpcode::IntToPtr,
+        wide.as_constant(),
+        ptr_ty.as_type(),
+        &dl,
+    )?
+    .expect("inttoptr folds through analysis layer");
+    let folded = constant_fold_cast_operand(CastOpcode::PtrToInt, ptr, i64_ty.as_type(), &dl)?
+        .expect("ptrtoint folds through analysis layer");
 
-        // Pointer size (64) equals both the i64 source and i64 destination
-        // widths, so case 11 collapses the pair to a straight `BitCast` of
-        // the original value: the round trip is a lossless identity, even
-        // though the index size (32) would have masked off bit 32.
-        assert_eq!(folded, wide.as_constant());
-        Ok(())
-    })
+    // Pointer size (64) equals both the i64 source and i64 destination
+    // widths, so case 11 collapses the pair to a straight `BitCast` of
+    // the original value: the round trip is a lossless identity, even
+    // though the index size (32) would have masked off bit 32.
+    assert_eq!(folded, wide.as_constant());
+    Ok(())
 }
 
 /// llvmkit-specific pin for `CastInst::isEliminableCastPair` case 11 on a
@@ -117,26 +114,21 @@ fn ptrtoint_of_inttoptr_uses_pointer_size() -> Result<(), IrError> {
 /// would truncate the high 64 bits a real pointer round trip preserves.
 #[test]
 fn ptrtoint_of_inttoptr_i128_collapses_to_original_value() -> Result<(), IrError> {
-    Module::with_new("analysis-ptr-i128-pointer-size", |m| {
-        let dl = DataLayout::parse("e-p:128:128:128:64")?;
-        let i128_ty = m.i128_type();
-        let ptr_ty = m.ptr_type(0);
-        // Bit 64 (above the 64-bit index boundary, within the 128-bit
-        // pointer boundary) must survive the round trip.
-        let x = i128_ty.const_ap_int(&ApInt::from_words(128, &[1, 1]))?;
-        let ptr = constant_fold_cast_operand(
-            CastOpcode::IntToPtr,
-            x.as_constant(),
-            ptr_ty.as_type(),
-            &dl,
-        )?
-        .expect("inttoptr folds through analysis layer");
-        let folded = constant_fold_cast_operand(CastOpcode::PtrToInt, ptr, i128_ty.as_type(), &dl)?
-            .expect("ptrtoint folds through analysis layer");
+    let m = module_new!("analysis-ptr-i128-pointer-size")?;
+    let dl = DataLayout::parse("e-p:128:128:128:64")?;
+    let i128_ty = m.i128_type();
+    let ptr_ty = m.ptr_type(0);
+    // Bit 64 (above the 64-bit index boundary, within the 128-bit
+    // pointer boundary) must survive the round trip.
+    let x = i128_ty.const_ap_int(&ApInt::from_words(128, &[1, 1]))?;
+    let ptr =
+        constant_fold_cast_operand(CastOpcode::IntToPtr, x.as_constant(), ptr_ty.as_type(), &dl)?
+            .expect("inttoptr folds through analysis layer");
+    let folded = constant_fold_cast_operand(CastOpcode::PtrToInt, ptr, i128_ty.as_type(), &dl)?
+        .expect("ptrtoint folds through analysis layer");
 
-        assert_eq!(folded, x.as_constant());
-        Ok(())
-    })
+    assert_eq!(folded, x.as_constant());
+    Ok(())
 }
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldLoadThroughBitcast`:
@@ -144,40 +136,37 @@ fn ptrtoint_of_inttoptr_i128_collapses_to_original_value() -> Result<(), IrError
 /// target-independent `ConstantFold.cpp` fold.
 #[test]
 fn ppc_fp128_bitcast_requires_datalayout_path() -> Result<(), IrError> {
-    Module::with_new("analysis-ppc-bitcast", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let ppc_ty = m.ppc_fp128_type();
-        let i128_ty = m.i128_type();
-        let bits = ApInt::from_words(128, &[0, 0x3ff0_0000_0000_0000]);
-        let fp = ApFloat::from_bits(ApFloatSemantics::PpcDoubleDouble, &bits)?;
-        let ppc = ppc_ty.const_ap_float(&fp)?.as_constant();
+    let m = module_new!("analysis-ppc-bitcast")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let ppc_ty = m.ppc_fp128_type();
+    let i128_ty = m.i128_type();
+    let bits = ApInt::from_words(128, &[0, 0x3ff0_0000_0000_0000]);
+    let fp = ApFloat::from_bits(ApFloatSemantics::PpcDoubleDouble, &bits)?;
+    let ppc = ppc_ty.const_ap_float(&fp)?.as_constant();
 
-        let folded = constant_fold_cast_operand(CastOpcode::BitCast, ppc, i128_ty.as_type(), &dl)?
-            .expect("DataLayout-aware PPC bitcast folds");
-        let int = ConstantIntValue::<IntDyn>::try_from(folded)?;
+    let folded = constant_fold_cast_operand(CastOpcode::BitCast, ppc, i128_ty.as_type(), &dl)?
+        .expect("DataLayout-aware PPC bitcast folds");
+    let int = ConstantIntValue::<IntDyn, _>::try_from(folded)?;
 
-        assert_eq!(int.ap_int(), bits);
-        Ok(())
-    })
+    assert_eq!(int.ap_int(), bits);
+    Ok(())
 }
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::FlushFPConstant`: dynamic
 /// denormal mode declines to choose a folded value for denormal inputs.
 #[test]
 fn dynamic_denormal_mode_declines_flush() -> Result<(), IrError> {
-    Module::with_new("analysis-denormal", |m| {
-        let f32_ty = m.f32_type();
-        let denormal =
-            ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
-        let operand = f32_ty.const_ap_float(&denormal)?.as_constant();
-        let mode = DenormalMode::new(DenormalModeKind::Dynamic, DenormalModeKind::Dynamic);
+    let m = module_new!("analysis-denormal")?;
+    let f32_ty = m.f32_type();
+    let denormal = ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
+    let operand = f32_ty.const_ap_float(&denormal)?.as_constant();
+    let mode = DenormalMode::new(DenormalModeKind::Dynamic, DenormalModeKind::Dynamic);
 
-        assert_eq!(
-            flush_fp_constant(operand, mode, DenormalModeSide::Input)?,
-            None
-        );
-        Ok(())
-    })
+    assert_eq!(
+        flush_fp_constant(operand, mode, DenormalModeSide::Input)?,
+        None
+    );
+    Ok(())
 }
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::FlushFPConstant`: FP
@@ -189,47 +178,46 @@ fn dynamic_denormal_mode_declines_flush() -> Result<(), IrError> {
 /// to the analysis-layer entry point, which used to decline every FP vector.
 #[test]
 fn fp_vector_fadd_folds_elementwise_through_analysis_path() -> Result<(), IrError> {
-    Module::with_new("analysis-fp-vector", |m| {
-        let dl = DataLayout::default();
-        let f32_ty = m.f32_type();
-        let i64_ty = m.i64_type();
-        let vec_ty = m.vector_type(f32_ty.as_type(), 2, false);
+    let m = module_new!("analysis-fp-vector")?;
+    let dl = DataLayout::default();
+    let f32_ty = m.f32_type();
+    let i64_ty = m.i64_type();
+    let vec_ty = m.vector_type(f32_ty.as_type(), 2, false);
 
-        let lhs = vec_ty
-            .const_vector::<ConstantFloatValue<'_, f32>, _>([
-                f32_ty.const_float(1.0),
-                f32_ty.const_float(2.0),
-            ])?
-            .as_constant();
-        let rhs = vec_ty
-            .const_vector::<ConstantFloatValue<'_, f32>, _>([
-                f32_ty.const_float(3.0),
-                f32_ty.const_float(4.0),
-            ])?
-            .as_constant();
+    let lhs = vec_ty
+        .const_vector::<ConstantFloatValue<'_, f32, _>, _>([
+            f32_ty.const_float(1.0),
+            f32_ty.const_float(2.0),
+        ])?
+        .as_constant();
+    let rhs = vec_ty
+        .const_vector::<ConstantFloatValue<'_, f32, _>, _>([
+            f32_ty.const_float(3.0),
+            f32_ty.const_float(4.0),
+        ])?
+        .as_constant();
 
-        let folded = constant_fold_fp_inst_operands(
-            BinaryOpcode::FAdd,
-            lhs,
-            rhs,
-            &dl,
-            DenormalMode::ieee(),
-            FastMathFlags::empty(),
-            FoldNonDeterminism::Allow,
+    let folded = constant_fold_fp_inst_operands(
+        BinaryOpcode::FAdd,
+        lhs,
+        rhs,
+        &dl,
+        DenormalMode::ieee(),
+        FastMathFlags::empty(),
+        FoldNonDeterminism::Allow,
+    )?
+    .expect("fp vector fadd folds elementwise through the analysis path");
+
+    for (index, expected) in [(0_i64, 4.0_f64), (1, 6.0)] {
+        let element = constant_fold_extract_element_instruction(
+            folded,
+            i64_ty.const_int(index).as_constant(),
         )?
-        .expect("fp vector fadd folds elementwise through the analysis path");
-
-        for (index, expected) in [(0_i64, 4.0_f64), (1, 6.0)] {
-            let element = constant_fold_extract_element_instruction(
-                folded,
-                i64_ty.const_int(index).as_constant(),
-            )?
-            .expect("lane extracts from the folded vector");
-            let fp = ConstantFloatValue::<f32>::try_from(element)?;
-            assert!(fp.ap_float().is_exactly_value_f64(expected));
-        }
-        Ok(())
-    })
+        .expect("lane extracts from the folded vector");
+        let fp = ConstantFloatValue::<f32, _>::try_from(element)?;
+        assert!(fp.ap_float().is_exactly_value_f64(expected));
+    }
+    Ok(())
 }
 
 /// Port of `ConstantFolding.cpp::ConstantFoldLoadFromConstPtr` +
@@ -238,132 +226,128 @@ fn fp_vector_fadd_folds_elementwise_through_analysis_path() -> Result<(), IrErro
 /// definition — so the load declines to fold, while a strong definition folds.
 #[test]
 fn interposable_constant_global_load_declines_to_fold() -> Result<(), IrError> {
-    Module::with_new("analysis-load-interposable", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i32_ty = m.i32_type();
-        let weak = m.add_global_constant("weak_g", i32_ty.const_int(42_i32))?;
-        weak.set_linkage(&m, Linkage::WeakAny);
-        let strong = m.add_global_constant("strong_g", i32_ty.const_int(7_i32))?;
+    let m = module_new!("analysis-load-interposable")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let weak = m.add_global_constant("weak_g", i32_ty.const_int(42_i32))?;
+    m.view(weak).set_linkage(&m, Linkage::WeakAny);
+    let strong = m.add_global_constant("strong_g", i32_ty.const_int(7_i32))?;
 
-        assert_eq!(
-            constant_fold_load_from_const_ptr(
-                weak.as_global_constant_ptr(),
-                i32_ty.as_type(),
-                ApInt::zero(64),
-                &dl,
-            )?,
-            None,
-            "interposable initializer must not fold"
-        );
-        let folded = constant_fold_load_from_const_ptr(
-            strong.as_global_constant_ptr(),
+    assert_eq!(
+        constant_fold_load_from_const_ptr(
+            m.view(weak).as_global_constant_ptr(),
             i32_ty.as_type(),
             ApInt::zero(64),
             &dl,
-        )?
-        .expect("definitive initializer folds");
-        assert_eq!(folded, i32_ty.const_int(7_i32).as_constant());
-        Ok(())
-    })
+        )?,
+        None,
+        "interposable initializer must not fold"
+    );
+    let folded = constant_fold_load_from_const_ptr(
+        m.view(strong).as_global_constant_ptr(),
+        i32_ty.as_type(),
+        ApInt::zero(64),
+        &dl,
+    )?
+    .expect("definitive initializer folds");
+    assert_eq!(folded, i32_ty.const_int(7_i32).as_constant());
+    Ok(())
 }
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldScalarCall`:
 /// modelled math libcalls can be folded when the target library reports support.
 #[test]
 fn foldable_libcall_sqrt_folds_constant() -> Result<(), IrError> {
-    Module::with_new("analysis-libcall", |m| {
-        let tli = TargetLibraryInfo::default();
-        let f64_ty = m.f64_type();
-        let input = f64_ty
-            .const_ap_float(
-                &ApFloat::from_string(
-                    ApFloatSemantics::IeeeDouble,
-                    "4.0",
-                    RoundingMode::NearestTiesToEven,
-                )?
-                .0,
+    let m = module_new!("analysis-libcall")?;
+    let tli = TargetLibraryInfo::default();
+    let f64_ty = m.f64_type();
+    let input = f64_ty
+        .const_ap_float(
+            &ApFloat::from_string(
+                ApFloatSemantics::IeeeDouble,
+                "4.0",
+                RoundingMode::NearestTiesToEven,
             )?
-            .as_constant();
-
-        assert!(can_constant_fold_call_to(LibFunc::Sqrt, &tli));
-        let folded = constant_fold_call(
-            LibFunc::Sqrt,
-            &[input],
-            f64_ty.as_type(),
-            &tli,
-            FoldNonDeterminism::Allow,
+            .0,
         )?
-        .expect("sqrt(4.0) folds");
-        let fp = ConstantFloatValue::<f64>::try_from(folded)?;
+        .as_constant();
 
-        assert!(fp.ap_float().is_exactly_value_f64(2.0));
-        Ok(())
-    })
+    assert!(can_constant_fold_call_to(LibFunc::Sqrt, &tli));
+    let folded = constant_fold_call(
+        LibFunc::Sqrt,
+        &[input],
+        f64_ty.as_type(),
+        &tli,
+        FoldNonDeterminism::Allow,
+    )?
+    .expect("sqrt(4.0) folds");
+    let fp = ConstantFloatValue::<f64, _>::try_from(folded)?;
+
+    assert!(fp.ap_float().is_exactly_value_f64(2.0));
+    Ok(())
 }
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldScalarCall`:
 /// the `LibFunc_sqrt` arm requires non-negative APFloat input before folding.
 #[test]
 fn negative_sqrt_libcall_declines_without_nan() -> Result<(), IrError> {
-    Module::with_new("analysis-libcall-negative-sqrt", |m| {
-        let tli = TargetLibraryInfo::default();
-        let f64_ty = m.f64_type();
-        let input = f64_ty
-            .const_ap_float(
-                &ApFloat::from_string(
-                    ApFloatSemantics::IeeeDouble,
-                    "-4.0",
-                    RoundingMode::NearestTiesToEven,
-                )?
-                .0,
+    let m = module_new!("analysis-libcall-negative-sqrt")?;
+    let tli = TargetLibraryInfo::default();
+    let f64_ty = m.f64_type();
+    let input = f64_ty
+        .const_ap_float(
+            &ApFloat::from_string(
+                ApFloatSemantics::IeeeDouble,
+                "-4.0",
+                RoundingMode::NearestTiesToEven,
             )?
-            .as_constant();
+            .0,
+        )?
+        .as_constant();
 
-        assert_eq!(
-            constant_fold_call(
-                LibFunc::Sqrt,
-                &[input],
-                f64_ty.as_type(),
-                &tli,
-                FoldNonDeterminism::Allow,
-            )?,
-            None
-        );
-        Ok(())
-    })
+    assert_eq!(
+        constant_fold_call(
+            LibFunc::Sqrt,
+            &[input],
+            f64_ty.as_type(),
+            &tli,
+            FoldNonDeterminism::Allow,
+        )?,
+        None
+    );
+    Ok(())
 }
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldScalarCall`:
 /// an unavailable target-library entry declines the fold.
 #[test]
 fn llvm_null_libcall_case_declines_fold() -> Result<(), IrError> {
-    Module::with_new("analysis-libcall-null", |m| {
-        let tli = TargetLibraryInfo::without(LibFunc::Sqrt);
-        let f64_ty = m.f64_type();
-        let input = f64_ty
-            .const_ap_float(
-                &ApFloat::from_string(
-                    ApFloatSemantics::IeeeDouble,
-                    "4.0",
-                    RoundingMode::NearestTiesToEven,
-                )?
-                .0,
+    let m = module_new!("analysis-libcall-null")?;
+    let tli = TargetLibraryInfo::without(LibFunc::Sqrt);
+    let f64_ty = m.f64_type();
+    let input = f64_ty
+        .const_ap_float(
+            &ApFloat::from_string(
+                ApFloatSemantics::IeeeDouble,
+                "4.0",
+                RoundingMode::NearestTiesToEven,
             )?
-            .as_constant();
+            .0,
+        )?
+        .as_constant();
 
-        assert!(!can_constant_fold_call_to(LibFunc::Sqrt, &tli));
-        assert_eq!(
-            constant_fold_call(
-                LibFunc::Sqrt,
-                &[input],
-                f64_ty.as_type(),
-                &tli,
-                FoldNonDeterminism::Allow,
-            )?,
-            None
-        );
-        Ok(())
-    })
+    assert!(!can_constant_fold_call_to(LibFunc::Sqrt, &tli));
+    assert_eq!(
+        constant_fold_call(
+            LibFunc::Sqrt,
+            &[input],
+            f64_ty.as_type(),
+            &tli,
+            FoldNonDeterminism::Allow,
+        )?,
+        None
+    );
+    Ok(())
 }
 
 /// llvmkit-specific subset of `TargetLibraryInfo.td` and
@@ -469,155 +453,152 @@ fn libfunc_from_name_recognizes_constant_folding_switch_names() {
 /// DataLayout-aware public analysis APIs are exported and usable from callers.
 #[test]
 fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrError> {
-    Module::with_new("analysis-api-surface", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let tli = TargetLibraryInfo::default();
-        let bool_ty = m.bool_type();
-        let i8_ty = m.i8_type();
-        let i16_ty = m.i16_type();
-        let i32_ty = m.i32_type();
-        let f32_ty = m.f32_type();
-        let arr_ty = m.array_type(i8_ty.as_type(), 1);
-        let init = arr_ty.const_array::<ConstantIntValue<'_, i8>, _>([i8_ty.const_int(0_i8)])?;
-        let g = m.add_global_constant("api_bytes", init)?;
-        let c2_i = i32_ty.const_int(2_i32);
-        let c5_i = i32_ty.const_int(5_i32);
-        let c7_i = i32_ty.const_int(7_i32);
-        let c2 = c2_i.as_constant();
-        let c5 = c5_i.as_constant();
-        let c7 = c7_i.as_constant();
-        let one = f32_ty
-            .const_ap_float(
-                &ApFloat::from_string(
-                    ApFloatSemantics::IeeeSingle,
-                    "1.0",
-                    RoundingMode::NearestTiesToEven,
-                )?
-                .0,
+    let m = module_new!("analysis-api-surface")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let tli = TargetLibraryInfo::default();
+    let bool_ty = m.bool_type();
+    let i8_ty = m.i8_type();
+    let i16_ty = m.i16_type();
+    let i32_ty = m.i32_type();
+    let f32_ty = m.f32_type();
+    let arr_ty = m.array_type(i8_ty.as_type(), 1);
+    let init = arr_ty.const_array::<ConstantIntValue<'_, i8, _>, _>([i8_ty.const_int(0_i8)])?;
+    let g = m.add_global_constant("api_bytes", init)?;
+    let c2_i = i32_ty.const_int(2_i32);
+    let c5_i = i32_ty.const_int(5_i32);
+    let c7_i = i32_ty.const_int(7_i32);
+    let c2 = c2_i.as_constant();
+    let c5 = c5_i.as_constant();
+    let c7 = c7_i.as_constant();
+    let one = f32_ty
+        .const_ap_float(
+            &ApFloat::from_string(
+                ApFloatSemantics::IeeeSingle,
+                "1.0",
+                RoundingMode::NearestTiesToEven,
             )?
-            .as_constant();
-        let two = f32_ty
-            .const_ap_float(
-                &ApFloat::from_string(
-                    ApFloatSemantics::IeeeSingle,
-                    "2.0",
-                    RoundingMode::NearestTiesToEven,
-                )?
-                .0,
+            .0,
+        )?
+        .as_constant();
+    let two = f32_ty
+        .const_ap_float(
+            &ApFloat::from_string(
+                ApFloatSemantics::IeeeSingle,
+                "2.0",
+                RoundingMode::NearestTiesToEven,
             )?
-            .as_constant();
+            .0,
+        )?
+        .as_constant();
 
-        let offset = is_constant_offset_from_global(g.as_global_constant_ptr(), &dl)
-            .expect("global pointer has a constant offset");
-        assert_eq!(offset.offset(), &ApInt::zero(64));
-        assert_eq!(constant_fold_constant(c7, &dl, Some(&tli))?, c7);
-        assert_eq!(
-            constant_fold_binary_op_operands(BinaryOpcode::Add, c2, c5, &dl)?,
-            Some(c7)
-        );
-        assert_eq!(
-            constant_fold_compare_inst_operands(
-                CmpPredicate::Int(IntPredicate::Eq),
-                c7,
-                c7,
-                &dl,
-                None,
-            )?,
-            Some(bool_ty.const_int(true).as_constant())
-        );
-        assert!(constant_fold_unary_op_operand(UnaryOpcode::FNeg, one, &dl)?.is_some());
-        assert!(
-            constant_fold_fp_inst_operands(
-                BinaryOpcode::FAdd,
-                one,
-                two,
-                &dl,
-                DenormalMode::ieee(),
-                FastMathFlags::empty(),
-                FoldNonDeterminism::Allow,
-            )?
-            .is_some()
-        );
-        assert_eq!(
-            constant_fold_integer_cast(c7, i16_ty.as_type(), false, &dl)?,
-            Some(i16_ty.const_int(7_i16).as_constant())
-        );
-        assert_eq!(
-            constant_fold_load_from_uniform_value(
-                i8_ty.const_all_ones().as_constant(),
-                i16_ty.as_type(),
-                &dl,
-            )?,
-            Some(i16_ty.const_all_ones().as_constant())
-        );
-        assert_eq!(
-            constant_fold_binary_intrinsic(BinaryIntrinsic::UMax, c7, c7, i32_ty.as_type(), &dl)?,
-            None
-        );
-        let one_bits = i32_ty
-            .const_ap_int(&ApInt::from_words(32, &[0x3f80_0000]))?
-            .as_constant();
-        let bitcast = constant_fold_load_through_bitcast(one_bits, f32_ty.as_type(), &dl)?
-            .expect("equal-width integer to float load-through-bitcast folds");
-        assert!(
-            ConstantFloatValue::<f32>::try_from(bitcast)?
-                .ap_float()
-                .is_exactly_value_f64(1.0)
-        );
-        let (lossless_bitcast, bitcast_flags) =
-            lossless_inv_cast(one_bits, f32_ty.as_type(), CastOpcode::BitCast, &dl)?
-                .expect("bitcast is lossless");
-        assert_eq!(lossless_bitcast, bitcast);
-        assert_eq!(bitcast_flags, PreservedCastFlags::none());
-        let (unsigned_trunc, unsigned_flags) =
-            lossless_unsigned_trunc(c7, i8_ty.as_type(), &dl)?.expect("small unsigned trunc fits");
-        assert_eq!(unsigned_trunc, i8_ty.const_int(7_i8).as_constant());
-        assert!(unsigned_flags.has_non_negative());
-        let signed_source = i16_ty
-            .const_ap_int(&ApInt::from_words(16, &[0x007f]))?
-            .as_constant();
-        let (signed_trunc, signed_flags) =
-            lossless_signed_trunc(signed_source, i8_ty.as_type(), &dl)?
-                .expect("positive signed trunc preserves sign");
-        assert_eq!(signed_trunc, i8_ty.const_int(127_i8).as_constant());
-        assert_eq!(signed_flags, PreservedCastFlags::none());
+    let offset = is_constant_offset_from_global(m.view(g).as_global_constant_ptr(), &dl)
+        .expect("global pointer has a constant offset");
+    assert_eq!(offset.offset(), &ApInt::zero(64));
+    assert_eq!(constant_fold_constant(c7, &dl, Some(&tli))?, c7);
+    assert_eq!(
+        constant_fold_binary_op_operands(BinaryOpcode::Add, c2, c5, &dl)?,
+        Some(c7)
+    );
+    assert_eq!(
+        constant_fold_compare_inst_operands(
+            CmpPredicate::Int(IntPredicate::Eq),
+            c7,
+            c7,
+            &dl,
+            None,
+        )?,
+        Some(bool_ty.const_int(true).as_constant())
+    );
+    assert!(constant_fold_unary_op_operand(UnaryOpcode::FNeg, one, &dl)?.is_some());
+    assert!(
+        constant_fold_fp_inst_operands(
+            BinaryOpcode::FAdd,
+            one,
+            two,
+            &dl,
+            DenormalMode::ieee(),
+            FastMathFlags::empty(),
+            FoldNonDeterminism::Allow,
+        )?
+        .is_some()
+    );
+    assert_eq!(
+        constant_fold_integer_cast(c7, i16_ty.as_type(), false, &dl)?,
+        Some(i16_ty.const_int(7_i16).as_constant())
+    );
+    assert_eq!(
+        constant_fold_load_from_uniform_value(
+            i8_ty.const_all_ones().as_constant(),
+            i16_ty.as_type(),
+            &dl,
+        )?,
+        Some(i16_ty.const_all_ones().as_constant())
+    );
+    assert_eq!(
+        constant_fold_binary_intrinsic(BinaryIntrinsic::UMax, c7, c7, i32_ty.as_type(), &dl)?,
+        None
+    );
+    let one_bits = i32_ty
+        .const_ap_int(&ApInt::from_words(32, &[0x3f80_0000]))?
+        .as_constant();
+    let bitcast = constant_fold_load_through_bitcast(one_bits, f32_ty.as_type(), &dl)?
+        .expect("equal-width integer to float load-through-bitcast folds");
+    assert!(
+        ConstantFloatValue::<f32, _>::try_from(bitcast)?
+            .ap_float()
+            .is_exactly_value_f64(1.0)
+    );
+    let (lossless_bitcast, bitcast_flags) =
+        lossless_inv_cast(one_bits, f32_ty.as_type(), CastOpcode::BitCast, &dl)?
+            .expect("bitcast is lossless");
+    assert_eq!(lossless_bitcast, bitcast);
+    assert_eq!(bitcast_flags, PreservedCastFlags::none());
+    let (unsigned_trunc, unsigned_flags) =
+        lossless_unsigned_trunc(c7, i8_ty.as_type(), &dl)?.expect("small unsigned trunc fits");
+    assert_eq!(unsigned_trunc, i8_ty.const_int(7_i8).as_constant());
+    assert!(unsigned_flags.has_non_negative());
+    let signed_source = i16_ty
+        .const_ap_int(&ApInt::from_words(16, &[0x007f]))?
+        .as_constant();
+    let (signed_trunc, signed_flags) = lossless_signed_trunc(signed_source, i8_ty.as_type(), &dl)?
+        .expect("positive signed trunc preserves sign");
+    assert_eq!(signed_trunc, i8_ty.const_int(127_i8).as_constant());
+    assert_eq!(signed_flags, PreservedCastFlags::none());
 
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function_dyn("api_fold_inst", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let add = b.build_int_add::<i32, _, _, _>(c2_i, c5_i, "sum")?;
-        let instruction = InstructionView::try_from(add.into_erased())?;
-        assert_eq!(
-            constant_fold_inst_operands(
-                &instruction,
-                &[c2, c5],
-                &dl,
-                Some(&tli),
-                FoldNonDeterminism::Allow,
-            )?,
-            Some(c7)
-        );
-        Ok(())
-    })
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("api_fold_inst", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let add = b.build_int_add::<i32, _, _, _>(c2_i, c5_i, "sum")?;
+    let instruction = InstructionView::try_from(b.view(add).into_erased())?;
+    assert_eq!(
+        constant_fold_inst_operands(
+            &instruction,
+            &[c2, c5],
+            &dl,
+            Some(&tli),
+            FoldNonDeterminism::Allow,
+        )?,
+        Some(c7)
+    );
+    Ok(())
 }
 
 /// llvmkit-specific validation of `llvm/include/llvm/Analysis/ConstantFolding.h`:
 /// the crate root exports `constant_offset_from_global` for Rust callers.
 #[test]
 fn crate_root_constant_offset_from_global_resolves_global_pointer() -> Result<(), IrError> {
-    Module::with_new("analysis-offset-root-export", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i8_ty = m.i8_type();
-        let g = m.add_global_constant("root_export", i8_ty.const_int(0_i8))?;
+    let m = module_new!("analysis-offset-root-export")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let g = m.add_global_constant("root_export", i8_ty.const_int(0_i8))?;
 
-        let resolved = constant_offset_from_global(g.ptr_offset(3), &dl)
-            .expect("global pointer plus constant offset resolves");
+    let resolved = constant_offset_from_global(m.view(g).ptr_offset(3), &dl)
+        .expect("global pointer plus constant offset resolves");
 
-        assert_eq!(resolved.global(), g);
-        assert_eq!(resolved.offset(), &ApInt::from_words(64, &[3]));
-        Ok(())
-    })
+    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.offset(), &ApInt::from_words(64, &[3]));
+    Ok(())
 }
 
 /// Mirrors `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldInstOperands`
@@ -625,30 +606,29 @@ fn crate_root_constant_offset_from_global_resolves_global_pointer() -> Result<()
 /// fold through `isGuaranteedNotToBeUndefOrPoison`.
 #[test]
 fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
-    Module::with_new("analysis-freeze", |m| {
-        let dl = DataLayout::default();
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function_dyn("freeze_fold", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let m = module_new!("analysis-freeze")?;
+    let dl = DataLayout::default();
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("freeze_fold", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
-        let concrete = b.build_freeze(i32_ty.const_int(42_i32), "concrete")?;
-        let undef = b.build_freeze(i32_ty.as_type().get_undef(), "undef")?;
-        let poison = b.build_freeze(i32_ty.as_type().get_poison(), "poison")?;
+    let concrete = b.build_freeze(i32_ty.const_int(42_i32), "concrete")?;
+    let undef = b.build_freeze(i32_ty.as_type().get_undef(), "undef")?;
+    let poison = b.build_freeze(i32_ty.as_type().get_poison(), "poison")?;
 
-        let concrete_inst = concrete.as_view();
-        let undef_inst = undef.as_view();
-        let poison_inst = poison.as_view();
+    let concrete_inst = b.view(concrete).as_view();
+    let undef_inst = b.view(undef).as_view();
+    let poison_inst = b.view(poison).as_view();
 
-        assert_eq!(
-            constant_fold_instruction(&concrete_inst, &dl, None)?,
-            Some(i32_ty.const_int(42_i32).as_constant())
-        );
-        assert_eq!(constant_fold_instruction(&undef_inst, &dl, None)?, None);
-        assert_eq!(constant_fold_instruction(&poison_inst, &dl, None)?, None);
-        Ok(())
-    })
+    assert_eq!(
+        constant_fold_instruction(&concrete_inst, &dl, None)?,
+        Some(i32_ty.const_int(42_i32).as_constant())
+    );
+    assert_eq!(constant_fold_instruction(&undef_inst, &dl, None)?, None);
+    assert_eq!(constant_fold_instruction(&poison_inst, &dl, None)?, None);
+    Ok(())
 }
 
 /// llvmkit-specific subset of
@@ -657,78 +637,79 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
 /// recursive GEP offsets into globals feed load-through-bitcast folding.
 #[test]
 fn recursive_gep_load_through_bitcast_from_global_folds() -> Result<(), IrError> {
-    Module::with_new("analysis-recursive-gep-load", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i32_ty = m.i32_type();
-        let i64_ty = m.i64_type();
-        let f32_ty = m.f32_type();
-        let arr_ty = m.array_type(i32_ty.as_type(), 2);
-        let init = arr_ty.const_array::<ConstantIntValue<'_, i32>, _>([
-            i32_ty.const_int(0x3f80_0000_i32),
-            i32_ty.const_int(0x4000_0000_i32),
-        ])?;
-        let g = m.add_global_constant("fp_bits", init)?;
-        let zero = i64_ty.const_zero();
-        let one = i64_ty.const_int(1_i64);
-        let gep = m.constant_expr_with_options(
-            m.ptr_type(0).as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [
-                g.as_global_constant_ptr().into_erased(),
-                zero.into_erased(),
-                one.into_erased(),
-            ],
-            [],
-            [],
-            ConstantExprOptions::new().source_ty(arr_ty.as_type()),
-        )?;
+    let m = module_new!("analysis-recursive-gep-load")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let f32_ty = m.f32_type();
+    let arr_ty = m.array_type(i32_ty.as_type(), 2);
+    let init = arr_ty.const_array::<ConstantIntValue<'_, i32, _>, _>([
+        i32_ty.const_int(0x3f80_0000_i32),
+        i32_ty.const_int(0x4000_0000_i32),
+    ])?;
+    let g = m.add_global_constant("fp_bits", init)?;
+    let zero = i64_ty.const_zero();
+    let one = i64_ty.const_int(1_i64);
+    let gep = m.constant_expr_with_options(
+        m.ptr_type(0).as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [
+            m.view(g).as_global_constant_ptr().into_erased(),
+            zero.into_erased(),
+            one.into_erased(),
+        ],
+        [],
+        [],
+        ConstantExprOptions::new().source_ty(arr_ty.as_type()),
+    )?;
 
-        let resolved = constant_offset_from_global(gep, &dl)
-            .expect("recursive GEP offset resolves to the base global");
-        assert_eq!(resolved.global(), g);
-        assert_eq!(resolved.offset(), &ApInt::from_words(64, &[4]));
+    let resolved = constant_offset_from_global(gep, &dl)
+        .expect("recursive GEP offset resolves to the base global");
+    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.offset(), &ApInt::from_words(64, &[4]));
 
-        let folded =
-            constant_fold_load_from_const_ptr(gep, f32_ty.as_type(), ApInt::zero(64), &dl)?
-                .expect("GEP to i32 bits folds as a load-through-bitcast to f32");
-        let fp = ConstantFloatValue::<f32>::try_from(folded)?;
+    let folded = constant_fold_load_from_const_ptr(gep, f32_ty.as_type(), ApInt::zero(64), &dl)?
+        .expect("GEP to i32 bits folds as a load-through-bitcast to f32");
+    let fp = ConstantFloatValue::<f32, _>::try_from(folded)?;
 
-        assert!(fp.ap_float().is_exactly_value_f64(2.0));
-        Ok(())
-    })
+    assert!(fp.ap_float().is_exactly_value_f64(2.0));
+    Ok(())
 }
 
 /// Mirrors `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldLoadThroughBitcast`:
 /// non-integral pointer address spaces decline non-null pointer/int bitcasts.
 #[test]
 fn non_integral_pointer_load_through_bitcast_declines() -> Result<(), IrError> {
-    Module::with_new("analysis-non-integral-bitcast", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64-p1:64:64:64-ni:1")?;
-        let i8_ty = m.i8_type();
-        let i64_ty = m.i64_type();
-        let ptr1_ty = m.ptr_type(1);
-        let g = m
-            .global_builder("ni_global", i8_ty.as_type())
-            .constant(true)
-            .address_space(1)
-            .initializer(i8_ty.const_int(0_i8))
-            .build()?;
+    let m = module_new!("analysis-non-integral-bitcast")?;
+    let dl = DataLayout::parse("e-p:64:64:64-p1:64:64:64-ni:1")?;
+    let i8_ty = m.i8_type();
+    let i64_ty = m.i64_type();
+    let ptr1_ty = m.ptr_type(1);
+    let g = m
+        .global_builder("ni_global", i8_ty.as_type())
+        .constant(true)
+        .address_space(1)
+        .initializer(i8_ty.const_int(0_i8))
+        .build()?;
 
-        assert!(dl.is_non_integral_address_space(1));
-        assert_eq!(
-            constant_fold_load_through_bitcast(g.as_global_constant_ptr(), i64_ty.as_type(), &dl)?,
-            None
-        );
-        assert_eq!(
-            constant_fold_load_through_bitcast(
-                i64_ty.const_int(1_i64).as_constant(),
-                ptr1_ty.as_type(),
-                &dl,
-            )?,
-            None
-        );
-        Ok(())
-    })
+    assert!(dl.is_non_integral_address_space(1));
+    assert_eq!(
+        constant_fold_load_through_bitcast(
+            m.view(g).as_global_constant_ptr(),
+            i64_ty.as_type(),
+            &dl
+        )?,
+        None
+    );
+    assert_eq!(
+        constant_fold_load_through_bitcast(
+            i64_ty.const_int(1_i64).as_constant(),
+            ptr1_ty.as_type(),
+            &dl,
+        )?,
+        None
+    );
+    Ok(())
 }
 
 /// Mirrors `llvm/lib/Analysis/ConstantFolding.cpp::getInstrDenormalMode` and
@@ -737,35 +718,34 @@ fn non_integral_pointer_load_through_bitcast_declines() -> Result<(), IrError> {
 /// generic `denormal-fp-math` mode for f32 operations.
 #[test]
 fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrError> {
-    Module::with_new("analysis-denormal-attrs", |m| {
-        let dl = DataLayout::default();
-        let f32_ty = m.f32_type();
-        let fn_ty = m.fn_type_no_params(f32_ty, false);
-        let f = m.add_function_dyn("denormal_attr", fn_ty, Linkage::External)?;
-        f.set_string_attribute(&m, AttrIndex::Function, "denormal-fp-math", "ieee,ieee");
-        f.set_string_attribute(
-            &m,
-            AttrIndex::Function,
-            "denormal-fp-math-f32",
-            "positive-zero,positive-zero",
-        );
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let denormal =
-            ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
-        assert!(denormal.is_denormal());
-        let lhs = f32_ty.const_ap_float(&denormal)?;
-        let rhs = f32_ty.const_ap_float(&denormal)?;
-        let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
-        let instruction = InstructionView::try_from(add.into_erased())?;
+    let m = module_new!("analysis-denormal-attrs")?;
+    let dl = DataLayout::default();
+    let f32_ty = m.f32_type();
+    let fn_ty = m.fn_type_no_params(f32_ty, false);
+    let f = m.add_function_dyn("denormal_attr", fn_ty, Linkage::External)?;
+    m.view(f)
+        .set_string_attribute(&m, AttrIndex::Function, "denormal-fp-math", "ieee,ieee");
+    m.view(f).set_string_attribute(
+        &m,
+        AttrIndex::Function,
+        "denormal-fp-math-f32",
+        "positive-zero,positive-zero",
+    );
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let denormal = ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
+    assert!(denormal.is_denormal());
+    let lhs = f32_ty.const_ap_float(&denormal)?;
+    let rhs = f32_ty.const_ap_float(&denormal)?;
+    let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
+    let instruction = InstructionView::try_from(b.view(add).into_erased())?;
 
-        let folded = constant_fold_instruction(&instruction, &dl, None)?
-            .expect("f32 denormal inputs fold after f32 attribute flush");
-        let fp = ConstantFloatValue::<f32>::try_from(folded)?;
+    let folded = constant_fold_instruction(&instruction, &dl, None)?
+        .expect("f32 denormal inputs fold after f32 attribute flush");
+    let fp = ConstantFloatValue::<f32, _>::try_from(folded)?;
 
-        assert!(fp.ap_float().is_pos_zero());
-        Ok(())
-    })
+    assert!(fp.ap_float().is_pos_zero());
+    Ok(())
 }
 
 /// Mirrors `llvm/lib/Analysis/ConstantFolding.cpp::getInstrDenormalMode` and
@@ -773,41 +753,39 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
 /// attribute groups participate in the same denormal lookup as inline attrs.
 #[test]
 fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrError> {
-    Module::with_new("analysis-denormal-attr-group", |m| {
-        let dl = DataLayout::default();
-        let f32_ty = m.f32_type();
-        let fn_ty = m.fn_type_no_params(f32_ty, false);
-        let mut group = AttributeStorage::new();
-        group.add(
-            AttrIndex::Function,
-            Attribute::string("denormal-fp-math", "ieee,ieee"),
-        );
-        group.add(
-            AttrIndex::Function,
-            Attribute::string("denormal-fp-math-f32", "positive-zero,positive-zero"),
-        );
-        m.set_attribute_group(0, group);
-        let f = m
-            .function_builder::<f32, _>("denormal_attr", fn_ty)
-            .linkage(Linkage::External)
-            .function_attr_group(0)
-            .build()?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let denormal =
-            ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
-        let lhs = f32_ty.const_ap_float(&denormal)?;
-        let rhs = f32_ty.const_ap_float(&denormal)?;
-        let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
-        let instruction = InstructionView::try_from(add.into_erased())?;
+    let m = module_new!("analysis-denormal-attr-group")?;
+    let dl = DataLayout::default();
+    let f32_ty = m.f32_type();
+    let fn_ty = m.fn_type_no_params(f32_ty, false);
+    let mut group = AttributeStorage::new();
+    group.add(
+        AttrIndex::Function,
+        Attribute::<DynBrand>::string("denormal-fp-math", "ieee,ieee"),
+    );
+    group.add(
+        AttrIndex::Function,
+        Attribute::<DynBrand>::string("denormal-fp-math-f32", "positive-zero,positive-zero"),
+    );
+    m.set_attribute_group(0, group);
+    let f = m
+        .function_builder::<f32, _>("denormal_attr", fn_ty)
+        .linkage(Linkage::External)
+        .function_attr_group(0)
+        .build()?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let denormal = ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
+    let lhs = f32_ty.const_ap_float(&denormal)?;
+    let rhs = f32_ty.const_ap_float(&denormal)?;
+    let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
+    let instruction = InstructionView::try_from(b.view(add).into_erased())?;
 
-        let folded = constant_fold_instruction(&instruction, &dl, None)?
-            .expect("f32 denormal inputs fold after attribute-group f32 flush");
-        let fp = ConstantFloatValue::<f32>::try_from(folded)?;
+    let folded = constant_fold_instruction(&instruction, &dl, None)?
+        .expect("f32 denormal inputs fold after attribute-group f32 flush");
+    let fp = ConstantFloatValue::<f32, _>::try_from(folded)?;
 
-        assert!(fp.ap_float().is_pos_zero());
-        Ok(())
-    })
+    assert!(fp.ap_float().is_pos_zero());
+    Ok(())
 }
 
 /// llvmkit-specific subset of `llvm/lib/Analysis/ConstantFolding.cpp`:
@@ -815,55 +793,54 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
 /// APFloat-native libcalls such as sqrt remain foldable.
 #[test]
 fn determinism_deny_declines_host_libm_but_keeps_apfloat_sqrt() -> Result<(), IrError> {
-    Module::with_new("analysis-libm-determinism", |m| {
-        let tli = TargetLibraryInfo::default();
-        let f64_ty = m.f64_type();
-        let zero = f64_ty
-            .const_ap_float(
-                &ApFloat::from_string(
-                    ApFloatSemantics::IeeeDouble,
-                    "0.0",
-                    RoundingMode::NearestTiesToEven,
-                )?
-                .0,
+    let m = module_new!("analysis-libm-determinism")?;
+    let tli = TargetLibraryInfo::default();
+    let f64_ty = m.f64_type();
+    let zero = f64_ty
+        .const_ap_float(
+            &ApFloat::from_string(
+                ApFloatSemantics::IeeeDouble,
+                "0.0",
+                RoundingMode::NearestTiesToEven,
             )?
-            .as_constant();
-        let four = f64_ty
-            .const_ap_float(
-                &ApFloat::from_string(
-                    ApFloatSemantics::IeeeDouble,
-                    "4.0",
-                    RoundingMode::NearestTiesToEven,
-                )?
-                .0,
+            .0,
+        )?
+        .as_constant();
+    let four = f64_ty
+        .const_ap_float(
+            &ApFloat::from_string(
+                ApFloatSemantics::IeeeDouble,
+                "4.0",
+                RoundingMode::NearestTiesToEven,
             )?
-            .as_constant();
+            .0,
+        )?
+        .as_constant();
 
-        assert!(can_constant_fold_call_to(LibFunc::Cos, &tli));
-        assert_eq!(
-            constant_fold_call(
-                LibFunc::Cos,
-                &[zero],
-                f64_ty.as_type(),
-                &tli,
-                FoldNonDeterminism::Deny,
-            )?,
-            None
-        );
-
-        let folded = constant_fold_call(
-            LibFunc::Sqrt,
-            &[four],
+    assert!(can_constant_fold_call_to(LibFunc::Cos, &tli));
+    assert_eq!(
+        constant_fold_call(
+            LibFunc::Cos,
+            &[zero],
             f64_ty.as_type(),
             &tli,
             FoldNonDeterminism::Deny,
-        )?
-        .expect("APFloat-native sqrt folds even when host libm folds are denied");
-        let fp = ConstantFloatValue::<f64>::try_from(folded)?;
+        )?,
+        None
+    );
 
-        assert!(fp.ap_float().is_exactly_value_f64(2.0));
-        Ok(())
-    })
+    let folded = constant_fold_call(
+        LibFunc::Sqrt,
+        &[four],
+        f64_ty.as_type(),
+        &tli,
+        FoldNonDeterminism::Deny,
+    )?
+    .expect("APFloat-native sqrt folds even when host libm folds are denied");
+    let fp = ConstantFloatValue::<f64, _>::try_from(folded)?;
+
+    assert!(fp.ap_float().is_exactly_value_f64(2.0));
+    Ok(())
 }
 
 /// Mirrors `ConstantFoldFPInstOperands`'s non-determinism guard in
@@ -877,44 +854,37 @@ fn determinism_deny_declines_host_libm_but_keeps_apfloat_sqrt() -> Result<(), Ir
 /// `constant_fold_fp_inst_operands`.
 #[test]
 fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
-    Module::with_new("analysis-fp-determinism-nsz", |m| {
-        let dl = DataLayout::default();
-        let f32_ty = m.f32_type();
-        let fn_ty = m.fn_type_no_params(f32_ty, false);
-        let f = m.add_function_dyn("nsz_fadd", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let one = f32_ty.const_float(1.0);
-        let two = f32_ty.const_float(2.0);
-        let add =
-            b.build_fp_add_fmf::<f32, _, _, _>(one, two, FastMathFlags::NO_SIGNED_ZEROS, "sum")?;
-        let instruction = InstructionView::try_from(add.into_erased())?;
-        let operands = [one.as_constant(), two.as_constant()];
+    let m = module_new!("analysis-fp-determinism-nsz")?;
+    let dl = DataLayout::default();
+    let f32_ty = m.f32_type();
+    let fn_ty = m.fn_type_no_params(f32_ty, false);
+    let f = m.add_function_dyn("nsz_fadd", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let one = f32_ty.const_float(1.0);
+    let two = f32_ty.const_float(2.0);
+    let add =
+        b.build_fp_add_fmf::<f32, _, _, _>(one, two, FastMathFlags::NO_SIGNED_ZEROS, "sum")?;
+    let instruction = InstructionView::try_from(b.view(add).into_erased())?;
+    let operands = [one.as_constant(), two.as_constant()];
 
-        assert_eq!(
-            constant_fold_inst_operands(
-                &instruction,
-                &operands,
-                &dl,
-                None,
-                FoldNonDeterminism::Deny,
-            )?,
-            None,
-            "an nsz FP op must decline to fold under deterministic folding"
-        );
-        let folded = constant_fold_inst_operands(
-            &instruction,
-            &operands,
-            &dl,
-            None,
-            FoldNonDeterminism::Allow,
-        )?
-        .expect("the same nsz FP op still folds when non-determinism is allowed");
-        let fp = ConstantFloatValue::<f32>::try_from(folded)?;
+    assert_eq!(
+        constant_fold_inst_operands(&instruction, &operands, &dl, None, FoldNonDeterminism::Deny,)?,
+        None,
+        "an nsz FP op must decline to fold under deterministic folding"
+    );
+    let folded = constant_fold_inst_operands(
+        &instruction,
+        &operands,
+        &dl,
+        None,
+        FoldNonDeterminism::Allow,
+    )?
+    .expect("the same nsz FP op still folds when non-determinism is allowed");
+    let fp = ConstantFloatValue::<f32, _>::try_from(folded)?;
 
-        assert!(fp.ap_float().is_exactly_value_f64(3.0));
-        Ok(())
-    })
+    assert!(fp.ap_float().is_exactly_value_f64(3.0));
+    Ok(())
 }
 
 // --------------------------------------------------------------------------
@@ -926,33 +896,32 @@ fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
 /// (`ConstantFolding.cpp` lines 1213-1224).
 #[test]
 fn inttoptr_vs_null_folds_via_integer_compare() -> Result<(), IrError> {
-    Module::with_new("analysis-inttoptr-vs-null", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i64_ty = m.i64_type();
-        let ptr_ty = m.ptr_type(0);
-        let five = i64_ty.const_int(5_i64).as_constant();
-        let lhs = m.constant_expr(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::IntToPtr,
-            [five.into_erased()],
-            [],
-            [],
-            ConstantExprFlags::none(),
-        )?;
-        let null = ptr_ty.const_null().as_constant();
+    let m = module_new!("analysis-inttoptr-vs-null")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type(0);
+    let five = i64_ty.const_int(5_i64).as_constant();
+    let lhs = m.constant_expr(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::IntToPtr,
+        [five.into_erased()],
+        [],
+        [],
+        ConstantExprFlags::none(),
+    )?;
+    let null = ptr_ty.const_null().as_constant();
 
-        let folded = constant_fold_compare_inst_operands(
-            CmpPredicate::Int(IntPredicate::Eq),
-            lhs,
-            null,
-            &dl,
-            None,
-        )?
-        .expect("inttoptr-vs-null rewrites to an integer compare that folds");
+    let folded = constant_fold_compare_inst_operands(
+        CmpPredicate::Int(IntPredicate::Eq),
+        lhs,
+        null,
+        &dl,
+        None,
+    )?
+    .expect("inttoptr-vs-null rewrites to an integer compare that folds");
 
-        assert_eq!(folded, m.bool_type().const_int(false).as_constant());
-        Ok(())
-    })
+    assert_eq!(folded, m.bool_type().const_int(false).as_constant());
+    Ok(())
 }
 
 /// fold #2: `icmp pred (ptrtoint x), 0` -> `icmp pred x, null`
@@ -962,74 +931,72 @@ fn inttoptr_vs_null_folds_via_integer_compare() -> Result<(), IrError> {
 /// target-independent `evaluateICmpRelation` port.
 #[test]
 fn ptrtoint_eq_null_folds_to_false_for_nonweak_global() -> Result<(), IrError> {
-    Module::with_new("analysis-ptrtoint-eq-null", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i8_ty = m.i8_type();
-        let i64_ty = m.i64_type();
-        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
-        let ptrtoint = m.constant_expr(
-            i64_ty.as_type(),
-            ConstantExprOpcode::PtrToInt,
-            [g.as_global_constant_ptr().into_erased()],
-            [],
-            [],
-            ConstantExprFlags::none(),
-        )?;
-        let zero = i64_ty.const_zero().as_constant();
+    let m = module_new!("analysis-ptrtoint-eq-null")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i64_ty = m.i64_type();
+    let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+    let ptrtoint = m.constant_expr(
+        i64_ty.as_type(),
+        ConstantExprOpcode::PtrToInt,
+        [m.view(g).as_global_constant_ptr().into_erased()],
+        [],
+        [],
+        ConstantExprFlags::none(),
+    )?;
+    let zero = i64_ty.const_zero().as_constant();
 
-        let folded = constant_fold_compare_inst_operands(
-            CmpPredicate::Int(IntPredicate::Eq),
-            ptrtoint,
-            zero,
-            &dl,
-            None,
-        )?
-        .expect("ptrtoint-vs-zero rewrites to a pointer compare that folds");
+    let folded = constant_fold_compare_inst_operands(
+        CmpPredicate::Int(IntPredicate::Eq),
+        ptrtoint,
+        zero,
+        &dl,
+        None,
+    )?
+    .expect("ptrtoint-vs-zero rewrites to a pointer compare that folds");
 
-        assert_eq!(folded, m.bool_type().const_int(false).as_constant());
-        Ok(())
-    })
+    assert_eq!(folded, m.bool_type().const_int(false).as_constant());
+    Ok(())
 }
 
 /// fold #3 (`inttoptr` branch): `icmp pred (inttoptr x), (inttoptr y)` ->
 /// `icmp pred x, y` (`ConstantFolding.cpp` lines 1239-1252).
 #[test]
 fn inttoptr_pair_ult_folds_via_integer_compare() -> Result<(), IrError> {
-    Module::with_new("analysis-inttoptr-pair-ult", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i64_ty = m.i64_type();
-        let ptr_ty = m.ptr_type(0);
-        let four = i64_ty.const_int(4_i64).as_constant();
-        let eight = i64_ty.const_int(8_i64).as_constant();
-        let lhs = m.constant_expr(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::IntToPtr,
-            [four.into_erased()],
-            [],
-            [],
-            ConstantExprFlags::none(),
-        )?;
-        let rhs = m.constant_expr(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::IntToPtr,
-            [eight.into_erased()],
-            [],
-            [],
-            ConstantExprFlags::none(),
-        )?;
+    let m = module_new!("analysis-inttoptr-pair-ult")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type(0);
+    let four = i64_ty.const_int(4_i64).as_constant();
+    let eight = i64_ty.const_int(8_i64).as_constant();
+    let lhs = m.constant_expr(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::IntToPtr,
+        [four.into_erased()],
+        [],
+        [],
+        ConstantExprFlags::none(),
+    )?;
+    let rhs = m.constant_expr(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::IntToPtr,
+        [eight.into_erased()],
+        [],
+        [],
+        ConstantExprFlags::none(),
+    )?;
 
-        let folded = constant_fold_compare_inst_operands(
-            CmpPredicate::Int(IntPredicate::Ult),
-            lhs,
-            rhs,
-            &dl,
-            None,
-        )?
-        .expect("matching inttoptr pair rewrites to an integer compare that folds");
+    let folded = constant_fold_compare_inst_operands(
+        CmpPredicate::Int(IntPredicate::Ult),
+        lhs,
+        rhs,
+        &dl,
+        None,
+    )?
+    .expect("matching inttoptr pair rewrites to an integer compare that folds");
 
-        assert_eq!(folded, m.bool_type().const_int(true).as_constant());
-        Ok(())
-    })
+    assert_eq!(folded, m.bool_type().const_int(true).as_constant());
+    Ok(())
 }
 
 /// fold #3 (`ptrtoint` branch): `icmp pred (ptrtoint x), (ptrtoint y)` ->
@@ -1038,41 +1005,40 @@ fn inttoptr_pair_ult_folds_via_integer_compare() -> Result<(), IrError> {
 /// rewritten pointer compare folds to `false` for `eq`.
 #[test]
 fn ptrtoint_pair_eq_folds_via_pointer_operand_compare() -> Result<(), IrError> {
-    Module::with_new("analysis-ptrtoint-pair-eq", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i8_ty = m.i8_type();
-        let i64_ty = m.i64_type();
-        let g1 = m.add_global_constant("g1", i8_ty.const_int(0_i8))?;
-        let g2 = m.add_global_constant("g2", i8_ty.const_int(0_i8))?;
-        let lhs = m.constant_expr(
-            i64_ty.as_type(),
-            ConstantExprOpcode::PtrToInt,
-            [g1.as_global_constant_ptr().into_erased()],
-            [],
-            [],
-            ConstantExprFlags::none(),
-        )?;
-        let rhs = m.constant_expr(
-            i64_ty.as_type(),
-            ConstantExprOpcode::PtrToInt,
-            [g2.as_global_constant_ptr().into_erased()],
-            [],
-            [],
-            ConstantExprFlags::none(),
-        )?;
+    let m = module_new!("analysis-ptrtoint-pair-eq")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i64_ty = m.i64_type();
+    let g1 = m.add_global_constant("g1", i8_ty.const_int(0_i8))?;
+    let g2 = m.add_global_constant("g2", i8_ty.const_int(0_i8))?;
+    let lhs = m.constant_expr(
+        i64_ty.as_type(),
+        ConstantExprOpcode::PtrToInt,
+        [m.view(g1).as_global_constant_ptr().into_erased()],
+        [],
+        [],
+        ConstantExprFlags::none(),
+    )?;
+    let rhs = m.constant_expr(
+        i64_ty.as_type(),
+        ConstantExprOpcode::PtrToInt,
+        [m.view(g2).as_global_constant_ptr().into_erased()],
+        [],
+        [],
+        ConstantExprFlags::none(),
+    )?;
 
-        let folded = constant_fold_compare_inst_operands(
-            CmpPredicate::Int(IntPredicate::Eq),
-            lhs,
-            rhs,
-            &dl,
-            None,
-        )?
-        .expect("matching ptrtoint pair rewrites to a pointer compare that folds");
+    let folded = constant_fold_compare_inst_operands(
+        CmpPredicate::Int(IntPredicate::Eq),
+        lhs,
+        rhs,
+        &dl,
+        None,
+    )?
+    .expect("matching ptrtoint pair rewrites to a pointer compare that folds");
 
-        assert_eq!(folded, m.bool_type().const_int(false).as_constant());
-        Ok(())
-    })
+    assert_eq!(folded, m.bool_type().const_int(false).as_constant());
+    Ok(())
 }
 
 /// fold #4: base+offset stripping, `(base+off1) pred (base+off2)` ->
@@ -1081,47 +1047,46 @@ fn ptrtoint_pair_eq_folds_via_pointer_operand_compare() -> Result<(), IrError> {
 /// passes `AllowNonInbounds = IsEqPred`, false here); both GEPs below are.
 #[test]
 fn same_base_inbounds_gep_ult_folds_via_offset_compare() -> Result<(), IrError> {
-    Module::with_new("analysis-gep-base-offset-inbounds", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i8_ty = m.i8_type();
-        let i64_ty = m.i64_type();
-        let ptr_ty = m.ptr_type(0);
-        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
-        let base = g.as_global_constant_ptr();
-        let four = i64_ty.const_int(4_i64).as_constant();
-        let eight = i64_ty.const_int(8_i64).as_constant();
-        let inbounds = ConstantExprOptions::new()
-            .source_ty(i8_ty.as_type())
-            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
-        let lhs = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [base.into_erased(), four.into_erased()],
-            [],
-            [],
-            inbounds.clone(),
-        )?;
-        let rhs = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [base.into_erased(), eight.into_erased()],
-            [],
-            [],
-            inbounds,
-        )?;
+    let m = module_new!("analysis-gep-base-offset-inbounds")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type(0);
+    let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+    let base = m.view(g).as_global_constant_ptr();
+    let four = i64_ty.const_int(4_i64).as_constant();
+    let eight = i64_ty.const_int(8_i64).as_constant();
+    let inbounds = ConstantExprOptions::new()
+        .source_ty(i8_ty.as_type())
+        .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
+    let lhs = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [base.into_erased(), four.into_erased()],
+        [],
+        [],
+        inbounds.clone(),
+    )?;
+    let rhs = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [base.into_erased(), eight.into_erased()],
+        [],
+        [],
+        inbounds,
+    )?;
 
-        let folded = constant_fold_compare_inst_operands(
-            CmpPredicate::Int(IntPredicate::Ult),
-            lhs,
-            rhs,
-            &dl,
-            None,
-        )?
-        .expect("same-base inbounds GEP offsets fold via offset comparison");
+    let folded = constant_fold_compare_inst_operands(
+        CmpPredicate::Int(IntPredicate::Ult),
+        lhs,
+        rhs,
+        &dl,
+        None,
+    )?
+    .expect("same-base inbounds GEP offsets fold via offset comparison");
 
-        assert_eq!(folded, m.bool_type().const_int(true).as_constant());
-        Ok(())
-    })
+    assert_eq!(folded, m.bool_type().const_int(true).as_constant());
+    Ok(())
 }
 
 /// fold #4, equality case: upstream allows stripping non-`inbounds` GEPs for
@@ -1129,44 +1094,43 @@ fn same_base_inbounds_gep_ult_folds_via_offset_compare() -> Result<(), IrError> 
 /// case above.
 #[test]
 fn non_inbounds_same_base_gep_eq_still_folds() -> Result<(), IrError> {
-    Module::with_new("analysis-gep-base-offset-noninbounds-eq", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i8_ty = m.i8_type();
-        let i64_ty = m.i64_type();
-        let ptr_ty = m.ptr_type(0);
-        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
-        let base = g.as_global_constant_ptr();
-        let four = i64_ty.const_int(4_i64).as_constant();
-        let eight = i64_ty.const_int(8_i64).as_constant();
-        let lhs = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [base.into_erased(), four.into_erased()],
-            [],
-            [],
-            ConstantExprOptions::new().source_ty(i8_ty.as_type()),
-        )?;
-        let rhs = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [base.into_erased(), eight.into_erased()],
-            [],
-            [],
-            ConstantExprOptions::new().source_ty(i8_ty.as_type()),
-        )?;
+    let m = module_new!("analysis-gep-base-offset-noninbounds-eq")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type(0);
+    let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+    let base = m.view(g).as_global_constant_ptr();
+    let four = i64_ty.const_int(4_i64).as_constant();
+    let eight = i64_ty.const_int(8_i64).as_constant();
+    let lhs = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [base.into_erased(), four.into_erased()],
+        [],
+        [],
+        ConstantExprOptions::new().source_ty(i8_ty.as_type()),
+    )?;
+    let rhs = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [base.into_erased(), eight.into_erased()],
+        [],
+        [],
+        ConstantExprOptions::new().source_ty(i8_ty.as_type()),
+    )?;
 
-        let folded = constant_fold_compare_inst_operands(
-            CmpPredicate::Int(IntPredicate::Eq),
-            lhs,
-            rhs,
-            &dl,
-            None,
-        )?
-        .expect("non-inbounds same-base GEP offsets still fold for eq");
+    let folded = constant_fold_compare_inst_operands(
+        CmpPredicate::Int(IntPredicate::Eq),
+        lhs,
+        rhs,
+        &dl,
+        None,
+    )?
+    .expect("non-inbounds same-base GEP offsets still fold for eq");
 
-        assert_eq!(folded, m.bool_type().const_int(false).as_constant());
-        Ok(())
-    })
+    assert_eq!(folded, m.bool_type().const_int(false).as_constant());
+    Ok(())
 }
 
 /// fold #4 soundness guard: unlike the `eq` case above, a non-`inbounds` GEP
@@ -1176,45 +1140,44 @@ fn non_inbounds_same_base_gep_eq_still_folds() -> Result<(), IrError> {
 /// `AllowNonInbounds = IsEqPred` guard instead of over-folding.
 #[test]
 fn non_inbounds_same_base_gep_ult_declines_to_fold() -> Result<(), IrError> {
-    Module::with_new("analysis-gep-base-offset-noninbounds-ult", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i8_ty = m.i8_type();
-        let i64_ty = m.i64_type();
-        let ptr_ty = m.ptr_type(0);
-        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
-        let base = g.as_global_constant_ptr();
-        let four = i64_ty.const_int(4_i64).as_constant();
-        let eight = i64_ty.const_int(8_i64).as_constant();
-        let lhs = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [base.into_erased(), four.into_erased()],
-            [],
-            [],
-            ConstantExprOptions::new().source_ty(i8_ty.as_type()),
-        )?;
-        let rhs = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [base.into_erased(), eight.into_erased()],
-            [],
-            [],
-            ConstantExprOptions::new().source_ty(i8_ty.as_type()),
-        )?;
+    let m = module_new!("analysis-gep-base-offset-noninbounds-ult")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type(0);
+    let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+    let base = m.view(g).as_global_constant_ptr();
+    let four = i64_ty.const_int(4_i64).as_constant();
+    let eight = i64_ty.const_int(8_i64).as_constant();
+    let lhs = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [base.into_erased(), four.into_erased()],
+        [],
+        [],
+        ConstantExprOptions::new().source_ty(i8_ty.as_type()),
+    )?;
+    let rhs = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [base.into_erased(), eight.into_erased()],
+        [],
+        [],
+        ConstantExprOptions::new().source_ty(i8_ty.as_type()),
+    )?;
 
-        assert_eq!(
-            constant_fold_compare_inst_operands(
-                CmpPredicate::Int(IntPredicate::Ult),
-                lhs,
-                rhs,
-                &dl,
-                None,
-            )?,
+    assert_eq!(
+        constant_fold_compare_inst_operands(
+            CmpPredicate::Int(IntPredicate::Ult),
+            lhs,
+            rhs,
+            &dl,
             None,
-            "non-inbounds GEPs must not fold under an unsigned ordering predicate"
-        );
-        Ok(())
-    })
+        )?,
+        None,
+        "non-inbounds GEPs must not fold under an unsigned ordering predicate"
+    );
+    Ok(())
 }
 
 /// Non-uniqued-constant parity guard. Unlike the `Expr`-form GEP pair above
@@ -1232,25 +1195,24 @@ fn non_inbounds_same_base_gep_ult_declines_to_fold() -> Result<(), IrError> {
 /// `==`, so the fold declined even though both pointers plainly share `@g`.
 #[test]
 fn same_base_gep_offset_ult_folds_via_offset_compare() -> Result<(), IrError> {
-    Module::with_new("analysis-gep-offset-base-offset-ult", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i8_ty = m.i8_type();
-        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
-        let lhs = g.ptr_offset(4);
-        let rhs = g.ptr_offset(8);
+    let m = module_new!("analysis-gep-offset-base-offset-ult")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+    let lhs = m.view(g).ptr_offset(4);
+    let rhs = m.view(g).ptr_offset(8);
 
-        let folded = constant_fold_compare_inst_operands(
-            CmpPredicate::Int(IntPredicate::Ult),
-            lhs,
-            rhs,
-            &dl,
-            None,
-        )?
-        .expect("same-base GepOffset pointers fold via offset comparison");
+    let folded = constant_fold_compare_inst_operands(
+        CmpPredicate::Int(IntPredicate::Ult),
+        lhs,
+        rhs,
+        &dl,
+        None,
+    )?
+    .expect("same-base GepOffset pointers fold via offset comparison");
 
-        assert_eq!(folded, m.bool_type().const_int(true).as_constant());
-        Ok(())
-    })
+    assert_eq!(folded, m.bool_type().const_int(true).as_constant());
+    Ok(())
 }
 
 /// Composed variant of the guard above: each side is a further `getelementptr`
@@ -1266,48 +1228,47 @@ fn same_base_gep_offset_ult_folds_via_offset_compare() -> Result<(), IrError> {
 /// still compared unequal.
 #[test]
 fn nested_gep_over_gep_offset_mid_folds_via_offset_compare() -> Result<(), IrError> {
-    Module::with_new("analysis-gep-offset-nested-mid-ult", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i8_ty = m.i8_type();
-        let i64_ty = m.i64_type();
-        let ptr_ty = m.ptr_type(0);
-        let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
-        let mid_lhs = g.ptr_offset(4);
-        let mid_rhs = g.ptr_offset(4);
-        let one = i64_ty.const_int(1_i64).as_constant();
-        let two = i64_ty.const_int(2_i64).as_constant();
-        let inbounds = ConstantExprOptions::new()
-            .source_ty(i8_ty.as_type())
-            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
-        let lhs = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [mid_lhs.into_erased(), one.into_erased()],
-            [],
-            [],
-            inbounds.clone(),
-        )?;
-        let rhs = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [mid_rhs.into_erased(), two.into_erased()],
-            [],
-            [],
-            inbounds,
-        )?;
+    let m = module_new!("analysis-gep-offset-nested-mid-ult")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type(0);
+    let g = m.add_global_constant("g", i8_ty.const_int(0_i8))?;
+    let mid_lhs = m.view(g).ptr_offset(4);
+    let mid_rhs = m.view(g).ptr_offset(4);
+    let one = i64_ty.const_int(1_i64).as_constant();
+    let two = i64_ty.const_int(2_i64).as_constant();
+    let inbounds = ConstantExprOptions::new()
+        .source_ty(i8_ty.as_type())
+        .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
+    let lhs = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [mid_lhs.into_erased(), one.into_erased()],
+        [],
+        [],
+        inbounds.clone(),
+    )?;
+    let rhs = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [mid_rhs.into_erased(), two.into_erased()],
+        [],
+        [],
+        inbounds,
+    )?;
 
-        let folded = constant_fold_compare_inst_operands(
-            CmpPredicate::Int(IntPredicate::Ult),
-            lhs,
-            rhs,
-            &dl,
-            None,
-        )?
-        .expect("nested GEPs over independently-built same-base mids fold");
+    let folded = constant_fold_compare_inst_operands(
+        CmpPredicate::Int(IntPredicate::Ult),
+        lhs,
+        rhs,
+        &dl,
+        None,
+    )?
+    .expect("nested GEPs over independently-built same-base mids fold");
 
-        assert_eq!(folded, m.bool_type().const_int(true).as_constant());
-        Ok(())
-    })
+    assert_eq!(folded, m.bool_type().const_int(true).as_constant());
+    Ok(())
 }
 
 /// Soundness guard for the two fixes above: `base_identity` must still
@@ -1316,27 +1277,26 @@ fn nested_gep_over_gep_offset_mid_folds_via_offset_compare() -> Result<(), IrErr
 /// distinct globals must not fold.
 #[test]
 fn different_base_gep_offset_declines_to_fold() -> Result<(), IrError> {
-    Module::with_new("analysis-gep-offset-different-base", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i8_ty = m.i8_type();
-        let g1 = m.add_global_constant("g1", i8_ty.const_int(0_i8))?;
-        let g2 = m.add_global_constant("g2", i8_ty.const_int(0_i8))?;
-        let lhs = g1.ptr_offset(4);
-        let rhs = g2.ptr_offset(8);
+    let m = module_new!("analysis-gep-offset-different-base")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let g1 = m.add_global_constant("g1", i8_ty.const_int(0_i8))?;
+    let g2 = m.add_global_constant("g2", i8_ty.const_int(0_i8))?;
+    let lhs = m.view(g1).ptr_offset(4);
+    let rhs = m.view(g2).ptr_offset(8);
 
-        assert_eq!(
-            constant_fold_compare_inst_operands(
-                CmpPredicate::Int(IntPredicate::Ult),
-                lhs,
-                rhs,
-                &dl,
-                None,
-            )?,
+    assert_eq!(
+        constant_fold_compare_inst_operands(
+            CmpPredicate::Int(IntPredicate::Ult),
+            lhs,
+            rhs,
+            &dl,
             None,
-            "pointers into two different globals must not fold"
-        );
-        Ok(())
-    })
+        )?,
+        None,
+        "pointers into two different globals must not fold"
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1351,33 +1311,35 @@ fn different_base_gep_offset_declines_to_fold() -> Result<(), IrError> {
 /// `GlobalVariable::ptr_offset` encoding.
 #[test]
 fn gep_i32_index_canonicalizes_to_i8_offset() -> Result<(), IrError> {
-    Module::with_new("analysis-gep-symbolic-i32", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i32_ty = m.i32_type();
-        let i64_ty = m.i64_type();
-        let ptr_ty = m.ptr_type(0);
-        let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
-        let four = i64_ty.const_int(4_i64).as_constant();
-        let gep = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [g.as_global_constant_ptr().into_erased(), four.into_erased()],
-            [],
-            [],
-            ConstantExprOptions::new()
-                .source_ty(i32_ty.as_type())
-                .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
-        )?;
+    let m = module_new!("analysis-gep-symbolic-i32")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type(0);
+    let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+    let four = i64_ty.const_int(4_i64).as_constant();
+    let gep = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [
+            m.view(g).as_global_constant_ptr().into_erased(),
+            four.into_erased(),
+        ],
+        [],
+        [],
+        ConstantExprOptions::new()
+            .source_ty(i32_ty.as_type())
+            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
+    )?;
 
-        let folded = constant_fold_constant(gep, &dl, None)?;
+    let folded = constant_fold_constant(gep, &dl, None)?;
 
-        assert_eq!(folded.to_string(), g.ptr_offset(16).to_string());
-        let resolved = constant_offset_from_global(folded, &dl)
-            .expect("canonical i8 GEP resolves to base + offset");
-        assert_eq!(resolved.global(), g);
-        assert_eq!(resolved.offset(), &ApInt::from_words(64, &[16]));
-        Ok(())
-    })
+    assert_eq!(folded.to_string(), m.view(g).ptr_offset(16).to_string());
+    let resolved = constant_offset_from_global(folded, &dl)
+        .expect("canonical i8 GEP resolves to base + offset");
+    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.offset(), &ApInt::from_words(64, &[16]));
+    Ok(())
 }
 
 /// Mirrors `SymbolicallyEvaluateGEP`'s "if this is a GEP of a GEP, fold it
@@ -1386,42 +1348,44 @@ fn gep_i32_index_canonicalizes_to_i8_offset() -> Result<(), IrError> {
 /// canonical `i8` GEP carrying the combined offset (4 + 4 = 8).
 #[test]
 fn nested_gep_merges_into_single_i8_offset() -> Result<(), IrError> {
-    Module::with_new("analysis-gep-symbolic-nested", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i32_ty = m.i32_type();
-        let i64_ty = m.i64_type();
-        let ptr_ty = m.ptr_type(0);
-        let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
-        let one = i64_ty.const_int(1_i64).as_constant();
-        let inbounds = ConstantExprOptions::new()
-            .source_ty(i32_ty.as_type())
-            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
-        let inner = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [g.as_global_constant_ptr().into_erased(), one.into_erased()],
-            [],
-            [],
-            inbounds.clone(),
-        )?;
-        let outer = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [inner.into_erased(), one.into_erased()],
-            [],
-            [],
-            inbounds,
-        )?;
+    let m = module_new!("analysis-gep-symbolic-nested")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type(0);
+    let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+    let one = i64_ty.const_int(1_i64).as_constant();
+    let inbounds = ConstantExprOptions::new()
+        .source_ty(i32_ty.as_type())
+        .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
+    let inner = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [
+            m.view(g).as_global_constant_ptr().into_erased(),
+            one.into_erased(),
+        ],
+        [],
+        [],
+        inbounds.clone(),
+    )?;
+    let outer = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [inner.into_erased(), one.into_erased()],
+        [],
+        [],
+        inbounds,
+    )?;
 
-        let folded = constant_fold_constant(outer, &dl, None)?;
+    let folded = constant_fold_constant(outer, &dl, None)?;
 
-        assert_eq!(folded.to_string(), g.ptr_offset(8).to_string());
-        let resolved = constant_offset_from_global(folded, &dl)
-            .expect("merged nested GEP resolves to base + offset");
-        assert_eq!(resolved.global(), g);
-        assert_eq!(resolved.offset(), &ApInt::from_words(64, &[8]));
-        Ok(())
-    })
+    assert_eq!(folded.to_string(), m.view(g).ptr_offset(8).to_string());
+    let resolved = constant_offset_from_global(folded, &dl)
+        .expect("merged nested GEP resolves to base + offset");
+    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.offset(), &ApInt::from_words(64, &[8]));
+    Ok(())
 }
 
 /// D9 zero-offset case: `SymbolicallyEvaluateGEP`'s tail always builds
@@ -1434,50 +1398,49 @@ fn nested_gep_merges_into_single_i8_offset() -> Result<(), IrError> {
 /// resolves to zero once the new offset arithmetic runs.
 #[test]
 fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
-    Module::with_new("analysis-gep-symbolic-cancel", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i32_ty = m.i32_type();
-        let i64_ty = m.i64_type();
-        let ptr_ty = m.ptr_type(0);
-        let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
-        let g_ptr = g.as_global_constant_ptr();
-        let one = i64_ty.const_int(1_i64).as_constant();
-        let neg_one = i64_ty.const_int(-1_i64).as_constant();
-        let inbounds = ConstantExprOptions::new()
-            .source_ty(i32_ty.as_type())
-            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
-        let inner = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [g_ptr.into_erased(), one.into_erased()],
-            [],
-            [],
-            inbounds.clone(),
-        )?;
-        let outer = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [inner.into_erased(), neg_one.into_erased()],
-            [],
-            [],
-            inbounds,
-        )?;
+    let m = module_new!("analysis-gep-symbolic-cancel")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type(0);
+    let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+    let g_ptr = m.view(g).as_global_constant_ptr();
+    let one = i64_ty.const_int(1_i64).as_constant();
+    let neg_one = i64_ty.const_int(-1_i64).as_constant();
+    let inbounds = ConstantExprOptions::new()
+        .source_ty(i32_ty.as_type())
+        .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS));
+    let inner = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [g_ptr.into_erased(), one.into_erased()],
+        [],
+        [],
+        inbounds.clone(),
+    )?;
+    let outer = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [inner.into_erased(), neg_one.into_erased()],
+        [],
+        [],
+        inbounds,
+    )?;
 
-        let folded = constant_fold_constant(outer, &dl, None)?;
+    let folded = constant_fold_constant(outer, &dl, None)?;
 
-        // Compare printed form rather than the `Constant` handle directly:
-        // llvmkit's `GlobalValueRef` constants are not interned/deduplicated
-        // (each construction — including the fresh one this fold's merge
-        // rewraps `g`'s id into — mints a distinct arena entry), so an
-        // independently-obtained `g_ptr` handle is a *different* id from the
-        // fold's result even though both denote the exact same value.
-        assert_eq!(folded.to_string(), g_ptr.to_string());
-        let resolved =
-            constant_offset_from_global(folded, &dl).expect("cancelling GEP resolves to base");
-        assert_eq!(resolved.global(), g);
-        assert_eq!(resolved.offset(), &ApInt::zero(64));
-        Ok(())
-    })
+    // Compare printed form rather than the `Constant` handle directly:
+    // llvmkit's `GlobalValueRef` constants are not interned/deduplicated
+    // (each construction — including the fresh one this fold's merge
+    // rewraps `g`'s id into — mints a distinct arena entry), so an
+    // independently-obtained `g_ptr` handle is a *different* id from the
+    // fold's result even though both denote the exact same value.
+    assert_eq!(folded.to_string(), g_ptr.to_string());
+    let resolved =
+        constant_offset_from_global(folded, &dl).expect("cancelling GEP resolves to base");
+    assert_eq!(resolved.global(), m.view(g));
+    assert_eq!(resolved.offset(), &ApInt::zero(64));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1503,84 +1466,83 @@ fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
 /// GEP alone.
 #[test]
 fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), IrError> {
-    Module::with_new("analysis-gep-symbolic-nw-intersect", |m| {
-        let dl = DataLayout::parse("e-p:64:64:64")?;
-        let i8_ty = m.i8_type();
-        let i32_ty = m.i32_type();
-        let i64_ty = m.i64_type();
-        let ptr_ty = m.ptr_type(0);
-        let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
-        let h = m.add_global_constant("h", i32_ty.const_int(0_i32))?;
-        let h_int = m.constant_expr(
-            i64_ty.as_type(),
-            ConstantExprOpcode::PtrToInt,
-            [h.as_global_constant_ptr().into_erased()],
-            [],
-            [],
-            ConstantExprFlags::none(),
-        )?;
+    let m = module_new!("analysis-gep-symbolic-nw-intersect")?;
+    let dl = DataLayout::parse("e-p:64:64:64")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let ptr_ty = m.ptr_type(0);
+    let g = m.add_global_constant("g", i32_ty.const_int(0_i32))?;
+    let h = m.add_global_constant("h", i32_ty.const_int(0_i32))?;
+    let h_int = m.constant_expr(
+        i64_ty.as_type(),
+        ConstantExprOpcode::PtrToInt,
+        [m.view(h).as_global_constant_ptr().into_erased()],
+        [],
+        [],
+        ConstantExprFlags::none(),
+    )?;
 
-        // Inner GEP: deliberately *not* inbounds, and its index is a
-        // constant expression rather than a plain `ConstantInt` so the merge
-        // loop cannot accumulate its offset.
-        let inner = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [
-                g.as_global_constant_ptr().into_erased(),
-                h_int.into_erased(),
-            ],
-            [],
-            [],
-            ConstantExprOptions::new().source_ty(i32_ty.as_type()),
-        )?;
-        let four = i64_ty.const_int(4_i64).as_constant();
-        let outer = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [inner.into_erased(), four.into_erased()],
-            [],
-            [],
-            ConstantExprOptions::new()
-                .source_ty(i32_ty.as_type())
-                .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
-        )?;
+    // Inner GEP: deliberately *not* inbounds, and its index is a
+    // constant expression rather than a plain `ConstantInt` so the merge
+    // loop cannot accumulate its offset.
+    let inner = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [
+            m.view(g).as_global_constant_ptr().into_erased(),
+            h_int.into_erased(),
+        ],
+        [],
+        [],
+        ConstantExprOptions::new().source_ty(i32_ty.as_type()),
+    )?;
+    let four = i64_ty.const_int(4_i64).as_constant();
+    let outer = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [inner.into_erased(), four.into_erased()],
+        [],
+        [],
+        ConstantExprOptions::new()
+            .source_ty(i32_ty.as_type())
+            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
+    )?;
 
-        let folded = constant_fold_constant(outer, &dl, None)?;
+    let folded = constant_fold_constant(outer, &dl, None)?;
 
-        // Expected: `getelementptr i8, ptr <inner>, i64 16` with NO no-wrap
-        // flags — `inbounds` (outer) intersected with empty (inner) is
-        // empty. Built independently, through the same general-form
-        // construction `build_canonical_i8_gep` falls back to, so the two
-        // printed forms line up exactly if (and only if) no flag survived.
-        let sixteen = i64_ty.const_int(16_i64).as_constant();
-        let expected = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [inner.into_erased(), sixteen.into_erased()],
-            [],
-            [],
-            ConstantExprOptions::new().source_ty(i8_ty.as_type()),
-        )?;
-        assert_eq!(folded.to_string(), expected.to_string());
-        assert!(!folded.to_string().contains("inbounds"));
+    // Expected: `getelementptr i8, ptr <inner>, i64 16` with NO no-wrap
+    // flags — `inbounds` (outer) intersected with empty (inner) is
+    // empty. Built independently, through the same general-form
+    // construction `build_canonical_i8_gep` falls back to, so the two
+    // printed forms line up exactly if (and only if) no flag survived.
+    let sixteen = i64_ty.const_int(16_i64).as_constant();
+    let expected = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [inner.into_erased(), sixteen.into_erased()],
+        [],
+        [],
+        ConstantExprOptions::new().source_ty(i8_ty.as_type()),
+    )?;
+    assert_eq!(folded.to_string(), expected.to_string());
+    assert!(!folded.to_string().contains("inbounds"));
 
-        // Non-vacuity: the pre-fix behavior kept the outer's `inbounds`
-        // unconditionally (the inner level's flags were computed but
-        // discarded when its offset failed to peel), which would print with
-        // an `inbounds` keyword this construction never gets.
-        let wrongly_inbounds = m.constant_expr_with_options(
-            ptr_ty.as_type(),
-            ConstantExprOpcode::GetElementPtr,
-            [inner.into_erased(), sixteen.into_erased()],
-            [],
-            [],
-            ConstantExprOptions::new()
-                .source_ty(i8_ty.as_type())
-                .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
-        )?;
-        assert_ne!(folded.to_string(), wrongly_inbounds.to_string());
+    // Non-vacuity: the pre-fix behavior kept the outer's `inbounds`
+    // unconditionally (the inner level's flags were computed but
+    // discarded when its offset failed to peel), which would print with
+    // an `inbounds` keyword this construction never gets.
+    let wrongly_inbounds = m.constant_expr_with_options(
+        ptr_ty.as_type(),
+        ConstantExprOpcode::GetElementPtr,
+        [inner.into_erased(), sixteen.into_erased()],
+        [],
+        [],
+        ConstantExprOptions::new()
+            .source_ty(i8_ty.as_type())
+            .flags(ConstantExprFlags::gep(GepNoWrapFlags::IN_BOUNDS)),
+    )?;
+    assert_ne!(folded.to_string(), wrongly_inbounds.to_string());
 
-        Ok(())
-    })
+    Ok(())
 }

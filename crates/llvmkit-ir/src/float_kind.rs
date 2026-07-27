@@ -212,7 +212,7 @@ use core::convert::Infallible;
 /// `Error = Infallible` for the lossless cases (so `f32 -> f32` and
 /// `f32 -> f64` widening are infallible). `Error = IrError` for the
 /// kind-erased target.
-pub trait IntoConstantFloat<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
+pub trait IntoConstantFloat<'ctx, K: FloatKind, B: ModuleBrand> {
     type Error;
     fn into_constant_float(
         self,
@@ -279,7 +279,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, FloatDyn, B> for f64 {
 // IntoFloatValue: ergonomic operand input for the float IRBuilder
 // --------------------------------------------------------------------------
 
-use super::module::{Brand, ModuleBrand, ModuleRef};
+use super::module::{ModuleBrand, ModuleRef};
 use super::value::{FloatValue, Value};
 
 /// Inputs that can be lifted into a [`FloatValue<'ctx, K>`] operand
@@ -290,7 +290,7 @@ use super::value::{FloatValue, Value};
 /// `Instruction` no longer lifts silently: narrow it explicitly with
 /// [`FloatValue::try_from`] (or [`IsValue`](crate::IsValue)-erased `_dyn`
 /// builders).
-pub trait IntoFloatValue<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>>:
+pub trait IntoFloatValue<'ctx, K: FloatKind, B: ModuleBrand>:
     Sized + into_float_value_sealed::Sealed
 {
     fn into_float_value(self, module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>>;
@@ -298,7 +298,11 @@ pub trait IntoFloatValue<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>>:
 
 /// Seals [`IntoFloatValue`] to the identity/lift handles plus the exact
 /// Rust floats (`f32`, `f64`). Erased handles are deliberately absent.
-mod into_float_value_sealed {
+///
+/// `pub(crate)` so the id-family `Sealed`/`IntoFloatValue` impls (for
+/// [`FloatValueId`](crate::FloatValueId)) can live beside the ids in
+/// `value_id.rs`; the trait inside stays crate-private, so the seal holds.
+pub(crate) mod into_float_value_sealed {
     pub trait Sealed {}
 }
 
@@ -344,7 +348,7 @@ macro_rules! impl_into_float_value_static {
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<FloatValue<'ctx, $marker, B>> {
                 let ty = FloatType::<$marker, B>::new(
-                    module.module().$ty_method().as_type().id(),
+                    module.module().$ty_method::<B>().as_type().id(),
                     module,
                 );
                 match self.into_constant_float(ty) {
@@ -397,7 +401,7 @@ macro_rules! impl_static_float_kind {
             fn ir_type<'ctx, B: ModuleBrand + 'ctx>(
                 module: ModuleRef<'ctx, B>,
             ) -> FloatType<'ctx, Self, B> {
-                FloatType::<Self, B>::new(module.module().$method().as_type().id(), module)
+                FloatType::<Self, B>::new(module.module().$method::<B>().as_type().id(), module)
             }
         }
     };

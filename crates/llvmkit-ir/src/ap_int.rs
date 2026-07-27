@@ -1441,7 +1441,10 @@ impl Neg for &ApInt {
     }
 }
 
-fn bitwise(lhs: &ApInt, rhs: &ApInt, f: impl Fn(u64, u64) -> u64) -> ApInt {
+fn bitwise<F>(lhs: &ApInt, rhs: &ApInt, f: F) -> ApInt
+where
+    F: Fn(u64, u64) -> u64,
+{
     if lhs.bit_width != rhs.bit_width {
         return ApInt::zero(lhs.bit_width);
     }

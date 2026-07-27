@@ -21,10 +21,19 @@
 use core::iter::FusedIterator;
 
 use super::asm_writer::{SlotTracker, fmt_instruction};
-use super::basic_block::{BasicBlock, BasicBlockLabel};
+use super::basic_block::BasicBlock;
 use super::block_state::Unterminated;
+use super::error::ValueCategoryLabel;
 use super::float_kind::FloatDyn;
 use super::function::FunctionValue;
+use super::instr_types::{
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
+    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FNegInstData,
+    FenceInstData, FreezeInstData, GepInstData, IndirectBrInstData, InsertElementInstData,
+    InsertValueInstData, InvokeInstData, LandingPadInstData, LoadInstData, ResumeInstData,
+    SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VAArgInstData,
+};
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
     FCmpInstData, PhiData, ReturnOpData, UnreachableInstData,
@@ -43,17 +52,19 @@ use super::instructions::{
 };
 use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
-use super::metadata::{DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataId};
-use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
-use super::phi_state::Closed as PhiClosed;
+use super::metadata::{
+    DebugRecord, MetadataAttachmentKind, MetadataAttachmentSet, MetadataId, StoredBrand,
+};
+use super::module::{Module, ModuleBrand, ModuleCore, ModuleRef, ModuleView, Unverified};
 use super::term_open_state::Closed as TermClosed;
-use super::r#type::TypeId;
+use super::r#type::TypeSlot;
 use super::r#use::Use;
 use super::user::User;
 use super::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueId, ValueKindData, ValueUse,
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot, ValueUse,
     sealed,
 };
+use super::value_id::BlockId;
 use super::{DebugLoc, IrError, IrResult, Type, TypeKind};
 
 // --------------------------------------------------------------------------
@@ -64,18 +75,18 @@ use super::{DebugLoc, IrError, IrResult, Type, TypeKind};
 /// [`ValueKindData::Instruction`](crate::value::ValueKindData::Instruction).
 #[derive(Debug)]
 pub(super) struct InstructionData {
-    pub(super) parent: core::cell::Cell<ValueId>,
+    pub(super) parent: core::cell::Cell<ValueSlot>,
     pub(super) kind: InstructionKindData,
-    pub(super) metadata: core::cell::RefCell<MetadataAttachmentSet>,
-    pub(super) debug_records: core::cell::RefCell<Vec<DebugRecord>>,
+    pub(super) metadata: core::cell::RefCell<MetadataAttachmentSet<StoredBrand>>,
+    pub(super) debug_records: core::cell::RefCell<Vec<DebugRecord<StoredBrand>>>,
 }
 
 impl InstructionData {
-    pub(super) fn new(parent: ValueId, kind: InstructionKindData) -> Self {
+    pub(super) fn new(parent: ValueSlot, kind: InstructionKindData) -> Self {
         Self {
             parent: core::cell::Cell::new(parent),
             kind,
-            metadata: core::cell::RefCell::new(crate::metadata::MetadataAttachmentSet::new()),
+            metadata: core::cell::RefCell::new(MetadataAttachmentSet::new()),
             debug_records: core::cell::RefCell::new(Vec::new()),
         }
     }
@@ -106,49 +117,49 @@ pub(super) enum InstructionKindData {
     FDiv(BinaryOpData),
     FRem(BinaryOpData),
     FCmp(FCmpInstData),
-    Alloca(crate::instr_types::AllocaInstData),
-    Load(crate::instr_types::LoadInstData),
-    Store(crate::instr_types::StoreInstData),
-    Gep(crate::instr_types::GepInstData),
-    Call(crate::instr_types::CallInstData),
-    Select(crate::instr_types::SelectInstData),
+    Alloca(AllocaInstData),
+    Load(LoadInstData),
+    Store(StoreInstData),
+    Gep(GepInstData),
+    Call(CallInstData),
+    Select(SelectInstData),
     Cast(CastOpData),
     ICmp(CmpInstData),
     Phi(PhiData),
-    FNeg(crate::instr_types::FNegInstData),
-    Freeze(crate::instr_types::FreezeInstData),
-    VAArg(crate::instr_types::VAArgInstData),
-    ExtractValue(crate::instr_types::ExtractValueInstData),
-    InsertValue(crate::instr_types::InsertValueInstData),
-    ExtractElement(crate::instr_types::ExtractElementInstData),
-    InsertElement(crate::instr_types::InsertElementInstData),
-    ShuffleVector(crate::instr_types::ShuffleVectorInstData),
-    Fence(crate::instr_types::FenceInstData),
-    AtomicCmpXchg(crate::instr_types::AtomicCmpXchgInstData),
-    AtomicRMW(crate::instr_types::AtomicRMWInstData),
-    Switch(crate::instr_types::SwitchInstData),
-    IndirectBr(crate::instr_types::IndirectBrInstData),
-    Invoke(crate::instr_types::InvokeInstData),
-    CallBr(crate::instr_types::CallBrInstData),
-    LandingPad(crate::instr_types::LandingPadInstData),
-    Resume(crate::instr_types::ResumeInstData),
-    CleanupPad(crate::instr_types::CleanupPadInstData),
-    CatchPad(crate::instr_types::CatchPadInstData),
-    CatchReturn(crate::instr_types::CatchReturnInstData),
-    CleanupReturn(crate::instr_types::CleanupReturnInstData),
-    CatchSwitch(crate::instr_types::CatchSwitchInstData),
+    FNeg(FNegInstData),
+    Freeze(FreezeInstData),
+    VAArg(VAArgInstData),
+    ExtractValue(ExtractValueInstData),
+    InsertValue(InsertValueInstData),
+    ExtractElement(ExtractElementInstData),
+    InsertElement(InsertElementInstData),
+    ShuffleVector(ShuffleVectorInstData),
+    Fence(FenceInstData),
+    AtomicCmpXchg(AtomicCmpXchgInstData),
+    AtomicRMW(AtomicRMWInstData),
+    Switch(SwitchInstData),
+    IndirectBr(IndirectBrInstData),
+    Invoke(InvokeInstData),
+    CallBr(CallBrInstData),
+    LandingPad(LandingPadInstData),
+    Resume(ResumeInstData),
+    CleanupPad(CleanupPadInstData),
+    CatchPad(CatchPadInstData),
+    CatchReturn(CatchReturnInstData),
+    CleanupReturn(CleanupReturnInstData),
+    CatchSwitch(CatchSwitchInstData),
     Ret(ReturnOpData),
     Br(BranchInstData),
     Unreachable(UnreachableInstData),
 }
 
 impl InstructionKindData {
-    /// Operand `ValueId`s in declaration order. Mirrors
+    /// Operand `ValueSlot`s in declaration order. Mirrors
     /// `User::operands`. Block references in branch terminators and
     /// phi incoming pairs are NOT SSA operands at this layer; they
     /// live in the per-variant payload and are surfaced via
     /// per-opcode handles.
-    pub(super) fn operand_ids(&self) -> Vec<ValueId> {
+    pub(super) fn operand_ids(&self) -> Vec<ValueSlot> {
         match self {
             Self::Add(b)
             | Self::Sub(b)
@@ -230,12 +241,12 @@ impl InstructionKindData {
             Self::LandingPad(l) => l.clauses.borrow().iter().map(|(_, c)| c.get()).collect(),
             Self::Resume(r) => vec![r.value.get()],
             Self::CleanupPad(p) => {
-                let mut v: Vec<ValueId> = p.parent_pad.get().into_iter().collect();
+                let mut v: Vec<ValueSlot> = p.parent_pad.get().into_iter().collect();
                 v.extend(p.args.iter().map(|c| c.get()));
                 v
             }
             Self::CatchPad(p) => {
-                let mut v: Vec<ValueId> = p.parent_pad.get().into_iter().collect();
+                let mut v: Vec<ValueSlot> = p.parent_pad.get().into_iter().collect();
                 v.extend(p.args.iter().map(|c| c.get()));
                 v
             }
@@ -322,14 +333,10 @@ pub mod state {
 /// and the compiler then prevents use-after-erase. Per-opcode handles expose
 /// [`InstructionView`] for read-only inspection; lifecycle mutation requires
 /// a builder-produced [`Instruction`] or [`crate::iter::BlockCursor`].
-pub struct Instruction<
-    'ctx,
-    S: state::InstructionState = state::Attached,
-    B: ModuleBrand = Brand<'ctx>,
-> {
-    pub(super) id: ValueId,
+pub struct Instruction<'ctx, S: state::InstructionState, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _state: core::marker::PhantomData<S>,
 }
 /// Copyable read-only instruction view. This is the rediscovery shape for
@@ -337,10 +344,10 @@ pub struct Instruction<
 /// inspection, metadata, naming, and operand access without lifecycle
 /// mutation capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InstructionView<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct InstructionView<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 // Hand-rolled trait impls so that consumers do not have to spell `S`
@@ -384,10 +391,17 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         self.as_view().to_erased()
     }
 
-    /// Opaque arena id of the underlying value (same id as
+    /// Bare arena slot of the underlying value (same slot as
     /// [`to_erased`](Self::to_erased)).
+    ///
+    /// Named `slot` rather than `id` since cycle B: across the crate `.id()`
+    /// mints a *storable, module-tagged* id, and an instruction — which may be
+    /// void, hence value-less — has none of its own. Reach a storable id
+    /// through `to_erased().id()` (a value-defining instruction) or through the
+    /// per-opcode handle's `id()` ([`CallInst::id`](crate::CallInst::id),
+    /// [`PhiInst::id`](crate::PhiInst::id), ...).
     #[inline]
-    pub fn id(&self) -> ValueId {
+    pub fn slot(&self) -> ValueSlot {
         self.to_erased().id
     }
 
@@ -425,26 +439,39 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
     }
 
     /// Metadata attachments on this instruction.
-    pub fn metadata(&self) -> core::cell::Ref<'_, MetadataAttachmentSet> {
-        self.data().metadata.borrow()
+    pub fn metadata(&self) -> MetadataAttachmentSet<B> {
+        self.as_view().metadata()
     }
 
-    /// Set or replace one metadata attachment.
-    pub fn set_metadata(&self, kind: MetadataAttachmentKind, id: MetadataId) {
-        self.as_view().set_metadata(kind, id);
+    /// Set or replace one metadata attachment. Takes the `Unverified` module
+    /// token — see [`InstructionView::set_metadata`].
+    pub fn set_metadata(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        kind: MetadataAttachmentKind,
+        id: MetadataId<B>,
+    ) -> IrResult<()> {
+        self.as_view().set_metadata(module_token, kind, id)
     }
 
-    pub fn debug_records(&self) -> core::cell::Ref<'_, [DebugRecord]> {
-        core::cell::Ref::map(self.data().debug_records.borrow(), Vec::as_slice)
+    /// Debug records attached ahead of this instruction.
+    pub fn debug_records(&self) -> Vec<DebugRecord<B>> {
+        self.as_view().debug_records()
     }
 
-    pub fn push_debug_record(&self, record: DebugRecord) {
-        self.as_view().push_debug_record(record);
+    /// Append a debug record. Takes the `Unverified` module token — see
+    /// [`InstructionView::push_debug_record`].
+    pub fn push_debug_record(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        record: DebugRecord<B>,
+    ) -> IrResult<()> {
+        self.as_view().push_debug_record(module_token, record)
     }
 
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
@@ -453,7 +480,7 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(&self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn clear_name(&self, module_token: &'ctx Module<B, Unverified>) {
         self.as_view().clear_name(module_token);
     }
 
@@ -485,7 +512,7 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
 impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     /// Construct a read-only view from raw parts.
     #[inline]
-    pub(super) fn from_parts<M>(id: ValueId, module: M) -> Self
+    pub(super) fn from_parts<M>(id: ValueSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -522,7 +549,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     /// Owning module reference.
     #[inline]
     pub fn module(&self) -> ModuleView<'ctx, B> {
-        crate::module::ModuleView::new(self.module.module())
+        ModuleView::new(self.module.module())
     }
 
     /// Result type. `void` for terminators and stores.
@@ -538,29 +565,79 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     }
 
     /// Metadata attachments on this instruction.
-    pub fn metadata(&self) -> core::cell::Ref<'_, MetadataAttachmentSet> {
+    pub fn metadata(&self) -> MetadataAttachmentSet<B> {
+        MetadataAttachmentSet::from_stored(&self.data().metadata.borrow())
+    }
+
+    /// Crate-internal: the stored attachment set, for the printer and the
+    /// verifier, which already work inside the owning module.
+    pub(crate) fn metadata_stored(
+        &self,
+    ) -> core::cell::Ref<'ctx, MetadataAttachmentSet<StoredBrand>> {
         self.data().metadata.borrow()
     }
 
     /// Set or replace one metadata attachment.
-    pub fn set_metadata(&self, kind: MetadataAttachmentKind, id: MetadataId) {
+    ///
+    /// Takes the `Unverified` module token, like every other mutator on this
+    /// type and like the metadata setters on
+    /// [`FunctionValue`] and
+    /// [`GlobalVariable`](crate::GlobalVariable), so `verify(self)` really does
+    /// consume mutation capability: an attachment cannot be rewritten through a
+    /// [`Module<B, Verified>`](crate::Module), and an `Inspect`-rung pass —
+    /// which only ever holds read-only views — cannot reach it at all.
+    ///
+    /// The token also supplies the module identity the attachment must belong
+    /// to: [`MetadataId`] carries a `ModuleId` tag, and this is where it is
+    /// compared. A node minted by a *different* module is
+    /// `Err(IrError::ForeignMetadataId)` — never an in-range slot silently
+    /// resolved against this module's arena.
+    pub fn set_metadata(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        kind: MetadataAttachmentKind,
+        id: MetadataId<B>,
+    ) -> IrResult<()> {
+        let id = id.into_stored(module_token.id())?;
         self.data().metadata.borrow_mut().insert(kind, id);
+        Ok(())
     }
 
-    pub fn debug_records(&self) -> core::cell::Ref<'_, [DebugRecord]> {
+    /// Debug records attached ahead of this instruction.
+    pub fn debug_records(&self) -> Vec<DebugRecord<B>> {
+        self.data()
+            .debug_records
+            .borrow()
+            .iter()
+            .map(DebugRecord::from_stored)
+            .collect()
+    }
+
+    /// Crate-internal: the stored debug records, for the printer, which already
+    /// works inside the owning module.
+    pub(crate) fn debug_records_stored(&self) -> core::cell::Ref<'ctx, [DebugRecord<StoredBrand>]> {
         core::cell::Ref::map(self.data().debug_records.borrow(), Vec::as_slice)
     }
 
-    pub fn push_debug_record(&self, record: DebugRecord) {
+    /// Append a debug record. Takes the `Unverified` module token for the same
+    /// reason as [`set_metadata`](Self::set_metadata), and tag-checks every
+    /// metadata and value operand the record carries against it.
+    pub fn push_debug_record(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        record: DebugRecord<B>,
+    ) -> IrResult<()> {
+        let record = record.into_stored(module_token.id())?;
         let mut records = self.data().debug_records.borrow_mut();
         let record_index = records.len();
         register_debug_record_uses(self.id, record_index, &record, self.module.module());
         records.push(record);
+        Ok(())
     }
 
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(&self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(&self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
@@ -569,15 +646,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(&self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn clear_name(&self, module_token: &'ctx Module<B, Unverified>) {
         self.to_erased().clear_name(module_token);
     }
 
     /// Containing basic block label.
-    pub fn parent(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
+    pub fn parent(&self) -> BlockId<Dyn, B> {
         let parent = self.data().parent.get();
-        let label_ty = self.module.module().label_type().as_type().id();
-        BasicBlock::<Dyn, Unterminated, B>::from_parts(parent, self.module, label_ty).label()
+        BlockId::<Dyn, B>::from_raw(self.module.id(), parent)
     }
 
     /// Read-only opcode discriminator for non-terminator opcodes.
@@ -843,7 +919,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
 
     /// Operand value-ids in declaration order. Crate-internal helper
     /// used by the use-list machinery.
-    pub(super) fn operand_ids(&self) -> Vec<ValueId> {
+    pub(super) fn operand_ids(&self) -> Vec<ValueSlot> {
         self.data().kind.operand_ids()
     }
 }
@@ -853,7 +929,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// only the IR builder hands these out, and only after the value-id
     /// has been pushed onto the parent block's instruction list.
     #[inline]
-    pub(super) fn from_parts<M>(id: ValueId, module: M) -> Self
+    pub(super) fn from_parts<M>(id: ValueSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -868,7 +944,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     }
 
     /// Containing basic block label.
-    pub fn parent(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
+    pub fn parent(&self) -> BlockId<Dyn, B> {
         self.as_view().parent()
     }
 
@@ -876,7 +952,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
 
     /// Replace every existing use of this instruction's result with
     /// `replacement`. Walks the reverse use-list, rewriting each
-    /// operand `Cell<ValueId>` slot in place, and migrates the entries
+    /// operand `Cell<ValueSlot>` slot in place, and migrates the entries
     /// onto `replacement`'s use-list. Mirrors `Value::replaceAllUsesWith`
     /// in `lib/IR/Value.cpp`.
     ///
@@ -887,7 +963,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// `I->replaceAllUsesWith(V); I->eraseFromParent();`.
     pub fn replace_all_uses_with<V: IsValue<'ctx, B>>(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         replacement: V,
     ) -> IrResult<()> {
         let new_value = replacement.into_erased();
@@ -950,16 +1026,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// `Instruction::eraseFromParent` in `lib/IR/Instruction.cpp`.
     ///
     /// Consumes `self`: use-after-erase is a *compile* error.
-    pub fn erase_from_parent(self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn erase_from_parent(self, module_token: &'ctx Module<B, Unverified>) {
         let self_id = self.id;
         let module = module_token.core_ref();
         remove_local_name_from_parent(self.to_erased());
         deregister_operand_uses(self_id, &self.data().kind, module);
         let parent_block_id = self.data().parent.get();
-        let bb = BasicBlock::<Dyn>::from_parts(
+        let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
             module,
-            module.label_type().as_type().id(),
+            module.label_type::<B>().as_type().id(),
         );
         bb.remove_instruction(self_id);
     }
@@ -971,16 +1047,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// Mirrors `Instruction::removeFromParent` in `lib/IR/Instruction.cpp`.
     pub fn detach_from_parent(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
     ) -> Instruction<'ctx, state::Detached, B> {
         let module = module_token.core_ref();
         let self_id = self.id;
         remove_local_name_from_parent(self.to_erased());
         let parent_block_id = self.data().parent.get();
-        let bb = BasicBlock::<Dyn>::from_parts(
+        let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
             parent_block_id,
             module,
-            module.label_type().as_type().id(),
+            module.label_type::<B>().as_type().id(),
         );
         bb.remove_instruction(self_id);
         // Clear the parent pointer so iteration over orphan instructions
@@ -998,7 +1074,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// `lib/IR/Instruction.cpp`.
     pub fn move_before(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<()> {
         let module = module_token.core_ref();
@@ -1014,13 +1090,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         }
         // Remove from current parent.
         let cur_parent = self.data().parent.get();
-        let cur_bb =
-            BasicBlock::<Dyn>::from_parts(cur_parent, module, module.label_type().as_type().id());
+        let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            cur_parent,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         cur_bb.remove_instruction(self_id);
         // Insert before other in other's parent.
         let new_parent = other.data().parent.get();
-        let new_bb =
-            BasicBlock::<Dyn>::from_parts(new_parent, module, module.label_type().as_type().id());
+        let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            new_parent,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         new_bb.insert_instruction_before(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
         if old_parent_fn != new_parent_fn
@@ -1035,7 +1117,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
     /// `other`'s parent block. Mirrors `Instruction::moveAfter`.
     pub fn move_after(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<()> {
         let module = module_token.core_ref();
@@ -1050,12 +1132,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
             remove_local_name_from_parent(self.to_erased());
         }
         let cur_parent = self.data().parent.get();
-        let cur_bb =
-            BasicBlock::<Dyn>::from_parts(cur_parent, module, module.label_type().as_type().id());
+        let cur_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            cur_parent,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         cur_bb.remove_instruction(self_id);
         let new_parent = other.data().parent.get();
-        let new_bb =
-            BasicBlock::<Dyn>::from_parts(new_parent, module, module.label_type().as_type().id());
+        let new_bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            new_parent,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         new_bb.insert_instruction_after(self_id, other_id)?;
         update_instruction_parent(module, self_id, new_parent);
         if old_parent_fn != new_parent_fn
@@ -1073,14 +1161,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// `lib/IR/Instruction.cpp`.
     pub fn insert_before(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let parent_fn_id = other.to_erased().local_parent_function_id();
-        let bb =
-            BasicBlock::<Dyn>::from_parts(parent_id, module, module.label_type().as_type().id());
+        let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            parent_id,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         bb.insert_instruction_before(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
@@ -1093,14 +1184,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// `other`'s parent block. Mirrors `Instruction::insertAfter`.
     pub fn insert_after(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         other: &InstructionView<'ctx, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
         let parent_id = other.data().parent.get();
         let parent_fn_id = other.to_erased().local_parent_function_id();
-        let bb =
-            BasicBlock::<Dyn>::from_parts(parent_id, module, module.label_type().as_type().id());
+        let bb = BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(
+            parent_id,
+            module,
+            module.label_type::<B>().as_type().id(),
+        );
         bb.insert_instruction_after(self.id, other.id)?;
         update_instruction_parent(module, self.id, parent_id);
         if let Some(parent_fn_id) = parent_fn_id {
@@ -1113,11 +1207,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// instruction list. Mirrors `Instruction::insertInto(BB, BB->end())`.
     pub fn append_to<R: ReturnMarker>(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         block: &BasicBlock<'ctx, R, Unterminated, B>,
     ) -> IrResult<Instruction<'ctx, state::Attached, B>> {
         let module = module_token.core_ref();
-        let parent_id = block.id();
+        let parent_id = block.slot();
         let parent_fn_id = block.to_erased().local_parent_function_id();
         block.as_dyn().append_instruction(self.id);
         update_instruction_parent(module, self.id, parent_id);
@@ -1132,7 +1226,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
     /// the value-arena slot tombstoned (still occupied for id-stability,
     /// but unreferenced by any block). Mirrors `Instruction::deleteValue`
     /// in `lib/IR/Instruction.cpp`.
-    pub fn drop_detached(self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn drop_detached(self, module_token: &'ctx Module<B, Unverified>) {
         let self_id = self.id;
         let module = module_token.core_ref();
         deregister_operand_uses(self_id, &self.data().kind, module);
@@ -1143,17 +1237,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Detached, B> {
 // Crate-private operand-walker helpers
 // --------------------------------------------------------------------------
 
-/// For each operand `Cell<ValueId>` in `kind` whose current value is
+/// For each operand `Cell<ValueSlot>` in `kind` whose current value is
 /// `from`, replace it with `to`. The match arms are exhaustive so
 /// future opcodes will fail to compile until they are added here.
-pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, to: ValueId) {
+pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueSlot, to: ValueSlot) {
     use super::instr_types::BranchKind;
-    let swap = |c: &core::cell::Cell<ValueId>| {
+    let swap = |c: &core::cell::Cell<ValueSlot>| {
         if c.get() == from {
             c.set(to);
         }
     };
-    let swap_opt = |c: &core::cell::Cell<Option<ValueId>>| {
+    let swap_opt = |c: &core::cell::Cell<Option<ValueSlot>>| {
         if c.get() == Some(from) {
             c.set(Some(to));
         }
@@ -1314,9 +1408,9 @@ pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueId, t
 
 /// Remove `inst_id` from the reverse use-list of every operand it
 /// references. Used by both `erase_from_parent` and `drop_detached`.
-fn deregister_operand_uses(inst_id: ValueId, kind: &InstructionKindData, module: &ModuleCore) {
+fn deregister_operand_uses(inst_id: ValueSlot, kind: &InstructionKindData, module: &ModuleCore) {
     use std::collections::HashMap;
-    let mut occurrences: HashMap<ValueId, usize> = HashMap::new();
+    let mut occurrences: HashMap<ValueSlot, usize> = HashMap::new();
     for op_id in kind.operand_ids() {
         *occurrences.entry(op_id).or_insert(0) += 1;
     }
@@ -1335,9 +1429,9 @@ fn deregister_operand_uses(inst_id: ValueId, kind: &InstructionKindData, module:
 }
 
 fn register_debug_record_uses(
-    inst_id: ValueId,
+    inst_id: ValueSlot,
     record_index: usize,
-    record: &DebugRecord,
+    record: &DebugRecord<StoredBrand>,
     module: &ModuleCore,
 ) {
     record.for_each_value(|value_id| {
@@ -1353,7 +1447,7 @@ fn register_debug_record_uses(
     });
 }
 
-fn deregister_debug_record_uses(inst_id: ValueId, module: &ModuleCore) {
+fn deregister_debug_record_uses(inst_id: ValueSlot, module: &ModuleCore) {
     let data = module.context().value_data(inst_id);
     let ValueKindData::Instruction(inst) = &data.kind else {
         return;
@@ -1374,17 +1468,17 @@ fn deregister_debug_record_uses(inst_id: ValueId, module: &ModuleCore) {
 
 pub(super) fn rewrite_debug_record_value(
     module: &ModuleCore,
-    inst_id: ValueId,
+    inst_id: ValueSlot,
     record_index: usize,
-    from: ValueId,
-    to: ValueId,
+    from: ValueSlot,
+    to: ValueSlot,
 ) {
     let data = module.context().value_data(inst_id);
     let ValueKindData::Instruction(inst) = &data.kind else {
         return;
     };
     if let Some(record) = inst.debug_records.borrow_mut().get_mut(record_index) {
-        record.replace_value_id(from, to);
+        record.replace_value_slot(from, to);
     }
 }
 
@@ -1395,7 +1489,10 @@ fn remove_local_name_from_parent<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx,
     }
 }
 
-fn reinsert_local_name<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>, parent_fn_id: ValueId) {
+fn reinsert_local_name<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    parent_fn_id: ValueSlot,
+) {
     let current_name = value.name();
     if let Some(name) = current_name.as_deref() {
         value.set_name_internal(None);
@@ -1404,7 +1501,7 @@ fn reinsert_local_name<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>, paren
     }
 }
 
-fn update_instruction_parent(module: &ModuleCore, inst_id: ValueId, new_parent: ValueId) {
+fn update_instruction_parent(module: &ModuleCore, inst_id: ValueSlot, new_parent: ValueSlot) {
     let data = module.context().value_data(inst_id);
     if let ValueKindData::Instruction(_) = &data.kind {
         // The parent field is plain; mutate via a dedicated helper on
@@ -1422,6 +1519,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for InstructionView<'ctx, B> 
         InstructionView::to_erased(&self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(InstructionView);
 impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for InstructionView<'ctx, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
@@ -1434,14 +1532,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for InstructionView<'ctx, B> 
         InstructionView::name(&self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         InstructionView::set_name(&self, module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         InstructionView::clear_name(&self, module_token);
     }
 }
@@ -1491,14 +1589,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Instruction<'ctx, state::
         Instruction::name(&self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         Instruction::set_name(&self, module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         Instruction::clear_name(&self, module_token);
     }
 }
@@ -1533,7 +1631,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for InstructionView<'c
                 ty: v.ty,
             }),
             _ => Err(IrError::ValueCategoryMismatch {
-                expected: crate::error::ValueCategoryLabel::Instruction,
+                expected: ValueCategoryLabel::Instruction,
                 got: v.category().into(),
             }),
         }
@@ -1560,7 +1658,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<Instruction<'ctx, state::Attached, B>> fo
 ///
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
 #[derive(Debug)]
-pub enum CastKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum CastKind<'ctx, B: ModuleBrand> {
     Trunc(TruncInst<'ctx, B>),
     ZExt(ZExtInst<'ctx, B>),
     SExt(SExtInst<'ctx, B>),
@@ -1674,10 +1772,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
 ///
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
 #[derive(Debug)]
-pub enum PhiKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    Int(PhiInst<'ctx, IntDyn, PhiClosed, B>),
-    Fp(FpPhiInst<'ctx, FloatDyn, PhiClosed, B>),
-    Ptr(PointerPhiInst<'ctx, PhiClosed, B>),
+pub enum PhiKind<'ctx, B: ModuleBrand> {
+    Int(PhiInst<'ctx, IntDyn, B>),
+    Fp(FpPhiInst<'ctx, FloatDyn, B>),
+    Ptr(PointerPhiInst<'ctx, B>),
     Other(OtherPhiInst<'ctx, B>),
 }
 
@@ -1696,10 +1794,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
     /// variant. The value comes back type-erased (`Value`), which is all a
     /// value-only consumer needs; the per-variant handles keep the narrowed
     /// accessors.
-    pub fn incoming(
-        &self,
-        index: u32,
-    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+    pub fn incoming(&self, index: u32) -> IrResult<(Value<'ctx, B>, BlockId<Dyn, B>)> {
         match self {
             Self::Int(p) => p.incoming(index),
             Self::Fp(p) => p.incoming(index),
@@ -1717,17 +1812,38 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
     /// narrowed accessors.
     pub fn incomings(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
-        let entries: Vec<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> = match self {
+        let entries: Vec<(Value<'ctx, B>, BlockId<Dyn, B>)> = match self {
             Self::Int(p) => p.incomings().collect(),
             Self::Fp(p) => p.incomings().collect(),
             Self::Ptr(p) => p.incomings().collect(),
             Self::Other(p) => p.incomings().collect(),
         };
         entries.into_iter()
+    }
+
+    /// Remove the incoming `(value, block)` pair at `index` and return the
+    /// removed value, independent of variant — the variant-independent form of
+    /// [`PhiInst::remove_incoming`](crate::PhiInst::remove_incoming), which is
+    /// the shape a CFG rewriter reaching a phi through rediscovery wants.
+    /// Mirrors `PHINode::removeIncomingValue`, including its
+    /// order-not-preserved backfill; see
+    /// [`PhiInst::remove_incoming`](crate::PhiInst::remove_incoming) for the
+    /// empty-phi contract.
+    pub fn remove_incoming(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        index: u32,
+    ) -> IrResult<Value<'ctx, B>> {
+        match self {
+            Self::Int(p) => p.remove_incoming(module_token, index),
+            Self::Fp(p) => p.remove_incoming(module_token, index),
+            Self::Ptr(p) => p.remove_incoming(module_token, index),
+            Self::Other(p) => p.remove_incoming(module_token, index),
+        }
     }
 
     /// Read-only erased instruction view for this phi.
@@ -1761,7 +1877,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
 /// is the safety feature (a silent `_` fallthrough would let a new opcode
 /// take whatever behavior the wildcard happens to have).
 #[derive(Debug)]
-pub enum InstructionKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum InstructionKind<'ctx, B: ModuleBrand> {
     Add(AddInst<'ctx, B>),
     Sub(SubInst<'ctx, B>),
     Mul(MulInst<'ctx, B>),
@@ -1853,7 +1969,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionKind<'ctx, B> {
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`]:
 /// a new terminator opcode must break every downstream `match`.
 #[derive(Debug)]
-pub enum TerminatorKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum TerminatorKind<'ctx, B: ModuleBrand> {
     Ret(RetInst<'ctx, B>),
     Br(BranchInst<'ctx, B>),
     Switch(SwitchInst<'ctx, TermClosed, B>),
@@ -1875,7 +1991,7 @@ pub enum TerminatorKind<'ctx, B: ModuleBrand = Brand<'ctx>> {
 /// [`InstructionView::classify`] is total: it always names the category, so
 /// a forgotten `is_terminator()` guard cannot mis-handle a terminator.
 #[derive(Debug)]
-pub enum Classified<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum Classified<'ctx, B: ModuleBrand> {
     /// A non-terminator instruction.
     Inst(InstructionKind<'ctx, B>),
     /// A block terminator.
@@ -1889,7 +2005,7 @@ pub enum Classified<'ctx, B: ModuleBrand = Brand<'ctx>> {
 /// rejection — a terminator-erase that would break a `PatchBody` pass's
 /// "CFG preserved" floor is unrepresentable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NonTerminator<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct NonTerminator<'ctx, B: ModuleBrand> {
     view: InstructionView<'ctx, B>,
 }
 
@@ -1908,11 +2024,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
         self.view.to_erased()
     }
 
-    /// Opaque arena id of the underlying value (same id as
-    /// [`to_erased`](Self::to_erased)).
+    /// Bare arena slot of the underlying value (same slot as
+    /// [`to_erased`](Self::to_erased)). Named `slot` rather than `id` for the
+    /// reason given on [`Instruction::slot`].
     #[inline]
-    pub fn id(&self) -> ValueId {
-        self.view.id()
+    pub fn slot(&self) -> ValueSlot {
+        self.view.slot()
     }
 
     /// Crate-internal: wrap a view already known to be a non-terminator.
@@ -1925,8 +2042,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> NonTerminator<'ctx, B> {
 /// Crate-internal helper: create a `ValueData` for an instruction with
 /// the given parent block and kind payload.
 pub(super) fn build_instruction_value(
-    ty: TypeId,
-    parent_bb: ValueId,
+    ty: TypeSlot,
+    parent_bb: ValueSlot,
     kind: InstructionKindData,
     name: Option<String>,
 ) -> ValueData {
@@ -1946,7 +2063,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for InstructionView<'ctx, B
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let module = self.module.module();
         let parent_id = self.data().parent.get();
-        let label_ty = module.label_type().as_type().id();
+        let label_ty = module.label_type::<B>().as_type().id();
         let parent =
             BasicBlock::<'ctx, Dyn, Unterminated, B>::from_parts(parent_id, self.module, label_ty);
         let slots = match parent.parent_id() {

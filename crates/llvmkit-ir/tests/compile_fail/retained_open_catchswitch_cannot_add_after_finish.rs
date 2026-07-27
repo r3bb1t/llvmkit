@@ -6,17 +6,16 @@
 use llvmkit_ir::{Dyn, IRBuilder, Linkage, Module};
 
 fn main() {
-    Module::with_new("retained-catchswitch", |m| {
-        let void_ty = m.void_type();
-        let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type>::new(), false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-        let entry = f.append_basic_block(&m, "entry");
-        let handler = f.append_basic_block(&m, "handler");
-        let handler_label = handler.label();
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let (_sealed, cs) = b.build_catch_switch_within_none_to_caller("cs").unwrap();
+    let m = Module::dynamic("retained-catchswitch");
+    let void_ty = m.void_type();
+    let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type<_>>::new(), false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let handler = m.view(f).append_basic_block(&m, "handler");
+    let handler_label = handler.id();
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let (_sealed, cs) = b.build_catch_switch_within_none_to_caller("cs").unwrap();
 
-        let _closed = cs.finish();
-        let _ = cs.add_handler(handler_label);
-    });
+    let _closed = cs.finish();
+    let _ = cs.add_handler(handler_label);
 }

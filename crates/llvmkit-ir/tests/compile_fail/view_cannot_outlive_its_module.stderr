@@ -1,0 +1,12 @@
+error[E0597]: `m` does not live long enough
+  --> tests/compile_fail/view_cannot_outlive_its_module.rs:32:9
+   |
+24 |     let escaped = {
+   |         ------- borrow later stored here
+25 |         let m = Module::dynamic("m");
+   |             - binding `m` declared here
+...
+32 |         m.view(f).append_basic_block(&m, "entry")
+   |         ^ borrowed value does not live long enough
+33 |     };
+   |     - `m` dropped here while still borrowed

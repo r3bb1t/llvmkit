@@ -7,7 +7,7 @@
 //! companion trybuild fixture in `tests/compile_fail/`
 //! (`set_struct_body_twice.rs`) locks the compile-fail story.
 
-use llvmkit_ir::{IrError, Module};
+use llvmkit_ir::{IrError, module_new};
 
 /// Port of `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)`
 /// (the name-management sub-tests). Upstream's `setName` API is not
@@ -16,12 +16,11 @@ use llvmkit_ir::{IrError, Module};
 /// name) matches the upstream invariant.
 #[test]
 fn named_struct_retains_name() -> Result<(), IrError> {
-    Module::with_new("t", |m| {
-        let opaque = m.opaque_struct("FooBar")?;
-        assert_eq!(opaque.name(), Some("FooBar"));
-        assert!(opaque.is_opaque());
-        Ok(())
-    })
+    let m = module_new!("t")?;
+    let opaque = m.opaque_struct("FooBar")?;
+    assert_eq!(opaque.name(), Some("FooBar"));
+    assert!(opaque.is_opaque());
+    Ok(())
 }
 
 /// llvmkit-specific (Doctrine D11): exercises the `Opaque -> BodySet`
@@ -31,15 +30,14 @@ fn named_struct_retains_name() -> Result<(), IrError> {
 /// structs.
 #[test]
 fn opaque_to_body_set_transition() -> Result<(), IrError> {
-    Module::with_new("t", |m| {
-        let i32_ty = m.i32_type();
-        let opaque = m.opaque_struct("Pair")?;
-        assert!(opaque.is_opaque());
-        let body_set = m.set_struct_body(opaque, [i32_ty.as_type(), i32_ty.as_type()], false)?;
-        assert!(!body_set.is_opaque());
-        assert_eq!(body_set.field_count(), 2);
-        Ok(())
-    })
+    let m = module_new!("t")?;
+    let i32_ty = m.i32_type();
+    let opaque = m.opaque_struct("Pair")?;
+    assert!(opaque.is_opaque());
+    let body_set = m.set_struct_body(opaque, [i32_ty.as_type(), i32_ty.as_type()], false)?;
+    assert!(!body_set.is_opaque());
+    assert_eq!(body_set.field_count(), 2);
+    Ok(())
 }
 
 /// llvmkit-specific (Doctrine D1): the runtime `set_struct_body_dyn`
@@ -50,16 +48,15 @@ fn opaque_to_body_set_transition() -> Result<(), IrError> {
 /// `unittests/IR/TypesTest.cpp::TEST(TypesTest, StructType)`.
 #[test]
 fn double_set_body_runtime_path_rejects() -> Result<(), IrError> {
-    Module::with_new("t", |m| {
-        let i32_ty = m.i32_type();
-        let opaque = m.opaque_struct("Once")?;
-        let _body_set = m.set_struct_body(opaque, [i32_ty.as_type(), i32_ty.as_type()], false)?;
-        // The typed `Opaque` handle has been consumed. Attempting another
-        // `opaque_struct(name)` for the same name surfaces the runtime
-        // `StructBodyAlreadySet` (since the second declaration pulls an
-        // already-set named struct).
-        let err = m.opaque_struct("Once").unwrap_err();
-        assert!(matches!(err, IrError::StructBodyAlreadySet { .. }));
-        Ok(())
-    })
+    let m = module_new!("t")?;
+    let i32_ty = m.i32_type();
+    let opaque = m.opaque_struct("Once")?;
+    let _body_set = m.set_struct_body(opaque, [i32_ty.as_type(), i32_ty.as_type()], false)?;
+    // The typed `Opaque` handle has been consumed. Attempting another
+    // `opaque_struct(name)` for the same name surfaces the runtime
+    // `StructBodyAlreadySet` (since the second declaration pulls an
+    // already-set named struct).
+    let err = m.opaque_struct("Once").unwrap_err();
+    assert!(matches!(err, IrError::StructBodyAlreadySet { .. }));
+    Ok(())
 }

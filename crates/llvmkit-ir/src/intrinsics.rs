@@ -8,8 +8,8 @@ use core::num::NonZeroU32;
 use crate::attributes::{AttrIndex, AttrKind, Attribute, AttributeStorage, MemoryEffects};
 use crate::derived_types::FunctionType;
 use crate::error::{IrError, IrResult};
-use crate::module::{Brand, Module, ModuleBrand, ModuleRef};
-use crate::r#type::{Type, TypeData, TypeId};
+use crate::module::{Module, ModuleBrand, ModuleRef};
+use crate::r#type::{Type, TypeData, TypeSlot};
 use crate::value::{Value, ValueKindData};
 use std::borrow::Cow;
 
@@ -17,7 +17,7 @@ use std::borrow::Cow;
 pub struct IntrinsicId(NonZeroU32);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct IntrinsicDescriptor<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct IntrinsicDescriptor<'ctx, B: ModuleBrand> {
     id: IntrinsicId,
     overloads: Box<[Type<'ctx, B>]>,
 }
@@ -25,7 +25,7 @@ pub struct IntrinsicDescriptor<'ctx, B: ModuleBrand = Brand<'ctx>> {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct IntrinsicFunctionData {
     pub id: IntrinsicId,
-    pub overloads: Box<[TypeId]>,
+    pub overloads: Box<[TypeSlot]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -431,7 +431,7 @@ impl IntrinsicId {
 
     pub fn function_type<'ctx, B, S>(
         self,
-        module: &Module<'ctx, B, S>,
+        module: &'ctx Module<B, S>,
         overloads: &[Type<'ctx, B>],
     ) -> IrResult<FunctionType<'ctx, B>>
     where
@@ -522,7 +522,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntrinsicDescriptor<'ctx, B> {
         Ok(name)
     }
 
-    pub fn function_type<S>(&self, module: &Module<'ctx, B, S>) -> IrResult<FunctionType<'ctx, B>> {
+    pub fn function_type<S>(&self, module: &'ctx Module<B, S>) -> IrResult<FunctionType<'ctx, B>> {
         self.function_type_ref(module.module_ref())
     }
 
@@ -607,7 +607,7 @@ fn add_function_attrs<B: ModuleBrand>(storage: &mut AttributeStorage, record: &I
     if record.memory_effects != MemoryEffects::unknown() {
         storage.add(
             AttrIndex::Function,
-            Attribute::<B>::memory_for_brand(record.memory_effects),
+            Attribute::<B>::memory(record.memory_effects),
         );
     }
 }
@@ -1143,9 +1143,10 @@ impl BinaryIntrinsic {
     pub fn from_intrinsic_name(name: &str) -> Option<Self> {
         let id = IntrinsicId::lookup(name)?;
         let binary = Self::from_intrinsic_id(id)?;
-        let descriptor_matches_name = Module::with_new("intrinsic-name-resolution", |module| {
+        let descriptor_matches_name = {
+            let module = Module::dynamic("intrinsic-name-resolution");
             descriptor_for_name(module.module_ref(), id, name).is_ok()
-        });
+        };
         descriptor_matches_name.then_some(binary)
     }
 
@@ -2404,31 +2405,29 @@ mod tests {
     /// for vector overloads and rejects scalar overloads.
     #[test]
     fn vec_element_argument_requires_vector_overload() -> IrResult<()> {
-        Module::with_new("intrinsic-vec-element", |module| {
-            let module_ref = module.module_ref();
-            let i32_ty = module.i32_type().as_type();
-            let vector_ty = fixed_vector_type(module_ref, i32_ty, 4);
+        let module = crate::module_new!("intrinsic-vec-element")?;
+        let module_ref = module.module_ref();
+        let i32_ty = module.i32_type().as_type();
+        let vector_ty = fixed_vector_type(module_ref, i32_ty, 4);
 
-            assert_eq!(vector_element_or_self(module_ref, vector_ty)?, i32_ty);
-            assert!(vector_element_or_self(module_ref, i32_ty).is_err());
-            Ok(())
-        })
+        assert_eq!(vector_element_or_self(module_ref, vector_ty)?, i32_ty);
+        assert!(vector_element_or_self(module_ref, i32_ty).is_err());
+        Ok(())
     }
 
     /// Mirrors `llvm/include/llvm/IR/DerivedTypes.h::getSubdividedVectorType`:
     /// subdivision doubles the lane count while halving the element bit width.
     #[test]
     fn subdivide_argument_halves_element_width_and_doubles_lanes() -> IrResult<()> {
-        Module::with_new("intrinsic-subdivide", |module| {
-            let module_ref = module.module_ref();
-            let vector_ty = fixed_vector_type(module_ref, module.i64_type().as_type(), 4);
-            let subdivided_once = subdivide_vector_type(module_ref, vector_ty, 1)?;
-            let subdivided_twice = subdivide_vector_type(module_ref, vector_ty, 2)?;
+        let module = crate::module_new!("intrinsic-subdivide")?;
+        let module_ref = module.module_ref();
+        let vector_ty = fixed_vector_type(module_ref, module.i64_type().as_type(), 4);
+        let subdivided_once = subdivide_vector_type(module_ref, vector_ty, 1)?;
+        let subdivided_twice = subdivide_vector_type(module_ref, vector_ty, 2)?;
 
-            assert_eq!(format!("{subdivided_once}"), "<8 x i32>");
-            assert_eq!(format!("{subdivided_twice}"), "<16 x i16>");
-            Ok(())
-        })
+        assert_eq!(format!("{subdivided_once}"), "<8 x i32>");
+        assert_eq!(format!("{subdivided_twice}"), "<16 x i16>");
+        Ok(())
     }
 
     /// Mirrors `llvm/lib/IR/Intrinsics.cpp::matchIntrinsicType`:
@@ -2436,30 +2435,29 @@ mod tests {
     /// `IITDescriptor::Subdivide4Argument` applies two subdivisions.
     #[test]
     fn subdivide_argument_matcher_uses_llvm_subdivision_counts() -> IrResult<()> {
-        Module::with_new("intrinsic-subdivide-match", |module| {
-            let module_ref = module.module_ref();
-            let vector_ty = fixed_vector_type(module_ref, module.i64_type().as_type(), 4);
-            let mut overloads = vec![Some(vector_ty)];
+        let module = crate::module_new!("intrinsic-subdivide-match")?;
+        let module_ref = module.module_ref();
+        let vector_ty = fixed_vector_type(module_ref, module.i64_type().as_type(), 4);
+        let mut overloads = vec![Some(vector_ty)];
 
-            let subdivide2 = [IitDescriptor::Subdivide2Argument(0)];
-            let mut subdivide2_descriptors = subdivide2.as_slice();
-            match_fixed_type(
-                module_ref,
-                &mut subdivide2_descriptors,
-                &mut overloads,
-                fixed_vector_type(module_ref, module.i32_type().as_type(), 8),
-            )?;
+        let subdivide2 = [IitDescriptor::Subdivide2Argument(0)];
+        let mut subdivide2_descriptors = subdivide2.as_slice();
+        match_fixed_type(
+            module_ref,
+            &mut subdivide2_descriptors,
+            &mut overloads,
+            fixed_vector_type(module_ref, module.i32_type().as_type(), 8),
+        )?;
 
-            let subdivide4 = [IitDescriptor::Subdivide4Argument(0)];
-            let mut subdivide4_descriptors = subdivide4.as_slice();
-            match_fixed_type(
-                module_ref,
-                &mut subdivide4_descriptors,
-                &mut overloads,
-                fixed_vector_type(module_ref, module.i16_type().as_type(), 16),
-            )?;
-            Ok(())
-        })
+        let subdivide4 = [IitDescriptor::Subdivide4Argument(0)];
+        let mut subdivide4_descriptors = subdivide4.as_slice();
+        match_fixed_type(
+            module_ref,
+            &mut subdivide4_descriptors,
+            &mut overloads,
+            fixed_vector_type(module_ref, module.i16_type().as_type(), 16),
+        )?;
+        Ok(())
     }
 
     /// Mirrors `llvm/include/llvm/IR/DerivedTypes.h::getInteger`:
@@ -2467,15 +2465,14 @@ mod tests {
     /// each element with an integer of the same primitive bit width.
     #[test]
     fn vec_of_bitcasts_to_int_preserves_shape_and_integerizes_element() -> IrResult<()> {
-        Module::with_new("intrinsic-vector-bitcast-int", |module| {
-            let module_ref = module.module_ref();
-            let f32_vec = fixed_vector_type(module_ref, module.f32_type().as_type(), 4);
-            let i32_vec = vector_of_bitcasts_to_int(module_ref, f32_vec)?;
+        let module = crate::module_new!("intrinsic-vector-bitcast-int")?;
+        let module_ref = module.module_ref();
+        let f32_vec = fixed_vector_type(module_ref, module.f32_type().as_type(), 4);
+        let i32_vec = vector_of_bitcasts_to_int(module_ref, f32_vec)?;
 
-            assert_eq!(format!("{i32_vec}"), "<4 x i32>");
-            assert!(vector_of_bitcasts_to_int(module_ref, module.f32_type().as_type()).is_err());
-            Ok(())
-        })
+        assert_eq!(format!("{i32_vec}"), "<4 x i32>");
+        assert!(vector_of_bitcasts_to_int(module_ref, module.f32_type().as_type()).is_err());
+        Ok(())
     }
 
     /// Mirrors `llvm/lib/IR/Intrinsics.cpp::matchIntrinsicType`:
@@ -2483,17 +2480,16 @@ mod tests {
     /// `VectorType::getInteger` for the referenced vector overload.
     #[test]
     fn vec_of_bitcasts_to_int_matcher_compares_integer_vector() -> IrResult<()> {
-        Module::with_new("intrinsic-vector-bitcast-int-match", |module| {
-            let module_ref = module.module_ref();
-            let f32_vec = fixed_vector_type(module_ref, module.f32_type().as_type(), 4);
-            let i32_vec = fixed_vector_type(module_ref, module.i32_type().as_type(), 4);
-            let mut overloads = vec![Some(f32_vec)];
+        let module = crate::module_new!("intrinsic-vector-bitcast-int-match")?;
+        let module_ref = module.module_ref();
+        let f32_vec = fixed_vector_type(module_ref, module.f32_type().as_type(), 4);
+        let i32_vec = fixed_vector_type(module_ref, module.i32_type().as_type(), 4);
+        let mut overloads = vec![Some(f32_vec)];
 
-            let descriptors = [IitDescriptor::VecOfBitcastsToInt(0)];
-            let mut descriptors = descriptors.as_slice();
-            match_fixed_type(module_ref, &mut descriptors, &mut overloads, i32_vec)?;
-            Ok(())
-        })
+        let descriptors = [IitDescriptor::VecOfBitcastsToInt(0)];
+        let mut descriptors = descriptors.as_slice();
+        match_fixed_type(module_ref, &mut descriptors, &mut overloads, i32_vec)?;
+        Ok(())
     }
 
     /// Mirrors `llvm/lib/IR/Intrinsics.cpp::getIntrinsicInfoTableEntries`:
@@ -2501,36 +2497,34 @@ mod tests {
     /// non-overloaded intrinsic can materialize a concrete function type.
     #[test]
     fn all_generated_intrinsics_decode_iit_entries() -> IrResult<()> {
-        Module::with_new("generated-all", |module| {
-            for id in IntrinsicId::all() {
-                let raw_entries = iit_entries(id.record()).unwrap_or_else(|| {
-                    panic!("{}#{} has no IIT entries", id.enum_name(), id.raw())
-                });
-                let descriptors = iit_descriptors(id.record()).unwrap_or_else(|err| {
+        let module = crate::module_new!("generated-all")?;
+        for id in IntrinsicId::all() {
+            let raw_entries = iit_entries(id.record())
+                .unwrap_or_else(|| panic!("{}#{} has no IIT entries", id.enum_name(), id.raw()));
+            let descriptors = iit_descriptors(id.record()).unwrap_or_else(|err| {
+                panic!(
+                    "{}#{} descriptor decode failed for entries {:?}: {err}",
+                    id.enum_name(),
+                    id.raw(),
+                    preview_entries(raw_entries.as_ref())
+                )
+            });
+            if !id.is_overloaded() {
+                let descriptor = IntrinsicDescriptor::new(id, Vec::<Type<'_, _>>::new())
+                    .unwrap_or_else(|err| {
+                        panic!("{}#{} descriptor failed: {err}", id.enum_name(), id.raw())
+                    });
+                descriptor.function_type(&module).unwrap_or_else(|err| {
                     panic!(
-                        "{}#{} descriptor decode failed for entries {:?}: {err}",
+                        "{}#{} function type failed for descriptors {:?}: {err}",
                         id.enum_name(),
                         id.raw(),
-                        preview_entries(raw_entries.as_ref())
+                        descriptors
                     )
                 });
-                if !id.is_overloaded() {
-                    let descriptor = IntrinsicDescriptor::new(id, Vec::<Type>::new())
-                        .unwrap_or_else(|err| {
-                            panic!("{}#{} descriptor failed: {err}", id.enum_name(), id.raw())
-                        });
-                    descriptor.function_type(&module).unwrap_or_else(|err| {
-                        panic!(
-                            "{}#{} function type failed for descriptors {:?}: {err}",
-                            id.enum_name(),
-                            id.raw(),
-                            descriptors
-                        )
-                    });
-                }
             }
-            Ok(())
-        })
+        }
+        Ok(())
     }
 
     /// Mirrors `llvm/lib/IR/Intrinsics.cpp::lookupIntrinsicID`,
@@ -2540,62 +2534,26 @@ mod tests {
     /// can be declared, and every generated sample overload can be declared.
     #[test]
     fn generated_all_intrinsic_names_lookup_and_decode() -> IrResult<()> {
-        Module::with_new("generated-all-names", |module| {
-            for id in IntrinsicId::all() {
-                let resolved = resolve_intrinsic_name(id.base_name());
-                assert_eq!(
-                    resolved,
-                    IntrinsicNameResolution::Known(id),
-                    "{}#{} base name `{}` resolved as {resolved:?}",
-                    id.enum_name(),
-                    id.raw(),
-                    id.base_name()
-                );
+        let module = crate::module_new!("generated-all-names")?;
+        for id in IntrinsicId::all() {
+            let resolved = resolve_intrinsic_name(id.base_name());
+            assert_eq!(
+                resolved,
+                IntrinsicNameResolution::Known(id),
+                "{}#{} base name `{}` resolved as {resolved:?}",
+                id.enum_name(),
+                id.raw(),
+                id.base_name()
+            );
 
-                if !id.is_overloaded() {
-                    let descriptor = IntrinsicDescriptor::new(id, Vec::<Type>::new())
-                        .unwrap_or_else(|err| {
-                            panic!("{}#{} descriptor failed: {err}", id.enum_name(), id.raw())
-                        });
-                    descriptor.function_type(&module).unwrap_or_else(|err| {
-                        panic!(
-                            "{}#{} function type failed before declaration insertion: {err}",
-                            id.enum_name(),
-                            id.raw()
-                        )
+            if !id.is_overloaded() {
+                let descriptor = IntrinsicDescriptor::new(id, Vec::<Type<'_, _>>::new())
+                    .unwrap_or_else(|err| {
+                        panic!("{}#{} descriptor failed: {err}", id.enum_name(), id.raw())
                     });
-                    module
-                        .get_or_insert_intrinsic_declaration(&descriptor)
-                        .unwrap_or_else(|err| {
-                            panic!(
-                                "{}#{} declaration insertion failed: {err}",
-                                id.enum_name(),
-                                id.raw()
-                            )
-                        });
-                }
-            }
-
-            for sample in generated::SAMPLE_OVERLOADS {
-                let id = IntrinsicId::from_raw(sample.raw_id).ok_or(IrError::InvalidOperation {
-                    message: "generated sample intrinsic id is out of range",
-                })?;
-                let overloads = sample
-                    .overloads
-                    .iter()
-                    .map(|sample| sample_type(module.module_ref(), sample))
-                    .collect::<Vec<_>>();
-                let descriptor = IntrinsicDescriptor::new(id, overloads).unwrap_or_else(|err| {
-                    panic!(
-                        "{}#{} sample descriptor failed for {} overload(s): {err}",
-                        id.enum_name(),
-                        id.raw(),
-                        sample.overloads.len()
-                    )
-                });
                 descriptor.function_type(&module).unwrap_or_else(|err| {
                     panic!(
-                        "{}#{} sample function type failed before declaration insertion: {err}",
+                        "{}#{} function type failed before declaration insertion: {err}",
                         id.enum_name(),
                         id.raw()
                     )
@@ -2604,15 +2562,50 @@ mod tests {
                     .get_or_insert_intrinsic_declaration(&descriptor)
                     .unwrap_or_else(|err| {
                         panic!(
-                            "{}#{} sample declaration insertion failed: {err}",
+                            "{}#{} declaration insertion failed: {err}",
                             id.enum_name(),
                             id.raw()
                         )
                     });
             }
+        }
 
-            module.verify_borrowed()
-        })
+        for sample in generated::SAMPLE_OVERLOADS {
+            let id = IntrinsicId::from_raw(sample.raw_id).ok_or(IrError::InvalidOperation {
+                message: "generated sample intrinsic id is out of range",
+            })?;
+            let overloads = sample
+                .overloads
+                .iter()
+                .map(|sample| sample_type(module.module_ref(), sample))
+                .collect::<Vec<_>>();
+            let descriptor = IntrinsicDescriptor::new(id, overloads).unwrap_or_else(|err| {
+                panic!(
+                    "{}#{} sample descriptor failed for {} overload(s): {err}",
+                    id.enum_name(),
+                    id.raw(),
+                    sample.overloads.len()
+                )
+            });
+            descriptor.function_type(&module).unwrap_or_else(|err| {
+                panic!(
+                    "{}#{} sample function type failed before declaration insertion: {err}",
+                    id.enum_name(),
+                    id.raw()
+                )
+            });
+            module
+                .get_or_insert_intrinsic_declaration(&descriptor)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "{}#{} sample declaration insertion failed: {err}",
+                        id.enum_name(),
+                        id.raw()
+                    )
+                });
+        }
+
+        module.verify_borrowed()
     }
 
     /// Mirrors `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp` sample overload
@@ -2621,55 +2614,53 @@ mod tests {
     /// same intrinsic descriptor.
     #[test]
     fn generated_sample_overloads_decode_and_match() -> IrResult<()> {
-        Module::with_new("generated-samples", |module| {
-            assert!(!generated::SAMPLE_OVERLOADS.is_empty());
-            for sample in generated::SAMPLE_OVERLOADS {
-                let id = IntrinsicId::from_raw(sample.raw_id).ok_or(IrError::InvalidOperation {
-                    message: "generated sample intrinsic id is out of range",
-                })?;
-                let overloads = sample
-                    .overloads
-                    .iter()
-                    .map(|sample| sample_type(module.module_ref(), sample))
-                    .collect::<Vec<_>>();
-                let raw_entries = iit_entries(id.record()).unwrap_or_else(|| {
-                    panic!("{}#{} has no IIT entries", id.enum_name(), id.raw())
-                });
-                let descriptors = iit_descriptors(id.record()).unwrap_or_else(|err| {
-                    panic!(
-                        "{}#{} descriptor decode failed for entries {:?}: {err}",
-                        id.enum_name(),
-                        id.raw(),
-                        preview_entries(raw_entries.as_ref())
-                    )
-                });
-                let expected_slots = overload_slot_count(&descriptors);
-                let descriptor = IntrinsicDescriptor::new(id, overloads).unwrap_or_else(|err| {
-                    panic!(
-                        "{}#{} descriptor failed for {} sample overload(s), expected {expected_slots}: {err}",
-                        id.enum_name(),
-                        id.raw(),
-                        sample.overloads.len()
-                    )
-                });
-                let fn_ty = descriptor.function_type(&module).unwrap_or_else(|err| {
-                    panic!(
-                        "{}#{} function type failed for entries {:?} and descriptors {:?}: {err}",
-                        id.enum_name(),
-                        id.raw(),
-                        preview_entries(raw_entries.as_ref()),
-                        descriptors
-                    )
-                });
-                let name = descriptor
-                    .mangled_name()
-                    .unwrap_or_else(|err| panic!("{} mangled name failed: {err}", id.enum_name()));
-                let matched = module
-                    .intrinsic_descriptor_from_signature(&name, fn_ty)
-                    .unwrap_or_else(|err| panic!("{name} signature match failed: {err}"));
-                assert_eq!(matched, descriptor);
-            }
-            Ok(())
-        })
+        let module = crate::module_new!("generated-samples")?;
+        assert!(!generated::SAMPLE_OVERLOADS.is_empty());
+        for sample in generated::SAMPLE_OVERLOADS {
+            let id = IntrinsicId::from_raw(sample.raw_id).ok_or(IrError::InvalidOperation {
+                message: "generated sample intrinsic id is out of range",
+            })?;
+            let overloads = sample
+                .overloads
+                .iter()
+                .map(|sample| sample_type(module.module_ref(), sample))
+                .collect::<Vec<_>>();
+            let raw_entries = iit_entries(id.record())
+                .unwrap_or_else(|| panic!("{}#{} has no IIT entries", id.enum_name(), id.raw()));
+            let descriptors = iit_descriptors(id.record()).unwrap_or_else(|err| {
+                panic!(
+                    "{}#{} descriptor decode failed for entries {:?}: {err}",
+                    id.enum_name(),
+                    id.raw(),
+                    preview_entries(raw_entries.as_ref())
+                )
+            });
+            let expected_slots = overload_slot_count(&descriptors);
+            let descriptor = IntrinsicDescriptor::new(id, overloads).unwrap_or_else(|err| {
+                panic!(
+                    "{}#{} descriptor failed for {} sample overload(s), expected {expected_slots}: {err}",
+                    id.enum_name(),
+                    id.raw(),
+                    sample.overloads.len()
+                )
+            });
+            let fn_ty = descriptor.function_type(&module).unwrap_or_else(|err| {
+                panic!(
+                    "{}#{} function type failed for entries {:?} and descriptors {:?}: {err}",
+                    id.enum_name(),
+                    id.raw(),
+                    preview_entries(raw_entries.as_ref()),
+                    descriptors
+                )
+            });
+            let name = descriptor
+                .mangled_name()
+                .unwrap_or_else(|err| panic!("{} mangled name failed: {err}", id.enum_name()));
+            let matched = module
+                .intrinsic_descriptor_from_signature(&name, fn_ty)
+                .unwrap_or_else(|err| panic!("{name} signature match failed: {err}"));
+            assert_eq!(matched, descriptor);
+        }
+        Ok(())
     }
 }

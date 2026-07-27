@@ -8,36 +8,38 @@ use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
 use super::metadata::MetadataAttachmentSet;
-use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use super::r#type::{Type, TypeId, TypeKind};
+use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::r#type::{Type, TypeKind, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
+use super::value_id::GlobalAliasId;
 
 #[derive(Debug)]
 pub(super) struct GlobalAliasData {
     pub(super) name: String,
-    pub(super) value_type: TypeId,
+    pub(super) value_type: TypeSlot,
     pub(super) address_space: u32,
-    pub(super) aliasee: Cell<ValueId>,
+    pub(super) aliasee: Cell<ValueSlot>,
     pub(super) linkage: Cell<Linkage>,
     pub(super) visibility: Cell<Visibility>,
     pub(super) dll_storage_class: Cell<DllStorageClass>,
     pub(super) thread_local_mode: Cell<ThreadLocalMode>,
     pub(super) unnamed_addr: Cell<UnnamedAddr>,
     pub(super) partition: RefCell<Option<String>>,
-    pub(super) metadata: RefCell<MetadataAttachmentSet>,
+    pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GlobalAlias<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct GlobalAlias<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     #[inline]
-    pub(super) fn from_parts_unchecked<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_parts_unchecked<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -55,6 +57,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
             module: self.module,
             ty: self.ty,
         }
+    }
+
+    /// Storable, module-tagged [`GlobalAliasId`] for this alias (0.0.4),
+    /// resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view).
+    #[inline]
+    pub fn id(self) -> GlobalAliasId<B> {
+        GlobalAliasId::from_raw(self.module.id(), self.id)
     }
 
     #[inline]
@@ -115,7 +125,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
 
     pub fn set_aliasee<C: IsConstant<'ctx, B>>(
         self,
-        _module: &Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         aliasee: C,
     ) -> IrResult<()> {
         let constant = aliasee.as_constant();
@@ -141,7 +151,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_linkage(self, _module: &Module<'ctx, B, Unverified>, linkage: Linkage) {
+    pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage) {
         self.data().linkage.set(linkage);
     }
 
@@ -151,7 +161,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_visibility(self, _module: &Module<'ctx, B, Unverified>, visibility: Visibility) {
+    pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, visibility: Visibility) {
         self.data().visibility.set(visibility);
     }
 
@@ -161,11 +171,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_dll_storage_class(
-        self,
-        _module: &Module<'ctx, B, Unverified>,
-        cls: DllStorageClass,
-    ) {
+    pub fn set_dll_storage_class(self, _module: &'ctx Module<B, Unverified>, cls: DllStorageClass) {
         self.data().dll_storage_class.set(cls);
     }
 
@@ -175,11 +181,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_thread_local_mode(
-        self,
-        _module: &Module<'ctx, B, Unverified>,
-        tlm: ThreadLocalMode,
-    ) {
+    pub fn set_thread_local_mode(self, _module: &'ctx Module<B, Unverified>, tlm: ThreadLocalMode) {
         self.data().thread_local_mode.set(tlm);
     }
 
@@ -189,35 +191,50 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_unnamed_addr(self, _module: &Module<'ctx, B, Unverified>, value: UnnamedAddr) {
+    pub fn set_unnamed_addr(self, _module: &'ctx Module<B, Unverified>, value: UnnamedAddr) {
         self.data().unnamed_addr.set(value);
     }
 
-    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
+    pub fn metadata(self) -> MetadataAttachmentSet<B> {
+        MetadataAttachmentSet::from_stored(&self.data().metadata.borrow())
+    }
+
+    /// Crate-internal: the stored attachment set, for the printer and the
+    /// verifier, which already work inside the owning module.
+    pub(crate) fn metadata_stored(
+        self,
+    ) -> core::cell::Ref<'ctx, MetadataAttachmentSet<StoredBrand>> {
         self.data().metadata.borrow()
     }
 
+    /// Set or replace one metadata attachment.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
+    /// module — the module token proves *which* module may be mutated, and the
+    /// id's tag is what proves the node belongs to it.
     pub fn set_metadata(
         self,
-        _module: &Module<'ctx, B, Unverified>,
-        kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataId,
-    ) {
+        module: &'ctx Module<B, Unverified>,
+        kind: MetadataAttachmentKind,
+        id: MetadataId<B>,
+    ) -> IrResult<()> {
+        let id = id.into_stored(module.id())?;
         self.data().metadata.borrow_mut().insert(kind, id);
+        Ok(())
     }
 
     pub fn partition(self) -> Option<String> {
         self.data().partition.borrow().clone()
     }
 
-    pub fn set_partition<P>(self, _module: &Module<'ctx, B, Unverified>, partition: P)
+    pub fn set_partition<P>(self, _module: &'ctx Module<B, Unverified>, partition: P)
     where
         P: Into<String>,
     {
         *self.data().partition.borrow_mut() = Some(partition.into());
     }
 
-    pub fn clear_partition(self, _module: &Module<'ctx, B, Unverified>) {
+    pub fn clear_partition(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().partition.borrow_mut() = None;
     }
 }
@@ -229,6 +246,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalAlias<'ctx, B> {
         GlobalAlias::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(GlobalAlias);
 impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalAlias<'ctx, B> {
     #[inline]
     fn as_constant(self) -> Constant<'ctx, B> {
@@ -245,12 +263,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalAlias<'ctx, B> {
     fn name(self) -> Option<String> {
         self.into_erased().name()
     }
-    fn set_name<Name>(self, _module_token: &Module<'ctx, B, Unverified>, _name: Name)
+    fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
     where
         Name: Into<String>,
     {
     }
-    fn clear_name(self, _module_token: &Module<'ctx, B, Unverified>) {}
+    fn clear_name(self, _module_token: &'ctx Module<B, Unverified>) {}
 }
 impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalAlias<'_, B> {
     fn debug_loc(self) -> Option<DebugLoc> {
@@ -289,12 +307,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalAlias<'ctx, 
     }
 }
 
-pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
-    value_type: TypeId,
-    aliasee: ValueId,
-    aliasee_type: TypeId,
+    value_type: TypeSlot,
+    aliasee: ValueSlot,
+    aliasee_type: TypeSlot,
     address_space: u32,
     linkage: Linkage,
     visibility: Visibility,
@@ -305,15 +323,11 @@ pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
-    pub(super) fn new<M, C>(
-        module: M,
-        name: impl Into<String>,
-        value_type: Type<'ctx, B>,
-        aliasee: C,
-    ) -> Self
+    pub(super) fn new<M, C, N>(module: M, name: N, value_type: Type<'ctx, B>, aliasee: C) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
         C: IsConstant<'ctx, B>,
+        N: Into<String>,
     {
         let module = module.into();
         let aliasee = aliasee.as_constant();
@@ -367,7 +381,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
         self
     }
 
-    pub fn build(self) -> IrResult<GlobalAlias<'ctx, B>> {
+    /// Materialise the alias, returning its storable [`GlobalAliasId`].
+    /// Resolve the id back into a borrowing [`GlobalAlias`] with
+    /// [`Module::view`](crate::Module::view).
+    pub fn build(self) -> IrResult<GlobalAliasId<B>> {
         if !is_valid_alias_linkage(self.linkage) {
             return Err(IrError::InvalidOperation {
                 message: "invalid linkage type for alias",
@@ -387,7 +404,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
                 got: Type::new(self.aliasee_type, self.module).kind_label(),
             });
         }
-        self.module.module().install_global_alias::<B>(self)
+        self.module
+            .module()
+            .install_global_alias::<B>(self)
+            .map(|a| a.id())
     }
 
     pub(super) fn into_data(self) -> (String, GlobalAliasData, u32) {

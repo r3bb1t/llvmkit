@@ -11,7 +11,7 @@
 //! failure.
 //!
 //! The core is deliberately `self`-free and diagnostic-free: it returns a
-//! [`PhiViolation`] carrying the raw `ValueId`/`TypeId` at fault, and each
+//! [`PhiViolation`] carrying the raw `ValueSlot`/`TypeSlot` at fault, and each
 //! caller maps the variant to its own rendered message (the verifier back
 //! to its byte-identical `VerifierRule` diagnostics, the parser to a
 //! source-located parse error).
@@ -22,11 +22,11 @@ use crate::function::FunctionValue;
 use crate::instruction::InstructionKindData;
 use crate::marker::Dyn;
 use crate::module::{Module, ModuleBrand, Unverified};
-use crate::r#type::{Type, TypeId};
-use crate::value::{IsValue, ValueId, ValueKindData};
+use crate::r#type::{Type, TypeSlot};
+use crate::value::{IsValue, ValueKindData, ValueSlot};
 
 /// A single coherence violation for one phi, identified by the raw
-/// `ValueId`/`TypeId` at fault. The verifier maps each variant back to
+/// `ValueSlot`/`TypeSlot` at fault. The verifier maps each variant back to
 /// its existing `VerifierRule` diagnostic; the parser renders its own
 /// source-located message. Check order (and therefore which variant a
 /// malformed phi yields first) is fixed by [`check_phi_incoming`].
@@ -36,14 +36,17 @@ pub(crate) enum PhiViolation {
     /// (both counted with edge multiplicity).
     CountMismatch { entries: usize, preds: usize },
     /// An incoming entry names a block that is not a predecessor at all.
-    NotAPredecessor { block: ValueId },
+    NotAPredecessor { block: ValueSlot },
     /// More incoming entries claim `block` than there are CFG edges from
     /// it into the phi's block.
-    TooManyFromBlock { block: ValueId },
+    TooManyFromBlock { block: ValueSlot },
     /// Two incoming entries for the same `block` carry different values.
-    AmbiguousValues { block: ValueId },
+    AmbiguousValues { block: ValueSlot },
     /// An incoming value's type differs from the phi's result type.
-    IncomingTypeMismatch { block: ValueId, value_ty: TypeId },
+    IncomingTypeMismatch {
+        block: ValueSlot,
+        value_ty: TypeSlot,
+    },
 }
 
 /// One phi's coherence against its block's predecessor multiset.
@@ -59,10 +62,10 @@ pub(crate) enum PhiViolation {
 /// incoming/result type — and the first failure is returned, so every
 /// caller reports the same first violation.
 pub(crate) fn check_phi_incoming(
-    result_ty: TypeId,
-    incoming: &[(ValueId, ValueId)],
-    preds: &[ValueId],
-    value_ty_of: &dyn Fn(ValueId) -> TypeId,
+    result_ty: TypeSlot,
+    incoming: &[(ValueSlot, ValueSlot)],
+    preds: &[ValueSlot],
+    value_ty_of: &dyn Fn(ValueSlot) -> TypeSlot,
 ) -> Result<(), PhiViolation> {
     // Entry-count must equal predecessor-count (with multiplicity).
     if incoming.len() != preds.len() {
@@ -73,11 +76,11 @@ pub(crate) fn check_phi_incoming(
     }
     // Every incoming block must be a real predecessor of the phi's block
     // (with multiplicity).
-    let mut pred_counts: HashMap<ValueId, u32> = HashMap::new();
+    let mut pred_counts: HashMap<ValueSlot, u32> = HashMap::new();
     for p in preds {
         *pred_counts.entry(*p).or_insert(0) += 1;
     }
-    let mut seen: HashMap<ValueId, ValueId> = HashMap::new();
+    let mut seen: HashMap<ValueSlot, ValueSlot> = HashMap::new();
     for &(val_id, block_id) in incoming {
         let Some(slot) = pred_counts.get_mut(&block_id) else {
             return Err(PhiViolation::NotAPredecessor { block: block_id });
@@ -115,7 +118,7 @@ pub(crate) fn check_phi_incoming(
 pub struct PhiCoherenceError {
     /// Arena id of the offending phi instruction, so the caller can anchor a
     /// diagnostic at that phi regardless of whether it is named or numbered.
-    pub phi_id: crate::value::ValueId,
+    pub phi_id: ValueSlot,
     /// Rendered coherence-failure message.
     pub message: String,
 }
@@ -124,10 +127,10 @@ pub struct PhiCoherenceError {
 /// parser's end-of-function coherence check and the pass-side
 /// [`FnReshape::insert_phi`](crate::FnReshape::insert_phi), so the two report
 /// the same diagnostic for the same failure and cannot drift.
-pub(crate) fn render_phi_violation<'ctx, B: ModuleBrand>(
+pub(crate) fn render_phi_violation<B: ModuleBrand>(
     violation: &PhiViolation,
-    result_ty: TypeId,
-    module: &Module<'ctx, B, Unverified>,
+    result_ty: TypeSlot,
+    module: &Module<B, Unverified>,
 ) -> String {
     let ctx = module.core_ref().context();
     match violation {
@@ -165,7 +168,7 @@ pub(crate) fn render_phi_violation<'ctx, B: ModuleBrand>(
 /// the first violation encountered (block order, then phi order).
 #[doc(hidden)]
 pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
-    module: &Module<'ctx, B, Unverified>,
+    module: &'ctx Module<B, Unverified>,
     function: FunctionValue<'ctx, Dyn, B>,
 ) -> Result<(), PhiCoherenceError> {
     let ctx = module.core_ref().context();
@@ -173,19 +176,19 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
     // Predecessor multiset per block: walk every block's terminator
     // successors and invert the edges (duplicate CFG edges preserved so
     // multiplicity matches the verifier's map).
-    let mut predecessors: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    let mut predecessors: HashMap<ValueSlot, Vec<ValueSlot>> = HashMap::new();
     for block in function.basic_blocks() {
-        let block_id = block.id();
+        let block_id = block.slot();
         for succ in crate::cfg::block_successors(&block) {
-            predecessors.entry(succ.id()).or_default().push(block_id);
+            predecessors.entry(succ.slot()).or_default().push(block_id);
         }
     }
 
-    let value_ty_of = |id: ValueId| ctx.value_data(id).ty;
+    let value_ty_of = |id: ValueSlot| ctx.value_data(id).ty;
 
     for block in function.basic_blocks() {
-        let block_id = block.id();
-        let preds: &[ValueId] = predecessors
+        let block_id = block.slot();
+        let preds: &[ValueSlot] = predecessors
             .get(&block_id)
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
@@ -200,7 +203,7 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
                 _ => break,
             };
             let result_ty = inst.ty().id;
-            let incoming: Vec<(ValueId, ValueId)> = phi
+            let incoming: Vec<(ValueSlot, ValueSlot)> = phi
                 .incoming
                 .borrow()
                 .iter()
@@ -208,7 +211,7 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
                 .collect();
             if let Err(violation) = check_phi_incoming(result_ty, &incoming, preds, &value_ty_of) {
                 return Err(PhiCoherenceError {
-                    phi_id: inst.id(),
+                    phi_id: inst.slot(),
                     message: render_phi_violation(&violation, result_ty, module),
                 });
             }
@@ -220,15 +223,15 @@ pub fn check_function_phi_coherence<'ctx, B: ModuleBrand>(
 #[cfg(test)]
 mod tests {
     use super::{PhiViolation, check_phi_incoming};
-    use crate::r#type::TypeId;
-    use crate::value::ValueId;
+    use crate::r#type::TypeSlot;
+    use crate::value::ValueSlot;
 
-    fn vid(n: usize) -> ValueId {
-        ValueId::from_index(n)
+    fn vid(n: usize) -> ValueSlot {
+        ValueSlot::from_index(n)
     }
 
-    fn tid(n: usize) -> TypeId {
-        TypeId::from_index(n)
+    fn tid(n: usize) -> TypeSlot {
+        TypeSlot::from_index(n)
     }
 
     #[test]
@@ -236,7 +239,7 @@ mod tests {
         let a = vid(1);
         let v = vid(2);
         let ty = tid(1);
-        let ty_of = |_id: ValueId| ty;
+        let ty_of = |_id: ValueSlot| ty;
         // One incoming entry, two predecessors.
         let r = check_phi_incoming(ty, &[(v, a)], &[a, a], &ty_of);
         assert!(matches!(
@@ -254,7 +257,7 @@ mod tests {
         let b = vid(3);
         let v = vid(2);
         let ty = tid(1);
-        let ty_of = |_id: ValueId| ty;
+        let ty_of = |_id: ValueSlot| ty;
         // Incoming claims block B, but only A is a predecessor.
         let r = check_phi_incoming(ty, &[(v, b)], &[a], &ty_of);
         assert!(matches!(r, Err(PhiViolation::NotAPredecessor { block }) if block == b));
@@ -266,7 +269,7 @@ mod tests {
         let b = vid(2);
         let v = vid(3);
         let ty = tid(1);
-        let ty_of = |_id: ValueId| ty;
+        let ty_of = |_id: ValueSlot| ty;
         // Preds [A, B] (count 2); both incoming entries claim A, so the
         // second exhausts A's slot -> too-many. (The count check passes:
         // 2 == 2, so this genuinely reaches the multiplicity check. Note
@@ -282,7 +285,7 @@ mod tests {
         let v1 = vid(2);
         let v2 = vid(3);
         let ty = tid(1);
-        let ty_of = |_id: ValueId| ty;
+        let ty_of = |_id: ValueSlot| ty;
         // Preds [A, A]; two entries from A carrying different values.
         let r = check_phi_incoming(ty, &[(v1, a), (v2, a)], &[a, a], &ty_of);
         assert!(matches!(r, Err(PhiViolation::AmbiguousValues { block }) if block == a));
@@ -295,7 +298,7 @@ mod tests {
         let result_ty = tid(1);
         let value_ty = tid(2);
         // The incoming value has a different type from the phi result.
-        let ty_of = |_id: ValueId| value_ty;
+        let ty_of = |_id: ValueSlot| value_ty;
         let r = check_phi_incoming(result_ty, &[(v, a)], &[a], &ty_of);
         assert!(matches!(
             r,
@@ -309,7 +312,7 @@ mod tests {
         let a = vid(1);
         let v = vid(2);
         let ty = tid(1);
-        let ty_of = |_id: ValueId| ty;
+        let ty_of = |_id: ValueSlot| ty;
         // Preds [A, A] (a legal multi-edge, e.g. a switch with two cases
         // to the phi's block); a single value repeated once per edge is
         // well-formed.

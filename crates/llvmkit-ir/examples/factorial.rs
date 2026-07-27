@@ -49,35 +49,39 @@
 //! cargo run -p llvmkit-ir --example factorial
 //! ```
 
-use llvmkit_ir::{IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module};
+use llvmkit_ir::{
+    IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module, ModuleBrand, module_new,
+};
 
-pub fn build(m: &Module<'_>) -> Result<(), IrError> {
+pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m
-        .function_builder::<i32, _>("factorial", fn_ty)
-        .linkage(Linkage::External)
-        .param_name(0, "n")
-        .build()?
+        .view(
+            m.function_builder::<i32, _>("factorial", fn_ty)
+                .linkage(Linkage::External)
+                .param_name(0, "n")
+                .build()?,
+        )
         .with_typed_params::<(i32,)>()?;
 
-    let entry = f.append_basic_block(m, "entry");
-    let base = f.append_basic_block(m, "base");
+    let entry = m.view(f).append_basic_block(m, "entry");
+    let base = m.view(f).append_basic_block(m, "base");
     // The loop header's two parameters ARE the head-phis: `params[0]` carries
     // the accumulator (`%acc`), `params[1]` the counter (`%i`). Their incomings
     // arrive later as block arguments on the branches into `loop`.
     let bwp = IRBuilder::new_for::<i32>(m);
     let (loop_bb, params) = bwp.append_block_with_named_params(
-        f.as_function(),
+        m.view(f).as_function(),
         &[(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
         "loop",
     )?;
-    let exit = f.append_basic_block(m, "exit");
-    let base_label = base.label();
-    let loop_label = loop_bb.label();
-    let exit_label = exit.label();
+    let exit = m.view(f).append_basic_block(m, "exit");
+    let base_label = base.id();
+    let loop_label = loop_bb.id();
+    let exit_label = exit.id();
 
-    let (n,) = f.params();
+    let (n,) = m.view(f).params();
 
     // entry: %is_zero = icmp eq i32 %n, 0; then branch to `base` with no
     // arguments, or into `loop` carrying the header-phis' initial values
@@ -101,8 +105,8 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     // `[ next_acc, next_i ]`. Those values are defined before the latch
     // terminator, so they dominate the branch that carries them.
     let b = IRBuilder::at_end(loop_bb);
-    let acc: IntValue<i32> = params[0].try_into()?;
-    let i: IntValue<i32> = params[1].try_into()?;
+    let acc: IntValue<'_, i32, _> = params[0].try_into()?;
+    let i: IntValue<'_, i32, _> = params[1].try_into()?;
     let next_acc = b.build_int_mul(acc, i, "next_acc")?;
     let next_i = b.build_int_sub(i, 1_i32, "next_i")?;
     let done = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
@@ -111,7 +115,7 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
         exit_label,
         &[],
         loop_label,
-        &[next_acc.into_erased(), next_i.into_erased()],
+        &[m.view(next_acc).into_erased(), m.view(next_i).into_erased()],
     )?;
 
     // exit: ret i32 %next_acc
@@ -120,12 +124,18 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     Ok(())
 }
 
+/// The module is minted here rather than in `main` so `?` has a `Result` to
+/// return to: `module_new!` is fallible (its brand is a registry key) and
+/// `main` reports errors by hand.
+fn emit() -> Result<(), IrError> {
+    let m = module_new!("factorial")?;
+    build(&m)?;
+    print!("{m}");
+    Ok(())
+}
+
 pub fn main() {
-    if let Err(e) = Module::with_new("factorial", |m| {
-        build(&m)?;
-        print!("{m}");
-        Ok::<(), IrError>(())
-    }) {
+    if let Err(e) = emit() {
         eprintln!("error: {e:?}");
         std::process::exit(1);
     }

@@ -26,6 +26,12 @@ fn typestate_compile_fail() {
     // public surface; this lock pins its absence (E0599).
     t.compile_fail("tests/compile_fail/add_function_removed.rs");
     t.compile_fail("tests/compile_fail/position_at_end_terminated_block.rs");
+    // Cycle E: the *linearity* half of "one terminator per block", which the
+    // fixture above does not cover. `position_at_end_terminated_block` proves a
+    // `Terminated` BLOCK cannot be re-positioned into; this proves the BUILDER
+    // is gone, because every terminator-emitting build takes `self` by value.
+    // Primary error is rustc's stable `E0382`.
+    t.compile_fail("tests/compile_fail/builder_cannot_terminate_twice.rs");
     t.compile_fail("tests/compile_fail/retained_unterminated_block_cannot_reposition.rs");
     t.compile_fail("tests/compile_fail/terminated_block_cannot_start_cursor.rs");
     // Slice 7 "the break": the raw typed-phi builders and the open-phi
@@ -93,11 +99,24 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/typed_call_wrong_arg_type_lifted.rs");
     t.compile_fail("tests/compile_fail/typed_call_void_result_use.rs");
     t.compile_fail("tests/compile_fail/typed_call_cross_module_arg.rs");
-    t.compile_fail("tests/compile_fail/ssa_def_unpositioned.rs");
-    t.compile_fail("tests/compile_fail/ssa_use_after_terminator.rs");
+    // 0.0.4 cycle D1 (`SsaBuilder` converges on the cursor model):
+    // three former fixtures here — `ssa_def_unpositioned`,
+    // `ssa_finish_positioned`, `ssa_use_after_terminator` — proved the SSA
+    // layer's `Unpositioned`/`Positioned` type-state, which cycle D
+    // *deliberately retired* in favour of a cursor held as data. Blessing their
+    // `.stderr` was not an option (the code they contain now compiles), and
+    // migrating their sources would have left them proving nothing, so they
+    // were deleted and replaced by runtime locks on the errors that took over:
+    // `unpositioned_def_is_a_typed_runtime_error`,
+    // `second_terminator_on_a_finished_block_is_unpositioned` and
+    // `finish_while_positioned_names_the_open_block` in `tests/ssa_builder.rs`.
+    // The two fixtures below survive untouched in doctrine: neither concerns
+    // positioning, and both still fail for exactly the same reason (an
+    // unsatisfied `IntoIntValue<i32>` / `IntoReturnValue<()>` bound) — only the
+    // `note: required by a bound in ...` line moved, since the methods now live
+    // in an impl block without the `Positioned` parameter.
     t.compile_fail("tests/compile_fail/ssa_def_wrong_width.rs");
     t.compile_fail("tests/compile_fail/ssa_ret_value_in_void_fn.rs");
-    t.compile_fail("tests/compile_fail/ssa_finish_positioned.rs");
     // capability-graded pass API capability-rung locks (Task 9). Each proves a rung guarantee
     // whose primary error is one of OUR OWN stable messages (an `E0599`
     // absent-method, a `#[diagnostic::on_unimplemented]`, or a `syn::Error`),
@@ -154,4 +173,43 @@ fn typestate_compile_fail() {
     // moves from `verify()` to build/compile time. The primary error is our
     // own `IntoPointerValue` trait bound, stable across rustc versions.
     t.compile_fail("tests/compile_fail/indirectbr_non_pointer_address.rs");
+    // 0.0.4 cycle A slice A4 (no-silent-erasure at operand positions):
+    // the three typed value ids lift into their handle via `IntoIntValue` &c,
+    // but the *erased* `ValueId` deliberately does not — erased -> typed must
+    // be spelled with `try_view`, never lifted implicitly. The primary error
+    // is our own unsatisfied `IntoIntValue` trait bound, stable across rustc
+    // versions (`B` is pinned by the argument brand, so no incidental
+    // inference failure masks it).
+    t.compile_fail("tests/compile_fail/erased_id_not_int_operand.rs");
+    // 0.0.4 cycle C4 (owned modules, branded by type): two *named* brands
+    // separate two modules statically, so a storable id minted by one is not
+    // even the right type to hand to the other's resolver. The compile-time
+    // twin of `module_ownership.rs`'s stale-generation test, which locks the
+    // runtime half for two generations of the *same* brand.
+    t.compile_fail("tests/compile_fail/cross_named_brand_id_view.rs");
+    // 0.0.4 polish freeze: the same law, now reaching the *metadata* currency.
+    // A metadata handle used to be a bare arena index with neither a brand nor
+    // a `ModuleId` tag, so one module's node could be attached to another and
+    // silently mis-resolve. `MetadataId<B>` carries both; two named brands make
+    // the mix-up a type error, and `module_ownership.rs` locks the runtime tag
+    // for the same-brand / `DynBrand` case.
+    t.compile_fail("tests/compile_fail/cross_module_metadata_attachment.rs");
+    // Pins the premise of the `Send` compile-assert in `module_ownership.rs`:
+    // the brand type used there really is `!Send`, so asserting that
+    // `Module<NotSendBrand, S>: Send` is not vacuous.
+    t.compile_fail("tests/compile_fail/not_send_brand_is_really_not_send.rs");
+    // Cycle E: a module is an owned value that can be dropped, so a borrowing
+    // handle minted from it cannot outlive it (`E0597`). The compile-time law
+    // that makes the storable id family necessary rather than merely
+    // convenient — the `.id()` form of the same program compiles, which is why
+    // a stale *id* is a run-time rejection (`module_ownership.rs`) while a
+    // stale *view* cannot be constructed at all.
+    t.compile_fail("tests/compile_fail/view_cannot_outlive_its_module.rs");
+    // Cycle E: instruction metadata was the one mutator that took no
+    // `&Module<B, Unverified>` token, so a `Verified` module's printed IR could
+    // be changed through a read-only `InstructionView` — and an `Inspect`-rung
+    // pass, which holds only views, could rewrite `!dbg` while the driver
+    // reported everything preserved. The token is now required, matching the
+    // metadata setters on `FunctionValue`/`GlobalVariable` and `set_name`.
+    t.compile_fail("tests/compile_fail/verified_module_metadata_is_immutable.rs");
 }

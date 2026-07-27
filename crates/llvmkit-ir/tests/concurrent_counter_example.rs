@@ -17,19 +17,19 @@
 #[path = "../examples/concurrent_counter.rs"]
 mod concurrent_counter_example;
 
-use llvmkit_ir::{IrError, Module};
+use llvmkit_ir::{IrError, module_new};
 
 /// Locks the example output against the Atomics documentation sequence and
 /// `test/Bitcode/compatibility.ll` atomic/fence/switch print forms cited above.
 #[test]
 fn concurrent_counter_example_emits_locked_ir() -> Result<(), IrError> {
-    Module::with_new("concurrent_counter", |m| {
-        // Function-pointer coercion: marks `main` as used without running it.
-        let _: fn() -> Result<(), IrError> = concurrent_counter_example::main;
-        concurrent_counter_example::build_atomic_inc(&m)?;
-        concurrent_counter_example::build_dispatch(&m)?;
-        let actual = format!("{m}");
-        let expected = "; ModuleID = 'concurrent_counter'\n\
+    let m = module_new!("concurrent_counter")?;
+    // Function-pointer coercion: marks `main` as used without running it.
+    let _: fn() -> Result<(), IrError> = concurrent_counter_example::main;
+    concurrent_counter_example::build_atomic_inc(&m)?;
+    concurrent_counter_example::build_dispatch(&m)?;
+    let actual = format!("{m}");
+    let expected = "; ModuleID = 'concurrent_counter'\n\
     define i32 @atomic_inc(ptr %0) {\n\
     entry:\n  fence release\n  %old = atomicrmw add ptr %0, i32 1 monotonic\n  fence acquire\n  ret i32 %old\n}\n\n\
     define i32 @dispatch(i32 %0, i32 %1, i32 %2) {\n\
@@ -38,10 +38,9 @@ fn concurrent_counter_example_emits_locked_ir() -> Result<(), IrError> {
     do_sub:\n  %r_sub = sub i32 %1, %2\n  ret i32 %r_sub\n\n\
     do_mul:\n  %r_mul = mul i32 %1, %2\n  ret i32 %r_mul\n\n\
     default:\n  ret i32 0\n}\n";
-        assert_eq!(
-            actual, expected,
-            "concurrent_counter example output drifted"
-        );
-        Ok(())
-    })
+    assert_eq!(
+        actual, expected,
+        "concurrent_counter example output drifted"
+    );
+    Ok(())
 }

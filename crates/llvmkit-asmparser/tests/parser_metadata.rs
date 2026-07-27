@@ -4,7 +4,7 @@
 //! Citations live in `UPSTREAM.md`.
 
 use llvmkit_asmparser::ll_parser::Parser;
-use llvmkit_ir::{IrError, Module};
+use llvmkit_ir::{IrError, Module, module_new};
 
 #[derive(Clone, Copy)]
 struct ModuleStats {
@@ -23,38 +23,35 @@ impl ModuleStats {
 }
 
 fn parse_snippet(src: &str) -> (ModuleStats, String) {
-    Module::with_new("test", |module| {
-        let _ = Parser::new(src.as_bytes(), &module)
-            .expect("parse constructor")
-            .parse_module()
-            .expect("parse succeeded");
-        let stats = ModuleStats {
-            metadata_count: module.metadata_count(),
-            named_metadata_count: module.named_metadata_count(),
-        };
-        let text = format!("{module}");
-        (stats, text)
-    })
+    let module = Module::dynamic("test");
+    let _ = Parser::new(src.as_bytes(), &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect("parse succeeded");
+    let stats = ModuleStats {
+        metadata_count: module.metadata_count(),
+        named_metadata_count: module.named_metadata_count(),
+    };
+    let text = format!("{module}");
+    (stats, text)
 }
 
 fn parse_fails(src: &str) -> String {
-    Module::with_new("test", |module| {
-        let err = Parser::new(src.as_bytes(), &module)
-            .expect("parse constructor")
-            .parse_module()
-            .expect_err("parse should fail");
-        err.to_string()
-    })
+    let module = Module::dynamic("test");
+    let err = Parser::new(src.as_bytes(), &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect_err("parse should fail");
+    err.to_string()
 }
 
 fn parse_and_verify(src: &str) -> Result<(), IrError> {
-    Module::with_new("test", |module| {
-        let _ = Parser::new(src.as_bytes(), &module)
-            .expect("parse constructor")
-            .parse_module()
-            .expect("parse succeeded");
-        module.verify_borrowed()
-    })
+    let module = Module::dynamic("test");
+    let _ = Parser::new(src.as_bytes(), &module)
+        .expect("parse constructor")
+        .parse_module()
+        .expect("parse succeeded");
+    module.verify_borrowed()
 }
 
 fn parse_and_verify_failure_message(src: &str) -> String {
@@ -636,13 +633,14 @@ fn inline_string_tuple_reparses() {
     assert!(text.contains(r#"!0 = !{!"hello"}"#), "output: {text}");
     // Re-parse the writer's output: it must be accepted, and re-printing
     // it must reproduce the same inline-string node (stable round-trip).
-    let reparsed = Module::with_new("test", |m2| {
+    let reparsed = {
+        let m2 = module_new!("test").expect("fresh module");
         Parser::new(text.as_bytes(), &m2)
             .expect("ctor")
             .parse_module()
             .expect("writer output must reparse");
         format!("{m2}")
-    });
+    };
     assert_eq!(reparsed, text, "round-trip must be stable");
 }
 
@@ -663,12 +661,13 @@ define i64 @f() {
     let (_, text) = parse_snippet(src);
     // The reference and its definition agree on a single slot number, and
     // re-parsing succeeds (no dangling reference).
-    Module::with_new("rt", |m2| {
+    {
+        let m2 = module_new!("rt").expect("fresh module");
         Parser::new(text.as_bytes(), &m2)
             .expect("ctor")
             .parse_module()
             .expect("output must reparse with a resolvable metadata slot");
-    });
+    }
     // The node the call references is actually defined in the output.
     assert!(text.contains("@g(metadata !0)"), "output: {text}");
     assert!(text.contains("!0 = !{}"), "output: {text}");
@@ -717,12 +716,13 @@ define void @f() {
 }
 !0 = !{}
 "#;
-    let err = Module::with_new("t", |m| {
+    let err = {
+        let m = module_new!("t").expect("fresh module");
         Parser::new(src.as_bytes(), &m)
             .expect("ctor")
             .parse_module()
             .expect_err("i64 !0 must be rejected")
-    });
+    };
     assert!(
         err.to_string()
             .contains("expected `metadata` type for a metadata operand"),

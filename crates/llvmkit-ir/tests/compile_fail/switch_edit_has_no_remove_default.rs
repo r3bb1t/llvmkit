@@ -10,16 +10,20 @@ use llvmkit_ir::{FnCx, FnReport, FunctionPass, IrResult, ModuleBrand, ReshapeCfg
 
 struct SwitchNoRemoveDefault;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for SwitchNoRemoveDefault {
+impl<B: ModuleBrand> FunctionPass<B> for SwitchNoRemoveDefault {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "switch-no-remove-default";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let bb = reshape.function().entry_block().expect("entry");
         // `SwitchEdit` has no `remove_default`: a switch must keep its default.
-        reshape.edit_switch(&bb)?.remove_default();
+        reshape.edit_switch(bb.id())?.remove_default();
         Ok(reshape.done())
     }
 }

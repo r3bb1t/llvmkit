@@ -9,16 +9,20 @@ use llvmkit_ir::{FnCx, FnReport, FunctionPass, IrResult, ModuleBrand, ReshapeCfg
 
 struct CallBrNoRemove;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for CallBrNoRemove {
+impl<B: ModuleBrand> FunctionPass<B> for CallBrNoRemove {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "callbr-no-remove";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let bb = reshape.function().entry_block().expect("entry");
         // `CallBrEdit` has no `remove_*`: a callbr edge is not removable.
-        reshape.edit_callbr(&bb)?.remove_default();
+        reshape.edit_callbr(bb.id())?.remove_default();
         Ok(reshape.done())
     }
 }

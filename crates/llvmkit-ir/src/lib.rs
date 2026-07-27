@@ -123,7 +123,6 @@ pub mod pass_pipeline;
 pub(crate) mod phi_check;
 #[cfg(test)]
 mod phi_raw_tests;
-pub mod phi_state;
 pub mod ssa_builder;
 pub mod struct_body_state;
 pub mod struct_schema;
@@ -136,6 +135,7 @@ pub mod typed_pointer_value;
 pub mod r#use;
 pub mod user;
 pub mod value;
+pub mod value_id;
 pub mod value_symbol_table;
 pub mod value_tracking;
 pub mod vec_len;
@@ -220,10 +220,10 @@ pub use derived_types::{
 pub use dominator_tree::{DominatorTree, DominatorTreeAnalysis, DominatorTreeBlock};
 pub use error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel, VerifierRule};
 pub use fmf::FastMathFlags;
-pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue};
+pub use function::{FunctionBasicBlocks, FunctionBuilder, FunctionValue, IntoCallee};
 pub use function_signature::{
     CallArgs, FunctionParam, FunctionParamList, FunctionReturn, FunctionSignature, IntoCallArg,
-    TypedFunctionValue, TypedVarArgsFunctionValue,
+    IntoTypedCallee, IntoVarArgsCallee, TypedFunctionValue, TypedVarArgsFunctionValue,
 };
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
@@ -270,12 +270,12 @@ pub use known_bits::KnownBits;
 pub use marker::{Dyn, Ptr, ReturnMarker};
 pub use metadata::{
     MetadataAttachmentKind, MetadataAttachmentSet, MetadataField, MetadataFieldValue, MetadataId,
-    MetadataKind, MetadataRef, SpecializedMetadataKind, SpecializedMetadataNode,
+    MetadataKind, SpecializedMetadataKind, SpecializedMetadataNode,
 };
 pub use module::{
-    Brand, ComdatView, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module, ModuleBrand,
-    ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord, UseListOrderRecord,
-    Verified,
+    ComdatView, DynBrand, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module,
+    ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord,
+    UseListOrderRecord, Verified,
 };
 pub use operator::{OverflowingBinaryOperator, PossiblyExactOperator};
 pub use optimization_level::{
@@ -288,8 +288,9 @@ pub use pass_access::{
 };
 pub use pass_context::{
     BasicBlockView, BlockInstructionViews, BrEdit, CallBrEdit, CondBrEdit, FnCx, FnPatch, FnReport,
-    FnReshape, FunctionBasicBlockViews, FunctionBody, FunctionView, InvokeEdit, ModCx, ModReport,
-    ModRewrite, ModuleFunctionViews, PatchFunctions, ReshapeFunctions, SwitchEdit, TermEdit,
+    FnReshape, FunctionBasicBlockViews, FunctionBody, FunctionView, IntoFunctionId, InvokeEdit,
+    ModCx, ModReport, ModRewrite, ModuleFunctionViews, PatchFunctions, ReshapeFunctions,
+    SwitchEdit, TermEdit,
 };
 pub use pass_instrumentation::{PassInstrumentationAnalysis, PassInstrumentationCallbacks};
 pub use pass_manager::{
@@ -314,7 +315,6 @@ pub use pass_pipeline::{
     SIMPLIFYCFG, cleanup_lift_pipeline, cleanup_min_pipeline, cleanup_o1_ish_pipeline,
     default_o0_pipeline, default_o1_pipeline, default_pipeline, parse_pass_pipeline_text,
 };
-pub use phi_state::{Closed, Open, PhiState};
 // Internal contract for llvmkit-asmparser; not public API, may change
 // without notice. The parser runs the verifier's phi-coherence algorithm
 // via this shared helper so the two cannot drift.
@@ -322,6 +322,7 @@ pub use phi_state::{Closed, Open, PhiState};
 pub use phi_check::{PhiCoherenceError, check_function_phi_coherence};
 pub use ssa_builder::{
     FloatVariable, IntVariable, IntoIrResult, PointerVariable, SsaBlock, SsaBuilder, SsaBuilderId,
+    SsaState,
 };
 pub use struct_body_state::{BodySet, Opaque, StructBodyDyn, StructBodyState};
 pub use struct_schema::{
@@ -330,15 +331,22 @@ pub use struct_schema::{
 };
 pub use sync_scope::SyncScope;
 pub use target_library_info::{LibFunc, TargetLibraryInfo};
-pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeId, TypeKind};
+pub use r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeKind, TypeSlot};
 pub use typed_pointer_type::TypedPointerType;
 pub use typed_pointer_value::TypedPointerValue;
 pub use unnamed_addr::UnnamedAddr;
 pub use r#use::Use;
 pub use user::User;
 pub use value::{
-    ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoPointerValue,
-    IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueId, VectorValue,
+    ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoErasedValue,
+    IntoPointerValue, IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueSlot,
+    VectorValue,
+};
+pub use value_id::{
+    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
+    FreezeInstId, FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, IntValueId, IntrinsicInstId,
+    OtherPhiInstId, PhiInstId, PointerPhiInstId, PointerValueId, TypedCallInstId, TypedFunctionId,
+    TypedVarArgsFunctionId, VAArgInstId, ValueId, ViewIn,
 };
 pub use worklist::Worklist;
 

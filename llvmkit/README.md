@@ -6,16 +6,25 @@
 
 Public umbrella crate for the `llvmkit` workspace, tracking LLVM 22.1.4.
 
-`llvmkit` groups the implementation crates under stable module names so users
-can depend on one crate:
+The crate is intentionally thin: it groups the implementation crates under
+stable module names so users can depend on one crate. Nothing is reimplemented
+here, and every name below is a plain re-export.
 
 - `llvmkit::ir` — typed LLVM IR data model, builder, verifier, AsmWriter,
   ConstantExpr construction/folding, the default ConstantFolder for the modeled
-  LLVM 22.1.4 IR surface, CFG, dominance, value-tracking queries, and the
-  re-exported `#[derive(IrStruct)]` macro when the default `macros` feature is
-  enabled.
+  LLVM 22.1.4 IR surface, `ApInt` / `ApFloat`, `DataLayout`, CFG, dominance,
+  value-tracking queries, the auto-SSA frontend, the capability-graded
+  analysis / pass layer, and the `#[derive(IrStruct)]` / `#[function_pass]` /
+  `#[module_pass]` macros.
 - `llvmkit::asmparser` — textual LLVM IR (`.ll`) lexer and parser.
-- `llvmkit::support` — shared source-location utilities.
+- `llvmkit::support` — shared source-location utilities (`Span`, `Spanned`,
+  `SourceMap`).
+
+The macros arrive through `llvmkit-ir`'s default `macros` feature, which this
+crate enables; `llvmkit` itself declares no features to turn off.
+
+Not here, and not planned in this crate: code generation, target backends,
+linking, and object emission. Bitcode and debug info are future work.
 
 See the workspace [`README`](https://github.com/r3bb1t/llvmkit#readme) for the
 full status and roadmap.

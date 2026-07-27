@@ -14,7 +14,7 @@
 //!   record per slot), so an `Argument<'ctx, B>` can be `Copy` and
 //!   round-trip through the user/use machinery exactly like any other
 //!   value.
-//! - Basic blocks live in a `RefCell<Vec<ValueId>>` so the IRBuilder
+//! - Basic blocks live in a `RefCell<Vec<ValueSlot>>` so the IRBuilder
 //!   can append while holding a `&'ctx ModuleCore` borrow.
 //!
 //! ## Return-type safety
@@ -55,16 +55,19 @@ use super::int_width::IntWidth;
 use super::intrinsics::{IntrinsicDescriptor, IntrinsicFunctionData, IntrinsicId};
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::MetadataAttachmentSet;
+use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use super::module::{
-    Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified, UseListOrderRecord,
+    Module, ModuleBrand, ModuleRef, ModuleView, Unverified, UseListOrderRecord,
     validate_use_list_order_indexes,
 };
 use super::pass_context::FunctionView;
-use super::r#type::{Type, TypeData, TypeId};
+use super::r#type::{Type, TypeData, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueId, ValueKindData, sealed,
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot, sealed,
 };
+use super::value_id::ViewIn;
+use super::value_id::{FunctionId, TypedFunctionId};
 use super::value_symbol_table::ValueSymbolTable;
 
 // --------------------------------------------------------------------------
@@ -76,7 +79,7 @@ use super::value_symbol_table::ValueSymbolTable;
 #[derive(Debug)]
 pub(super) struct FunctionData {
     pub(super) name: String,
-    pub(super) signature: TypeId,
+    pub(super) signature: TypeSlot,
     pub(super) linkage: RefCell<Linkage>,
     pub(super) visibility: RefCell<Visibility>,
     pub(super) dll_storage_class: RefCell<DllStorageClass>,
@@ -88,20 +91,20 @@ pub(super) struct FunctionData {
     pub(super) partition: RefCell<Option<String>>,
     pub(super) align: RefCell<MaybeAlign>,
     pub(super) gc: RefCell<Option<String>>,
-    pub(super) prefix_data: Cell<Option<ValueId>>,
-    pub(super) prologue_data: Cell<Option<ValueId>>,
-    pub(super) personality_fn: Cell<Option<ValueId>>,
+    pub(super) prefix_data: Cell<Option<ValueSlot>>,
+    pub(super) prologue_data: Cell<Option<ValueSlot>>,
+    pub(super) personality_fn: Cell<Option<ValueSlot>>,
     pub(super) comdat: RefCell<Option<String>>,
     /// One value-id per parameter, in declaration order. Set once at
     /// function-creation time after every argument value-id is known;
     /// LLVM does not allow adding parameters in place afterwards, so
     /// this stays effectively immutable past the constructor.
-    pub(super) args: RefCell<Box<[ValueId]>>,
-    pub(super) basic_blocks: RefCell<Vec<ValueId>>,
+    pub(super) args: RefCell<Box<[ValueSlot]>>,
+    pub(super) basic_blocks: RefCell<Vec<ValueSlot>>,
     pub(super) attributes: RefCell<AttributeStorage>,
     pub(super) function_attr_groups: RefCell<Vec<u32>>,
     pub(super) use_list_orders: RefCell<Vec<UseListOrderRecord>>,
-    pub(super) metadata: RefCell<MetadataAttachmentSet>,
+    pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
     pub(super) intrinsic: Option<IntrinsicFunctionData>,
     pub(super) symbol_table: ValueSymbolTable,
 }
@@ -109,7 +112,7 @@ pub(super) struct FunctionData {
 impl FunctionData {
     pub(super) fn new(
         name: String,
-        signature: TypeId,
+        signature: TypeSlot,
         linkage: Linkage,
         calling_conv: CallingConv,
         intrinsic: Option<IntrinsicFunctionData>,
@@ -153,13 +156,13 @@ impl FunctionData {
 /// The `R: ReturnMarker` parameter encodes the return type at compile
 /// time (see [`crate::marker`]). Use [`FunctionValue::as_dyn`]
 /// to widen to the runtime-checked [`Dyn`] form.
-pub struct FunctionValue<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct FunctionValue<'ctx, R: ReturnMarker, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     /// Cached signature type id. The value's value-arena type is the
     /// pointer-to-function on real LLVM; here we cache the function-
     /// type id directly so `signature()` is a thin lookup.
-    pub(super) signature: TypeId,
+    pub(super) signature: TypeSlot,
     pub(super) _r: PhantomData<R>,
 }
 
@@ -201,7 +204,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// function-creation paths hand these out, after they've
     /// validated that the signature's return type matches `R`.
     #[inline]
-    pub(super) fn from_parts_unchecked<M>(id: ValueId, module: M) -> Self
+    pub(super) fn from_parts_unchecked<M>(id: ValueSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -233,6 +236,16 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         }
     }
 
+    /// Storable, module-tagged [`FunctionId<R>`] for this function (llvmkit
+    /// 2.0), resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view). Preserves the
+    /// return-shape marker `R`; the signature is recovered from the arena on
+    /// view.
+    #[inline]
+    pub fn id(self) -> FunctionId<R, B> {
+        FunctionId::from_raw(self.module.id(), self.id)
+    }
+
     /// Erase the return-shape marker, producing a runtime-checked
     /// [`Dyn`] handle.
     #[inline]
@@ -248,7 +261,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// Read-only function view for analysis and pass contexts.
     #[inline]
     pub fn as_view(self) -> FunctionView<'ctx, B> {
-        crate::pass_context::FunctionView::from(self)
+        FunctionView::from(self)
     }
 
     /// Borrow the storage payload.
@@ -306,26 +319,27 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self.signature().return_type()
     }
 
-    /// Wrap this function with a typed parameter tuple schema.
+    /// Wrap this function with a typed parameter tuple schema, returning the
+    /// storable [`TypedFunctionId`]. Resolve it back into the borrowing
+    /// [`TypedFunctionValue`] facade with [`Module::view`](crate::Module::view).
     #[inline]
-    pub fn with_typed_params<Params>(self) -> IrResult<TypedFunctionValue<'ctx, R, Params, B>>
+    pub fn with_typed_params<Params>(self) -> IrResult<TypedFunctionId<R, Params, B>>
     where
         R: FunctionReturn<Marker = R>,
         Params: FunctionParamList,
     {
-        TypedFunctionValue::<R, Params, B>::try_from_function(self)
+        TypedFunctionValue::<R, Params, B>::try_from_function(self).map(|f| f.id())
     }
 
-    /// Wrap this function with a Rust function-pointer signature schema.
+    /// Wrap this function with a Rust function-pointer signature schema,
+    /// returning the storable [`TypedFunctionId`].
     #[inline]
-    pub fn with_typed_signature<Sig>(
-        self,
-    ) -> IrResult<TypedFunctionValue<'ctx, Sig::Ret, Sig::Params, B>>
+    pub fn with_typed_signature<Sig>(self) -> IrResult<TypedFunctionId<Sig::Ret, Sig::Params, B>>
     where
         Sig: FunctionSignature,
         Sig::Ret: FunctionReturn<Marker = R>,
     {
-        TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(self)
+        TypedFunctionValue::<Sig::Ret, Sig::Params, B>::try_from_function(self).map(|f| f.id())
     }
 
     /// Linkage of this function.
@@ -336,7 +350,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     /// Update linkage.
     #[inline]
-    pub fn set_linkage(self, _module: &Module<'ctx, B, Unverified>, linkage: Linkage) {
+    pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage) {
         *self.data().linkage.borrow_mut() = linkage;
     }
 
@@ -346,7 +360,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_visibility(self, _module: &Module<'ctx, B, Unverified>, visibility: Visibility) {
+    pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, visibility: Visibility) {
         *self.data().visibility.borrow_mut() = visibility;
     }
 
@@ -356,11 +370,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_dll_storage_class(
-        self,
-        _module: &Module<'ctx, B, Unverified>,
-        cls: DllStorageClass,
-    ) {
+    pub fn set_dll_storage_class(self, _module: &'ctx Module<B, Unverified>, cls: DllStorageClass) {
         *self.data().dll_storage_class.borrow_mut() = cls;
     }
 
@@ -370,7 +380,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_dso_locality(self, _module: &Module<'ctx, B, Unverified>, locality: DsoLocality) {
+    pub fn set_dso_locality(self, _module: &'ctx Module<B, Unverified>, locality: DsoLocality) {
         *self.data().dso_locality.borrow_mut() = locality;
     }
 
@@ -382,7 +392,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     /// Update calling convention.
     #[inline]
-    pub fn set_calling_conv(self, _module: &Module<'ctx, B, Unverified>, cc: CallingConv) {
+    pub fn set_calling_conv(self, _module: &'ctx Module<B, Unverified>, cc: CallingConv) {
         *self.data().calling_conv.borrow_mut() = cc;
     }
 
@@ -395,7 +405,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// Update the unnamed-address marker. Mirrors
     /// `GlobalValue::setUnnamedAddr`.
     #[inline]
-    pub fn set_unnamed_addr(self, _module: &Module<'ctx, B, Unverified>, value: UnnamedAddr) {
+    pub fn set_unnamed_addr(self, _module: &'ctx Module<B, Unverified>, value: UnnamedAddr) {
         *self.data().unnamed_addr.borrow_mut() = value;
     }
 
@@ -405,7 +415,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_address_space(self, _module: &Module<'ctx, B, Unverified>, address_space: u32) {
+    pub fn set_address_space(self, _module: &'ctx Module<B, Unverified>, address_space: u32) {
         *self.data().address_space.borrow_mut() = address_space;
     }
 
@@ -413,14 +423,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self.data().section.borrow().clone()
     }
 
-    pub fn set_section<S>(self, _module: &Module<'ctx, B, Unverified>, section: S)
+    pub fn set_section<S>(self, _module: &'ctx Module<B, Unverified>, section: S)
     where
         S: Into<String>,
     {
         *self.data().section.borrow_mut() = Some(section.into());
     }
 
-    pub fn clear_section(self, _module: &Module<'ctx, B, Unverified>) {
+    pub fn clear_section(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().section.borrow_mut() = None;
     }
 
@@ -428,14 +438,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self.data().partition.borrow().clone()
     }
 
-    pub fn set_partition<P>(self, _module: &Module<'ctx, B, Unverified>, partition: P)
+    pub fn set_partition<P>(self, _module: &'ctx Module<B, Unverified>, partition: P)
     where
         P: Into<String>,
     {
         *self.data().partition.borrow_mut() = Some(partition.into());
     }
 
-    pub fn clear_partition(self, _module: &Module<'ctx, B, Unverified>) {
+    pub fn clear_partition(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().partition.borrow_mut() = None;
     }
 
@@ -445,7 +455,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
 
     #[inline]
-    pub fn set_align(self, _module: &Module<'ctx, B, Unverified>, align: MaybeAlign) {
+    pub fn set_align(self, _module: &'ctx Module<B, Unverified>, align: MaybeAlign) {
         *self.data().align.borrow_mut() = align;
     }
 
@@ -453,14 +463,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         self.data().gc.borrow().clone()
     }
 
-    pub fn set_gc<G>(self, _module: &Module<'ctx, B, Unverified>, gc: G)
+    pub fn set_gc<G>(self, _module: &'ctx Module<B, Unverified>, gc: G)
     where
         G: Into<String>,
     {
         *self.data().gc.borrow_mut() = Some(gc.into());
     }
 
-    pub fn clear_gc(self, _module: &Module<'ctx, B, Unverified>) {
+    pub fn clear_gc(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().gc.borrow_mut() = None;
     }
     pub fn prefix_data(self) -> Option<Constant<'ctx, B>> {
@@ -474,7 +484,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         })
     }
 
-    pub fn set_prefix_data<C>(self, _module: &Module<'ctx, B, Unverified>, data: C) -> IrResult<()>
+    pub fn set_prefix_data<C>(self, _module: &'ctx Module<B, Unverified>, data: C) -> IrResult<()>
     where
         C: IsConstant<'ctx, B>,
     {
@@ -483,7 +493,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Ok(())
     }
 
-    pub fn clear_prefix_data(self, _module: &Module<'ctx, B, Unverified>) {
+    pub fn clear_prefix_data(self, _module: &'ctx Module<B, Unverified>) {
         self.data().prefix_data.set(None);
     }
 
@@ -498,11 +508,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         })
     }
 
-    pub fn set_prologue_data<C>(
-        self,
-        _module: &Module<'ctx, B, Unverified>,
-        data: C,
-    ) -> IrResult<()>
+    pub fn set_prologue_data<C>(self, _module: &'ctx Module<B, Unverified>, data: C) -> IrResult<()>
     where
         C: IsConstant<'ctx, B>,
     {
@@ -511,7 +517,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Ok(())
     }
 
-    pub fn clear_prologue_data(self, _module: &Module<'ctx, B, Unverified>) {
+    pub fn clear_prologue_data(self, _module: &'ctx Module<B, Unverified>) {
         self.data().prologue_data.set(None);
     }
 
@@ -528,7 +534,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     pub fn set_personality_fn<C>(
         self,
-        _module: &Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         data: C,
     ) -> IrResult<()>
     where
@@ -539,16 +545,16 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Ok(())
     }
 
-    pub fn clear_personality_fn(self, _module: &Module<'ctx, B, Unverified>) {
+    pub fn clear_personality_fn(self, _module: &'ctx Module<B, Unverified>) {
         self.data().personality_fn.set(None);
     }
 
-    fn checked_constant_id<C>(self, data: C) -> IrResult<ValueId>
+    fn checked_constant_id<C>(self, data: C) -> IrResult<ValueSlot>
     where
         C: IsConstant<'ctx, B>,
     {
         let constant = data.as_constant();
-        Ok(constant.id())
+        Ok(constant.slot())
     }
 
     pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
@@ -558,28 +564,43 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     pub fn set_comdat(
         self,
-        _module: &Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         comdat: ComdatRef<'ctx, B>,
     ) -> IrResult<()> {
         *self.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
         Ok(())
     }
 
-    pub fn clear_comdat(self, _module: &Module<'ctx, B, Unverified>) {
+    pub fn clear_comdat(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().comdat.borrow_mut() = None;
     }
 
-    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
+    pub fn metadata(self) -> MetadataAttachmentSet<B> {
+        MetadataAttachmentSet::from_stored(&self.data().metadata.borrow())
+    }
+
+    /// Crate-internal: the stored attachment set, for the printer and the
+    /// verifier, which already work inside the owning module.
+    pub(crate) fn metadata_stored(
+        self,
+    ) -> core::cell::Ref<'ctx, MetadataAttachmentSet<StoredBrand>> {
         self.data().metadata.borrow()
     }
 
+    /// Set or replace one metadata attachment.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
+    /// module — the module token proves *which* module may be mutated, and the
+    /// id's tag is what proves the node belongs to it.
     pub fn set_metadata(
         self,
-        _module: &Module<'ctx, B, Unverified>,
-        kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataId,
-    ) {
+        module: &'ctx Module<B, Unverified>,
+        kind: MetadataAttachmentKind,
+        id: MetadataId<B>,
+    ) -> IrResult<()> {
+        let id = id.into_stored(module.id())?;
         self.data().metadata.borrow_mut().insert(kind, id);
+        Ok(())
     }
 
     /// Add an attribute at `index` to an already-created function.
@@ -593,14 +614,14 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     #[inline]
     pub fn add_attribute(
         self,
-        _module: &Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         index: AttrIndex,
-        attr: crate::Attribute<'ctx>,
+        attr: crate::Attribute<'ctx, B>,
     ) {
         self.data().attributes.borrow_mut().add(index, attr);
     }
 
-    pub fn add_function_attr_group(self, _module: &Module<'ctx, B, Unverified>, group: u32) {
+    pub fn add_function_attr_group(self, _module: &'ctx Module<B, Unverified>, group: u32) {
         let mut groups = self.data().function_attr_groups.borrow_mut();
         if !groups.contains(&group) {
             groups.push(group);
@@ -608,7 +629,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
     pub fn set_attributes(
         self,
-        _module: &Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         attributes: AttributeStorage,
     ) {
         *self.data().attributes.borrow_mut() = attributes;
@@ -624,7 +645,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     #[inline]
     pub fn set_string_attribute<Key, ValueText>(
         self,
-        module: &Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         index: AttrIndex,
         key: Key,
         value: ValueText,
@@ -632,11 +653,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Key: Into<String>,
         ValueText: Into<String>,
     {
-        self.add_attribute(
-            module,
-            index,
-            crate::Attribute::string_for_brand(key, value),
-        );
+        self.add_attribute(module, index, crate::Attribute::string(key, value));
     }
 
     fn string_attribute_in_storage(storage: &AttributeStorage, key: &str) -> Option<String> {
@@ -751,8 +768,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         let module = self.module;
         let parent = self.id;
         let signature = self.signature;
-        let args: Box<[ValueId]> = self.data().args.borrow().clone();
-        let param_types: Vec<TypeId> = FunctionType::new(signature, module)
+        let args: Box<[ValueSlot]> = self.data().args.borrow().clone();
+        let param_types: Vec<TypeSlot> = FunctionType::new(signature, module)
             .params()
             .map(|t| t.id())
             .collect();
@@ -775,14 +792,37 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// block already carries its final function-local unique name.
     pub fn append_basic_block<Name>(
         self,
-        _module: &Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
+        name: Name,
+    ) -> BasicBlock<'ctx, R, Unterminated, B>
+    where
+        Name: Into<String>,
+    {
+        self.append_basic_block_unchecked(name)
+    }
+
+    /// [`append_basic_block`](Self::append_basic_block) without the
+    /// `&Module<Unverified>` capability token.
+    ///
+    /// Crate-internal. The token on the public entry point is a *capability
+    /// proof* only — it is bound to `_module` and never read. This variant
+    /// exists for callers that have already discharged that proof but cannot
+    /// re-present it: [`crate::IRBuilder`] stores only `&ModuleCore` (its
+    /// `at_end` constructor is handed a block, not a token), and since a
+    /// `Module` now owns its core, the ephemeral token it can reconstruct is a
+    /// *local* whose region is too short to satisfy `&'ctx Module<…>`.
+    /// Every builder was itself constructed from a module token or from a block
+    /// minted through one, so the capability is already established.
+    #[inline]
+    pub(crate) fn append_basic_block_unchecked<Name>(
+        self,
         name: Name,
     ) -> BasicBlock<'ctx, R, Unterminated, B>
     where
         Name: Into<String>,
     {
         let name = name.into();
-        let label_ty = self.module.module().label_type().as_type().id();
+        let label_ty = self.module.module().label_type::<B>().as_type().id();
         let bb_id = self.module.module().context().push_value(ValueData {
             ty: label_ty,
             name: RefCell::new(None),
@@ -802,7 +842,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// step in LLVM's `LLParser::PerFunctionState::defineBB`.
     pub fn move_basic_block_to_end<R2, S2>(
         self,
-        module: &Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         block: BasicBlock<'ctx, R2, S2, B>,
     ) -> IrResult<()>
     where
@@ -822,7 +862,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             });
         }
         let mut blocks = self.data().basic_blocks.borrow_mut();
-        let Some(pos) = blocks.iter().position(|id| *id == block.id()) else {
+        let Some(pos) = blocks.iter().position(|id| *id == block.slot()) else {
             return Err(IrError::InvalidOperation {
                 message: "block does not belong to function",
             });
@@ -840,8 +880,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        let ids: Vec<ValueId> = self.data().basic_blocks.borrow().clone();
+        let label_ty = module.label_type::<B>().as_type().id();
+        let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         ids.into_iter()
             .map(move |id| BasicBlock::from_parts(id, self.module, label_ty))
     }
@@ -863,7 +903,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         Some(BasicBlock::from_parts(
             id,
             self.module,
-            module.label_type().as_type().id(),
+            module.label_type::<B>().as_type().id(),
         ))
     }
 
@@ -873,7 +913,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// read-only handles.
     pub fn basic_block_for_construction(
         self,
-        module: &Module<'ctx, B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         value: Value<'ctx, B>,
     ) -> IrResult<BasicBlock<'ctx, R, Unterminated, B>> {
         let _ = module;
@@ -898,7 +938,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     }
     pub(super) fn set_local_value_name(
         self,
-        id: ValueId,
+        id: ValueSlot,
         requested: Option<&str>,
     ) -> Option<String> {
         let value = self.module.module().context().value_data(id);
@@ -911,7 +951,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         final_name
     }
 
-    pub(super) fn remove_local_value_name(self, id: ValueId) {
+    pub(super) fn remove_local_value_name(self, id: ValueSlot) {
         let value = self.module.module().context().value_data(id);
         if let Some(name) = value.name.borrow().as_deref() {
             self.data().symbol_table.remove_value_name(name, id);
@@ -928,11 +968,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     #[inline]
     pub fn as_global_constant_ptr(self) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type(0).as_type().id();
+        let ptr_ty = module.ptr_type::<B>(0).as_type().id();
         let id = module
             .context()
             .intern_constant_global_value_ref(ptr_ty, self.id);
-        crate::constant::Constant {
+        Constant {
             id,
             module: self.module,
             ty: ptr_ty,
@@ -952,11 +992,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// function entry).
     pub fn as_aggregate_ptr(self, addr_space: u32) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type(addr_space).as_type().id();
+        let ptr_ty = module.ptr_type::<B>(addr_space).as_type().id();
         let id = module
             .context()
             .intern_constant_gep_offset(ptr_ty, self.id, 0);
-        crate::constant::Constant {
+        Constant {
             id,
             module: self.module,
             ty: ptr_ty,
@@ -968,10 +1008,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 /// named form of [`FunctionValue::basic_blocks`]'s walk, returned by
 /// [`FunctionValue`]'s `IntoIterator`: it snapshots the function's block ids
 /// up front, so IR mutation during the walk does not disturb it.
-pub struct FunctionBasicBlocks<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
-    ids: std::vec::IntoIter<ValueId>,
+pub struct FunctionBasicBlocks<'ctx, R: ReturnMarker, B: ModuleBrand> {
+    ids: std::vec::IntoIter<ValueSlot>,
     module: ModuleRef<'ctx, B>,
-    label_ty: TypeId,
+    label_ty: TypeSlot,
     _r: PhantomData<R>,
 }
 
@@ -1025,8 +1065,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoIterator for FunctionValu
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        let ids: Vec<ValueId> = self.data().basic_blocks.borrow().clone();
+        let label_ty = module.label_type::<B>().as_type().id();
+        let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         FunctionBasicBlocks {
             ids: ids.into_iter(),
             module: self.module,
@@ -1085,6 +1125,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Function
         FunctionValue::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(FunctionValue[R: ReturnMarker]);
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
@@ -1097,7 +1138,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'
         self.into_erased().name()
     }
     #[inline]
-    fn set_name<Name>(self, _module_token: &Module<'ctx, B, Unverified>, _name: Name)
+    fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
     where
         Name: Into<String>,
     {
@@ -1106,7 +1147,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'
         // adds the proper path; today this is a no-op.
     }
     #[inline]
-    fn clear_name(self, _module_token: &Module<'ctx, B, Unverified>) {}
+    fn clear_name(self, _module_token: &'ctx Module<B, Unverified>) {}
 }
 impl<R: ReturnMarker, B: ModuleBrand> HasDebugLoc for FunctionValue<'_, R, B> {
     #[inline]
@@ -1142,6 +1183,56 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FunctionValue<'ctx
     }
 }
 
+mod into_callee_sealed {
+    pub trait Sealed {}
+}
+
+/// Values accepted where a builder names a **direct** function callee — the
+/// `@name` operand of `call` / `invoke` / `callbr`, as opposed to the
+/// function-*pointer* operand of the indirect forms (which take
+/// [`IntoPointerValue`](crate::IntoPointerValue)).
+///
+/// The storable currency at these positions is [`FunctionId`] — that is what
+/// [`Module::add_function_dyn`](crate::Module::add_function_dyn) and the
+/// [`FunctionBuilder`] hand back and what a struct stores. This trait is the
+/// *accepting* bound: it also takes the borrowing [`FunctionValue`] directly,
+/// so an in-scope handle can be called without a round trip through the
+/// module. Resolution is module-checked and fallible, exactly like
+/// [`IntoErasedValue`](crate::IntoErasedValue) at operand positions: a
+/// [`FunctionId`] minted in another module yields
+/// [`IrError::ForeignValueId`] instead of silently naming a same-numbered slot
+/// here.
+///
+/// The return marker `R` rides through unchanged, so the callee still pins the
+/// call's result shape.
+pub trait IntoCallee<'ctx, R: ReturnMarker, B: ModuleBrand>: into_callee_sealed::Sealed {
+    #[doc(hidden)]
+    fn into_callee(self, module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>>;
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand> into_callee_sealed::Sealed
+    for FunctionValue<'ctx, R, B>
+{
+}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B>
+    for FunctionValue<'ctx, R, B>
+{
+    #[inline]
+    fn into_callee(self, _module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>> {
+        Ok(self)
+    }
+}
+
+impl<R: ReturnMarker, B: ModuleBrand> into_callee_sealed::Sealed for FunctionId<R, B> {}
+
+impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B> for FunctionId<R, B> {
+    #[inline]
+    fn into_callee(self, module: ModuleRef<'ctx, B>) -> IrResult<FunctionValue<'ctx, R, B>> {
+        ViewIn::resolve_in(self, module).ok_or(IrError::ForeignValueId)
+    }
+}
+
 // --------------------------------------------------------------------------
 // FunctionBuilder
 // --------------------------------------------------------------------------
@@ -1165,7 +1256,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FunctionValue<'ctx
 ///     .return_attribute(AttrKind::NoUndef)
 ///     .build()?;
 /// ```
-pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> {
+pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
     signature: FunctionType<'ctx, B>,
@@ -1195,11 +1286,14 @@ pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand = Brand<'ctx>> 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     /// Crate-internal constructor; users start through
     /// [`Module::function_builder`].
-    pub(super) fn new(
+    pub(super) fn new<N>(
         module: ModuleRef<'ctx, B>,
-        name: impl Into<String>,
+        name: N,
         signature: FunctionType<'ctx, B>,
-    ) -> Self {
+    ) -> Self
+    where
+        N: Into<String>,
+    {
         Self {
             module,
             name: name.into(),
@@ -1341,7 +1435,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     /// Convenience: add an enum-flavored attribute on the function's
     /// return slot. Mirrors `Function::addRetAttr(AttrKind)`.
     pub fn return_attribute(self, kind: AttrKind) -> Self {
-        let attr = crate::Attribute::enum_attr_for_brand(kind)
+        let attr = crate::Attribute::enum_attr(kind)
             .unwrap_or_else(|| unreachable!("return_attribute called with non-enum kind"));
         self.attribute(AttrIndex::Return, attr)
     }
@@ -1349,7 +1443,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     /// Convenience: add an enum-flavored attribute on parameter
     /// `slot`. Mirrors `Function::addParamAttr(slot, AttrKind)`.
     pub fn param_attribute(self, slot: u32, kind: AttrKind) -> Self {
-        let attr = crate::Attribute::enum_attr_for_brand(kind)
+        let attr = crate::Attribute::enum_attr(kind)
             .unwrap_or_else(|| unreachable!("param_attribute called with non-enum kind"));
         self.attribute(AttrIndex::Param(slot), attr)
     }
@@ -1365,11 +1459,17 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         self
     }
 
-    /// Materialize the function. Mirrors `Function::Create`.
+    /// Materialize the function, returning its storable [`FunctionId`].
+    /// Mirrors `Function::Create`. Resolve the id back into a borrowing
+    /// [`FunctionValue`] with [`Module::view`](crate::Module::view).
+    ///
+    /// The chain up to here stays handle-free: every setter takes and returns
+    /// the builder itself, and the borrowing handle exists only inside this
+    /// method, where the collected settings are applied.
     ///
     /// Returns [`IrError::ReturnTypeMismatch`] if the signature's
     /// return type does not match the chosen [`ReturnMarker`].
-    pub fn build(self) -> IrResult<FunctionValue<'ctx, R, B>> {
+    pub fn build(self) -> IrResult<FunctionId<R, B>> {
         let f = self.module.module().add_function_checked::<B, R, _>(
             &self.name,
             self.signature,
@@ -1392,13 +1492,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
             *f.data().gc.borrow_mut() = Some(gc);
         }
         if let Some(prefix_data) = self.prefix_data {
-            f.data().prefix_data.set(Some(prefix_data.id()));
+            f.data().prefix_data.set(Some(prefix_data.slot()));
         }
         if let Some(prologue_data) = self.prologue_data {
-            f.data().prologue_data.set(Some(prologue_data.id()));
+            f.data().prologue_data.set(Some(prologue_data.slot()));
         }
         if let Some(personality_fn) = self.personality_fn {
-            f.data().personality_fn.set(Some(personality_fn.id()));
+            f.data().personality_fn.set(Some(personality_fn.slot()));
         }
         if let Some(comdat) = self.comdat {
             *f.data().comdat.borrow_mut() = Some(comdat.name().to_owned());
@@ -1413,9 +1513,9 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         // Apply parameter names.
         for (slot, name) in self.param_names {
             let arg = f.param(slot)?;
-            f.set_local_value_name(arg.id(), Some(&name));
+            f.set_local_value_name(IsValue::slot(arg), Some(&name));
         }
-        Ok(f)
+        Ok(f.id())
     }
 }
 
@@ -1434,7 +1534,7 @@ impl<'ctx, W: IntWidth + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx
     #[inline]
     pub fn return_int_type(self) -> IntType<'ctx, W, B> {
         let signature = self.signature();
-        crate::derived_types::IntType::new(signature.return_type().id(), self.module)
+        IntType::new(signature.return_type().id(), self.module)
     }
 }
 
@@ -1443,7 +1543,7 @@ impl<'ctx, K: FloatKind + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ct
     #[inline]
     pub fn return_float_type(self) -> FloatType<'ctx, K, B> {
         let signature = self.signature();
-        crate::derived_types::FloatType::new(signature.return_type().id(), self.module)
+        FloatType::new(signature.return_type().id(), self.module)
     }
 }
 

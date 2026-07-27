@@ -389,7 +389,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
     //      could be changed without any signal here, and the builder's
     //      `accept_folded_*` acceptors trusted the marker rather than
     //      verifying it. `narrow` turns each audit into a proof at the point
-    //      of construction. It is a `TypeId` compare on a *successful fold*
+    //      of construction. It is a `TypeSlot` compare on a *successful fold*
     //      only, against types the context memoizes by width/kind -- so a
     //      correct fold still costs one integer compare and cannot be
     //      spuriously rejected. ----
@@ -747,7 +747,7 @@ fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
     mask: &[i32],
     scalable: bool,
 ) -> IrResult<Constant<'ctx, B>> {
-    let i32_ty = IntType::<i32, B>::new(module.module().i32_type().as_type().id(), module);
+    let i32_ty = IntType::<i32, B>::new(module.module().i32_type::<B>().as_type().id(), module);
     let mut elements = Vec::with_capacity(mask.len());
     for element in mask {
         if *element == POISON_MASK_ELEM {

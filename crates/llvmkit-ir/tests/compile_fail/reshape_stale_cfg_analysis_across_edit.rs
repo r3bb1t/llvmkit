@@ -16,15 +16,19 @@ use llvmkit_ir::{
 
 struct StaleRead;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for StaleRead {
+impl<B: ModuleBrand> FunctionPass<B> for StaleRead {
     type Access = ReshapeCfg;
     type Requires = (DominatorTreeAnalysis,);
     const NAME: &'static str = "stale-read";
 
-    fn run(
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport> {
+        cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, (DominatorTreeAnalysis,)>,
+    ) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let mut reshape = cx.mutate();
         let entry = reshape.function().entry_block().expect("definition");
         let before = entry.instructions().next().expect("an instruction");
@@ -33,7 +37,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for StaleRead {
         let dt = reshape.analysis_repaired::<DominatorTreeAnalysis, _>();
         // ...then reshape the CFG while still holding it: `reshape` is already
         // mutably borrowed by `dt`, so this cannot compile.
-        let _ = reshape.split_block(&entry, &before, "split");
+        let _ = reshape.split_block(entry.id(), &before, "split");
         // The stale use that keeps `dt` live across the edit.
         let _ = dt.is_reachable_from_entry(entry);
 

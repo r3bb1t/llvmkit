@@ -2,7 +2,7 @@
 //! `llvm/include/llvm/IR/Instructions.h`.
 //!
 //! Each handle is a thin view onto an attached instruction in some basic
-//! block. Internally it stores the `(ValueId, ModuleRef, TypeId)` triple ---
+//! block. Internally it stores the `(ValueSlot, ModuleRef, TypeSlot)` triple ---
 //! the same shape `Value` uses --- so it does not depend on
 //! [`Instruction`](crate::Instruction)'s `!Copy` lifecycle handle. Copyable handles expose
 //! [`InstructionView`] for read-only rediscovery;
@@ -28,17 +28,31 @@ use super::IrResult;
 use super::align::Align;
 use super::atomic_ordering::AtomicOrdering;
 use super::atomicrmw_binop::AtomicRMWBinOp;
-use super::basic_block::{BasicBlock, BasicBlockLabel, IntoBasicBlockLabel};
-use super::block_state::Unterminated;
+use super::basic_block::{BasicBlockLabel, IntoBasicBlockLabel, require_no_block_parameters};
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::derived_types::FunctionType;
-use super::float_kind::{FloatKind, IntoFloatValue};
+use super::float_kind::FloatKind;
+// Only the crate-internal raw-phi authoring surface lifts through these, and
+// that surface is `#[cfg(test)]` — block arguments are the public way to
+// author a phi. See `docs/design/phi-type-guarantees-design.md`, slice 7.
+#[cfg(test)]
+use super::float_kind::IntoFloatValue;
+use super::float_kind::{BFloat, FloatDyn, Fp128, Half, PpcFp128, X86Fp80};
 use super::fmf::FastMathFlags;
 use super::function::FunctionValue;
 use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::instr_types::TailCallKind;
+use super::instr_types::{
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
+    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FCmpInstData,
+    FNegInstData, FenceInstData, FreezeInstData, GepInstData, IndirectBrInstData,
+    InsertElementInstData, InsertValueInstData, InvokeInstData, LandingPadInstData, LoadInstData,
+    ResumeInstData, SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData,
+    VAArgInstData,
+};
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
     LandingPadClauseKind, PhiData, ReturnOpData,
@@ -46,14 +60,18 @@ use super::instr_types::{
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::{IntDyn, IntWidth, IntoIntValue, StaticIntWidth};
 use super::marker::{Dyn, Ptr, ReturnMarker};
-use super::module::{Brand, Module, ModuleBrand, ModuleRef, Unverified};
-use super::phi_state::{Closed, Open, PhiState};
+use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed as TermClosed, Open as TermOpen, TermOpenState};
-use super::r#type::{Type, TypeData, TypeId};
+use super::r#type::{Type, TypeData, TypeSlot};
+#[cfg(test)]
+use super::value::IntoPointerValue;
 use super::value::{
-    FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueId, ValueKindData,
-    ValueUse,
+    FloatValue, IntValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot, ValueUse,
+};
+use super::value_id::{
+    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FpPhiInstId, FreezeInstId,
+    OtherPhiInstId, PhiInstId, PointerPhiInstId, TypedCallInstId, VAArgInstId,
 };
 
 macro_rules! decl_binop_handle {
@@ -64,15 +82,15 @@ macro_rules! decl_binop_handle {
     ) => {
         $(#[$attr])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
-            pub(super) id: ValueId,
+        pub struct $name<'ctx, B: ModuleBrand> {
+            pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
-            pub(super) ty: TypeId,
+            pub(super) ty: TypeSlot,
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
             #[inline]
-            pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+            pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
             where
                 M: Into<ModuleRef<'ctx, B>>,
             {
@@ -218,10 +236,10 @@ decl_binop_handle!(
 /// `getOpcode()`. Obtain one via
 /// [`InstructionKind::as_binary_op`](crate::InstructionKind::as_binary_op).
 #[derive(Debug, Clone, Copy)]
-pub struct BinaryOp<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct BinaryOp<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) opcode: BinaryOpcode,
 }
 
@@ -322,10 +340,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> BinaryOp<'ctx, B> {
 /// Obtain one via
 /// [`InstructionKind::as_cmp`](crate::InstructionKind::as_cmp).
 #[derive(Debug, Clone, Copy)]
-pub struct Cmp<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct Cmp<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Cmp<'ctx, B> {
@@ -405,7 +423,7 @@ macro_rules! decl_handle_scaffold {
     ($name:ident) => {
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
             #[inline]
-            pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+            pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
             where
                 M: Into<ModuleRef<'ctx, B>>,
             {
@@ -433,19 +451,57 @@ macro_rules! decl_handle_scaffold {
     };
 }
 
+/// Give a marker-free opcode handle the two id accessors every handle in the
+/// crate shares (0.0.4): `.id()` mints the storable, module-tagged
+/// instruction id its builder hands back — so a handle recovered through
+/// [`Module::view`](crate::Module::view) or an [`InstructionKind`] match can go
+/// back into a side table — and `.slot()` is the bare arena index.
+///
+/// Only opcodes with a dedicated id type appear here; the rest reach an id
+/// through `to_erased().id()`, which is the honest spelling for a handle whose
+/// only storable identity is its result value.
+macro_rules! decl_instruction_id_accessors {
+    ($( $name:ident => $id:ident ),+ $(,)?) => { $(
+        impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
+            #[doc = concat!(
+                "Storable, module-tagged [`", stringify!($id), "`](crate::",
+                stringify!($id), ") for this instruction."
+            )]
+            #[inline]
+            pub fn id(&self) -> $id<B> {
+                $id::from_raw(self.module.id(), self.id)
+            }
+
+            /// Bare arena slot of this instruction. Untagged: prefer
+            /// [`id`](Self::id).
+            #[inline]
+            pub fn slot(&self) -> ValueSlot {
+                self.id
+            }
+        }
+    )+ };
+}
+
+decl_instruction_id_accessors!(
+    FreezeInst => FreezeInstId,
+    VAArgInst => VAArgInstId,
+    AtomicRMWInst => AtomicRMWInstId,
+    AtomicCmpXchgInst => AtomicCmpXchgInstId,
+);
+
 /// `alloca` stack-slot allocation. Mirrors `AllocaInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AllocaInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct AllocaInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(AllocaInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> AllocaInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::AllocaInstData {
+    fn payload(self) -> &'ctx AllocaInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -478,16 +534,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> AllocaInst<'ctx, B> {
 
 /// `load` instruction. Mirrors `LoadInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LoadInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct LoadInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(LoadInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> LoadInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::LoadInstData {
+    fn payload(self) -> &'ctx LoadInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -541,16 +597,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> LoadInst<'ctx, B> {
 
 /// `store` instruction. Mirrors `StoreInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StoreInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct StoreInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(StoreInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> StoreInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::StoreInstData {
+    fn payload(self) -> &'ctx StoreInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -600,16 +656,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> StoreInst<'ctx, B> {
 /// `getelementptr` instruction. Mirrors `GetElementPtrInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GepInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct GepInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(GepInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::GepInstData {
+    fn payload(self) -> &'ctx GepInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -636,7 +692,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
     ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let module = self.module.module();
-        let ids: Vec<ValueId> = self.payload().indices.iter().map(|c| c.get()).collect();
+        let ids: Vec<ValueSlot> = self.payload().indices.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
             let data = module.context().value_data(id);
             Value::from_parts(id, self.module, data.ty)
@@ -650,7 +706,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GepInst<'ctx, B> {
 /// The called operand of a call, split into the direct/indirect cases.
 /// Returned by [`CallInst::classify_callee`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Callee<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum Callee<'ctx, B: ModuleBrand> {
     /// A direct call to a known function global.
     Direct(FunctionValue<'ctx, Dyn, B>),
     /// An indirect call through a function pointer.
@@ -665,10 +721,10 @@ pub enum Callee<'ctx, B: ModuleBrand = Brand<'ctx>> {
 /// `return_int_value()` accessor without a runtime
 /// [`crate::IrError::TypeMismatch`].
 #[derive(Debug)]
-pub struct CallInst<'ctx, R: ReturnMarker = Dyn, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct CallInst<'ctx, R: ReturnMarker, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _r: core::marker::PhantomData<R>,
 }
 
@@ -695,7 +751,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> core::hash::Hash for CallInst<'ctx, 
 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -721,6 +777,23 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
+    /// Bare arena slot of this call. Untagged: prefer [`id`](Self::id).
+    #[inline]
+    pub fn slot(&self) -> ValueSlot {
+        self.id
+    }
+
+    /// Storable, module-tagged [`CallInstId<R>`](crate::CallInstId) for this
+    /// call — the id its builder handed back, re-mintable from a handle
+    /// recovered through [`Module::view`](crate::Module::view) or an
+    /// [`InstructionKind`](crate::InstructionKind) match, so a rediscovered call
+    /// can go back into a
+    /// side table.
+    #[inline]
+    pub fn id(&self) -> CallInstId<R, B> {
+        CallInstId::from_raw(self.module.id(), self.id)
+    }
+
     /// Re-tag the return marker. Crate-internal: only [`build_call_dyn`]
     /// flows the typed marker; [`as_dyn`] erases it.
     #[inline]
@@ -740,7 +813,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         self.retag::<Dyn>()
     }
 
-    fn payload(self) -> &'ctx crate::instr_types::CallInstData {
+    fn payload(self) -> &'ctx CallInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -780,7 +853,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
     ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let module = self.module.module();
-        let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
+        let ids: Vec<ValueSlot> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
             let data = module.context().value_data(id);
             Value::from_parts(id, self.module, data.ty)
@@ -837,33 +910,20 @@ macro_rules! call_inst_float_return {
         }
     )+ };
 }
-call_inst_float_return!(
-    f32,
-    f64,
-    crate::float_kind::Half,
-    crate::float_kind::BFloat,
-    crate::float_kind::Fp128,
-    crate::float_kind::X86Fp80,
-    crate::float_kind::PpcFp128,
-    crate::float_kind::FloatDyn,
-);
+call_inst_float_return!(f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CallInst<'ctx, Ptr, B> {
     /// Typed result handle for a pointer-returning call.
     #[inline]
     pub fn return_pointer_value(self) -> PointerValue<'ctx, B> {
-        crate::value::PointerValue::from_value_unchecked(Value::from_parts(
-            self.id,
-            self.module,
-            self.ty,
-        ))
+        PointerValue::from_value_unchecked(Value::from_parts(self.id, self.module, self.ty))
     }
 }
 
 /// Call handle whose full return schema is carried at the type level.
 /// The marker on the inner [`CallInst`] is `Ret::Marker` — derived from
 /// the callee by [`crate::IRBuilder::build_call`], never caller-asserted.
-pub struct TypedCallInst<'ctx, Ret, B: ModuleBrand = Brand<'ctx>>
+pub struct TypedCallInst<'ctx, Ret, B: ModuleBrand>
 where
     Ret: FunctionReturn,
 {
@@ -929,6 +989,20 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
         self.inner
     }
 
+    /// Bare arena slot of this call. Untagged: prefer [`id`](Self::id).
+    #[inline]
+    pub fn slot(&self) -> ValueSlot {
+        self.inner.slot()
+    }
+
+    /// Storable, module-tagged [`TypedCallInstId<Ret>`](crate::TypedCallInstId)
+    /// for this call — the schema rides on the id, so viewing it recovers the
+    /// infallible [`result`](Self::result) without a re-narrowing step.
+    #[inline]
+    pub fn id(&self) -> TypedCallInstId<Ret, B> {
+        TypedCallInstId::from_raw(self.inner.module.id(), self.inner.id)
+    }
+
     /// Fully-erased handle (D3).
     #[inline]
     pub fn as_dyn(self) -> CallInst<'ctx, Dyn, B> {
@@ -944,16 +1018,16 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
 
 /// `select` instruction. Mirrors `SelectInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SelectInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct SelectInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(SelectInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> SelectInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::SelectInstData {
+    fn payload(self) -> &'ctx SelectInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -986,10 +1060,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> SelectInst<'ctx, B> {
 /// `ret` terminator instruction. Mirrors `ReturnInst` in
 /// `Instructions.h`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RetInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct RetInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(RetInst);
@@ -1028,10 +1102,10 @@ macro_rules! decl_cast_handle {
     (@struct $(#[$attr:meta])* $name:ident, $opcode:ident) => {
         $(#[$attr])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
-            pub(super) id: ValueId,
+        pub struct $name<'ctx, B: ModuleBrand> {
+            pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
-            pub(super) ty: TypeId,
+            pub(super) ty: TypeSlot,
         }
 
         decl_handle_scaffold!($name);
@@ -1152,10 +1226,10 @@ decl_cast_handle!(
 
 /// `icmp` integer comparison. Mirrors `ICmpInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ICmpInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct ICmpInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ICmpInst);
@@ -1193,16 +1267,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> ICmpInst<'ctx, B> {
 /// `fcmp` floating-point comparison. Mirrors `FCmpInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FCmpInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct FCmpInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(FCmpInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> FCmpInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::FCmpInstData {
+    fn payload(self) -> &'ctx FCmpInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -1237,10 +1311,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> FCmpInst<'ctx, B> {
 
 /// `br` terminator. Mirrors `BranchInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BranchInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct BranchInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(BranchInst);
@@ -1274,7 +1348,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BranchInst<'ctx, B> {
         }
     }
     /// Iterator over successor block-ids.
-    pub(super) fn successor_ids(self) -> Vec<ValueId> {
+    pub(super) fn successor_ids(self) -> Vec<ValueSlot> {
         match &*self.payload().kind.borrow() {
             BranchKind::Unconditional(t) => vec![*t],
             BranchKind::Conditional {
@@ -1285,25 +1359,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> BranchInst<'ctx, B> {
     /// Successors as copyable block labels.
     pub fn successors(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>>
-    + DoubleEndedIterator
-    + FusedIterator
-    + 'ctx {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        self.successor_ids().into_iter().map(move |id| {
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(id, self.module, label_ty).label()
-        })
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
+        self.successor_ids()
+            .into_iter()
+            .map(move |id| BlockId::<Dyn, B>::from_raw(self.module.id(), id))
     }
 }
 
 /// `unreachable` terminator. Mirrors `UnreachableInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct UnreachableInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct UnreachableInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(UnreachableInst);
@@ -1312,27 +1382,87 @@ decl_handle_scaffold!(UnreachableInst);
 // Phi
 // --------------------------------------------------------------------------
 
+/// Shared body of the four phi handles' `remove_incoming`, mirroring
+/// `PHINode::removeIncomingValue(Idx, /*DeletePHIIfEmpty=*/false)`
+/// (`lib/IR/Instructions.cpp`).
+///
+/// Upstream backfills the vacated slot from the **end** of the incoming list
+/// rather than shifting, so incoming order is not preserved; that behaviour is
+/// mirrored exactly so a rewriter that follows LLVM's algorithm prints the same
+/// text. The removed value's reverse use-list loses exactly one
+/// `Instruction(phi)` edge — one edge per incoming was registered by
+/// `add_incoming` / `phi_add_incoming_from_value`, so a value that is incoming
+/// on several edges keeps the rest.
+///
+/// The `DeletePHIIfEmpty` half of upstream's contract is deliberately **not**
+/// mirrored: llvmkit erases through
+/// [`Instruction::erase_from_parent`](crate::Instruction::erase_from_parent),
+/// which consumes the linear lifecycle handle so that use-after-erase is a
+/// compile error, and a `Copy` opcode handle cannot express that consumption —
+/// self-erasure here would hand the caller a live handle to an erased
+/// instruction. The auto-erase behaviour already ships where it *can* be
+/// sound, inside the `ReshapeCfg` pass surface (`FnReshape`'s edge edits RAUW
+/// an emptied phi with poison and erase it, LLVM `removePredecessor`). Emptying
+/// a phi here is legal but leaves a node with no printable textual form; the
+/// caller owns finishing the job, and
+/// [`Module::verify`](crate::Module::verify) flags the leftover through the
+/// existing incoming-count-vs-predecessor rule.
+fn phi_remove_incoming<'ctx, B: ModuleBrand + 'ctx>(
+    phi_id: ValueSlot,
+    module: ModuleRef<'ctx, B>,
+    payload: &PhiData,
+    index: u32,
+) -> IrResult<Value<'ctx, B>> {
+    let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
+    let removed = {
+        let mut incoming = payload.incoming.borrow_mut();
+        let count = u32::try_from(incoming.len())
+            .unwrap_or_else(|_| unreachable!("phi has more than u32::MAX incoming"));
+        if slot >= incoming.len() {
+            return Err(crate::IrError::ArgumentIndexOutOfRange { index, count });
+        }
+        // `swap_remove` is exactly upstream's "swap with the end, nuke the
+        // last" — the vacated slot is backfilled from the tail.
+        incoming.swap_remove(slot).0.get()
+    };
+    // Deregister one phi-use of the removed value.
+    {
+        let core = module.module();
+        let mut uses = core.context().value_data(removed).use_list.borrow_mut();
+        if let Some(pos) = uses
+            .iter()
+            .position(|edge| *edge == ValueUse::Instruction(phi_id))
+        {
+            uses.remove(pos);
+        }
+    }
+    let ty = module.module().context().value_data(removed).ty;
+    Ok(Value::from_parts(removed, module, ty))
+}
+
 /// `phi` node. Mirrors `PHINode` (`Instructions.h`). Mutable
 /// `add_incoming` mirrors `PHINode::addIncoming`; the factorial
 /// example needs it because the loop-edge incoming value is defined
 /// later in the same block.
 ///
-/// The `P: PhiState` parameter (default [`Open`]) tracks whether the
-/// phi handle accepts `add_incoming` calls. Calling `PhiInst::finish` consumes
-/// the open handle and returns a [`Closed`] handle; the closed handle exposes
-/// only read accessors.
+/// The handle is a copyable read/edit view, minted from the storable
+/// [`PhiInstId<W>`](crate::PhiInstId) the phi builders hand back. Authoring
+/// (`add_incoming`) is crate-internal — block arguments
+/// ([`IRBuilder::append_block_with_params`](crate::IRBuilder::append_block_with_params))
+/// are the public phi-authoring surface — while
+/// [`remove_incoming`](Self::remove_incoming) is public for CFG rewriters and
+/// takes an `Unverified` module token as its mutation-capability witness.
 #[derive(Debug)]
-pub struct PhiInst<'ctx, W: IntWidth, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct PhiInst<'ctx, W: IntWidth, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _w: core::marker::PhantomData<fn() -> W>,
-    _p: core::marker::PhantomData<P>,
 }
 
-impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -1341,21 +1471,6 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
             module: module.into(),
             ty,
             _w: core::marker::PhantomData,
-            _p: core::marker::PhantomData,
-        }
-    }
-
-    /// Re-tag the phi-state marker. Crate-internal: only [`finish`]
-    /// flips the public marker.
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline]
-    pub(super) fn retag<P2: PhiState>(self) -> PhiInst<'ctx, W, P2, B> {
-        PhiInst {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-            _w: core::marker::PhantomData,
-            _p: core::marker::PhantomData,
         }
     }
 
@@ -1383,11 +1498,21 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Opaque arena id of the underlying value (same id as
-    /// [`to_erased`](Self::to_erased)).
+    /// Bare arena slot of the underlying value (same slot as
+    /// [`to_erased`](Self::to_erased)). Untagged: prefer [`id`](Self::id),
+    /// which carries the owning module and resolves back through
+    /// [`Module::view`](crate::Module::view).
     #[inline]
-    pub fn id(&self) -> ValueId {
+    pub fn slot(&self) -> ValueSlot {
         self.to_erased().id
+    }
+
+    /// Storable, module-tagged [`PhiInstId<W>`](crate::PhiInstId) for this phi
+    /// — the id its builder handed back, re-mintable from a rediscovered
+    /// handle.
+    #[inline]
+    pub fn id(&self) -> PhiInstId<W, B> {
+        PhiInstId::from_raw(self.module.id(), self.id)
     }
 
     /// Result handle for the phi node, narrowed to the static width
@@ -1404,10 +1529,7 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
     }
 
     /// Read the `(value, block label)` pair at `index`.
-    pub fn incoming(
-        &self,
-        index: u32,
-    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+    pub fn incoming(&self, index: u32) -> IrResult<(Value<'ctx, B>, BlockId<Dyn, B>)> {
         let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
         let module = self.module.module();
         let pair = self
@@ -1423,9 +1545,7 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
         let (vid, bid) = pair;
         let v_data = module.context().value_data(vid);
         let value = Value::from_parts(vid, self.module, v_data.ty);
-        let label_ty = module.label_type().as_type().id();
-        let block =
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        let block = BlockId::<Dyn, B>::from_raw(self.module.id(), bid);
         Ok((value, block))
     }
 
@@ -1436,14 +1556,13 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
     /// mutate the phi while iterating.
     pub fn incomings(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
-        let entries: Vec<(ValueId, ValueId)> = self
+        let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
             .incoming
             .borrow()
@@ -1453,20 +1572,46 @@ impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, P, 
         entries.into_iter().map(move |(vid, bid)| {
             let v_data = module.context().value_data(vid);
             let value = Value::from_parts(vid, module_ref, v_data.ty);
-            let block =
-                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            let block = BlockId::<Dyn, B>::from_raw(module_ref.id(), bid);
             (value, block)
         })
     }
+
+    /// Remove the incoming `(value, block)` pair at `index` and return the
+    /// removed value. Mirrors `PHINode::removeIncomingValue`, which real CFG
+    /// rewriters call when a predecessor edge disappears.
+    ///
+    /// Like upstream, the vacated slot is backfilled from the **end** of the
+    /// incoming list, so **incoming order is not preserved**. Errors with
+    /// [`IrError::ArgumentIndexOutOfRange`](crate::IrError::ArgumentIndexOutOfRange)
+    /// when `index` is past the end.
+    ///
+    /// Requires an `Unverified` module token: like
+    /// [`AtomicRMWInst::set_value_operand`], this mutates the IR and must not be
+    /// reachable without proof of mutation capability.
+    ///
+    /// Unlike upstream's default `DeletePHIIfEmpty = true`, removing the last
+    /// incoming leaves the (now unprintable) phi in place — see
+    /// the module-level note on this file's `phi_remove_incoming` helper for why
+    /// self-erasure cannot be sound on a `Copy` handle, and use the `ReshapeCfg`
+    /// edge edits when the whole predecessor edge is going away.
+    pub fn remove_incoming(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        index: u32,
+    ) -> IrResult<Value<'ctx, B>> {
+        let _ = module_token;
+        phi_remove_incoming(self.id, self.module, self.payload(), index)
+    }
 }
 
-// The typed open-phi mutation surface is crate-internal since slice 7 (block
+// The typed phi *authoring* surface is crate-internal since slice 7 (block
 // arguments are the public phi-authoring surface). It has no production caller
 // today — the parser and SSA builder add incomings through the erased
 // `phi_add_incoming_from_value` path — so `dead_code` is allowed in non-test
-// builds; the in-crate phi typestate tests exercise it.
-#[cfg_attr(not(test), allow(dead_code))]
-impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
+// builds; the in-crate raw-phi tests exercise it.
+#[cfg(test)]
+impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Returns `Self` so calls chain.
     /// Errors if `value`'s type does not match the phi's result type.
@@ -1485,8 +1630,8 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
         let module = self.module.module();
         let value = value.into_int_value(self.module)?;
         if value.into_erased().ty == self.ty {
-            let value_id = value.id();
-            let block_id = block.into_basic_block_label().id();
+            let value_id = value.slot();
+            let block_id = block.into_basic_block_label(self.module)?.slot();
             if self
                 .payload()
                 .incoming
@@ -1512,30 +1657,27 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, Open, B> {
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
-                expected: Type::new(self.ty, module).kind_label(),
+                expected: Type::<B>::new(self.ty, module).kind_label(),
                 got: value.into_erased().ty().kind_label(),
             })
         }
     }
-
-    /// Consume the open phi and return its [`Closed`] view. After
-    /// `finish`, `add_incoming` is no longer in scope at the type
-    /// level; the closed handle exposes only read accessors. Mirrors
-    /// the implicit "phi is finalised" convention upstream where the
-    /// verifier subsequently runs `Verifier::visitPHINode`.
-    #[inline]
-    pub(crate) fn finish(self) -> PhiInst<'ctx, W, Closed, B> {
-        self.retag::<Closed>()
-    }
 }
 
-impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand> PartialEq for PhiInst<'ctx, W, P, B> {
+impl<'ctx, W: IntWidth, B: ModuleBrand> Clone for PhiInst<'ctx, W, B> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, W: IntWidth, B: ModuleBrand> Copy for PhiInst<'ctx, W, B> {}
+impl<'ctx, W: IntWidth, B: ModuleBrand> PartialEq for PhiInst<'ctx, W, B> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, W: IntWidth, P: PhiState, B: ModuleBrand> Eq for PhiInst<'ctx, W, P, B> {}
-impl<'ctx, W: IntWidth, P: PhiState> core::hash::Hash for PhiInst<'ctx, W, P> {
+impl<'ctx, W: IntWidth, B: ModuleBrand> Eq for PhiInst<'ctx, W, B> {}
+impl<'ctx, W: IntWidth, B: ModuleBrand> core::hash::Hash for PhiInst<'ctx, W, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
@@ -1553,17 +1695,16 @@ impl<'ctx, W: IntWidth, P: PhiState> core::hash::Hash for PhiInst<'ctx, W, P> {
 /// per-opcode handle pattern in this crate (the unified-trait alternative
 /// would force every read accessor through dyn dispatch).
 #[derive(Debug)]
-pub struct FpPhiInst<'ctx, K: FloatKind, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct FpPhiInst<'ctx, K: FloatKind, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _k: core::marker::PhantomData<fn() -> K>,
-    _p: core::marker::PhantomData<P>,
 }
 
-impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, P, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -1572,19 +1713,6 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
             module: module.into(),
             ty,
             _k: core::marker::PhantomData,
-            _p: core::marker::PhantomData,
-        }
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline]
-    pub(super) fn retag<P2: PhiState>(self) -> FpPhiInst<'ctx, K, P2, B> {
-        FpPhiInst {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-            _k: core::marker::PhantomData,
-            _p: core::marker::PhantomData,
         }
     }
 
@@ -1612,11 +1740,18 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Opaque arena id of the underlying value (same id as
-    /// [`to_erased`](Self::to_erased)).
+    /// Bare arena slot of the underlying value (same slot as
+    /// [`to_erased`](Self::to_erased)). Untagged: prefer [`id`](Self::id).
     #[inline]
-    pub fn id(&self) -> ValueId {
+    pub fn slot(&self) -> ValueSlot {
         self.to_erased().id
+    }
+
+    /// Storable, module-tagged [`FpPhiInstId<K>`](crate::FpPhiInstId) for this
+    /// phi.
+    #[inline]
+    pub fn id(&self) -> FpPhiInstId<K, B> {
+        FpPhiInstId::from_raw(self.module.id(), self.id)
     }
 
     /// Result handle for the phi, narrowed to the static kind `K`.
@@ -1632,10 +1767,7 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
     }
 
     /// Read the `(value, block label)` pair at `index`.
-    pub fn incoming(
-        &self,
-        index: u32,
-    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+    pub fn incoming(&self, index: u32) -> IrResult<(Value<'ctx, B>, BlockId<Dyn, B>)> {
         let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
         let module = self.module.module();
         let pair = self
@@ -1651,9 +1783,7 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         let (vid, bid) = pair;
         let v_data = module.context().value_data(vid);
         let value = Value::from_parts(vid, self.module, v_data.ty);
-        let label_ty = module.label_type().as_type().id();
-        let block =
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        let block = BlockId::<Dyn, B>::from_raw(self.module.id(), bid);
         Ok((value, block))
     }
 
@@ -1664,14 +1794,13 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
     /// mutate the phi while iterating.
     pub fn incomings(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
-        let entries: Vec<(ValueId, ValueId)> = self
+        let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
             .incoming
             .borrow()
@@ -1681,15 +1810,27 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, 
         entries.into_iter().map(move |(vid, bid)| {
             let v_data = module.context().value_data(vid);
             let value = Value::from_parts(vid, module_ref, v_data.ty);
-            let block =
-                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            let block = BlockId::<Dyn, B>::from_raw(module_ref.id(), bid);
             (value, block)
         })
     }
+
+    /// Remove the incoming `(value, block)` pair at `index` and return the
+    /// removed value — the float-phi twin of
+    /// [`PhiInst::remove_incoming`], with the same upstream-mirroring
+    /// swap-with-last semantics and the same non-deleting empty-phi contract.
+    pub fn remove_incoming(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        index: u32,
+    ) -> IrResult<Value<'ctx, B>> {
+        let _ = module_token;
+        phi_remove_incoming(self.id, self.module, self.payload(), index)
+    }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
+#[cfg(test)]
+impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Errors if `value`'s type does not match
     /// the phi's result type. Rejects a second entry for the same block with
@@ -1708,8 +1849,8 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
         let module = self.module.module();
         let value = value.into_float_value(self.module)?;
         if value.into_erased().ty == self.ty {
-            let value_id = value.id();
-            let block_id = block.into_basic_block_label().id();
+            let value_id = value.slot();
+            let block_id = block.into_basic_block_label(self.module)?.slot();
             if self
                 .payload()
                 .incoming
@@ -1734,28 +1875,27 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, Open, B> {
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
-                expected: Type::new(self.ty, module).kind_label(),
+                expected: Type::<B>::new(self.ty, module).kind_label(),
                 got: value.into_erased().ty().kind_label(),
             })
         }
     }
-
-    /// Consume the open phi and return its [`Closed`] view.
-    #[inline]
-    pub(crate) fn finish(self) -> FpPhiInst<'ctx, K, Closed, B> {
-        self.retag::<Closed>()
-    }
 }
 
-impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand> PartialEq for FpPhiInst<'ctx, K, P, B> {
+impl<'ctx, K: FloatKind, B: ModuleBrand> Clone for FpPhiInst<'ctx, K, B> {
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'ctx, K: FloatKind, B: ModuleBrand> Copy for FpPhiInst<'ctx, K, B> {}
+impl<'ctx, K: FloatKind, B: ModuleBrand> PartialEq for FpPhiInst<'ctx, K, B> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand> Eq for FpPhiInst<'ctx, K, P, B> {}
-impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand> core::hash::Hash
-    for FpPhiInst<'ctx, K, P, B>
-{
+impl<'ctx, K: FloatKind, B: ModuleBrand> Eq for FpPhiInst<'ctx, K, B> {}
+impl<'ctx, K: FloatKind, B: ModuleBrand> core::hash::Hash for FpPhiInst<'ctx, K, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
@@ -1769,18 +1909,17 @@ impl<'ctx, K: FloatKind, P: PhiState, B: ModuleBrand> core::hash::Hash
 
 /// `phi` node whose result type is a pointer. Pointers carry no
 /// element-kind type parameter (only addrspace, which is encoded in
-/// the type id), so the handle is parameterised only by `P: PhiState`.
-#[derive(Debug)]
-pub struct PointerPhiInst<'ctx, P: PhiState = Open, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+/// the type id), so the handle carries no marker beyond the brand.
+#[derive(Debug, Clone, Copy)]
+pub struct PointerPhiInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
-    _p: core::marker::PhantomData<P>,
+    pub(super) ty: TypeSlot,
 }
 
-impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -1788,18 +1927,6 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
             id,
             module: module.into(),
             ty,
-            _p: core::marker::PhantomData,
-        }
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    #[inline]
-    pub(super) fn retag<P2: PhiState>(self) -> PointerPhiInst<'ctx, P2, B> {
-        PointerPhiInst {
-            id: self.id,
-            module: self.module,
-            ty: self.ty,
-            _p: core::marker::PhantomData,
         }
     }
 
@@ -1827,18 +1954,24 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
 
-    /// Opaque arena id of the underlying value (same id as
-    /// [`to_erased`](Self::to_erased)).
+    /// Bare arena slot of the underlying value (same slot as
+    /// [`to_erased`](Self::to_erased)). Untagged: prefer [`id`](Self::id).
     #[inline]
-    pub fn id(&self) -> ValueId {
+    pub fn slot(&self) -> ValueSlot {
         self.to_erased().id
+    }
+
+    /// Storable, module-tagged [`PointerPhiInstId`] for this phi.
+    #[inline]
+    pub fn id(&self) -> PointerPhiInstId<B> {
+        PointerPhiInstId::from_raw(self.module.id(), self.id)
     }
 
     /// Result handle for the phi, narrowed to a [`PointerValue`].
     #[inline]
     pub fn as_pointer_value(&self) -> PointerValue<'ctx, B> {
         let v = Value::from_parts(self.id, self.module, self.ty);
-        crate::value::PointerValue::from_value_unchecked(v)
+        PointerValue::from_value_unchecked(v)
     }
 
     pub fn incoming_count(&self) -> u32 {
@@ -1847,10 +1980,7 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
     }
 
     /// Read the `(value, block label)` pair at `index`.
-    pub fn incoming(
-        &self,
-        index: u32,
-    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+    pub fn incoming(&self, index: u32) -> IrResult<(Value<'ctx, B>, BlockId<Dyn, B>)> {
         let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
         let module = self.module.module();
         let pair = self
@@ -1866,9 +1996,7 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
         let (vid, bid) = pair;
         let v_data = module.context().value_data(vid);
         let value = Value::from_parts(vid, self.module, v_data.ty);
-        let label_ty = module.label_type().as_type().id();
-        let block =
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        let block = BlockId::<Dyn, B>::from_raw(self.module.id(), bid);
         Ok((value, block))
     }
 
@@ -1879,14 +2007,13 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
     /// mutate the phi while iterating.
     pub fn incomings(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
-        let entries: Vec<(ValueId, ValueId)> = self
+        let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
             .incoming
             .borrow()
@@ -1896,15 +2023,27 @@ impl<'ctx, P: PhiState, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, P, B> {
         entries.into_iter().map(move |(vid, bid)| {
             let v_data = module.context().value_data(vid);
             let value = Value::from_parts(vid, module_ref, v_data.ty);
-            let block =
-                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            let block = BlockId::<Dyn, B>::from_raw(module_ref.id(), bid);
             (value, block)
         })
     }
+
+    /// Remove the incoming `(value, block)` pair at `index` and return the
+    /// removed value — the pointer-phi twin of
+    /// [`PhiInst::remove_incoming`], with the same upstream-mirroring
+    /// swap-with-last semantics and the same non-deleting empty-phi contract.
+    pub fn remove_incoming(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        index: u32,
+    ) -> IrResult<Value<'ctx, B>> {
+        let _ = module_token;
+        phi_remove_incoming(self.id, self.module, self.payload(), index)
+    }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
+#[cfg(test)]
+impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     /// Append `(value, block)` to the incoming list. Rejects a second entry
     /// for the same block with a different value
     /// ([`IrError::AmbiguousPhiIncoming`](crate::IrError::AmbiguousPhiIncoming));
@@ -1918,8 +2057,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
         let module = self.module.module();
         let value = value.into_pointer_value(self.module)?;
         if value.into_erased().ty == self.ty {
-            let value_id = value.id();
-            let block_id = block.into_basic_block_label().id();
+            let value_id = value.slot();
+            let block_id = block.into_basic_block_label(self.module)?.slot();
             if self
                 .payload()
                 .incoming
@@ -1944,26 +2083,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, Open, B> {
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
-                expected: Type::new(self.ty, module).kind_label(),
+                expected: Type::<B>::new(self.ty, module).kind_label(),
                 got: IsValue::into_erased(value).ty().kind_label(),
             })
         }
     }
-
-    /// Consume the open phi and return its [`Closed`] view.
-    #[inline]
-    pub(crate) fn finish(self) -> PointerPhiInst<'ctx, Closed, B> {
-        self.retag::<Closed>()
-    }
 }
 
-impl<'ctx, P: PhiState, B: ModuleBrand> PartialEq for PointerPhiInst<'ctx, P, B> {
+impl<'ctx, B: ModuleBrand> PartialEq for PointerPhiInst<'ctx, B> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.module == other.module && self.ty == other.ty
     }
 }
-impl<'ctx, P: PhiState, B: ModuleBrand> Eq for PointerPhiInst<'ctx, P, B> {}
-impl<'ctx, P: PhiState> core::hash::Hash for PointerPhiInst<'ctx, P> {
+impl<'ctx, B: ModuleBrand> Eq for PointerPhiInst<'ctx, B> {}
+impl<'ctx, B: ModuleBrand> core::hash::Hash for PointerPhiInst<'ctx, B> {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.id.hash(h);
         self.module.hash(h);
@@ -1981,10 +2114,10 @@ impl<'ctx, P: PhiState> core::hash::Hash for PointerPhiInst<'ctx, P> {
 /// — there is no lying `as_int_value()` narrowing (the bug the split
 /// [`PhiKind`](crate::PhiKind) exists to remove).
 #[derive(Debug, Clone, Copy)]
-pub struct OtherPhiInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct OtherPhiInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(OtherPhiInst);
@@ -2001,6 +2134,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
         }
     }
 
+    /// Bare arena slot of the underlying value (same slot as
+    /// [`to_erased`](Self::to_erased)). Untagged: prefer [`id`](Self::id).
+    #[inline]
+    pub fn slot(&self) -> ValueSlot {
+        self.id
+    }
+
+    /// Storable, module-tagged [`OtherPhiInstId`] for this phi.
+    #[inline]
+    pub fn id(&self) -> OtherPhiInstId<B> {
+        OtherPhiInstId::from_raw(self.module.id(), self.id)
+    }
+
+    /// Remove the incoming `(value, block)` pair at `index` and return the
+    /// removed value — the erased-phi twin of [`PhiInst::remove_incoming`],
+    /// with the same upstream-mirroring swap-with-last semantics and the same
+    /// non-deleting empty-phi contract.
+    pub fn remove_incoming(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        index: u32,
+    ) -> IrResult<Value<'ctx, B>> {
+        let _ = module_token;
+        phi_remove_incoming(self.id, self.module, self.payload(), index)
+    }
+
     /// Number of incoming `(value, block)` edges.
     pub fn incoming_count(&self) -> u32 {
         let len = self.payload().incoming.borrow().len();
@@ -2008,10 +2167,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
     }
 
     /// Read the `(value, block label)` pair at `index`.
-    pub fn incoming(
-        &self,
-        index: u32,
-    ) -> IrResult<(Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)> {
+    pub fn incoming(&self, index: u32) -> IrResult<(Value<'ctx, B>, BlockId<Dyn, B>)> {
         let slot = usize::try_from(index).unwrap_or_else(|_| unreachable!("u32 fits in usize"));
         let module = self.module.module();
         let pair = self
@@ -2027,9 +2183,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
         let (vid, bid) = pair;
         let v_data = module.context().value_data(vid);
         let value = Value::from_parts(vid, self.module, v_data.ty);
-        let label_ty = module.label_type().as_type().id();
-        let block =
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, self.module, label_ty).label();
+        let block = BlockId::<Dyn, B>::from_raw(self.module.id(), bid);
         Ok((value, block))
     }
 
@@ -2040,14 +2194,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
     /// mutate the phi while iterating.
     pub fn incomings(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
-        let entries: Vec<(ValueId, ValueId)> = self
+        let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
             .incoming
             .borrow()
@@ -2057,8 +2210,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
         entries.into_iter().map(move |(vid, bid)| {
             let v_data = module.context().value_data(vid);
             let value = Value::from_parts(vid, module_ref, v_data.ty);
-            let block =
-                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            let block = BlockId::<Dyn, B>::from_raw(module_ref.id(), bid);
             (value, block)
         })
     }
@@ -2072,16 +2224,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
 /// `InstrTypes.h`. Carries [`crate::FastMathFlags`] like every
 /// `FPMathOperator`-class instruction (`Operator.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FNegInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct FNegInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(FNegInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> FNegInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::FNegInstData {
+    fn payload(self) -> &'ctx FNegInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2107,16 +2259,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> FNegInst<'ctx, B> {
 /// `freeze` poison/undef-removing operator. Mirrors `FreezeInst`
 /// (`Instructions.h`). The result type matches the operand type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FreezeInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct FreezeInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(FreezeInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> FreezeInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::FreezeInstData {
+    fn payload(self) -> &'ctx FreezeInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2139,16 +2291,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> FreezeInst<'ctx, B> {
 /// Loads the next argument from a `va_list` pointer; the destination
 /// type lives on [`Self::result_type`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VAArgInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct VAArgInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(VAArgInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> VAArgInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::VAArgInstData {
+    fn payload(self) -> &'ctx VAArgInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2180,16 +2332,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> VAArgInst<'ctx, B> {
 /// `extractvalue` reads a single sub-element of an aggregate by
 /// constant indices. Mirrors `ExtractValueInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ExtractValueInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct ExtractValueInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ExtractValueInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> ExtractValueInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::ExtractValueInstData {
+    fn payload(self) -> &'ctx ExtractValueInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2215,16 +2367,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExtractValueInst<'ctx, B> {
 /// `insertvalue` writes a sub-element back into an aggregate by
 /// constant indices. Mirrors `InsertValueInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InsertValueInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct InsertValueInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(InsertValueInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> InsertValueInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::InsertValueInstData {
+    fn payload(self) -> &'ctx InsertValueInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2258,16 +2410,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> InsertValueInst<'ctx, B> {
 /// `extractelement` reads a single element from a vector. Mirrors
 /// `ExtractElementInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ExtractElementInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct ExtractElementInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ExtractElementInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> ExtractElementInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::ExtractElementInstData {
+    fn payload(self) -> &'ctx ExtractElementInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2294,16 +2446,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> ExtractElementInst<'ctx, B> {
 /// `insertelement` writes a single element back into a vector.
 /// Mirrors `InsertElementInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InsertElementInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct InsertElementInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(InsertElementInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> InsertElementInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::InsertElementInstData {
+    fn payload(self) -> &'ctx InsertElementInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2337,16 +2489,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> InsertElementInst<'ctx, B> {
 /// input vectors per a constant integer mask. Mirrors
 /// `ShuffleVectorInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ShuffleVectorInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct ShuffleVectorInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ShuffleVectorInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::ShuffleVectorInstData {
+    fn payload(self) -> &'ctx ShuffleVectorInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2382,16 +2534,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
 /// `fence` instruction. Mirrors `FenceInst` (`Instructions.h`).
 /// No SSA operands; carries memory ordering and synchronization scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FenceInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct FenceInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(FenceInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> FenceInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::FenceInstData {
+    fn payload(self) -> &'ctx FenceInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2415,16 +2567,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> FenceInst<'ctx, B> {
 /// (`Instructions.h`). Result type is the literal struct
 /// `{ <pointee>, i1 }`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AtomicCmpXchgInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct AtomicCmpXchgInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(AtomicCmpXchgInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> AtomicCmpXchgInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::AtomicCmpXchgInstData {
+    fn payload(self) -> &'ctx AtomicCmpXchgInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2477,16 +2629,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicCmpXchgInst<'ctx, B> {
 /// `atomicrmw` read-modify-write. Mirrors `AtomicRMWInst`
 /// (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct AtomicRMWInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct AtomicRMWInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(AtomicRMWInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::AtomicRMWInstData {
+    fn payload(self) -> &'ctx AtomicRMWInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2521,7 +2673,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
     /// `ModuleRef`.
     pub fn set_value_operand(
         self,
-        module_token: &Module<'ctx, B, Unverified>,
+        module_token: &'ctx Module<B, Unverified>,
         value: Value<'ctx, B>,
     ) -> IrResult<()> {
         let _ = module_token;
@@ -2592,15 +2744,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
 /// and defaults to `IntDyn`, so width-agnostic `SwitchInst<'ctx, P, B>`
 /// annotations keep resolving to the erased flavour unchanged.
 #[derive(Debug)]
-pub struct SwitchInst<
-    'ctx,
-    P: TermOpenState = TermOpen,
-    B: ModuleBrand = Brand<'ctx>,
-    W: IntWidth = IntDyn,
-> {
-    pub(super) id: ValueId,
+pub struct SwitchInst<'ctx, P: TermOpenState, B: ModuleBrand, W: IntWidth = IntDyn> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _p: core::marker::PhantomData<P>,
     _w: core::marker::PhantomData<W>,
 }
@@ -2623,7 +2770,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand, W: IntWidth> core::hash::Hash
 
 impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, P, B, W> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -2657,7 +2804,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
     pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
-    fn payload(&self) -> &'ctx crate::instr_types::SwitchInstData {
+    fn payload(&self) -> &'ctx SwitchInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2673,15 +2820,8 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
         let data = module.context().value_data(id);
         Value::from_parts(id, self.module, data.ty)
     }
-    pub fn default_destination(&self) -> BasicBlockLabel<'ctx, Dyn, B> {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unterminated, B>::from_parts(
-            self.payload().default_bb.get(),
-            self.module,
-            label_ty,
-        )
-        .label()
+    pub fn default_destination(&self) -> BlockId<Dyn, B> {
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().default_bb.get())
     }
     pub fn case_count(&self) -> u32 {
         let len = self.payload().cases.borrow().len();
@@ -2691,14 +2831,13 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
     /// order. Mirrors walking `SwitchInst::cases()`.
     pub fn cases(
         &self,
-    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BasicBlockLabel<'ctx, Dyn, B>)>
+    ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
         let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
         let module_ref = self.module;
-        let entries: Vec<(ValueId, ValueId)> = self
+        let entries: Vec<(ValueSlot, ValueSlot)> = self
             .payload()
             .cases
             .borrow()
@@ -2708,15 +2847,14 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
         entries.into_iter().map(move |(vid, bid)| {
             let v_data = module.context().value_data(vid);
             let value = Value::from_parts(vid, module_ref, v_data.ty);
-            let block =
-                BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label();
+            let block = BlockId::<Dyn, B>::from_raw(module_ref.id(), bid);
             (value, block)
         })
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> {
-    /// Consume the open switch and return its [`Closed`] view, preserving
+    /// Consume the open switch and return its [`TermClosed`] view, preserving
     /// the condition width `W`. Mirrors the implicit "switch is finalised"
     /// convention upstream where the verifier subsequently runs
     /// `Verifier::visitSwitchInst`.
@@ -2725,42 +2863,99 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
         self.retag()
     }
 
-    /// Shared case-append body: push `(case_value_id, target)` and register
-    /// the switch as a user of the case value. Both `add_case` flavours
-    /// funnel through here once their width discipline (compile-time for
-    /// static `W`, runtime for [`IntDyn`]) has been discharged.
+    /// Shared case-append body for the *public* `add_case` flavours: validate,
+    /// reject a parameterised target, then record. Both flavours funnel
+    /// through here once their width discipline (compile-time for static `W`,
+    /// runtime for [`IntDyn`]) has been discharged.
+    ///
+    /// A case edge added this way carries no block arguments, so its target
+    /// must not be a **parameterised** block — the same guard the plain
+    /// terminator builders apply, reported as
+    /// [`crate::IrError::PhiArgArityMismatch`]. The argument-carrying route is
+    /// [`IRBuilder::build_switch_with_args`](crate::IRBuilder::build_switch_with_args)
+    /// (and its erased twin), which spells every case at the call and hands
+    /// back an already-[`TermClosed`] switch — so a `switch` reaching a
+    /// parameterised block either carries that block's arguments or does not
+    /// build.
     fn push_case_checked<R, Target>(self, v: Value<'ctx, B>, target: Target) -> IrResult<Self>
     where
         R: ReturnMarker,
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        let target = self.validate_case(v, target)?;
+        require_no_block_parameters(self.module, target.slot())?;
+        Ok(self.record_case(v, target))
+    }
+
+    /// Append a case whose target's block parameters this call's caller has
+    /// **already seeded**, skipping the parameterised-target rejection
+    /// `push_case_checked` applies. Crate-internal: only
+    /// [`IRBuilder::build_switch_with_args`](crate::IRBuilder::build_switch_with_args)
+    /// and its erased twin reach for it, after `add_block_args` has recorded
+    /// each edge's incomings.
+    pub(crate) fn push_case_seeded<R, Target>(
+        self,
+        v: Value<'ctx, B>,
+        target: Target,
+    ) -> IrResult<Self>
+    where
+        R: ReturnMarker,
+        Target: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let target = self.validate_case(v, target)?;
+        Ok(self.record_case(v, target))
+    }
+
+    /// Check a case value against the switch condition and resolve its target
+    /// label. Runs before anything is recorded, so a rejected case leaves the
+    /// case list untouched.
+    ///
+    /// Defence in depth: the case value's runtime type must still equal the
+    /// condition's. For a typed switch this is guaranteed by the
+    /// `IntoIntValue<'ctx, W, B>` bound; for the erased switch it is the
+    /// primary check (mirrors `Verifier::visitSwitchInst`).
+    fn validate_case<R, Target>(
+        &self,
+        v: Value<'ctx, B>,
+        target: Target,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B>>
+    where
+        R: ReturnMarker,
+        Target: IntoBasicBlockLabel<'ctx, R, B>,
+    {
         let module = self.module.module();
-        // Defence in depth: the case value's runtime type must still equal
-        // the condition's. For a typed switch this is guaranteed by the
-        // `IntoIntValue<'ctx, W, B>` bound; for the erased switch it is the
-        // primary check (mirrors `Verifier::visitSwitchInst`).
         let cond_ty = self.payload().cond.get();
         let cond_ty = module.context().value_data(cond_ty).ty;
         if v.ty != cond_ty {
             return Err(crate::IrError::TypeMismatch {
-                expected: Type::new(cond_ty, module).kind_label(),
+                expected: Type::<B>::new(cond_ty, module).kind_label(),
                 got: v.ty().kind_label(),
             });
         }
+        target.into_basic_block_label(self.module)
+    }
+
+    /// Push `(case_value_id, target)` onto the case list and register the
+    /// switch as a user of the case value. Infallible: every check the case
+    /// has to pass ran in `validate_case` / the caller's guard.
+    fn record_case<R: ReturnMarker>(
+        self,
+        v: Value<'ctx, B>,
+        target: BasicBlockLabel<'ctx, R, B>,
+    ) -> Self {
         let v_id = v.id;
-        let bb_id = target.into_basic_block_label().id();
         self.payload()
             .cases
             .borrow_mut()
-            .push((core::cell::Cell::new(v_id), bb_id));
-        // Register the switch as a user of the case value.
-        module
+            .push((core::cell::Cell::new(v_id), target.slot()));
+        self.module
+            .module()
             .context()
             .value_data(v_id)
             .use_list
             .borrow_mut()
             .push(ValueUse::Instruction(self.id));
-        Ok(self)
+        self
     }
 }
 
@@ -2811,10 +3006,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: StaticIntWidth> SwitchInst<'ctx, TermOpen, 
 /// (`Instructions.h`). The address operand selects one of the
 /// declared destination blocks at runtime.
 #[derive(Debug)]
-pub struct IndirectBrInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct IndirectBrInst<'ctx, P: TermOpenState, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _p: core::marker::PhantomData<P>,
 }
 
@@ -2834,7 +3029,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand> core::hash::Hash for IndirectBrInst
 
 impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -2866,7 +3061,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
     pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
-    fn payload(&self) -> &'ctx crate::instr_types::IndirectBrInstData {
+    fn payload(&self) -> &'ctx IndirectBrInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -2891,33 +3086,39 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
     /// walking `IndirectBrInst::successors()`.
     pub fn destinations(
         &self,
-    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>>
-    + DoubleEndedIterator
-    + FusedIterator
-    + 'ctx {
-        let label_ty = self.module.module().label_type().as_type().id();
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let module_ref = self.module;
-        let ids: Vec<ValueId> = self.payload().destinations.borrow().clone();
-        ids.into_iter().map(move |bid| {
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label()
-        })
+        let ids: Vec<ValueSlot> = self.payload().destinations.borrow().clone();
+        ids.into_iter()
+            .map(move |bid| BlockId::<Dyn, B>::from_raw(module_ref.id(), bid))
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
     /// Append a destination block. Mirrors `IndirectBrInst::addDestination`.
+    ///
+    /// An `indirectbr` edge carries no block arguments and has no
+    /// argument-carrying form — the address picks the destination at run time,
+    /// so there is nothing to attach a per-edge argument list to. A
+    /// **parameterised** destination (one from
+    /// [`IRBuilder::append_block_with_params`](crate::IRBuilder::append_block_with_params)
+    /// or its siblings) is therefore rejected outright with
+    /// [`crate::IrError::PhiArgArityMismatch`], the documented restriction the
+    /// block-argument design called for. A block that merely *contains* phis is
+    /// unaffected, so the classic phi-with-`indirectbr` shape still parses and
+    /// round-trips from `.ll`.
     pub fn add_destination<R, Target>(self, target: Target) -> IrResult<Self>
     where
         R: ReturnMarker,
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        self.payload()
-            .destinations
-            .borrow_mut()
-            .push(target.into_basic_block_label().id());
+        let target = target.into_basic_block_label(self.module)?;
+        require_no_block_parameters(self.module, target.slot())?;
+        self.payload().destinations.borrow_mut().push(target.slot());
         Ok(self)
     }
-    /// Consume the open `indirectbr` and return its [`Closed`] view.
+    /// Consume the open `indirectbr` and return its [`TermClosed`] view.
     #[inline]
     pub fn finish(self) -> IndirectBrInst<'ctx, TermClosed, B> {
         self.retag()
@@ -2933,10 +3134,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
 /// successors (`normal` / `unwind`). The `R` parameter mirrors
 /// [`CallInst`]'s typed-return marker.
 #[derive(Debug)]
-pub struct InvokeInst<'ctx, R: ReturnMarker = Dyn, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct InvokeInst<'ctx, R: ReturnMarker, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _r: core::marker::PhantomData<R>,
 }
 
@@ -2963,7 +3164,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> core::hash::Hash for InvokeInst<'ctx
 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -3004,7 +3205,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     pub fn as_dyn(self) -> InvokeInst<'ctx, Dyn, B> {
         self.retag::<Dyn>()
     }
-    fn payload(self) -> &'ctx crate::instr_types::InvokeInstData {
+    fn payload(self) -> &'ctx InvokeInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3028,7 +3229,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let module = self.module.module();
-        let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
+        let ids: Vec<ValueSlot> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
             let data = module.context().value_data(id);
             Value::from_parts(id, self.module, data.ty)
@@ -3037,25 +3238,11 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
     pub fn calling_conv(self) -> CallingConv {
         self.payload().calling_conv
     }
-    pub fn normal_destination(self) -> BasicBlockLabel<'ctx, Dyn, B> {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unterminated, B>::from_parts(
-            self.payload().normal_dest.get(),
-            self.module,
-            label_ty,
-        )
-        .label()
+    pub fn normal_destination(self) -> BlockId<Dyn, B> {
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().normal_dest.get())
     }
-    pub fn unwind_destination(self) -> BasicBlockLabel<'ctx, Dyn, B> {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unterminated, B>::from_parts(
-            self.payload().unwind_dest.get(),
-            self.module,
-            label_ty,
-        )
-        .label()
+    pub fn unwind_destination(self) -> BlockId<Dyn, B> {
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().unwind_dest.get())
     }
 }
 
@@ -3063,16 +3250,16 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
 /// A call-like terminator with one fallthrough destination plus zero
 /// or more indirect destination labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CallBrInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct CallBrInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CallBrInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::CallBrInstData {
+    fn payload(self) -> &'ctx CallBrInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3096,7 +3283,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let module = self.module.module();
-        let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
+        let ids: Vec<ValueSlot> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
             let data = module.context().value_data(id);
             Value::from_parts(id, self.module, data.ty)
@@ -3105,33 +3292,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
     pub fn calling_conv(self) -> CallingConv {
         self.payload().calling_conv
     }
-    pub fn default_destination(self) -> BasicBlockLabel<'ctx, Dyn, B> {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unterminated, B>::from_parts(
-            self.payload().default_dest.get(),
-            self.module,
-            label_ty,
-        )
-        .label()
+    pub fn default_destination(self) -> BlockId<Dyn, B> {
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().default_dest.get())
     }
     pub fn indirect_destinations(
         self,
-    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>>
-    + DoubleEndedIterator
-    + FusedIterator
-    + 'ctx {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        let ids: Vec<ValueId> = self
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
+        let ids: Vec<ValueSlot> = self
             .payload()
             .indirect_dests
             .iter()
             .map(|c| c.get())
             .collect();
-        ids.into_iter().map(move |id| {
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(id, self.module, label_ty).label()
-        })
+        ids.into_iter()
+            .map(move |id| BlockId::<Dyn, B>::from_raw(self.module.id(), id))
     }
 }
 
@@ -3145,10 +3320,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallBrInst<'ctx, B> {
 /// [`Open`](TermOpen)) tracks whether the clause list is still editable.
 /// Open mutators are gated to `P = Open`; `finish` moves the open handle.
 #[derive(Debug)]
-pub struct LandingPadInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct LandingPadInst<'ctx, P: TermOpenState, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _p: core::marker::PhantomData<P>,
 }
 
@@ -3168,7 +3343,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand> core::hash::Hash for LandingPadInst
 
 impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -3200,7 +3375,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
     pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
-    fn payload(&self) -> &'ctx crate::instr_types::LandingPadInstData {
+    fn payload(&self) -> &'ctx LandingPadInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3229,7 +3404,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
     + 'ctx {
         let module = self.module.module();
         let module_ref = self.module;
-        let entries: Vec<(LandingPadClauseKind, ValueId)> = self
+        let entries: Vec<(LandingPadClauseKind, ValueSlot)> = self
             .payload()
             .clauses
             .borrow()
@@ -3282,7 +3457,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
             .push(ValueUse::Instruction(self.id));
         Ok(self)
     }
-    /// Consume the open landingpad and return its [`Closed`] view.
+    /// Consume the open landingpad and return its [`TermClosed`] view.
     #[inline]
     pub fn finish(self) -> LandingPadInst<'ctx, TermClosed, B> {
         self.retag()
@@ -3292,16 +3467,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
 /// `resume` terminator. Mirrors `ResumeInst` (`Instructions.h`).
 /// Single value operand (typically a `landingpad` result).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ResumeInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct ResumeInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(ResumeInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> ResumeInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::ResumeInstData {
+    fn payload(self) -> &'ctx ResumeInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3326,16 +3501,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> ResumeInst<'ctx, B> {
 /// `cleanuppad` instruction. Mirrors `CleanupPadInst` (`Instructions.h`).
 /// Result is a `token`-typed value used as a funclet pad.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CleanupPadInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct CleanupPadInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CleanupPadInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CleanupPadInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::CleanupPadInstData {
+    fn payload(self) -> &'ctx CleanupPadInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3358,7 +3533,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupPadInst<'ctx, B> {
     ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let module = self.module.module();
-        let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
+        let ids: Vec<ValueSlot> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
             let data = module.context().value_data(id);
             Value::from_parts(id, self.module, data.ty)
@@ -3370,16 +3545,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupPadInst<'ctx, B> {
 /// Result is a `token`-typed value used as a funclet pad. Parent must
 /// be a `catchswitch` (verifier rule).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CatchPadInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct CatchPadInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CatchPadInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CatchPadInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::CatchPadInstData {
+    fn payload(self) -> &'ctx CatchPadInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3400,7 +3575,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchPadInst<'ctx, B> {
     ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let module = self.module.module();
-        let ids: Vec<ValueId> = self.payload().args.iter().map(|c| c.get()).collect();
+        let ids: Vec<ValueSlot> = self.payload().args.iter().map(|c| c.get()).collect();
         ids.into_iter().map(move |id| {
             let data = module.context().value_data(id);
             Value::from_parts(id, self.module, data.ty)
@@ -3410,16 +3585,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchPadInst<'ctx, B> {
 
 /// `catchret` terminator. Mirrors `CatchReturnInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CatchReturnInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct CatchReturnInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CatchReturnInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CatchReturnInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::CatchReturnInstData {
+    fn payload(self) -> &'ctx CatchReturnInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3435,30 +3610,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchReturnInst<'ctx, B> {
         let data = module.context().value_data(id);
         Value::from_parts(id, self.module, data.ty)
     }
-    pub fn target(self) -> BasicBlockLabel<'ctx, Dyn, B> {
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        BasicBlock::<Dyn, Unterminated, B>::from_parts(
-            self.payload().target_bb,
-            self.module,
-            label_ty,
-        )
-        .label()
+    pub fn target(self) -> BlockId<Dyn, B> {
+        BlockId::<Dyn, B>::from_raw(self.module.id(), self.payload().target_bb)
     }
 }
 
 /// `cleanupret` terminator. Mirrors `CleanupReturnInst` (`Instructions.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CleanupReturnInst<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct CleanupReturnInst<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 decl_handle_scaffold!(CleanupReturnInst);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CleanupReturnInst<'ctx, B> {
-    fn payload(self) -> &'ctx crate::instr_types::CleanupReturnInstData {
+    fn payload(self) -> &'ctx CleanupReturnInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3475,21 +3643,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> CleanupReturnInst<'ctx, B> {
         Value::from_parts(id, self.module, data.ty)
     }
     /// `None` represents `unwind to caller`.
-    pub fn unwind_dest(self) -> Option<BasicBlockLabel<'ctx, Dyn, B>> {
+    pub fn unwind_dest(self) -> Option<BlockId<Dyn, B>> {
         let id = self.payload().unwind_dest?;
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        Some(BasicBlock::<Dyn, Unterminated, B>::from_parts(id, self.module, label_ty).label())
+        Some(BlockId::<Dyn, B>::from_raw(self.module.id(), id))
     }
 }
 
 /// `catchswitch` terminator. Mirrors `CatchSwitchInst` (`Instructions.h`).
 /// Variable-arity handler list with optional unwind destination.
 #[derive(Debug)]
-pub struct CatchSwitchInst<'ctx, P: TermOpenState = TermOpen, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct CatchSwitchInst<'ctx, P: TermOpenState, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     _p: core::marker::PhantomData<P>,
 }
 
@@ -3509,7 +3675,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand> core::hash::Hash for CatchSwitchIns
 
 impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> {
     #[inline]
-    pub(super) fn from_raw<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_raw<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -3541,7 +3707,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
     pub fn to_erased(&self) -> Value<'ctx, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
-    fn payload(&self) -> &'ctx crate::instr_types::CatchSwitchInstData {
+    fn payload(&self) -> &'ctx CatchSwitchInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
@@ -3558,11 +3724,9 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
         Some(Value::from_parts(id, self.module, data.ty))
     }
     /// `None` = `unwind to caller`.
-    pub fn unwind_dest(&self) -> Option<BasicBlockLabel<'ctx, Dyn, B>> {
+    pub fn unwind_dest(&self) -> Option<BlockId<Dyn, B>> {
         let id = self.payload().unwind_dest.get()?;
-        let module = self.module.module();
-        let label_ty = module.label_type().as_type().id();
-        Some(BasicBlock::<Dyn, Unterminated, B>::from_parts(id, self.module, label_ty).label())
+        Some(BlockId::<Dyn, B>::from_raw(self.module.id(), id))
     }
     pub fn handler_count(&self) -> u32 {
         let len = self.payload().handlers.borrow().len();
@@ -3573,16 +3737,12 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
     /// `CatchSwitchInst::handlers()`.
     pub fn handlers(
         &self,
-    ) -> impl ExactSizeIterator<Item = BasicBlockLabel<'ctx, Dyn, B>>
-    + DoubleEndedIterator
-    + FusedIterator
-    + 'ctx {
-        let label_ty = self.module.module().label_type().as_type().id();
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    {
         let module_ref = self.module;
-        let ids: Vec<ValueId> = self.payload().handlers.borrow().clone();
-        ids.into_iter().map(move |bid| {
-            BasicBlock::<Dyn, Unterminated, B>::from_parts(bid, module_ref, label_ty).label()
-        })
+        let ids: Vec<ValueSlot> = self.payload().handlers.borrow().clone();
+        ids.into_iter()
+            .map(move |bid| BlockId::<Dyn, B>::from_raw(module_ref.id(), bid))
     }
 }
 
@@ -3595,7 +3755,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
         self.payload()
             .handlers
             .borrow_mut()
-            .push(handler.into_basic_block_label().id());
+            .push(handler.into_basic_block_label(self.module)?.slot());
         Ok(self)
     }
     #[inline]
@@ -3607,12 +3767,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IrError, Linkage, Module};
+    use crate::{IrError, Linkage};
 
     /// Locks `TypedCallInst::result` as the `CallResult` GAT's narrowing
     /// path: wrapping a raw `CallInst<'ctx, i32, B>` and reading
     /// `result()` back must yield an `IntValue<'ctx, i32, B>` that names
-    /// the exact same underlying value (same `ValueId`) as the call
+    /// the exact same underlying value (same `ValueSlot`) as the call
     /// instruction itself -- i.e. `result()` narrows the derived
     /// `CallResult` GAT without losing or renaming the value.
     ///
@@ -3627,27 +3787,26 @@ mod tests {
     /// code at all).
     #[test]
     fn typed_call_inst_result_narrows_to_callresult() -> Result<(), IrError> {
-        Module::with_new("typed-call-inst-result", |m| {
-            let callee = m
-                .add_typed_function::<i32, (), _>("callee", Linkage::External)?
-                .as_function();
-            let caller_ty = m.fn_type_no_params(m.i32_type(), false);
-            let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
-            let entry = caller.append_basic_block(&m, "entry");
-            let b = crate::IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let m = crate::module_new!("typed-call-inst-result")?;
+        let callee = m
+            .add_typed_function::<i32, (), _>("callee", Linkage::External)?
+            .as_function();
+        let caller_ty = m.fn_type_no_params(m.i32_type(), false);
+        let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
+        let entry = m.view(caller).append_basic_block(&m, "entry");
+        let b = crate::IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-            let call: CallInst<'_, i32, _> =
-                b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?;
-            let call_id = call.to_erased().id();
+        let call: CallInst<'_, i32, _> =
+            b.view(b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?);
+        let call_id = call.to_erased().slot();
 
-            let typed = TypedCallInst::<i32, _> {
-                inner: call,
-                _ret: core::marker::PhantomData,
-            };
-            let result = typed.result();
+        let typed = TypedCallInst::<i32, _> {
+            inner: call,
+            _ret: core::marker::PhantomData,
+        };
+        let result = typed.result();
 
-            assert_eq!(result.id(), call_id);
-            Ok(())
-        })
+        assert_eq!(result.slot(), call_id);
+        Ok(())
     }
 }

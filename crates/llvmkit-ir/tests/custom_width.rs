@@ -9,7 +9,7 @@
 //! `stepvector` round-trip lands with the vector / intrinsic phase.
 //! Per-test citations below.
 
-use llvmkit_ir::{FunctionValue, Linkage, Module, Width};
+use llvmkit_ir::{FunctionValue, Linkage, Width, module_new};
 
 /// Mirrors the constructive line `Type *I3 = IntegerType::get(Ctx, 3);`
 /// from `IRBuilderTest::CreateStepVectorI3`. Verifies our
@@ -18,13 +18,12 @@ use llvmkit_ir::{FunctionValue, Linkage, Module, Width};
 /// print form is the canonical `i3`.
 #[test]
 fn int_type_n_constructor_matches_upstream_int3() {
-    Module::with_new("c", |m| {
-        let i3_ty = m.int_type_n::<3>();
-        assert_eq!(i3_ty.bit_width(), 3);
-        // LangRef: integer types print as `i<N>`. Our AsmWriter must
-        // match.
-        assert_eq!(format!("{}", i3_ty.as_type()), "i3");
-    })
+    let m = module_new!("c").expect("fresh module");
+    let i3_ty = m.int_type_n::<3>();
+    assert_eq!(i3_ty.bit_width(), 3);
+    // LangRef: integer types print as `i<N>`. Our AsmWriter must
+    // match.
+    assert_eq!(format!("{}", i3_ty.as_type()), "i3");
 }
 
 /// Type-level: `Width<N>` participates in the same trait surface as
@@ -37,10 +36,9 @@ fn int_type_n_constructor_matches_upstream_int3() {
 /// `srem-seteq-illegal-types.ll`).
 #[test]
 fn width_marker_works_as_return_marker() -> Result<(), llvmkit_ir::IrError> {
-    Module::with_new("c", |m| {
-        let _f: FunctionValue<'_, Width<17>> = m
-            .add_typed_function::<Width<17>, (Width<17>,), _>("identity17", Linkage::External)?
-            .as_function();
-        Ok(())
-    })
+    let m = module_new!("c")?;
+    let _f: FunctionValue<'_, Width<17>, _> = m
+        .view(m.add_typed_function::<Width<17>, (Width<17>,), _>("identity17", Linkage::External)?)
+        .as_function();
+    Ok(())
 }

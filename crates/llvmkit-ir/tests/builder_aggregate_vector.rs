@@ -3,7 +3,7 @@
 //!
 //! Every test cites its upstream source per Doctrine D11.
 
-use llvmkit_ir::{Dyn, IRBuilder, IntValue, IrError, Linkage, Module};
+use llvmkit_ir::{Dyn, DynBrand, IRBuilder, IntValue, IrError, Linkage, module_new};
 
 // --------------------------------------------------------------------------
 // extractvalue
@@ -14,50 +14,48 @@ use llvmkit_ir::{Dyn, IRBuilder, IntValue, IrError, Linkage, Module};
 /// type for an unpacked struct extract.
 #[test]
 fn extract_value_struct_field0() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i8_ty = m.i8_type();
-        let i32_ty = m.i32_type();
-        let void_ty = m.void_type();
-        let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
-        let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
-        let f = m.add_function_dyn("instructions.aggregateops", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let up = f.param(0)?;
-        let _ = b.build_extract_value(up, [0u32], "")?;
-        b.build_ret_void()?;
-        let text = format!("{m}");
-        // Mirrors `; CHECK: extractvalue { i8, i32 } %up, 0` (line 1550).
-        assert!(
-            text.contains("extractvalue { i8, i32 } %0, 0\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+    let f = m.add_function_dyn("instructions.aggregateops", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let up = m.view(f).param(0)?;
+    let _ = b.build_extract_value(up, [0u32], "")?;
+    b.build_ret_void()?;
+    let text = format!("{m}");
+    // Mirrors `; CHECK: extractvalue { i8, i32 } %up, 0` (line 1550).
+    assert!(
+        text.contains("extractvalue { i8, i32 } %0, 0\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// Ports `test/Bitcode/compatibility.ll` line 1553:
 /// `extractvalue [3 x i8] %arr, 2`.
 #[test]
 fn extract_value_array_index() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i8_ty = m.i8_type();
-        let void_ty = m.void_type();
-        let arr_ty = m.array_type(i8_ty, 3);
-        let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
-        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let arr = f.param(0)?;
-        let _ = b.build_extract_value(arr, [2u32], "")?;
-        b.build_ret_void()?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("extractvalue [3 x i8] %0, 2\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i8_ty = m.i8_type();
+    let void_ty = m.void_type();
+    let arr_ty = m.array_type(i8_ty, 3);
+    let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let arr = m.view(f).param(0)?;
+    let _ = b.build_extract_value(arr, [2u32], "")?;
+    b.build_ret_void()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("extractvalue [3 x i8] %0, 2\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// Ports `test/Bitcode/compatibility.ll` line 1555:
@@ -65,26 +63,25 @@ fn extract_value_array_index() -> Result<(), IrError> {
 /// path walks struct → struct → leaf.
 #[test]
 fn extract_value_nested_indices() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i8_ty = m.i8_type();
-        let i32_ty = m.i32_type();
-        let void_ty = m.void_type();
-        let inner = m.struct_type([i32_ty.as_type()], false);
-        let outer = m.struct_type([i8_ty.as_type(), inner.as_type()], false);
-        let fn_ty = m.fn_type(void_ty.as_type(), [outer.as_type()], false);
-        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let n = f.param(0)?;
-        let _ = b.build_extract_value(n, [1u32, 0u32], "")?;
-        b.build_ret_void()?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("extractvalue { i8, { i32 } } %0, 1, 0\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let inner = m.struct_type([i32_ty.as_type()], false);
+    let outer = m.struct_type([i8_ty.as_type(), inner.as_type()], false);
+    let fn_ty = m.fn_type(void_ty.as_type(), [outer.as_type()], false);
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let n = m.view(f).param(0)?;
+    let _ = b.build_extract_value(n, [1u32, 0u32], "")?;
+    b.build_ret_void()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("extractvalue { i8, { i32 } } %0, 1, 0\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// Mirrors `ExtractValueInst::init` (`lib/IR/Instructions.cpp`): LLVM rejects
@@ -95,29 +92,28 @@ fn extract_value_nested_indices() -> Result<(), IrError> {
 /// the assembler diagnostic in `test/Assembler/extractvalue-no-idx.ll`.
 #[test]
 fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i8_ty = m.i8_type();
-        let i32_ty = m.i32_type();
-        let void_ty = m.void_type();
-        let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
-        let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
-        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let up = f.param(0)?;
-        let err = b
-            .build_extract_value_dyn(up, &[], "bad")
-            .expect_err("empty extractvalue indices must be rejected");
-        assert_eq!(
-            err,
-            IrError::InvalidOperation {
-                message: "extractvalue indices must not be empty",
-            }
-        );
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        b.build_ret_void()?;
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let up = m.view(f).param(0)?;
+    let err = b
+        .build_extract_value_dyn(up, &[], "bad")
+        .expect_err("empty extractvalue indices must be rejected");
+    assert_eq!(
+        err,
+        IrError::InvalidOperation {
+            message: "extractvalue indices must not be empty",
+        }
+    );
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    b.build_ret_void()?;
+    Ok(())
 }
 
 /// Ports `test/Assembler/extractvalue-invalid-idx.ll` (PR4170):
@@ -128,26 +124,25 @@ fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
 /// AT->getNumElements()`.
 #[test]
 fn extract_value_rejects_out_of_range_array_index() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i32_ty = m.i32_type();
-        let void_ty = m.void_type();
-        let arr_ty = m.array_type(i32_ty, 0);
-        let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
-        let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let undef = arr_ty.as_type().get_undef();
-        let err = b
-            .build_extract_value(undef, [0u32], "")
-            .expect_err("index 0 into a 0-element array must be rejected");
-        assert_eq!(
-            err,
-            IrError::AggregateIndexOutOfRange { index: 0, count: 0 }
-        );
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        b.build_ret_void()?;
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let arr_ty = m.array_type(i32_ty, 0);
+    let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
+    let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let undef = arr_ty.as_type().get_undef();
+    let err = b
+        .build_extract_value(undef, [0u32], "")
+        .expect_err("index 0 into a 0-element array must be rejected");
+    assert_eq!(
+        err,
+        IrError::AggregateIndexOutOfRange { index: 0, count: 0 }
+    );
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    b.build_ret_void()?;
+    Ok(())
 }
 
 /// Ports `test/Assembler/extractvalue-invalid-idx.ll` (PR4170), struct variant:
@@ -158,27 +153,26 @@ fn extract_value_rejects_out_of_range_array_index() -> Result<(), IrError> {
 /// ST->getNumElements()`.
 #[test]
 fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i8_ty = m.i8_type();
-        let i32_ty = m.i32_type();
-        let void_ty = m.void_type();
-        let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
-        let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
-        let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let undef = s_ty.as_type().get_undef();
-        let err = b
-            .build_extract_value(undef, [2u32], "")
-            .expect_err("index 2 into a 2-field struct must be rejected");
-        assert_eq!(
-            err,
-            IrError::AggregateIndexOutOfRange { index: 2, count: 2 }
-        );
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        b.build_ret_void()?;
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+    let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let undef = s_ty.as_type().get_undef();
+    let err = b
+        .build_extract_value(undef, [2u32], "")
+        .expect_err("index 2 into a 2-field struct must be rejected");
+    assert_eq!(
+        err,
+        IrError::AggregateIndexOutOfRange { index: 2, count: 2 }
+    );
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    b.build_ret_void()?;
+    Ok(())
 }
 
 // --------------------------------------------------------------------------
@@ -189,51 +183,49 @@ fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
 /// `insertvalue { i8, i32 } %up, i8 1, 0`.
 #[test]
 fn insert_value_struct_field0() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i8_ty = m.i8_type();
-        let i32_ty = m.i32_type();
-        let void_ty = m.void_type();
-        let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
-        let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
-        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let up = f.param(0)?;
-        let one = i8_ty.const_int(1_i8);
-        let _ = b.build_insert_value(up, one, [0u32], "")?;
-        b.build_ret_void()?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("insertvalue { i8, i32 } %0, i8 1, 0\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let up = m.view(f).param(0)?;
+    let one = i8_ty.const_int(1_i8);
+    let _ = b.build_insert_value(up, one, [0u32], "")?;
+    b.build_ret_void()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("insertvalue { i8, i32 } %0, i8 1, 0\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// Ports `test/Bitcode/compatibility.ll` line 1562:
 /// `insertvalue [3 x i8] %arr, i8 0, 0`.
 #[test]
 fn insert_value_array_index_zero() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i8_ty = m.i8_type();
-        let void_ty = m.void_type();
-        let arr_ty = m.array_type(i8_ty, 3);
-        let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
-        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let arr = f.param(0)?;
-        let zero = i8_ty.const_int(0_i8);
-        let _ = b.build_insert_value(arr, zero, [0u32], "")?;
-        b.build_ret_void()?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("insertvalue [3 x i8] %0, i8 0, 0\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i8_ty = m.i8_type();
+    let void_ty = m.void_type();
+    let arr_ty = m.array_type(i8_ty, 3);
+    let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let arr = m.view(f).param(0)?;
+    let zero = i8_ty.const_int(0_i8);
+    let _ = b.build_insert_value(arr, zero, [0u32], "")?;
+    b.build_ret_void()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("insertvalue [3 x i8] %0, i8 0, 0\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// Mirrors `InsertValueInst::init` (`lib/IR/Instructions.cpp`): LLVM rejects
@@ -245,29 +237,28 @@ fn insert_value_array_index_zero() -> Result<(), IrError> {
 /// `test/Assembler/extractvalue-no-idx.ll`.
 #[test]
 fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i8_ty = m.i8_type();
-        let i32_ty = m.i32_type();
-        let void_ty = m.void_type();
-        let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
-        let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
-        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let up = f.param(0)?;
-        let err = b
-            .build_insert_value_dyn(up, up, &[], "bad")
-            .expect_err("empty insertvalue indices must be rejected");
-        assert_eq!(
-            err,
-            IrError::InvalidOperation {
-                message: "insertvalue indices must not be empty",
-            }
-        );
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        b.build_ret_void()?;
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i8_ty = m.i8_type();
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let up = m.view(f).param(0)?;
+    let err = b
+        .build_insert_value_dyn(up, up, &[], "bad")
+        .expect_err("empty insertvalue indices must be rejected");
+    assert_eq!(
+        err,
+        IrError::InvalidOperation {
+            message: "insertvalue indices must not be empty",
+        }
+    );
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    b.build_ret_void()?;
+    Ok(())
 }
 
 // --------------------------------------------------------------------------
@@ -279,26 +270,25 @@ fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
 /// vector + integer-indexed extract.
 #[test]
 fn extract_element_vector_i8_index() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let f32_ty = m.f32_type();
-        let i8_ty = m.i8_type();
-        let void_ty = m.void_type();
-        let vec_ty = m.vector_type(f32_ty, 4, false);
-        let fn_ty = m.fn_type(void_ty.as_type(), [vec_ty.as_type()], false);
-        let f = m.add_function_dyn("instructions.vectorops", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let vec = f.param(0)?;
-        let zero = i8_ty.const_int(0_i8);
-        let _ = b.build_extract_element(vec, zero, "")?;
-        b.build_ret_void()?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("extractelement <4 x float> %0, i8 0\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let f32_ty = m.f32_type();
+    let i8_ty = m.i8_type();
+    let void_ty = m.void_type();
+    let vec_ty = m.vector_type(f32_ty, 4, false);
+    let fn_ty = m.fn_type(void_ty.as_type(), [vec_ty.as_type()], false);
+    let f = m.add_function_dyn("instructions.vectorops", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let vec = m.view(f).param(0)?;
+    let zero = i8_ty.const_int(0_i8);
+    let _ = b.build_extract_element(vec, zero, "")?;
+    b.build_ret_void()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("extractelement <4 x float> %0, i8 0\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 // --------------------------------------------------------------------------
@@ -309,27 +299,26 @@ fn extract_element_vector_i8_index() -> Result<(), IrError> {
 /// `insertelement <4 x float> %vec, float 3.500000e+00, i8 0`.
 #[test]
 fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let f32_ty = m.f32_type();
-        let i8_ty = m.i8_type();
-        let void_ty = m.void_type();
-        let vec_ty = m.vector_type(f32_ty, 4, false);
-        let fn_ty = m.fn_type(void_ty.as_type(), [vec_ty.as_type()], false);
-        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let vec = f.param(0)?;
-        let three_five = f32_ty.const_float(3.5_f32);
-        let zero = i8_ty.const_int(0_i8);
-        let _ = b.build_insert_element(vec, three_five, zero, "")?;
-        b.build_ret_void()?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("insertelement <4 x float> %0, float 3.500000e+00, i8 0\n"),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let f32_ty = m.f32_type();
+    let i8_ty = m.i8_type();
+    let void_ty = m.void_type();
+    let vec_ty = m.vector_type(f32_ty, 4, false);
+    let fn_ty = m.fn_type(void_ty.as_type(), [vec_ty.as_type()], false);
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let vec = m.view(f).param(0)?;
+    let three_five = f32_ty.const_float(3.5_f32);
+    let zero = i8_ty.const_int(0_i8);
+    let _ = b.build_insert_element(vec, three_five, zero, "")?;
+    b.build_ret_void()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("insertelement <4 x float> %0, float 3.500000e+00, i8 0\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 // --------------------------------------------------------------------------
@@ -341,31 +330,28 @@ fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
 /// Locks the all-zero mask print form (`zeroinitializer`).
 #[test]
 fn shuffle_vector_zeroinitializer_mask() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let f32_ty = m.f32_type();
-        let void_ty = m.void_type();
-        let vec_ty = m.vector_type(f32_ty, 4, false);
-        let fn_ty = m.fn_type(
-            void_ty.as_type(),
-            [vec_ty.as_type(), vec_ty.as_type()],
-            false,
-        );
-        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let v0 = f.param(0)?;
-        let v1 = f.param(1)?;
-        let _ = b.build_shuffle_vector(v0, v1, &[0, 0], "")?;
-        b.build_ret_void()?;
-        let text = format!("{m}");
-        assert!(
-            text.contains(
-                "shufflevector <4 x float> %0, <4 x float> %1, <2 x i32> zeroinitializer\n"
-            ),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let f32_ty = m.f32_type();
+    let void_ty = m.void_type();
+    let vec_ty = m.vector_type(f32_ty, 4, false);
+    let fn_ty = m.fn_type(
+        void_ty.as_type(),
+        [vec_ty.as_type(), vec_ty.as_type()],
+        false,
+    );
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let v0 = m.view(f).param(0)?;
+    let v1 = m.view(f).param(1)?;
+    let _ = b.build_shuffle_vector(v0, v1, &[0, 0], "")?;
+    b.build_ret_void()?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("shufflevector <4 x float> %0, <4 x float> %1, <2 x i32> zeroinitializer\n"),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 /// Mirrors the explicit-mask print path in `printShuffleMask`
@@ -377,36 +363,35 @@ fn shuffle_vector_zeroinitializer_mask() -> Result<(), IrError> {
 /// form rather than the `zeroinitializer` / `poison` short forms.
 #[test]
 fn shuffle_vector_explicit_mask_print() -> Result<(), IrError> {
-    Module::with_new("a", |m| {
-        let i32_ty = m.i32_type();
-        let void_ty = m.void_type();
-        let vec_ty = m.vector_type(i32_ty, 4, false);
-        let fn_ty = m.fn_type(
-            void_ty.as_type(),
-            [vec_ty.as_type(), vec_ty.as_type()],
-            false,
-        );
-        let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let v0 = f.param(0)?;
-        let v1 = f.param(1)?;
-        let _ = b.build_shuffle_vector(v0, v1, &[1, 1, 0, 0], "")?;
-        b.build_ret_void()?;
-        let text = format!("{m}");
-        // Asserts the canonical `<<N> x i32> <i32 e0, ...>` body that the
-        // upstream `printShuffleMask` produces for non-zero, non-poison masks.
-        assert!(
-            text.contains(
-                "shufflevector <4 x i32> %0, <4 x i32> %1, <4 x i32> <i32 1, i32 1, i32 0, i32 0>\n"
-            ),
-            "got:\n{text}"
-        );
-        Ok(())
-    })
+    let m = module_new!("a")?;
+    let i32_ty = m.i32_type();
+    let void_ty = m.void_type();
+    let vec_ty = m.vector_type(i32_ty, 4, false);
+    let fn_ty = m.fn_type(
+        void_ty.as_type(),
+        [vec_ty.as_type(), vec_ty.as_type()],
+        false,
+    );
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let v0 = m.view(f).param(0)?;
+    let v1 = m.view(f).param(1)?;
+    let _ = b.build_shuffle_vector(v0, v1, &[1, 1, 0, 0], "")?;
+    b.build_ret_void()?;
+    let text = format!("{m}");
+    // Asserts the canonical `<<N> x i32> <i32 e0, ...>` body that the
+    // upstream `printShuffleMask` produces for non-zero, non-poison masks.
+    assert!(
+        text.contains(
+            "shufflevector <4 x i32> %0, <4 x i32> %1, <4 x i32> <i32 1, i32 1, i32 0, i32 0>\n"
+        ),
+        "got:\n{text}"
+    );
+    Ok(())
 }
 
 // Suppress unused-import warning if a marker drifts.
 const _: fn() = || {
-    let _ = std::any::TypeId::of::<IntValue<i32>>();
+    let _ = std::any::TypeId::of::<IntValue<'static, i32, DynBrand>>();
 };

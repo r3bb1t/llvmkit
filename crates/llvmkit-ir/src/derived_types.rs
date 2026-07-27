@@ -2,7 +2,7 @@
 //! `llvm/include/llvm/IR/DerivedTypes.h`.
 //!
 //! Each handle (`IntType<'ctx>`, `FloatType<'ctx>`, ...) is a
-//! `(TypeId, ModuleRef<'ctx>)` record. Both fields are themselves `Hash`
+//! `(TypeSlot, ModuleRef<'ctx>)` record. Both fields are themselves `Hash`
 //! and `Eq`, so every handle derives the full
 //! `Copy + Clone + PartialEq + Eq + Hash + Debug` surface without any
 //! hand-written impls.
@@ -29,8 +29,8 @@ use core::fmt;
 use core::iter::FusedIterator;
 
 use super::error::{IrError, IrResult, TypeKindLabel};
-use super::module::{Brand, ModuleBrand, ModuleRef};
-use super::r#type::{Type, TypeData, TypeId, TypeKind};
+use super::module::{ModuleBrand, ModuleRef};
+use super::r#type::{Type, TypeData, TypeKind, TypeSlot};
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
@@ -53,14 +53,14 @@ macro_rules! decl_type_handle {
     ) => {
         $(#[$attr])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
-            pub(super) id: TypeId,
+        pub struct $name<'ctx, B: ModuleBrand> {
+            pub(super) id: TypeSlot,
             pub(super) module: ModuleRef<'ctx, B>,
         }
 
         impl<'ctx, B: ModuleBrand> $name<'ctx, B> {
             #[inline]
-            pub(super) fn new<M>(id: TypeId, module: M) -> Self
+            pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
             where
                 M: Into<ModuleRef<'ctx, B>>,
             {
@@ -138,13 +138,8 @@ decl_type_handle!(
 /// mismatch at compile time. Runtime-checked defaults keep existing call
 /// sites working. Array lengths are `u64` (mirroring
 /// `ArrayType::getNumElements`).
-pub struct ArrayType<
-    'ctx,
-    E: VecElem = ElemDyn,
-    L: ArrayLen = ArrLenDyn,
-    B: ModuleBrand = Brand<'ctx>,
-> {
-    pub(super) id: TypeId,
+pub struct ArrayType<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> {
+    pub(super) id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
@@ -181,7 +176,7 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> fmt::Debug for ArrayType<'ct
 
 impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L, B> {
     #[inline]
-    pub(super) fn new<M>(id: TypeId, module: M) -> Self
+    pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -277,8 +272,8 @@ impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for ArrayType<'ctx, ElemDyn, A
 /// consumes the opaque handle and produces a `StructType<'ctx,
 /// BodySet>`. The runtime-checked default keeps existing parsed-IR /
 /// literal-struct call sites working without churn.
-pub struct StructType<'ctx, Body: StructBodyState = StructBodyDyn, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: TypeId,
+pub struct StructType<'ctx, Body: StructBodyState, B: ModuleBrand> {
+    pub(super) id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _b: core::marker::PhantomData<Body>,
 }
@@ -310,7 +305,7 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand> core::fmt::Debug for StructTyp
 
 impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, B> {
     #[inline]
-    pub(super) fn new<M>(id: TypeId, module: M) -> Self
+    pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -405,9 +400,8 @@ impl<'ctx, B: ModuleBrand> TryFrom<Type<'ctx, B>> for StructType<'ctx, StructBod
 /// parsed IR lands in; `VectorType<'ctx, i32, Len<4>>` is a statically
 /// typed `<4 x i32>`, and builder call sites can reject a shape mismatch at
 /// compile time. Runtime-checked defaults keep existing call sites working.
-pub struct VectorType<'ctx, E: VecElem = ElemDyn, L: VecLen = LenDyn, B: ModuleBrand = Brand<'ctx>>
-{
-    pub(super) id: TypeId,
+pub struct VectorType<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> {
+    pub(super) id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
@@ -444,7 +438,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> fmt::Debug for VectorType<'ctx
 
 impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, B> {
     #[inline]
-    pub(super) fn new<M>(id: TypeId, module: M) -> Self
+    pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -570,8 +564,8 @@ decl_type_handle!(
 ///
 /// Use [`IntType<'ctx, IntDyn>`](IntDyn) when the width
 /// is only known at runtime (parsed `.ll`).
-pub struct IntType<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: TypeId,
+pub struct IntType<'ctx, W: IntWidth, B: ModuleBrand> {
+    pub(super) id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _w: PhantomData<W>,
 }
@@ -610,7 +604,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand> fmt::Debug for IntType<'ctx, W, B> {
 
 impl<'ctx, W: IntWidth, B: ModuleBrand> IntType<'ctx, W, B> {
     #[inline]
-    pub(super) fn new<M>(id: TypeId, module: M) -> Self
+    pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -739,9 +733,9 @@ impl_int_type_static_try_from!(i128, 128);
 /// Static -> `Dyn` widening (always succeeds).
 macro_rules! impl_int_type_static_to_dyn {
     ($marker:ident) => {
-        impl<'ctx> From<IntType<'ctx, $marker>> for IntType<'ctx, IntDyn> {
+        impl<'ctx, B: ModuleBrand> From<IntType<'ctx, $marker, B>> for IntType<'ctx, IntDyn, B> {
             #[inline]
-            fn from(t: IntType<'ctx, $marker>) -> Self {
+            fn from(t: IntType<'ctx, $marker, B>) -> Self {
                 t.as_dyn()
             }
         }
@@ -764,8 +758,8 @@ impl_int_type_static_to_dyn!(i128);
 /// The `K: FloatKind` marker encodes which kind at the type level.
 /// Use [`FloatDyn`] when the kind is only known
 /// at runtime.
-pub struct FloatType<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: TypeId,
+pub struct FloatType<'ctx, K: FloatKind, B: ModuleBrand> {
+    pub(super) id: TypeSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) _k: PhantomData<K>,
 }
@@ -801,7 +795,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand> fmt::Debug for FloatType<'ctx, K, B> {
 
 impl<'ctx, K: FloatKind, B: ModuleBrand> FloatType<'ctx, K, B> {
     #[inline]
-    pub(super) fn new<M>(id: TypeId, module: M) -> Self
+    pub(super) fn new<M>(id: TypeSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -910,9 +904,11 @@ impl_float_type_static_try_from!(PpcFp128, PpcFp128, PpcFp128);
 
 macro_rules! impl_float_type_static_to_dyn {
     ($marker:ident) => {
-        impl<'ctx> From<FloatType<'ctx, $marker>> for FloatType<'ctx, FloatDyn> {
+        impl<'ctx, B: ModuleBrand> From<FloatType<'ctx, $marker, B>>
+            for FloatType<'ctx, FloatDyn, B>
+        {
             #[inline]
-            fn from(t: FloatType<'ctx, $marker>) -> Self {
+            fn from(t: FloatType<'ctx, $marker, B>) -> Self {
                 t.as_dyn()
             }
         }
@@ -1224,7 +1220,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TargetExtType<'ctx, B> {
 
 /// Exhaustive enum over every type kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AnyTypeEnum<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum AnyTypeEnum<'ctx, B: ModuleBrand> {
     Void(VoidType<'ctx, B>),
     Int(IntType<'ctx, IntDyn, B>),
     Float(FloatType<'ctx, FloatDyn, B>),
@@ -1309,7 +1305,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for AnyTypeEnum<'ctx, B> {
 /// sized: methods that require sizedness can take it directly without
 /// runtime checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SizedType<'ctx, B: ModuleBrand = Brand<'ctx>>(pub(super) Type<'ctx, B>);
+pub struct SizedType<'ctx, B: ModuleBrand>(pub(super) Type<'ctx, B>);
 
 impl<'ctx, B: ModuleBrand> SizedType<'ctx, B> {
     #[inline]
@@ -1348,7 +1344,7 @@ impl<'ctx, B: ModuleBrand> fmt::Display for SizedType<'ctx, B> {
 /// First-class types that may carry an SSA value: integer / float /
 /// pointer / array / struct / vector. Mirrors LLVM's "basic" type group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BasicTypeEnum<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum BasicTypeEnum<'ctx, B: ModuleBrand> {
     Int(IntType<'ctx, IntDyn, B>),
     Float(FloatType<'ctx, FloatDyn, B>),
     Pointer(PointerType<'ctx, B>),
@@ -1416,7 +1412,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for BasicTypeEnum<'ctx, B> {
 /// Basic + metadata. Used for the typing of variadic intrinsics whose
 /// arguments may include `metadata` slots (e.g. `@llvm.dbg.value`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BasicMetadataTypeEnum<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum BasicMetadataTypeEnum<'ctx, B: ModuleBrand> {
     Int(IntType<'ctx, IntDyn, B>),
     Float(FloatType<'ctx, FloatDyn, B>),
     Pointer(PointerType<'ctx, B>),
@@ -1481,7 +1477,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for BasicMetadataTypeEnum<'ctx, B
 /// so `extractvalue` / `insertvalue` cannot accept a vector source
 /// (matches `Type.h` + LangRef).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AggregateType<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub enum AggregateType<'ctx, B: ModuleBrand> {
     Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B>),
     Struct(StructType<'ctx, StructBodyDyn, B>),
 }

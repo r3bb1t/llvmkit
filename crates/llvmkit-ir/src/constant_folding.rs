@@ -32,10 +32,10 @@ use super::instr_types::{BinaryOpcode, CastOpcode, PhiData, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
 use super::intrinsics::BinaryIntrinsic;
-use super::module::{Brand, ModuleBrand, ModuleRef, ModuleView};
+use super::module::{DynBrand, ModuleBrand, ModuleRef, ModuleView};
 use super::target_library_info::{LibFunc, TargetLibraryInfo};
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData};
-use super::value::{IsValue, Value, ValueId, ValueKindData};
+use super::value::{IsValue, Value, ValueKindData, ValueSlot};
 use super::vec_len::LenDyn;
 use super::{ApInt, Dyn, FunctionValue, IrError, IrResult};
 
@@ -100,7 +100,7 @@ impl PreservedCastFlags {
 
 /// Constant pointer offset relative to one global object.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ConstantOffsetFromGlobal<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ConstantOffsetFromGlobal<'ctx, B: ModuleBrand> {
     global: GlobalVariable<'ctx, B>,
     offset: ApInt,
 }
@@ -434,8 +434,8 @@ pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx>(
                     return Ok(constant);
                 };
                 let folded = constant_fold_constant(element, dl, tli)?;
-                changed |= folded.id() != id;
-                folded_ids.push(folded.id());
+                changed |= folded.slot() != id;
+                folded_ids.push(folded.slot());
             }
             if !changed {
                 return Ok(constant);
@@ -971,7 +971,7 @@ fn fold_pointer_base_offset<'ctx, B: ModuleBrand + 'ctx>(
 /// comment for why arena identity alone is insufficient here).
 ///
 /// A global/function-backed base resolves to the underlying global's own
-/// [`ValueId`] regardless of how many distinct `GlobalValueRef` wrapper
+/// [`ValueSlot`] regardless of how many distinct `GlobalValueRef` wrapper
 /// constants happen to name it — including a bare `GepOffset` base,
 /// defensively, though after stripping it should already have been
 /// re-wrapped as a `GlobalValueRef` by
@@ -980,12 +980,12 @@ fn fold_pointer_base_offset<'ctx, B: ModuleBrand + 'ctx>(
 /// key, exactly like the arena-identity comparison this replaces: safe,
 /// since two such constants only compare equal when they are the literal
 /// same value.
-fn base_identity<'ctx, B: ModuleBrand + 'ctx>(base: Constant<'ctx, B>) -> ValueId {
+fn base_identity<'ctx, B: ModuleBrand + 'ctx>(base: Constant<'ctx, B>) -> ValueSlot {
     match &base.into_erased().data().kind {
         ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => *value,
-        ValueKindData::Function(_) | ValueKindData::GlobalVariable(_) => base.id(),
+        ValueKindData::Function(_) | ValueKindData::GlobalVariable(_) => base.slot(),
         ValueKindData::Constant(ConstantData::GepOffset { base_id, .. }) => *base_id,
-        _ => base.id(),
+        _ => base.slot(),
     }
 }
 
@@ -1543,7 +1543,7 @@ fn constant_offset_from_global_with_offset<'ctx, B: ModuleBrand + 'ctx>(
 
 fn constant_gep_offset<'ctx, B: ModuleBrand + 'ctx>(
     source_ty: Type<'ctx, B>,
-    index_ids: &[ValueId],
+    index_ids: &[ValueSlot],
     module: ModuleView<'ctx, B>,
     index_bits: u32,
     dl: &DataLayout,
@@ -1603,7 +1603,7 @@ fn constant_gep_offset<'ctx, B: ModuleBrand + 'ctx>(
 
 fn constant_gep_index<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleView<'ctx, B>,
-    id: ValueId,
+    id: ValueSlot,
     index_bits: u32,
 ) -> Option<ApInt> {
     let constant = constant_from_id(module, id)?;
@@ -1689,7 +1689,7 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
     };
 
     let module = pointer.into_erased().module();
-    let index_ids: Vec<ValueId> = indices.iter().map(|index| index.id()).collect();
+    let index_ids: Vec<ValueSlot> = indices.iter().map(|index| index.slot()).collect();
     // `Offset = APInt(BitWidth, DL.getIndexedOffsetInType(SrcElemTy, Ops[1..]), ...)`.
     // Bails (matching `for i in 1..: if (!isa<ConstantInt>(Ops[i])) return
     // nullptr;`) whenever an index isn't a plain scalar `ConstantInt`.
@@ -1993,7 +1993,7 @@ fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 fn constant_at_indexed_offset<'ctx, B: ModuleBrand + 'ctx>(
-    elements: &[ValueId],
+    elements: &[ValueSlot],
     elem_ty: Type<'ctx, B>,
     stride: u64,
     module: ModuleView<'ctx, B>,
@@ -2080,14 +2080,15 @@ fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
     Ok(None)
 }
 
-fn folded_constants_from_ids<'ctx, B>(
+fn folded_constants_from_ids<'ctx, B, I>(
     module: ModuleView<'ctx, B>,
-    ids: impl IntoIterator<Item = ValueId>,
+    ids: I,
     dl: &DataLayout,
     tli: Option<&TargetLibraryInfo>,
 ) -> IrResult<Option<Vec<Constant<'ctx, B>>>>
 where
     B: ModuleBrand + 'ctx,
+    I: IntoIterator<Item = ValueSlot>,
 {
     let mut folded = Vec::new();
     for id in ids {
@@ -2373,7 +2374,7 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
 
 fn aggregate_to_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
-    elements: &[ValueId],
+    elements: &[ValueSlot],
     module: ModuleView<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Vec<u8>>> {
@@ -2592,7 +2593,7 @@ fn cast_constant_expr_opcode(opcode: CastOpcode) -> Option<ConstantExprOpcode> {
 
 fn constant_from_id<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleView<'ctx, B>,
-    id: ValueId,
+    id: ValueSlot,
 ) -> Option<Constant<'ctx, B>> {
     let data = module.context().value_data(id);
     matches!(&data.kind, ValueKindData::Constant(_))
@@ -2673,7 +2674,7 @@ fn is_non_integral_pointer_type<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 fn denormal_mode_for_instruction<'ctx, B: ModuleBrand + 'ctx>(
-    parent_id: ValueId,
+    parent_id: ValueSlot,
     module: ModuleView<'ctx, B>,
     ty: Type<'ctx, B>,
 ) -> DenormalMode {
@@ -2802,7 +2803,7 @@ fn is_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
 
 fn constant_id_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleView<'ctx, B>,
-    id: ValueId,
+    id: ValueSlot,
 ) -> bool {
     let data = module.context().value_data(id);
     let ValueKindData::Constant(_) = &data.kind else {
@@ -2813,11 +2814,11 @@ fn constant_id_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>
     )))
 }
 
-fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx> {
+fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
     Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
 }
 
-fn erase_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx> {
+fn erase_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx, DynBrand> {
     Value::from_parts(
         value.id,
         ModuleView::new(value.module().core_ref()),
@@ -2826,8 +2827,12 @@ fn erase_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Value<'ctx
 }
 
 fn rebrand_constant<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx>,
+    constant: Constant<'ctx, DynBrand>,
     module: ModuleView<'ctx, B>,
 ) -> Constant<'ctx, B> {
-    Constant::from_parts(Value::from_parts(constant.id(), module, constant.ty().id()))
+    Constant::from_parts(Value::from_parts(
+        constant.slot(),
+        module,
+        constant.ty().id(),
+    ))
 }

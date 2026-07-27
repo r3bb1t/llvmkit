@@ -36,6 +36,16 @@ pub mod slot_mapping;
 
 use std::io::{self, Read};
 
+/// The closure-free entry points, re-exported at the crate root because they
+/// are the ordinary way to parse: each returns the owned
+/// [`Module`](llvmkit_ir::Module) itself. The closure forms that also hand back
+/// the [`ParsedModule`](ll_parser::ParsedModule) slot mapping stay in
+/// [`parser`], since that by-product borrows the module and so cannot be
+/// returned alongside it.
+pub use parser::{
+    parse_branded, parse_dynamic, parse_file_branded, parse_file_dynamic, parse_into,
+};
+
 /// Drain `r` into a fresh `Vec<u8>`. Convenience helper for the common case
 /// where a caller has any `Read` source and wants to feed it to
 /// [`ll_lexer::Lexer::new`].

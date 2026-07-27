@@ -29,7 +29,7 @@ pub fn derive_ir_struct(input: TokenStream) -> TokenStream {
 /// Author a `FunctionPass` from a plain inherent `impl` block.
 ///
 /// Expands `impl Pass { fn run(&mut self, cx) -> .. { .. } }` into exactly the
-/// raw `impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for Pass` a user
+/// raw `impl<B: ModuleBrand> FunctionPass<B> for Pass` a user
 /// could hand-write — the impl header, the `type Access` / `type Requires` /
 /// `const NAME` block, and the canonical `run` lifetimes are all supplied.
 /// **Zero runtime cost:** the output is byte-for-byte that trait impl.
@@ -61,8 +61,8 @@ pub fn function_pass(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Author a `ModulePass` from a plain inherent `impl` block — the module-level
 /// mirror of [`macro@function_pass`].
 ///
-/// Expands into exactly the raw `impl<'ctx, B: ModuleBrand + 'ctx>
-/// ModulePass<'ctx, B> for Pass` (with `ModCx` / `ModReport` in place of `FnCx` /
+/// Expands into exactly the raw `impl<B: ModuleBrand> ModulePass<B> for Pass`
+/// (with `ModCx` / `ModReport` in place of `FnCx` /
 /// `FnReport`). The attribute grammar is identical to
 /// [`macro@function_pass`], except `access` is a module rung — `Inspect` or
 /// `RewriteModule`; a function-only rung such as `PatchBody` fails the

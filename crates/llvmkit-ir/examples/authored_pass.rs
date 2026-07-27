@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 use llvmkit_ir::{
     Analyses, DominatorTreeAnalysis, IRBuilder, IrError, Linkage, Module, Unverified, Verified,
-    function_pass, module_pass, run_function_pass, run_module_pass,
+    function_pass, module_new, module_pass, run_function_pass, run_module_pass,
 };
 
 /// Read-only (`Inspect`) function pass that declares a required analysis and
@@ -57,40 +57,42 @@ impl AddMarkerGlobal {
 }
 
 fn main() -> Result<(), IrError> {
-    Module::with_new("authored-pass-demo", |m| {
-        // Build `i32 @f()` returning a constant. `add_typed_function` is the
-        // typed primary: the turbofish `<i32, ()>` *is* the schema (return
-        // `i32`, no parameters) — no separately built `FunctionType`.
-        let i32_ty = m.i32_type();
-        let f = m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::at_end(entry);
-        b.build_ret(i32_ty.const_int(1_u32))?;
+    let m = module_new!("authored-pass-demo")?;
+    // Build `i32 @f()` returning a constant. `add_typed_function` is the
+    // typed primary: the turbofish `<i32, ()>` *is* the schema (return
+    // `i32`, no parameters) — no separately built `FunctionType`.
+    let i32_ty = m.i32_type();
+    let f = m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::at_end(entry);
+    b.build_ret(i32_ty.const_int(1_u32))?;
 
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
 
-        // The `Inspect` function pass keeps the module verified (compile-time
-        // half of the guarantee is the explicit `Verified` binding).
-        let flag = Rc::new(Cell::new(false));
-        let verified: Module<'_, _, Verified> = run_function_pass(
-            EntryReachable { flag: flag.clone() },
-            verified,
-            f.as_function(),
-            &mut analyses,
-        )?;
-        println!("entry-reachable = {}", flag.get());
+    // The `Inspect` function pass keeps the module verified (compile-time
+    // half of the guarantee is the explicit `Verified` binding).
+    let flag = Rc::new(Cell::new(false));
+    // The driver names the function by **id**: it consumes the module token,
+    // and a view would be a borrow of the very token being moved.
+    // `as_function` drops the parameter schema without touching the module.
+    let verified: Module<_, Verified> = run_function_pass(
+        EntryReachable { flag: flag.clone() },
+        verified,
+        f.as_function(),
+        &mut analyses,
+    )?;
+    println!("entry-reachable = {}", flag.get());
 
-        // The `RewriteModule` module pass downgrades to `Unverified`.
-        let rewritten: Module<'_, _, Unverified> =
-            run_module_pass(AddMarkerGlobal, verified, &mut analyses)?;
-        println!(
-            "globals after add-marker-global = {}",
-            rewritten.globals().len()
-        );
+    // The `RewriteModule` module pass downgrades to `Unverified`.
+    let rewritten: Module<_, Unverified> =
+        run_module_pass(AddMarkerGlobal, verified, &mut analyses)?;
+    println!(
+        "globals after add-marker-global = {}",
+        rewritten.globals().len()
+    );
 
-        let reverified = rewritten.verify()?;
-        println!("re-verified module:\n{reverified}");
-        Ok(())
-    })
+    let reverified = rewritten.verify()?;
+    println!("re-verified module:\n{reverified}");
+    Ok(())
 }

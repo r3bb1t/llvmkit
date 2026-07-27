@@ -7,13 +7,12 @@ use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
 
 fn parse_and_render(module_name: &str, src: &[u8]) -> String {
-    Module::with_new(module_name, |module| {
-        Parser::new(src, &module)
-            .expect("lexer primes")
-            .parse_module()
-            .expect("parser succeeds");
-        format!("{module}")
-    })
+    let module = Module::dynamic(module_name);
+    Parser::new(src, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect("parser succeeds");
+    format!("{module}")
 }
 
 /// Port of `LLParser.cpp::parseValID` decimal APSInt conversion for arbitrary width.

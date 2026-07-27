@@ -21,10 +21,10 @@ use crate::instr_types::{
 use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicSemantic, semantic_for_callee};
 use crate::metadata::MetadataAttachmentKind;
-use crate::module::{Brand, ModuleBrand, ModuleCore, ModuleRef};
+use crate::module::{DynBrand, ModuleBrand, ModuleCore, ModuleRef};
 use crate::pass_context::FunctionView;
-use crate::r#type::{Type, TypeData, TypeId, TypeKind};
-use crate::value::{Value, ValueId, ValueKindData};
+use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
+use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::{ApInt, IrResult, KnownBits};
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
@@ -45,8 +45,8 @@ pub struct KnownBitsAnalysis;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct KnownBitsCacheKey {
-    value: ValueId,
-    context_instruction: Option<ValueId>,
+    value: ValueSlot,
+    context_instruction: Option<ValueSlot>,
     demanded_elements: Option<ApInt>,
     uses_instruction_info: bool,
 }
@@ -54,14 +54,14 @@ struct KnownBitsCacheKey {
 impl KnownBitsCacheKey {
     #[inline]
     fn new<'a, 'ctx, B: ModuleBrand>(
-        value: ValueId,
+        value: ValueSlot,
         query: &ValueTrackingQuery<'a, 'ctx, B>,
     ) -> Self {
         Self {
             value,
             context_instruction: query
                 .context_instruction
-                .map(|instruction| instruction.id()),
+                .map(|instruction| instruction.slot()),
             demanded_elements: query.demanded_elements.cloned(),
             uses_instruction_info: query.uses_instruction_info(),
         }
@@ -153,11 +153,14 @@ impl KnownBitsAnalysisResult {
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for KnownBitsAnalysis {
     type Result = KnownBitsAnalysisResult;
 
-    fn run(
+    fn run<'v>(
         &self,
-        function: FunctionView<'ctx, B>,
+        function: FunctionView<'v, B>,
         am: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Self::Result> {
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
         let dominator_tree = am
             .get_cached_result_by_type::<DominatorTreeAnalysis, DominatorTree, _>(function)
             .cloned();
@@ -178,12 +181,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> PrefetchableAnalysis<'ctx, B> for KnownBitsAna
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for KnownBitsAnalysisResult {
-    fn invalidate(
+    fn invalidate<'v>(
         &mut self,
-        _function: FunctionView<'ctx, B>,
+        _function: FunctionView<'v, B>,
         pa: &PreservedAnalyses,
         _inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
-    ) -> IrResult<bool> {
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
         let checker = pa.checker::<KnownBitsAnalysis>();
         if !(checker.preserved() || checker.preserved_set::<AllAnalysesOnFunction>()) {
             return Ok(true);
@@ -199,7 +205,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for KnownBitsA
 }
 
 /// Per-query state for known-bits computations.
-pub struct ValueTrackingQuery<'a, 'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ValueTrackingQuery<'a, 'ctx, B: ModuleBrand> {
     data_layout: &'a DataLayout,
     max_depth: u32,
     dominator_tree: Option<&'a DominatorTree>,
@@ -373,21 +379,21 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
     if depth > query.max_depth() {
         return Ok(KnownBits::unknown(width));
     }
-    if stack.contains(&value.id()) {
+    if stack.contains(&value.slot()) {
         return Ok(KnownBits::unknown(width));
     }
-    let cache_key = KnownBitsCacheKey::new(value.id(), query);
+    let cache_key = KnownBitsCacheKey::new(value.slot(), query);
     if let Some(cached) = query.cache().borrow().get(&cache_key).cloned() {
         return Ok(cached);
     }
 
-    stack.insert(value.id());
+    stack.insert(value.slot());
     let known = match &value.data().kind {
         ValueKindData::Constant(c) => compute_constant_known_bits(value, c, query, depth, stack)?,
         ValueKindData::Instruction(inst) => {
@@ -402,7 +408,7 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
         | ValueKindData::MetadataAsValue(_)
         | ValueKindData::InlineAsm(_) => KnownBits::unknown(width),
     };
-    stack.remove(&value.id());
+    stack.remove(&value.slot());
     query.cache().borrow_mut().insert(cache_key, known.clone());
     Ok(known)
 }
@@ -412,7 +418,7 @@ fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     constant: &ConstantData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
     Ok(match constant {
@@ -445,7 +451,7 @@ fn compute_constant_expr_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     expr: &ConstantExprData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(anchor, query.data_layout()).unwrap_or(0);
     let operand = |idx: usize| {
@@ -529,7 +535,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     inst: &InstructionData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
     let known = match &inst.kind {
@@ -754,7 +760,8 @@ fn range_metadata_known_bits<'ctx, B: ModuleBrand + 'ctx>(
     let module = module_view.core_ref();
     let store = module_view.metadata_store();
     let expected_ty = scalar_type_id(module, value.ty().id);
-    let Some(ranges) = constant_ranges_from_metadata(module, &store, range_id, expected_ty) else {
+    let Some(ranges) = constant_ranges_from_metadata(module, &store, range_id.slot(), expected_ty)
+    else {
         return KnownBits::unknown(bit_width);
     };
     ranges_known_bits(ranges, bit_width)
@@ -780,7 +787,10 @@ fn range_attribute_known_bits<'ctx, B: ModuleBrand + 'ctx>(
     ranges_known_bits(ranges, bit_width)
 }
 
-fn ranges_known_bits(ranges: impl IntoIterator<Item = ConstantRange>, bit_width: u32) -> KnownBits {
+fn ranges_known_bits<I>(ranges: I, bit_width: u32) -> KnownBits
+where
+    I: IntoIterator<Item = ConstantRange>,
+{
     let mut seen = false;
     let mut known = KnownBits::unknown(bit_width);
     known.set_all_conflict();
@@ -809,8 +819,8 @@ fn ranges_known_bits(ranges: impl IntoIterator<Item = ConstantRange>, bit_width:
 }
 
 struct CallKnownBitsInputs<'a> {
-    callee_id: ValueId,
-    args: &'a [Cell<ValueId>],
+    callee_id: ValueSlot,
+    args: &'a [Cell<ValueSlot>],
     return_attrs: &'a AttributeStorage,
     arg_attrs: &'a [AttributeStorage],
 }
@@ -820,7 +830,7 @@ fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     inputs: CallKnownBitsInputs<'_>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(anchor, query.data_layout()).unwrap_or(0);
     let mut known = range_attribute_known_bits(anchor, inputs.return_attrs, width);
@@ -848,7 +858,7 @@ fn call_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 fn returned_arg_operand<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
-    args: &[Cell<ValueId>],
+    args: &[Cell<ValueSlot>],
     arg_attrs: &[AttributeStorage],
 ) -> Option<Value<'ctx, B>> {
     arg_attrs.iter().enumerate().find_map(|(idx, attrs)| {
@@ -880,7 +890,7 @@ fn attribute_slice_has_returned(attrs: &[AttributeStored]) -> bool {
 
 fn intrinsic_semantic_for_callee<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
-    callee_id: ValueId,
+    callee_id: ValueSlot,
 ) -> Option<IntrinsicSemantic> {
     semantic_for_callee(value_from_id(anchor, callee_id))
 }
@@ -888,14 +898,14 @@ fn intrinsic_semantic_for_callee<'ctx, B: ModuleBrand + 'ctx>(
 fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     semantic: IntrinsicSemantic,
-    args: &[Cell<ValueId>],
+    args: &[Cell<ValueSlot>],
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(anchor, query.data_layout()).unwrap_or(0);
     let arg = |idx: usize| args.get(idx).map(|cell| value_from_id(anchor, cell.get()));
-    let arg_bits = |idx: usize, stack: &mut HashSet<ValueId>| -> IrResult<KnownBits> {
+    let arg_bits = |idx: usize, stack: &mut HashSet<ValueSlot>| -> IrResult<KnownBits> {
         let Some(value) = arg(idx) else {
             return Ok(KnownBits::unknown(width));
         };
@@ -1042,7 +1052,7 @@ fn bit_width_u32(value: u32) -> u32 {
     }
 }
 
-fn scalar_type_id(module: &ModuleCore, ty: TypeId) -> TypeId {
+fn scalar_type_id(module: &ModuleCore, ty: TypeSlot) -> TypeSlot {
     match module.context().type_data(ty) {
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => *elem,
         _ => ty,
@@ -1054,7 +1064,7 @@ fn binary_operand_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     data: &BinaryOpData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<(KnownBits, KnownBits)> {
     let lhs = compute_known_bits_inner(
         value_from_id(anchor, data.lhs.get()),
@@ -1076,7 +1086,7 @@ fn binary_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     data: &BinaryOpData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
     f: fn(&KnownBits, &KnownBits) -> KnownBits,
 ) -> IrResult<KnownBits> {
     let (lhs, rhs) = binary_operand_known_bits(anchor, data, query, depth, stack)?;
@@ -1088,7 +1098,7 @@ fn mul_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     data: &BinaryOpData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let lhs_value = value_from_id(anchor, data.lhs.get());
     let rhs_value = value_from_id(anchor, data.rhs.get());
@@ -1127,7 +1137,7 @@ fn bitwise_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     opcode: BinaryOpcode,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let (lhs, rhs) = binary_operand_known_bits(anchor, data, query, depth, stack)?;
     let mut known = match opcode {
@@ -1164,8 +1174,8 @@ fn bitwise_self_plus_odd_operand<'ctx, B: ModuleBrand + 'ctx>(
 
 fn self_plus_odd_operand<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
-    base_id: ValueId,
-    expr_id: ValueId,
+    base_id: ValueSlot,
+    expr_id: ValueSlot,
 ) -> Option<Value<'ctx, B>> {
     let expr = value_from_id(anchor, expr_id);
     let ValueKindData::Instruction(inst) = &expr.data().kind else {
@@ -1187,7 +1197,7 @@ fn self_plus_odd_operand<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 fn odd_operand_from_commutative<'ctx, B: ModuleBrand + 'ctx>(
-    base_id: ValueId,
+    base_id: ValueSlot,
     data: &BinaryOpData,
     anchor: Value<'ctx, B>,
 ) -> Option<Value<'ctx, B>> {
@@ -1205,7 +1215,7 @@ fn cast_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     data: &CastOpData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(anchor, query.data_layout()).unwrap_or(0);
     let src = value_from_id(anchor, data.src.get());
@@ -1233,7 +1243,7 @@ fn icmp_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     data: &CmpInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let lhs = compute_known_bits_inner(
         value_from_id(anchor, data.lhs.get()),
@@ -1346,7 +1356,7 @@ fn gep_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     data: &GepInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
     let ptr = value_from_id(value, data.ptr.get());
@@ -1377,7 +1387,7 @@ where
     anchor: Value<'ctx, B>,
     width: u32,
     known: KnownBits,
-    source_ty: TypeId,
+    source_ty: TypeSlot,
     indices: I,
 }
 
@@ -1385,7 +1395,7 @@ fn gep_known_bits_from_values<'a, 'ctx, B, I>(
     input: GepKnownBitsInput<'ctx, B, I>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits>
 where
     B: ModuleBrand + 'ctx,
@@ -1510,7 +1520,7 @@ fn add_gep_index<'a, 'ctx, B: ModuleBrand + 'ctx>(
     scale: GepIndexScale,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<()> {
     if let Some(index) = argument_constant(Some(index_value)) {
         let scaled = index
@@ -1560,7 +1570,7 @@ fn pointer_addr_space<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<
 fn struct_field_type_id<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
     field_index: usize,
-) -> Option<TypeId> {
+) -> Option<TypeSlot> {
     let TypeData::Struct(data) = ty.data() else {
         return None;
     };
@@ -1575,7 +1585,7 @@ fn extract_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     data: &ExtractElementInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let vector = value_from_id(value, data.vector.get());
     let Some((lanes, false)) = vector_shape(vector) else {
@@ -1600,7 +1610,7 @@ fn insert_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     data: &InsertElementInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let Some((lanes, false)) = vector_shape(value) else {
         return Ok(KnownBits::unknown(
@@ -1656,7 +1666,7 @@ fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     data: &ShuffleVectorInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let Ok(result_lanes) = u32::try_from(data.mask.len()) else {
         return Ok(KnownBits::unknown(
@@ -1732,10 +1742,10 @@ fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
 fn aggregate_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
-    elements: &[ValueId],
+    elements: &[ValueSlot],
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
     let Some((lanes, false)) = vector_shape(value) else {
@@ -1770,7 +1780,7 @@ fn compute_known_bits_for_demanded<'a, 'ctx, B: ModuleBrand + 'ctx>(
     demanded: &ApInt,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let subquery = query.with_temporary_demanded_elements(demanded);
     compute_known_bits_inner(value, &subquery, depth, stack)
@@ -1812,7 +1822,7 @@ fn is_guaranteed_not_to_be_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
-    stack: &mut HashSet<ValueId>,
+    stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<bool> {
     if depth > query.max_depth() {
         return Ok(false);
@@ -1889,7 +1899,7 @@ fn type_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>, dl: &DataLayou
 
 fn value_from_id<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
-    id: ValueId,
+    id: ValueSlot,
 ) -> Value<'ctx, B> {
     let module = module_ref(anchor);
     let data = module.value_data(id);
@@ -1904,7 +1914,7 @@ fn module_ref_from_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Modul
     ModuleRef::new(ty.module().core_ref())
 }
 
-fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx> {
+fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
     Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
 }
 
@@ -1915,12 +1925,12 @@ mod tests {
     use crate::module::Module;
     use crate::value::IsValue;
 
-    fn fabricate_instruction(
-        m: &Module<'_>,
-        bb_id: ValueId,
-        result_ty: TypeId,
+    fn fabricate_instruction<B: ModuleBrand>(
+        m: &Module<B>,
+        bb_id: ValueSlot,
+        result_ty: TypeSlot,
         kind: InstructionKindData,
-    ) -> ValueId {
+    ) -> ValueSlot {
         let core = m.core_ref();
         let value = build_instruction_value(result_ty, bb_id, kind, None);
         let id = core.context().push_value(value);
@@ -1931,7 +1941,11 @@ mod tests {
         id
     }
 
-    fn fabricated_value<'ctx>(m: &Module<'ctx>, id: ValueId, ty: TypeId) -> Value<'ctx> {
+    fn fabricated_value<'ctx, B: ModuleBrand + 'ctx>(
+        m: &'ctx Module<B>,
+        id: ValueSlot,
+        ty: TypeSlot,
+    ) -> Value<'ctx, B> {
         Value::from_parts(id, ModuleRef::new(m.core_ref()), ty)
     }
 
@@ -1941,39 +1955,38 @@ mod tests {
     /// selects the index width.
     #[test]
     fn vector_gep_uses_element_pointer_address_space_for_index_width() -> crate::IrResult<()> {
-        Module::with_new("vt-vector-gep-as", |m| {
-            m.set_data_layout("p1:64:64:64:32")?;
-            let i8_ty = m.i8_type();
-            let i32_ty = m.i32_type();
-            let ptr1_ty = m.ptr_type(1);
-            let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2, false);
-            let fn_ty = m.fn_type_no_params(m.void_type(), false);
-            let f = m.add_function_dyn("f", fn_ty, crate::Linkage::External)?;
-            let entry = f.append_basic_block(&m, "entry");
+        let m = crate::module_new!("vt-vector-gep-as")?;
+        m.set_data_layout("p1:64:64:64:32")?;
+        let i8_ty = m.i8_type();
+        let i32_ty = m.i32_type();
+        let ptr1_ty = m.ptr_type(1);
+        let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2, false);
+        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let f = m.add_function_dyn("f", fn_ty, crate::Linkage::External)?;
+        let entry = m.view(f).append_basic_block(&m, "entry");
 
-            let base = ptr_vec_ty.const_vector([ptr1_ty.const_null(); 2])?;
-            let minus_one = i32_ty.const_int(-1_i32);
-            let gep_ty = ptr_vec_ty.as_type();
-            let gep_id = fabricate_instruction(
-                &m,
-                entry.id(),
-                gep_ty.id(),
-                InstructionKindData::Gep(GepInstData::new(
-                    i8_ty.as_type().id(),
-                    base.id(),
-                    [minus_one.id()],
-                    crate::GepNoWrapFlags::empty(),
-                )),
-            );
-            let gep = fabricated_value(&m, gep_id, gep_ty.id());
-            let dl = m.data_layout();
-            let query = ValueTrackingQuery::new(&dl);
+        let base = ptr_vec_ty.const_vector([ptr1_ty.const_null(); 2])?;
+        let minus_one = i32_ty.const_int(-1_i32);
+        let gep_ty = ptr_vec_ty.as_type();
+        let gep_id = fabricate_instruction(
+            &m,
+            entry.slot(),
+            gep_ty.id(),
+            InstructionKindData::Gep(GepInstData::new(
+                i8_ty.as_type().id(),
+                base.slot(),
+                [minus_one.slot()],
+                crate::GepNoWrapFlags::empty(),
+            )),
+        );
+        let gep = fabricated_value(&m, gep_id, gep_ty.id());
+        let dl = m.data_layout();
+        let query = ValueTrackingQuery::new(&dl);
 
-            assert_eq!(
-                compute_known_bits(gep, &query)?.to_string(),
-                "0000000000000000000000000000000011111111111111111111111111111111"
-            );
-            Ok(())
-        })
+        assert_eq!(
+            compute_known_bits(gep, &query)?.to_string(),
+            "0000000000000000000000000000000011111111111111111111111111111111"
+        );
+        Ok(())
     }
 }

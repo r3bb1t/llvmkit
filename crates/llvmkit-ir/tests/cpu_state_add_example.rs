@@ -10,7 +10,7 @@
 //! `build_trunc` deliverable in one place. If this test ever diverges
 //! from the example, one of them is wrong.
 
-use llvmkit_ir::Module;
+use llvmkit_ir::module_new;
 
 #[path = "../examples/cpu_state_add.rs"]
 mod example;
@@ -20,14 +20,14 @@ mod example;
 /// (trunc + add + ret IRBuilder patterns).
 #[test]
 fn cpu_state_add_matches_priorities_section_byte_for_byte() {
-    Module::with_new("cpu_state_add", |m| {
-        // Reference `main` so the dead-code lint stays quiet without an
-        // `#[allow]`. Function-pointer coercion is a real use that does not
-        // run the function.
-        let _: fn() = example::main;
-        example::build(&m).expect("build succeeds");
-        let actual = format!("{m}");
-        let expected = "\
+    let m = module_new!("cpu_state_add").expect("fresh module");
+    // Reference `main` so the dead-code lint stays quiet without an
+    // `#[allow]`. Function-pointer coercion is a real use that does not
+    // run the function.
+    let _: fn() = example::main;
+    example::build(&m).expect("build succeeds");
+    let actual = format!("{m}");
+    let expected = "\
 ; ModuleID = 'cpu_state_add'
 define i32 @add(i64 %rax, i64 %rbx, i64 %rcx, i64 %rdx) local_unnamed_addr {
 entry:
@@ -44,6 +44,5 @@ entry:
   ret i32 1
 }
 ";
-        assert_eq!(actual, expected, "got:\n{actual}");
-    })
+    assert_eq!(actual, expected, "got:\n{actual}");
 }

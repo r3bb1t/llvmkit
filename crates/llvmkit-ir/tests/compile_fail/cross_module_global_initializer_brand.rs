@@ -7,14 +7,23 @@
 //! module at runtime. llvmkit makes the stronger module-provenance rule static:
 //! a constant produced through one branded [`Module`] cannot initialize a global
 //! in a differently branded [`Module`].
+//!
+//! The two modules are separated by *named brand types*, so the rejection is a
+//! plain type mismatch (`Left` vs `Right`) rather than a region error.
 
-use llvmkit_ir::Module;
+use llvmkit_ir::{Module, ModuleBrand};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Left;
+impl ModuleBrand for Left {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Right;
+impl ModuleBrand for Right {}
 
 fn main() {
-    Module::with_new::<_, _, _>("left", |left| {
-        let left_init = left.i32_type().const_int(1_i32);
-        Module::with_new::<_, _, _>("right", |right| {
-            let _ = right.add_global("g", left_init);
-        });
-    });
+    let left = Module::branded::<Left, _>("left").unwrap();
+    let left_init = left.i32_type().const_int(1_i32);
+    let right = Module::branded::<Right, _>("right").unwrap();
+    let _ = right.add_global("g", left_init);
 }

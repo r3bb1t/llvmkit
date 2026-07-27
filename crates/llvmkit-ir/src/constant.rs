@@ -9,8 +9,8 @@
 //! arena index into the same
 //! module's value arena. Per-kind refinement handles
 //! ([`ConstantIntValue`], [`ConstantFloatValue`], ...) live in
-//! [`crate::constants`] and follow the same `(ValueId, ModuleRef, ty:
-//! TypeId)` layout as the value handles.
+//! [`crate::constants`] and follow the same `(ValueSlot, ModuleRef, ty:
+//! TypeSlot)` layout as the value handles.
 //!
 //! ## What's shipped
 //!
@@ -29,10 +29,16 @@
 //! [`ConstantIntValue`]: crate::constants::ConstantIntValue
 //! [`ConstantFloatValue`]: crate::constants::ConstantFloatValue
 
+use super::derived_types::{FloatType, IntType};
+use super::error::ValueCategoryLabel;
+use super::float_kind::IntoConstantFloat;
+use super::int_width::IntoConstantInt;
+use super::module::ModuleBrand;
+use super::value::ValueKindData;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::module::{Module, ModuleRef, Unverified};
-use crate::r#type::{Type, TypeId};
-use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, sealed};
+use crate::r#type::{Type, TypeSlot};
+use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueSlot, sealed};
 use crate::{DebugLoc, IrError, IrResult};
 
 /// Opcode carried by a parser-needed LLVM `ConstantExpr`.
@@ -246,9 +252,9 @@ impl ConstantExprFlags {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ConstantExprData {
     pub(crate) opcode: ConstantExprOpcode,
-    pub(crate) result_ty: TypeId,
-    pub(crate) source_ty: Option<TypeId>,
-    pub(crate) operands: Box<[ValueId]>,
+    pub(crate) result_ty: TypeSlot,
+    pub(crate) source_ty: Option<TypeSlot>,
+    pub(crate) operands: Box<[ValueSlot]>,
     pub(crate) indices: Box<[u32]>,
     pub(crate) mask: Box<[i32]>,
     pub(crate) flags: ConstantExprFlags,
@@ -278,7 +284,7 @@ pub(crate) enum ConstantData {
     /// A pointer-typed constant reference to a function or global value.
     /// Mirrors `GlobalValue` being a `Constant` whose `getType()` is the
     /// pointer type while `getValueType()` stores the pointee/function type.
-    GlobalValueRef { value: ValueId },
+    GlobalValueRef { value: ValueSlot },
     /// `null` of a pointer or typed-pointer type.
     PointerNull,
     /// Temporary parser placeholder for a forward `blockaddress`.
@@ -287,14 +293,14 @@ pub(crate) enum ConstantData {
     /// Aggregate constant — `ConstantArray`, `ConstantStruct`, or
     /// `ConstantVector`. Element categorisation is determined by the
     /// owning aggregate type.
-    Aggregate(Box<[ValueId]>),
+    Aggregate(Box<[ValueSlot]>),
     /// A specialised byte-offset into a global, printed as the constant
     /// expression `getelementptr inbounds (i8, ptr @<base>, i64 <off>)`.
     /// `base_id` is the value-id of the host global/function; `off` is the byte
     /// offset. This compact form is kept for symbol-relative initializers that
     /// point into the *middle* of another global, such as a relocated pointer
     /// slot inside an embedded section. The owning value's type is `ptr`.
-    GepOffset { base_id: ValueId, off: i64 },
+    GepOffset { base_id: ValueSlot, off: i64 },
     /// Specialised link-time difference of two symbol addresses, printed as the
     /// constant expression `sub (i64 ptrtoint (ptr @hi to i64), i64 ptrtoint
     /// (ptr @lo to i64))`. Both ids are globals/functions; the owning value's
@@ -304,7 +310,7 @@ pub(crate) enum ConstantData {
     /// where a real address is reached as `anchor + (real - anchor)` and only
     /// the delta lives in data. The two ids must differ (a self-delta would be a
     /// constant zero; callers should use `Int(0)` for that).
-    SymbolDelta { hi_id: ValueId, lo_id: ValueId },
+    SymbolDelta { hi_id: ValueSlot, lo_id: ValueSlot },
     /// Link-time symbol difference plus a constant addend, printed as
     /// `add (i64 sub (i64 ptrtoint (ptr @hi to i64), i64 ptrtoint (ptr @lo to
     /// i64)), i64 <addend>)`. Like [`ConstantData::SymbolDelta`] but with a
@@ -315,27 +321,30 @@ pub(crate) enum ConstantData {
     /// computation the optimizer cannot fold away. The two symbol ids must
     /// differ; the owning value's type is `i64`.
     SymbolDeltaPlus {
-        hi_id: ValueId,
-        lo_id: ValueId,
+        hi_id: ValueSlot,
+        lo_id: ValueSlot,
         addend: i64,
     },
     /// `blockaddress(@function, %block)`.
-    BlockAddress { function: ValueId, block: ValueId },
+    BlockAddress {
+        function: ValueSlot,
+        block: ValueSlot,
+    },
     /// `dso_local_equivalent @function`.
-    DSOLocalEquivalent { function: ValueId },
+    DSOLocalEquivalent { function: ValueSlot },
     /// `no_cfi @function`.
-    NoCfi { function: ValueId },
+    NoCfi { function: ValueSlot },
     /// `token none`.
     TokenNone,
     /// `target(...) none`.
     TargetExtNone,
     /// `ptrauth (...)`.
     PtrAuth {
-        pointer: ValueId,
-        key: ValueId,
-        discriminator: ValueId,
-        addr_discriminator: ValueId,
-        deactivation_symbol: ValueId,
+        pointer: ValueSlot,
+        key: ValueSlot,
+        discriminator: ValueSlot,
+        addr_discriminator: ValueSlot,
+        deactivation_symbol: ValueSlot,
     },
     /// `undef` of any first-class type.
     Undef,
@@ -345,7 +354,10 @@ pub(crate) enum ConstantData {
 }
 
 impl ConstantData {
-    pub(crate) fn for_each_operand(&self, mut f: impl FnMut(ValueId)) {
+    pub(crate) fn for_each_operand<F>(&self, mut f: F)
+    where
+        F: FnMut(ValueSlot),
+    {
         match self {
             Self::Expr(data) => {
                 for operand in data.operands.iter().copied() {
@@ -393,12 +405,11 @@ impl ConstantData {
 ///
 /// The erased [`Constant`] view may be embedded in parsed constants and
 /// instructions, but only this parser-only handle can resolve the placeholder.
-pub struct BlockAddressPlaceholder<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>>
-{
+pub struct BlockAddressPlaceholder<'ctx, B: ModuleBrand> {
     constant: Constant<'ctx, B>,
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> BlockAddressPlaceholder<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> BlockAddressPlaceholder<'ctx, B> {
     #[inline]
     pub(crate) fn from_constant(constant: Constant<'ctx, B>) -> Self {
         Self { constant }
@@ -426,13 +437,13 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> BlockAddressPlaceholder<'ctx, B
 ///
 /// [`ConstantIntValue`]: crate::constants::ConstantIntValue
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Constant<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
-    pub(crate) id: ValueId,
+pub struct Constant<'ctx, B: ModuleBrand> {
+    pub(crate) id: ValueSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
-    pub(crate) ty: TypeId,
+    pub(crate) ty: TypeSlot,
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// Construct from raw parts. Crate-internal: only the constant
     /// constructors hand these out.
     #[inline]
@@ -461,7 +472,7 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Constant<'ctx, B> {
     }
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> core::fmt::Display for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for Constant<'ctx, B> {
     /// Print the operand form `<type> <literal>`, identical to what the
     /// erased [`Value`] handle from [`Constant::into_erased`] prints.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -469,58 +480,59 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> core::fmt::Display for Constant
     }
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> sealed::Sealed for Constant<'ctx, B> {}
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IsValue<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for Constant<'ctx, B> {}
+impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Constant<'ctx, B> {
     #[inline]
     fn into_erased(self) -> Value<'ctx, B> {
         Constant::into_erased(self)
     }
 }
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> Typed<'ctx, B> for Constant<'ctx, B> {
+crate::value::impl_into_erased_value_for_handle!(Constant);
+impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for Constant<'ctx, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
         Constant::ty(self)
     }
 }
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'ctx, B> {
     #[inline]
     fn name(self) -> Option<String> {
         self.into_erased().name()
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         self.into_erased().set_name(module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
 }
-impl<B: crate::module::ModuleBrand + 'static> HasDebugLoc for Constant<'_, B> {
+impl<B: ModuleBrand + 'static> HasDebugLoc for Constant<'_, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
         self.into_erased().debug_loc()
     }
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> From<Constant<'ctx, B>> for Value<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> From<Constant<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(c: Constant<'ctx, B>) -> Self {
         c.into_erased()
     }
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Constant<'ctx, B> {
     type Error = IrError;
     fn try_from(v: Value<'ctx, B>) -> IrResult<Self> {
-        if let crate::value::ValueKindData::Constant(_) = v.data().kind {
+        if let ValueKindData::Constant(_) = v.data().kind {
             Ok(Self::from_parts(v))
         } else {
             Err(IrError::ValueCategoryMismatch {
-                expected: crate::error::ValueCategoryLabel::Constant,
+                expected: ValueCategoryLabel::Constant,
                 got: v.category().into(),
             })
         }
@@ -535,14 +547,12 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Con
 /// (`ConstantIntValue`, `ConstantFloatValue`, ...) plus the erased
 /// [`Constant`] itself. Bound generic code with this trait when a
 /// function should accept any constant.
-pub trait IsConstant<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>>:
-    sealed::Sealed + IsValue<'ctx, B>
-{
+pub trait IsConstant<'ctx, B: ModuleBrand>: sealed::Sealed + IsValue<'ctx, B> {
     /// Widen to the erased [`Constant`] handle.
     fn as_constant(self) -> Constant<'ctx, B>;
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constant<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constant<'ctx, B> {
     #[inline]
     fn as_constant(self) -> Constant<'ctx, B> {
         self
@@ -563,16 +573,14 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IsConstant<'ctx, B> for Constan
 /// matching IR constant through the module and erase it to [`Constant`].
 /// One literal maps to exactly one IR width, with no widening: `0i32` is
 /// an `i32`, `0i64` an `i64`. Ints route through
-/// [`IntoConstantInt`](crate::IntoConstantInt), floats through
-/// [`IntoConstantFloat`](crate::IntoConstantFloat).
-pub trait IntoConstantValue<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
+/// [`IntoConstantInt`], floats through
+/// [`IntoConstantFloat`].
+pub trait IntoConstantValue<'ctx, B: ModuleBrand> {
     /// Materialize `self` as an erased [`Constant`] owned by `module`.
     fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B>;
 }
 
-impl<'ctx, B: crate::module::ModuleBrand + 'ctx, C: IsConstant<'ctx, B>> IntoConstantValue<'ctx, B>
-    for C
-{
+impl<'ctx, B: ModuleBrand + 'ctx, C: IsConstant<'ctx, B>> IntoConstantValue<'ctx, B> for C {
     #[inline]
     fn into_constant(self, _module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
         self.as_constant()
@@ -581,14 +589,14 @@ impl<'ctx, B: crate::module::ModuleBrand + 'ctx, C: IsConstant<'ctx, B>> IntoCon
 
 macro_rules! impl_into_constant_value_int {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
-        impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
+        impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
             #[inline]
             fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
-                let ty = crate::derived_types::IntType::<$marker, B>::new(
-                    module.module().$ty_method().as_type().id(),
+                let ty = IntType::<$marker, B>::new(
+                    module.module().$ty_method::<B>().as_type().id(),
                     module,
                 );
-                crate::int_width::IntoConstantInt::into_constant_int(self, ty)
+                IntoConstantInt::into_constant_int(self, ty)
                     .unwrap_or_else(|_| {
                         unreachable!("exact-width scalar literal is an infallible IR constant")
                     })
@@ -613,14 +621,14 @@ impl_into_constant_value_int!(u128, i128, i128_type);
 
 macro_rules! impl_into_constant_value_float {
     ($rust_ty:ty, $marker:ty, $ty_method:ident) => {
-        impl<'ctx, B: crate::module::ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
+        impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantValue<'ctx, B> for $rust_ty {
             #[inline]
             fn into_constant(self, module: ModuleRef<'ctx, B>) -> Constant<'ctx, B> {
-                let ty = crate::derived_types::FloatType::<$marker, B>::new(
-                    module.module().$ty_method().as_type().id(),
+                let ty = FloatType::<$marker, B>::new(
+                    module.module().$ty_method::<B>().as_type().id(),
                     module,
                 );
-                crate::float_kind::IntoConstantFloat::into_constant_float(self, ty)
+                IntoConstantFloat::into_constant_float(self, ty)
                     .unwrap_or_else(|_| {
                         unreachable!("exact-width scalar literal is an infallible IR constant")
                     })

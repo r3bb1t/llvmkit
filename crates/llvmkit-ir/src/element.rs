@@ -34,7 +34,7 @@ use crate::float_kind::{BFloat, Fp128, Half, PpcFp128, StaticFloatKind, X86Fp80}
 use crate::int_width::StaticIntWidth;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::Type;
-use crate::value::{FloatValue, IntValue, IsValue, Value};
+use crate::value::{FloatValue, IntValue, IntoErasedValue, IsValue, Value};
 
 /// Base marker trait — the bound a typed vector/array handle's element
 /// parameter carries. The element analog of [`IntWidth`](crate::IntWidth).
@@ -86,7 +86,12 @@ pub trait StaticVecElem<'ctx, B: ModuleBrand>: VecElem {
     /// The scalar value handle for this element: what `extractelement`
     /// returns and what `insertelement` / `splat` accept. `IntValue` for the
     /// int markers, `FloatValue` for the float markers.
-    type Value: IsValue<'ctx, B> + Copy;
+    ///
+    /// [`IntoErasedValue`] is bound alongside [`IsValue`] because the typed
+    /// vector builders forward this handle into the erased element operand of
+    /// `build_insert_element` / `build_vector_splat`, which is what that
+    /// bound spells. Every [`IsValue`] handle satisfies it.
+    type Value: IsValue<'ctx, B> + IntoErasedValue<'ctx, B> + Copy;
 
     /// Project the marker into the matching erased element [`Type`] from the
     /// caller's module.
@@ -148,20 +153,18 @@ mod sealed {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Module;
 
     #[test]
     fn static_vec_elem_projects_scalar_element_types() {
-        Module::with_new("element-marker", |m| {
-            let module = m.module_ref();
-            assert_eq!(
-                <i32 as StaticVecElem<'_, _>>::element_ir_type(module),
-                m.i32_type().as_type(),
-            );
-            assert_eq!(
-                <f32 as StaticVecElem<'_, _>>::element_ir_type(module),
-                m.f32_type().as_type(),
-            );
-        });
+        let m = crate::module_new!("element-marker").expect("fresh module");
+        let module = m.module_ref();
+        assert_eq!(
+            <i32 as StaticVecElem<'_, _>>::element_ir_type(module),
+            m.i32_type().as_type(),
+        );
+        assert_eq!(
+            <f32 as StaticVecElem<'_, _>>::element_ir_type(module),
+            m.f32_type().as_type(),
+        );
     }
 }

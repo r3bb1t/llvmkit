@@ -16,12 +16,16 @@ use llvmkit_ir::{FnCx, FnReport, FunctionPass, Inspect, IrResult, ModuleBrand};
 
 struct InspectMutates;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InspectMutates {
+impl<B: ModuleBrand> FunctionPass<B> for InspectMutates {
     type Access = Inspect;
     type Requires = ();
     const NAME: &'static str = "inspect-mutates";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         // `Inspect` does not implement `MutatingFn`, so `mutate()` is not on the
         // context: over-claiming (mutating from a read-only rung) is unspellable.
         let patch = cx.mutate();

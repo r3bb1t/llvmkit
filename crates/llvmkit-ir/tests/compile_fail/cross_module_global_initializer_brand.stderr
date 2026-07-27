@@ -1,28 +1,25 @@
-error[E0521]: borrowed data escapes outside of closure
-  --> tests/compile_fail/cross_module_global_initializer_brand.rs:17:21
+error[E0277]: the trait bound `ConstantIntValue<'_, i32, Left>: IntoConstantValue<'_, Right>` is not satisfied
+  --> tests/compile_fail/cross_module_global_initializer_brand.rs:28:35
    |
-15 |         let left_init = left.i32_type().const_int(1_i32);
-   |             --------- `left_init` declared here, outside of the closure body
-16 |         Module::with_new::<_, _, _>("right", |right| {
-   |                                               ----- `right` is a reference that is only valid in the closure body
-17 |             let _ = right.add_global("g", left_init);
-   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `right` escapes the closure body here
+28 |     let _ = right.add_global("g", left_init);
+   |                   ----------      ^^^^^^^^^ the trait `IsConstant<'_, Right>` is not implemented for `ConstantIntValue<'_, i32, Left>`
+   |                   |
+   |                   required by a bound introduced by this call
    |
-   = note: requirement occurs because of the type `ConstantIntValue<'_, i32, Brand<'_>>`, which makes the generic argument `Brand<'_>` invariant
-   = note: the struct `ConstantIntValue<'ctx, W, B>` is invariant over the parameter `B`
-   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
-
-error[E0521]: borrowed data escapes outside of closure
-  --> tests/compile_fail/cross_module_global_initializer_brand.rs:17:21
+help: the trait `IsConstant<'_, Right>` is not implemented for `ConstantIntValue<'_, i32, Left>`
+      but trait `IsConstant<'_, Left>` is implemented for it
+  --> src/constants.rs
    |
-14 |     Module::with_new::<_, _, _>("left", |left| {
-   |                                          ----
-   |                                          |
-   |                                          `left` is a reference that is only valid in the closure body
-   |                                          has type `Module<'1>`
+   | / impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsConstant<'ctx, B>
+   | |     for ConstantIntValue<'ctx, W, B>
+   | |____________________________________^
+   = help: for that trait implementation, expected `Left`, found `Right`
+   = note: required for `ConstantIntValue<'_, i32, Left>` to implement `IntoConstantValue<'_, Right>`
+note: required by a bound in `Module::<B>::add_global`
+  --> src/module.rs
+   |
+   |     pub fn add_global<N, C>(&'ctx self, name: N, initializer: C) -> IrResult<GlobalId<B>>
+   |            ---------- required by a bound in this associated function
 ...
-17 |             let _ = right.add_global("g", left_init);
-   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |                     |
-   |                     `left` escapes the closure body here
-   |                     argument requires that `'1` must outlive `'static`
+   |         C: IntoConstantValue<'ctx, B>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Module::<B>::add_global`

@@ -14,6 +14,24 @@ Tracking **LLVM 22.1.4** (`llvmorg-22.1.4`, released 2026-04-21).
 
 Shipped today:
 
+- **Owned modules and storable ids** — the 0.0.4 handle model. `Module<B, S>`
+  has no lifetime parameter, owns its storage, and is `Send`, so it can be
+  returned, stored in a struct, collected into a `Vec`, and moved between
+  threads. Declarations and value-producing `build_*` calls return a
+  `Copy + Send` **id** (`IntValueId<W, B>`, `FunctionId<R, B>`, `GlobalId<B>`,
+  …) that carries the module's identity without borrowing it. Blocks are
+  minted as linear, `!Copy` handles instead (`append_basic_block` returns a
+  `BasicBlock<..>`, `append_block_with_params` a `BlockWithParams<..>`);
+  calling `.id()` on one gives the storable `BlockId<R, B, Params>`.
+  Terminator builders (`build_br`, `build_cond_br`, `build_ret`, …) consume
+  the builder and hand back the terminated block alongside the new
+  instruction, not an id. The borrowing handles themselves are minted per
+  operation from `m.view(id)` / `m.try_view(id)`. A module's identity is the
+  `B: ModuleBrand` *type*, in
+  three rungs — `module_new!` (unnameable, generated at the expansion site),
+  `Module::branded::<B>` (a named brand, at most one live module per brand),
+  and `Module::dynamic` (`DynBrand`, unlimited live modules, separated by the
+  runtime tag). See [Same-module safety](#same-module-safety).
 - **`.ll` lexer** — done. `llvmkit-asmparser` ports
   `llvm/lib/AsmParser/LLLexer.cpp` and borrows directly from the source slice,
   allocating only when escape decoding actually changes bytes.
@@ -25,6 +43,12 @@ Shipped today:
   zeroinitializer, global/function references, and represented `ConstantExpr`
   forms for parser-needed opcodes, including upstream vector GEP, bitcast, cast,
   and select folding fixtures). Round-trip tested via `format!("{module}")`.
+  **Not yet ordinary `clang` output:** roughly 21 attribute keywords are
+  missing — `byval(T)` and `sret(T)` among them — and `dso_local` is accepted on
+  `define` / `declare` but not on globals, which is enough to reject a plain
+  `clang -O0` or `-O2` dump. The structure around them parses; see
+  [Milestone 0](ROADMAP.md#milestone-0-textual-ll-parser-completeness) for the
+  measured inventory. Closing it is the next thing on the roadmap.
 - **Typed IR data model** — done. `llvmkit-ir` ships interned types, typed
   values, typed constants, functions, basic blocks, globals, comdats, data
   layout, target triple, module asm directives, and LLVM-style function-local
@@ -129,21 +153,20 @@ while let Some(tok) = lex.next() {
 Build IR programmatically:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
+use llvmkit_ir::{IRBuilder, IrError, Linkage, module_new};
 
 fn build() -> Result<(), IrError> {
-    Module::with_new("demo", |m| {
-        let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+    let m = module_new!("demo")?;
+    let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
 
-        let b = IRBuilder::at_end(entry);
-        let (lhs, rhs) = f.params();
-        let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
-        b.build_ret(sum)?;
+    let b = IRBuilder::at_end(entry);
+    let (lhs, rhs) = m.view(f).params();
+    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    b.build_ret(sum)?;
 
-        print!("{m}");
-        Ok(())
-    })
+    print!("{m}");
+    Ok(())
 }
 ```
 
@@ -165,29 +188,29 @@ or misusing a void call's result are all compile errors instead of runtime
 return type with no `try_into`:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module};
+use llvmkit_ir::{IRBuilder, IrError, Linkage, module_new};
 
 fn build_typed_call() -> Result<(), IrError> {
-    Module::with_new("demo", |m| {
-        let callee = m.add_typed_function::<i32, (i32, i32), _>("add_inner", Linkage::External)?;
-        let entry = callee.append_basic_block(&m, "entry");
-        let b = IRBuilder::at_end(entry);
-        let (lhs, rhs) = callee.params();
-        let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
-        b.build_ret(sum)?;
+    let m = module_new!("demo")?;
+    let callee = m.add_typed_function::<i32, (i32, i32), _>("add_inner", Linkage::External)?;
+    let entry = m.view(callee).append_basic_block(&m, "entry");
+    let b = IRBuilder::at_end(entry);
+    let (lhs, rhs) = m.view(callee).params();
+    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    b.build_ret(sum)?;
 
-        let caller = m.add_typed_function::<i32, (i32, i32), _>("caller", Linkage::External)?;
-        let entry = caller.append_basic_block(&m, "entry");
-        let b = IRBuilder::at_end(entry);
-        let (x, y) = caller.params();
+    let caller = m.add_typed_function::<i32, (i32, i32), _>("caller", Linkage::External)?;
+    let entry = m.view(caller).append_basic_block(&m, "entry");
+    let b = IRBuilder::at_end(entry);
+    let (x, y) = m.view(caller).params();
 
-        // `call.result()` is already `IntValue<i32>` -- no `try_into`.
-        let call = b.build_call(callee, (x, y), "r")?;
-        b.build_ret(call.result())?;
+    // `build_call` hands back a storable `TypedCallInstId`; `b.view(..)` reaches
+    // the handle, whose `result()` is already `IntValue<i32>` -- no `try_into`.
+    let call = b.build_call(m.view(callee), (x, y), "r")?;
+    b.build_ret(b.view(call).result())?;
 
-        print!("{m}");
-        Ok(())
-    })
+    print!("{m}");
+    Ok(())
 }
 ```
 
@@ -208,7 +231,7 @@ generated `<Struct>Value<'ctx, B>` wrapper in IR, and call field
 accessors/builders instead of indexing aggregates manually:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrStruct, Linkage, Module};
+use llvmkit_ir::{IRBuilder, IrStruct, Linkage, module_new};
 
 #[derive(IrStruct)]
 struct Point {
@@ -230,17 +253,15 @@ struct WindowPlacement {
 
 type Normalize = fn(WindowPlacement) -> WindowPlacement;
 
-Module::with_new("window", |m| {
-    let f = m.add_typed_function_of::<Normalize, _>("normalize", Linkage::External)?;
-    let entry = f.append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for_return::<Normalize>(&m).position_at_end(entry);
-    let (placement,) = f.params();
-    // `normal_position` returns `RectValue<'ctx, B>`, and `min` returns
-    // `PointValue<'ctx, B>`; nested structs keep their generated wrapper type.
-    let rect = placement.normal_position(&b)?;
-    let _min = rect.min(&b)?;
-    Ok(())
-})?;
+let m = module_new!("window")?;
+let f = m.add_typed_function_of::<Normalize, _>("normalize", Linkage::External)?;
+let entry = m.view(f).append_basic_block(&m, "entry");
+let b = IRBuilder::new_for_return::<Normalize>(&m).position_at_end(entry);
+let (placement,) = m.view(f).params();
+// `normal_position` returns `RectValue<'ctx, B>`, and `min` returns
+// `PointValue<'ctx, B>`; nested structs keep their generated wrapper type.
+let rect = placement.normal_position(&b)?;
+let _min = rect.min(&b)?;
 ```
 
 Existing IR can be checked back into a generated wrapper with
@@ -283,27 +304,28 @@ land in; it narrows to the typed form with `TryFrom`, which checks both element
 and length.
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, Len, Linkage, Module, VectorValue};
+use llvmkit_ir::{IRBuilder, IrError, Len, Linkage, VectorValue, module_new};
 
 fn typed_vec() -> Result<(), IrError> {
-    Module::with_new("demo", |m| {
-        let v4i32 = m.vector_type_n::<i32, 4>(); // VectorType<'_, i32, Len<4>>
-        let fn_ty = m.fn_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()], false);
-        let f = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::at_end(entry);
+    let m = module_new!("demo")?;
+    let v4i32 = m.vector_type_n::<i32, 4>(); // VectorType<'_, i32, Len<4>>
+    let fn_ty = m.fn_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()], false);
+    let f = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::at_end(entry);
 
-        // `try_into` checks element (i32) AND lane count (4) before stamping the markers.
-        let a: VectorValue<'_, i32, Len<4>> = f.param(0).unwrap().into_erased().try_into().unwrap();
-        let c: VectorValue<'_, i32, Len<4>> = f.param(1).unwrap().into_erased().try_into().unwrap();
+    // `try_into` checks element (i32) AND lane count (4) before stamping the markers.
+    let a: VectorValue<'_, i32, Len<4>> =
+        m.view(f).param(0).unwrap().into_erased().try_into().unwrap();
+    let c: VectorValue<'_, i32, Len<4>> =
+        m.view(f).param(1).unwrap().into_erased().try_into().unwrap();
 
-        // Both operands are pinned to `<4 x i32>`; a length/element mismatch would not compile.
-        let sum = b.build_vec_int_add(a, c, "sum")?;
-        // Extract returns the element as its typed scalar handle -- `IntValue<i32>`, inferred.
-        let lane0 = b.build_vec_extract(sum, m.i32_type().const_int(0_i32), "lane0")?;
-        b.build_ret(lane0)?;
-        Ok(())
-    })
+    // Both operands are pinned to `<4 x i32>`; a length/element mismatch would not compile.
+    let sum = b.build_vec_int_add(a, c, "sum")?;
+    // Extract returns the element as its typed scalar handle -- `IntValue<i32>`, inferred.
+    let lane0 = b.build_vec_extract(sum, m.i32_type().const_int(0_i32), "lane0")?;
+    b.build_ret(lane0)?;
+    Ok(())
 }
 ```
 
@@ -328,18 +350,36 @@ and no label plumbing to get wrong. Compare the loop body of
 (auto-SSA) -- both are byte-parity locked to print the identical `.ll`:
 
 ```rust
-// Manual phi wiring (examples/factorial.rs): declare empty phis up front,
-// build the loop body, then patch both incoming edges by hand.
-let acc_phi = b.build_int_phi::<i32, _>("acc")?;
-let i_phi = b.build_int_phi::<i32, _>("i")?;
-let acc = acc_phi.as_int_value();
-let i = i_phi.as_int_value();
+// Explicit phis, via block parameters (examples/factorial.rs). A loop header's
+// parameters ARE its head-phis: you declare them on the block, and each branch
+// into it carries its incomings as block arguments. There is no phi to
+// pre-declare and no incoming-edge list to patch after the fact -- an edge that
+// forgets an argument, or carries the wrong type or arity, does not compile.
+let (loop_bb, params) = bwp.append_block_with_named_params(
+    m.view(f).as_function(),
+    &[(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
+    "loop",
+)?;
+let loop_label = loop_bb.id();       // storable `BlockId` — the branch currency
+
+// entry: enter the loop carrying the initial values `[ acc = 1, i = %n ]`.
+b.build_cond_br_with_args(is_zero, base_label, &[], loop_label,
+    &[i32_ty.const_int(1_i32).into_erased(), n.into_erased()])?;
+
+// loop: read the header params, compute, re-enter carrying the back-edge values.
+let acc: IntValue<'_, i32, _> = params[0].try_into()?;
+let i: IntValue<'_, i32, _> = params[1].try_into()?;
 let next_acc = b.build_int_mul(acc, i, "next_acc")?;
 let next_i = b.build_int_sub(i, 1_i32, "next_i")?;
-// ... build the rest of the loop body, then:
-acc_phi.add_incoming(1_i32, entry_label)?.add_incoming(next_acc, loop_label)?.finish();
-i_phi.add_incoming(n, entry_label)?.add_incoming(next_i, loop_label)?.finish();
+b.build_cond_br_with_args(done, exit_label, &[], loop_label,
+    &[m.view(next_acc).into_erased(), m.view(next_i).into_erased()])?;
 ```
+
+(The raw `build_int_phi` / `add_incoming` pair that predates block parameters is
+`pub(crate)` and cannot be called from outside the crate — that is deliberate,
+and a compile-fail fixture pins it. Block parameters and `SsaBuilder` are the
+two public ways to author a phi; `FnReshape::insert_phi` is the third, for
+passes editing existing IR.)
 
 ```rust
 // Auto-SSA (examples/factorial_auto_ssa.rs): declare typed variables once;
@@ -354,8 +394,8 @@ b.def_int_var(i_var, n)?;
 // loop block:
 let i = b.use_int_var(i_var)?;
 let acc = b.use_int_var(acc_var)?;
-let next_acc = b.ins().build_int_mul(acc, i, "next_acc")?;
-let next_i = b.ins().build_int_sub(i, 1_i32, "next_i")?;
+let next_acc = b.ins()?.build_int_mul(acc, i, "next_acc")?;
+let next_i = b.ins()?.build_int_sub(i, 1_i32, "next_i")?;
 b.def_int_var(acc_var, next_acc)?;
 b.def_int_var(i_var, next_i)?;
 b.seal_block(loop_bb)?; // completes both phis from the now-known predecessor set
@@ -399,16 +439,158 @@ reach codegen through upstream LLVM, and `llvmkit` when the task is IR
 construction / analysis and compile-time misuse safety matters more than
 having `libLLVM`'s full backend behind it.
 
+Migrating an existing inkwell codebase? [INKWELL_MIGRATION.md](INKWELL_MIGRATION.md)
+is a side-by-side guide: the API mapping table, the three structural differences
+to read first (no `Context` lifetime, owned modules, ids rather than handles),
+and the ledger of what each migration buys you at compile time.
+
+### Where llvmkit improves on upstream LLVM
+
+`llvmkit` models a subset of LLVM and stops at IR construction, analysis, and
+verification (see "Out of scope"). Within that subset there are three places
+where its API makes a guarantee upstream's cannot, and they are worth stating
+concretely rather than as a slogan.
+
+**1. A module is an owned value, and every handle has a storable id.**
+`Module<B, S>` owns its storage, has no lifetime parameter, and is `Send`, so it
+can be returned from a function, held in a struct field, collected into a `Vec`,
+and moved to another thread. Handles like `IntValue<'ctx, W, B>` borrow the
+module, but each one also has an `id()` — `IntValueId<W, B>`, `BlockId<..>`,
+`FunctionId<R, B>`, `GlobalId<B>` — that is `Copy + Send` and carries the brand
+*without* the borrow. That is what lets a binary lifter keep its own
+`HashMap<u64, BlockId<..>>` from guest address to block, suspend in the middle
+of a function, move to a worker thread, and resume there
+(`crates/llvmkit-ir/examples/lifter_session.rs` does exactly this).
+
+Upstream's equivalent of a stored id is a raw `Value *` / `BasicBlock *`, and
+keeping it valid is the client's job. LLVM ships `WeakVH`, `AssertingVH`, and
+`CallbackVH` (`llvm/include/llvm/IR/ValueHandle.h`) specifically for
+"catching dangling pointer bugs", and the Programmers Manual warns that the
+weak form can still leave a dangling pointer. An llvmkit id is not a pointer:
+resolving it re-checks the module tag and the arena slot, so a stale or foreign
+id becomes `IrError::ForeignValueId`, `None`, or a panic — never a read of freed
+memory. With `#![forbid(unsafe_code)]` on every workspace crate there is no
+unsafe path available for it to take.
+
+**2. Several error classes are unrepresentable rather than diagnosed.** An
+integer width is a type parameter (`IntValue<'ctx, i32, B>`), a vector's element
+and lane count are type parameters (`VectorValue<'ctx, i32, Len<4>, B>`), a
+function's signature is a type parameter, and the owning module is a brand type.
+So a mismatched `add`, a `<4 x i32>` mixed with a `<8 x i32>`, a call with the
+wrong arity, a `ret` in a `void` function, and an operand borrowed from another
+module are all *compile* errors — there is no program text that expresses them
+and no runtime check to reach. Upstream accepts each of these as `Value *` and
+reports them from `Verifier.cpp`, later, if verification runs at all. The
+mapping from each upstream verifier message to the llvmkit type that forecloses
+it is tabulated in [Type Safety: llvmkit vs. LLVM C++](docs/type-safety-vs-llvm.md),
+and 82 compile-fail fixtures lock the guarantees.
+
+**3. Verification is a typestate, not a function you must remember to call.**
+`Module::verify(self)` consumes `Module<B, Unverified>` and returns
+`Module<B, Verified>`; APIs that are only sound on verified IR demand the
+`Verified` token, and any mutating pass *derives* `Module<B, Unverified>` from
+its capability rung, so the re-verify is enforced by the type checker rather
+than by a convention. Upstream's `verifyModule` is a free function returning a
+bool sentinel that a caller can simply not call — and its pass-manager form
+reports preservation through a hand-written `PreservedAnalyses`, where
+over-claiming leaves stale analyses for a later pass to miscompile against. In
+llvmkit that claim is derived from the rung and is unspellable.
+
+The honest limits: these guarantees cover the *modeled* surface only, the
+erased `Dyn` forms deliberately trade them back for runtime checks so parsed and
+dynamic IR still works, and none of it helps if you need codegen — upstream is
+the only option there.
+
+### Bindings
+
+Python and Java bindings are planned. They have not been written yet for one
+reason: the API was not stable enough to wrap. Wrapping a moving surface means
+rewriting the wrapper on every break, which is the failure mode
+[llvmlite](https://github.com/numba/llvmlite) describes chasing upstream LLVM's
+unstable C++ API. 0.0.4 is where that surface stops moving week to week — not
+a stability promise (the crate is pre-1.0 and every `0.0.x` is mutually
+incompatible), but settled enough that a wrapper is worth writing.
+
+Keeping the surface *wrappable* has been a standing constraint on every API
+decision along the way, which is why the shape below fell out rather than
+having to be retrofitted:
+
+- **Nothing is reachable only from inside a closure.** `Module::branded::<B>`,
+  `Module::dynamic`, and `module_new!` all return an owned module. A binding's
+  `Module.__init__` can call one and store the result; there is no
+  `with_new(|m| ...)` scope for a foreign call stack to sit inside.
+- **No lifetime appears in a storable type.** Every id is `Copy + Send` and
+  `'static`; a wrapper object can hold one in a field for as long as it likes.
+  The borrowing views (`IntValue<'ctx, ..>`) are minted per operation from
+  `m.view(id)` and never need to cross the boundary.
+- **`DynBrand` is the rung a binding uses.** A dynamic language has no place to
+  put a brand type, and `Module::dynamic` asks for none: it is exempt from the
+  uniqueness registry, so many live modules are legal, and separation falls
+  back to the runtime `ModuleId` tag with `IrError::ForeignValueId` as the
+  verdict — an error a wrapper can raise as an exception, not UB.
+- **Misuse of a *handle or id* is an `IrError` or a deterministic panic, never
+  a dangling read.** `#![forbid(unsafe_code)]` holds across the workspace, so
+  the worst a forged or stale handle can do is get rejected. That holds without
+  exception, metadata included: a metadata node is named by a `MetadataId<B>`
+  carrying the owning module's `ModuleId`, and a foreign one is
+  `IrError::ForeignMetadataId` at the arena boundary.
+
+What a wrapper will still build itself: an id table. Ids are opaque — their
+`(ModuleId, slot)` payload is private, and there is deliberately no
+`from_raw_parts` — so a binding keeps its own `Vec`/`HashMap` of live ids and
+hands the host language an index into it, which is what
+[wgpu](https://github.com/gfx-rs/wgpu)'s and MLIR's C APIs do anyway.
+
 ### Same-module safety
 
-`Module::with_new` gives every module construction session a fresh compile-time
-brand. Normal code does not name that brand: values, constants, basic blocks,
-globals, and builders infer it from the `Module` or type receiver used to
-create them. Builder and mutation APIs therefore reject cross-module operands at
-compile time instead of returning a runtime "foreign value" error. Generic
-extension code may name `B: ModuleBrand` explicitly when it needs to accept any
-module brand; ordinary examples should stay inside the `with_new` closure and
-let the receiver drive inference.
+A module's identity is a **type**. `Module<B, S>` is an owned, `Send`,
+lifetime-free value; the `B: ModuleBrand` parameter rides on every handle, id,
+and builder minted from it, and it is what separates one module from another.
+Normal code never names the brand — values, constants, basic blocks, globals,
+and builders infer it from the `Module` or type receiver they came from. Generic
+extension code names `B: ModuleBrand` explicitly when it must accept any module.
+
+There are three ways to obtain a brand, trading ergonomics against how much of
+the separation is static:
+
+| Constructor | Brand | Separation |
+|---|---|---|
+| `module_new!("name")` | a fresh, **unnameable** type per expansion site | compile-time |
+| `Module::branded::<MyBrand, _>("name")` | a `'static` type you declare and can name | compile-time |
+| `Module::dynamic("name")` | `DynBrand`, shared by every such module | run-time only |
+
+`module_new!` is the default: it declares a brand inside its own block scope, so
+no two expansion sites can ever collide and nothing outside can name the type.
+Name a brand yourself when a module must appear in a struct field, a function
+signature, or a return type — somewhere the type has to be written down.
+`Module::dynamic` is for a module *count* that is a run-time decision (a loop
+over translation units, a worker pool, a `Vec<Module<DynBrand>>`), where no
+single static type could name each module individually.
+
+**What is compile-time.** A process-global registry admits at most one live
+`Module` per brand type, so a brand names exactly one module; a second claim is
+`IrError::BrandInUse`, and `Module::branded_once` retires its brand permanently
+on drop (`IrError::BrandRetired`) so a stale `'static` id can never be replayed
+against fresh storage. Because of that lock, two **distinct** brand types are
+two distinct modules, and handing a handle or id from one to the other's
+builders, mutators, or resolvers is a type error — no runtime check is involved,
+and there is no `IrError` variant for it to return. `DynBrand` is exempt from
+the registry, which is precisely why it buys no compile-time separation.
+
+**What is run-time.** Ids are storable: they carry the brand but not the borrow,
+so they outlive the handle they came from — and therefore they also carry a
+`ModuleId` tag, checked whenever an id is resolved back to a handle. That tag is
+the backstop for the two cases the type system cannot see: two `DynBrand`
+modules (the same type by construction), and a named brand re-issued to a fresh
+module after the previous one dropped. Neither can become a silent miscompile.
+Which form the rejection takes depends on the surface: the fallible id-taking
+APIs — builders, pass mutators, `try_from_id`-style resolvers — return
+`IrError::ForeignValueId`; `Module::try_view(id)` returns `None`; and
+`Module::view(id)` *panics*, treating a foreign id as a deterministic contract
+violation in the same way indexing a slice out of bounds is.
+
+Compile-time separation is the guarantee llvmkit leads with; the runtime tag is
+what keeps the deliberately-erased case sound instead of undefined.
 
 ### Instruction lifecycle safety
 
@@ -540,7 +722,11 @@ struct EraseDeadInstruction;
 impl EraseDeadInstruction {
     fn run(&mut self, cx: FnCx<Self>) -> IrResult<FnReport> {
         let mut patch = cx.mutate();     // consumes `cx` — no all-preserved report left
-        // ... locate a dead InstructionView `dead` and: patch.erase(&dead)?;
+        // ... locate a dead instruction, then narrow it to a `NonTerminator`:
+        //     if let Some(dead) = view.as_non_terminator() { patch.erase(&dead); }
+        // `erase` accepts *only* a `NonTerminator`, so erasing a terminator —
+        // which would break this rung's CFG-preserved floor — is a compile
+        // error, not a runtime rejection. It is infallible: no `?`.
         Ok(patch.done())                 // floor = CFG analyses preserved (PatchBody rung)
     }
 }
@@ -605,19 +791,21 @@ forcing an explicit re-`verify()` before the next verified-only stage (D8):
 
 ```rust
 use llvmkit_ir::{
-    Analyses, Brand, DcePass, FunctionView, InstSimplifyPass, IrResult, Module, Unverified,
-    Verified, function_pipeline, run_function_pass,
+    Analyses, DcePass, Dyn, FunctionId, InstSimplifyPass, IrResult, Module, ModuleBrand,
+    Unverified, Verified, function_pipeline, run_function_pass,
 };
 
-fn cleanup<'ctx>(
-    verified: Module<'ctx, Brand<'ctx>, Verified>,
-    f: FunctionView<'ctx>,
+fn cleanup<'ctx, B: ModuleBrand + 'ctx>(
+    verified: Module<B, Verified>,
+    f: FunctionId<Dyn, B>,
 ) -> IrResult<()> {
     let mut analyses = Analyses::new();
 
     // 1. A single pass. `InstSimplifyPass` is `PatchBody`, so the driver
     //    returns `Module<Unverified>` and the re-verify is enforced by the type.
-    let simplified: Module<'_, _, Unverified> =
+    //    The driver is handed an **id**, never a view: it consumes the module
+    //    token, and a view would be a borrow of the token about to move.
+    let simplified: Module<B, Unverified> =
         run_function_pass(InstSimplifyPass, verified, f, &mut analyses)?;
 
     // 2. A compile-time tuple pipeline, run in written order. The output
@@ -646,7 +834,7 @@ For runnable end-to-end versions, see
 | `PreservedAnalyses::all()` / `none()` hand-written by the pass | derived from the pass's `type Access` rung — never hand-written |
 | `FAM.getResult<A>(F)` (fallible, null on undeclared) | `cx.analysis::<A, _>()` — infallible; declared in `type Requires`, prefetched |
 | `ModuleToFunctionPassAdaptor` | `for_each_function(function_pipeline((..)))` as a module-pipeline member |
-| mutating IR in a pass | declare a mutating rung, call the consuming `cx.mutate()`, receive a mutator; the driver returns `Module<'ctx, B, Unverified>` |
+| mutating IR in a pass | declare a mutating rung, call the consuming `cx.mutate()`, receive a mutator; the driver returns `Module<B, Unverified>` |
 | plugin registration (`llvmGetPassPluginInfo`) | none — a pass is a plain value; no registration step |
 
 Important boundary: the crate currently ships **the capability-graded pass API,
@@ -665,11 +853,21 @@ section) for the scoped-out items.
 <repo root>/
 ├── Cargo.toml                       # [workspace] only
 ├── llvmkit/                         # umbrella crate
+├── docs/                            # see docs/README.md for the index
+│   ├── type-safety-vs-llvm.md       #   current: the main technical reference
+│   ├── ir-struct-derive.md          #   current: IrStruct user guide
+│   ├── future-work.md               #   current: the live backlog
+│   └── design/                      #   dated records of shipped subsystems
 └── crates/
     ├── llvmkit-support/             # Span, Spanned<T>, SourceMap
     ├── llvmkit-asmparser/           # Lexer + .ll parser
+    ├── llvmkit-macros/              # IrStruct derive, #[function_pass]/#[module_pass]
     └── llvmkit-ir/                  # Typed IR model, builder, verifier, passes
 ```
+
+`docs/` sits at the workspace root, so it is not part of the published `.crate`
+and does not appear on docs.rs — it is a repository-facing tree. API
+documentation ships as rustdoc.
 
 Every Rust file that ports LLVM behavior pairs to a specific upstream LLVM
 concept. See [AGENTS.md](AGENTS.md) for the detailed source-tree map and the
@@ -712,15 +910,31 @@ locks.
   updates live in one exhaustive place per construction / mutation primitive.
 - **D6. Aggregate types preserve element shape.** Aggregate typing is modeled
   directly rather than flattened into weak runtime predicates.
-- **D7. Cross-module mixing is rejected.** Public construction and mutation
-  APIs carry a generative module brand, so values from one `Module::with_new`
-  closure cannot be passed to another module's builders or mutators. This is a
-  type error, not a runtime same-module check.
+- **D7. Cross-module mixing is rejected.** Every handle, id, and builder carries
+  the owning module's brand — a `'static` *type* parameter `B`. Two modules with
+  **distinct** brand types cannot exchange operands: that is a type error, caught
+  at compile time, with no runtime check involved. A process-global registry
+  admits at most one live `Module` per brand (`IrError::BrandInUse` /
+  `BrandRetired`), which is what makes a brand name *one* module unambiguously.
+  Where two modules deliberately **share** a brand type — every
+  `Module::dynamic` module is `DynBrand`, and a named brand is re-issued after
+  the previous module drops — the compile-time half cannot apply, and a mix-up
+  is instead caught at the arena boundary by the runtime `ModuleId` tag every id
+  carries (`IrError::ForeignValueId`). Compile-time separation is the guarantee;
+  the runtime tag is the backstop that keeps the erased case sound rather than
+  silently miscompiling. See [Same-module safety](#same-module-safety).
+  **Metadata is included.** It used to be the one currency outside D7 — a bare
+  arena index with neither a brand nor a tag, so an in-range node from another
+  module mis-resolved silently. Since 0.0.4 the public currency is
+  `MetadataId<B>`, which carries both halves like every other id: a mix-up
+  across named brands is a compile error, and within one brand it is
+  `IrError::ForeignMetadataId`. `IrError::UnknownMetadataSlot` now reports only
+  a *native* id whose slot is out of range.
 - **D8. Verified guarantees are explicit.** Verification consumes an
-  unverified token and produces `Module<'ctx, B, Verified>`. A pass pipeline's
+  unverified token and produces `Module<B, Verified>`. A pass pipeline's
   output typestate is *derived* from its members' capability rungs: an
   all-read-only (`Inspect`) run preserves that verified state at the type level,
-  while any mutating pass returns `Module<'ctx, B, Unverified>`, so their output
+  while any mutating pass returns `Module<B, Unverified>`, so their output
   must be verified again before another verified-only pipeline can consume it.
 - **D9. Iteration safety is structural.** Mutating-while-iterating uses
   dedicated cursor APIs rather than relying on caller discipline.

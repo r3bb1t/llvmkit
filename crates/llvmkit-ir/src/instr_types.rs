@@ -15,12 +15,15 @@
 
 use core::cell::{Cell, RefCell};
 
+use super::atomicrmw_binop::AtomicRMWBinOp;
+use super::cmp_predicate::{FloatPredicate, IntPredicate};
+use super::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::align::{Align, MaybeAlign};
 use crate::atomic_ordering::AtomicOrdering;
 use crate::attributes::AttributeStorage;
 use crate::fmf::FastMathFlags;
 use crate::sync_scope::SyncScope;
-use crate::value::ValueId;
+use crate::value::ValueSlot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOpcode {
@@ -104,14 +107,14 @@ pub enum UnaryOpcode {
 /// `mul`, ...). Mirrors the operand/flag layout of `BinaryOperator`
 /// (`InstrTypes.h`).
 ///
-/// Operand slots are wrapped in [`Cell<ValueId>`] so RAUW
+/// Operand slots are wrapped in [`Cell<ValueSlot>`] so RAUW
 /// (`Value::replaceAllUsesWith`) can rewrite the wiring without
 /// requiring `&mut Module` borrows. Reads must use `.get()`; the
 /// flags remain plain (RAUW does not touch them).
 #[derive(Debug)]
 pub(crate) struct BinaryOpData {
-    pub(crate) lhs: Cell<ValueId>,
-    pub(crate) rhs: Cell<ValueId>,
+    pub(crate) lhs: Cell<ValueSlot>,
+    pub(crate) rhs: Cell<ValueSlot>,
     /// `nuw` (no-unsigned-wrap) flag. Mirrors
     /// `OverflowingBinaryOperator::NoUnsignedWrap`. Applies to
     /// `add` / `sub` / `mul` / `shl`.
@@ -127,21 +130,21 @@ pub(crate) struct BinaryOpData {
     /// (`fadd` / `fsub` / `fmul` / `fdiv` / `frem`); empty for integer
     /// opcodes. Mirrors the `FastMathFlags` slot on `FPMathOperator`
     /// (`Operator.h`).
-    pub(crate) fmf: crate::fmf::FastMathFlags,
+    pub(crate) fmf: FastMathFlags,
     /// `disjoint` flag for `or`. Mirrors `PossiblyDisjointOperator` in
     /// `Operator.h`. When set, the two operands have no bits in common.
     pub(crate) disjoint: bool,
 }
 
 impl BinaryOpData {
-    pub(crate) fn new(lhs: ValueId, rhs: ValueId) -> Self {
+    pub(crate) fn new(lhs: ValueSlot, rhs: ValueSlot) -> Self {
         Self {
             lhs: Cell::new(lhs),
             rhs: Cell::new(rhs),
             no_unsigned_wrap: false,
             no_signed_wrap: false,
             is_exact: false,
-            fmf: crate::fmf::FastMathFlags::empty(),
+            fmf: FastMathFlags::empty(),
             disjoint: false,
         }
     }
@@ -192,11 +195,11 @@ impl core::hash::Hash for BinaryOpData {
 /// void`. Mirrors `ReturnInst`'s operand layout (`Instructions.h`).
 #[derive(Debug)]
 pub(crate) struct ReturnOpData {
-    pub(crate) value: Cell<Option<ValueId>>,
+    pub(crate) value: Cell<Option<ValueSlot>>,
 }
 
 impl ReturnOpData {
-    pub(crate) fn new(value: Option<ValueId>) -> Self {
+    pub(crate) fn new(value: Option<ValueSlot>) -> Self {
         Self {
             value: Cell::new(value),
         }
@@ -302,7 +305,7 @@ impl CastOpcode {
 #[derive(Debug)]
 pub(crate) struct CastOpData {
     pub(crate) kind: CastOpcode,
-    pub(crate) src: Cell<ValueId>,
+    pub(crate) src: Cell<ValueSlot>,
     /// `nneg` flag: applies to `zext` and `uitofp`. When set, the source
     /// value is guaranteed non-negative. Mirrors `PossiblyNonNegInst` in
     /// `Operator.h`.
@@ -314,7 +317,7 @@ pub(crate) struct CastOpData {
 }
 
 impl CastOpData {
-    pub(crate) fn new(kind: CastOpcode, src: ValueId) -> Self {
+    pub(crate) fn new(kind: CastOpcode, src: ValueSlot) -> Self {
         Self {
             kind,
             src: Cell::new(src),
@@ -365,12 +368,12 @@ impl core::hash::Hash for CastOpData {
 /// (`Operator.h`, `FPMathOperator`).
 #[derive(Debug)]
 pub(crate) struct FNegInstData {
-    pub(crate) src: Cell<ValueId>,
-    pub(crate) fmf: crate::fmf::FastMathFlags,
+    pub(crate) src: Cell<ValueSlot>,
+    pub(crate) fmf: FastMathFlags,
 }
 
 impl FNegInstData {
-    pub(crate) fn new(src: ValueId, fmf: crate::fmf::FastMathFlags) -> Self {
+    pub(crate) fn new(src: ValueSlot, fmf: FastMathFlags) -> Self {
         Self {
             src: Cell::new(src),
             fmf,
@@ -403,11 +406,11 @@ impl core::hash::Hash for FNegInstData {
 /// is carried in the host [`crate::value::ValueData::ty`].
 #[derive(Debug)]
 pub(crate) struct FreezeInstData {
-    pub(crate) src: Cell<ValueId>,
+    pub(crate) src: Cell<ValueSlot>,
 }
 
 impl FreezeInstData {
-    pub(crate) fn new(src: ValueId) -> Self {
+    pub(crate) fn new(src: ValueSlot) -> Self {
         Self {
             src: Cell::new(src),
         }
@@ -437,11 +440,11 @@ impl core::hash::Hash for FreezeInstData {
 /// `ValueData::ty`; the payload stores only the `va_list` pointer.
 #[derive(Debug)]
 pub(crate) struct VAArgInstData {
-    pub(crate) src: Cell<ValueId>,
+    pub(crate) src: Cell<ValueSlot>,
 }
 
 impl VAArgInstData {
-    pub(crate) fn new(src: ValueId) -> Self {
+    pub(crate) fn new(src: ValueSlot) -> Self {
         Self {
             src: Cell::new(src),
         }
@@ -481,20 +484,16 @@ impl core::hash::Hash for VAArgInstData {
 /// once vector compares ship).
 #[derive(Debug)]
 pub(crate) struct CmpInstData {
-    pub(crate) predicate: crate::cmp_predicate::IntPredicate,
-    pub(crate) lhs: Cell<ValueId>,
-    pub(crate) rhs: Cell<ValueId>,
+    pub(crate) predicate: IntPredicate,
+    pub(crate) lhs: Cell<ValueSlot>,
+    pub(crate) rhs: Cell<ValueSlot>,
     /// `samesign` flag. LLVM 20+: asserts both operands have the same sign.
     /// Mirrors `ICmpInst::hasSameSign` / `setSameSign`.
     pub(crate) samesign: bool,
 }
 
 impl CmpInstData {
-    pub(crate) fn new(
-        predicate: crate::cmp_predicate::IntPredicate,
-        lhs: ValueId,
-        rhs: ValueId,
-    ) -> Self {
+    pub(crate) fn new(predicate: IntPredicate, lhs: ValueSlot, rhs: ValueSlot) -> Self {
         Self {
             predicate,
             lhs: Cell::new(lhs),
@@ -537,25 +536,21 @@ impl core::hash::Hash for CmpInstData {
 /// layer.
 #[derive(Debug)]
 pub(crate) struct FCmpInstData {
-    pub(crate) predicate: crate::cmp_predicate::FloatPredicate,
-    pub(crate) lhs: Cell<ValueId>,
-    pub(crate) rhs: Cell<ValueId>,
+    pub(crate) predicate: FloatPredicate,
+    pub(crate) lhs: Cell<ValueSlot>,
+    pub(crate) rhs: Cell<ValueSlot>,
     /// Per-instruction fast-math flags. `fcmp` is an `FPMathOperator`
     /// upstream, so the same FMF slot applies. Empty by default.
-    pub(crate) fmf: crate::fmf::FastMathFlags,
+    pub(crate) fmf: FastMathFlags,
 }
 
 impl FCmpInstData {
-    pub(crate) fn new(
-        predicate: crate::cmp_predicate::FloatPredicate,
-        lhs: ValueId,
-        rhs: ValueId,
-    ) -> Self {
+    pub(crate) fn new(predicate: FloatPredicate, lhs: ValueSlot, rhs: ValueSlot) -> Self {
         Self {
             predicate,
             lhs: Cell::new(lhs),
             rhs: Cell::new(rhs),
-            fmf: crate::fmf::FastMathFlags::empty(),
+            fmf: FastMathFlags::empty(),
         }
     }
 }
@@ -650,15 +645,15 @@ impl core::hash::Hash for BranchInstData {
 #[derive(Debug)]
 pub(crate) enum BranchKind {
     /// `br label %target`. Carries the target block's value-id.
-    Unconditional(ValueId),
+    Unconditional(ValueSlot),
     /// `br i1 %cond, label %then, label %else`. The block ids are
     /// stored alongside the SSA `cond` operand; only `cond` is an
     /// SSA operand, so `User::operands()` returns just `cond` for
     /// this variant.
     Conditional {
-        cond: Cell<ValueId>,
-        then_bb: ValueId,
-        else_bb: ValueId,
+        cond: Cell<ValueSlot>,
+        then_bb: ValueSlot,
+        else_bb: ValueSlot,
     },
 }
 
@@ -701,7 +696,7 @@ pub(crate) struct PhiData {
     /// First slot in each pair is the SSA value (operand); second is
     /// the predecessor block. RAUW rewrites the value slot only; block
     /// edges are CFG-level data, not SSA operands.
-    pub(crate) incoming: core::cell::RefCell<Vec<(Cell<ValueId>, ValueId)>>,
+    pub(crate) incoming: core::cell::RefCell<Vec<(Cell<ValueSlot>, ValueSlot)>>,
 }
 
 impl PhiData {
@@ -1109,18 +1104,18 @@ impl AllocaFlags {
 /// (`Instructions.h`).
 #[derive(Debug)]
 pub(crate) struct AllocaInstData {
-    pub(crate) allocated_ty: crate::r#type::TypeId,
-    pub(crate) num_elements: Cell<Option<ValueId>>,
-    pub(crate) align: crate::align::MaybeAlign,
+    pub(crate) allocated_ty: crate::r#type::TypeSlot,
+    pub(crate) num_elements: Cell<Option<ValueSlot>>,
+    pub(crate) align: MaybeAlign,
     pub(crate) addr_space: u32,
     pub(crate) flags: AllocaFlags,
 }
 
 impl AllocaInstData {
     pub(crate) fn new_with_flags(
-        allocated_ty: crate::r#type::TypeId,
-        num_elements: Option<ValueId>,
-        align: crate::align::MaybeAlign,
+        allocated_ty: crate::r#type::TypeSlot,
+        num_elements: Option<ValueSlot>,
+        align: MaybeAlign,
         addr_space: u32,
         flags: AllocaFlags,
     ) -> Self {
@@ -1171,22 +1166,22 @@ impl core::hash::Hash for AllocaInstData {
 /// non-atomic load.
 #[derive(Debug)]
 pub(crate) struct LoadInstData {
-    pub(crate) pointee_ty: crate::r#type::TypeId,
-    pub(crate) ptr: Cell<ValueId>,
-    pub(crate) align: crate::align::MaybeAlign,
+    pub(crate) pointee_ty: crate::r#type::TypeSlot,
+    pub(crate) ptr: Cell<ValueSlot>,
+    pub(crate) align: MaybeAlign,
     pub(crate) volatile: bool,
-    pub(crate) ordering: crate::atomic_ordering::AtomicOrdering,
-    pub(crate) sync_scope: crate::sync_scope::SyncScope,
+    pub(crate) ordering: AtomicOrdering,
+    pub(crate) sync_scope: SyncScope,
 }
 
 impl LoadInstData {
     pub(crate) fn new(
-        pointee_ty: crate::r#type::TypeId,
-        ptr: ValueId,
-        align: crate::align::MaybeAlign,
+        pointee_ty: crate::r#type::TypeSlot,
+        ptr: ValueSlot,
+        align: MaybeAlign,
         volatile: bool,
-        ordering: crate::atomic_ordering::AtomicOrdering,
-        sync_scope: crate::sync_scope::SyncScope,
+        ordering: AtomicOrdering,
+        sync_scope: SyncScope,
     ) -> Self {
         Self {
             pointee_ty,
@@ -1201,10 +1196,7 @@ impl LoadInstData {
     /// `true` when the load carries a non-`NotAtomic` ordering. Mirrors
     /// `LoadInst::isAtomic` in `Instructions.h`.
     pub(crate) fn is_atomic(&self) -> bool {
-        !matches!(
-            self.ordering,
-            crate::atomic_ordering::AtomicOrdering::NotAtomic,
-        )
+        !matches!(self.ordering, AtomicOrdering::NotAtomic,)
     }
 
     /// `true` when the load has no memory-ordering side effects: non-volatile
@@ -1213,8 +1205,7 @@ impl LoadInstData {
         !self.volatile
             && matches!(
                 self.ordering,
-                crate::atomic_ordering::AtomicOrdering::NotAtomic
-                    | crate::atomic_ordering::AtomicOrdering::Unordered,
+                AtomicOrdering::NotAtomic | AtomicOrdering::Unordered,
             )
     }
 }
@@ -1259,22 +1250,22 @@ impl core::hash::Hash for LoadInstData {
 /// non-atomic store.
 #[derive(Debug)]
 pub(crate) struct StoreInstData {
-    pub(crate) value: Cell<ValueId>,
-    pub(crate) ptr: Cell<ValueId>,
-    pub(crate) align: crate::align::MaybeAlign,
+    pub(crate) value: Cell<ValueSlot>,
+    pub(crate) ptr: Cell<ValueSlot>,
+    pub(crate) align: MaybeAlign,
     pub(crate) volatile: bool,
-    pub(crate) ordering: crate::atomic_ordering::AtomicOrdering,
-    pub(crate) sync_scope: crate::sync_scope::SyncScope,
+    pub(crate) ordering: AtomicOrdering,
+    pub(crate) sync_scope: SyncScope,
 }
 
 impl StoreInstData {
     pub(crate) fn new(
-        value: ValueId,
-        ptr: ValueId,
-        align: crate::align::MaybeAlign,
+        value: ValueSlot,
+        ptr: ValueSlot,
+        align: MaybeAlign,
         volatile: bool,
-        ordering: crate::atomic_ordering::AtomicOrdering,
-        sync_scope: crate::sync_scope::SyncScope,
+        ordering: AtomicOrdering,
+        sync_scope: SyncScope,
     ) -> Self {
         Self {
             value: Cell::new(value),
@@ -1289,10 +1280,7 @@ impl StoreInstData {
     /// `true` when the store carries a non-`NotAtomic` ordering. Mirrors
     /// `StoreInst::isAtomic` in `Instructions.h`.
     pub(crate) fn is_atomic(&self) -> bool {
-        !matches!(
-            self.ordering,
-            crate::atomic_ordering::AtomicOrdering::NotAtomic,
-        )
+        !matches!(self.ordering, AtomicOrdering::NotAtomic,)
     }
 }
 impl Clone for StoreInstData {
@@ -1337,19 +1325,22 @@ impl core::hash::Hash for StoreInstData {
 /// (`Instructions.h`).
 #[derive(Debug)]
 pub(crate) struct GepInstData {
-    pub(crate) source_ty: crate::r#type::TypeId,
-    pub(crate) ptr: Cell<ValueId>,
-    pub(crate) indices: Box<[Cell<ValueId>]>,
-    pub(crate) flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
+    pub(crate) source_ty: crate::r#type::TypeSlot,
+    pub(crate) ptr: Cell<ValueSlot>,
+    pub(crate) indices: Box<[Cell<ValueSlot>]>,
+    pub(crate) flags: GepNoWrapFlags,
 }
 
 impl GepInstData {
-    pub(crate) fn new(
-        source_ty: crate::r#type::TypeId,
-        ptr: ValueId,
-        indices: impl IntoIterator<Item = ValueId>,
-        flags: crate::gep_no_wrap_flags::GepNoWrapFlags,
-    ) -> Self {
+    pub(crate) fn new<Indices>(
+        source_ty: crate::r#type::TypeSlot,
+        ptr: ValueSlot,
+        indices: Indices,
+        flags: GepNoWrapFlags,
+    ) -> Self
+    where
+        Indices: IntoIterator<Item = ValueSlot>,
+    {
         Self {
             source_ty,
             ptr: Cell::new(ptr),
@@ -1443,13 +1434,13 @@ pub enum OperandBundleTag {
 #[derive(Debug)]
 pub struct OperandBundleData {
     tag: OperandBundleTag,
-    inputs: Box<[Cell<ValueId>]>,
+    inputs: Box<[Cell<ValueSlot>]>,
 }
 
 impl OperandBundleData {
     pub fn new<Inputs>(tag: OperandBundleTag, inputs: Inputs) -> Self
     where
-        Inputs: IntoIterator<Item = ValueId>,
+        Inputs: IntoIterator<Item = ValueSlot>,
     {
         Self {
             tag,
@@ -1461,11 +1452,11 @@ impl OperandBundleData {
         &self.tag
     }
 
-    pub fn inputs(&self) -> impl ExactSizeIterator<Item = ValueId> + '_ {
+    pub fn inputs(&self) -> impl ExactSizeIterator<Item = ValueSlot> + '_ {
         self.inputs.iter().map(|input| input.get())
     }
 
-    pub(crate) fn input_cells(&self) -> &[Cell<ValueId>] {
+    pub(crate) fn input_cells(&self) -> &[Cell<ValueSlot>] {
         &self.inputs
     }
 }
@@ -1584,22 +1575,25 @@ impl Default for CallAttributeData {
 /// (`Instructions.h`).
 #[derive(Debug)]
 pub(crate) struct CallInstData {
-    pub(crate) callee: Cell<ValueId>,
-    pub(crate) fn_ty: crate::r#type::TypeId,
-    pub(crate) args: Box<[Cell<ValueId>]>,
+    pub(crate) callee: Cell<ValueSlot>,
+    pub(crate) fn_ty: crate::r#type::TypeSlot,
+    pub(crate) args: Box<[Cell<ValueSlot>]>,
     pub(crate) calling_conv: crate::CallingConv,
     pub(crate) tail_kind: TailCallKind,
     pub(crate) attrs: CallAttributeData,
 }
 
 impl CallInstData {
-    pub(crate) fn new(
-        callee: ValueId,
-        fn_ty: crate::r#type::TypeId,
-        args: impl IntoIterator<Item = ValueId>,
+    pub(crate) fn new<Args>(
+        callee: ValueSlot,
+        fn_ty: crate::r#type::TypeSlot,
+        args: Args,
         calling_conv: crate::CallingConv,
         tail_kind: TailCallKind,
-    ) -> Self {
+    ) -> Self
+    where
+        Args: IntoIterator<Item = ValueSlot>,
+    {
         Self::new_with_attrs(
             callee,
             fn_ty,
@@ -1610,14 +1604,17 @@ impl CallInstData {
         )
     }
 
-    pub(crate) fn new_with_attrs(
-        callee: ValueId,
-        fn_ty: crate::r#type::TypeId,
-        args: impl IntoIterator<Item = ValueId>,
+    pub(crate) fn new_with_attrs<Args>(
+        callee: ValueSlot,
+        fn_ty: crate::r#type::TypeSlot,
+        args: Args,
         calling_conv: crate::CallingConv,
         tail_kind: TailCallKind,
         attrs: CallAttributeData,
-    ) -> Self {
+    ) -> Self
+    where
+        Args: IntoIterator<Item = ValueSlot>,
+    {
         Self {
             callee: Cell::new(callee),
             fn_ty,
@@ -1679,13 +1676,13 @@ impl core::hash::Hash for CallInstData {
 /// (`Instructions.h`).
 #[derive(Debug)]
 pub(crate) struct SelectInstData {
-    pub(crate) cond: Cell<ValueId>,
-    pub(crate) true_val: Cell<ValueId>,
-    pub(crate) false_val: Cell<ValueId>,
+    pub(crate) cond: Cell<ValueSlot>,
+    pub(crate) true_val: Cell<ValueSlot>,
+    pub(crate) false_val: Cell<ValueSlot>,
 }
 
 impl SelectInstData {
-    pub(crate) fn new(cond: ValueId, true_val: ValueId, false_val: ValueId) -> Self {
+    pub(crate) fn new(cond: ValueSlot, true_val: ValueSlot, false_val: ValueSlot) -> Self {
         Self {
             cond: Cell::new(cond),
             true_val: Cell::new(true_val),
@@ -1728,12 +1725,15 @@ impl core::hash::Hash for SelectInstData {
 /// `Instructions.h::ExtractValueInst::Indices` -- `SmallVector<unsigned,4>`).
 #[derive(Debug)]
 pub(crate) struct ExtractValueInstData {
-    pub(crate) aggregate: Cell<ValueId>,
+    pub(crate) aggregate: Cell<ValueSlot>,
     pub(crate) indices: Box<[u32]>,
 }
 
 impl ExtractValueInstData {
-    pub(crate) fn new(aggregate: ValueId, indices: impl IntoIterator<Item = u32>) -> Self {
+    pub(crate) fn new<Indices>(aggregate: ValueSlot, indices: Indices) -> Self
+    where
+        Indices: IntoIterator<Item = u32>,
+    {
         Self {
             aggregate: Cell::new(aggregate),
             indices: indices.into_iter().collect(),
@@ -1765,17 +1765,16 @@ impl core::hash::Hash for ExtractValueInstData {
 /// (`Instructions.h`).
 #[derive(Debug)]
 pub(crate) struct InsertValueInstData {
-    pub(crate) aggregate: Cell<ValueId>,
-    pub(crate) value: Cell<ValueId>,
+    pub(crate) aggregate: Cell<ValueSlot>,
+    pub(crate) value: Cell<ValueSlot>,
     pub(crate) indices: Box<[u32]>,
 }
 
 impl InsertValueInstData {
-    pub(crate) fn new(
-        aggregate: ValueId,
-        value: ValueId,
-        indices: impl IntoIterator<Item = u32>,
-    ) -> Self {
+    pub(crate) fn new<Indices>(aggregate: ValueSlot, value: ValueSlot, indices: Indices) -> Self
+    where
+        Indices: IntoIterator<Item = u32>,
+    {
         Self {
             aggregate: Cell::new(aggregate),
             value: Cell::new(value),
@@ -1816,12 +1815,12 @@ impl core::hash::Hash for InsertValueInstData {
 /// (`Instructions.h`).
 #[derive(Debug)]
 pub(crate) struct ExtractElementInstData {
-    pub(crate) vector: Cell<ValueId>,
-    pub(crate) index: Cell<ValueId>,
+    pub(crate) vector: Cell<ValueSlot>,
+    pub(crate) index: Cell<ValueSlot>,
 }
 
 impl ExtractElementInstData {
-    pub(crate) fn new(vector: ValueId, index: ValueId) -> Self {
+    pub(crate) fn new(vector: ValueSlot, index: ValueSlot) -> Self {
         Self {
             vector: Cell::new(vector),
             index: Cell::new(index),
@@ -1853,13 +1852,13 @@ impl core::hash::Hash for ExtractElementInstData {
 /// (`Instructions.h`).
 #[derive(Debug)]
 pub(crate) struct InsertElementInstData {
-    pub(crate) vector: Cell<ValueId>,
-    pub(crate) value: Cell<ValueId>,
-    pub(crate) index: Cell<ValueId>,
+    pub(crate) vector: Cell<ValueSlot>,
+    pub(crate) value: Cell<ValueSlot>,
+    pub(crate) index: Cell<ValueSlot>,
 }
 
 impl InsertElementInstData {
-    pub(crate) fn new(vector: ValueId, value: ValueId, index: ValueId) -> Self {
+    pub(crate) fn new(vector: ValueSlot, value: ValueSlot, index: ValueSlot) -> Self {
         Self {
             vector: Cell::new(vector),
             value: Cell::new(value),
@@ -1902,13 +1901,16 @@ pub const POISON_MASK_ELEM: i32 = -1;
 /// `POISON_MASK_ELEM` (-1) marks poison entries.
 #[derive(Debug)]
 pub(crate) struct ShuffleVectorInstData {
-    pub(crate) lhs: Cell<ValueId>,
-    pub(crate) rhs: Cell<ValueId>,
+    pub(crate) lhs: Cell<ValueSlot>,
+    pub(crate) rhs: Cell<ValueSlot>,
     pub(crate) mask: Box<[i32]>,
 }
 
 impl ShuffleVectorInstData {
-    pub(crate) fn new(lhs: ValueId, rhs: ValueId, mask: impl IntoIterator<Item = i32>) -> Self {
+    pub(crate) fn new<Mask>(lhs: ValueSlot, rhs: ValueSlot, mask: Mask) -> Self
+    where
+        Mask: IntoIterator<Item = i32>,
+    {
         Self {
             lhs: Cell::new(lhs),
             rhs: Cell::new(rhs),
@@ -1949,15 +1951,12 @@ impl core::hash::Hash for ShuffleVectorInstData {
 /// No SSA operands; ordering and sync-scope only.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct FenceInstData {
-    pub(crate) ordering: crate::atomic_ordering::AtomicOrdering,
-    pub(crate) sync_scope: crate::sync_scope::SyncScope,
+    pub(crate) ordering: AtomicOrdering,
+    pub(crate) sync_scope: SyncScope,
 }
 
 impl FenceInstData {
-    pub(crate) fn new(
-        ordering: crate::atomic_ordering::AtomicOrdering,
-        sync_scope: crate::sync_scope::SyncScope,
-    ) -> Self {
+    pub(crate) fn new(ordering: AtomicOrdering, sync_scope: SyncScope) -> Self {
         Self {
             ordering,
             sync_scope,
@@ -1970,22 +1969,22 @@ impl FenceInstData {
 /// `{ <pointee>, i1 }` (carried in the host `ValueData::ty`).
 #[derive(Debug)]
 pub(crate) struct AtomicCmpXchgInstData {
-    pub(crate) ptr: Cell<ValueId>,
-    pub(crate) cmp: Cell<ValueId>,
-    pub(crate) new_val: Cell<ValueId>,
-    pub(crate) align: crate::align::MaybeAlign,
-    pub(crate) success_ordering: crate::atomic_ordering::AtomicOrdering,
-    pub(crate) failure_ordering: crate::atomic_ordering::AtomicOrdering,
-    pub(crate) sync_scope: crate::sync_scope::SyncScope,
+    pub(crate) ptr: Cell<ValueSlot>,
+    pub(crate) cmp: Cell<ValueSlot>,
+    pub(crate) new_val: Cell<ValueSlot>,
+    pub(crate) align: MaybeAlign,
+    pub(crate) success_ordering: AtomicOrdering,
+    pub(crate) failure_ordering: AtomicOrdering,
+    pub(crate) sync_scope: SyncScope,
     pub(crate) weak: bool,
     pub(crate) volatile: bool,
 }
 
 impl AtomicCmpXchgInstData {
     pub(crate) fn new(
-        ptr: ValueId,
-        cmp: ValueId,
-        new_val: ValueId,
+        ptr: ValueSlot,
+        cmp: ValueSlot,
+        new_val: ValueSlot,
         config: crate::instr_types::AtomicCmpXchgConfig,
     ) -> Self {
         Self {
@@ -2048,20 +2047,20 @@ impl core::hash::Hash for AtomicCmpXchgInstData {
 /// (`Instructions.h`).
 #[derive(Debug)]
 pub(crate) struct AtomicRMWInstData {
-    pub(crate) op: crate::atomicrmw_binop::AtomicRMWBinOp,
-    pub(crate) ptr: Cell<ValueId>,
-    pub(crate) value: Cell<ValueId>,
-    pub(crate) align: crate::align::MaybeAlign,
-    pub(crate) ordering: crate::atomic_ordering::AtomicOrdering,
-    pub(crate) sync_scope: crate::sync_scope::SyncScope,
+    pub(crate) op: AtomicRMWBinOp,
+    pub(crate) ptr: Cell<ValueSlot>,
+    pub(crate) value: Cell<ValueSlot>,
+    pub(crate) align: MaybeAlign,
+    pub(crate) ordering: AtomicOrdering,
+    pub(crate) sync_scope: SyncScope,
     pub(crate) volatile: bool,
 }
 
 impl AtomicRMWInstData {
     pub(crate) fn new(
-        op: crate::atomicrmw_binop::AtomicRMWBinOp,
-        ptr: ValueId,
-        value: ValueId,
+        op: AtomicRMWBinOp,
+        ptr: ValueSlot,
+        value: ValueSlot,
         config: crate::instr_types::AtomicRMWConfig,
     ) -> Self {
         Self {
@@ -2175,15 +2174,15 @@ impl AtomicRMWFlags {
 /// mutation goes through `&self`.
 #[derive(Debug)]
 pub(crate) struct SwitchInstData {
-    pub(crate) cond: Cell<ValueId>,
-    pub(crate) default_bb: Cell<ValueId>,
+    pub(crate) cond: Cell<ValueSlot>,
+    pub(crate) default_bb: Cell<ValueSlot>,
     /// Each entry is `(case_value_id, dest_bb_id)`. Mirrors the
     /// `(Constant, BB)` pairs in `SwitchInst::Case`.
-    pub(crate) cases: core::cell::RefCell<Vec<(Cell<ValueId>, ValueId)>>,
+    pub(crate) cases: core::cell::RefCell<Vec<(Cell<ValueSlot>, ValueSlot)>>,
 }
 
 impl SwitchInstData {
-    pub(crate) fn new(cond: ValueId, default_bb: ValueId) -> Self {
+    pub(crate) fn new(cond: ValueSlot, default_bb: ValueSlot) -> Self {
         Self {
             cond: Cell::new(cond),
             default_bb: Cell::new(default_bb),
@@ -2237,12 +2236,12 @@ impl core::hash::Hash for SwitchInstData {
 /// `add_destination` method.
 #[derive(Debug)]
 pub(crate) struct IndirectBrInstData {
-    pub(crate) addr: Cell<ValueId>,
-    pub(crate) destinations: core::cell::RefCell<Vec<ValueId>>,
+    pub(crate) addr: Cell<ValueSlot>,
+    pub(crate) destinations: core::cell::RefCell<Vec<ValueSlot>>,
 }
 
 impl IndirectBrInstData {
-    pub(crate) fn new(addr: ValueId) -> Self {
+    pub(crate) fn new(addr: ValueSlot) -> Self {
         Self {
             addr: Cell::new(addr),
             destinations: core::cell::RefCell::new(Vec::new()),
@@ -2282,25 +2281,28 @@ impl core::hash::Hash for IndirectBrInstData {
 /// [`CallInstData`] plus the normal/unwind destination block ids.
 #[derive(Debug)]
 pub(crate) struct InvokeInstData {
-    pub(crate) callee: Cell<ValueId>,
-    pub(crate) fn_ty: crate::r#type::TypeId,
-    pub(crate) args: Box<[Cell<ValueId>]>,
+    pub(crate) callee: Cell<ValueSlot>,
+    pub(crate) fn_ty: crate::r#type::TypeSlot,
+    pub(crate) args: Box<[Cell<ValueSlot>]>,
     pub(crate) calling_conv: crate::CallingConv,
-    pub(crate) normal_dest: Cell<ValueId>,
-    pub(crate) unwind_dest: Cell<ValueId>,
+    pub(crate) normal_dest: Cell<ValueSlot>,
+    pub(crate) unwind_dest: Cell<ValueSlot>,
     pub(crate) attrs: CallAttributeData,
 }
 
 impl InvokeInstData {
-    pub(crate) fn new_with_attrs(
-        callee: ValueId,
-        fn_ty: crate::r#type::TypeId,
-        args: impl IntoIterator<Item = ValueId>,
+    pub(crate) fn new_with_attrs<Args>(
+        callee: ValueSlot,
+        fn_ty: crate::r#type::TypeSlot,
+        args: Args,
         calling_conv: crate::CallingConv,
-        normal_dest: ValueId,
-        unwind_dest: ValueId,
+        normal_dest: ValueSlot,
+        unwind_dest: ValueSlot,
         attrs: CallAttributeData,
-    ) -> Self {
+    ) -> Self
+    where
+        Args: IntoIterator<Item = ValueSlot>,
+    {
         Self {
             callee: Cell::new(callee),
             fn_ty,
@@ -2363,25 +2365,29 @@ impl core::hash::Hash for InvokeInstData {
 /// block; the indirect destinations are the asm-listed labels.
 #[derive(Debug)]
 pub(crate) struct CallBrInstData {
-    pub(crate) callee: Cell<ValueId>,
-    pub(crate) fn_ty: crate::r#type::TypeId,
-    pub(crate) args: Box<[Cell<ValueId>]>,
+    pub(crate) callee: Cell<ValueSlot>,
+    pub(crate) fn_ty: crate::r#type::TypeSlot,
+    pub(crate) args: Box<[Cell<ValueSlot>]>,
     pub(crate) calling_conv: crate::CallingConv,
-    pub(crate) default_dest: Cell<ValueId>,
-    pub(crate) indirect_dests: Box<[Cell<ValueId>]>,
+    pub(crate) default_dest: Cell<ValueSlot>,
+    pub(crate) indirect_dests: Box<[Cell<ValueSlot>]>,
     pub(crate) attrs: CallAttributeData,
 }
 
 impl CallBrInstData {
-    pub(crate) fn new_with_attrs(
-        callee: ValueId,
-        fn_ty: crate::r#type::TypeId,
-        args: impl IntoIterator<Item = ValueId>,
+    pub(crate) fn new_with_attrs<Args, IndirectDests>(
+        callee: ValueSlot,
+        fn_ty: crate::r#type::TypeSlot,
+        args: Args,
         calling_conv: crate::CallingConv,
-        default_dest: ValueId,
-        indirect_dests: impl IntoIterator<Item = ValueId>,
+        default_dest: ValueSlot,
+        indirect_dests: IndirectDests,
         attrs: CallAttributeData,
-    ) -> Self {
+    ) -> Self
+    where
+        Args: IntoIterator<Item = ValueSlot>,
+        IndirectDests: IntoIterator<Item = ValueSlot>,
+    {
         Self {
             callee: Cell::new(callee),
             fn_ty,
@@ -2475,7 +2481,7 @@ pub enum LandingPadClauseKind {
 #[derive(Debug)]
 pub(crate) struct LandingPadInstData {
     pub(crate) cleanup: core::cell::Cell<bool>,
-    pub(crate) clauses: core::cell::RefCell<Vec<(LandingPadClauseKind, Cell<ValueId>)>>,
+    pub(crate) clauses: core::cell::RefCell<Vec<(LandingPadClauseKind, Cell<ValueSlot>)>>,
 }
 
 impl LandingPadInstData {
@@ -2528,11 +2534,11 @@ impl core::hash::Hash for LandingPadInstData {
 /// (`Instructions.h`). Single SSA operand; no successors; terminator.
 #[derive(Debug)]
 pub(crate) struct ResumeInstData {
-    pub(crate) value: Cell<ValueId>,
+    pub(crate) value: Cell<ValueSlot>,
 }
 
 impl ResumeInstData {
-    pub(crate) fn new(value: ValueId) -> Self {
+    pub(crate) fn new(value: ValueSlot) -> Self {
         Self {
             value: Cell::new(value),
         }
@@ -2565,15 +2571,15 @@ impl core::hash::Hash for ResumeInstData {
 /// (`Instructions.h`). The result is a `token`-typed value.
 #[derive(Debug)]
 pub(crate) struct CleanupPadInstData {
-    pub(crate) parent_pad: Cell<Option<ValueId>>,
-    pub(crate) args: Box<[Cell<ValueId>]>,
+    pub(crate) parent_pad: Cell<Option<ValueSlot>>,
+    pub(crate) args: Box<[Cell<ValueSlot>]>,
 }
 
 impl CleanupPadInstData {
-    pub(crate) fn new(
-        parent_pad: Option<ValueId>,
-        args: impl IntoIterator<Item = ValueId>,
-    ) -> Self {
+    pub(crate) fn new<Args>(parent_pad: Option<ValueSlot>, args: Args) -> Self
+    where
+        Args: IntoIterator<Item = ValueSlot>,
+    {
         Self {
             parent_pad: Cell::new(parent_pad),
             args: args.into_iter().map(Cell::new).collect(),
@@ -2614,15 +2620,15 @@ impl core::hash::Hash for CleanupPadInstData {
 /// parent must be a `catchswitch` (verifier rule).
 #[derive(Debug)]
 pub(crate) struct CatchPadInstData {
-    pub(crate) parent_pad: Cell<Option<ValueId>>,
-    pub(crate) args: Box<[Cell<ValueId>]>,
+    pub(crate) parent_pad: Cell<Option<ValueSlot>>,
+    pub(crate) args: Box<[Cell<ValueSlot>]>,
 }
 
 impl CatchPadInstData {
-    pub(crate) fn new(
-        parent_pad: Option<ValueId>,
-        args: impl IntoIterator<Item = ValueId>,
-    ) -> Self {
+    pub(crate) fn new<Args>(parent_pad: Option<ValueSlot>, args: Args) -> Self
+    where
+        Args: IntoIterator<Item = ValueSlot>,
+    {
         Self {
             parent_pad: Cell::new(parent_pad),
             args: args.into_iter().map(Cell::new).collect(),
@@ -2662,12 +2668,12 @@ impl core::hash::Hash for CatchPadInstData {
 /// (`Instructions.h`).
 #[derive(Debug, Clone)]
 pub(crate) struct CatchReturnInstData {
-    pub(crate) catch_pad: Cell<ValueId>,
-    pub(crate) target_bb: ValueId,
+    pub(crate) catch_pad: Cell<ValueSlot>,
+    pub(crate) target_bb: ValueSlot,
 }
 
 impl CatchReturnInstData {
-    pub(crate) fn new(catch_pad: ValueId, target_bb: ValueId) -> Self {
+    pub(crate) fn new(catch_pad: ValueSlot, target_bb: ValueSlot) -> Self {
         Self {
             catch_pad: Cell::new(catch_pad),
             target_bb,
@@ -2692,12 +2698,12 @@ impl core::hash::Hash for CatchReturnInstData {
 /// caller`; `Some(bb_id)` is `unwind label %bb`.
 #[derive(Debug, Clone)]
 pub(crate) struct CleanupReturnInstData {
-    pub(crate) cleanup_pad: Cell<ValueId>,
-    pub(crate) unwind_dest: Option<ValueId>,
+    pub(crate) cleanup_pad: Cell<ValueSlot>,
+    pub(crate) unwind_dest: Option<ValueSlot>,
 }
 
 impl CleanupReturnInstData {
-    pub(crate) fn new(cleanup_pad: ValueId, unwind_dest: Option<ValueId>) -> Self {
+    pub(crate) fn new(cleanup_pad: ValueSlot, unwind_dest: Option<ValueSlot>) -> Self {
         Self {
             cleanup_pad: Cell::new(cleanup_pad),
             unwind_dest,
@@ -2721,13 +2727,13 @@ impl core::hash::Hash for CleanupReturnInstData {
 /// (`Instructions.h`). Variable-arity (handlers).
 #[derive(Debug)]
 pub(crate) struct CatchSwitchInstData {
-    pub(crate) parent_pad: Cell<Option<ValueId>>,
-    pub(crate) unwind_dest: Cell<Option<ValueId>>,
-    pub(crate) handlers: core::cell::RefCell<Vec<ValueId>>,
+    pub(crate) parent_pad: Cell<Option<ValueSlot>>,
+    pub(crate) unwind_dest: Cell<Option<ValueSlot>>,
+    pub(crate) handlers: core::cell::RefCell<Vec<ValueSlot>>,
 }
 
 impl CatchSwitchInstData {
-    pub(crate) fn new(parent_pad: Option<ValueId>, unwind_dest: Option<ValueId>) -> Self {
+    pub(crate) fn new(parent_pad: Option<ValueSlot>, unwind_dest: Option<ValueSlot>) -> Self {
         Self {
             parent_pad: Cell::new(parent_pad),
             unwind_dest: Cell::new(unwind_dest),

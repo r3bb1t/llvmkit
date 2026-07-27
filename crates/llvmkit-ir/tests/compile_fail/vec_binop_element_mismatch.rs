@@ -9,27 +9,26 @@
 use llvmkit_ir::{Dyn, IRBuilder, Len, Linkage, Module, VectorValue};
 
 fn main() {
-    Module::with_new("vec-elem-mismatch", |m| {
-        let i32_ty = m.i32_type();
-        let i64_ty = m.i64_type();
-        let v_i32 = m.vector_type(i32_ty.as_type(), 4, false);
-        let v_i64 = m.vector_type(i64_ty.as_type(), 4, false);
-        let void_ty = m.void_type();
-        let fn_ty = m.fn_type(
-            void_ty.as_type(),
-            [v_i32.as_type(), v_i64.as_type()],
-            false,
-        );
-        let f = m.add_function_dyn("g", fn_ty, Linkage::External).unwrap();
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let m = Module::dynamic("vec-elem-mismatch");
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let v_i32 = m.vector_type(i32_ty.as_type(), 4, false);
+    let v_i64 = m.vector_type(i64_ty.as_type(), 4, false);
+    let void_ty = m.void_type();
+    let fn_ty = m.fn_type(
+        void_ty.as_type(),
+        [v_i32.as_type(), v_i64.as_type()],
+        false,
+    );
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External).unwrap();
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let a: VectorValue<'_, i32, Len<4>> =
-            f.param(0).unwrap().into_erased().try_into().unwrap();
-        let c: VectorValue<'_, i64, Len<4>> =
-            f.param(1).unwrap().into_erased().try_into().unwrap();
+    let a: VectorValue<'_, i32, Len<4>, _> =
+        m.view(f).param(0).unwrap().into_erased().try_into().unwrap();
+    let c: VectorValue<'_, i64, Len<4>, _> =
+        m.view(f).param(1).unwrap().into_erased().try_into().unwrap();
 
-        // `i32` and `i64` cannot unify the single `E` the binop demands.
-        let _bad = b.build_vec_int_add(a, c, "x").unwrap(); //~ ERROR mismatched types
-    });
+    // `i32` and `i64` cannot unify the single `E` the binop demands.
+    let _bad = b.build_vec_int_add(a, c, "x").unwrap(); //~ ERROR mismatched types
 }

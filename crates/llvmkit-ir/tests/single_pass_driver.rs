@@ -25,7 +25,7 @@ use std::rc::Rc;
 use llvmkit_ir::{
     Analyses, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, Inspect, IrError, IrResult, Linkage,
     ModCx, ModReport, Module, ModuleBrand, ModulePass, RewriteModule, Unverified, Verified,
-    run_function_pass, run_module_pass,
+    module_new, run_function_pass, run_module_pass,
 };
 
 /// Read-only module pass: counts the module's functions and flips a shared
@@ -35,12 +35,16 @@ struct CountFunctionsPass {
     ran: Rc<Cell<bool>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for CountFunctionsPass {
+impl<B: ModuleBrand> ModulePass<B> for CountFunctionsPass {
     type Access = Inspect;
     type Requires = ();
     const NAME: &'static str = "count-functions-probe";
 
-    fn run(&mut self, cx: ModCx<'_, '_, '_, 'ctx, B, Inspect, ()>) -> IrResult<ModReport> {
+    fn run<'m, 'ctx>(&mut self, cx: ModCx<'m, '_, '_, 'ctx, B, Inspect, ()>) -> IrResult<ModReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         assert_eq!(
             cx.functions().count(),
             1,
@@ -54,32 +58,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for CountFunctionsPass {
 /// llvmkit-specific single-pass-driver verification lock (no upstream
 /// analog: LLVM pass managers have no compile-time verified/unverified
 /// typestate). An `Inspect` `ModulePass` run through [`run_module_pass`]
-/// must bind as `Module<'_, _, Verified>` (read-only stays verified) *and*
+/// must bind as `Module<_, Verified>` (read-only stays verified) *and*
 /// must have genuinely executed.
 #[test]
 fn inspect_module_pass_stays_verified_and_runs() -> Result<(), IrError> {
-    Module::with_new("inspect-module-pass", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        b.build_ret(i32_ty.const_int(1_u32))?;
+    let m = module_new!("inspect-module-pass")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    b.build_ret(i32_ty.const_int(1_u32))?;
 
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
 
-        let ran = Rc::new(Cell::new(false));
-        let pass = CountFunctionsPass { ran: ran.clone() };
+    let ran = Rc::new(Cell::new(false));
+    let pass = CountFunctionsPass { ran: ran.clone() };
 
-        // The explicit `Verified` annotation is the compile-time half of the
-        // assertion: a wrong driver verdict here fails to compile.
-        let out: Module<'_, _, Verified> = run_module_pass(pass, verified, &mut analyses)?;
+    // The explicit `Verified` annotation is the compile-time half of the
+    // assertion: a wrong driver verdict here fails to compile.
+    let out: Module<_, Verified> = run_module_pass(pass, verified, &mut analyses)?;
 
-        assert!(ran.get(), "Inspect ModulePass::run must actually execute");
-        assert_eq!(out.as_view().functions().count(), 1);
-        Ok(())
-    })
+    assert!(ran.get(), "Inspect ModulePass::run must actually execute");
+    assert_eq!(out.as_view().functions().count(), 1);
+    Ok(())
 }
 
 /// Mutating module pass: adds a global straight through the `RewriteModule`
@@ -88,12 +91,19 @@ struct AddGlobalPass {
     ran: Rc<Cell<bool>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for AddGlobalPass {
+impl<B: ModuleBrand> ModulePass<B> for AddGlobalPass {
     type Access = RewriteModule;
     type Requires = ();
     const NAME: &'static str = "add-global-probe";
 
-    fn run(&mut self, cx: ModCx<'_, '_, '_, 'ctx, B, RewriteModule, ()>) -> IrResult<ModReport> {
+    fn run<'m, 'ctx>(
+        &mut self,
+        cx: ModCx<'m, '_, '_, 'ctx, B, RewriteModule, ()>,
+    ) -> IrResult<ModReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let rewrite = cx.mutate();
         let i32_ty = rewrite.module_mut().i32_type();
         rewrite.module_mut().add_global("g", i32_ty.const_zero())?;
@@ -105,41 +115,40 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModulePass<'ctx, B> for AddGlobalPass {
 /// llvmkit-specific single-pass-driver verification lock (no upstream
 /// analog: LLVM pass managers have no compile-time verified/unverified
 /// typestate). A `RewriteModule` `ModulePass` run through [`run_module_pass`]
-/// must bind as `Module<'_, _, Unverified>` (D8 downgrade) *and* its
+/// must bind as `Module<_, Unverified>` (D8 downgrade) *and* its
 /// mutation must be observable on the returned module.
 #[test]
 fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
-    Module::with_new("rewrite-module-pass", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        b.build_ret(i32_ty.const_int(0_u32))?;
+    let m = module_new!("rewrite-module-pass")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    b.build_ret(i32_ty.const_int(0_u32))?;
 
-        let verified = m.verify()?;
-        assert_eq!(verified.globals().len(), 0);
+    let verified = m.verify()?;
+    assert_eq!(verified.globals().len(), 0);
 
-        let mut analyses = Analyses::new();
+    let mut analyses = Analyses::new();
 
-        let ran = Rc::new(Cell::new(false));
-        let pass = AddGlobalPass { ran: ran.clone() };
+    let ran = Rc::new(Cell::new(false));
+    let pass = AddGlobalPass { ran: ran.clone() };
 
-        // The explicit `Unverified` annotation is the compile-time half of
-        // the assertion: a wrong driver verdict here fails to compile.
-        let out: Module<'_, _, Unverified> = run_module_pass(pass, verified, &mut analyses)?;
+    // The explicit `Unverified` annotation is the compile-time half of
+    // the assertion: a wrong driver verdict here fails to compile.
+    let out: Module<_, Unverified> = run_module_pass(pass, verified, &mut analyses)?;
 
-        assert!(
-            ran.get(),
-            "RewriteModule ModulePass::run must actually execute"
-        );
-        // The real mutation landed on the returned module, not just inside
-        // the pass's own scope.
-        assert_eq!(out.globals().len(), 1);
-        // The mutation is a real, well-formed IR edit.
-        out.verify()?;
-        Ok(())
-    })
+    assert!(
+        ran.get(),
+        "RewriteModule ModulePass::run must actually execute"
+    );
+    // The real mutation landed on the returned module, not just inside
+    // the pass's own scope.
+    assert_eq!(out.globals().len(), 1);
+    // The mutation is a real, well-formed IR edit.
+    out.verify()?;
+    Ok(())
 }
 
 /// Read-only function pass: reads the function's block count and flips a
@@ -148,12 +157,16 @@ struct InspectFnPass {
     ran: Rc<Cell<bool>>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InspectFnPass {
+impl<B: ModuleBrand> FunctionPass<B> for InspectFnPass {
     type Access = Inspect;
     type Requires = ();
     const NAME: &'static str = "inspect-fn-probe";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         assert_eq!(
             cx.function().basic_blocks().count(),
             1,
@@ -167,33 +180,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for InspectFnPass {
 /// llvmkit-specific single-pass-driver verification lock (no upstream
 /// analog: LLVM pass managers have no compile-time verified/unverified
 /// typestate). An `Inspect` `FunctionPass` run through [`run_function_pass`]
-/// must bind as `Module<'_, _, Verified>` *and* must have genuinely
+/// must bind as `Module<_, Verified>` *and* must have genuinely
 /// executed. (`run_function_pass` already has executed coverage at the
 /// mutating `PatchBody` rung via `DcePass`/`InstSimplifyPass` in
 /// `scalar_cleanup_passes.rs`; this closes the `Inspect`-rung gap.)
 #[test]
 fn inspect_function_pass_stays_verified_and_runs() -> Result<(), IrError> {
-    Module::with_new("inspect-function-pass", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        b.build_ret(i32_ty.const_int(1_u32))?;
+    let m = module_new!("inspect-function-pass")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    b.build_ret(i32_ty.const_int(1_u32))?;
 
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
 
-        let ran = Rc::new(Cell::new(false));
-        let pass = InspectFnPass { ran: ran.clone() };
+    let ran = Rc::new(Cell::new(false));
+    let pass = InspectFnPass { ran: ran.clone() };
 
-        // The explicit `Verified` annotation is the compile-time half of the
-        // assertion: a wrong driver verdict here fails to compile.
-        let out: Module<'_, _, Verified> = run_function_pass(pass, verified, f, &mut analyses)?;
+    // The explicit `Verified` annotation is the compile-time half of the
+    // assertion: a wrong driver verdict here fails to compile.
+    let out: Module<_, Verified> = run_function_pass(pass, verified, f, &mut analyses)?;
 
-        assert!(ran.get(), "Inspect FunctionPass::run must actually execute");
-        // A read-only pass leaves the IR untouched.
-        assert!(format!("{out}").contains("ret i32 1"));
-        Ok(())
-    })
+    assert!(ran.get(), "Inspect FunctionPass::run must actually execute");
+    // A read-only pass leaves the IR untouched.
+    assert!(format!("{out}").contains("ret i32 1"));
+    Ok(())
 }

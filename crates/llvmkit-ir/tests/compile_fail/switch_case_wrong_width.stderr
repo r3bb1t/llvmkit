@@ -1,13 +1,13 @@
-error[E0277]: the trait bound `i64: IntoIntValue<'_, i32, Brand<'_>>` is not satisfied
-  --> tests/compile_fail/switch_case_wrong_width.rs:37:33
+error[E0277]: the trait bound `i64: IntoIntValue<'_, i32, DynBrand>` is not satisfied
+  --> tests/compile_fail/switch_case_wrong_width.rs:37:29
    |
-37 |         let _ = switch.add_case(5_i64, dest_label);
-   |                        -------- ^^^^^ the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `i64`
-   |                        |
-   |                        required by a bound introduced by this call
+37 |     let _ = switch.add_case(5_i64, dest_label);
+   |                    -------- ^^^^^ the trait `IntoIntValue<'_, i32, DynBrand>` is not implemented for `i64`
+   |                    |
+   |                    required by a bound introduced by this call
    |
-help: the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `i64`
-      but trait `IntoIntValue<'_, i64, Brand<'_>>` is implemented for it
+help: the trait `IntoIntValue<'_, i32, DynBrand>` is not implemented for `i64`
+      but trait `IntoIntValue<'_, i64, DynBrand>` is implemented for it
   --> src/int_width.rs
    |
    |         impl<'ctx, B: ModuleBrand + 'ctx> IntoIntValue<'ctx, $marker, B> for $rust_ty {
@@ -16,7 +16,7 @@ help: the trait `IntoIntValue<'_, i32, Brand<'_>>` is not implemented for `i64`
    | impl_into_int_value_static!(i64, i64, i64_type);
    | ----------------------------------------------- in this macro invocation
    = help: for that trait implementation, expected `i64`, found `i32`
-note: required by a bound in `SwitchInst::<'ctx, llvmkit_ir::term_open_state::Open, B, W>::add_case`
+note: required by a bound in `SwitchInst::<'ctx, Open, B, W>::add_case`
   --> src/instructions.rs
    |
    |     pub fn add_case<V, R, Target>(self, case_value: V, target: Target) -> IrResult<Self>

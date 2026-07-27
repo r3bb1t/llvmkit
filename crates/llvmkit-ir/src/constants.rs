@@ -45,10 +45,10 @@ use super::function::FunctionValue;
 use super::instr_types::{BinaryOpcode, CastOpcode};
 use super::instruction::{rewrite_debug_record_value, rewrite_operand_cells};
 use super::marker::{Dyn, ReturnMarker};
-use super::module::{Brand, Module, ModuleBrand, ModuleCore, ModuleRef, Unverified};
-use super::r#type::{Type, TypeData, TypeId};
+use super::module::{DynBrand, Module, ModuleBrand, ModuleCore, ModuleRef, Unverified};
+use super::r#type::{Type, TypeData, TypeSlot};
 use super::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, ValueUse, sealed,
+    HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, ValueUse, sealed,
 };
 use super::vec_len::VecLen;
 use core::convert::Infallible;
@@ -59,6 +59,7 @@ use core::marker::PhantomData;
 use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
 use super::int_width::IntoConstantInt;
 use super::int_width::{IntDyn, IntWidth};
+use super::struct_body_state::StructBodyState;
 
 // --------------------------------------------------------------------------
 // Per-kind handles
@@ -74,10 +75,10 @@ macro_rules! decl_constant_handle {
     ) => {
         $(#[$attr])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
-            pub(super) id: ValueId,
+        pub struct $name<'ctx, B: ModuleBrand> {
+            pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
-            pub(super) ty: TypeId,
+            pub(super) ty: TypeSlot,
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
@@ -113,6 +114,7 @@ macro_rules! decl_constant_handle {
             #[inline]
             fn into_erased(self) -> Value<'ctx, B> { Self::into_erased(self) }
         }
+        crate::value::impl_into_erased_value_for_handle!($name);
         impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for $name<'ctx, B> {
             #[inline]
             fn as_constant(self) -> Constant<'ctx, B> { Self::as_constant(self) }
@@ -127,9 +129,9 @@ macro_rules! decl_constant_handle {
             #[inline]
             fn name(self) -> Option<String> { self.into_erased().name() }
             #[inline]
-            fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name) where Name: Into<String> { self.into_erased().set_name(module_token, name); }
+            fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name) where Name: Into<String> { self.into_erased().set_name(module_token, name); }
             #[inline]
-            fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) { self.into_erased().clear_name(module_token); }
+            fn clear_name(self, module_token: &'ctx Module<B, Unverified>) { self.into_erased().clear_name(module_token); }
         }
         impl<'ctx, B: ModuleBrand + 'ctx> HasDebugLoc for $name<'ctx, B> {
             #[inline]
@@ -196,10 +198,10 @@ decl_constant_handle!(
 // --------------------------------------------------------------------------
 
 /// Integer constant of width `W`.
-pub struct ConstantIntValue<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct ConstantIntValue<'ctx, W: IntWidth, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _w: PhantomData<W>,
 }
 
@@ -287,6 +289,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for ConstantIntV
         Self::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(ConstantIntValue[W: IntWidth]);
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsConstant<'ctx, B>
     for ConstantIntValue<'ctx, W, B>
 {
@@ -305,13 +308,13 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> HasName<'ctx, B> for ConstantIntV
     fn name(self) -> Option<String> {
         self.into_erased().name()
     }
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         self.into_erased().set_name(module_token, name);
     }
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
 }
@@ -407,10 +410,10 @@ impl_constant_int_static_try_from!(i128, 128);
 // --------------------------------------------------------------------------
 
 /// Floating-point constant of kind `K`.
-pub struct ConstantFloatValue<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct ConstantFloatValue<'ctx, K: FloatKind, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _k: PhantomData<K>,
 }
 
@@ -498,6 +501,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
         Self::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(ConstantFloatValue[K: FloatKind]);
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsConstant<'ctx, B>
     for ConstantFloatValue<'ctx, K, B>
 {
@@ -517,13 +521,13 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> HasName<'ctx, B>
     fn name(self) -> Option<String> {
         self.into_erased().name()
     }
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         self.into_erased().set_name(module_token, name);
     }
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
 }
@@ -903,9 +907,7 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayType<'ctx, E, L,
     }
 }
 
-impl<'ctx, Body: crate::struct_body_state::StructBodyState, B: ModuleBrand + 'ctx>
-    StructType<'ctx, Body, B>
-{
+impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, B> {
     /// `T { ... }`. Element types must match the struct's declared
     /// body. Mirrors `ConstantStruct::get`.
     pub fn const_struct<C, I>(self, elements: I) -> IrResult<ConstantAggregate<'ctx, B>>
@@ -978,7 +980,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
 // --------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub struct ConstantExprOptions<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct ConstantExprOptions<'ctx, B: ModuleBrand> {
     source_ty: Option<Type<'ctx, B>>,
     flags: ConstantExprFlags,
 }
@@ -1020,15 +1022,21 @@ impl<'ctx, B: ModuleBrand> ConstantExprOptions<'ctx, B> {
 
 impl<'ctx> ModuleCore {
     /// Construct a parser-needed LLVM `ConstantExpr`.
-    pub fn constant_expr<B: ModuleBrand + 'ctx>(
+    pub fn constant_expr<B, Operands, Indices, Mask>(
         &'ctx self,
         result_ty: Type<'ctx, B>,
         opcode: ConstantExprOpcode,
-        operands: impl IntoIterator<Item = Value<'ctx, B>>,
-        indices: impl IntoIterator<Item = u32>,
-        mask: impl IntoIterator<Item = i32>,
+        operands: Operands,
+        indices: Indices,
+        mask: Mask,
         flags: ConstantExprFlags,
-    ) -> IrResult<Constant<'ctx, B>> {
+    ) -> IrResult<Constant<'ctx, B>>
+    where
+        B: ModuleBrand + 'ctx,
+        Operands: IntoIterator<Item = Value<'ctx, B>>,
+        Indices: IntoIterator<Item = u32>,
+        Mask: IntoIterator<Item = i32>,
+    {
         self.constant_expr_with_options(
             result_ty,
             opcode,
@@ -1041,15 +1049,21 @@ impl<'ctx> ModuleCore {
 
     /// Construct a parser-needed LLVM `ConstantExpr` with options such as an
     /// explicit `getelementptr` source element type.
-    pub fn constant_expr_with_options<B: ModuleBrand + 'ctx>(
+    pub fn constant_expr_with_options<B, Operands, Indices, Mask>(
         &'ctx self,
         result_ty: Type<'ctx, B>,
         opcode: ConstantExprOpcode,
-        operands: impl IntoIterator<Item = Value<'ctx, B>>,
-        indices: impl IntoIterator<Item = u32>,
-        mask: impl IntoIterator<Item = i32>,
+        operands: Operands,
+        indices: Indices,
+        mask: Mask,
         options: ConstantExprOptions<'ctx, B>,
-    ) -> IrResult<Constant<'ctx, B>> {
+    ) -> IrResult<Constant<'ctx, B>>
+    where
+        B: ModuleBrand + 'ctx,
+        Operands: IntoIterator<Item = Value<'ctx, B>>,
+        Indices: IntoIterator<Item = u32>,
+        Mask: IntoIterator<Item = i32>,
+    {
         let source_ty_id = options.source_type().map(|ty| ty.id());
         let mut ids = Vec::new();
         for operand in operands {
@@ -1087,16 +1101,16 @@ impl<'ctx> ModuleCore {
         R: ReturnMarker,
         S: BlockTerminationState,
     {
-        if block.parent_function().map(|f| f.id()) != Some(function.as_dyn().id()) {
+        if block.parent_function().map(|f| f.slot()) != Some(function.as_dyn().slot()) {
             return Err(IrError::InvalidOperation {
                 message: "blockaddress block must belong to function",
             });
         }
-        let ty = self.ptr_type(function.address_space()).as_type().id();
+        let ty = self.ptr_type::<B>(function.address_space()).as_type().id();
         let id = self.context().intern_constant_block_address(
             ty,
-            function.as_dyn().id(),
-            block.as_dyn().id(),
+            function.as_dyn().slot(),
+            block.as_dyn().slot(),
         );
         Ok(constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty))
     }
@@ -1132,10 +1146,10 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         function: FunctionValue<'ctx, Dyn, B>,
     ) -> Constant<'ctx, B> {
-        let ty = self.ptr_type(0).as_type().id();
+        let ty = self.ptr_type::<DynBrand>(0).as_type().id();
         let id = self
             .context()
-            .intern_constant_dso_local_equivalent(ty, function.id());
+            .intern_constant_dso_local_equivalent(ty, function.slot());
         constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty)
     }
     /// `dso_local_equivalent` over a function, alias-to-function, or ifunc.
@@ -1143,7 +1157,7 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         global: Constant<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
-        let value = match &self.context().value_data(global.id()).kind {
+        let value = match &self.context().value_data(global.slot()).kind {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Value::from_parts(
                 *value,
                 ModuleRef::<B>::new(self),
@@ -1166,7 +1180,7 @@ impl<'ctx> ModuleCore {
                 message: "dso_local_equivalent expects a function, alias to function, or ifunc",
             });
         }
-        let ty = self.ptr_type(0).as_type().id();
+        let ty = self.ptr_type::<DynBrand>(0).as_type().id();
         let id = self
             .context()
             .intern_constant_dso_local_equivalent(ty, value.id);
@@ -1178,8 +1192,8 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         function: FunctionValue<'ctx, Dyn, B>,
     ) -> Constant<'ctx, B> {
-        let ty = self.ptr_type(0).as_type().id();
-        let id = self.context().intern_constant_no_cfi(ty, function.id());
+        let ty = self.ptr_type::<DynBrand>(0).as_type().id();
+        let id = self.context().intern_constant_no_cfi(ty, function.slot());
         constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty)
     }
 
@@ -1188,7 +1202,7 @@ impl<'ctx> ModuleCore {
         &'ctx self,
         global: Constant<'ctx, B>,
     ) -> IrResult<Constant<'ctx, B>> {
-        let value = match &self.context().value_data(global.id()).kind {
+        let value = match &self.context().value_data(global.slot()).kind {
             ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Value::from_parts(
                 *value,
                 ModuleRef::<B>::new(self),
@@ -1207,20 +1221,28 @@ impl<'ctx> ModuleCore {
                 });
             }
         }
-        let ty = self.ptr_type(0).as_type().id();
+        let ty = self.ptr_type::<DynBrand>(0).as_type().id();
         let id = self.context().intern_constant_no_cfi(ty, value.id);
         Ok(constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty))
     }
 
     /// `ptrauth (ptr <pointer>, i32 <key>, i64 <discriminator>, ptr <addr-discriminator>, ptr <deactivation-symbol>)`.
-    pub fn ptr_auth<B: ModuleBrand + 'ctx>(
+    pub fn ptr_auth<B, Pointer, Key, Discriminator, AddrDiscriminator, DeactivationSymbol>(
         &'ctx self,
-        pointer: impl IsConstant<'ctx, B>,
-        key: impl IsConstant<'ctx, B>,
-        discriminator: impl IsConstant<'ctx, B>,
-        addr_discriminator: impl IsConstant<'ctx, B>,
-        deactivation_symbol: impl IsConstant<'ctx, B>,
-    ) -> IrResult<Constant<'ctx, B>> {
+        pointer: Pointer,
+        key: Key,
+        discriminator: Discriminator,
+        addr_discriminator: AddrDiscriminator,
+        deactivation_symbol: DeactivationSymbol,
+    ) -> IrResult<Constant<'ctx, B>>
+    where
+        B: ModuleBrand + 'ctx,
+        Pointer: IsConstant<'ctx, B>,
+        Key: IsConstant<'ctx, B>,
+        Discriminator: IsConstant<'ctx, B>,
+        AddrDiscriminator: IsConstant<'ctx, B>,
+        DeactivationSymbol: IsConstant<'ctx, B>,
+    {
         let pointer = pointer.as_constant().into_erased();
         let key = key.as_constant().into_erased();
         let discriminator = discriminator.as_constant().into_erased();
@@ -1231,12 +1253,16 @@ impl<'ctx> ModuleCore {
                 message: "constant ptrauth base pointer must be a pointer",
             });
         }
-        if !is_int_constant_with_type(self, key.id, self.i32_type().as_type().id()) {
+        if !is_int_constant_with_type(self, key.id, self.i32_type::<DynBrand>().as_type().id()) {
             return Err(IrError::InvalidOperation {
                 message: "constant ptrauth key must be i32 constant",
             });
         }
-        if !is_int_constant_with_type(self, discriminator.id, self.i64_type().as_type().id()) {
+        if !is_int_constant_with_type(
+            self,
+            discriminator.id,
+            self.i64_type::<DynBrand>().as_type().id(),
+        ) {
             return Err(IrError::InvalidOperation {
                 message: "constant ptrauth integer discriminator must be i64 constant",
             });
@@ -1270,7 +1296,7 @@ impl<'ctx> ModuleCore {
 
     /// `token none`.
     pub fn token_none<B: ModuleBrand + 'ctx>(&'ctx self) -> Constant<'ctx, B> {
-        let ty = self.token_type().as_type().id();
+        let ty = self.token_type::<DynBrand>().as_type().id();
         let id = self.context().intern_constant_token_none(ty);
         constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty)
     }
@@ -1381,7 +1407,7 @@ fn fold_constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
 
 fn constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
     module: &'ctx ModuleCore,
-    operands: &[ValueId],
+    operands: &[ValueSlot],
 ) -> Option<Vec<Constant<'ctx, B>>> {
     operands
         .iter()
@@ -1409,7 +1435,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
     }
 }
 
-fn is_int_constant_with_type(module: &ModuleCore, id: ValueId, ty: TypeId) -> bool {
+fn is_int_constant_with_type(module: &ModuleCore, id: ValueSlot, ty: TypeSlot) -> bool {
     module.context().value_data(id).ty == ty
         && matches!(
             &module.context().value_data(id).kind,
@@ -1417,7 +1443,7 @@ fn is_int_constant_with_type(module: &ModuleCore, id: ValueId, ty: TypeId) -> bo
         )
 }
 
-fn is_global_value_or_null_constant(module: &ModuleCore, id: ValueId) -> bool {
+fn is_global_value_or_null_constant(module: &ModuleCore, id: ValueSlot) -> bool {
     matches!(
         &module.context().value_data(id).kind,
         ValueKindData::Constant(ConstantData::GlobalValueRef { .. } | ConstantData::PointerNull)
@@ -1526,22 +1552,22 @@ fn canonicalize_gep_operands(module: &ModuleCore, data: &mut ConstantExprData) -
 
 fn vector_splat_constant(
     module: &ModuleCore,
-    scalar: ValueId,
+    scalar: ValueSlot,
     lanes: u32,
     scalable: bool,
-) -> IrResult<ValueId> {
+) -> IrResult<ValueSlot> {
     let lane_count = usize::try_from(lanes).map_err(|_| IrError::InvalidOperation {
         message: "invalid getelementptr constant expression",
     })?;
     let elem_ty = module.context().value_data(scalar).ty;
     let vector_ty = module
-        .vector_type(Type::new(elem_ty, module), lanes, scalable)
+        .vector_type::<DynBrand, _>(Type::new(elem_ty, module), lanes, scalable)
         .as_type();
     Ok(intern_aggregate(vector_ty, vec![scalar; lane_count].into_boxed_slice()).id)
 }
 fn valid_shufflevector_mask_constant(
     module: &ModuleCore,
-    mask: ValueId,
+    mask: ValueSlot,
     lhs_lanes: u32,
     lhs_scalable: bool,
 ) -> bool {
@@ -1573,14 +1599,14 @@ fn valid_shufflevector_mask_constant(
     }
 }
 
-fn constant_id_is_undef_or_poison(module: &ModuleCore, id: ValueId) -> bool {
+fn constant_id_is_undef_or_poison(module: &ModuleCore, id: ValueSlot) -> bool {
     matches!(
         &module.context().value_data(id).kind,
         ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison)
     )
 }
 
-fn constant_id_is_zero_value(module: &ModuleCore, id: ValueId) -> bool {
+fn constant_id_is_zero_value(module: &ModuleCore, id: ValueSlot) -> bool {
     match &module.context().value_data(id).kind {
         ValueKindData::Constant(ConstantData::Int(_)) => {
             const_index_u64(module, id).is_some_and(|value| value == 0)
@@ -1593,7 +1619,7 @@ fn constant_id_is_zero_value(module: &ModuleCore, id: ValueId) -> bool {
     }
 }
 
-fn vector_splat_value(module: &ModuleCore, vector: ValueId) -> Option<ValueId> {
+fn vector_splat_value(module: &ModuleCore, vector: ValueSlot) -> Option<ValueSlot> {
     let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
         &module.context().value_data(vector).kind
     else {
@@ -1623,8 +1649,8 @@ pub(super) fn replace_constant_uses_with<'ctx, B: ModuleBrand + 'ctx>(
 
 fn replace_value_uses_with_constant(
     module: &ModuleCore,
-    from_id: ValueId,
-    replacement_id: ValueId,
+    from_id: ValueSlot,
+    replacement_id: ValueSlot,
 ) -> IrResult<()> {
     let user_edges = module
         .context()
@@ -1677,10 +1703,10 @@ fn replace_value_uses_with_constant(
 
 fn constant_with_replaced_operand(
     module: &ModuleCore,
-    user_id: ValueId,
-    from_id: ValueId,
-    replacement_id: ValueId,
-) -> IrResult<Option<ValueId>> {
+    user_id: ValueSlot,
+    from_id: ValueSlot,
+    replacement_id: ValueSlot,
+) -> IrResult<Option<ValueSlot>> {
     let user_data = module.context().value_data(user_id);
     let ty = user_data.ty;
     let ValueKindData::Constant(data) = &user_data.kind else {
@@ -1712,9 +1738,9 @@ fn constant_with_replaced_operand(
             }
             canonicalize_constant_expr_data(module, &mut expr)?;
             validate_constant_expr_data(module, &expr)?;
-            let result_ty = Type::new(expr.result_ty, module);
+            let result_ty = Type::<DynBrand>::new(expr.result_ty, module);
             if let Some(folded) = fold_constant_expr_data(module, result_ty, &expr)? {
-                return Ok(Some(folded.id()));
+                return Ok(Some(folded.slot()));
             }
             Ok(Some(module.context().intern_constant_expr(expr)))
         }
@@ -1746,7 +1772,7 @@ fn constant_with_replaced_operand(
             if !changed {
                 return Ok(None);
             }
-            let rebuilt = module.ptr_auth(
+            let rebuilt = module.ptr_auth::<DynBrand, _, _, _, _, _>(
                 constant_handle(pointer, module, module.context().value_data(pointer).ty),
                 constant_handle(key, module, module.context().value_data(key).ty),
                 constant_handle(
@@ -1787,9 +1813,9 @@ fn constant_with_replaced_operand(
 
 pub(crate) fn advance_gep_index_type(
     module: &ModuleCore,
-    current: TypeId,
-    index: ValueId,
-) -> Option<TypeId> {
+    current: TypeSlot,
+    index: ValueSlot,
+) -> Option<TypeSlot> {
     match module.context().type_data(current) {
         TypeData::Array { elem, .. }
         | TypeData::FixedVector { elem, .. }
@@ -1811,9 +1837,9 @@ pub(crate) fn advance_gep_index_type(
 /// (`StructType::indexValid`), or an index that walks past a non-aggregate.
 pub(crate) fn gep_indexed_type(
     module: &ModuleCore,
-    source_ty: TypeId,
-    indices: &[ValueId],
-) -> Option<TypeId> {
+    source_ty: TypeSlot,
+    indices: &[ValueSlot],
+) -> Option<TypeSlot> {
     let mut current = source_ty;
     for index in indices.iter().skip(1) {
         // `StructType::indexValid` requires an i32 index; the shared walker
@@ -1931,7 +1957,7 @@ pub(super) fn validate_constant_expr_data(
     data: &ConstantExprData,
 ) -> IrResult<()> {
     let result_ty = Type::new(data.result_ty, module);
-    let operand_tys: Vec<Type<'_>> = data
+    let operand_tys: Vec<Type<'_, DynBrand>> = data
         .operands
         .iter()
         .map(|id| Type::new(module.context().value_data(*id).ty, module))
@@ -2098,7 +2124,7 @@ pub(super) fn validate_constant_expr_data(
                 || lhs_elem != rhs_elem
                 || lhs_lanes != rhs_lanes
                 || lhs_scalable != rhs_scalable
-                || mask_elem != module.i32_type().as_type().id()
+                || mask_elem != module.i32_type::<DynBrand>().as_type().id()
                 || mask_scalable != lhs_scalable
                 || !valid_shufflevector_mask_constant(module, mask_id, lhs_lanes, lhs_scalable)
                 || result_elem != lhs_elem
@@ -2135,13 +2161,13 @@ pub(super) fn verify_constant_expr_data(
 ) -> IrResult<()> {
     validate_constant_expr_data(module, data)?;
     if matches!(data.opcode, ConstantExprOpcode::PtrToAddr) {
-        let result_ty = Type::new(data.result_ty, module);
+        let result_ty = Type::<DynBrand>::new(data.result_ty, module);
         let [src] = data.operands.as_ref() else {
             return Err(IrError::InvalidOperation {
                 message: "ptrtoaddr constant expression expects one operand",
             });
         };
-        let src_ty = Type::new(module.context().value_data(*src).ty, module);
+        let src_ty = Type::<DynBrand>::new(module.context().value_data(*src).ty, module);
         let addr_bits = pointer_address_space(module, scalar_type_id(module, src_ty.id()))
             .map(|as_id| module.data_layout().index_size_in_bits(as_id));
         if addr_bits != scalar_int_bits(module, result_ty.id()) {
@@ -2156,10 +2182,10 @@ pub(super) fn verify_constant_expr_data(
 fn validate_gep_constant_expr(
     module: &ModuleCore,
     data: &ConstantExprData,
-    result_ty: Type<'_>,
-    operand_tys: &[Type<'_>],
+    result_ty: Type<'_, DynBrand>,
+    operand_tys: &[Type<'_, DynBrand>],
 ) -> IrResult<()> {
-    let Some(source_ty) = data.source_ty.map(|id| Type::new(id, module)) else {
+    let Some(source_ty) = data.source_ty.map(|id| Type::<DynBrand>::new(id, module)) else {
         return Err(IrError::InvalidOperation {
             message: "getelementptr constant expression missing source type",
         });
@@ -2229,14 +2255,14 @@ fn validate_gep_constant_expr(
     validate_gep_indices(module, source_ty.id(), &data.operands[1..])
 }
 
-fn scalar_int_bits(module: &ModuleCore, id: TypeId) -> Option<u32> {
+fn scalar_int_bits(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     match module.context().type_data(scalar_type_id(module, id)) {
         TypeData::Integer { bits } => Some(*bits),
         _ => None,
     }
 }
 
-fn scalar_type_id(module: &ModuleCore, id: TypeId) -> TypeId {
+fn scalar_type_id(module: &ModuleCore, id: TypeSlot) -> TypeSlot {
     module
         .context()
         .type_data(id)
@@ -2244,7 +2270,7 @@ fn scalar_type_id(module: &ModuleCore, id: TypeId) -> TypeId {
         .map_or(id, |(elem, _, _)| elem)
 }
 
-fn type_contains_scalable_vector(module: &ModuleCore, id: TypeId) -> bool {
+fn type_contains_scalable_vector(module: &ModuleCore, id: TypeSlot) -> bool {
     match module.context().type_data(id) {
         TypeData::ScalableVector { .. } => true,
         TypeData::Array { elem, .. } | TypeData::FixedVector { elem, .. } => {
@@ -2259,7 +2285,7 @@ fn type_contains_scalable_vector(module: &ModuleCore, id: TypeId) -> bool {
     }
 }
 
-fn vector_shape(module: &ModuleCore, id: TypeId) -> Option<(u32, bool)> {
+fn vector_shape(module: &ModuleCore, id: TypeSlot) -> Option<(u32, bool)> {
     module
         .context()
         .type_data(id)
@@ -2267,11 +2293,11 @@ fn vector_shape(module: &ModuleCore, id: TypeId) -> Option<(u32, bool)> {
         .map(|(_, lanes, scalable)| (lanes, scalable))
 }
 
-fn lane_shape_matches(module: &ModuleCore, lhs: TypeId, rhs: TypeId) -> bool {
+fn lane_shape_matches(module: &ModuleCore, lhs: TypeSlot, rhs: TypeSlot) -> bool {
     vector_shape(module, lhs) == vector_shape(module, rhs)
 }
 
-fn pointer_bitcast_shape_matches(module: &ModuleCore, src: TypeId, dst: TypeId) -> bool {
+fn pointer_bitcast_shape_matches(module: &ModuleCore, src: TypeSlot, dst: TypeSlot) -> bool {
     match (vector_shape(module, src), vector_shape(module, dst)) {
         (None, None) => true,
         (Some(src_shape), Some(dst_shape)) => src_shape == dst_shape,
@@ -2280,21 +2306,21 @@ fn pointer_bitcast_shape_matches(module: &ModuleCore, src: TypeId, dst: TypeId) 
     }
 }
 
-fn is_ptr_or_ptr_vector(module: &ModuleCore, id: TypeId) -> bool {
+fn is_ptr_or_ptr_vector(module: &ModuleCore, id: TypeSlot) -> bool {
     matches!(
         module.context().type_data(scalar_type_id(module, id)),
         TypeData::Pointer { .. }
     )
 }
 
-fn pointer_address_space(module: &ModuleCore, id: TypeId) -> Option<u32> {
+fn pointer_address_space(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     match module.context().type_data(id) {
         TypeData::Pointer { addr_space } => Some(*addr_space),
         _ => None,
     }
 }
 
-fn valid_bitcast_constant(module: &ModuleCore, src: TypeId, dst: TypeId) -> bool {
+fn valid_bitcast_constant(module: &ModuleCore, src: TypeSlot, dst: TypeSlot) -> bool {
     let src_scalar = scalar_type_id(module, src);
     let dst_scalar = scalar_type_id(module, dst);
     let src_ptr = pointer_address_space(module, src_scalar);
@@ -2305,10 +2331,10 @@ fn valid_bitcast_constant(module: &ModuleCore, src: TypeId, dst: TypeId) -> bool
         }
         (Some(_), None) | (None, Some(_)) => false,
         (None, None) => {
-            Type::new(src_scalar, module).is_single_value()
-                && Type::new(dst_scalar, module).is_single_value()
-                && !Type::new(src_scalar, module).is_aggregate()
-                && !Type::new(dst_scalar, module).is_aggregate()
+            Type::<DynBrand>::new(src_scalar, module).is_single_value()
+                && Type::<DynBrand>::new(dst_scalar, module).is_single_value()
+                && !Type::<DynBrand>::new(src_scalar, module).is_aggregate()
+                && !Type::<DynBrand>::new(dst_scalar, module).is_aggregate()
                 && type_bit_width(module, src) == type_bit_width(module, dst)
         }
     }
@@ -2316,8 +2342,8 @@ fn valid_bitcast_constant(module: &ModuleCore, src: TypeId, dst: TypeId) -> bool
 
 fn validate_gep_indices(
     module: &ModuleCore,
-    source_ty: TypeId,
-    indices: &[ValueId],
+    source_ty: TypeSlot,
+    indices: &[ValueSlot],
 ) -> IrResult<()> {
     let mut current = source_ty;
     let mut first = true;
@@ -2363,7 +2389,7 @@ fn validate_gep_indices(
     Ok(())
 }
 
-fn const_index_u64(module: &ModuleCore, id: ValueId) -> Option<u64> {
+fn const_index_u64(module: &ModuleCore, id: ValueSlot) -> Option<u64> {
     match &module.context().value_data(id).kind {
         ValueKindData::Constant(ConstantData::Int(words)) if words.len() <= 1 => {
             Some(words.first().copied().unwrap_or(0))
@@ -2375,14 +2401,14 @@ fn const_index_u64(module: &ModuleCore, id: ValueId) -> Option<u64> {
 /// `true` when `id` is a constant integer equal to 1. Mirrors the check in
 /// `AllocaInst::isArrayAllocation` (a size operand of constant 1 is NOT an
 /// array allocation) and the matching AsmWriter size-print suppression.
-pub(crate) fn is_constant_int_one(module: &ModuleCore, id: ValueId) -> bool {
+pub(crate) fn is_constant_int_one(module: &ModuleCore, id: ValueSlot) -> bool {
     matches!(
         &module.context().value_data(id).kind,
         ValueKindData::Constant(ConstantData::Int(words)) if words.len() == 1 && words[0] == 1
     )
 }
 
-fn type_bit_width(module: &ModuleCore, id: TypeId) -> Option<u32> {
+fn type_bit_width(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     match module.context().type_data(id) {
         TypeData::Half | TypeData::BFloat => Some(16),
         TypeData::Float => Some(32),
@@ -2401,7 +2427,7 @@ fn type_bit_width(module: &ModuleCore, id: TypeId) -> Option<u32> {
     }
 }
 
-fn is_int_or_int_vector(module: &ModuleCore, id: TypeId) -> bool {
+fn is_int_or_int_vector(module: &ModuleCore, id: TypeSlot) -> bool {
     match module.context().type_data(id) {
         TypeData::Integer { .. } => true,
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
@@ -2483,7 +2509,7 @@ fn intern_poison<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> PoisonValue<
 
 pub(super) fn intern_aggregate<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
-    ids: Box<[ValueId]>,
+    ids: Box<[ValueSlot]>,
 ) -> ConstantAggregate<'ctx, B> {
     let module = ty.module();
     let id = module.context().intern_constant_aggregate(ty.id(), ids);
@@ -2491,7 +2517,7 @@ pub(super) fn intern_aggregate<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 #[inline]
-fn constant_handle<'ctx, B, M>(id: ValueId, module: M, ty: TypeId) -> Constant<'ctx, B>
+fn constant_handle<'ctx, B, M>(id: ValueSlot, module: M, ty: TypeSlot) -> Constant<'ctx, B>
 where
     B: ModuleBrand + 'ctx,
     M: Into<ModuleRef<'ctx, B>>,
@@ -2508,39 +2534,38 @@ mod tests {
     /// path, so foldable expressions reduce before interning.
     #[test]
     fn rewritten_constant_expr_folds_before_reinterning() -> IrResult<()> {
-        Module::with_new("constexpr-rewrite-fold", |m| {
-            let i32_ty = m.i32_type();
-            let i64_ty = m.i64_type();
-            let global = m.add_global("g", i32_ty.const_zero())?;
-            let ptr_as_int = m.constant_expr(
-                i64_ty.as_type(),
-                ConstantExprOpcode::PtrToInt,
-                [global.as_global_constant_ptr().into_erased()],
-                [],
-                [],
-                ConstantExprFlags::none(),
-            )?;
-            let expr = m.constant_expr(
-                i64_ty.as_type(),
-                ConstantExprOpcode::Add,
-                [
-                    ptr_as_int.into_erased(),
-                    i64_ty.const_int(1_i64).into_erased(),
-                ],
-                [],
-                [],
-                ConstantExprFlags::none(),
-            )?;
-            let replacement = i64_ty.const_zero().as_constant();
-            let rewritten = constant_with_replaced_operand(
-                m.core_ref(),
-                expr.id(),
-                ptr_as_int.id(),
-                replacement.id(),
-            )?;
+        let m = crate::module_new!("constexpr-rewrite-fold")?;
+        let i32_ty = m.i32_type();
+        let i64_ty = m.i64_type();
+        let global = m.add_global("g", i32_ty.const_zero())?;
+        let ptr_as_int = m.constant_expr(
+            i64_ty.as_type(),
+            ConstantExprOpcode::PtrToInt,
+            [m.view(global).as_global_constant_ptr().into_erased()],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        let expr = m.constant_expr(
+            i64_ty.as_type(),
+            ConstantExprOpcode::Add,
+            [
+                ptr_as_int.into_erased(),
+                i64_ty.const_int(1_i64).into_erased(),
+            ],
+            [],
+            [],
+            ConstantExprFlags::none(),
+        )?;
+        let replacement = i64_ty.const_zero().as_constant();
+        let rewritten = constant_with_replaced_operand(
+            m.core_ref(),
+            expr.slot(),
+            ptr_as_int.slot(),
+            replacement.slot(),
+        )?;
 
-            assert_eq!(rewritten, Some(i64_ty.const_int(1_i64).id()));
-            Ok(())
-        })
+        assert_eq!(rewritten, Some(i64_ty.const_int(1_i64).slot()));
+        Ok(())
     }
 }

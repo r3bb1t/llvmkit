@@ -25,10 +25,11 @@
 
 use core::marker::PhantomData;
 
+use super::value::ValueKindData;
 use crate::derived_types::FunctionType;
 use crate::module::{ModuleBrand, ModuleRef, ModuleView};
-use crate::r#type::TypeId;
-use crate::value::{Value, ValueId};
+use crate::r#type::TypeSlot;
+use crate::value::{Value, ValueSlot};
 
 // --------------------------------------------------------------------------
 // Assembly dialect
@@ -123,7 +124,7 @@ pub(crate) struct InlineAsmData {
     /// The conceptual function type of the asm: governs the call's
     /// return type and argument types. LLVM stores this as `FunctionType
     /// *FTy`.
-    pub(crate) fn_ty: TypeId,
+    pub(crate) fn_ty: TypeSlot,
     /// `sideeffect` keyword: the asm has effects not captured by its
     /// outputs. Mirrors `InlineAsm::hasSideEffects()`.
     pub(crate) has_side_effects: bool,
@@ -150,15 +151,15 @@ pub(crate) struct InlineAsmData {
 /// [`Self::function_type`].
 ///
 /// Shape mirrors [`GlobalVariable`](crate::global_variable::GlobalVariable)
-/// / [`FunctionValue`](crate::function::FunctionValue): a `(ValueId,
-/// ModuleRef, TypeId)` triple plus the cached pointer type.
+/// / [`FunctionValue`](crate::function::FunctionValue): a `(ValueSlot,
+/// ModuleRef, TypeSlot)` triple plus the cached pointer type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct InlineAsm<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
-    pub(crate) id: ValueId,
+pub struct InlineAsm<'ctx, B: ModuleBrand> {
+    pub(crate) id: ValueSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
     /// Cached pointer type id (`ptr`). The value's value-arena type is
     /// this pointer type; the wrapped function type lives in the payload.
-    pub(crate) ty: TypeId,
+    pub(crate) ty: TypeSlot,
     pub(crate) _ctx: PhantomData<&'ctx ()>,
 }
 
@@ -180,7 +181,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
     /// [`Module::inline_asm`](crate::module::Module::inline_asm) hands
     /// these out, after pushing the value into the arena.
     #[inline]
-    pub(crate) fn from_parts<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(crate) fn from_parts<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -214,7 +215,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
     #[inline]
     pub fn function_type(self) -> FunctionType<'ctx, B> {
         let fn_ty = self.payload().fn_ty;
-        crate::derived_types::FunctionType::new(fn_ty, self.module)
+        FunctionType::new(fn_ty, self.module)
     }
 
     /// The assembly template string. Mirrors `InlineAsm::getAsmString()`.
@@ -277,7 +278,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
     #[inline]
     fn payload(&self) -> &'ctx InlineAsmData {
         match &self.module.module().context().value_data(self.id).kind {
-            crate::value::ValueKindData::InlineAsm(d) => d,
+            ValueKindData::InlineAsm(d) => d,
             _ => unreachable!("InlineAsm handle invariant: kind is InlineAsm"),
         }
     }

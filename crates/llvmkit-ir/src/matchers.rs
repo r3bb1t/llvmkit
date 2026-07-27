@@ -25,12 +25,12 @@
 use crate::ap_int::ApInt;
 use crate::instr_types::BinaryOpcode;
 use crate::instruction::{InstructionKind, InstructionView, PhiKind};
-use crate::module::{Brand, ModuleBrand};
+use crate::module::ModuleBrand;
 use crate::value::Value;
 
 /// A composable instruction/value matcher. Implementors test `value` and,
 /// on success, return the values they bind.
-pub trait Matcher<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub trait Matcher<'ctx, B: ModuleBrand + 'ctx> {
     /// The flat tuple of values this matcher binds on success.
     type Bindings;
 

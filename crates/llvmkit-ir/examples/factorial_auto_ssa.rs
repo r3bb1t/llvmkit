@@ -55,19 +55,24 @@
 //! cargo run -p llvmkit-ir --example factorial_auto_ssa
 //! ```
 
-use llvmkit_ir::{IntPredicate, IrError, Linkage, Module, SsaBuilder};
+use llvmkit_ir::{
+    IntPredicate, IrError, Linkage, Module, ModuleBrand, SsaBuilder, SsaState, module_new,
+};
 
-pub fn build(m: &Module<'_>) -> Result<(), IrError> {
+pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m
-        .function_builder::<i32, _>("factorial", fn_ty)
-        .linkage(Linkage::External)
-        .param_name(0, "n")
-        .build()?
+        .view(
+            m.function_builder::<i32, _>("factorial", fn_ty)
+                .linkage(Linkage::External)
+                .param_name(0, "n")
+                .build()?,
+        )
         .with_typed_params::<(i32,)>()?;
 
-    let mut b = SsaBuilder::for_function(m, f.as_function())?;
+    let mut st_b = SsaState::for_function(m, m.view(f).as_function())?;
+    let mut b = SsaBuilder::for_function(m, m.view(f).as_function(), &mut st_b)?;
 
     // Same block names, same creation order as the manual example:
     // entry (auto-sealed), base, loop, exit.
@@ -81,24 +86,24 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     let acc_var = b.declare_int_var::<i32, _>("acc");
     let i_var = b.declare_int_var::<i32, _>("i");
 
-    let (n,) = f.params();
+    let (n,) = m.view(f).params();
 
     // entry: %is_zero = icmp eq i32 %n, 0; def acc=1, i=n (this loop's
     // entry-edge incoming values belong to `entry`, the block they're
     // defined in); br i1 %is_zero, label %base, label %loop.
-    let mut b = b.switch_to_block(entry)?;
+    b.switch_to_block(entry)?;
     let is_zero = b
-        .ins()
+        .ins()?
         .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
     b.def_int_var(acc_var, 1_i32)?;
     b.def_int_var(i_var, n)?;
-    let mut b = b.cond_br(is_zero, base, loop_bb)?;
+    b.cond_br(is_zero, base, loop_bb)?;
     // `base` has a single predecessor (entry) and is now fully known.
     b.seal_block(base)?;
 
     // base: ret i32 1
-    let b = b.switch_to_block(base)?;
-    let b = b.ret(1_i32)?;
+    b.switch_to_block(base)?;
+    b.ret(1_i32)?;
 
     // loop: read acc/i BEFORE this block's own back-edge is recorded --
     // `loop` is still unsealed (its only known predecessor so far is
@@ -108,17 +113,17 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
     // prints `acc` first, matching the manual example's phi creation order
     // (`build_int_phi("acc")` before `build_int_phi("i")`). `next_acc`/
     // `next_i`/`done` reuse the manual example's exact instruction names.
-    let mut b = b.switch_to_block(loop_bb)?;
+    b.switch_to_block(loop_bb)?;
     let acc = b.use_int_var(acc_var)?;
     let i = b.use_int_var(i_var)?;
-    let next_acc = b.ins().build_int_mul(acc, i, "next_acc")?;
-    let next_i = b.ins().build_int_sub(i, 1_i32, "next_i")?;
+    let next_acc = b.ins()?.build_int_mul(acc, i, "next_acc")?;
+    let next_i = b.ins()?.build_int_sub(i, 1_i32, "next_i")?;
     let done = b
-        .ins()
+        .ins()?
         .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
     b.def_int_var(acc_var, next_acc)?;
     b.def_int_var(i_var, next_i)?;
-    let mut b = b.cond_br(done, exit, loop_bb)?;
+    b.cond_br(done, exit, loop_bb)?;
     // `loop`'s predecessor set (entry, loop-self) is now fully known:
     // sealing AFTER the back-edge completes both incomplete phis with
     // the entry-edge first, back-edge second -- matching the manual
@@ -128,20 +133,26 @@ pub fn build(m: &Module<'_>) -> Result<(), IrError> {
 
     // exit: `acc`'s single sealed predecessor is `loop`, so this read
     // resolves directly to `%next_acc` with no phi -- ret i32 %next_acc.
-    let mut b = b.switch_to_block(exit)?;
+    b.switch_to_block(exit)?;
     b.seal_block(exit)?;
     let read = b.use_int_var(acc_var)?;
-    let b = b.ret(read)?;
+    b.ret(read)?;
 
     b.finish()
 }
 
+/// The module is minted here rather than in `main` so `?` has a `Result` to
+/// return to: `module_new!` is fallible (its brand is a registry key) and
+/// `main` reports errors by hand.
+fn emit() -> Result<(), IrError> {
+    let m = module_new!("factorial")?;
+    build(&m)?;
+    print!("{m}");
+    Ok(())
+}
+
 pub fn main() {
-    if let Err(e) = Module::with_new("factorial", |m| {
-        build(&m)?;
-        print!("{m}");
-        Ok::<(), IrError>(())
-    }) {
+    if let Err(e) = emit() {
         eprintln!("error: {e:?}");
         std::process::exit(1);
     }

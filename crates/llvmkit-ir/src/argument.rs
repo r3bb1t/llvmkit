@@ -7,30 +7,31 @@
 //! The handle caches the parent-function id and parameter slot so the
 //! common accessors do not round-trip through the value arena.
 
+use super::error::ValueCategoryLabel;
 use super::function::FunctionValue;
 use super::marker::Dyn;
 use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
-use super::r#type::{Type, TypeId};
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use super::r#type::{Type, TypeSlot};
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
 use super::{DebugLoc, IrError, IrResult};
 
 /// Typed handle for a function parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Argument<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct Argument<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
-    pub(super) parent_fn: ValueId,
+    pub(super) ty: TypeSlot,
+    pub(super) parent_fn: ValueSlot,
     pub(super) slot: u32,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
     #[inline]
     pub(super) fn from_parts<M>(
-        id: ValueId,
+        id: ValueSlot,
         module: M,
-        ty: TypeId,
-        parent_fn: ValueId,
+        ty: TypeSlot,
+        parent_fn: ValueSlot,
         slot: u32,
     ) -> Self
     where
@@ -82,7 +83,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
 
     /// Set the textual name.
     #[inline]
-    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
@@ -91,7 +92,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
 
     /// Clear the textual name.
     #[inline]
-    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
 }
@@ -113,6 +114,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Argument<'ctx, B> {
         Argument::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(Argument);
 impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for Argument<'ctx, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
@@ -125,14 +127,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Argument<'ctx, B> {
         Argument::name(self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         Argument::set_name(self, module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         Argument::clear_name(self, module_token);
     }
 }
@@ -162,7 +164,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for Argument<'ctx, B> 
                 slot,
             }),
             _ => Err(IrError::ValueCategoryMismatch {
-                expected: crate::error::ValueCategoryLabel::Argument,
+                expected: ValueCategoryLabel::Argument,
                 got: v.category().into(),
             }),
         }

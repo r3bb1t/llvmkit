@@ -29,8 +29,8 @@ use core::fmt;
 
 use crate::align::{Align, MaybeAlign};
 use crate::error::{IrError, IrResult};
-use crate::module::ModuleCore;
-use crate::r#type::{Type, TypeData, TypeId};
+use crate::module::{ModuleBrand, ModuleCore};
+use crate::r#type::{Type, TypeData, TypeSlot};
 
 // --------------------------------------------------------------------------
 // Sub-records
@@ -576,51 +576,55 @@ impl DataLayout {
     /// Bit-size of `ty` when held as an SSA value. Mirrors
     /// `DataLayout::getTypeSizeInBits` (the inline definition in
     /// `DataLayout.h`).
-    pub fn type_size_in_bits(&self, ty: Type<'_>) -> u64 {
+    pub fn type_size_in_bits<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
         self.type_size_in_bits_inner(ty.module().core_ref(), ty.id())
     }
 
     /// Mirrors `DataLayout::getTypeStoreSize`. Bytes.
-    pub fn type_store_size(&self, ty: Type<'_>) -> u64 {
+    pub fn type_store_size<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
         let bits = self.type_size_in_bits(ty);
         align_to_power_of_two(bits, 8) / 8
     }
 
     /// Mirrors `DataLayout::getTypeStoreSizeInBits`.
-    pub fn type_store_size_in_bits(&self, ty: Type<'_>) -> u64 {
+    pub fn type_store_size_in_bits<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
         let bits = self.type_size_in_bits(ty);
         align_to_power_of_two(bits, 8)
     }
 
     /// Mirrors `DataLayout::typeSizeEqualsStoreSize`.
-    pub fn type_size_equals_store_size(&self, ty: Type<'_>) -> bool {
+    pub fn type_size_equals_store_size<B: ModuleBrand>(&self, ty: Type<'_, B>) -> bool {
         self.type_size_in_bits(ty) == self.type_store_size_in_bits(ty)
     }
 
     /// Mirrors `DataLayout::getTypeAllocSize`. Bytes including
     /// trailing alignment padding.
-    pub fn type_alloc_size(&self, ty: Type<'_>) -> u64 {
+    pub fn type_alloc_size<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
         self.type_alloc_size_inner(ty.module().core_ref(), ty.id())
     }
 
     /// Mirrors `DataLayout::getTypeAllocSizeInBits`.
-    pub fn type_alloc_size_in_bits(&self, ty: Type<'_>) -> u64 {
+    pub fn type_alloc_size_in_bits<B: ModuleBrand>(&self, ty: Type<'_, B>) -> u64 {
         self.type_alloc_size(ty).saturating_mul(8)
     }
 
     /// Mirrors `DataLayout::getABITypeAlign`.
-    pub fn abi_type_align(&self, ty: Type<'_>) -> Align {
+    pub fn abi_type_align<B: ModuleBrand>(&self, ty: Type<'_, B>) -> Align {
         self.alignment(ty.module().core_ref(), ty.id(), true)
     }
 
     /// Mirrors `DataLayout::getPrefTypeAlign`.
-    pub fn pref_type_align(&self, ty: Type<'_>) -> Align {
+    pub fn pref_type_align<B: ModuleBrand>(&self, ty: Type<'_, B>) -> Align {
         self.alignment(ty.module().core_ref(), ty.id(), false)
     }
 
     /// Mirrors `DataLayout::getValueOrABITypeAlignment`. If
     /// `alignment` is set, returns it; otherwise the ABI alignment.
-    pub fn value_or_abi_type_align(&self, alignment: MaybeAlign, ty: Type<'_>) -> Align {
+    pub fn value_or_abi_type_align<B: ModuleBrand>(
+        &self,
+        alignment: MaybeAlign,
+        ty: Type<'_, B>,
+    ) -> Align {
         alignment.align().unwrap_or_else(|| self.abi_type_align(ty))
     }
 
@@ -630,15 +634,15 @@ impl DataLayout {
     }
 
     /// ABI alignment of a type by id (brand-free; for builder/parser paths
-    /// that hold a `&ModuleCore` and a `TypeId`). Same walk as
+    /// that hold a `&ModuleCore` and a `TypeSlot`). Same walk as
     /// [`Self::abi_type_align`].
-    pub(crate) fn abi_align_of_id(&self, module: &ModuleCore, id: TypeId) -> Align {
+    pub(crate) fn abi_align_of_id(&self, module: &ModuleCore, id: TypeSlot) -> Align {
         self.alignment(module, id, true)
     }
 
     /// Preferred alignment of a type by id (brand-free). Same walk as
     /// [`Self::pref_type_align`].
-    pub(crate) fn pref_align_of_id(&self, module: &ModuleCore, id: TypeId) -> Align {
+    pub(crate) fn pref_align_of_id(&self, module: &ModuleCore, id: TypeSlot) -> Align {
         self.alignment(module, id, false)
     }
 }
@@ -648,7 +652,7 @@ impl DataLayout {
 // --------------------------------------------------------------------------
 
 impl DataLayout {
-    fn type_size_in_bits_inner(&self, module: &ModuleCore, id: TypeId) -> u64 {
+    fn type_size_in_bits_inner(&self, module: &ModuleCore, id: TypeSlot) -> u64 {
         match module.context().type_data(id) {
             TypeData::Label => u64::from(self.pointer_size_in_bits(0)),
             TypeData::Pointer { addr_space } => u64::from(self.pointer_size_in_bits(*addr_space)),
@@ -687,7 +691,7 @@ impl DataLayout {
         }
     }
 
-    fn type_alloc_size_inner(&self, module: &ModuleCore, id: TypeId) -> u64 {
+    fn type_alloc_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> u64 {
         match module.context().type_data(id) {
             TypeData::Array { elem, n } => {
                 n.saturating_mul(self.type_alloc_size_inner(module, *elem))
@@ -730,12 +734,12 @@ impl DataLayout {
         }
     }
 
-    fn type_store_size_inner(&self, module: &ModuleCore, id: TypeId) -> u64 {
+    fn type_store_size_inner(&self, module: &ModuleCore, id: TypeSlot) -> u64 {
         let bits = self.type_size_in_bits_inner(module, id);
         align_to_power_of_two(bits, 8) / 8
     }
 
-    fn alignment(&self, module: &ModuleCore, id: TypeId, abi_or_pref: bool) -> Align {
+    fn alignment(&self, module: &ModuleCore, id: TypeSlot, abi_or_pref: bool) -> Align {
         match module.context().type_data(id) {
             TypeData::Integer { bits } => self.integer_alignment(*bits, abi_or_pref),
             TypeData::Half
@@ -855,11 +859,11 @@ impl DataLayout {
 
     /// Compute (without caching) the layout of an aggregate struct.
     /// Mirrors `StructLayout::StructLayout` in `DataLayout.cpp`.
-    pub fn struct_layout(&self, ty: Type<'_>) -> StructLayoutInfo {
+    pub fn struct_layout<B: ModuleBrand>(&self, ty: Type<'_, B>) -> StructLayoutInfo {
         self.struct_layout_inner(ty.module().core_ref(), ty.id())
     }
 
-    fn struct_layout_inner(&self, module: &ModuleCore, id: TypeId) -> StructLayoutInfo {
+    fn struct_layout_inner(&self, module: &ModuleCore, id: TypeSlot) -> StructLayoutInfo {
         let s = match module.context().type_data(id) {
             TypeData::Struct(s) => s,
             _ => unreachable!("struct_layout invariant: TypeData::Struct"),
@@ -868,7 +872,7 @@ impl DataLayout {
         let body = body
             .as_ref()
             .unwrap_or_else(|| unreachable!("struct_layout invariant: opaque structs are unsized"));
-        let elements: &[TypeId] = &body.elements;
+        let elements: &[TypeSlot] = &body.elements;
         let packed = body.packed;
 
         let mut size_bytes: u64 = 0;
@@ -1485,7 +1489,7 @@ fn parse_addr_space_and_name(s: &str) -> IrResult<(u32, String)> {
 /// (`aarch64.svcount`), RISC-V (`riscv.vector.tuple`), DirectX
 /// (`dx.*`), AMDGPU (`amdgcn.named.barrier`), and the test
 /// extension (`llvm.test.vectorelement`).
-fn target_ext_layout_type(module: &ModuleCore, id: TypeId) -> Option<TypeId> {
+fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Option<TypeSlot> {
     let data = module.context().type_data(id);
     let TypeData::TargetExt(ext) = data else {
         return None;

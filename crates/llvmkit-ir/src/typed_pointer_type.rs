@@ -5,7 +5,7 @@
 //! LLVM exposes those as the separate `TypedPointerType` kind.
 //!
 //! Shape mirrors the per-kind handles in [`crate::derived_types`]:
-//! `(TypeId, ModuleRef<'ctx>)` with full derive on identity, accessors
+//! `(TypeSlot, ModuleRef<'ctx>)` with full derive on identity, accessors
 //! routed through the internal `TypeData::as_typed_pointer` projection,
 //! `From` / `TryFrom` against the erased [`Type`] handle.
 //!
@@ -20,18 +20,18 @@ use core::fmt;
 
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::module::{ModuleBrand, ModuleRef};
-use crate::r#type::{Type, TypeData, TypeId};
+use crate::r#type::{Type, TypeData, TypeSlot};
 
 /// Typed pointer (`<elem>*`, `<elem> addrspace(N)*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TypedPointerType<'ctx, B: crate::module::ModuleBrand = crate::module::Brand<'ctx>> {
-    pub(crate) id: TypeId,
+pub struct TypedPointerType<'ctx, B: ModuleBrand> {
+    pub(crate) id: TypeSlot,
     pub(crate) module: ModuleRef<'ctx, B>,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> TypedPointerType<'ctx, B> {
     #[inline]
-    pub(crate) fn new<M>(id: TypeId, module: M) -> Self
+    pub(crate) fn new<M>(id: TypeSlot, module: M) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {

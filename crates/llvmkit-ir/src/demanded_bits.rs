@@ -9,18 +9,19 @@ use super::analysis::{
     FunctionAnalysisResult, PrefetchableAnalysis, PreservedAnalyses,
 };
 use super::constant::ConstantData;
-use super::constants::ConstantIntValue;
 use super::data_layout::DataLayout;
+use super::derived_types::IntType;
 use super::instr_types::{BinaryOpData, CallInstData, CastOpData, CastOpcode, InvokeInstData};
 use super::instruction::{Instruction, InstructionData, InstructionKindData, state};
 use super::int_width::IntDyn;
 use super::intrinsics::{IntrinsicSemantic, semantic_for_callee};
-use super::module::{Brand, ModuleBrand, ModuleRef};
+use super::module::{DynBrand, ModuleBrand, ModuleRef};
 use super::pass_access::PatchBody;
 use super::pass_context::{FnCx, FnPatch, FnReport, FunctionView};
 use super::pass_manager::FunctionPass;
 use super::r#type::{Type, TypeKind};
-use super::value::{Value, ValueId, ValueKindData, ValueUse};
+use super::value::{IntValue, Value, ValueKindData, ValueSlot, ValueUse};
+use super::value_id::IntValueId;
 use super::value_tracking::{ValueTrackingQuery, compute_known_bits};
 use super::{ApInt, IrError, IrResult, KnownBits};
 use core::ops::Not;
@@ -36,14 +37,18 @@ pub struct DemandedBitsAnalysis;
 pub struct SimplifyDemandedBitsPass;
 
 /// Result of one demanded-bits simplification query.
-pub struct SimplifyDemandedBitsResult<'ctx, B: ModuleBrand = crate::module::Brand<'ctx>> {
+///
+/// Lifetime-free: the replacement it carries is a storable
+/// [`IntValueId`], not a borrowing constant handle, so a
+/// pass can hold the whole result across the mutation that consumes it.
+pub struct SimplifyDemandedBitsResult<B: ModuleBrand> {
     known: KnownBits,
     demanded: ApInt,
-    replacement: Option<ConstantIntValue<'ctx, IntDyn, B>>,
+    replacement: Option<IntValueId<IntDyn, B>>,
     demanded_bits_changed: bool,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> SimplifyDemandedBitsResult<'ctx, B> {
+impl<B: ModuleBrand> SimplifyDemandedBitsResult<B> {
     /// Known bits computed for the queried value.
     #[inline]
     pub fn known_bits(&self) -> &KnownBits {
@@ -56,9 +61,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> SimplifyDemandedBitsResult<'ctx, B> {
         &self.demanded
     }
 
-    /// Replacement constant when every demanded bit is known.
+    /// Id of the replacement constant when every demanded bit is known. View it
+    /// with [`Module::view`](crate::Module::view), or feed it straight to a
+    /// builder / [`FnPatch::replace_all_uses`] — ids are accepted at operand
+    /// positions.
     #[inline]
-    pub fn replacement(&self) -> Option<ConstantIntValue<'ctx, IntDyn, B>> {
+    pub fn replacement(&self) -> Option<IntValueId<IntDyn, B>> {
         self.replacement
     }
 
@@ -75,7 +83,7 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     demanded_bits: &DemandedBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
-) -> IrResult<SimplifyDemandedBitsResult<'ctx, B>> {
+) -> IrResult<SimplifyDemandedBitsResult<B>> {
     let Some(width) = int_scalar_bit_width(value.ty()) else {
         return Ok(SimplifyDemandedBitsResult {
             known: KnownBits::unknown(value_scalar_size_in_bits(value, query.data_layout())),
@@ -90,8 +98,16 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let known_mask = known.zero_mask().bitor(known.one_mask());
     let unknown_demanded = demanded.bitand(&known_mask.not());
     let replacement = if unknown_demanded.is_zero() {
-        let int_ty = crate::derived_types::IntType::<IntDyn, B>::try_from(value.ty())?;
-        Some(int_ty.const_ap_int(known.one_mask())?)
+        let int_ty = IntType::<IntDyn, B>::try_from(value.ty())?;
+        // Mint the *typed* id: an int constant is an int value, so the
+        // narrowing is total here (the type came from `value.ty()`), and a
+        // typed id keeps the no-silent-erasure law's guarantee that a caller
+        // never has to re-narrow an erased id to use it as an int operand.
+        let konst: IntValue<'ctx, IntDyn, B> = int_ty
+            .const_ap_int(known.one_mask())?
+            .into_erased()
+            .try_into()?;
+        Some(konst.id())
     } else {
         None
     };
@@ -106,11 +122,11 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// Cached demanded-bits result for one function.
 pub struct DemandedBits {
     data_layout: DataLayout,
-    alive_bits: HashMap<ValueId, ApInt>,
-    operand_bits: HashMap<(ValueId, usize), ApInt>,
-    dead_uses: HashSet<(ValueId, usize)>,
-    visited_non_integer: HashSet<ValueId>,
-    always_live: HashSet<ValueId>,
+    alive_bits: HashMap<ValueSlot, ApInt>,
+    operand_bits: HashMap<(ValueSlot, usize), ApInt>,
+    dead_uses: HashSet<(ValueSlot, usize)>,
+    visited_non_integer: HashSet<ValueSlot>,
+    always_live: HashSet<ValueSlot>,
 }
 
 impl DemandedBits {
@@ -127,7 +143,7 @@ impl DemandedBits {
 
     /// Return the bits demanded from an instruction value.
     pub fn get_demanded_bits<'ctx, B: ModuleBrand + 'ctx>(&self, value: Value<'ctx, B>) -> ApInt {
-        if let Some(bits) = self.alive_bits.get(&value.id()) {
+        if let Some(bits) = self.alive_bits.get(&value.slot()) {
             return bits.clone();
         }
         ApInt::low_bits_set(
@@ -148,7 +164,7 @@ impl DemandedBits {
                 message: "operand index out of range",
             });
         };
-        if let Some(bits) = self.operand_bits.get(&(user.id(), operand_index)) {
+        if let Some(bits) = self.operand_bits.get(&(user.slot(), operand_index)) {
             return Ok(bits.clone());
         }
         let operand = value_from_id(user, operand_id);
@@ -167,9 +183,9 @@ impl DemandedBits {
 
     /// Return true if `value` was unreachable from any live root during analysis.
     pub fn is_instruction_dead<'ctx, B: ModuleBrand + 'ctx>(&self, value: Value<'ctx, B>) -> bool {
-        !self.visited_non_integer.contains(&value.id())
-            && !self.alive_bits.contains_key(&value.id())
-            && !self.always_live.contains(&value.id())
+        !self.visited_non_integer.contains(&value.slot())
+            && !self.alive_bits.contains_key(&value.slot())
+            && !self.always_live.contains(&value.slot())
     }
 
     /// Return true if operand `operand_index` of instruction `user` has no demanded bits.
@@ -188,16 +204,19 @@ impl DemandedBits {
         if int_scalar_bit_width(operand.ty()).is_none() {
             return Ok(false);
         }
-        if self.always_live.contains(&user.id()) {
+        if self.always_live.contains(&user.slot()) {
             return Ok(false);
         }
         if self.is_instruction_dead(user) {
             return Ok(true);
         }
-        if self.dead_uses.contains(&(user.id(), operand_index)) {
+        if self.dead_uses.contains(&(user.slot(), operand_index)) {
             return Ok(true);
         }
-        Ok(self.alive_bits.get(&user.id()).is_some_and(ApInt::is_zero))
+        Ok(self
+            .alive_bits
+            .get(&user.slot())
+            .is_some_and(ApInt::is_zero))
     }
 
     /// Compute alive bits of one addition operand from alive output and known operands.
@@ -239,12 +258,12 @@ impl DemandedBits {
                 if !is_always_live(data) {
                     continue;
                 }
-                self.always_live.insert(value.id());
+                self.always_live.insert(value.slot());
                 if let Some(width) = int_scalar_bit_width(value.ty()) {
                     self.alive_bits
-                        .entry(value.id())
+                        .entry(value.slot())
                         .or_insert_with(|| ApInt::zero(width));
-                    enqueue(value.id(), &mut worklist, &mut queued);
+                    enqueue(value.slot(), &mut worklist, &mut queued);
                     continue;
                 }
                 for operand_id in data.kind.operand_ids() {
@@ -582,7 +601,7 @@ impl DemandedBits {
     fn intrinsic_operand_bits<'ctx, B: ModuleBrand + 'ctx>(
         &self,
         user: Value<'ctx, B>,
-        callee_id: ValueId,
+        callee_id: ValueSlot,
         operand_index: usize,
         alive_out: &ApInt,
     ) -> IrResult<Option<ApInt>> {
@@ -702,7 +721,7 @@ impl DemandedBits {
     }
 }
 
-impl<'ctx> FunctionPass<'ctx> for SimplifyDemandedBitsPass {
+impl<B: ModuleBrand> FunctionPass<B> for SimplifyDemandedBitsPass {
     // Instruction-level rewrites only (RAUW + erase, operand shrinking, poison
     // flag drops); the CFG is never touched, so the `PatchBody` floor's
     // "CFG analyses preserved" is correct.
@@ -713,7 +732,11 @@ impl<'ctx> FunctionPass<'ctx> for SimplifyDemandedBitsPass {
     type Requires = ();
     const NAME: &'static str = "simplify-demanded-bits";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, Brand<'ctx>, PatchBody, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, PatchBody, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         // The transform recomputes demanded bits from the *current* IR on every
         // iteration (each mutation invalidates them), so — unlike `DcePass` and
         // `InstSimplifyPass` — a faithful read-only "will it change?" pre-scan
@@ -731,11 +754,14 @@ impl<'ctx> FunctionPass<'ctx> for SimplifyDemandedBitsPass {
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DemandedBitsAnalysis {
     type Result = DemandedBits;
 
-    fn run(
+    fn run<'v>(
         &self,
-        function: FunctionView<'ctx, B>,
+        function: FunctionView<'v, B>,
         _am: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Self::Result> {
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
         let mut result = DemandedBits::new(function.module().data_layout().clone());
         result.perform_analysis(function)?;
         Ok(result)
@@ -750,12 +776,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> PrefetchableAnalysis<'ctx, B> for DemandedBits
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for DemandedBits {
-    fn invalidate(
+    fn invalidate<'v>(
         &mut self,
-        _function: FunctionView<'ctx, B>,
+        _function: FunctionView<'v, B>,
         pa: &PreservedAnalyses,
         _inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
-    ) -> IrResult<bool> {
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
         let checker = pa.checker::<DemandedBitsAnalysis>();
         Ok(!(checker.preserved() || checker.preserved_set::<AllAnalysesOnFunction>()))
     }
@@ -925,8 +954,8 @@ fn operand_value<'ctx, B: ModuleBrand + 'ctx>(
     Ok(value_from_id(user, id))
 }
 
-fn simplify_demanded_bits_iteration<'ctx>(
-    patch: &FnPatch<'_, '_, 'ctx, Brand<'ctx>, ()>,
+fn simplify_demanded_bits_iteration<'ctx, B: ModuleBrand + 'ctx>(
+    patch: &FnPatch<'_, '_, 'ctx, B, ()>,
 ) -> IrResult<bool> {
     let data_layout = patch.function().module().data_layout().clone();
     let mut demanded = DemandedBits::new(data_layout.clone());
@@ -938,31 +967,33 @@ fn simplify_demanded_bits_iteration<'ctx>(
     for block in patch.function_mut().basic_blocks() {
         let instruction_ids = block.instruction_ids();
         for id in instruction_ids {
-            let inst = Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
+            let inst = Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
             let value = inst.to_erased();
             if !is_simplify_candidate(value) {
                 continue;
             }
             if demanded.is_instruction_dead(value) {
-                dead_to_erase.push(value.id());
+                dead_to_erase.push(value.slot());
                 continue;
             }
             let simplified = simplify_demanded_bits(value, &demanded, &query)?;
             if let Some(replacement) = simplified.replacement() {
-                let id = value.id();
+                let id = value.slot();
                 drop_zext_nneg_for_replaced_uses(value);
-                inst.replace_all_uses_with(module_token, replacement)?;
+                // The result carries a storable id; view it for the RAUW, which
+                // takes an ephemeral handle.
+                inst.replace_all_uses_with(module_token, module_token.view(replacement))?;
                 let erased =
-                    Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
+                    Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
                 erased.erase_from_parent(module_token);
                 return Ok(true);
             }
             if let Some(replacement) = demanded_value_replacement(value, &demanded, &query)? {
-                let id = value.id();
+                let id = value.slot();
                 drop_zext_nneg_for_replaced_uses(value);
                 inst.replace_all_uses_with(module_token, replacement)?;
                 let erased =
-                    Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
+                    Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
                 erased.erase_from_parent(module_token);
                 return Ok(true);
             }
@@ -976,7 +1007,7 @@ fn simplify_demanded_bits_iteration<'ctx>(
     }
 
     for id in dead_to_erase.into_iter().rev() {
-        let erased = Instruction::<state::Attached>::from_parts(id, module_token.module_ref());
+        let erased = Instruction::<state::Attached, B>::from_parts(id, module_token.module_ref());
         if erased.to_erased().has_uses() {
             continue;
         }
@@ -1096,21 +1127,21 @@ fn drop_zext_nneg_for_replaced_uses<'ctx, B: ModuleBrand + 'ctx>(value: Value<'c
 
 fn drop_zext_nneg_for_replaced_uses_recursive<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
-    visited: &mut HashSet<ValueId>,
+    visited: &mut HashSet<ValueSlot>,
 ) {
-    if !visited.insert(value.id()) {
+    if !visited.insert(value.slot()) {
         return;
     }
     for user in value.users() {
         let user = user.to_erased();
-        drop_zext_nneg_for_replaced_operand(user, value.id());
+        drop_zext_nneg_for_replaced_operand(user, value.slot());
         drop_zext_nneg_for_replaced_uses_recursive(user, visited);
     }
 }
 
 fn drop_zext_nneg_for_replaced_operand<'ctx, B: ModuleBrand + 'ctx>(
     user: Value<'ctx, B>,
-    old_operand: ValueId,
+    old_operand: ValueSlot,
 ) {
     let ValueKindData::Instruction(inst) = &user.data().kind else {
         return;
@@ -1178,7 +1209,7 @@ fn simplify_xor_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(false);
     }
     if rhs_bits.bitor(&demanded.not()).is_all_ones() {
-        let int_ty = crate::derived_types::IntType::<IntDyn, B>::try_from(rhs.ty())?;
+        let int_ty = IntType::<IntDyn, B>::try_from(rhs.ty())?;
         let all_ones = int_ty.const_ap_int(&ApInt::all_ones(demanded.bit_width()))?;
         return replace_instruction_operand(value, &bin.rhs, all_ones.into_erased());
     }
@@ -1187,7 +1218,7 @@ fn simplify_xor_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
 
 fn shrink_demanded_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
     user: Value<'ctx, B>,
-    operand: &core::cell::Cell<ValueId>,
+    operand: &core::cell::Cell<ValueSlot>,
     demanded: &ApInt,
 ) -> IrResult<bool> {
     let current = value_from_id(user, operand.get());
@@ -1199,18 +1230,18 @@ fn shrink_demanded_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
     if shrunk.eq_ap_int(&current_bits) {
         return Ok(false);
     }
-    let int_ty = crate::derived_types::IntType::<IntDyn, B>::try_from(current.ty())?;
+    let int_ty = IntType::<IntDyn, B>::try_from(current.ty())?;
     let replacement = int_ty.const_ap_int(&shrunk)?;
     replace_instruction_operand(user, operand, replacement.into_erased())
 }
 
 fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
     user: Value<'ctx, B>,
-    operand: &core::cell::Cell<ValueId>,
+    operand: &core::cell::Cell<ValueSlot>,
     replacement: Value<'ctx, B>,
 ) -> IrResult<bool> {
     let old_id = operand.get();
-    let new_id = replacement.id();
+    let new_id = replacement.slot();
     if old_id == new_id {
         return Ok(false);
     }
@@ -1225,7 +1256,7 @@ fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
     drop_zext_nneg_for_replaced_uses(user);
     operand.set(new_id);
     let module = user.module().core_ref();
-    let edge = ValueUse::Instruction(user.id());
+    let edge = ValueUse::Instruction(user.slot());
     let mut old_uses = module.context().value_data(old_id).use_list.borrow_mut();
     if let Some(pos) = old_uses.iter().position(|candidate| *candidate == edge) {
         old_uses.remove(pos);
@@ -1260,7 +1291,7 @@ fn constant_ap_int<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option
 
 fn instruction_operands<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
-) -> IrResult<Vec<ValueId>> {
+) -> IrResult<Vec<ValueSlot>> {
     match &value.data().kind {
         ValueKindData::Instruction(inst) => Ok(inst.kind.operand_ids()),
         other => Err(IrError::ValueCategoryMismatch {
@@ -1314,7 +1345,7 @@ fn is_simplify_candidate<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> 
     )
 }
 
-fn enqueue(id: ValueId, worklist: &mut VecDeque<ValueId>, queued: &mut HashSet<ValueId>) {
+fn enqueue(id: ValueSlot, worklist: &mut VecDeque<ValueSlot>, queued: &mut HashSet<ValueSlot>) {
     if queued.insert(id) {
         worklist.push_back(id);
     }
@@ -1326,7 +1357,7 @@ fn is_instruction_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> b
 
 fn value_from_id<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
-    id: ValueId,
+    id: ValueSlot,
 ) -> Value<'ctx, B> {
     let module = module_ref(anchor);
     let data = module.value_data(id);
@@ -1380,6 +1411,6 @@ fn value_scalar_size_in_bits<'ctx, B: ModuleBrand + 'ctx>(
     u32::try_from(dl.type_size_in_bits(erase_type(value.ty()))).unwrap_or(0)
 }
 
-fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx> {
+fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynBrand> {
     Type::new(ty.id(), ModuleRef::new(ty.module().core_ref()))
 }

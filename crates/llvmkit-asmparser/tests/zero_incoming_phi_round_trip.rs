@@ -15,7 +15,7 @@
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::{
     Analyses, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError, IrResult, Linkage,
-    Module, ModuleBrand, ReshapeCfg, run_function_pass,
+    Module, ModuleBrand, ReshapeCfg, module_new, run_function_pass,
 };
 
 /// A `ReshapeCfg` pass that removes the `from_name` block's `cond_br` then-edge
@@ -25,19 +25,23 @@ struct RemoveEdge {
     from_name: &'static str,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdge {
+impl<B: ModuleBrand> FunctionPass<B> for RemoveEdge {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "remove-edge-empty-phi-rt";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let from = reshape
             .function()
             .basic_blocks()
             .find(|bb| bb.name().as_deref() == Some(self.from_name))
             .expect("`from` block is present");
-        reshape.edit_cond_br(&from)?.remove_then()?;
+        reshape.edit_cond_br(from.id())?.remove_then()?;
         Ok(reshape.done())
     }
 }
@@ -53,40 +57,44 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for RemoveEdge {
 /// other:    ret 0
 /// ```
 fn build_and_empty_phi() -> IrResult<String> {
-    Module::with_new("empty-phi-build", |m| -> IrResult<String> {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let other = f.append_basic_block(&m, "other");
-        // to(%p: i32): reached ONLY from entry.
-        let (to_bb, to_params) =
-            IRBuilder::new_for::<Dyn>(&m).append_block_with_params(f, &[i32_ty.as_type()], "to")?;
-        let to_lbl = to_bb.label();
-        let other_lbl = other.label();
+    // A helper, not a test body: `DynBrand` is registry-exempt, so
+    // repeated or concurrent calls cannot collide on one brand.
+    let m = Module::dynamic("empty-phi-build");
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let other = m.view(f).append_basic_block(&m, "other");
+    // to(%p: i32): reached ONLY from entry.
+    let (to_bb, to_params) = IRBuilder::new_for::<Dyn>(&m).append_block_with_params(
+        m.view(f),
+        &[i32_ty.as_type()],
+        "to",
+    )?;
+    let to_lbl = to_bb.id();
+    let other_lbl = other.id();
 
-        // entry: %c = icmp eq %a, 0 ; br %c ? to(%a) : other()
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let a: IntValue<i32> = f.param(0)?.try_into()?;
-        let c = b.build_icmp_eq(a, 0_i32, "c")?;
-        b.build_cond_br_with_args(c, to_lbl, &[a.into_erased()], other_lbl, &[])?;
+    // entry: %c = icmp eq %a, 0 ; br %c ? to(%a) : other()
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+    let c = b.build_icmp_eq(a, 0_i32, "c")?;
+    b.build_cond_br_with_args(c, to_lbl, &[a.into_erased()], other_lbl, &[])?;
 
-        // to: ret %p
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(to_bb);
-        let p: IntValue<i32> = to_params[0].try_into()?;
-        b.build_ret(p)?;
+    // to: ret %p
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(to_bb);
+    let p: IntValue<'_, i32, _> = to_params[0].try_into()?;
+    b.build_ret(p)?;
 
-        // other: ret 0
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
-        b.build_ret(i32_ty.const_int(0_u32))?;
+    // other: ret 0
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
+    b.build_ret(i32_ty.const_int(0_u32))?;
 
-        let verified = m.verify()?;
-        let mut analyses = Analyses::new();
-        let pass = RemoveEdge { from_name: "entry" };
-        let out = run_function_pass(pass, verified, f, &mut analyses)?;
-        let reverified = out.verify().expect("remove_then output must re-verify");
-        Ok(format!("{reverified}"))
-    })
+    let verified = m.verify()?;
+    let mut analyses = Analyses::new();
+    let pass = RemoveEdge { from_name: "entry" };
+    let out = run_function_pass(pass, verified, f, &mut analyses)?;
+    let reverified = out.verify().expect("remove_then output must re-verify");
+    Ok(format!("{reverified}"))
 }
 
 /// The printed output of an edge removal that empties a phi must reparse. This
@@ -110,7 +118,8 @@ fn emptied_phi_output_round_trips() -> Result<(), IrError> {
     );
 
     // The printed IR reparses and re-verifies through this crate's parser.
-    Module::with_new("empty-phi-reparse", |m2| {
+    {
+        let m2 = module_new!("empty-phi-reparse")?;
         Parser::new(printed.as_bytes(), &m2)
             .expect("lexer primes")
             .parse_module()
@@ -121,6 +130,6 @@ fn emptied_phi_output_round_trips() -> Result<(), IrError> {
             !reprinted.contains("= phi"),
             "reparsed IR must still be phi-free, got:\n{reprinted}"
         );
-    });
+    }
     Ok(())
 }

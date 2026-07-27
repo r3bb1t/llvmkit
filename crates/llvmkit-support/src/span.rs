@@ -79,7 +79,7 @@ impl<T> Spanned<T> {
     }
 
     #[inline]
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Spanned<U> {
+    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Spanned<U> {
         Spanned {
             value: f(self.value),
             span: self.span,

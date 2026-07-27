@@ -1,16 +1,30 @@
-error[E0382]: borrow of moved value: `module`
-  --> tests/compile_fail/saved_function_handle_requires_unverified_token.rs:14:30
+error[E0505]: cannot move out of `module` because it is borrowed
+  --> tests/compile_fail/saved_function_handle_requires_unverified_token.rs:13:21
    |
- 4 |     Module::with_new::<_, _, _>("saved-function", |module| {
-   |                                                    ------ move occurs because `module` has type `Module<'_, Brand<'_>>`, which does not implement the `Copy` trait
+ 4 |     let module = Module::dynamic("saved-function");
+   |         ------ binding `module` declared here
 ...
-13 |         let _verified = module.verify()?;
-   |                                -------- `module` moved due to this method call
-14 |         function.set_linkage(&module, Linkage::Internal);
-   |                              ^^^^^^^ value borrowed here after move
+ 7 |     let function = module.view(module.add_function_dyn("f", fn_ty, Linkage::External)?);
+   |                    ------ borrow of `module` occurs here
+...
+13 |     let _verified = module.verify()?;
+   |                     ^^^^^^ move out of `module` occurs here
+14 |     function.set_linkage(&module, Linkage::Internal);
+   |     -------- borrow later used here
+
+error[E0382]: borrow of moved value: `module`
+  --> tests/compile_fail/saved_function_handle_requires_unverified_token.rs:14:26
    |
-note: `Module::<'ctx, B>::verify` takes ownership of the receiver `self`, which moves `module`
+ 4 |     let module = Module::dynamic("saved-function");
+   |         ------ move occurs because `module` has type `Module<DynBrand>`, which does not implement the `Copy` trait
+...
+13 |     let _verified = module.verify()?;
+   |                            -------- `module` moved due to this method call
+14 |     function.set_linkage(&module, Linkage::Internal);
+   |                          ^^^^^^^ value borrowed here after move
+   |
+note: `Module::<B>::verify` takes ownership of the receiver `self`, which moves `module`
   --> src/module.rs
    |
-   |     pub fn verify(self) -> IrResult<Module<'ctx, B, Verified>> {
+   |     pub fn verify(self) -> IrResult<Module<B, Verified>> {
    |                   ^^^^

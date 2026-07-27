@@ -7,7 +7,7 @@
 //! or constant, and `Err(_)` reports a malformed custom-folder result.
 
 use super::{
-    BinaryIntrinsic, BinaryOpcode, Brand, CastOpcode, CmpPredicate, Constant, FastMathFlags,
+    BinaryIntrinsic, BinaryOpcode, CastOpcode, CmpPredicate, Constant, FastMathFlags,
     GepNoWrapFlags, InstructionView, IrResult, ModuleBrand, Type, UnaryOpcode, Value,
 };
 use crate::cmp_predicate::{FloatPredicate, IntPredicate};
@@ -38,13 +38,13 @@ use crate::value::{FloatValue, IntValue, Typed};
 ///   `IntValue<W>` without consulting the payload's real type, so the
 ///   marker is a claim to verify rather than evidence to trust.
 ///   Defaults delegate to the matching `_dyn` hook and re-narrow by
-///   `TypeId`, so a folder that only overrides the erased surface keeps
+///   `TypeSlot`, so a folder that only overrides the erased surface keeps
 ///   today's semantics.
 ///   Pointer-, vector-, and aggregate-result folds (`fold_gep_dyn`,
 ///   `fold_select_dyn`, ...) deliberately stay erased: `PointerValue`
 ///   does not statically pin the address space and vector element
 ///   typing is deferred (T4).
-pub trait IRBuilderFolder<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub trait IRBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
     fn fold_bin_op_dyn(
         &self,
         opcode: BinaryOpcode,
@@ -239,7 +239,7 @@ pub trait IRBuilderFolder<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
     //      static W is only as honest as whoever built the handle, and
     //      IntValue::from_value_unchecked mints an IntValue<W> without
     //      consulting the payload's real type. Defaults delegate to
-    //      the matching _dyn hook and re-narrow by TypeId, so a folder
+    //      the matching _dyn hook and re-narrow by TypeSlot, so a folder
     //      that only overrides the erased surface keeps today's
     //      semantics. Pointer-, vector-, and aggregate-result folds
     //      (fold_gep_dyn, fold_select_dyn, ...) deliberately stay
@@ -340,7 +340,7 @@ pub trait IRBuilderFolder<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
     }
 }
 
-/// Re-narrow an erased fold result to the operand's int width by TypeId
+/// Re-narrow an erased fold result to the operand's int width by TypeSlot
 /// equality. Used by the typed hooks' delegating default bodies; native
 /// typed overrides (ConstantFolder) skip this entirely.
 ///
@@ -361,7 +361,7 @@ where
     Ok(Some(IntValue::from_value_unchecked(v)))
 }
 
-/// Re-narrow an erased fold result to the operand's float kind by TypeId
+/// Re-narrow an erased fold result to the operand's float kind by TypeSlot
 /// equality. Mirrors [`narrow_folded_int`] for the float-kind family.
 pub(super) fn narrow_folded_fp<'ctx, K, B>(
     folded: Option<Value<'ctx, B>>,
@@ -399,7 +399,7 @@ where
 }
 
 /// Re-narrow an erased cast fold result to the destination int type by
-/// TypeId equality. Mirrors [`narrow_folded_int`] but compares against
+/// TypeSlot equality. Mirrors [`narrow_folded_int`] but compares against
 /// `dest_ty` instead of an operand (casts have no same-type operand).
 pub(super) fn narrow_folded_cast_int<'ctx, W, B>(
     folded: Option<Value<'ctx, B>>,
@@ -415,7 +415,7 @@ where
 }
 
 /// Re-narrow an erased cast fold result to the destination float type by
-/// TypeId equality. Mirrors [`narrow_folded_cast_int`] for float kinds.
+/// TypeSlot equality. Mirrors [`narrow_folded_cast_int`] for float kinds.
 pub(super) fn narrow_folded_cast_fp<'ctx, K, B>(
     folded: Option<Value<'ctx, B>>,
     dest_ty: FloatType<'ctx, K, B>,

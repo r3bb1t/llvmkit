@@ -1,16 +1,22 @@
 //! NamedMDNode storage. Mirrors `llvm/include/llvm/IR/Metadata.h`'s
-//! `NamedMDNode` class. Each node is a named list of `MetadataRef`.
+//! `NamedMDNode` class. Each node is a named list of [`MetadataId`].
 
-use crate::metadata::MetadataRef;
+use crate::metadata::MetadataId;
+use crate::module::ModuleBrand;
 
 /// A named metadata node. Mirrors `NamedMDNode` in `Metadata.h`.
+///
+/// Brand-generic because its operands are the tagged metadata currency: a
+/// module stores its own nodes under the crate-private storage brand, and
+/// `Module::named_metadata_add_operand` tag-checks a caller's
+/// [`MetadataId<B>`] before it lands here.
 #[derive(Debug, Clone)]
-pub struct NamedMDNode {
+pub struct NamedMDNode<B: ModuleBrand> {
     name: String,
-    operands: Vec<MetadataRef>,
+    operands: Vec<MetadataId<B>>,
 }
 
-impl NamedMDNode {
+impl<B: ModuleBrand> NamedMDNode<B> {
     /// Construct an empty named metadata node with the given name.
     pub fn new<Name>(name: Name) -> Self
     where
@@ -28,12 +34,12 @@ impl NamedMDNode {
     }
 
     /// Append an operand.
-    pub fn add_operand(&mut self, op: MetadataRef) {
+    pub fn add_operand(&mut self, op: MetadataId<B>) {
         self.operands.push(op);
     }
 
     /// All operands in insertion order.
-    pub fn operands(&self) -> &[MetadataRef] {
+    pub fn operands(&self) -> &[MetadataId<B>] {
         &self.operands
     }
 

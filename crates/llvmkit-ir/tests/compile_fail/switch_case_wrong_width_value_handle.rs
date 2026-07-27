@@ -18,30 +18,29 @@
 use llvmkit_ir::{Dyn, IRBuilder, IntValue, Linkage, Module};
 
 fn main() {
-    Module::with_new("c", |m| {
-        let i32_ty = m.i32_type();
-        let i64_ty = m.i64_type();
-        let void_ty = m.void_type();
-        let fn_ty = m.fn_type(
-            void_ty.as_type(),
-            [i32_ty.as_type(), i64_ty.as_type()],
-            false,
-        );
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
-        let entry = f.append_basic_block(&m, "entry");
-        let dest = f.append_basic_block(&m, "dest");
-        let dest_label = dest.label();
+    let m = Module::dynamic("c");
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let void_ty = m.void_type();
+    let fn_ty = m.fn_type(
+        void_ty.as_type(),
+        [i32_ty.as_type(), i64_ty.as_type()],
+        false,
+    );
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let dest = m.view(f).append_basic_block(&m, "dest");
+    let dest_label = dest.id();
 
-        // `W` is inferred as `i32` from the typed condition.
-        let cond: IntValue<i32> = f.param(0).unwrap().try_into().unwrap();
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let (_sealed, switch) = b.build_switch(cond, dest_label, "").unwrap();
+    // `W` is inferred as `i32` from the typed condition.
+    let cond: IntValue<i32, _> = m.view(f).param(0).unwrap().try_into().unwrap();
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let (_sealed, switch) = b.build_switch(cond, dest_label, "").unwrap();
 
-        // A typed `i64` *value handle* (not a literal): the second parameter
-        // narrowed to `IntValue<i64>`. It IS `IsValue`, but does not implement
-        // `IntoIntValue<'_, i32, _>`, so it cannot be a case value on an
-        // `i32`-width switch: `.add_case` does not type-check.
-        let case: IntValue<i64> = f.param(1).unwrap().try_into().unwrap();
-        let _ = switch.add_case(case, dest_label);
-    });
+    // A typed `i64` *value handle* (not a literal): the second parameter
+    // narrowed to `IntValue<i64>`. It IS `IsValue`, but does not implement
+    // `IntoIntValue<'_, i32, _>`, so it cannot be a case value on an
+    // `i32`-width switch: `.add_case` does not type-check.
+    let case: IntValue<i64, _> = m.view(f).param(1).unwrap().try_into().unwrap();
+    let _ = switch.add_case(case, dest_label);
 }

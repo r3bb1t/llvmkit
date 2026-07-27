@@ -8,29 +8,29 @@ use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     BinaryIntrinsic, BinaryOpcode, CastKind, Constant, ConstantFloatValue, ConstantFolder,
     ConstantIntValue, Dyn, GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind,
-    InstructionView, IntDyn, IntPredicate, IntValue, IntWidth, IrError, IrResult, Linkage, Module,
-    MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type, UDivFlags, Value,
-    constant_fold_binary_instruction,
+    InstructionView, IntDyn, IntPredicate, IntValue, IntValueId, IntWidth, IrError, IrResult,
+    Linkage, ModuleBrand, MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type,
+    UDivFlags, Value, constant_fold_binary_instruction, module_new,
 };
 
 #[derive(Debug, Clone, Copy)]
-enum FolderReturn<'ctx> {
-    Value(Value<'ctx>),
+enum FolderReturn<'ctx, B: ModuleBrand> {
+    Value(Value<'ctx, B>),
     NoWrapCall {
         opcode: BinaryOpcode,
         has_nuw: bool,
         has_nsw: bool,
-        value: Value<'ctx>,
+        value: Value<'ctx, B>,
     },
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ReturningFolder<'ctx> {
-    result: FolderReturn<'ctx>,
+struct ReturningFolder<'ctx, B: ModuleBrand> {
+    result: FolderReturn<'ctx, B>,
 }
 
-impl<'ctx> ReturningFolder<'ctx> {
-    fn fold(&self) -> IrResult<Option<Value<'ctx>>> {
+impl<'ctx, B: ModuleBrand> ReturningFolder<'ctx, B> {
+    fn fold(&self) -> IrResult<Option<Value<'ctx, B>>> {
         match self.result {
             FolderReturn::Value(value) => Ok(Some(value)),
             FolderReturn::NoWrapCall { .. } => Ok(None),
@@ -43,23 +43,23 @@ impl<'ctx> ReturningFolder<'ctx> {
 /// erased `*_dyn` hooks all default to `Ok(None)`, and the typed hooks
 /// default-delegate to them), matching upstream `IRBuilderFolder.h`'s
 /// posture that a custom folder overrides only what it cares about.
-impl<'ctx> IRBuilderFolder<'ctx> for ReturningFolder<'ctx> {
+impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ReturningFolder<'ctx, B> {
     fn fold_bin_op_dyn(
         &self,
         _opcode: BinaryOpcode,
-        _lhs: Value<'ctx>,
-        _rhs: Value<'ctx>,
-    ) -> IrResult<Option<Value<'ctx>>> {
+        _lhs: Value<'ctx, B>,
+        _rhs: Value<'ctx, B>,
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         self.fold()
     }
 
     fn fold_no_wrap_bin_op_dyn(
         &self,
         opcode: BinaryOpcode,
-        _lhs: Value<'ctx>,
-        _rhs: Value<'ctx>,
+        _lhs: Value<'ctx, B>,
+        _rhs: Value<'ctx, B>,
         flags: OverflowFlags,
-    ) -> IrResult<Option<Value<'ctx>>> {
+    ) -> IrResult<Option<Value<'ctx, B>>> {
         match self.result {
             FolderReturn::NoWrapCall {
                 opcode: expected_opcode,
@@ -81,44 +81,42 @@ impl<'ctx> IRBuilderFolder<'ctx> for ReturningFolder<'ctx> {
 /// fneg is folded by the default folder and no instruction is inserted.
 #[test]
 fn constant_folder_folds_fneg_constant_without_instruction() -> Result<(), IrError> {
-    Module::with_new("folder-fneg", |m| {
-        let f32_ty = m.f32_type();
-        let fn_ty = m.fn_type_no_params(f32_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let m = module_new!("folder-fneg")?;
+    let f32_ty = m.f32_type();
+    let fn_ty = m.fn_type_no_params(f32_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let result = b.build_float_neg::<f32, _, _>(f32_ty.const_float(1.0), "n")?;
+    let result = b.build_float_neg::<f32, _, _>(f32_ty.const_float(1.0), "n")?;
 
-        let folded =
-            ConstantFloatValue::<f32>::try_from(Constant::try_from(result.into_erased())?)?;
-        assert!(folded.ap_float().is_exactly_value_f64(-1.0));
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok(())
-    })
+    let folded =
+        ConstantFloatValue::<f32, _>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
+    assert!(folded.ap_float().is_exactly_value_f64(-1.0));
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    Ok(())
 }
 
 /// llvmkit-specific subset of `ConstantFolder.h::CreateUDiv`: all-constant
 /// invalid integer divide folds to poison and no instruction is inserted.
 #[test]
 fn constant_folder_folds_udiv_by_zero_to_poison_without_instruction() -> Result<(), IrError> {
-    Module::with_new("folder-udiv", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let m = module_new!("folder-udiv")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let result =
-            b.build_int_udiv::<i32, _, _, _>(i32_ty.const_int(42_i32), i32_ty.const_zero(), "q")?;
+    let result =
+        b.build_int_udiv::<i32, _, _, _>(i32_ty.const_int(42_i32), i32_ty.const_zero(), "q")?;
 
-        assert_eq!(
-            Constant::try_from(result.into_erased())?,
-            i32_ty.as_type().get_poison().as_constant()
-        );
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok(())
-    })
+    assert_eq!(
+        Constant::try_from(b.view(result).into_erased())?,
+        i32_ty.as_type().get_poison().as_constant()
+    );
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    Ok(())
 }
 
 /// Mirrors `llvm/include/llvm/IR/ConstantFolder.h::ConstantFolder::FoldExactBinOp`
@@ -127,27 +125,26 @@ fn constant_folder_folds_udiv_by_zero_to_poison_without_instruction() -> Result<
 /// inexact all-constant quotient through `ConstantFolder`.
 #[test]
 fn constant_folder_exact_udiv_inexact_constants_match_upstream_plain_fold() -> Result<(), IrError> {
-    Module::with_new("folder-exact-udiv", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let m = module_new!("folder-exact-udiv")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let result = b.build_int_udiv_with_flags::<i32, _, _, _>(
-            i32_ty.const_int(7_i32),
-            i32_ty.const_int(3_i32),
-            UDivFlags::new().exact(),
-            "q",
-        )?;
+    let result = b.build_int_udiv_with_flags::<i32, _, _, _>(
+        i32_ty.const_int(7_i32),
+        i32_ty.const_int(3_i32),
+        UDivFlags::new().exact(),
+        "q",
+    )?;
 
-        assert_eq!(
-            Constant::try_from(result.into_erased())?,
-            i32_ty.const_int(2_i32).as_constant()
-        );
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok(())
-    })
+    assert_eq!(
+        Constant::try_from(b.view(result).into_erased())?,
+        i32_ty.const_int(2_i32).as_constant()
+    );
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    Ok(())
 }
 
 /// llvmkit-specific subset of `llvm/include/llvm/IR/ConstantFolder.h::FoldNoWrapBinOp`:
@@ -155,28 +152,24 @@ fn constant_folder_exact_udiv_inexact_constants_match_upstream_plain_fold() -> R
 /// `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction`.
 #[test]
 fn constant_folder_no_wrap_mul_delegates_to_binary_constant_fold() -> Result<(), IrError> {
-    Module::with_new("folder-nowrap-mul", |m| {
-        let i32_ty = m.i32_type();
-        let lhs = i32_ty.const_int(6_i32);
-        let rhs = i32_ty.const_int(7_i32);
-        let expected = constant_fold_binary_instruction(
+    let m = module_new!("folder-nowrap-mul")?;
+    let i32_ty = m.i32_type();
+    let lhs = i32_ty.const_int(6_i32);
+    let rhs = i32_ty.const_int(7_i32);
+    let expected =
+        constant_fold_binary_instruction(BinaryOpcode::Mul, lhs.as_constant(), rhs.as_constant())?
+            .expect("all-constant mul folds through ConstantFoldBinaryInstruction");
+    let folded = ConstantFolder
+        .fold_no_wrap_bin_op_dyn(
             BinaryOpcode::Mul,
-            lhs.as_constant(),
-            rhs.as_constant(),
+            lhs.into_erased(),
+            rhs.into_erased(),
+            OverflowFlags::new().nuw(),
         )?
-        .expect("all-constant mul folds through ConstantFoldBinaryInstruction");
-        let folded = ConstantFolder
-            .fold_no_wrap_bin_op_dyn(
-                BinaryOpcode::Mul,
-                lhs.into_erased(),
-                rhs.into_erased(),
-                OverflowFlags::new().nuw(),
-            )?
-            .expect("all-constant no-wrap mul folds");
+        .expect("all-constant no-wrap mul folds");
 
-        assert_eq!(Constant::try_from(folded)?, expected);
-        Ok(())
-    })
+    assert_eq!(Constant::try_from(folded)?, expected);
+    Ok(())
 }
 
 /// llvmkit-specific subset of `llvm/include/llvm/IR/ConstantFolder.h::FoldNoWrapBinOp`:
@@ -184,28 +177,24 @@ fn constant_folder_no_wrap_mul_delegates_to_binary_constant_fold() -> Result<(),
 /// `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction`.
 #[test]
 fn constant_folder_no_wrap_shl_delegates_to_binary_constant_fold() -> Result<(), IrError> {
-    Module::with_new("folder-nowrap-shl", |m| {
-        let i32_ty = m.i32_type();
-        let lhs = i32_ty.const_int(1_i32);
-        let rhs = i32_ty.const_int(3_i32);
-        let expected = constant_fold_binary_instruction(
+    let m = module_new!("folder-nowrap-shl")?;
+    let i32_ty = m.i32_type();
+    let lhs = i32_ty.const_int(1_i32);
+    let rhs = i32_ty.const_int(3_i32);
+    let expected =
+        constant_fold_binary_instruction(BinaryOpcode::Shl, lhs.as_constant(), rhs.as_constant())?
+            .expect("all-constant shl folds through ConstantFoldBinaryInstruction");
+    let folded = ConstantFolder
+        .fold_no_wrap_bin_op_dyn(
             BinaryOpcode::Shl,
-            lhs.as_constant(),
-            rhs.as_constant(),
+            lhs.into_erased(),
+            rhs.into_erased(),
+            OverflowFlags::new().nuw().nsw(),
         )?
-        .expect("all-constant shl folds through ConstantFoldBinaryInstruction");
-        let folded = ConstantFolder
-            .fold_no_wrap_bin_op_dyn(
-                BinaryOpcode::Shl,
-                lhs.into_erased(),
-                rhs.into_erased(),
-                OverflowFlags::new().nuw().nsw(),
-            )?
-            .expect("all-constant no-wrap shl folds");
+        .expect("all-constant no-wrap shl folds");
 
-        assert_eq!(Constant::try_from(folded)?, expected);
-        Ok(())
-    })
+    assert_eq!(Constant::try_from(folded)?, expected);
+    Ok(())
 }
 
 /// llvmkit-specific direct Rust hook coverage for
@@ -215,32 +204,31 @@ fn constant_folder_no_wrap_shl_delegates_to_binary_constant_fold() -> Result<(),
 /// (`llvm/lib/IR/ConstantFold.cpp` lines 598-955).
 #[test]
 fn constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and() -> Result<(), IrError> {
-    Module::with_new("folder-nowrap-direct", |m| {
-        let i32_ty = m.i32_type();
+    let m = module_new!("folder-nowrap-direct")?;
+    let i32_ty = m.i32_type();
 
-        let xor = ConstantFolder
-            .fold_no_wrap_bin_op_dyn(
-                BinaryOpcode::Xor,
-                i32_ty.const_int(5_i32).into_erased(),
-                i32_ty.const_int(3_i32).into_erased(),
-                OverflowFlags::new().nuw(),
-            )?
-            .expect("all-constant xor folds through direct no-wrap hook");
-        let xor = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(xor)?)?;
-        assert_eq!(xor.ap_int(), i32_ty.const_int(6_i32).ap_int());
+    let xor = ConstantFolder
+        .fold_no_wrap_bin_op_dyn(
+            BinaryOpcode::Xor,
+            i32_ty.const_int(5_i32).into_erased(),
+            i32_ty.const_int(3_i32).into_erased(),
+            OverflowFlags::new().nuw(),
+        )?
+        .expect("all-constant xor folds through direct no-wrap hook");
+    let xor = ConstantIntValue::<IntDyn, _>::try_from(Constant::try_from(xor)?)?;
+    assert_eq!(xor.ap_int(), i32_ty.const_int(6_i32).ap_int());
 
-        let and = ConstantFolder
-            .fold_no_wrap_bin_op_dyn(
-                BinaryOpcode::And,
-                i32_ty.const_int(5_i32).into_erased(),
-                i32_ty.const_zero().into_erased(),
-                OverflowFlags::new().nuw().nsw(),
-            )?
-            .expect("all-constant and folds through direct no-wrap hook");
-        let and = ConstantIntValue::<IntDyn>::try_from(Constant::try_from(and)?)?;
-        assert_eq!(and.ap_int(), i32_ty.const_zero().ap_int());
-        Ok(())
-    })
+    let and = ConstantFolder
+        .fold_no_wrap_bin_op_dyn(
+            BinaryOpcode::And,
+            i32_ty.const_int(5_i32).into_erased(),
+            i32_ty.const_zero().into_erased(),
+            OverflowFlags::new().nuw().nsw(),
+        )?
+        .expect("all-constant and folds through direct no-wrap hook");
+    let and = ConstantIntValue::<IntDyn, _>::try_from(Constant::try_from(and)?)?;
+    assert_eq!(and.ap_int(), i32_ty.const_zero().ap_int());
+    Ok(())
 }
 
 /// llvmkit-specific direct Rust hook coverage for
@@ -248,19 +236,18 @@ fn constant_folder_no_wrap_direct_hook_matches_upstream_for_xor_and_and() -> Res
 /// lines 184-188: default `ConstantFolder` declines intrinsic folding.
 #[test]
 fn constant_folder_binary_intrinsic_declines() -> Result<(), IrError> {
-    Module::with_new("folder-intrinsic", |m| {
-        let i32_ty = m.i32_type();
-        assert_eq!(
-            ConstantFolder.fold_binary_intrinsic_dyn(
-                BinaryIntrinsic::UMax,
-                i32_ty.const_int(1_i32).into_erased(),
-                i32_ty.const_int(2_i32).into_erased(),
-                i32_ty.as_type(),
-            )?,
-            None
-        );
-        Ok(())
-    })
+    let m = module_new!("folder-intrinsic")?;
+    let i32_ty = m.i32_type();
+    assert_eq!(
+        ConstantFolder.fold_binary_intrinsic_dyn(
+            BinaryIntrinsic::UMax,
+            i32_ty.const_int(1_i32).into_erased(),
+            i32_ty.const_int(2_i32).into_erased(),
+            i32_ty.as_type(),
+        )?,
+        None
+    );
+    Ok(())
 }
 
 /// llvmkit-specific direct Rust hook coverage for
@@ -269,37 +256,36 @@ fn constant_folder_binary_intrinsic_declines() -> Result<(), IrError> {
 /// pointer plus vector index constructs a vector-of-pointer constant expr.
 #[test]
 fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), IrError> {
-    Module::with_new("folder-vector-gep", |m| {
-        let i32_ty = m.i32_type();
-        let i64_ty = m.i64_type();
-        let ptr_vec_ty = m.vector_type(m.ptr_type(0).as_type(), 2, false);
-        let index_ty = m.vector_type(i64_ty.as_type(), 2, false);
-        let g = m.add_global("g", i32_ty.const_zero())?;
-        let index = index_ty.const_vector::<ConstantIntValue<'_, i64>, _>([
-            i64_ty.const_int(1_i64),
-            i64_ty.const_int(2_i64),
-        ])?;
+    let m = module_new!("folder-vector-gep")?;
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let ptr_vec_ty = m.vector_type(m.ptr_type(0).as_type(), 2, false);
+    let index_ty = m.vector_type(i64_ty.as_type(), 2, false);
+    let g = m.add_global("g", i32_ty.const_zero())?;
+    let index = index_ty.const_vector::<ConstantIntValue<'_, i64, _>, _>([
+        i64_ty.const_int(1_i64),
+        i64_ty.const_int(2_i64),
+    ])?;
 
-        let folded = ConstantFolder
-            .fold_gep_dyn(
-                i32_ty.as_type(),
-                g.as_global_constant_ptr().into_erased(),
-                &[index.into_erased()],
-                GepNoWrapFlags::empty(),
-            )?
-            .expect("vector GEP constexpr constructed");
-        let folded = Constant::try_from(folded)?;
-        assert_eq!(folded.ty(), ptr_vec_ty.as_type());
-        m.add_global("gep", folded)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains(
-                "@gep = global <2 x ptr> getelementptr (i32, ptr @g, <2 x i64> <i64 1, i64 2>)"
-            ),
-            "{text}"
-        );
-        Ok(())
-    })
+    let folded = ConstantFolder
+        .fold_gep_dyn(
+            i32_ty.as_type(),
+            m.view(g).as_global_constant_ptr().into_erased(),
+            &[index.into_erased()],
+            GepNoWrapFlags::empty(),
+        )?
+        .expect("vector GEP constexpr constructed");
+    let folded = Constant::try_from(folded)?;
+    assert_eq!(folded.ty(), ptr_vec_ty.as_type());
+    m.add_global("gep", folded)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains(
+            "@gep = global <2 x ptr> getelementptr (i32, ptr @g, <2 x i64> <i64 1, i64 2>)"
+        ),
+        "{text}"
+    );
+    Ok(())
 }
 
 /// llvmkit-specific subset of `ConstantFolder.h::FoldGEP` lines 107-118
@@ -307,21 +293,24 @@ fn constant_folder_vector_gep_nonzero_index_builds_vector_expr() -> Result<(), I
 /// element types are unsupported for GEP constant expressions.
 #[test]
 fn constant_folder_gep_declines_scalable_target_ext_source_type() -> Result<(), IrError> {
-    Module::with_new("folder-gep-scalable-target-ext", |m| {
-        let source_ty = m.target_ext_type("aarch64.svcount", Vec::<Type>::new(), Vec::<u32>::new());
-        let ptr = m.ptr_type(0).const_null().as_constant();
+    let m = module_new!("folder-gep-scalable-target-ext")?;
+    let source_ty = m.target_ext_type(
+        "aarch64.svcount",
+        Vec::<Type<'_, _>>::new(),
+        Vec::<u32>::new(),
+    );
+    let ptr = m.ptr_type(0).const_null().as_constant();
 
-        assert_eq!(
-            ConstantFolder.fold_gep_dyn(
-                source_ty.as_type(),
-                ptr.into_erased(),
-                &[],
-                GepNoWrapFlags::empty(),
-            )?,
-            None
-        );
-        Ok(())
-    })
+    assert_eq!(
+        ConstantFolder.fold_gep_dyn(
+            source_ty.as_type(),
+            ptr.into_erased(),
+            &[],
+            GepNoWrapFlags::empty(),
+        )?,
+        None
+    );
+    Ok(())
 }
 
 /// llvmkit-specific direct Rust hook coverage for
@@ -330,31 +319,30 @@ fn constant_folder_gep_declines_scalable_target_ext_source_type() -> Result<(), 
 /// zero-mask shuffles build a scalable mask constant for the fallback constexpr.
 #[test]
 fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), IrError> {
-    Module::with_new("folder-scalable-shuffle", |m| {
-        let i32_ty = m.i32_type();
-        let vec_ty = m.vector_type(i32_ty.as_type(), 2, true);
-        let lhs = vec_ty.const_vector::<ConstantIntValue<'_, i32>, _>([
-            i32_ty.const_int(1_i32),
-            i32_ty.const_int(2_i32),
-        ])?;
-        let rhs = vec_ty.const_vector::<ConstantIntValue<'_, i32>, _>([
-            i32_ty.const_int(3_i32),
-            i32_ty.const_int(4_i32),
-        ])?;
+    let m = module_new!("folder-scalable-shuffle")?;
+    let i32_ty = m.i32_type();
+    let vec_ty = m.vector_type(i32_ty.as_type(), 2, true);
+    let lhs = vec_ty.const_vector::<ConstantIntValue<'_, i32, _>, _>([
+        i32_ty.const_int(1_i32),
+        i32_ty.const_int(2_i32),
+    ])?;
+    let rhs = vec_ty.const_vector::<ConstantIntValue<'_, i32, _>, _>([
+        i32_ty.const_int(3_i32),
+        i32_ty.const_int(4_i32),
+    ])?;
 
-        let folded = ConstantFolder
-            .fold_shuffle_vector_dyn(lhs.into_erased(), rhs.into_erased(), &[0, 0])?
-            .expect("scalable zero-mask shuffle constexpr constructed");
-        let folded = Constant::try_from(folded)?;
-        assert_eq!(folded.ty(), vec_ty.as_type());
-        m.add_global("shuf", folded)?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("@shuf = global <vscale x 2 x i32> shufflevector (<vscale x 2 x i32> <i32 1, i32 2>, <vscale x 2 x i32> <i32 3, i32 4>, <vscale x 2 x i32> zeroinitializer)"),
-            "{text}"
-        );
-        Ok(())
-    })
+    let folded = ConstantFolder
+        .fold_shuffle_vector_dyn(lhs.into_erased(), rhs.into_erased(), &[0, 0])?
+        .expect("scalable zero-mask shuffle constexpr constructed");
+    let folded = Constant::try_from(folded)?;
+    assert_eq!(folded.ty(), vec_ty.as_type());
+    m.add_global("shuf", folded)?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("@shuf = global <vscale x 2 x i32> shufflevector (<vscale x 2 x i32> <i32 1, i32 2>, <vscale x 2 x i32> <i32 3, i32 4>, <vscale x 2 x i32> zeroinitializer)"),
+        "{text}"
+    );
+    Ok(())
 }
 
 /// llvmkit-specific direct Rust hook coverage for
@@ -365,54 +353,53 @@ fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), Ir
 /// use `bitcast`, not an invalid-cast diagnostic.
 #[test]
 fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Result<(), IrError> {
-    Module::with_new("folder-ptr-one-lane-bitcast", |m| {
-        let i32_ty = m.i32_type();
-        let ptr_ty = m.ptr_type(0);
-        let vec_ptr_ty = m.vector_type(ptr_ty.as_type(), 1, false);
-        let g = m.add_global("g", i32_ty.const_zero())?;
-        let scalar = g.as_global_constant_ptr();
+    let m = module_new!("folder-ptr-one-lane-bitcast")?;
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let vec_ptr_ty = m.vector_type(ptr_ty.as_type(), 1, false);
+    let g = m.add_global("g", i32_ty.const_zero())?;
+    let scalar = m.view(g).as_global_constant_ptr();
 
-        let to_vec = ConstantFolder
-            .create_pointer_bitcast_or_addrspace_cast(scalar, vec_ptr_ty.as_type())?
-            .expect("scalar pointer to one-lane pointer vector folds");
-        let to_vec_via_pointer_cast = ConstantFolder
-            .create_pointer_cast(scalar, vec_ptr_ty.as_type())?
-            .expect("pointer cast helper uses bitcast for one-lane vector destination");
+    let to_vec = ConstantFolder
+        .create_pointer_bitcast_or_addrspace_cast(scalar, vec_ptr_ty.as_type())?
+        .expect("scalar pointer to one-lane pointer vector folds");
+    let to_vec_via_pointer_cast = ConstantFolder
+        .create_pointer_cast(scalar, vec_ptr_ty.as_type())?
+        .expect("pointer cast helper uses bitcast for one-lane vector destination");
 
-        let vector = vec_ptr_ty.const_vector::<Constant<'_>, _>([scalar])?;
-        let to_scalar = ConstantFolder
-            .create_pointer_bitcast_or_addrspace_cast(vector.as_constant(), ptr_ty.as_type())?
-            .expect("one-lane pointer vector to scalar pointer folds");
-        let to_scalar_via_pointer_cast = ConstantFolder
-            .create_pointer_cast(vector.as_constant(), ptr_ty.as_type())?
-            .expect("pointer cast helper uses bitcast for scalar destination");
+    let vector = vec_ptr_ty.const_vector::<Constant<'_, _>, _>([scalar])?;
+    let to_scalar = ConstantFolder
+        .create_pointer_bitcast_or_addrspace_cast(vector.as_constant(), ptr_ty.as_type())?
+        .expect("one-lane pointer vector to scalar pointer folds");
+    let to_scalar_via_pointer_cast = ConstantFolder
+        .create_pointer_cast(vector.as_constant(), ptr_ty.as_type())?
+        .expect("pointer cast helper uses bitcast for scalar destination");
 
-        m.add_global("to_vec", Constant::try_from(to_vec)?)?;
-        m.add_global("to_vec_pc", Constant::try_from(to_vec_via_pointer_cast)?)?;
-        m.add_global("to_scalar", Constant::try_from(to_scalar)?)?;
-        m.add_global(
-            "to_scalar_pc",
-            Constant::try_from(to_scalar_via_pointer_cast)?,
-        )?;
-        let text = format!("{m}");
-        assert!(
-            text.contains("@to_vec = global <1 x ptr> bitcast (ptr @g to <1 x ptr>)"),
-            "{text}"
-        );
-        assert!(
-            text.contains("@to_vec_pc = global <1 x ptr> bitcast (ptr @g to <1 x ptr>)"),
-            "{text}"
-        );
-        assert!(
-            text.contains("@to_scalar = global ptr bitcast (<1 x ptr> <ptr @g> to ptr)"),
-            "{text}"
-        );
-        assert!(
-            text.contains("@to_scalar_pc = global ptr bitcast (<1 x ptr> <ptr @g> to ptr)"),
-            "{text}"
-        );
-        Ok(())
-    })
+    m.add_global("to_vec", Constant::try_from(to_vec)?)?;
+    m.add_global("to_vec_pc", Constant::try_from(to_vec_via_pointer_cast)?)?;
+    m.add_global("to_scalar", Constant::try_from(to_scalar)?)?;
+    m.add_global(
+        "to_scalar_pc",
+        Constant::try_from(to_scalar_via_pointer_cast)?,
+    )?;
+    let text = format!("{m}");
+    assert!(
+        text.contains("@to_vec = global <1 x ptr> bitcast (ptr @g to <1 x ptr>)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("@to_vec_pc = global <1 x ptr> bitcast (ptr @g to <1 x ptr>)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("@to_scalar = global ptr bitcast (<1 x ptr> <ptr @g> to ptr)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("@to_scalar_pc = global ptr bitcast (<1 x ptr> <ptr @g> to ptr)"),
+        "{text}"
+    );
+    Ok(())
 }
 
 /// Mirrors `IRBuilder.h::CreateIsNull` -> `CreateICmpEQ` -> `Folder.FoldCmp`
@@ -422,24 +409,23 @@ fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Res
 /// inserted.
 #[test]
 fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Result<(), IrError> {
-    Module::with_new("folder-is-null", |m| {
-        let bool_ty = m.bool_type();
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type_no_params(bool_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let null = PointerValue::try_from(ptr_ty.const_null().into_erased())?;
+    let m = module_new!("folder-is-null")?;
+    let bool_ty = m.bool_type();
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type_no_params(bool_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let null = PointerValue::try_from(ptr_ty.const_null().into_erased())?;
 
-        let result = b.build_is_null(null, "isn")?;
+    let result = b.build_is_null(null, "isn")?;
 
-        assert_eq!(
-            Constant::try_from(result.into_erased())?,
-            bool_ty.const_int(true).as_constant()
-        );
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok(())
-    })
+    assert_eq!(
+        Constant::try_from(b.view(result).into_erased())?,
+        bool_ty.const_int(true).as_constant()
+    );
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    Ok(())
 }
 
 /// Sibling of the `CreateIsNull` fold above for `IRBuilder.h::
@@ -447,24 +433,23 @@ fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Resul
 /// default folder and no instruction is inserted.
 #[test]
 fn constant_folder_folds_is_not_null_of_constant_null_without_instruction() -> Result<(), IrError> {
-    Module::with_new("folder-is-not-null", |m| {
-        let bool_ty = m.bool_type();
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type_no_params(bool_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let null = PointerValue::try_from(ptr_ty.const_null().into_erased())?;
+    let m = module_new!("folder-is-not-null")?;
+    let bool_ty = m.bool_type();
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type_no_params(bool_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let null = PointerValue::try_from(ptr_ty.const_null().into_erased())?;
 
-        let result = b.build_is_not_null(null, "ok")?;
+    let result = b.build_is_not_null(null, "ok")?;
 
-        assert_eq!(
-            Constant::try_from(result.into_erased())?,
-            bool_ty.const_int(false).as_constant()
-        );
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok(())
-    })
+    assert_eq!(
+        Constant::try_from(b.view(result).into_erased())?,
+        bool_ty.const_int(false).as_constant()
+    );
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    Ok(())
 }
 
 /// Mirrors `ConstantFold.cpp::evaluateICmpRelation`: a non-extern-weak
@@ -473,31 +458,30 @@ fn constant_folder_folds_is_not_null_of_constant_null_without_instruction() -> R
 /// to `i1 true`) without materializing instructions.
 #[test]
 fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Result<(), IrError> {
-    Module::with_new("folder-ptr-cmp-global", |m| {
-        let bool_ty = m.bool_type();
-        let i32_ty = m.i32_type();
-        let ptr_ty = m.ptr_type(0);
-        let g = m.add_global("g", i32_ty.const_zero())?;
-        let gp = PointerValue::try_from(g.as_global_constant_ptr().into_erased())?;
-        let fn_ty = m.fn_type_no_params(bool_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let m = module_new!("folder-ptr-cmp-global")?;
+    let bool_ty = m.bool_type();
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let g = m.add_global("g", i32_ty.const_zero())?;
+    let gp = PointerValue::try_from(m.view(g).as_global_constant_ptr().into_erased())?;
+    let fn_ty = m.fn_type_no_params(bool_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let eq = b.build_pointer_cmp(IntPredicate::Eq, gp, ptr_ty.const_null(), "eq")?;
-        let ne = b.build_pointer_cmp(IntPredicate::Ne, gp, ptr_ty.const_null(), "ne")?;
+    let eq = b.build_pointer_cmp(IntPredicate::Eq, gp, ptr_ty.const_null(), "eq")?;
+    let ne = b.build_pointer_cmp(IntPredicate::Ne, gp, ptr_ty.const_null(), "ne")?;
 
-        assert_eq!(
-            Constant::try_from(eq.into_erased())?,
-            bool_ty.const_int(false).as_constant()
-        );
-        assert_eq!(
-            Constant::try_from(ne.into_erased())?,
-            bool_ty.const_int(true).as_constant()
-        );
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok(())
-    })
+    assert_eq!(
+        Constant::try_from(b.view(eq).into_erased())?,
+        bool_ty.const_int(false).as_constant()
+    );
+    assert_eq!(
+        Constant::try_from(b.view(ne).into_erased())?,
+        bool_ty.const_int(true).as_constant()
+    );
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    Ok(())
 }
 
 /// Port of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, InsertExtractElement)`
@@ -505,37 +489,31 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
 /// constants without materializing instructions.
 #[test]
 fn default_builder_folds_insert_extract_element_chain() -> Result<(), IrError> {
-    Module::with_new("folder-insert-extract-element", |m| {
-        let i64_ty = m.i64_type();
-        let vec_ty = m.vector_type(i64_ty.as_type(), 4, false);
-        let fn_ty = m.fn_type_no_params(i64_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let elt1 = i64_ty.const_int(-1_i64);
-        let elt2 = i64_ty.const_int(-2_i64);
+    let m = module_new!("folder-insert-extract-element")?;
+    let i64_ty = m.i64_type();
+    let vec_ty = m.vector_type(i64_ty.as_type(), 4, false);
+    let fn_ty = m.fn_type_no_params(i64_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let elt1 = i64_ty.const_int(-1_i64);
+    let elt2 = i64_ty.const_int(-2_i64);
 
-        let vec = b.build_insert_element::<_, _, i8, _, _>(
-            vec_ty.as_type().get_poison(),
-            elt1,
-            m.i8_type().const_int(1_i8),
-            "v1",
-        )?;
-        let vec = b.build_insert_element::<_, _, i32, _, _>(
-            vec,
-            elt2,
-            m.i32_type().const_int(2_i32),
-            "v2",
-        )?;
-        let x1 = b.build_extract_element::<_, i8, _, _>(vec, m.i8_type().const_int(1_i8), "x1")?;
-        let x2 =
-            b.build_extract_element::<_, i32, _, _>(vec, m.i32_type().const_int(2_i32), "x2")?;
+    let vec = b.build_insert_element::<_, _, i8, _, _>(
+        vec_ty.as_type().get_poison(),
+        elt1,
+        m.i8_type().const_int(1_i8),
+        "v1",
+    )?;
+    let vec =
+        b.build_insert_element::<_, _, i32, _, _>(vec, elt2, m.i32_type().const_int(2_i32), "v2")?;
+    let x1 = b.build_extract_element::<_, i8, _, _>(vec, m.i8_type().const_int(1_i8), "x1")?;
+    let x2 = b.build_extract_element::<_, i32, _, _>(vec, m.i32_type().const_int(2_i32), "x2")?;
 
-        assert_eq!(Constant::try_from(x1)?, elt1.as_constant());
-        assert_eq!(Constant::try_from(x2)?, elt2.as_constant());
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok(())
-    })
+    assert_eq!(Constant::try_from(b.view(x1))?, elt1.as_constant());
+    assert_eq!(Constant::try_from(b.view(x2))?, elt2.as_constant());
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    Ok(())
 }
 
 /// llvmkit-specific subset of `llvm/include/llvm/IR/IRBuilder.h::CreateMul`:
@@ -543,36 +521,35 @@ fn default_builder_folds_insert_extract_element_chain() -> Result<(), IrError> {
 /// the plain binary hook.
 #[test]
 fn custom_folder_no_wrap_hook_receives_mul() -> Result<(), IrError> {
-    Module::with_new("folder-nowrap-hook-mul", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let folded = i32_ty.const_int(99_i32).into_erased();
-        let b = IRBuilder::with_folder(
-            &m,
-            ReturningFolder {
-                result: FolderReturn::NoWrapCall {
-                    opcode: BinaryOpcode::Mul,
-                    has_nuw: true,
-                    has_nsw: false,
-                    value: folded,
-                },
+    let m = module_new!("folder-nowrap-hook-mul")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let folded = i32_ty.const_int(99_i32).into_erased();
+    let b = IRBuilder::with_folder(
+        &m,
+        ReturningFolder {
+            result: FolderReturn::NoWrapCall {
+                opcode: BinaryOpcode::Mul,
+                has_nuw: true,
+                has_nsw: false,
+                value: folded,
             },
-        )
-        .position_at_end(entry);
+        },
+    )
+    .position_at_end(entry);
 
-        let result = b.build_int_mul_with_flags::<i32, _, _, _>(
-            i32_ty.const_int(6_i32),
-            i32_ty.const_int(7_i32),
-            MulFlags::new().nuw(),
-            "mul",
-        )?;
+    let result = b.build_int_mul_with_flags::<i32, _, _, _>(
+        i32_ty.const_int(6_i32),
+        i32_ty.const_int(7_i32),
+        MulFlags::new().nuw(),
+        "mul",
+    )?;
 
-        assert_eq!(result.into_erased(), folded);
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok(())
-    })
+    assert_eq!(b.view(result).into_erased(), folded);
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    Ok(())
 }
 
 /// llvmkit-specific subset of `llvm/include/llvm/IR/IRBuilder.h::CreateShl`:
@@ -580,89 +557,83 @@ fn custom_folder_no_wrap_hook_receives_mul() -> Result<(), IrError> {
 /// the plain binary hook.
 #[test]
 fn custom_folder_no_wrap_hook_receives_shl() -> Result<(), IrError> {
-    Module::with_new("folder-nowrap-hook-shl", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let folded = i32_ty.const_int(123_i32).into_erased();
-        let b = IRBuilder::with_folder(
-            &m,
-            ReturningFolder {
-                result: FolderReturn::NoWrapCall {
-                    opcode: BinaryOpcode::Shl,
-                    has_nuw: true,
-                    has_nsw: true,
-                    value: folded,
-                },
+    let m = module_new!("folder-nowrap-hook-shl")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let folded = i32_ty.const_int(123_i32).into_erased();
+    let b = IRBuilder::with_folder(
+        &m,
+        ReturningFolder {
+            result: FolderReturn::NoWrapCall {
+                opcode: BinaryOpcode::Shl,
+                has_nuw: true,
+                has_nsw: true,
+                value: folded,
             },
-        )
-        .position_at_end(entry);
+        },
+    )
+    .position_at_end(entry);
 
-        let result = b.build_int_shl_with_flags::<i32, _, _, _>(
-            i32_ty.const_int(1_i32),
-            i32_ty.const_int(3_i32),
-            ShlFlags::new().nuw().nsw(),
-            "shl",
-        )?;
+    let result = b.build_int_shl_with_flags::<i32, _, _, _>(
+        i32_ty.const_int(1_i32),
+        i32_ty.const_int(3_i32),
+        ShlFlags::new().nuw().nsw(),
+        "shl",
+    )?;
 
-        assert_eq!(result.into_erased(), folded);
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok(())
-    })
+    assert_eq!(b.view(result).into_erased(), folded);
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    Ok(())
 }
 
 /// Port of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, NoFolderNames)`:
 /// `NoFolder` materializes the instruction and preserves the requested name.
 #[test]
 fn no_folder_names_add_instruction_exactly() -> Result<(), IrError> {
-    Module::with_new("nofolder-add", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let m = module_new!("nofolder-add")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
-        let add = b.build_int_add::<i32, _, _, _>(
-            i32_ty.const_int(1_i32),
-            i32_ty.const_int(2_i32),
-            "add",
-        )?;
+    let add =
+        b.build_int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "add")?;
 
-        let name = add.into_erased().name();
-        assert_eq!(name.as_deref(), Some("add"));
-        assert!(InstructionView::try_from(add.into_erased()).is_ok());
-        assert_eq!(b.insert_block().instructions().len(), 1);
-        Ok(())
-    })
+    let name = b.view(add).into_erased().name();
+    assert_eq!(name.as_deref(), Some("add"));
+    assert!(InstructionView::try_from(b.view(add).into_erased()).is_ok());
+    assert_eq!(b.insert_block().instructions().len(), 1);
+    Ok(())
 }
 
 /// llvmkit-specific subset of `NoFolder.h`: with `NoFolder`, even all-constant
 /// invalid `udiv` operands materialize a real instruction instead of poison.
 #[test]
 fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
-    Module::with_new("nofolder-udiv", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let lhs = i32_ty.const_int(42_i32);
-        let rhs = i32_ty.const_zero();
+    let m = module_new!("nofolder-udiv")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let lhs = i32_ty.const_int(42_i32);
+    let rhs = i32_ty.const_zero();
 
-        let result = b.build_int_udiv::<i32, _, _, _>(lhs, rhs, "q")?;
-        let instruction = InstructionView::try_from(result.into_erased())?;
-        let Some(InstructionKind::UDiv(udiv)) = instruction.kind() else {
-            panic!("expected udiv instruction");
-        };
+    let result = b.build_int_udiv::<i32, _, _, _>(lhs, rhs, "q")?;
+    let instruction = InstructionView::try_from(b.view(result).into_erased())?;
+    let Some(InstructionKind::UDiv(udiv)) = instruction.kind() else {
+        panic!("expected udiv instruction");
+    };
 
-        assert_eq!(udiv.lhs(), lhs.into_erased());
-        assert_eq!(udiv.rhs(), rhs.into_erased());
-        assert!(!udiv.is_exact());
-        assert_eq!(result.into_erased().name().as_deref(), Some("q"));
-        assert_eq!(b.insert_block().instructions().len(), 1);
-        Ok(())
-    })
+    assert_eq!(udiv.lhs(), lhs.into_erased());
+    assert_eq!(udiv.rhs(), rhs.into_erased());
+    assert!(!udiv.is_exact());
+    assert_eq!(b.view(result).into_erased().name().as_deref(), Some("q"));
+    assert_eq!(b.insert_block().instructions().len(), 1);
+    Ok(())
 }
 
 /// llvmkit-specific subset of `IRBuilder.h::CreatePtrToAddr`: the builder
@@ -670,81 +641,81 @@ fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
 /// `ptrtoaddr` cast, not `ptrtoint`.
 #[test]
 fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrError> {
-    Module::with_new("nofolder-ptrtoaddr", |m| {
-        m.set_data_layout("p1:64:64:64:32")?;
-        let i32_ty = m.i32_type();
-        let ptr1_ty = m.ptr_type(1);
-        let fn_ty = m.fn_type(i32_ty, [ptr1_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let ptr: PointerValue = f.param(0)?.try_into()?;
+    let m = module_new!("nofolder-ptrtoaddr")?;
+    m.set_data_layout("p1:64:64:64:32")?;
+    let i32_ty = m.i32_type();
+    let ptr1_ty = m.ptr_type(1);
+    let fn_ty = m.fn_type(i32_ty, [ptr1_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let ptr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
 
-        let result = b.build_ptr_to_addr(ptr, "addr")?;
-        let instruction = InstructionView::try_from(result.into_erased())?;
-        // Match the exact cast opcode through the nested `CastKind`; the
-        // `PtrToAddr` handle exposes a statically pointer-typed `src()`.
-        let Some(InstructionKind::Cast(CastKind::PtrToAddr(cast))) = instruction.kind() else {
-            panic!("expected ptrtoaddr cast instruction");
-        };
+    let result = b.build_ptr_to_addr(ptr, "addr")?;
+    let instruction = InstructionView::try_from(b.view(result).into_erased())?;
+    // Match the exact cast opcode through the nested `CastKind`; the
+    // `PtrToAddr` handle exposes a statically pointer-typed `src()`.
+    let Some(InstructionKind::Cast(CastKind::PtrToAddr(cast))) = instruction.kind() else {
+        panic!("expected ptrtoaddr cast instruction");
+    };
 
-        assert_eq!(cast.opcode(), CastOpcode::PtrToAddr);
-        let src: PointerValue = cast.src();
-        assert_eq!(src.into_erased(), ptr.into_erased());
-        let typed_result: IntValue<IntDyn> = result;
-        assert_eq!(typed_result.ty().bit_width(), 32);
-        assert_eq!(typed_result.into_erased().name().as_deref(), Some("addr"));
-        assert_eq!(b.insert_block().instructions().len(), 1);
-        Ok(())
-    })
+    assert_eq!(cast.opcode(), CastOpcode::PtrToAddr);
+    let src: PointerValue<'_, _> = cast.src();
+    assert_eq!(src.into_erased(), ptr.into_erased());
+    let typed_result: IntValueId<IntDyn, _> = result;
+    assert_eq!(b.view(typed_result).ty().bit_width(), 32);
+    assert_eq!(
+        b.view(typed_result).into_erased().name().as_deref(),
+        Some("addr")
+    );
+    assert_eq!(b.insert_block().instructions().len(), 1);
+    Ok(())
 }
 
 /// llvmkit-specific subset of `NoFolder.h`: with `NoFolder`, an all-constant
 /// pointer compare still materializes a real `icmp` instruction.
 #[test]
 fn no_folder_emits_pointer_cmp_instruction_for_constant_nulls() -> Result<(), IrError> {
-    Module::with_new("nofolder-ptr-cmp", |m| {
-        let bool_ty = m.bool_type();
-        let ptr_ty = m.ptr_type(0);
-        let fn_ty = m.fn_type_no_params(bool_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let null = ptr_ty.const_null();
+    let m = module_new!("nofolder-ptr-cmp")?;
+    let bool_ty = m.bool_type();
+    let ptr_ty = m.ptr_type(0);
+    let fn_ty = m.fn_type_no_params(bool_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let null = ptr_ty.const_null();
 
-        let result = b.build_pointer_cmp(IntPredicate::Eq, null, null, "isn")?;
-        let instruction = InstructionView::try_from(result.into_erased())?;
-        let Some(InstructionKind::ICmp(icmp)) = instruction.kind() else {
-            panic!("expected icmp instruction");
-        };
+    let result = b.build_pointer_cmp(IntPredicate::Eq, null, null, "isn")?;
+    let instruction = InstructionView::try_from(b.view(result).into_erased())?;
+    let Some(InstructionKind::ICmp(icmp)) = instruction.kind() else {
+        panic!("expected icmp instruction");
+    };
 
-        assert_eq!(icmp.predicate(), IntPredicate::Eq);
-        assert_eq!(icmp.lhs(), null.into_erased());
-        assert_eq!(icmp.rhs(), null.into_erased());
-        assert_eq!(result.into_erased().name().as_deref(), Some("isn"));
-        assert_eq!(b.insert_block().instructions().len(), 1);
-        Ok(())
-    })
+    assert_eq!(icmp.predicate(), IntPredicate::Eq);
+    assert_eq!(icmp.lhs(), null.into_erased());
+    assert_eq!(icmp.rhs(), null.into_erased());
+    assert_eq!(b.view(result).into_erased().name().as_deref(), Some("isn"));
+    assert_eq!(b.insert_block().instructions().len(), 1);
+    Ok(())
 }
 
 /// llvmkit-specific subset of `ConstantFolder.h`: the default folder folds
 /// constants only; it does not invent InstSimplify-style `x + 0` for nonconstants.
 #[test]
 fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrError> {
-    Module::with_new("folder-add-zero", |m| {
-        let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        let x: IntValue<i32> = f.param(0)?.try_into()?;
+    let m = module_new!("folder-add-zero")?;
+    let i32_ty = m.i32_type();
+    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-        let result = b.build_int_add(x, i32_ty.const_zero(), "sum")?;
+    let result = b.build_int_add(x, i32_ty.const_zero(), "sum")?;
 
-        assert!(InstructionView::try_from(result.into_erased()).is_ok());
-        assert_eq!(b.insert_block().instructions().len(), 1);
-        Ok(())
-    })
+    assert!(InstructionView::try_from(b.view(result).into_erased()).is_ok());
+    assert_eq!(b.insert_block().instructions().len(), 1);
+    Ok(())
 }
 
 /// `llvmkit-specific subset` of `IRBuilderFolder.h`: custom folders may return
@@ -758,29 +729,28 @@ fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrErro
 /// not say which width was wrong (`Type::require_match`).
 #[test]
 fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
-    Module::with_new("folder-wrong-type", |m| {
-        let i32_ty = m.i32_type();
-        let i64_ty = m.i64_type();
-        let fn_ty = m.fn_type_no_params(i32_ty, false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let folded = i64_ty.const_int(0_i64).into_erased();
-        let b = IRBuilder::with_folder(
-            &m,
-            ReturningFolder {
-                result: FolderReturn::Value(folded),
-            },
-        )
-        .position_at_end(entry);
+    let m = module_new!("folder-wrong-type")?;
+    let i32_ty = m.i32_type();
+    let i64_ty = m.i64_type();
+    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let folded = i64_ty.const_int(0_i64).into_erased();
+    let b = IRBuilder::with_folder(
+        &m,
+        ReturningFolder {
+            result: FolderReturn::Value(folded),
+        },
+    )
+    .position_at_end(entry);
 
-        let err = b
-            .build_int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "sum")
-            .expect_err("wrong-type folded value is rejected");
+    let err = b
+        .build_int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "sum")
+        .expect_err("wrong-type folded value is rejected");
 
-        assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok(())
-    })
+    assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    Ok(())
 }
 
 /// Typed-vs-dyn parity: `build_int_add::<i32>` (typed hook path,
@@ -793,11 +763,12 @@ fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
 /// reach it.
 #[test]
 fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
-    let typed_text = Module::with_new("folder-typed-add", |m| {
+    let typed_text = {
+        let m = module_new!("folder-typed-add")?;
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let result = b.build_int_add::<i32, _, _, _>(
@@ -807,18 +778,19 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
         )?;
 
         assert_eq!(
-            Constant::try_from(result.into_erased())?,
+            Constant::try_from(b.view(result).into_erased())?,
             i32_ty.const_int(16_i32).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok::<_, IrError>(format!("{m}"))
-    })?;
+        format!("{m}")
+    };
 
-    let dyn_text = Module::with_new("folder-typed-add", |m| {
+    let dyn_text = {
+        let m = module_new!("folder-typed-add")?;
         let i32_ty = m.i32_type();
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let result = b.build_int_add_dyn(
@@ -828,12 +800,12 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
         )?;
 
         assert_eq!(
-            Constant::try_from(result)?,
+            Constant::try_from(b.view(result))?,
             i32_ty.const_int(16_i32).as_constant()
         );
         assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok::<_, IrError>(format!("{m}"))
-    })?;
+        format!("{m}")
+    };
 
     assert_eq!(typed_text, dyn_text);
     Ok(())
@@ -846,7 +818,7 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
 /// only the erased `fold_bin_op_dyn` hook, so `build_int_add`'s call to
 /// `fold_int_bin_op` runs the trait's *default* body (`folder.rs`'s
 /// `fold_int_bin_op<W>` -- there is no native override here), which forwards
-/// to `fold_bin_op_dyn` and then re-narrows the erased result by `TypeId`
+/// to `fold_bin_op_dyn` and then re-narrows the erased result by `TypeSlot`
 /// through `narrow_folded_int`. That re-narrow call is where the wrong-width
 /// 64-bit replacement is rejected; the builder's own `accept_folded_int`
 /// type check (`ir_builder.rs`) is never reached on this path, because
@@ -924,7 +896,7 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
         // default body to bypass), so overriding only this hook routes the
         // typed `build_int_add::<IntDyn, ...>` call through
         // `fold_int_bin_op`'s *default* body, which re-narrows this erased
-        // result via `narrow_folded_int`'s TypeId check. That is the seam
+        // result via `narrow_folded_int`'s TypeSlot check. That is the seam
         // this test exercises -- not the builder's separate
         // `accept_folded_int` type check, which only runs behind a typed
         // hook's *native* override (see the struct doc comment above for
@@ -934,7 +906,7 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
 }
 
 /// `llvm/include/llvm/IR/IRBuilderFolder.h` `Value*` folder hook contract:
-/// locks the `IntValue<IntDyn>` builder-side `TypeId` re-check the
+/// locks the `IntValue<IntDyn>` builder-side `TypeSlot` re-check the
 /// typed-folder rewrite (task 5) preserves for erased markers -- an erased
 /// `fold_bin_op_dyn` override that answers with a wrong-width replacement
 /// must still be caught by `narrow_folded_int`'s runtime check rather than
@@ -949,28 +921,27 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
 /// see `Type::require_match`.
 #[test]
 fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
-    Module::with_new("folder-dyn-widen", |m| {
-        let i32_dyn_ty = m.custom_width_int_type(32)?;
-        let i64_dyn_ty = m.custom_width_int_type(64)?;
-        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let folder = WideningDynFolder {
-            replacement: i64_dyn_ty.const_zero().into_erased(),
-        };
-        let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+    let m = module_new!("folder-dyn-widen")?;
+    let i32_dyn_ty = m.custom_width_int_type(32)?;
+    let i64_dyn_ty = m.custom_width_int_type(64)?;
+    let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let folder = WideningDynFolder {
+        replacement: i64_dyn_ty.const_zero().into_erased(),
+    };
+    let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
-        let lhs = i32_dyn_ty.const_int_checked(1_i32)?;
-        let rhs = i32_dyn_ty.const_int_checked(2_i32)?;
+    let lhs = i32_dyn_ty.const_int_checked(1_i32)?;
+    let rhs = i32_dyn_ty.const_int_checked(2_i32)?;
 
-        let err = b
-            .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
-            .expect_err("64-bit fold result for 32-bit IntDyn operands is rejected");
+    let err = b
+        .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
+        .expect_err("64-bit fold result for 32-bit IntDyn operands is rejected");
 
-        assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok(())
-    })
+    assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    Ok(())
 }
 
 /// The executable proof of the reachability claim in [`WideningDynFolder`]'s
@@ -1087,27 +1058,26 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
 /// would let this 64-bit payload reach the IR as a 32-bit add's result.
 #[test]
 fn external_narrow_override_wrong_width_rejected_by_accept_folded_int() -> Result<(), IrError> {
-    Module::with_new("external-narrow-folder", |m| {
-        let i32_dyn_ty = m.custom_width_int_type(32)?;
-        let i64_dyn_ty = m.custom_width_int_type(64)?;
-        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
-        let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
+    let m = module_new!("external-narrow-folder")?;
+    let i32_dyn_ty = m.custom_width_int_type(32)?;
+    let i64_dyn_ty = m.custom_width_int_type(64)?;
+    let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
 
-        let folder = NarrowingTypedFolder {
-            replacement: i64_dyn_ty.const_zero().into_erased(),
-        };
-        let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+    let folder = NarrowingTypedFolder {
+        replacement: i64_dyn_ty.const_zero().into_erased(),
+    };
+    let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
 
-        let lhs = i32_dyn_ty.const_int_checked(1_i32)?;
-        let rhs = i32_dyn_ty.const_int_checked(2_i32)?;
+    let lhs = i32_dyn_ty.const_int_checked(1_i32)?;
+    let rhs = i32_dyn_ty.const_int_checked(2_i32)?;
 
-        let err = b
-            .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
-            .expect_err("64-bit narrow-built fold result for 32-bit IntDyn operands is rejected");
+    let err = b
+        .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
+        .expect_err("64-bit narrow-built fold result for 32-bit IntDyn operands is rejected");
 
-        assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
-        assert_eq!(b.insert_block().instructions().len(), 0);
-        Ok(())
-    })
+    assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
+    assert_eq!(b.insert_block().instructions().len(), 0);
+    Ok(())
 }

@@ -4,7 +4,7 @@
 
 use llvmkit_ir::function_signature::token::ValidatedFunctionParams;
 use llvmkit_ir::{
-    Argument, FunctionParam, IrResult, Module, ModuleBrand, Type, TypeKindLabel, Unverified, Value,
+    Argument, FunctionParam, IrResult, ModuleBrand, ModuleView, Type, TypeKindLabel, Value,
 };
 
 struct Leaker;
@@ -12,7 +12,7 @@ struct Leaker;
 impl FunctionParam for Leaker {
     type Value<'ctx, B: ModuleBrand + 'ctx> = ();
 
-    fn ir_type<'ctx, B>(module: &Module<'ctx, B, Unverified>) -> IrResult<Type<'ctx, B>>
+    fn ir_type<'ctx, B>(module: ModuleView<'ctx, B>) -> IrResult<Type<'ctx, B>>
     where
         B: ModuleBrand + 'ctx,
     {

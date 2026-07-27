@@ -6,13 +6,13 @@
 //! Storage layout decisions:
 //!
 //! - One shared backing arena (`boxcar::Vec<TypeData>`), indexed by
-//!   [`TypeId`]. Boxcar gives stable addresses under `&self`, so reads
+//!   [`TypeSlot`]. Boxcar gives stable addresses under `&self`, so reads
 //!   return plain `&TypeData` without `Ref<...>` wrapper noise.
-//! - Per-kind intern maps (`int_types: HashMap<u32, TypeId>` etc.) instead
-//!   of one big `HashMap<TypeKey, TypeId>` over a giant enum. Keys stay
+//! - Per-kind intern maps (`int_types: HashMap<u32, TypeSlot>` etc.) instead
+//!   of one big `HashMap<TypeKey, TypeSlot>` over a giant enum. Keys stay
 //!   small and hash cheaply, and each constructor knows exactly which map
 //!   to consult — the same way `LLVMContextImpl` operates.
-//! - Singletons (`void`, `half`, ...) live in `Cell<Option<TypeId>>`
+//! - Singletons (`void`, `half`, ...) live in `Cell<Option<TypeSlot>>`
 //!   slots, lazily filled on first request.
 //!
 //! `Context` is `pub(crate)` — the public surface is on
@@ -22,9 +22,10 @@
 use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
+use super::value::ValueUse;
 use crate::constant::{ConstantData, ConstantExprData};
-use crate::r#type::{StructBody, TypeData, TypeId};
-use crate::value::{ValueData, ValueId, ValueKindData};
+use crate::r#type::{StructBody, TypeData, TypeSlot};
+use crate::value::{ValueData, ValueKindData, ValueSlot};
 
 pub(crate) struct Context {
     /// Backing arena. `&TypeData` borrows are stable for the lifetime of
@@ -32,36 +33,36 @@ pub(crate) struct Context {
     types: boxcar::Vec<TypeData>,
 
     // ---- Singleton primitives. Each lazily filled on first request.
-    void: Cell<Option<TypeId>>,
-    label: Cell<Option<TypeId>>,
-    metadata: Cell<Option<TypeId>>,
-    token: Cell<Option<TypeId>>,
-    half: Cell<Option<TypeId>>,
-    bfloat: Cell<Option<TypeId>>,
-    float: Cell<Option<TypeId>>,
-    double: Cell<Option<TypeId>>,
-    fp128: Cell<Option<TypeId>>,
-    x86_fp80: Cell<Option<TypeId>>,
-    ppc_fp128: Cell<Option<TypeId>>,
-    x86_amx: Cell<Option<TypeId>>,
-    wasm_exnref: Cell<Option<TypeId>>,
+    void: Cell<Option<TypeSlot>>,
+    label: Cell<Option<TypeSlot>>,
+    metadata: Cell<Option<TypeSlot>>,
+    token: Cell<Option<TypeSlot>>,
+    half: Cell<Option<TypeSlot>>,
+    bfloat: Cell<Option<TypeSlot>>,
+    float: Cell<Option<TypeSlot>>,
+    double: Cell<Option<TypeSlot>>,
+    fp128: Cell<Option<TypeSlot>>,
+    x86_fp80: Cell<Option<TypeSlot>>,
+    ppc_fp128: Cell<Option<TypeSlot>>,
+    x86_amx: Cell<Option<TypeSlot>>,
+    wasm_exnref: Cell<Option<TypeSlot>>,
 
     // ---- Parameterised — one map per kind. Keys are small structural
     // fingerprints (mirrors LLVMContextImpl).
-    int_types: RefCell<HashMap<u32, TypeId>>,
-    ptr_types: RefCell<HashMap<u32, TypeId>>,
-    array_types: RefCell<HashMap<(TypeId, u64), TypeId>>,
-    fixed_vector_types: RefCell<HashMap<(TypeId, u32), TypeId>>,
-    scalable_vector_types: RefCell<HashMap<(TypeId, u32), TypeId>>,
-    function_types: RefCell<HashMap<FunctionKey, TypeId>>,
-    literal_struct_types: RefCell<HashMap<LiteralStructKey, TypeId>>,
-    named_struct_types: RefCell<HashMap<String, TypeId>>,
+    int_types: RefCell<HashMap<u32, TypeSlot>>,
+    ptr_types: RefCell<HashMap<u32, TypeSlot>>,
+    array_types: RefCell<HashMap<(TypeSlot, u64), TypeSlot>>,
+    fixed_vector_types: RefCell<HashMap<(TypeSlot, u32), TypeSlot>>,
+    scalable_vector_types: RefCell<HashMap<(TypeSlot, u32), TypeSlot>>,
+    function_types: RefCell<HashMap<FunctionKey, TypeSlot>>,
+    literal_struct_types: RefCell<HashMap<LiteralStructKey, TypeSlot>>,
+    named_struct_types: RefCell<HashMap<String, TypeSlot>>,
     /// Insertion-ordered list of named-struct ids, parallel to
     /// `named_struct_types` (which is unordered). Lets the printer emit the
     /// `%Name = type {...}` identity block in declaration order.
-    named_struct_order: RefCell<Vec<TypeId>>,
-    typed_pointer_types: RefCell<HashMap<(TypeId, u32), TypeId>>,
-    target_ext_types: RefCell<HashMap<TargetExtKey, TypeId>>,
+    named_struct_order: RefCell<Vec<TypeSlot>>,
+    typed_pointer_types: RefCell<HashMap<(TypeSlot, u32), TypeSlot>>,
+    target_ext_types: RefCell<HashMap<TargetExtKey, TypeSlot>>,
 
     // ---- Value arena. Like the type arena, `boxcar::Vec` gives
     // stable `&ValueData` borrows under `&self`.
@@ -71,51 +72,61 @@ pub(crate) struct Context {
     // `LLVMContextImpl::IntConstants` / `FPConstants` / etc.
     int_constants: RefCell<IntConstantMap>,
     float_constants: RefCell<FloatConstantMap>,
-    null_constants: RefCell<HashMap<TypeId, ValueId>>,
-    undef_constants: RefCell<HashMap<TypeId, ValueId>>,
-    poison_constants: RefCell<HashMap<TypeId, ValueId>>,
+    null_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
+    undef_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
+    poison_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
     aggregate_constants: RefCell<AggregateConstantMap>,
-    expr_constants: RefCell<HashMap<ConstantExprData, ValueId>>,
-    block_address_constants: RefCell<HashMap<(TypeId, ValueId, ValueId), ValueId>>,
-    dso_local_equivalent_constants: RefCell<HashMap<(TypeId, ValueId), ValueId>>,
-    no_cfi_constants: RefCell<HashMap<(TypeId, ValueId), ValueId>>,
-    token_none_constant: Cell<Option<ValueId>>,
-    target_ext_none_constants: RefCell<HashMap<TypeId, ValueId>>,
+    expr_constants: RefCell<HashMap<ConstantExprData, ValueSlot>>,
+    block_address_constants: RefCell<HashMap<(TypeSlot, ValueSlot, ValueSlot), ValueSlot>>,
+    dso_local_equivalent_constants: RefCell<HashMap<(TypeSlot, ValueSlot), ValueSlot>>,
+    no_cfi_constants: RefCell<HashMap<(TypeSlot, ValueSlot), ValueSlot>>,
+    token_none_constant: Cell<Option<ValueSlot>>,
+    target_ext_none_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
     ptrauth_constants: RefCell<PtrauthConstantMap>,
 }
 
 /// Intern key for [`ConstantData::Int`](crate::constant::ConstantData::Int):
 /// the integer's type plus its little-endian magnitude words.
-type IntConstantMap = HashMap<(TypeId, Box<[u64]>), ValueId>;
+type IntConstantMap = HashMap<(TypeSlot, Box<[u64]>), ValueSlot>;
 /// Intern key for [`ConstantData::Float`](crate::constant::ConstantData::Float):
 /// the float's type plus its IEEE bit pattern (held as a `u128` so
 /// every IEEE width up to `fp128` fits without a discriminant).
-type FloatConstantMap = HashMap<(TypeId, u128), ValueId>;
-type PtrauthConstantMap = HashMap<(TypeId, ValueId, ValueId, ValueId, ValueId, ValueId), ValueId>;
+type FloatConstantMap = HashMap<(TypeSlot, u128), ValueSlot>;
+type PtrauthConstantMap = HashMap<
+    (
+        TypeSlot,
+        ValueSlot,
+        ValueSlot,
+        ValueSlot,
+        ValueSlot,
+        ValueSlot,
+    ),
+    ValueSlot,
+>;
 /// Intern key for `ConstantArray` / `ConstantStruct` / `ConstantVector`
 /// payloads: the aggregate's type plus its element value-ids.
-type AggregateConstantMap = HashMap<(TypeId, Box<[ValueId]>), ValueId>;
+type AggregateConstantMap = HashMap<(TypeSlot, Box<[ValueSlot]>), ValueSlot>;
 
 /// Hashable structural key for a function type. Children are already
-/// interned, so by-value [`TypeId`] equality is exactly LLVM's
+/// interned, so by-value [`TypeSlot`] equality is exactly LLVM's
 /// pointer-equality-after-interning.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct FunctionKey {
-    pub ret: TypeId,
-    pub params: Box<[TypeId]>,
+    pub ret: TypeSlot,
+    pub params: Box<[TypeSlot]>,
     pub is_var_arg: bool,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct LiteralStructKey {
-    pub elements: Box<[TypeId]>,
+    pub elements: Box<[TypeSlot]>,
     pub packed: bool,
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) struct TargetExtKey {
     pub name: String,
-    pub type_params: Box<[TypeId]>,
+    pub type_params: Box<[TypeSlot]>,
     pub int_params: Box<[u32]>,
 }
 
@@ -166,62 +177,62 @@ impl Context {
 
     /// Resolve a type id to its payload. Address is stable for the
     /// lifetime of the owning module.
-    pub(crate) fn type_data(&self, id: TypeId) -> &TypeData {
+    pub(crate) fn type_data(&self, id: TypeSlot) -> &TypeData {
         self.types
             .get(id.arena_index())
-            .expect("invalid TypeId: out of arena range (cross-module mixing?)")
+            .expect("invalid TypeSlot: out of arena range (cross-module mixing?)")
     }
 
-    fn push(&self, data: TypeData) -> TypeId {
+    fn push(&self, data: TypeData) -> TypeSlot {
         let idx = self.types.push(data);
-        // `idx + 1` keeps zero out of `NonZeroU32` so `Option<TypeId>` has
+        // `idx + 1` keeps zero out of `NonZeroU32` so `Option<TypeSlot>` has
         // a niche and is still 4 bytes.
-        TypeId::from_index(idx)
+        TypeSlot::from_index(idx)
     }
 
     // ---- Singleton accessors ----
 
-    pub(crate) fn void(&self) -> TypeId {
+    pub(crate) fn void(&self) -> TypeSlot {
         self.singleton(&self.void, TypeData::Void)
     }
-    pub(crate) fn label(&self) -> TypeId {
+    pub(crate) fn label(&self) -> TypeSlot {
         self.singleton(&self.label, TypeData::Label)
     }
-    pub(crate) fn metadata(&self) -> TypeId {
+    pub(crate) fn metadata(&self) -> TypeSlot {
         self.singleton(&self.metadata, TypeData::Metadata)
     }
-    pub(crate) fn token(&self) -> TypeId {
+    pub(crate) fn token(&self) -> TypeSlot {
         self.singleton(&self.token, TypeData::Token)
     }
-    pub(crate) fn half(&self) -> TypeId {
+    pub(crate) fn half(&self) -> TypeSlot {
         self.singleton(&self.half, TypeData::Half)
     }
-    pub(crate) fn bfloat(&self) -> TypeId {
+    pub(crate) fn bfloat(&self) -> TypeSlot {
         self.singleton(&self.bfloat, TypeData::BFloat)
     }
-    pub(crate) fn float(&self) -> TypeId {
+    pub(crate) fn float(&self) -> TypeSlot {
         self.singleton(&self.float, TypeData::Float)
     }
-    pub(crate) fn double(&self) -> TypeId {
+    pub(crate) fn double(&self) -> TypeSlot {
         self.singleton(&self.double, TypeData::Double)
     }
-    pub(crate) fn fp128(&self) -> TypeId {
+    pub(crate) fn fp128(&self) -> TypeSlot {
         self.singleton(&self.fp128, TypeData::Fp128)
     }
-    pub(crate) fn x86_fp80(&self) -> TypeId {
+    pub(crate) fn x86_fp80(&self) -> TypeSlot {
         self.singleton(&self.x86_fp80, TypeData::X86Fp80)
     }
-    pub(crate) fn ppc_fp128(&self) -> TypeId {
+    pub(crate) fn ppc_fp128(&self) -> TypeSlot {
         self.singleton(&self.ppc_fp128, TypeData::PpcFp128)
     }
-    pub(crate) fn x86_amx(&self) -> TypeId {
+    pub(crate) fn x86_amx(&self) -> TypeSlot {
         self.singleton(&self.x86_amx, TypeData::X86Amx)
     }
-    pub(crate) fn wasm_exnref(&self) -> TypeId {
+    pub(crate) fn wasm_exnref(&self) -> TypeSlot {
         self.singleton(&self.wasm_exnref, TypeData::WasmExnRef)
     }
 
-    fn singleton(&self, slot: &Cell<Option<TypeId>>, data: TypeData) -> TypeId {
+    fn singleton(&self, slot: &Cell<Option<TypeSlot>>, data: TypeData) -> TypeSlot {
         if let Some(id) = slot.get() {
             return id;
         }
@@ -232,7 +243,7 @@ impl Context {
 
     // ---- Parameterised constructors ----
 
-    pub(crate) fn int_type(&self, bits: u32) -> TypeId {
+    pub(crate) fn int_type(&self, bits: u32) -> TypeSlot {
         if let Some(&id) = self.int_types.borrow().get(&bits) {
             return id;
         }
@@ -241,7 +252,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn ptr_type(&self, addr_space: u32) -> TypeId {
+    pub(crate) fn ptr_type(&self, addr_space: u32) -> TypeSlot {
         if let Some(&id) = self.ptr_types.borrow().get(&addr_space) {
             return id;
         }
@@ -250,7 +261,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn array_type(&self, elem: TypeId, n: u64) -> TypeId {
+    pub(crate) fn array_type(&self, elem: TypeSlot, n: u64) -> TypeSlot {
         let key = (elem, n);
         if let Some(&id) = self.array_types.borrow().get(&key) {
             return id;
@@ -260,7 +271,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn fixed_vector_type(&self, elem: TypeId, n: u32) -> TypeId {
+    pub(crate) fn fixed_vector_type(&self, elem: TypeSlot, n: u32) -> TypeSlot {
         let key = (elem, n);
         if let Some(&id) = self.fixed_vector_types.borrow().get(&key) {
             return id;
@@ -270,7 +281,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn scalable_vector_type(&self, elem: TypeId, min: u32) -> TypeId {
+    pub(crate) fn scalable_vector_type(&self, elem: TypeSlot, min: u32) -> TypeSlot {
         let key = (elem, min);
         if let Some(&id) = self.scalable_vector_types.borrow().get(&key) {
             return id;
@@ -282,10 +293,10 @@ impl Context {
 
     pub(crate) fn function_type(
         &self,
-        ret: TypeId,
-        params: Box<[TypeId]>,
+        ret: TypeSlot,
+        params: Box<[TypeSlot]>,
         is_var_arg: bool,
-    ) -> TypeId {
+    ) -> TypeSlot {
         let key = FunctionKey {
             ret,
             params: params.clone(),
@@ -303,7 +314,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn literal_struct_type(&self, elements: Box<[TypeId]>, packed: bool) -> TypeId {
+    pub(crate) fn literal_struct_type(&self, elements: Box<[TypeSlot]>, packed: bool) -> TypeSlot {
         let key = LiteralStructKey {
             elements: elements.clone(),
             packed,
@@ -319,7 +330,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn typed_pointer_type(&self, pointee: TypeId, addr_space: u32) -> TypeId {
+    pub(crate) fn typed_pointer_type(&self, pointee: TypeSlot, addr_space: u32) -> TypeSlot {
         let key = (pointee, addr_space);
         if let Some(&id) = self.typed_pointer_types.borrow().get(&key) {
             return id;
@@ -335,9 +346,9 @@ impl Context {
     pub(crate) fn target_ext_type(
         &self,
         name: String,
-        type_params: Box<[TypeId]>,
+        type_params: Box<[TypeSlot]>,
         int_params: Box<[u32]>,
-    ) -> TypeId {
+    ) -> TypeSlot {
         let key = TargetExtKey {
             name: name.clone(),
             type_params: type_params.clone(),
@@ -355,7 +366,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn get_or_create_named_struct(&self, name: &str) -> (TypeId, bool) {
+    pub(crate) fn get_or_create_named_struct(&self, name: &str) -> (TypeSlot, bool) {
         if let Some(&id) = self.named_struct_types.borrow().get(name) {
             return (id, true);
         }
@@ -370,7 +381,7 @@ impl Context {
         (id, false)
     }
 
-    pub(crate) fn get_named_struct(&self, name: &str) -> Option<TypeId> {
+    pub(crate) fn get_named_struct(&self, name: &str) -> Option<TypeSlot> {
         self.named_struct_types.borrow().get(name).copied()
     }
 
@@ -379,13 +390,13 @@ impl Context {
     /// the `ModuleCore::iter_functions`/`iter_globals` snapshot pattern
     /// (the crate-internal iterators, not the public `functions()`/
     /// `globals()` surface).
-    pub(crate) fn iter_named_structs(&self) -> Vec<TypeId> {
+    pub(crate) fn iter_named_structs(&self) -> Vec<TypeSlot> {
         self.named_struct_order.borrow().clone()
     }
 
     pub(crate) fn set_named_struct_body(
         &self,
-        id: TypeId,
+        id: TypeSlot,
         body: StructBody,
     ) -> crate::IrResult<()> {
         let s = self
@@ -407,13 +418,18 @@ impl Context {
         Ok(())
     }
 
-    fn body_would_be_recursive(&self, target: TypeId, body: &StructBody) -> bool {
+    fn body_would_be_recursive(&self, target: TypeSlot, body: &StructBody) -> bool {
         body.elements
             .iter()
             .any(|&elem| self.type_reaches_type(elem, target, &mut Vec::new()))
     }
 
-    fn type_reaches_type(&self, ty: TypeId, target: TypeId, visited: &mut Vec<TypeId>) -> bool {
+    fn type_reaches_type(
+        &self,
+        ty: TypeSlot,
+        target: TypeSlot,
+        visited: &mut Vec<TypeSlot>,
+    ) -> bool {
         if ty == target {
             return true;
         }
@@ -471,10 +487,10 @@ impl Context {
 
     /// Resolve a value-id to its payload. Address is stable for the
     /// lifetime of the owning module.
-    pub(crate) fn value_data(&self, id: ValueId) -> &ValueData {
+    pub(crate) fn value_data(&self, id: ValueSlot) -> &ValueData {
         match self.values.get(id.arena_index()) {
             Some(d) => d,
-            None => unreachable!("invalid ValueId: out of arena range (cross-module mixing?)"),
+            None => unreachable!("invalid ValueSlot: out of arena range (cross-module mixing?)"),
         }
     }
 
@@ -482,7 +498,7 @@ impl Context {
     /// textual name if present, else its numeric arena index. Used by the
     /// phi edge-add paths' [`IrError::AmbiguousPhiIncoming`](crate::IrError::AmbiguousPhiIncoming)
     /// message, which does not carry a borrowed block handle.
-    pub(crate) fn block_diag_name(&self, id: ValueId) -> String {
+    pub(crate) fn block_diag_name(&self, id: ValueSlot) -> String {
         self.value_data(id)
             .name
             .borrow()
@@ -491,12 +507,12 @@ impl Context {
     }
 
     /// Push a fresh value to the arena and return its id.
-    pub(crate) fn push_value(&self, data: ValueData) -> ValueId {
+    pub(crate) fn push_value(&self, data: ValueData) -> ValueSlot {
         let idx = self.values.push(data);
-        ValueId::from_index(idx)
+        ValueSlot::from_index(idx)
     }
 
-    fn register_constant_operand_uses(&self, user: ValueId) {
+    fn register_constant_operand_uses(&self, user: ValueSlot) {
         let ValueKindData::Constant(data) = &self.value_data(user).kind else {
             return;
         };
@@ -504,16 +520,16 @@ impl Context {
             self.value_data(operand)
                 .use_list
                 .borrow_mut()
-                .push(crate::value::ValueUse::Constant(user));
+                .push(ValueUse::Constant(user));
         });
     }
 
     /// Update the parent block of the instruction stored at `inst_id`.
     /// No-op if the value at that id is not an instruction. Crate-internal:
     /// only the lifecycle primitives in [`crate::instruction`] reach for this.
-    pub(crate) fn set_instruction_parent(&self, inst_id: ValueId, new_parent: ValueId) {
+    pub(crate) fn set_instruction_parent(&self, inst_id: ValueSlot, new_parent: ValueSlot) {
         let data = self.value_data(inst_id);
-        if let crate::value::ValueKindData::Instruction(idata) = &data.kind {
+        if let ValueKindData::Instruction(idata) = &data.kind {
             idata.parent.set(new_parent);
         }
     }
@@ -523,7 +539,7 @@ impl Context {
     // Each kind has its own intern map. Keys are the structural
     // fingerprint matching `LLVMContextImpl`'s constant uniquing.
 
-    pub(crate) fn intern_constant_int(&self, ty: TypeId, words: Box<[u64]>) -> ValueId {
+    pub(crate) fn intern_constant_int(&self, ty: TypeSlot, words: Box<[u64]>) -> ValueSlot {
         let key = (ty, words.clone());
         if let Some(&id) = self.int_constants.borrow().get(&key) {
             return id;
@@ -539,7 +555,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn intern_constant_float(&self, ty: TypeId, bits: u128) -> ValueId {
+    pub(crate) fn intern_constant_float(&self, ty: TypeSlot, bits: u128) -> ValueSlot {
         let key = (ty, bits);
         if let Some(&id) = self.float_constants.borrow().get(&key) {
             return id;
@@ -555,7 +571,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn intern_constant_null(&self, ty: TypeId) -> ValueId {
+    pub(crate) fn intern_constant_null(&self, ty: TypeSlot) -> ValueSlot {
         if let Some(&id) = self.null_constants.borrow().get(&ty) {
             return id;
         }
@@ -570,7 +586,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn intern_constant_undef(&self, ty: TypeId) -> ValueId {
+    pub(crate) fn intern_constant_undef(&self, ty: TypeSlot) -> ValueSlot {
         if let Some(&id) = self.undef_constants.borrow().get(&ty) {
             return id;
         }
@@ -585,7 +601,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn intern_constant_poison(&self, ty: TypeId) -> ValueId {
+    pub(crate) fn intern_constant_poison(&self, ty: TypeSlot) -> ValueSlot {
         if let Some(&id) = self.poison_constants.borrow().get(&ty) {
             return id;
         }
@@ -600,7 +616,11 @@ impl Context {
         id
     }
 
-    pub(crate) fn intern_constant_global_value_ref(&self, ty: TypeId, value: ValueId) -> ValueId {
+    pub(crate) fn intern_constant_global_value_ref(
+        &self,
+        ty: TypeSlot,
+        value: ValueSlot,
+    ) -> ValueSlot {
         self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
@@ -610,7 +630,7 @@ impl Context {
         })
     }
 
-    pub(crate) fn push_constant_block_address_placeholder(&self, ty: TypeId) -> ValueId {
+    pub(crate) fn push_constant_block_address_placeholder(&self, ty: TypeSlot) -> ValueSlot {
         self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
@@ -625,10 +645,10 @@ impl Context {
     /// effectively unique and cheap); a fresh value-arena node each call.
     pub(crate) fn intern_constant_gep_offset(
         &self,
-        ty: TypeId,
-        base_id: ValueId,
+        ty: TypeSlot,
+        base_id: ValueSlot,
         off: i64,
-    ) -> ValueId {
+    ) -> ValueSlot {
         self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
@@ -640,10 +660,10 @@ impl Context {
 
     pub(crate) fn intern_constant_symbol_delta(
         &self,
-        ty: TypeId,
-        hi_id: ValueId,
-        lo_id: ValueId,
-    ) -> ValueId {
+        ty: TypeSlot,
+        hi_id: ValueSlot,
+        lo_id: ValueSlot,
+    ) -> ValueSlot {
         self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
@@ -655,11 +675,11 @@ impl Context {
 
     pub(crate) fn intern_constant_symbol_delta_plus(
         &self,
-        ty: TypeId,
-        hi_id: ValueId,
-        lo_id: ValueId,
+        ty: TypeSlot,
+        hi_id: ValueSlot,
+        lo_id: ValueSlot,
         addend: i64,
-    ) -> ValueId {
+    ) -> ValueSlot {
         self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
@@ -675,9 +695,9 @@ impl Context {
 
     pub(crate) fn intern_constant_aggregate(
         &self,
-        ty: TypeId,
-        elements: Box<[ValueId]>,
-    ) -> ValueId {
+        ty: TypeSlot,
+        elements: Box<[ValueSlot]>,
+    ) -> ValueSlot {
         let key = (ty, elements.clone());
         if let Some(&id) = self.aggregate_constants.borrow().get(&key) {
             return id;
@@ -694,7 +714,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn intern_constant_expr(&self, data: ConstantExprData) -> ValueId {
+    pub(crate) fn intern_constant_expr(&self, data: ConstantExprData) -> ValueSlot {
         if let Some(&id) = self.expr_constants.borrow().get(&data) {
             return id;
         }
@@ -714,10 +734,10 @@ impl Context {
 
     pub(crate) fn intern_constant_block_address(
         &self,
-        ty: TypeId,
-        function: ValueId,
-        block: ValueId,
-    ) -> ValueId {
+        ty: TypeSlot,
+        function: ValueSlot,
+        block: ValueSlot,
+    ) -> ValueSlot {
         let key = (ty, function, block);
         if let Some(&id) = self.block_address_constants.borrow().get(&key) {
             return id;
@@ -735,9 +755,9 @@ impl Context {
 
     pub(crate) fn intern_constant_dso_local_equivalent(
         &self,
-        ty: TypeId,
-        function: ValueId,
-    ) -> ValueId {
+        ty: TypeSlot,
+        function: ValueSlot,
+    ) -> ValueSlot {
         let key = (ty, function);
         if let Some(&id) = self.dso_local_equivalent_constants.borrow().get(&key) {
             return id;
@@ -755,7 +775,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn intern_constant_no_cfi(&self, ty: TypeId, function: ValueId) -> ValueId {
+    pub(crate) fn intern_constant_no_cfi(&self, ty: TypeSlot, function: ValueSlot) -> ValueSlot {
         let key = (ty, function);
         if let Some(&id) = self.no_cfi_constants.borrow().get(&key) {
             return id;
@@ -771,7 +791,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn intern_constant_token_none(&self, ty: TypeId) -> ValueId {
+    pub(crate) fn intern_constant_token_none(&self, ty: TypeSlot) -> ValueSlot {
         if let Some(id) = self.token_none_constant.get() {
             return id;
         }
@@ -786,7 +806,7 @@ impl Context {
         id
     }
 
-    pub(crate) fn intern_constant_target_ext_none(&self, ty: TypeId) -> ValueId {
+    pub(crate) fn intern_constant_target_ext_none(&self, ty: TypeSlot) -> ValueSlot {
         if let Some(&id) = self.target_ext_none_constants.borrow().get(&ty) {
             return id;
         }
@@ -803,13 +823,13 @@ impl Context {
 
     pub(crate) fn intern_constant_ptrauth(
         &self,
-        ty: TypeId,
-        pointer: ValueId,
-        key: ValueId,
-        discriminator: ValueId,
-        addr_discriminator: ValueId,
-        deactivation_symbol: ValueId,
-    ) -> ValueId {
+        ty: TypeSlot,
+        pointer: ValueSlot,
+        key: ValueSlot,
+        discriminator: ValueSlot,
+        addr_discriminator: ValueSlot,
+        deactivation_symbol: ValueSlot,
+    ) -> ValueSlot {
         let map_key = (
             ty,
             pointer,

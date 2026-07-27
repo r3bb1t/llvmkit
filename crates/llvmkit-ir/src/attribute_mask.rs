@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use std::collections::HashSet;
 
 use crate::attributes::{AttrKind, Attribute, AttributeSet};
+use crate::module::ModuleBrand;
 
 #[derive(Debug, Default, Clone)]
 pub struct AttributeMask {
@@ -41,7 +42,7 @@ impl AttributeMask {
 
     /// Add every attribute in `set` to the mask. Mirrors the
     /// `AttributeMask(AttributeSet)` constructor in C++.
-    pub fn add_set(&mut self, set: &AttributeSet<'_>) -> &mut Self {
+    pub fn add_set<B: ModuleBrand>(&mut self, set: &AttributeSet<'_, B>) -> &mut Self {
         for a in set.iter() {
             match a {
                 Attribute::Enum(k) | Attribute::Int(k, _) | Attribute::Type(k, _) => {
@@ -72,7 +73,7 @@ impl AttributeMask {
     }
 
     /// `true` if `attr` is covered by this mask.
-    pub fn contains(&self, attr: &Attribute<'_>) -> bool {
+    pub fn contains<B: ModuleBrand>(&self, attr: &Attribute<'_, B>) -> bool {
         match attr {
             Attribute::Enum(k) | Attribute::Int(k, _) | Attribute::Type(k, _) => {
                 self.contains_kind(*k)
@@ -91,6 +92,7 @@ impl AttributeMask {
 mod tests {
     use super::*;
     use crate::attributes::AttrKind;
+    use crate::module::DynBrand;
 
     /// Mirrors `AttributeMask::addAttribute(Attribute::AttrKind)` /
     /// `contains` in `include/llvm/IR/AttributeMask.h`.
@@ -108,7 +110,7 @@ mod tests {
     /// attributes from a set).
     #[test]
     fn add_set_collects_kinds_and_strings() {
-        let mut s = AttributeSet::<'_>::new();
+        let mut s = AttributeSet::<'_, DynBrand>::new();
         s.add(Attribute::Enum(AttrKind::NoReturn));
         s.add(Attribute::Int(AttrKind::Alignment, 8));
         s.add(Attribute::string("target-features", "+sse2"));
@@ -126,8 +128,8 @@ mod tests {
         let mut m = AttributeMask::new();
         m.add_kind(AttrKind::NoReturn);
         m.add_string("frame-pointer");
-        assert!(m.contains(&Attribute::<'_>::Enum(AttrKind::NoReturn)));
-        assert!(!m.contains(&Attribute::<'_>::Enum(AttrKind::Cold)));
-        assert!(m.contains(&Attribute::<'_>::string("frame-pointer", "all")));
+        assert!(m.contains(&Attribute::<'_, DynBrand>::Enum(AttrKind::NoReturn)));
+        assert!(!m.contains(&Attribute::<'_, DynBrand>::Enum(AttrKind::Cold)));
+        assert!(m.contains(&Attribute::<'_, DynBrand>::string("frame-pointer", "all")));
     }
 }

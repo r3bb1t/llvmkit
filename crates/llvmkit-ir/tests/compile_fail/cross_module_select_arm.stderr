@@ -1,30 +1,44 @@
-error[E0521]: borrowed data escapes outside of closure
-  --> tests/compile_fail/cross_module_select_arm.rs:36:21
+error[E0277]: the trait bound `IntValue<'_, i32, Left>: SelectArm<'_, Right>` is not satisfied
+  --> tests/compile_fail/cross_module_select_arm.rs:51:21
    |
-20 |         let left_arm = left_builder
-   |             -------- `left_arm` declared here, outside of the closure body
-...
-23 |         Module::with_new::<_, _, _>("right", |right| {
-   |                                               ----- `right` is a reference that is only valid in the closure body
-...
-36 |             let _ = builder.build_select(cond, left_arm, right_arm, "bad");
-   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `right` escapes the closure body here
+51 |     let _ = builder.build_select(cond, left_arm, right_arm, "bad");
+   |                     ^^^^^^^^^^^^ the trait `SelectArm<'_, Right>` is not implemented for `IntValue<'_, i32, Left>`
    |
-   = note: requirement occurs because of the type `IntValue<'_, i32, Brand<'_>>`, which makes the generic argument `Brand<'_>` invariant
-   = note: the struct `IntValue<'ctx, W, B>` is invariant over the parameter `B`
-   = help: see <https://doc.rust-lang.org/nomicon/subtyping.html> for more information about variance
+help: the trait `SelectArm<'_, Right>` is not implemented for `IntValue<'_, i32, Left>`
+      but trait `SelectArm<'_, Left>` is implemented for it
+  --> src/ir_builder.rs
+   |
+   | impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'ctx, W, B> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `Left`, found `Right`
+note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_select`
+  --> src/ir_builder.rs
+   |
+   |     pub fn build_select<C, A, Name>(
+   |            ------------ required by a bound in this associated function
+...
+   |         A: SelectArm<'ctx, B> + Copy,
+   |            ^^^^^^^^^^^^^^^^^^ required by this bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_select`
 
-error[E0521]: borrowed data escapes outside of closure
-  --> tests/compile_fail/cross_module_select_arm.rs:32:27
+error[E0308]: mismatched types
+  --> tests/compile_fail/cross_module_select_arm.rs:51:50
    |
-12 |     Module::with_new::<_, _, _>("left", |left| {
-   |                                          ----
-   |                                          |
-   |                                          `left` is a reference that is only valid in the closure body
-   |                                          has type `Module<'1>`
-...
-32 |             let builder = IRBuilder::new_for::<i32>(&right).position_at_end(entry);
-   |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |                           |
-   |                           `left` escapes the closure body here
-   |                           argument requires that `'1` must outlive `'static`
+51 |     let _ = builder.build_select(cond, left_arm, right_arm, "bad");
+   |                     ------------                 ^^^^^^^^^ expected `IntValue<'_, i32, Left>`, found `IntValue<'_, i32, Right>`
+   |                     |
+   |                     arguments to this method are incorrect
+   |
+   = note: expected struct `IntValue<'_, i32, Left>`
+              found struct `IntValue<'_, i32, Right>`
+help: the return type of this call is `IntValue<'_, i32, Right>` due to the type of the argument passed
+  --> tests/compile_fail/cross_module_select_arm.rs:51:13
+   |
+51 |     let _ = builder.build_select(cond, left_arm, right_arm, "bad");
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^---------^^^^^^^^
+   |                                                  |
+   |                                                  this argument influences the return type of `build_select`
+note: method defined here
+  --> src/ir_builder.rs
+   |
+   |     pub fn build_select<C, A, Name>(
+   |            ^^^^^^^^^^^^

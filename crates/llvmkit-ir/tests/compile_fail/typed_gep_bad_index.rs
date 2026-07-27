@@ -12,12 +12,11 @@ struct CpuState {
 }
 
 fn main() -> Result<(), IrError> {
-    Module::with_new("m", |m| {
-        let f = m.add_typed_function::<i64, (), _>("f", Linkage::External)?;
-        let entry = f.append_basic_block(&m, "entry");
-        let b = f.builder(&m).position_at_end(entry);
-        let cpu = b.build_typed_alloca::<CpuState, _>("cpu")?;
-        let _bad = b.build_field_gep::<CpuState, 7, _>(cpu, "x")?;
-        Ok(())
-    })
+    let m = Module::dynamic("m");
+    let f = m.add_typed_function::<i64, (), _>("f", Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = m.view(f).builder(&m).position_at_end(entry);
+    let cpu = b.build_typed_alloca::<CpuState, _>("cpu")?;
+    let _bad = b.build_field_gep::<CpuState, 7, _>(cpu, "x")?;
+    Ok(())
 }

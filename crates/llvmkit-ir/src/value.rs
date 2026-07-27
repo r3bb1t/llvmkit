@@ -14,8 +14,8 @@
 //! - **Storage:** an internal record — one variant per LLVM value
 //!   category (`Constant`, `Argument`, `BasicBlock`, `Function`,
 //!   `Instruction`).
-//! - **Public handle:** [`Value<'ctx, B>`] is `(ValueId, ModuleRef<'ctx, B>,
-//!   ty: TypeId)`. `ty` is cached so `value.ty()` is a thin wrapper
+//! - **Public handle:** [`Value<'ctx, B>`] is `(ValueSlot, ModuleRef<'ctx, B>,
+//!   ty: TypeSlot)`. `ty` is cached so `value.ty()` is a thin wrapper
 //!   instead of an arena round-trip — the type of a value is an
 //!   immutable property by construction.
 //! - **Per-kind handles:** [`IntValue`], [`FloatValue`],
@@ -39,29 +39,39 @@ use super::derived_types::{
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::function::FunctionData;
 use super::instruction::{Instruction, InstructionData, InstructionView, state::Attached};
-use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::struct_body_state::StructBodyDyn;
-use super::r#type::{Type, TypeData, TypeId};
+use super::r#type::{Type, TypeData, TypeSlot};
+use super::value_id::{FloatValueId, IntValueId, PointerValueId, ValueId};
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
+use super::ap_int::ApInt;
 use super::array_len::{ArrLen, ArrLenDyn, ArrayLen};
+use super::constants::ConstantIntValue;
 use super::element::{ElemDyn, StaticVecElem, VecElem};
 use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
+use super::function::FunctionValue;
+use super::global_alias::GlobalAliasData;
+use super::global_ifunc::GlobalIFuncData;
+use super::global_variable::GlobalVariableData;
+use super::inline_asm::InlineAsmData;
 use super::int_width::{IntDyn, IntWidth, Width};
+use super::marker::Dyn;
+use super::metadata::MetadataSlot;
 use super::vec_len::{Len, LenDyn, VecLen};
 
 // --------------------------------------------------------------------------
-// ValueId
+// ValueSlot
 // --------------------------------------------------------------------------
 
 /// Stable index into the value arena. The numeric contents are opaque; callers
 /// may store and pass the handle back to this crate, but cannot construct one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ValueId(NonZeroUsize);
+pub struct ValueSlot(NonZeroUsize);
 
-impl ValueId {
+impl ValueSlot {
     /// Build from a 0-based arena index.
     #[inline]
     pub(super) fn from_index(index: usize) -> Self {
@@ -72,7 +82,7 @@ impl ValueId {
         match NonZeroUsize::new(raw) {
             Some(nz) => Self(nz),
             None => unreachable!(
-                "ValueId arena exhausted: usize::MAX values allocated, exceeds addressable memory"
+                "ValueSlot arena exhausted: usize::MAX values allocated, exceeds addressable memory"
             ),
         }
     }
@@ -97,7 +107,7 @@ impl ValueId {
 /// kind needs without hung-off operands.
 #[derive(Debug)]
 pub(super) struct ValueData {
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) name: RefCell<Option<String>>,
     pub(super) debug_loc: Option<DebugLoc>,
     pub(super) kind: ValueKindData,
@@ -115,13 +125,13 @@ pub(super) struct ValueData {
 
 /// One reverse use-list edge for a value. Instruction operands, constants,
 /// metadata nodes, and debug records have different mutation paths, so the
-/// edge kind is part of the stored fact rather than inferred from a `ValueId`.
+/// edge kind is part of the stored fact rather than inferred from a `ValueSlot`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum ValueUse {
-    Instruction(ValueId),
-    Constant(ValueId),
-    Metadata(crate::metadata::MetadataId),
-    DebugRecord { inst: ValueId, record: usize },
+    Instruction(ValueSlot),
+    Constant(ValueSlot),
+    Metadata(MetadataSlot),
+    DebugRecord { inst: ValueSlot, record: usize },
 }
 
 /// Discriminator over the closed value-category set.
@@ -134,29 +144,29 @@ pub(super) enum ValueUse {
 pub(super) enum ValueKindData {
     Constant(ConstantData),
     Argument {
-        parent_fn: ValueId,
+        parent_fn: ValueSlot,
         slot: u32,
     },
     BasicBlock(BasicBlockData),
     Function(Box<FunctionData>),
     Instruction(InstructionData),
-    GlobalAlias(crate::global_alias::GlobalAliasData),
-    GlobalIFunc(crate::global_ifunc::GlobalIFuncData),
-    GlobalVariable(crate::global_variable::GlobalVariableData),
+    GlobalAlias(GlobalAliasData),
+    GlobalIFunc(GlobalIFuncData),
+    GlobalVariable(GlobalVariableData),
     /// A metadata node used in a value context. Mirrors LLVM's
     /// `MetadataAsValue` (`llvm/include/llvm/IR/Metadata.h`): it lets a
     /// metadata node (e.g. `!0`) appear where a `Value` is expected,
     /// such as a `call` argument of `metadata` type. Like a constant,
     /// it is context-global — it has no function-local SSA definition
     /// and is never assigned a `%N` slot.
-    MetadataAsValue(crate::metadata::MetadataId),
+    MetadataAsValue(MetadataSlot),
     /// An inline-assembly value used as a `call` callee. Mirrors LLVM's
     /// `InlineAsm` (`llvm/include/llvm/IR/InlineAsm.h`). Like a
     /// `Function` or `Constant`, it is context-global — it has no
     /// function-local SSA definition and is never assigned a `%N` slot;
     /// a `call` whose callee is one of these prints the `asm ...` form
     /// instead of an `@name` operand.
-    InlineAsm(crate::inline_asm::InlineAsmData),
+    InlineAsm(InlineAsmData),
 }
 
 // --------------------------------------------------------------------------
@@ -166,18 +176,18 @@ pub(super) enum ValueKindData {
 /// Erased public handle for any IR value.
 ///
 /// Three-field record:
-/// - `id: ValueId` — arena index.
+/// - `id: ValueSlot` — arena index.
 /// - `module: ModuleRef<'ctx>` — brand carrier; equality routes through
 ///   the process-global [`ModuleId`](crate::ModuleId).
-/// - `ty: TypeId` — cached type. Values do not change type, so caching
+/// - `ty: TypeSlot` — cached type. Values do not change type, so caching
 ///   here saves an arena lookup on every `value.ty()` access.
 ///
 /// Equality and hashing compare the branded module reference by `ModuleId`,
 /// so the handle remains cheap to copy and store in maps.
-pub struct Value<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct Value<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 impl<B: ModuleBrand> Clone for Value<'_, B> {
@@ -220,7 +230,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// Construct from raw parts. Crate-internal: only the value-arena
     /// constructors hand these out.
     #[inline]
-    pub(super) fn from_parts<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_parts<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -246,8 +256,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// Opaque arena id for structured side tables such as use-list order
     /// records.
     #[inline]
-    pub fn id(self) -> ValueId {
+    pub fn slot(self) -> ValueSlot {
         self.id
+    }
+
+    /// Storable, module-tagged [`ValueId`] for this value (0.0.4).
+    ///
+    /// Unlike [`slot`](Self::slot) — which returns the bare, untagged arena
+    /// [`ValueSlot`] — the returned [`ValueId`] carries the owning
+    /// [`ModuleId`](crate::ModuleId) and can be resolved back into a handle
+    /// with [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view).
+    #[inline]
+    pub fn id(self) -> ValueId<B> {
+        ValueId::from_raw(self.module.id(), self.id)
     }
 
     /// Cached IR type of this value.
@@ -263,13 +285,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     }
 
     /// Set the textual name. Mirrors `Value::setName`.
-    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        if module_token.id() != self.module.id() {
-            return;
-        }
+        assert_eq!(
+            module_token.id(),
+            self.module.id(),
+            "set_name: the module token belongs to a different module than this value"
+        );
         let requested = name.into();
         if self.ty().is_void() {
             self.set_name_internal(None);
@@ -277,10 +301,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
         }
         if let Some(parent_fn_id) = self.local_parent_function_id() {
             let parent_fn =
-                crate::function::FunctionValue::<crate::marker::Dyn, B>::from_parts_unchecked(
-                    parent_fn_id,
-                    self.module,
-                );
+                FunctionValue::<Dyn, B>::from_parts_unchecked(parent_fn_id, self.module);
             parent_fn.set_local_value_name(self.id, Some(requested.as_str()));
             return;
         }
@@ -290,20 +311,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     }
 
     /// Clear the textual name.
-    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
-        if module_token.id() != self.module.id() {
-            return;
-        }
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
+        assert_eq!(
+            module_token.id(),
+            self.module.id(),
+            "clear_name: the module token belongs to a different module than this value"
+        );
         if self.ty().is_void() {
             self.set_name_internal(None);
             return;
         }
         if let Some(parent_fn_id) = self.local_parent_function_id() {
             let parent_fn =
-                crate::function::FunctionValue::<crate::marker::Dyn, B>::from_parts_unchecked(
-                    parent_fn_id,
-                    self.module,
-                );
+                FunctionValue::<Dyn, B>::from_parts_unchecked(parent_fn_id, self.module);
             parent_fn.set_local_value_name(self.id, None);
             return;
         }
@@ -319,7 +339,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
         *self.data().name.borrow_mut() = name;
     }
 
-    pub(super) fn local_parent_function_id(self) -> Option<ValueId> {
+    pub(super) fn local_parent_function_id(self) -> Option<ValueSlot> {
         match &self.data().kind {
             ValueKindData::Argument { parent_fn, .. } => Some(*parent_fn),
             ValueKindData::BasicBlock(data) => *data.parent.borrow(),
@@ -394,7 +414,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     + FusedIterator
     + 'ctx {
         let module = self.module;
-        let snapshot: Vec<ValueId> = self
+        let snapshot: Vec<ValueSlot> = self
             .data()
             .use_list
             .borrow()
@@ -437,10 +457,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// Mirrors reading a `ConstantInt`'s `getValue()`; backs the matcher
     /// constant predicates (`m_zero`, `m_all_ones`, `m_ap_int`, ...).
     /// Scalar only — vector splats are not unwrapped here.
-    pub fn as_const_int(self) -> Option<crate::ap_int::ApInt> {
+    pub fn as_const_int(self) -> Option<ApInt> {
         let constant = Constant::try_from(self).ok()?;
-        let int: crate::constants::ConstantIntValue<'_, crate::int_width::IntDyn, B> =
-            crate::constants::ConstantIntValue::try_from(constant).ok()?;
+        let int: ConstantIntValue<'_, IntDyn, B> = ConstantIntValue::try_from(constant).ok()?;
         Some(int.ap_int())
     }
 }
@@ -458,7 +477,7 @@ pub enum ValueCategory {
     InlineAsm,
 }
 
-impl From<ValueCategory> for crate::error::ValueCategoryLabel {
+impl From<ValueCategory> for ValueCategoryLabel {
     fn from(c: ValueCategory) -> Self {
         match c {
             ValueCategory::Constant => Self::Constant,
@@ -503,35 +522,33 @@ pub(super) mod sealed {
 ///
 /// Sealed: the closed set of LLVM value categories is part of the IR
 /// spec, not an extension point.
-pub trait IsValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
-    sealed::Sealed + Copy + Sized + core::fmt::Debug
-{
+pub trait IsValue<'ctx, B: ModuleBrand>: sealed::Sealed + Copy + Sized + core::fmt::Debug {
     /// Widen to the erased [`Value`] handle.
     fn into_erased(self) -> Value<'ctx, B>;
 
     /// Opaque arena id of the underlying value. Every handle shares the
-    /// id of its erased [`Value`], so `x.id()` replaces the
+    /// id of its erased [`Value`], so `x.slot()` replaces the
     /// `x.into_erased().id` widen-then-project chain.
     #[inline]
-    fn id(self) -> ValueId {
+    fn slot(self) -> ValueSlot {
         self.into_erased().id
     }
 }
 
 /// Sealed accessor trait: anything that has an IR type. Implemented by
 /// every value handle and every type handle.
-pub trait Typed<'ctx, B: ModuleBrand = Brand<'ctx>>: sealed::Sealed {
+pub trait Typed<'ctx, B: ModuleBrand>: sealed::Sealed {
     fn ty(self) -> Type<'ctx, B>;
 }
 
 /// Sealed accessor trait: anything that exposes an optional textual
 /// name. Implemented by every value handle.
-pub trait HasName<'ctx, B: ModuleBrand = Brand<'ctx>>: sealed::Sealed {
+pub trait HasName<'ctx, B: ModuleBrand>: sealed::Sealed {
     fn name(self) -> Option<String>;
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>;
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>);
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>);
 }
 
 /// Sealed accessor trait: anything that carries an optional
@@ -559,14 +576,14 @@ impl<'ctx, B: ModuleBrand> HasName<'ctx, B> for Value<'ctx, B> {
         Value::name(self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         Value::set_name(self, module_token, name);
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         Value::clear_name(self, module_token);
     }
 }
@@ -576,6 +593,87 @@ impl<B: ModuleBrand> HasDebugLoc for Value<'_, B> {
         Value::debug_loc(self)
     }
 }
+
+// --------------------------------------------------------------------------
+// IntoErasedValue: operand input at an erased-by-design slot
+// --------------------------------------------------------------------------
+
+/// Inputs accepted where a builder wants an **erased** [`Value`] operand.
+///
+/// The erased sibling of [`IntoIntValue`](crate::IntoIntValue) /
+/// [`IntoFloatValue`](crate::IntoFloatValue) / [`IntoPointerValue`]: it is the
+/// bound on every builder operand whose declared parameter type is the erased
+/// [`Value`] — `build_store`'s stored value, `build_freeze`'s operand, the
+/// aggregate/vector element slots, the call-argument lists, and so on. Where
+/// those three *narrow* to a pinned IR type, this one only widens, so it
+/// accepts strictly more:
+///
+/// - every value **handle** — the whole [`IsValue`] family — for which the
+///   `module` argument is unused and the lift is infallible; and
+/// - the storable **ids** ([`ValueId`], [`IntValueId`], [`FloatValueId`],
+///   [`PointerValueId`], [`FunctionId`](crate::FunctionId) and
+///   [`GlobalId`](crate::GlobalId)), which resolve against `module` and report
+///   [`IrError::ForeignValueId`] for an id minted by a different module.
+///
+/// The *erased* [`ValueId`] is admitted here and **nowhere else**: an operand
+/// slot bound by this trait is erased by design (its parameter type is
+/// [`Value`]), so erased-in / erased-out is not the silent erased -> typed
+/// narrowing that [`IntoIntValue`](crate::IntoIntValue) and friends forbid.
+/// Narrowing an erased id stays spelled —
+/// [`Module::try_view`](crate::Module::try_view) or `TryFrom`.
+///
+/// The trait is **sealed**, and deliberately carries *no* blanket impl over
+/// [`IsValue`]: a blanket keyed on a trait bound would conflict with the
+/// concrete id impls, because rustc has no negative reasoning with which to
+/// prove `IntValueId: !IsValue`. Every implementor is therefore spelled out,
+/// mostly by the handle-declaring macros via the crate-internal
+/// `impl_into_erased_value_for_handle!`.
+pub trait IntoErasedValue<'ctx, B: ModuleBrand>: Sized + into_erased_value_sealed::Sealed {
+    #[doc(hidden)]
+    fn into_erased_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>>;
+}
+
+/// Seals [`IntoErasedValue`] to the value handles plus the storable id family.
+///
+/// `pub(crate)` so each impl can live beside the type it is for — the
+/// per-kind handles next to their handle, the id family in `value_id.rs` —
+/// while the trait inside stays crate-private, so the seal holds.
+pub(crate) mod into_erased_value_sealed {
+    pub trait Sealed {}
+}
+
+/// Implement [`IntoErasedValue`] for one or more value **handles**, whose lift
+/// is the infallible [`IsValue::into_erased`] widen (the `module` argument is
+/// unused). Optional square-bracketed marker parameters are emitted ahead of
+/// the brand `B`, matching how every handle orders its generics
+/// (`IntValue<'ctx, W, B>`, `ArrayValue<'ctx, E, L, B>`, ...).
+///
+/// This exists because [`IntoErasedValue`] cannot be blanket-implemented over
+/// [`IsValue`] without colliding with the id-family impls; see the trait docs.
+macro_rules! impl_into_erased_value_for_handle {
+    ($( $name:ident $([$($mk:ident : $mkb:path),+ $(,)?])? ),+ $(,)?) => { $(
+        impl<'ctx, $($($mk: $mkb,)+)? B: $crate::module::ModuleBrand + 'ctx>
+            $crate::value::into_erased_value_sealed::Sealed
+            for $name<'ctx, $($($mk,)+)? B>
+        {
+        }
+        impl<'ctx, $($($mk: $mkb,)+)? B: $crate::module::ModuleBrand + 'ctx>
+            $crate::value::IntoErasedValue<'ctx, B>
+            for $name<'ctx, $($($mk,)+)? B>
+        {
+            #[inline]
+            fn into_erased_value(
+                self,
+                _module: $crate::module::ModuleRef<'ctx, B>,
+            ) -> $crate::error::IrResult<$crate::value::Value<'ctx, B>> {
+                Ok($crate::value::IsValue::into_erased(self))
+            }
+        }
+    )+ };
+}
+pub(crate) use impl_into_erased_value_for_handle;
+
+impl_into_erased_value_for_handle!(Value);
 
 // --------------------------------------------------------------------------
 // Per-kind value handles
@@ -588,16 +686,17 @@ macro_rules! decl_value_handle {
     (
         $(#[$attr:meta])*
         $name:ident,
+        $id:ident,
         $type_label:ident,
         $type_handle:ident,
         type_predicate $pred:expr
     ) => {
         $(#[$attr])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub struct $name<'ctx, B: ModuleBrand = Brand<'ctx>> {
-            pub(super) id: ValueId,
+        pub struct $name<'ctx, B: ModuleBrand> {
+            pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
-            pub(super) ty: TypeId,
+            pub(super) ty: TypeSlot,
         }
 
         impl<'ctx, B: ModuleBrand + 'ctx> $name<'ctx, B> {
@@ -605,6 +704,14 @@ macro_rules! decl_value_handle {
             #[inline]
             pub fn into_erased(self) -> Value<'ctx, B> {
                 Value { id: self.id, module: self.module, ty: self.ty }
+            }
+
+            /// Storable, module-tagged id for this value (0.0.4),
+            /// resolvable via [`Module::view`](crate::Module::view) /
+            /// [`Module::try_view`](crate::Module::try_view).
+            #[inline]
+            pub fn id(self) -> $id<B> {
+                $id::from_raw(self.module.id(), self.id)
             }
 
             /// Owning module reference.
@@ -625,7 +732,7 @@ macro_rules! decl_value_handle {
             }
 
             /// Set the textual name.
-            pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+            pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
             where
                 Name: Into<String>,
             {
@@ -633,7 +740,7 @@ macro_rules! decl_value_handle {
             }
 
             /// Clear the textual name.
-            pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+            pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
                 self.into_erased().clear_name(module_token);
             }
 
@@ -657,6 +764,7 @@ macro_rules! decl_value_handle {
             #[inline]
             fn into_erased(self) -> Value<'ctx, B> { Self::into_erased(self) }
         }
+        impl_into_erased_value_for_handle!($name);
         impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for $name<'ctx, B> {
             #[inline]
             fn ty(self) -> Type<'ctx, B> {
@@ -667,14 +775,14 @@ macro_rules! decl_value_handle {
             #[inline]
             fn name(self) -> Option<String> { Self::name(self) }
             #[inline]
-            fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+            fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
             where
                 Name: Into<String>,
             {
                 Self::set_name(self, module_token, name)
             }
             #[inline]
-            fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+            fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
                 Self::clear_name(self, module_token)
             }
         }
@@ -745,7 +853,7 @@ macro_rules! decl_value_handle {
 // carry their width / kind markers.
 decl_value_handle!(
     /// Value whose type is a (opaque) pointer.
-    PointerValue, Pointer, PointerType,
+    PointerValue, PointerValueId, Pointer, PointerType,
     type_predicate |d| matches!(d, TypeData::Pointer { .. })
 );
 impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
@@ -791,15 +899,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerValue<'ctx, B> {
 /// `ArrLen`/`ArrLenDyn` marker family). `ArrayValue<'ctx>` (both markers
 /// erased) is the dynamic handle; `ArrayValue<'ctx, i32, ArrLen<4>>` is a
 /// statically typed `[4 x i32]`.
-pub struct ArrayValue<
-    'ctx,
-    E: VecElem = ElemDyn,
-    L: ArrayLen = ArrLenDyn,
-    B: ModuleBrand = Brand<'ctx>,
-> {
-    pub(super) id: ValueId,
+pub struct ArrayValue<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
 }
@@ -868,14 +971,14 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> ArrayValue<'ctx, E, L
         self.into_erased().name()
     }
     /// Set the textual name.
-    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         self.into_erased().set_name(module_token, name);
     }
     /// Clear the textual name.
-    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
     /// Optional debug-location.
@@ -936,6 +1039,7 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
         Self::into_erased(self)
     }
 }
+impl_into_erased_value_for_handle!(ArrayValue[E: VecElem, L: ArrayLen]);
 impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> Typed<'ctx, B>
     for ArrayValue<'ctx, E, L, B>
 {
@@ -952,14 +1056,14 @@ impl<'ctx, E: VecElem, L: ArrayLen, B: ModuleBrand + 'ctx> HasName<'ctx, B>
         Self::name(self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         Self::set_name(self, module_token, name)
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         Self::clear_name(self, module_token)
     }
 }
@@ -1090,10 +1194,10 @@ impl<'ctx, E: VecElem, const N: u64, B: ModuleBrand + 'ctx> From<ArrayValue<'ctx
 
 /// Value whose type is a struct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct StructValue<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct StructValue<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
@@ -1151,7 +1255,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
     }
 
     /// Set the textual name.
-    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
@@ -1159,7 +1263,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> StructValue<'ctx, B> {
     }
 
     /// Clear the textual name.
-    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
 
@@ -1185,6 +1289,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for StructValue<'ctx, B> {
         Self::into_erased(self)
     }
 }
+impl_into_erased_value_for_handle!(StructValue);
 impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for StructValue<'ctx, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
@@ -1197,14 +1302,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for StructValue<'ctx, B> {
         Self::name(self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         Self::set_name(self, module_token, name)
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         Self::clear_name(self, module_token)
     }
 }
@@ -1275,11 +1380,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Instruction<'ctx, Attached, B>> for St
 /// [`IntValue`]'s width marker. `VectorValue<'ctx>` (both markers erased)
 /// is the dynamic handle; `VectorValue<'ctx, i32, Len<4>>` is a statically
 /// typed `<4 x i32>`.
-pub struct VectorValue<'ctx, E: VecElem = ElemDyn, L: VecLen = LenDyn, B: ModuleBrand = Brand<'ctx>>
-{
-    pub(super) id: ValueId,
+pub struct VectorValue<'ctx, E: VecElem, L: VecLen, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _e: PhantomData<E>,
     pub(super) _l: PhantomData<L>,
 }
@@ -1375,14 +1479,14 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorValue<'ctx, E, L,
         self.into_erased().name()
     }
     /// Set the textual name.
-    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         self.into_erased().set_name(module_token, name);
     }
     /// Clear the textual name.
-    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
     /// Optional debug-location.
@@ -1415,6 +1519,7 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> IsValue<'ctx, B>
         Self::into_erased(self)
     }
 }
+impl_into_erased_value_for_handle!(VectorValue[E: VecElem, L: VecLen]);
 impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> Typed<'ctx, B>
     for VectorValue<'ctx, E, L, B>
 {
@@ -1431,14 +1536,14 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> HasName<'ctx, B>
         Self::name(self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         Self::set_name(self, module_token, name)
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         Self::clear_name(self, module_token)
     }
 }
@@ -1571,7 +1676,11 @@ decl_value_handle!(
     /// Value whose type is a function signature. Mostly seen as a
     /// `FunctionValue` operand, but the concrete category is checked
     /// elsewhere; this handle only refines the type, not the category.
-    FunctionTypedValue, Function, FunctionType,
+    ///
+    /// Has no dedicated id family (it refines only the *type*, not the value
+    /// category), so [`id`](FunctionTypedValue::id) mints the erased
+    /// [`ValueId`].
+    FunctionTypedValue, ValueId, Function, FunctionType,
     type_predicate |d| matches!(d, TypeData::Function { .. })
 );
 
@@ -1584,10 +1693,10 @@ decl_value_handle!(
 /// Value whose IR type is `iN`. The `W: IntWidth` marker pins the
 /// bit-width at the type level, so the IRBuilder can reject mismatched
 /// widths at compile time.
-pub struct IntValue<'ctx, W: IntWidth, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct IntValue<'ctx, W: IntWidth, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _w: PhantomData<W>,
 }
 
@@ -1689,6 +1798,14 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
             ty: self.ty,
         }
     }
+    /// Storable, module-tagged [`IntValueId<W>`] for this value (0.0.4),
+    /// resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view). Preserves the width
+    /// marker `W`.
+    #[inline]
+    pub fn id(self) -> IntValueId<W, B> {
+        IntValueId::from_raw(self.module.id(), self.id)
+    }
     /// Owning module reference.
     #[inline]
     pub fn module(self) -> ModuleView<'ctx, B> {
@@ -1704,14 +1821,14 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
         self.into_erased().name()
     }
     /// Set the textual name.
-    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         self.into_erased().set_name(module_token, name);
     }
     /// Clear the textual name.
-    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
     /// Optional debug-location.
@@ -1747,6 +1864,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for IntValue<'ct
         Self::into_erased(self)
     }
 }
+impl_into_erased_value_for_handle!(IntValue[W: IntWidth]);
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Typed<'ctx, B> for IntValue<'ctx, W, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
@@ -1759,14 +1877,14 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> HasName<'ctx, B> for IntValue<'ct
         Self::name(self)
     }
     #[inline]
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         Self::set_name(self, module_token, name)
     }
     #[inline]
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         Self::clear_name(self, module_token)
     }
 }
@@ -1978,10 +2096,10 @@ impl<'ctx, B: ModuleBrand + 'ctx, const N: u32> From<IntValue<'ctx, Width<N>, B>
 // --------------------------------------------------------------------------
 
 /// Value whose IR type is an IEEE / non-IEEE float.
-pub struct FloatValue<'ctx, K: FloatKind, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct FloatValue<'ctx, K: FloatKind, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
     pub(super) _k: PhantomData<K>,
 }
 
@@ -2051,6 +2169,14 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
             ty: self.ty,
         }
     }
+    /// Storable, module-tagged [`FloatValueId<K>`] for this value (llvmkit
+    /// 2.0), resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view). Preserves the
+    /// float-kind marker `K`.
+    #[inline]
+    pub fn id(self) -> FloatValueId<K, B> {
+        FloatValueId::from_raw(self.module.id(), self.id)
+    }
     #[inline]
     pub fn module(self) -> ModuleView<'ctx, B> {
         ModuleView::new(self.module.module())
@@ -2062,13 +2188,13 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatValue<'ctx, K, B> {
     pub fn name(self) -> Option<String> {
         self.into_erased().name()
     }
-    pub fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    pub fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         self.into_erased().set_name(module_token, name);
     }
-    pub fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         self.into_erased().clear_name(module_token);
     }
     #[inline]
@@ -2101,6 +2227,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FloatValue<
         Self::into_erased(self)
     }
 }
+impl_into_erased_value_for_handle!(FloatValue[K: FloatKind]);
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FloatValue<'ctx, K, B> {
     #[inline]
     fn ty(self) -> Type<'ctx, B> {
@@ -2111,13 +2238,13 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> HasName<'ctx, B> for FloatValue<
     fn name(self) -> Option<String> {
         Self::name(self)
     }
-    fn set_name<Name>(self, module_token: &Module<'ctx, B, Unverified>, name: Name)
+    fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
         Self::set_name(self, module_token, name)
     }
-    fn clear_name(self, module_token: &Module<'ctx, B, Unverified>) {
+    fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
         Self::clear_name(self, module_token)
     }
 }
@@ -2275,7 +2402,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Value<'ctx, B> {
 /// The trait is **sealed**. An erased [`Value`] / `Argument` /
 /// `Instruction` no longer lifts silently: narrow it explicitly with
 /// [`PointerValue::try_from`] (or [`IsValue`]-erased `_dyn` builders).
-pub trait IntoPointerValue<'ctx, B: ModuleBrand = Brand<'ctx>>:
+pub trait IntoPointerValue<'ctx, B: ModuleBrand>:
     Sized + into_pointer_value_sealed::Sealed
 {
     fn into_pointer_value(self, module: ModuleRef<'ctx, B>) -> IrResult<PointerValue<'ctx, B>>;

@@ -1,11 +1,488 @@
 # Changelog
 
 Notable, user-visible changes to `llvmkit`. The format follows
-[Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0
-(`0.0.x`), so breaking changes are expected and are flagged inline. Until a
-tagged release is cut, entries accumulate under **Unreleased**.
+[Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
+breaking changes are expected and are flagged inline. Until a tagged release is
+cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
+
+## [0.0.4] — unreleased
+
+The id-first redesign. Cycles A–E reshaped the core currency of the API —
+handles became storable ids, the module became an owned value, and its identity
+moved from a lifetime to a type — so almost every construction call site
+changes. The migration is mechanical, and each break is spelled out under the
+cycle that made it.
+
+The version stays `0.0.4`: that is what the workspace already carried, it was
+never published (crates.io has 0.0.3), and under Cargo's pre-1.0 rules every
+`0.0.x` is mutually incompatible anyway, so a break needs no wider signal. A
+minor bump would imply a stability this crate does not yet have.
+
+The headline shape, for a reader arriving cold:
+
+```rust
+let m = module_new!("demo")?;                       // owned, Send, no lifetime
+let f = m.add_typed_function::<i32, (i32, i32), _>  // declarations return ids
+    ("add", Linkage::External)?;
+let entry = m.view(f).append_basic_block(&m, "entry");   // ids resolve to handles
+```
+
+### Packaging
+
+#### Fixed
+
+- **Every published crate now contains the license text.** `LICENSE` lived only
+  at the workspace root, and Cargo auto-includes a license file only from the
+  *package* directory, so all five `.crate` tarballs shipped with the `license`
+  field set and no license in them. For a derivative work of the LLVM Project
+  that is a defect rather than an oversight: Apache-2.0 section 4(a) requires
+  that recipients of a distribution receive a copy of the License, and a
+  crates.io tarball is a distribution. Each package directory now carries a
+  verbatim copy of the root `LICENSE`, and CI compares all five against the root
+  so they cannot drift.
+
+### The polish and freeze cycle (cycle E)
+
+The API surface is frozen for the release: the remaining asymmetry is closed,
+and the documentation is reconciled with the library that cycles A–D actually
+produced.
+
+#### Changed (breaking)
+
+- **A plain terminator edge into a parameterised block is now rejected at the
+  builder.** Branching into a block created by `append_block_with_params` /
+  `append_block_with_named_params` / `append_block_typed` *without* carrying its
+  block arguments used to build fine, seed nothing, and leave an incomplete phi
+  for a distant `Module::verify()` (`PhiEmptyInReachableBlock`, or the shared
+  `check_phi` count guard) to report. Every plain terminator edge now checks its
+  target first and returns `IrError::PhiArgArityMismatch` — the same error a
+  wrong argument *count* already got from `build_br_with_args`, so one mistake
+  reads the same wherever it is caught. Covered: `build_br`, `build_cond_br`,
+  `build_switch` / `build_switch_dyn` (default edge) and `SwitchInst::add_case`
+  (case edges), all four `invoke` entry points — `build_invoke_with_config`,
+  `build_invoke_dyn_with_config`, `build_indirect_invoke_dyn_with_config`,
+  `build_inline_asm_invoke_with_config`, and so the `build_invoke` /
+  `build_invoke_dyn` / `build_inline_asm_invoke` wrappers over them — on both
+  the normal and unwind edge, `build_callbr*` (default and indirect), and
+  `IndirectBrInst::add_destination`. The check runs before the terminator is
+  emitted, so a rejected edge leaves no half-formed instruction; the builder is
+  still consumed, exactly as when a target fails to resolve.
+
+  **What is *not* affected:** the guard keys on "was this block created with
+  block parameters", not on "does this block contain phis". A `.ll` back-edge
+  into an already-parsed loop header, an `SsaBuilder` back-edge into an unsealed
+  header whose reads have minted operandless phis, and a pass-inserted phi are
+  all untouched — those phis are completed through their own checked paths and
+  their blocks were never declared parameterised. That is also what makes the
+  guard free on the hot path: a block records its declared parameter count in
+  one `Cell`, and an ordinary target costs that single read rather than a walk
+  of its instruction list.
+
+  **Migration:** use the argument-carrying builder for that edge —
+  `build_br_with_args` / `build_cond_br_with_args` / `build_switch_with_args` /
+  `build_invoke_with_args` (or the `_dyn` / `_call` siblings). `indirectbr`,
+  `callbr`, and the indirect-callee and inline-asm-callee `invoke` shapes have
+  no argument-carrying form by design — their edges are selected at run time —
+  so a parameterised destination is rejected there with no alternative; author
+  such a phi through `SsaBuilder` or `FnReshape::insert_phi` on a block created
+  with plain `append_basic_block`.
+- **Lookups return ids, symmetric with declarations.** `Module::get_global` →
+  `Option<GlobalId<B>>`, `get_alias` → `Option<GlobalAliasId<B>>`, `get_ifunc`
+  → `Option<GlobalIFuncId<B>>`, `function_by_name_dyn` →
+  `Option<FunctionId<Dyn, B>>`, and `function_by_name::<R>` →
+  `IrResult<Option<FunctionId<R, B>>>`. Reach the handle with `m.view(id)`,
+  exactly as for a declaration's id. The marker check on `function_by_name::<R>`
+  is unchanged — a mismatched signature is still
+  `IrError::ReturnTypeMismatch`, never a silently widened id. The four
+  unconditional lookups also relax `&'ctx self` to `&self`: an id borrows
+  nothing, so a lookup no longer pins a borrow of the module.
+  `Module::get_comdat` is deliberately exempt and documents why — a comdat is
+  not a `Value`, and `ComdatId` is a bare `u32` carrying neither a `ModuleId`
+  tag nor a brand, so it is not a member of the id family and `view` cannot
+  resolve it.
+- **The by-name lookups are state-generic.** `get_global`, `get_alias`,
+  `get_ifunc`, and `get_comdat` moved out of the `Module<B, Unverified>` impl
+  into the state-generic one, where `function_by_name` / `function_by_name_dyn`
+  already lived. They return a capability-free id (or, for comdats, a read-only
+  handle), so the `Unverified` restriction bought no safety — it only meant a
+  `Module<B, Verified>` had *no* O(1) route to a symbol, leaving a linear scan
+  over `as_view().globals()` as the only option. `function_by_name::<R>` also
+  relaxes `&'ctx self` to `&self`, matching the other five.
+- **`ComdatRef::id` is removed.** It handed out a `ComdatId` that no public API
+  accepts — untagged, unbranded, and unresolvable by `view`, which is exactly
+  the argument `get_comdat` makes for returning a handle instead. Comdat
+  identity is `(module, ComdatId)` and is compared through `ComdatRef`'s
+  `PartialEq`, so `a == b` replaces `a.id() == b.id()`.
+- **Instruction metadata mutators take the `Unverified` module token.**
+  `InstructionView::set_metadata`, `InstructionView::push_debug_record`, and
+  their `Instruction` twins gain a leading `&Module<B, Unverified>` parameter.
+  See *Fixed*, below, for what this closes.
+- **The metadata currency is tagged and branded: `MetadataId<B>`.** Metadata was
+  the one currency 2.0 left untagged — a handle was a bare `usize` arena index
+  with neither a `ModuleId` tag nor a brand, so an *in-range* node minted in
+  module A and attached in module B resolved against B's arena and printed the
+  wrong node, silently. The split cycle A gave the value currency now reaches it:
+
+  - **`MetadataSlot` is crate-internal**, together with `MetadataStore`, and is
+    no longer re-exported from the crate root. It remains the bare arena index.
+  - **`MetadataRef` is removed.** It was a `pub` newtype over a slot *with a
+    public field*, so anyone could forge one. `MetadataId<B>` replaces it at
+    every operand position: `m.metadata_tuple([node])` instead of
+    `m.metadata_tuple([MetadataRef(node)])`.
+  - **`MetadataId<B: ModuleBrand>`** is the public currency —
+    `{ tag: ModuleId, slot: MetadataSlot }`, `Copy + Send + 'static`, brand
+    phantom `PhantomData<fn(B) -> B>` like every other id. Two named brands make
+    a cross-module mix-up a **compile error**; within one brand (two `DynBrand`
+    modules, two generations of a re-issued brand) the tag makes it
+    **`IrError::ForeignMetadataId`**, a new variant that is the metadata twin of
+    `ForeignValueId`.
+  - **Every metadata vocabulary type gained the brand:** `MetadataKind<B>`,
+    `SpecializedMetadataNode<B>`, `MetadataField<B>`, `MetadataFieldValue<B>`,
+    `DebugRecord<B>`, `DebugVariableRecord<B>`, `DebugMetadataOperand<B>`,
+    `MetadataAttachmentSet<B>`, `NamedMDNode<B>`. `DebugMetadataOperand::Value`
+    carries a `ValueId<B>` instead of a bare value slot, so
+    `DebugMetadataOperand::Value(v.into_erased().id())` replaces
+    `…::Value(v.into_erased().slot())`.
+  - **Accepting an id makes an API fallible.** `Module::metadata_tuple`,
+    `metadata_tuple_with_distinct`, `metadata_specialized`, `metadata_node`, and
+    `metadata_as_value` now return `IrResult<…>`; `set_metadata` on
+    `InstructionView` / `Instruction` / `FunctionValue` / `GlobalVariable` /
+    `GlobalAlias` / `GlobalIFunc`, and `InstructionView::push_debug_record` (plus
+    its `Instruction` twin), now return `IrResult<()>`. `metadata_string`,
+    `metadata_constant`, and `metadata_reserve` stay infallible — they mint an id
+    rather than consume one. `metadata_get` keeps returning `Option`, now `None`
+    for a foreign id rather than another module's node.
+  - **The read accessors hand back branded data.** `metadata()` on an
+    instruction, function, or global returns an owned `MetadataAttachmentSet<B>`
+    (was `Ref<'_, MetadataAttachmentSet>`), and `debug_records()` returns
+    `Vec<DebugRecord<B>>` (was `Ref<'_, [DebugRecord]>`).
+  - `llvmkit-asmparser`: `SlotMapping::metadata_nodes` is
+    `NumberedValues<MetadataId<B>>`. The parser needed no raw-slot escape hatch —
+    every id it hands back was minted by the module it is populating.
+
+  **Printed IR is byte-identical**; the byte-locked example suites and the parser
+  round-trip corpus are unchanged. Locked by
+  `tests/module_ownership.rs::a_metadata_id_from_another_module_is_refused_everywhere`
+  and `tests/compile_fail/cross_module_metadata_attachment.rs`.
+
+#### Documentation
+
+- The README's **Same-module safety** section, **D7**, and the three-run-modes
+  example described the deleted generative lifetime brand and spelled
+  `Module<'ctx, Brand<'ctx>, S>`. They now describe the three brand rungs
+  (`module_new!` / `branded::<B>` / `dynamic`) and separate precisely what is
+  compile-time (distinct brand types are a type error; the uniqueness registry
+  is what makes a brand name one module) from what is run-time (modules sharing
+  a brand type fall back to the `ModuleId` tag, surfacing as
+  `IrError::ForeignValueId`, `None`, or a `view` panic).
+- New README section, **Where llvmkit improves on upstream LLVM**: storable ids
+  and an owned module (so a lifter can suspend, move threads, and resume),
+  unrepresentable-versus-diagnosed error classes, and verification as a
+  typestate rather than a function you must remember to call.
+- New README section, **Bindings**: Python and Java bindings are planned and
+  were blocked on exactly one thing — an API not yet stable enough to wrap,
+  since wrapping a moving surface means rewriting the wrapper on every break.
+  This release is what unblocks them. The section records the standing
+  constraint 2.0 was designed under, which is why the surface is already
+  wrappable: nothing reachable only from inside a closure, no lifetime in any
+  storable type, `DynBrand` as the rung a wrapper uses, and misuse of a handle
+  or id an `IrError` or a deterministic panic rather than a dangling read. A
+  wrapper still supplies its own id table, since an id's `(ModuleId, slot)`
+  payload is private and there is deliberately no `from_raw_parts`.
+- `docs/type-safety-vs-llvm.md` worked examples re-spelled against the
+  lifetime-free `Module<B, S>`.
+- The **"2 environmental `.stderr` fixtures"** caveat is retired from
+  `docs/design/pass-facing-type-safety.md`,
+  `docs/design/unforgeable-markers-design.md`, and
+  the `docs/future-work.md` backlog item that asked for a canonical re-bless.
+  It was never real: both fixtures pass on the pinned 1.96.0 toolchain, and the
+  mismatch only ever appeared under a newer rustc. Gated on `cargo +1.96.0` the
+  trybuild baseline is **0 failures of 83 registered fixtures** (82
+  `compile_fail` + 1 `pass`).
+
+#### Added
+
+- **`switch` and `invoke` can carry block arguments.** The block-argument
+  authoring surface shipped `build_br_with_args` / `build_cond_br_with_args`
+  and stopped there, so the public `IRBuilder` could *create* a `switch` or
+  `invoke` edge into a parameterised block but had no way to supply its
+  incoming values (the raw `add_incoming` is `pub(crate)`). Four new builders
+  close it, all following the existing family's up-front, per-edge arity
+  (`IrError::PhiArgArityMismatch`) and type (`IrError::TypeMismatch`) checks:
+  - `build_switch_with_args(cond, default, cases, name)` and its width-erased
+    twin `build_switch_dyn_with_args`, where `default` is a `(target, args)`
+    pair and `cases` a `(case_value, target, args)` triple per edge. The whole
+    case list is spelled at the call — an edge and the values it carries have to
+    move together — so the returned `SwitchInst` comes back already
+    `TermClosed`: there is no `add_case` on it, and therefore no way to bolt on
+    a later case whose target's parameters nothing seeds.
+  - `build_invoke_with_args(callee, args, normal, unwind, name)` and its
+    erased-callee twin `build_invoke_dyn_with_args`, where `normal` and
+    `unwind` are each a `(destination, args)` pair — both `invoke` edges are
+    mandatory, so both are supplied; pass an empty slice for a destination with
+    no parameters.
+
+  All four bundle each edge with the values it carries into one parameter,
+  which the case list forces anyway and which keeps `invoke`'s own call
+  arguments and result name from crowding the signature. The frozen
+  `build_br_with_args` / `build_cond_br_with_args` keep their flat
+  `target, args` parameter pairs.
+- Two compile-fail fixtures for 2.0 laws that had no lock.
+  `builder_cannot_terminate_twice.rs` proves the *linearity* half of "one
+  terminator per block" — every terminator-emitting build takes `self` by
+  value, so a second call is `E0382`, where upstream `IRBuilder` keeps its
+  insertion point after `CreateRetVoid()` and silently appends a second
+  terminator. `view_cannot_outlive_its_module.rs` proves a borrowing handle
+  cannot escape the scope of the owned module it was minted from (`E0597`) —
+  the compile-time law that makes the id family necessary rather than merely
+  convenient, since the `.id()` form of the identical program *does* compile.
+
+#### Fixed
+
+- **Instruction metadata now requires the `Unverified` module token.**
+  `InstructionView::set_metadata` / `push_debug_record` (and their
+  `Instruction` twins) took no token, while the metadata setters on
+  `FunctionValue` and `GlobalVariable` — and `set_name` / `clear_name` on the
+  very same type — always had. The omission punched through two guarantees at
+  once: a `Module<B, Verified>`'s printed IR could be changed through a
+  read-only `InstructionView` with the typestate still claiming verification
+  (D8), and an `Inspect`-rung pass, which is handed only views, could rewrite
+  `!dbg` attachments while the driver derived `Module<B, Verified>` and
+  reported everything preserved. Both are now type errors, locked by
+  `tests/compile_fail/verified_module_metadata_is_immutable.rs`.
+- **`Module::metadata_set` and `Module::named_metadata_add_operand` are
+  fallible.** The first silently no-opped on an unknown slot — the exact silent
+  no-op the 2.0 contract forbids — and the second panicked with a bare
+  `index out of bounds`. Both now return
+  `Err(IrError::UnknownMetadataSlot { index, len })`.
+
+#### Known gaps
+
+**None left in the cross-module law.** This section carried one gap into the
+freeze — metadata being the only currency 2.0 had not tagged, so an in-range
+node from another module mis-resolved silently — and it was closed before 0.0.4
+shipped. See "**The metadata currency is tagged and branded: `MetadataId<B>`**"
+under *Changed (breaking)* above. Every public handle in the crate now states
+its owning module both statically (the brand) and at run time (the `ModuleId`
+tag), so a foreign handle is an `IrError` or a deterministic panic, never a
+silent mis-resolve. Work still ahead is tracked in `docs/future-work.md`.
+
+### The SSA session is a value (cycle D)
+
+`SsaBuilder` converges on the cursor model. It is **one type** whose insertion
+point is data, and the Braun bookkeeping moves into an owned, `Send`, `Clone`,
+lifetime-free `SsaState<B>` that a caller stores in a struct field, snapshots
+around a speculative branch, and drives one step at a time.
+
+#### Changed (breaking)
+
+- **`SsaBuilder<'m, 'ctx, B, F, S, R>` → `SsaBuilder<'s, 'ctx, B, F, R>`.** The
+  `S: BuilderPositionState` parameter is gone: `switch_to_block` takes
+  `&mut self` and returns `IrResult<()>` instead of changing the builder's type,
+  and so does every terminator (`br` / `cond_br` / `switch` / `ret` /
+  `ret_void` / `unreachable`; the last two became fallible). Operations that
+  need an insertion point report the new **`IrError::SsaUnpositioned`** instead
+  of not existing. This is the runtime rendering of a static law, taken *only*
+  on the on-the-fly SSA layer, whose whole job is authoring a CFG discovered at
+  run time — the plain `IRBuilder`'s linear block token and
+  terminator-consuming cursor are untouched.
+- **The session state is explicit.** Open it with `SsaState::for_function(&m,
+  m.view(f))?` (this is where `SsaFunctionHasBlocks` is now raised), then mint
+  working builders with `SsaBuilder::for_function(&m, m.view(f), &mut state)?`.
+  Pairing a state with another function is `IrError::SsaForeignFunction`.
+- **`ins()` and `current_block()` are fallible**: `b.ins()?.build_int_mul(..)?`.
+  `ins()` still returns a **borrow** of the positioned plain builder, so its
+  self-consuming terminators stay structurally unreachable through it.
+- **The typed variable handles lost their lifetime**: `IntVariable<'ctx, W, B>`
+  → `IntVariable<W, B>`, `FloatVariable<'ctx, K, B>` → `FloatVariable<K, B>`,
+  `PointerVariable<'ctx, B>` → `PointerVariable<B>`. They are `Copy`,
+  module-tagged ids like every other cycle-A/B id. Their `module()` accessor is
+  removed with the `ModuleRef` they used to carry — the owning module is pinned
+  by the brand type parameter.
+
+#### Added
+
+- **`SsaState<B>`** — owned, `Send`, `Clone`, no lifetime. `for_function`,
+  `id`, `block_count`, `variable_count`.
+- `SsaBuilder::is_positioned` / `clear_position` / `state`.
+- `IrError::SsaUnpositioned`, `IrError::SsaForeignFunction`.
+- **`Module::instruction_count()`** — total instructions across every block of
+  every function. The module-size probe a transform driven to a fixpoint
+  watches for a plateau.
+- **`examples/lifter_session.rs`** — the consumer proof. A binary lifter as a
+  plain struct owning its `Module`, an address→block `HashMap`, its `SsaState`
+  and its cursor, driven by a suspend/resume `step()` loop, moved to a worker
+  thread mid-function, and finished there. No closure, no borrow held across a
+  step. Emits real, verified IR.
+- **`examples/module_per_batch.rs`** — the JIT/batch shape: build a module,
+  hand it away *by value* to a consumer, build the next one, all under one
+  named brand the registry re-issues each round.
+- `tests/block_id_stability.rs` — a `BlockId` minted before a block
+  replace-all-uses still resolves *and still drives the mutation API*
+  afterwards, so an address→block side map needs no hand-migration.
+
+### Owned modules, branded by type (cycle C)
+
+A module is now an ordinary owned value. `Module<'ctx, B, S>` becomes
+`Module<B, S>`: it owns its storage, borrows nothing, and can be returned from a
+function, stored in a struct field or a `Vec`, and moved across a thread
+boundary. Identity moves from a generative lifetime to a `'static` **type**.
+
+#### Removed (breaking)
+
+- **`Module::with_new` and the lifetime brand `Brand<'id>` are gone.** Replace
+  `Module::with_new("m", |m| { ... })` with `let m = module_new!("m")?;` and
+  outdent — the body is otherwise unchanged, and the module now outlives it.
+- **The `B: ModuleBrand = Brand<'ctx>` default type parameter is gone** from
+  every handle, together with the defaults that preceded it in a declaration
+  (`Term = Unterminated`, `Body = StructBodyDyn`, `E = ElemDyn`, `R = Dyn`,
+  `P = TermOpen`, …), which Rust requires to be trailing. Spell the brand, or
+  `_` where it is inferred: `IntValue<'_, i32, _>`, `Vec::<Type<_>>::new()`.
+- **`Attribute::*_for_brand`** — the un-suffixed constructors are now the
+  brand-generic ones. `Attribute::enum_attr` / `int` / `memory` / `string`.
+
+#### Changed (breaking)
+
+- **`ModuleBrand` requires `'static`.** It was already required by the brand
+  registry, which keys by `TypeId`; the bound simply moves from the individual
+  constructors onto the trait. A brand names a module, it never borrows one.
+- **Brands are types.** `Module::branded::<B, _>(name)` claims a brand you name
+  (at most one live module per brand, released on drop);
+  `Module::branded_once::<B, _>(name)` retires it permanently on drop, so no
+  successor can ever replay a stale `'static` id against fresh storage;
+  `module_new!(name)` mints an unnameable brand per expansion site;
+  `Module::dynamic(name)` is registry-exempt for a run-time module count.
+  Collisions report `IrError::BrandInUse` / `BrandRetired`.
+- **The schema traits take a `ModuleView`.** `IrField::ir_type`,
+  `StructSchema::field_types` / `ir_type`, `FunctionReturn::ir_type`,
+  `FunctionParam::ir_type` and `FunctionParamList::ir_types` now take
+  `ModuleView<'ctx, B>` instead of `&'ctx Module<'ctx, B, Unverified>`; the
+  `#[derive(IrStruct)]` `build` constructor follows. Call sites go from
+  `X::ir_type(&m)` to `X::ir_type(m.as_view())`. Type construction is
+  preservation-neutral, which is why the view already carried the constructor
+  surface; `get_or_set_named_struct_body`, `named_struct` and
+  `get_named_struct` join it. The typestate body setters (`set_struct_body`,
+  `set_struct_body_dyn`) and every module-structural declaration stay on the
+  `Module<Unverified>` token.
+
+#### Added
+
+- **Closure-free parser entry points**, re-exported at the crate root:
+  `parse_into(module, src)`, `parse_branded::<B>(src)`, `parse_dynamic(src)`,
+  `parse_file_branded::<B>(path)`, `parse_file_dynamic(path)` — each returns the
+  owned `Module`, so it can be verified, stored, and moved. The closure forms
+  remain for callers who need the `ParsedModule` slot mapping, which borrows the
+  module it was parsed from and so cannot be returned alongside it.
+  `ParseError` gains `BrandInUse` / `BrandRetired`.
+- **`Module<B, S>` is `Send`** — including under a brand type that is itself
+  `!Send`, because the brand rides as `PhantomData<fn(B) -> B>`. It stays
+  `!Sync`: a module moves between threads, it is not shared between them.
+
+#### Unchanged
+
+Printed IR is byte-identical across the whole cycle — the byte-locked example
+suites and the parser round-trip corpus pass untouched at every slice.
+
+### Id-first handles (cycle B: builders speak ids)
+
+Every builder and declaration now returns a storable id instead of a borrowing
+handle. Combined with cycle A's id family, an IR value can be kept in a struct
+field, a `HashMap`, or across a suspend/resume boundary — the thing the old
+handle model could not express. Handles remain, as short-lived *views*.
+
+#### Changed (breaking — this is the bulk of the cycle)
+
+- **Builders return ids.** `build_*` yields `IntValueId<W>` / `FloatValueId<K>` /
+  `PointerValueId` / erased `ValueId` per the result kind; `add_function*` yields
+  `FunctionId<R>`; `add_global*` yields `GlobalId`. Reading from a result goes
+  through a view: `b.view(x).ty()`, `m.view(f).param(0)`.
+- **`IRBuilder::view`/`try_view` and `ModuleView::view`/`try_view`** join
+  `Module::view`, so an id can be resolved wherever you are — mid-builder-chain
+  or inside a pass.
+- **Instruction ids.** Builders whose result carries its own API (`call`, the
+  intrinsic call, `atomicrmw`, `cmpxchg`, `freeze`, `va_arg`, the phis) return an
+  id whose view is that opcode handle, so the typed accessors survive:
+  `b.view(call).return_int_value()`.
+- **`BlockId` is the branch-target currency.** `BasicBlockLabel` is now only the
+  view you get from `m.view(block_id)`; `.label()` is gone in favour of `.id()`.
+  `BasicBlockEdge`, `BlockCall` and the SSA block wrapper lost their lifetime
+  parameter as a result. `position_at_end_dyn(BlockId)` is the checked escape for
+  dynamically discovered CFGs; `position_at_end` still takes the linear block
+  token, so building into a terminated block stays impossible.
+- **One `.id()` rule.** `.id()` mints the storable id; `.slot()` is the internal
+  arena index. `IntrinsicInst::id()`'s legacy alias is now `intrinsic_id()`. A
+  void instruction has no value id and so has no `.id()`.
+- **The pass surface speaks ids** — analysis results and context accessors hand
+  out ids for anything a pass would store, with views for reads. Rung tokens, the
+  witnessed `done()`, and the erase-safe cursor are unchanged.
+- **Operands accept ids everywhere.** Cast, comparison, pointer and callee
+  positions that previously demanded a concrete handle now take the same
+  `Into*`-style bounds as the rest, so a returned id feeds straight into the next
+  builder with no rehydration. `IntoErasedValue` covers the positions that are
+  erased by design; `IntoBasicBlockLabel` became module-taking and fallible so
+  `BlockId` satisfies it. Erased `ValueId` is still rejected at typed positions —
+  erasure must be spelled.
+- The phi `Open`/`Closed` typestate is retired: a `Copy` id is re-mintable, so
+  the marker could no longer express "exactly one open capability". A phi is
+  still unobservable mid-construction from outside the crate (its constructors
+  are crate-private), and the genuinely linear terminator states
+  (`switch`/`indirectbr`/`landingpad`/`catchswitch`) are unchanged.
+
+#### Added
+
+- `PhiInst::remove_incoming` (and the other phi flavours) — previously absent.
+  Mirrors upstream's swap-with-last backfill; it does not self-erase an emptied
+  phi (llvmkit's erase consumes a linear handle, which a `Copy` opcode handle
+  cannot express), and `Module::verify` reports the resulting predecessor
+  mismatch.
+
+#### Unchanged
+
+Printed IR is byte-identical across the whole cycle — the byte-locked example
+suites and the parser round-trip corpus pass untouched at every slice.
+
+### Id-first handles (cycle A: foundations)
+
+The first cycle of a redesign that replaces the closure-scoped, lifetime-branded
+handle system with owned modules and storable, module-tagged id handles. This
+cycle is additive and internal groundwork; later cycles flip the builders to
+return ids and delete `Module::with_new`. The migration is spelled out break by
+break in the `[0.0.4]` section above, under the cycle that made each one.
+
+#### Added
+
+- A public id family: `ValueId`, `IntValueId<W>`, `FloatValueId<K>`,
+  `PointerValueId`, `FunctionId<R>`, `GlobalId`, `BlockId<R, _, Params>` — each a
+  `Copy`, `Send`, module-tagged `{ module-tag, arena-slot }` pair that is stored
+  and passed by value with no borrow of the module. Mint one from any value
+  handle with `handle.to_id()`.
+- `Module::view(id)` and `Module::try_view(id)` resolve an id back into its
+  borrowing handle. `view` panics on an id from a different module (a caller
+  contract violation, like an out-of-bounds index); `try_view` returns `None`.
+  The module-tag check runs before any arena access.
+- The typed ids implement the operand-conversion traits (`IntoIntValue` /
+  `IntoFloatValue` / `IntoPointerValue`, and `IntoCallArg` for free), so they can
+  be passed where a value operand is expected; a foreign-module id yields
+  `Err(IrError::ForeignValueId)`. The erased `ValueId` deliberately does **not**
+  implement them — erased → typed stays a spelled narrowing (`try_view`).
+- `IrError::ForeignValueId` (non-breaking; the error enum is `#[non_exhaustive]`).
+
+#### Changed (breaking)
+
+- The internal arena-index types are renamed to `ValueSlot` / `TypeSlot` /
+  `MetadataSlot` (freeing the `ValueId` / `TypeId` names for the public id
+  family). `TypeId` and `MetadataId` are no longer re-exported under those names.
+- `ModuleId` widened to a 64-bit counter; `ModuleId::as_u32` → `as_u64`.
+- `Value::set_name` / `Value::clear_name` now panic when handed a module token
+  from a different module, instead of silently doing nothing. All correct uses
+  (which pass the value's own module token) are unaffected.
+
+#### Removed
+
+- The public `MetadataId::from_index` constructor (it had no callers and let
+  external code forge a metadata id from an arbitrary index).
 
 ### Constant-folding parity with LLVM 22.1.4
 

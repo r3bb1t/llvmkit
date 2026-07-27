@@ -2,15 +2,39 @@
 
 **Status:** approved design, 2026-07-16. Cycle 1.5 of the "No silent erasure" program.
 
+> **Outcome, recorded 2026-07-27 (llvmkit 0.0.4).** This design shipped, and it
+> shipped as the **audited seal**, not the hard seal — see "The seal, and its
+> honest limit" below, which posed that as the one open question. `value` and
+> `ir_builder` are sibling modules and the constructors need `ir_builder`-private
+> helpers, so co-location was infeasible; `from_value_unchecked` remains
+> crate-visible on all six wrapper types (`PointerValue`, `ArrayValue`,
+> `StructValue`, `VectorValue`, `IntValue`, `FloatValue` — three spelled
+> `pub(crate)` and three `pub(super)`, which in the crate-root `value` module
+> means the same thing). Confinement is **documented and locally proven, not
+> compiler-enforced**, and — per this document's own instruction — **no
+> compile-fail fixture was written**, because one would prove something weaker
+> than it appeared. The constructor family (`append_int_like` / `append_int_at` /
+> `append_int_load`, the `append_fp_*` trio, `append_ptr` / `append_ptr_load`)
+> exists in `ir_builder.rs`; the Cycle-1 runtime re-checks stayed. Both doc
+> follow-ups landed: `docs/type-safety-vs-llvm.md` §4 now states the *audited*
+> claim, and `docs/future-work.md` carries the residual rather than the
+> superseded "TypeId-carrying witness" entry.
+>
+> Numbers and `file:line` citations below are the 2026-07-16 census and have
+> drifted; the symbol names are the stable reference.
+
 ## Context
 
 A typed handle's marker is a claim about its runtime type: an `IntValue<'ctx, i32, B>`
 asserts "this value's IR type is `i32`". The crate's guarantees rest on that claim being
 true — `build_int_add(a, b)` emits `add i32` because the handles say `i32`.
 
-**Today the claim is forgeable.** `IntValue::from_value_unchecked` (`value.rs:1093`,
-`:1612`, `:1964` — three of the six are `pub(crate)`) attaches any marker to any value
-without consulting its type. There are **~125 call sites**. A census classified them:
+**In-crate the claim is forgeable.** `from_value_unchecked` — one per wrapper type in
+`value.rs` (`IntValue`, `FloatValue`, `PointerValue`, `ArrayValue`, `StructValue`,
+`VectorValue`; three spelled `pub(crate)`, three `pub(super)`, which in the crate-root
+`value` module is the same visibility) — attaches any marker to any value without
+consulting its type. There were **~125 call sites** at census time. A census classified
+them:
 
 | Bucket | Count | |
 |---|---|---|
@@ -46,12 +70,12 @@ claim in §4 becomes true rather than documented-around.
 2. **Scope: the root fix only** (census rows 1-4). The other known gaps stay queued:
    `OperandWidthMismatch`'s two-shape overload, the 6 pre-existing
    `#[allow(clippy::type_complexity)]` on dev, literal-widening (task #72), and the strict
-   cut (Cycle 2).
-3. **No `TypeProof` object.** An `IntValue<W>` / `IntType<W>` already *is* the proof;
-   boxing its `TypeId` adds indirection and a `debug_assert`. Rejected in favour of the
-   typed-append family below.
-4. **Zero user-facing change.** `from_value_unchecked` is `pub(crate)`; users cannot call
-   it today and will not see this work. Public API and printed IR are unchanged.
+   cut (Cycle 2). *(The `clippy::type_complexity` allows are gone; `#[allow(...)]`
+   is now banned outright repo-wide. The `clippy::type_complexity` allows are gone, and so are the six
+  `#[cfg_attr(not(test), allow(dead_code))]` on the crate-internal raw-phi
+  items — those became `#[cfg(test)]` in 0.0.4, since their only
+  callers were ever `src/phi_raw_tests/`. No `#[allow(...)]` in any form
+  remains in the crate sources.
 
 ## Architecture
 
@@ -79,7 +103,7 @@ fn append_int_at<W: IntWidth>(
 Call sites lose the assertion entirely:
 
 ```rust
-// before (ir_builder.rs:1523-1524)
+// before (ir_builder.rs, the binop append path)
 let inst = self.append_instruction(lhs.ty().as_type().id(), kind_ctor(payload), name);
 Ok(IntValue::<W, B>::from_value_unchecked(inst.to_erased()))
 
@@ -103,8 +127,9 @@ Derived from the census's patterns, not invented:
 `IntDyn`/`FloatDyn` sites "vacuous (the marker asserts nothing)". That is true only of the
 *width*: `IntDyn::static_bits()` is `None`, so a width re-check cannot fire. But
 `IntValue<'ctx, IntDyn, B>` still claims **"is an integer, of some width"** — its
-`TryFrom<Value>` (`value.rs:1621`) checks `matches!(ty.data(), TypeData::Integer { .. })`.
-Wrapping a *pointer* as `IntValue<IntDyn>` is still a forged claim.
+`TryFrom<Value>` in `value.rs` checks `matches!(ty.data(), TypeData::Integer { .. })`
+and otherwise returns `IrError::TypeMismatch`. Wrapping a *pointer* as
+`IntValue<IntDyn>` is still a forged claim.
 
 So these sites do **not** get a proof-free constructor. They route through the same
 `append_int_like` / `append_int_at` family (which proves integer-ness structurally, since
@@ -137,6 +162,16 @@ The implementer **must report which was achieved**, and must not describe an aud
 as a compile-time guarantee. The audited outcome is still a large win; misreporting it is
 the failure mode this whole program exists to prevent.
 
+**Resolved: the audited seal.** `from_value_unchecked` is still crate-visible;
+`ir_builder.rs`'s ~40 scattered wraps collapsed onto the 8 constructor-family bodies
+plus a legible residual (the runtime-checked fold seams, the select-arm re-wrap, the
+`ptrtoaddr` `IntDyn` re-wrap, and the vector / array appends that have no typed
+constructor yet). Sites outside `ir_builder.rs` — `instructions.rs` re-wrapping
+operands read back out of a payload, `function_signature.rs` lifting arguments and
+block parameters, `ssa_builder.rs`, `struct_schema.rs`, `element.rs`, `int_width.rs`,
+`float_kind.rs` — were out of this cycle's scope and remain, each with the
+obligation spelled out in the constructor's own doc comment.
+
 ## Testing
 
 - **Non-disruption is the primary signal.** This is a refactor of *how* a marker is
@@ -151,8 +186,12 @@ the failure mode this whole program exists to prevent.
   the Cycle 1 runtime checks stay, so the in-crate hostile folder — if it can still be
   written — is still caught. If the hard seal makes that folder *unwritable*, the test must
   be retired with its `UPSTREAM.md` row, not deleted silently.
-- Per-slice: the 5 gates. Baseline: **125 binaries ok, trybuild `2 of 78`** (the two
-  environmental fixtures only, never re-blessed).
+- Per-slice: the CI gates, run on the pinned toolchain. The trybuild baseline is
+  **0 failures of 83 registered fixtures** (82 `t.compile_fail` + 1 `t.pass`). This
+  document once recorded a `2 of 78` baseline as expected; that was an artifact of
+  running the suite on a newer rustc than the pin, not of the fixtures. There is no
+  "environmental fixture drift" — the claim was investigated and disproved. Gate on
+  `cargo +1.96.0`, bless `.stderr` there and nowhere else.
 
 ## Docs (part of the work, not an afterthought)
 

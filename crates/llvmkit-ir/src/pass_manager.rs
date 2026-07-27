@@ -26,9 +26,9 @@
 //!
 //! ```
 //! use llvmkit_ir::{
-//!     Analyses, Brand, DcePass, DynReadOnlyFunctionPipeline, FnCx, FnReport, FunctionPass,
-//!     IRBuilder, Inspect, InstSimplifyPass, IrError, IrResult, Linkage, Module, Unverified,
-//!     Verified, function_pipeline, run_function_pass,
+//!     Analyses, DcePass, DynReadOnlyFunctionPipeline, FnCx, FnReport, FunctionPass, IRBuilder,
+//!     Inspect, InstSimplifyPass, IrError, IrResult, Linkage, Module, ModuleBrand, Unverified,
+//!     Verified, function_pipeline, module_new, run_function_pass,
 //! };
 //!
 //! // A read-only (`Inspect`) function pass — the raw trait impl the
@@ -36,51 +36,60 @@
 //! // only report it can build is all-preserved and the module stays `Verified`.
 //! struct CountBlocks;
 //!
-//! impl<'ctx> FunctionPass<'ctx> for CountBlocks {
+//! // The pass fixes neither the brand nor either context region: `run` is
+//! // higher-ranked over both, so the DRIVER picks them.
+//! impl<B: ModuleBrand> FunctionPass<B> for CountBlocks {
 //!     type Access = Inspect;
 //!     type Requires = ();
 //!     const NAME: &'static str = "count-blocks";
 //!
-//!     fn run(&mut self, cx: FnCx<'_, '_, 'ctx, Brand<'ctx>, Inspect, ()>) -> IrResult<FnReport> {
+//!     fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, Inspect, ()>) -> IrResult<FnReport>
+//!     where
+//!         'ctx: 'm,
+//!         Self: 'ctx,
+//!     {
 //!         let _blocks = cx.function().basic_blocks().count();
 //!         Ok(cx.done())
 //!     }
 //! }
 //!
 //! fn main() -> Result<(), IrError> {
-//!     Module::with_new("pass-doc", |m| {
-//!         // Build `i32 @f()` returning a constant.
-//!         let i32_ty = m.i32_type();
-//!         let fn_ty = m.fn_type_no_params(i32_ty, false);
-//!         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
-//!         let entry = f.append_basic_block(&m, "entry");
-//!         let b = IRBuilder::at_end(entry);
-//!         b.build_ret(i32_ty.const_int(1_u32))?;
+//!     let m = module_new!("pass-doc")?;
+//!     // Build `i32 @f()` returning a constant.
+//!     let i32_ty = m.i32_type();
+//!     let fn_ty = m.fn_type_no_params(i32_ty, false);
+//!     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+//!     let entry = m.view(f).append_basic_block(&m, "entry");
+//!     let b = IRBuilder::at_end(entry);
+//!     b.build_ret(i32_ty.const_int(1_u32))?;
 //!
-//!         let verified = m.verify()?;
-//!         let mut analyses = Analyses::new();
+//!     let verified = m.verify()?;
+//!     let mut analyses = Analyses::new();
+//!     // The drivers name the function by **id**: each one consumes the
+//!     // module token, and a view would borrow the very token being moved.
+//!     // `f` is the lifetime-free id `add_function_dyn` handed back, so it
+//!     // threads through every run below unchanged.
 //!
-//!         // 1. Single-pass driver. `CountBlocks` is `Inspect`, so the module is
-//!         //    still `Verified` on the way out (the explicit binding proves it).
-//!         let verified: Module<'_, _, Verified> =
-//!             run_function_pass(CountBlocks, verified, f, &mut analyses)?;
+//!     // 1. Single-pass driver. `CountBlocks` is `Inspect`, so the module is
+//!     //    still `Verified` on the way out (the explicit binding proves it).
+//!     let verified: Module<_, Verified> =
+//!         run_function_pass(CountBlocks, verified, f, &mut analyses)?;
 //!
-//!         // 2. A compile-time tuple pipeline of two `PatchBody` passes, run in
-//!         //    written order. The output typestate folds the members' rungs: any
-//!         //    mutator ⇒ `Module<Unverified>`, so re-verifying is enforced by the
-//!         //    type system, not by convention.
-//!         let cleaned: Module<'_, _, Unverified> =
-//!             function_pipeline((InstSimplifyPass, DcePass)).run(verified, f, &mut analyses)?;
-//!         let reverified = cleaned.verify()?;
+//!     // 2. A compile-time tuple pipeline of two `PatchBody` passes, run in
+//!     //    written order. The output typestate folds the members' rungs: any
+//!     //    mutator ⇒ `Module<Unverified>`, so re-verifying is enforced by the
+//!     //    type system, not by convention.
+//!     let cleaned: Module<_, Unverified> =
+//!         function_pipeline((InstSimplifyPass, DcePass)).run(verified, f, &mut analyses)?;
+//!     let reverified = cleaned.verify()?;
 //!
-//!         // 3. A runtime-assembled read-only pipeline (opt-style CLIs). `push` is
-//!         //    bounded to `Inspect`, so a mutating pass cannot be added and the
-//!         //    module threads through `Verified`.
-//!         let mut read_only = DynReadOnlyFunctionPipeline::new();
-//!         read_only.push(CountBlocks);
-//!         let _final: Module<'_, _, Verified> = read_only.run(reverified, f, &mut analyses)?;
-//!         Ok(())
-//!     })
+//!     // 3. A runtime-assembled read-only pipeline (opt-style CLIs). `push` is
+//!     //    bounded to `Inspect`, so a mutating pass cannot be added and the
+//!     //    module threads through `Verified`.
+//!     let mut read_only = DynReadOnlyFunctionPipeline::new();
+//!     read_only.push(CountBlocks);
+//!     let _final: Module<_, Verified> = read_only.run(reverified, f, &mut analyses)?;
+//!     Ok(())
 //! }
 //! ```
 
@@ -92,12 +101,14 @@ use crate::analysis::{
     FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy, ModuleAnalysisList,
     ModuleAnalysisManager, PreservedAnalyses,
 };
-use crate::module::{Brand, Module, ModuleBrand, ModuleView, Unverified, Verified};
+use crate::marker::Dyn;
+use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified, Verified};
 use crate::pass_access::{
     Downgrades, FnAccess, Inspect, ModAccess, PatchBody, PipelineVerdict, ReshapeCfg,
     RewriteModule, StaysVerified, VerdictFold,
 };
-use crate::pass_context::{FnCx, FnReport, FunctionView, ModCx, ModReport};
+use crate::pass_context::{FnCx, FnReport, FunctionView, IntoFunctionId, ModCx, ModReport};
+use crate::value_id::{FunctionId, ViewIn};
 
 /// A pass over one function body at capability rung [`Self::Access`].
 ///
@@ -105,6 +116,32 @@ use crate::pass_context::{FnCx, FnReport, FunctionView, ModCx, ModReport};
 /// (does the module stay verified?) and the preservation floor from it. The
 /// `run` method takes its [`FnCx`] **by value**: the consuming transition into a
 /// mutator is what makes over-claiming preservation unspellable (D1/D8).
+///
+/// # Why the pass names neither the brand nor a context region
+///
+/// The trait is generic over the brand `B` only; **both** context regions live on
+/// [`run`](Self::run) itself, quantified per call. A pass impl therefore cannot
+/// pin the region its module borrow comes from — the *driver* chooses it, and can
+/// point it at a module value living in the driver's own frame. That is the
+/// property the whole single-pass/pipeline surface is built on, and the one an
+/// `impl<'ctx> FunctionPass<'ctx>`-shaped trait could not offer.
+///
+/// The two `run` bounds pay for it:
+///
+/// * `'ctx: 'm` — the analyses were collected at `'ctx`; the module borrow `'m`
+///   nests inside it.
+/// * `Self: 'ctx` — the pass value outlives that region, which is what lets a
+///   pass legitimately *stash* a `'ctx`-bound handle (an `InsertPoint`, whose
+///   snapshot is id-shaped and borrows nothing) in its own fields and still use
+///   it from a per-call `run`. A handle that genuinely *borrows* the module
+///   token — a `Type`, a `Value` — cannot be stashed this way: the driver moves
+///   the token, so the pass re-mints such handles inside `run` from an id.
+///
+/// [`Self::Requires`] carries no trait bound here for the same reason: it can
+/// only be a [`FunctionAnalysisList`] *at a region*, and no region is in scope at
+/// the trait level, so the bound sits on `run` where `'ctx` exists. Drivers
+/// restate it (`P::Requires: FunctionAnalysisList<'ctx, B>`) at the region they
+/// pick; impls may omit it, since a concrete `Requires` discharges it directly.
 ///
 /// The `#[function_pass]` macro is zero-cost sugar for this trait — it expands a
 /// plain inherent `impl` into exactly the impl below. `FnCx<Self>` / `FnReport`
@@ -128,11 +165,13 @@ use crate::pass_context::{FnCx, FnReport, FunctionView, ModCx, ModReport};
 ///     }
 /// }
 /// ```
-pub trait FunctionPass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub trait FunctionPass<B: ModuleBrand> {
     /// Capability rung: how much of the function body this pass may touch.
     type Access: FnAccess;
     /// Analyses prefetched before `run`; the context accessor is infallible.
-    type Requires: FunctionAnalysisList<'ctx, B>;
+    /// Bounded on [`FunctionAnalysisList`] at `run`'s `'ctx`, not here — see the
+    /// trait docs.
+    type Requires;
     /// Instrumentation-facing name (unused by the bare driver; part of the API).
     const NAME: &'static str;
     /// Whether the pass must always run. Replaces the old runtime `is_required()`
@@ -140,10 +179,19 @@ pub trait FunctionPass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
     const REQUIRED: bool = false;
 
     /// Run the pass over one function, consuming its capability context.
-    fn run(
+    ///
+    /// Higher-ranked over **both** context regions: `'m` (the driver's borrow of
+    /// the module and everything minted from it) and `'ctx` (the region the
+    /// prefetched analyses were collected at). The driver picks both, so it may
+    /// hand the pass a module borrow rooted in the driver's own frame.
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: FnCx<'_, '_, 'ctx, B, Self::Access, Self::Requires>,
-    ) -> IrResult<FnReport>;
+        cx: FnCx<'m, '_, 'ctx, B, Self::Access, Self::Requires>,
+    ) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+        Self::Requires: FunctionAnalysisList<'ctx, B>;
 }
 
 /// A pass over one module at capability rung [`Self::Access`]. The module-level
@@ -151,21 +199,28 @@ pub trait FunctionPass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
 /// iterating `rewrite.patch_functions()` / `rewrite.reshape_functions()` inline,
 /// so there is no `FnAccess`/`FnRequires` associated type here — the function
 /// rung is the method name, chosen at the call site.
-pub trait ModulePass<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub trait ModulePass<B: ModuleBrand> {
     /// Capability rung: how much of the module this pass may rewrite.
     type Access: ModAccess;
-    /// Module analyses prefetched before `run`; the context accessor is infallible.
-    type Requires: ModuleAnalysisList<'ctx, B>;
+    /// Module analyses prefetched before `run`; the context accessor is
+    /// infallible. Bounded on [`ModuleAnalysisList`] at `run`'s `'ctx`, mirroring
+    /// [`FunctionPass::Requires`].
+    type Requires;
     /// Instrumentation-facing name (unused by the bare driver; part of the API).
     const NAME: &'static str;
     /// Whether the pass must always run. See [`FunctionPass::REQUIRED`].
     const REQUIRED: bool = false;
 
     /// Run the pass over one module, consuming its capability context.
-    fn run(
+    /// Higher-ranked over both context regions — see [`FunctionPass::run`].
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: ModCx<'_, '_, '_, 'ctx, B, Self::Access, Self::Requires>,
-    ) -> IrResult<ModReport>;
+        cx: ModCx<'m, '_, '_, 'ctx, B, Self::Access, Self::Requires>,
+    ) -> IrResult<ModReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+        Self::Requires: ModuleAnalysisList<'ctx, B>;
 }
 
 mod pass_execution_sealed {
@@ -187,14 +242,57 @@ mod pass_execution_sealed {
 pub trait PassExecution: PipelineVerdict + pass_execution_sealed::Sealed {
     /// Module typestate produced by a run whose derived verdict is `Self`.
     type OutModule<'ctx, B: ModuleBrand + 'ctx>;
+
+    /// Read-only view of the module a run produced.
+    ///
+    /// A driver hands its `Module` to the rung seam **by value** — the typestate
+    /// transition is a move, and a `Module` owns its storage — so any view the
+    /// driver minted beforehand is dead by the time the report comes back.
+    /// Post-run invalidation needs a fresh one, and only a concrete `OutModule`
+    /// can mint it, so the verdict marker supplies this accessor. Hidden
+    /// plumbing on a sealed trait.
+    #[doc(hidden)]
+    fn out_module_view<'a, 'ctx, B: ModuleBrand + 'ctx>(
+        out: &'a Self::OutModule<'ctx, B>,
+    ) -> ModuleView<'a, B>;
 }
 
 impl PassExecution for StaysVerified {
-    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<'ctx, B, Verified>;
+    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<B, Verified>;
+
+    fn out_module_view<'a, 'ctx, B: ModuleBrand + 'ctx>(
+        out: &'a Module<B, Verified>,
+    ) -> ModuleView<'a, B> {
+        out.as_view()
+    }
 }
 
 impl PassExecution for Downgrades {
-    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<'ctx, B, Unverified>;
+    type OutModule<'ctx, B: ModuleBrand + 'ctx> = Module<B, Unverified>;
+
+    fn out_module_view<'a, 'ctx, B: ModuleBrand + 'ctx>(
+        out: &'a Module<B, Unverified>,
+    ) -> ModuleView<'a, B> {
+        out.as_view()
+    }
+}
+
+/// Mint a function view against a live module token.
+///
+/// The view's region is the **borrow of the token**, not the token's `'ctx`
+/// parameter: a `Module` owns its storage, so a handle it lends out cannot
+/// outlive the borrow. Every driver below re-mints its view this way after each
+/// typestate move instead of threading one across it.
+#[inline]
+fn view_in<'a, 'ctx, B, S>(
+    module: &'a Module<B, S>,
+    function: FunctionId<Dyn, B>,
+) -> FunctionView<'a, B>
+where
+    B: ModuleBrand + 'ctx,
+    'ctx: 'a,
+{
+    FunctionView::from(module.view(function))
 }
 
 mod fn_rung_sealed {
@@ -216,10 +314,14 @@ mod fn_rung_sealed {
 #[doc(hidden)]
 pub trait FnRungExecute: FnAccess + fn_rung_sealed::Sealed {
     /// Run `pass` over `function` at this rung, given the prefetched `results`.
+    ///
+    /// `function` arrives as a lifetime-free [`FunctionId`], not a view: the
+    /// module is consumed here (the typestate flip is a move), so the view has
+    /// to be minted *inside*, against whichever token the rung produces.
     fn execute<'ctx, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
-        function: FunctionView<'ctx, B>,
+        module: Module<B, Verified>,
+        function: FunctionId<Dyn, B>,
         results: R::ResultRefs<'_>,
     ) -> IrResult<(
         FnReport,
@@ -228,25 +330,27 @@ pub trait FnRungExecute: FnAccess + fn_rung_sealed::Sealed {
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = Self, Requires = R>,
+        P: FunctionPass<B, Access = Self, Requires = R> + 'ctx,
         Self::Verdict: PassExecution;
 }
 
 impl FnRungExecute for Inspect {
     fn execute<'ctx, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
-        function: FunctionView<'ctx, B>,
+        module: Module<B, Verified>,
+        function: FunctionId<Dyn, B>,
         results: R::ResultRefs<'_>,
-    ) -> IrResult<(FnReport, Module<'ctx, B, Verified>)>
+    ) -> IrResult<(FnReport, Module<B, Verified>)>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = Inspect, Requires = R>,
+        P: FunctionPass<B, Access = Inspect, Requires = R> + 'ctx,
     {
         // Read-only: no unverify, the token is `()`, the module flows out verified.
-        let cx = FnCx::new((), function, results);
-        let report = pass.run(cx)?;
+        let report = {
+            let cx = FnCx::new((), view_in(&module, function), results);
+            pass.run(cx)?
+        };
         Ok((report, module))
     }
 }
@@ -254,18 +358,20 @@ impl FnRungExecute for Inspect {
 impl FnRungExecute for PatchBody {
     fn execute<'ctx, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
-        function: FunctionView<'ctx, B>,
+        module: Module<B, Verified>,
+        function: FunctionId<Dyn, B>,
         results: R::ResultRefs<'_>,
-    ) -> IrResult<(FnReport, Module<'ctx, B, Unverified>)>
+    ) -> IrResult<(FnReport, Module<B, Unverified>)>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = PatchBody, Requires = R>,
+        P: FunctionPass<B, Access = PatchBody, Requires = R> + 'ctx,
     {
         let unverified = module.unverify();
-        let cx = FnCx::new(&unverified, function, results);
-        let report = pass.run(cx)?;
+        let report = {
+            let cx = FnCx::new(&unverified, view_in(&unverified, function), results);
+            pass.run(cx)?
+        };
         Ok((report, unverified))
     }
 }
@@ -273,18 +379,20 @@ impl FnRungExecute for PatchBody {
 impl FnRungExecute for ReshapeCfg {
     fn execute<'ctx, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
-        function: FunctionView<'ctx, B>,
+        module: Module<B, Verified>,
+        function: FunctionId<Dyn, B>,
         results: R::ResultRefs<'_>,
-    ) -> IrResult<(FnReport, Module<'ctx, B, Unverified>)>
+    ) -> IrResult<(FnReport, Module<B, Unverified>)>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = ReshapeCfg, Requires = R>,
+        P: FunctionPass<B, Access = ReshapeCfg, Requires = R> + 'ctx,
     {
         let unverified = module.unverify();
-        let cx = FnCx::new(&unverified, function, results);
-        let report = pass.run(cx)?;
+        let report = {
+            let cx = FnCx::new(&unverified, view_in(&unverified, function), results);
+            pass.run(cx)?
+        };
         Ok((report, unverified))
     }
 }
@@ -302,7 +410,7 @@ pub trait ModRungExecute: ModAccess + mod_rung_sealed::Sealed {
     /// Run `pass` over `module` at this rung, given the prefetched `results`.
     fn execute<'ctx, 'r, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         mam: &'r ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
         results: R::ResultRefs<'r>,
@@ -313,22 +421,22 @@ pub trait ModRungExecute: ModAccess + mod_rung_sealed::Sealed {
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
-        P: ModulePass<'ctx, B, Access = Self, Requires = R>,
+        P: ModulePass<B, Access = Self, Requires = R> + 'ctx,
         Self::Verdict: PassExecution;
 }
 
 impl ModRungExecute for Inspect {
     fn execute<'ctx, 'r, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         mam: &'r ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
         results: R::ResultRefs<'r>,
-    ) -> IrResult<(ModReport, Module<'ctx, B, Verified>)>
+    ) -> IrResult<(ModReport, Module<B, Verified>)>
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
-        P: ModulePass<'ctx, B, Access = Inspect, Requires = R>,
+        P: ModulePass<B, Access = Inspect, Requires = R> + 'ctx,
     {
         let view = module.as_view();
         let cx = ModCx::new(view, (), results, mam, fam);
@@ -340,15 +448,15 @@ impl ModRungExecute for Inspect {
 impl ModRungExecute for RewriteModule {
     fn execute<'ctx, 'r, B, R, P>(
         pass: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         mam: &'r ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
         results: R::ResultRefs<'r>,
-    ) -> IrResult<(ModReport, Module<'ctx, B, Unverified>)>
+    ) -> IrResult<(ModReport, Module<B, Unverified>)>
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
-        P: ModulePass<'ctx, B, Access = RewriteModule, Requires = R>,
+        P: ModulePass<B, Access = RewriteModule, Requires = R> + 'ctx,
     {
         let unverified = module.unverify();
         let view = unverified.as_view();
@@ -366,36 +474,50 @@ impl ModRungExecute for RewriteModule {
 /// downgraded `Module<Unverified>` for a mutating one (D8).
 pub fn run_function_pass<'ctx, B, P, F>(
     mut pass: P,
-    module: Module<'ctx, B, Verified>,
+    module: Module<B, Verified>,
     function: F,
     analyses: &mut Analyses<'ctx, B>,
 ) -> IrResult<<<P::Access as FnAccess>::Verdict as PassExecution>::OutModule<'ctx, B>>
 where
     B: ModuleBrand + 'ctx,
-    P: FunctionPass<'ctx, B>,
+    P: FunctionPass<B> + 'ctx,
+    P::Requires: FunctionAnalysisList<'ctx, B>,
     P::Access: FnRungExecute,
     <P::Access as FnAccess>::Verdict: PassExecution,
-    F: Into<FunctionView<'ctx, B>>,
+    F: IntoFunctionId<B>,
 {
-    let function = function.into();
+    // The driver names the function by **id**, never by a view: it consumes the
+    // module (the typestate flip is a move), and a view is a borrow of the very
+    // token being moved. Each phase below re-mints its own view.
+    let function = function.into_function_id();
     let fam = analyses.function_manager_mut();
-    P::Requires::prefetch(fam, function)?;
+    P::Requires::prefetch(fam, view_in(&module, function))?;
     let (report, out) = {
         // `results` borrows `*fam` only for this block; the returned report and
         // module borrow nothing from it, so `fam` is free for `invalidate`.
-        let results = P::Requires::collect(&*fam, function)?;
+        let results = P::Requires::collect(&*fam, view_in(&module, function))?;
         <P::Access as FnRungExecute>::execute::<B, P::Requires, P>(
             &mut pass, module, function, results,
         )?
     };
+    // Re-mint the view against the module the run produced — the pre-run one
+    // borrowed a token that no longer exists.
+    let out_module = <<P::Access as FnAccess>::Verdict as PassExecution>::out_module_view(&out);
+    let out_view = FunctionView::from(
+        function
+            .resolve_in(ModuleRef::from(out_module))
+            .unwrap_or_else(|| {
+                unreachable!("the function id resolved in this module before the pass ran")
+            }),
+    );
     // Framework-witnessed preservation: offer any recorded reshape edits to the
     // cached CFG analyses; those that repair are added back to the report before
     // invalidation, so they survive instead of being evicted by the rung floor.
     let (mut pa, cfg_updates) = report.into_parts();
     if !cfg_updates.is_empty() {
-        fam.flush_cfg_updates(function, &cfg_updates, &mut pa);
+        fam.flush_cfg_updates(out_view, &cfg_updates, &mut pa);
     }
-    fam.invalidate(function, &pa)?;
+    fam.invalidate(out_view, &pa)?;
     Ok(out)
 }
 
@@ -405,24 +527,27 @@ where
 /// preservation set.
 pub fn run_module_pass<'ctx, B, P>(
     mut pass: P,
-    module: Module<'ctx, B, Verified>,
+    module: Module<B, Verified>,
     analyses: &mut Analyses<'ctx, B>,
 ) -> IrResult<<<P::Access as ModAccess>::Verdict as PassExecution>::OutModule<'ctx, B>>
 where
     B: ModuleBrand + 'ctx,
-    P: ModulePass<'ctx, B>,
+    P: ModulePass<B> + 'ctx,
+    P::Requires: ModuleAnalysisList<'ctx, B>,
     P::Access: ModRungExecute,
     <P::Access as ModAccess>::Verdict: PassExecution,
 {
     let (mam, fam) = analyses.managers_mut();
-    let view = module.as_view();
-    P::Requires::prefetch(mam, view)?;
+    P::Requires::prefetch(mam, module.as_view())?;
     let (report, out) = {
-        let results = P::Requires::collect(&*mam, view)?;
+        let results = P::Requires::collect(&*mam, module.as_view())?;
         <P::Access as ModRungExecute>::execute::<B, P::Requires, P>(
             &mut pass, module, &*mam, fam, results,
         )?
     };
+    // Re-mint the view against the module the run produced — the pre-run one
+    // borrowed a token that was moved into `execute`.
+    let view = <<P::Access as ModAccess>::Verdict as PassExecution>::out_module_view(&out);
     let pa = report.into_pa();
     mam.invalidate(view, &pa)?;
     fam.invalidate_module(view, &pa)?;
@@ -455,24 +580,17 @@ where
 #[doc(hidden)]
 pub trait VerdictCarry: PipelineVerdict {
     /// Carried mutation token; `()` for [`StaysVerified`],
-    /// `&'pm Module<Unverified>` for [`Downgrades`].
-    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>: Copy
-    where
-        'ctx: 'pm;
+    /// `&'m Module<Unverified>` for [`Downgrades`]. `'m` is the driver's borrow
+    /// of the module value it owns — see [`FnAccess::Token`].
+    type Token<'m, B: ModuleBrand + 'm>: Copy;
 }
 
 impl VerdictCarry for StaysVerified {
-    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
-        = ()
-    where
-        'ctx: 'pm;
+    type Token<'m, B: ModuleBrand + 'm> = ();
 }
 
 impl VerdictCarry for Downgrades {
-    type Token<'pm, 'ctx, B: ModuleBrand + 'ctx>
-        = &'pm Module<'ctx, B, Unverified>
-    where
-        'ctx: 'pm;
+    type Token<'m, B: ModuleBrand + 'm> = &'m Module<B, Unverified>;
 }
 
 /// Weakens a pipeline verdict's carried token down to one member's verdict
@@ -487,36 +605,21 @@ impl VerdictCarry for Downgrades {
 #[doc(hidden)]
 pub trait ProvidesToken<Member: VerdictCarry>: VerdictCarry {
     /// Project this pipeline verdict's token to `Member`'s token.
-    fn member_token<'pm, 'ctx, B: ModuleBrand + 'ctx>(
-        token: Self::Token<'pm, 'ctx, B>,
-    ) -> Member::Token<'pm, 'ctx, B>
-    where
-        'ctx: 'pm;
+    fn member_token<'m, B: ModuleBrand + 'm>(token: Self::Token<'m, B>) -> Member::Token<'m, B>;
 }
 
 impl ProvidesToken<StaysVerified> for StaysVerified {
-    fn member_token<'pm, 'ctx, B: ModuleBrand + 'ctx>(_token: ())
-    where
-        'ctx: 'pm,
-    {
-    }
+    fn member_token<'m, B: ModuleBrand + 'm>(_token: ()) {}
 }
 
 impl ProvidesToken<StaysVerified> for Downgrades {
-    fn member_token<'pm, 'ctx, B: ModuleBrand + 'ctx>(_token: &'pm Module<'ctx, B, Unverified>)
-    where
-        'ctx: 'pm,
-    {
-    }
+    fn member_token<'m, B: ModuleBrand + 'm>(_token: &'m Module<B, Unverified>) {}
 }
 
 impl ProvidesToken<Downgrades> for Downgrades {
-    fn member_token<'pm, 'ctx, B: ModuleBrand + 'ctx>(
-        token: &'pm Module<'ctx, B, Unverified>,
-    ) -> &'pm Module<'ctx, B, Unverified>
-    where
-        'ctx: 'pm,
-    {
+    fn member_token<'m, B: ModuleBrand + 'm>(
+        token: &'m Module<B, Unverified>,
+    ) -> &'m Module<B, Unverified> {
         token
     }
 }
@@ -550,24 +653,24 @@ macro_rules! fold_verdicts {
 /// token to all members instead of consuming a fresh `Module<Verified>` per
 /// member). Because each member invalidates `fam` from its own report here, the
 /// next member's prefetch already sees the fresh cache.
-fn run_function_member<'pm, 'ctx, B, A, R, P>(
+fn run_function_member<'m, 'ctx, B, A, R, P>(
     pass: &mut P,
-    token: A::Token<'pm, 'ctx, B>,
-    function: FunctionView<'ctx, B>,
+    token: A::Token<'m, B>,
+    function: FunctionView<'m, B>,
     fam: &mut FunctionAnalysisManager<'ctx, B>,
 ) -> IrResult<PreservedAnalyses>
 where
     B: ModuleBrand + 'ctx,
     A: FnAccess,
     R: FunctionAnalysisList<'ctx, B>,
-    P: FunctionPass<'ctx, B, Access = A, Requires = R>,
-    'ctx: 'pm,
+    P: FunctionPass<B, Access = A, Requires = R> + 'ctx,
+    'ctx: 'm,
 {
     R::prefetch(fam, function)?;
     let report = {
         // `results` borrows `*fam` only for this block; the returned report
         // borrows nothing from it, so `fam` is free for `invalidate`. The module
-        // `token` is `Copy` and keeps its own longer `'pm`.
+        // `token` is `Copy` and keeps its own longer `'m`.
         let results = R::collect(&*fam, function)?;
         let cx = FnCx::new(token, function, results);
         pass.run(cx)?
@@ -599,66 +702,66 @@ mod fn_member_sealed {
 #[doc(hidden)]
 pub trait FnMemberExec: FnAccess + fn_member_sealed::Sealed {
     /// Run `pass` at this rung with the member's already-weakened `token`.
-    fn run_member<'pm, 'ctx, B, R, P>(
+    fn run_member<'m, 'ctx, B, R, P>(
         pass: &mut P,
-        token: <Self::Verdict as VerdictCarry>::Token<'pm, 'ctx, B>,
-        function: FunctionView<'ctx, B>,
+        token: <Self::Verdict as VerdictCarry>::Token<'m, B>,
+        function: FunctionView<'m, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = Self, Requires = R>,
+        P: FunctionPass<B, Access = Self, Requires = R> + 'ctx,
         Self::Verdict: VerdictCarry,
-        'ctx: 'pm;
+        'ctx: 'm;
 }
 
 impl FnMemberExec for Inspect {
-    fn run_member<'pm, 'ctx, B, R, P>(
+    fn run_member<'m, 'ctx, B, R, P>(
         pass: &mut P,
         token: (),
-        function: FunctionView<'ctx, B>,
+        function: FunctionView<'m, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = Inspect, Requires = R>,
-        'ctx: 'pm,
+        P: FunctionPass<B, Access = Inspect, Requires = R> + 'ctx,
+        'ctx: 'm,
     {
         run_function_member::<B, Inspect, R, P>(pass, token, function, fam)
     }
 }
 
 impl FnMemberExec for PatchBody {
-    fn run_member<'pm, 'ctx, B, R, P>(
+    fn run_member<'m, 'ctx, B, R, P>(
         pass: &mut P,
-        token: &'pm Module<'ctx, B, Unverified>,
-        function: FunctionView<'ctx, B>,
+        token: &'m Module<B, Unverified>,
+        function: FunctionView<'m, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = PatchBody, Requires = R>,
-        'ctx: 'pm,
+        P: FunctionPass<B, Access = PatchBody, Requires = R> + 'ctx,
+        'ctx: 'm,
     {
         run_function_member::<B, PatchBody, R, P>(pass, token, function, fam)
     }
 }
 
 impl FnMemberExec for ReshapeCfg {
-    fn run_member<'pm, 'ctx, B, R, P>(
+    fn run_member<'m, 'ctx, B, R, P>(
         pass: &mut P,
-        token: &'pm Module<'ctx, B, Unverified>,
-        function: FunctionView<'ctx, B>,
+        token: &'m Module<B, Unverified>,
+        function: FunctionView<'m, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
         B: ModuleBrand + 'ctx,
         R: FunctionAnalysisList<'ctx, B>,
-        P: FunctionPass<'ctx, B, Access = ReshapeCfg, Requires = R>,
-        'ctx: 'pm,
+        P: FunctionPass<B, Access = ReshapeCfg, Requires = R> + 'ctx,
+        'ctx: 'm,
     {
         run_function_member::<B, ReshapeCfg, R, P>(pass, token, function, fam)
     }
@@ -687,33 +790,34 @@ pub trait FunctionPipelineMember<'ctx, B: ModuleBrand + 'ctx, Kind> {
     type MemberVerdict: VerdictCarry;
 
     #[doc(hidden)]
-    fn run_member<'pm>(
+    fn run_member<'m>(
         &mut self,
-        token: <Self::MemberVerdict as VerdictCarry>::Token<'pm, 'ctx, B>,
-        function: FunctionView<'ctx, B>,
+        token: <Self::MemberVerdict as VerdictCarry>::Token<'m, B>,
+        function: FunctionView<'m, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
-        'ctx: 'pm;
+        'ctx: 'm;
 }
 
 impl<'ctx, B, T> FunctionPipelineMember<'ctx, B, LeafMember> for T
 where
     B: ModuleBrand + 'ctx,
-    T: FunctionPass<'ctx, B>,
+    T: FunctionPass<B> + 'ctx,
+    T::Requires: FunctionAnalysisList<'ctx, B>,
     T::Access: FnMemberExec,
     <T::Access as FnAccess>::Verdict: VerdictCarry,
 {
     type MemberVerdict = <T::Access as FnAccess>::Verdict;
 
-    fn run_member<'pm>(
+    fn run_member<'m>(
         &mut self,
-        token: <Self::MemberVerdict as VerdictCarry>::Token<'pm, 'ctx, B>,
-        function: FunctionView<'ctx, B>,
+        token: <Self::MemberVerdict as VerdictCarry>::Token<'m, B>,
+        function: FunctionView<'m, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
-        'ctx: 'pm,
+        'ctx: 'm,
     {
         <T::Access as FnMemberExec>::run_member::<B, T::Requires, T>(self, token, function, fam)
     }
@@ -734,14 +838,14 @@ pub trait FunctionPassList<'ctx, B: ModuleBrand + 'ctx, Kinds>: pass_list_sealed
     type Verdict: VerdictCarry;
 
     #[doc(hidden)]
-    fn run_all<'pm>(
+    fn run_all<'m>(
         &mut self,
-        token: <Self::Verdict as VerdictCarry>::Token<'pm, 'ctx, B>,
-        function: FunctionView<'ctx, B>,
+        token: <Self::Verdict as VerdictCarry>::Token<'m, B>,
+        function: FunctionView<'m, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
-        'ctx: 'pm;
+        'ctx: 'm;
 }
 
 macro_rules! impl_function_pass_list {
@@ -763,14 +867,14 @@ macro_rules! impl_function_pass_list {
                     $(<$member as FunctionPipelineMember<'ctx, B, $kind>>::MemberVerdict),+
                 );
 
-            fn run_all<'pm>(
+            fn run_all<'m>(
                 &mut self,
-                token: <Self::Verdict as VerdictCarry>::Token<'pm, 'ctx, B>,
-                function: FunctionView<'ctx, B>,
+                token: <Self::Verdict as VerdictCarry>::Token<'m, B>,
+                function: FunctionView<'m, B>,
                 fam: &mut FunctionAnalysisManager<'ctx, B>,
             ) -> IrResult<PreservedAnalyses>
             where
-                'ctx: 'pm,
+                'ctx: 'm,
             {
                 let mut preserved = PreservedAnalyses::all();
                 $(
@@ -825,7 +929,7 @@ impl<P> FunctionPipeline<P> {
     /// the current `fam` state. `Kinds` is the inferred leaf/nested dispatch tuple.
     pub fn run<'ctx, B, F, Kinds>(
         &mut self,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         function: F,
         analyses: &mut Analyses<'ctx, B>,
     ) -> IrResult<
@@ -835,7 +939,7 @@ impl<P> FunctionPipeline<P> {
         B: ModuleBrand + 'ctx,
         P: FunctionPassList<'ctx, B, Kinds>,
         <P as FunctionPassList<'ctx, B, Kinds>>::Verdict: FunctionPipelineExecute,
-        F: Into<FunctionView<'ctx, B>>,
+        F: IntoFunctionId<B>,
     {
         <<P as FunctionPassList<'ctx, B, Kinds>>::Verdict as FunctionPipelineExecute>::execute::<
             B,
@@ -844,7 +948,7 @@ impl<P> FunctionPipeline<P> {
         >(
             &mut self.passes,
             module,
-            function.into(),
+            function.into_function_id(),
             analyses.function_manager_mut(),
         )
     }
@@ -862,14 +966,14 @@ where
 {
     type MemberVerdict = <P as FunctionPassList<'ctx, B, Kinds>>::Verdict;
 
-    fn run_member<'pm>(
+    fn run_member<'m>(
         &mut self,
-        token: <Self::MemberVerdict as VerdictCarry>::Token<'pm, 'ctx, B>,
-        function: FunctionView<'ctx, B>,
+        token: <Self::MemberVerdict as VerdictCarry>::Token<'m, B>,
+        function: FunctionView<'m, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
-        'ctx: 'pm,
+        'ctx: 'm,
     {
         self.passes.run_all(token, function, fam)
     }
@@ -884,8 +988,8 @@ pub trait FunctionPipelineExecute: VerdictCarry + PassExecution {
     #[doc(hidden)]
     fn execute<'ctx, B, P, Kinds>(
         passes: &mut P,
-        module: Module<'ctx, B, Verified>,
-        function: FunctionView<'ctx, B>,
+        module: Module<B, Verified>,
+        function: FunctionId<Dyn, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<<Self as PassExecution>::OutModule<'ctx, B>>
     where
@@ -896,15 +1000,15 @@ pub trait FunctionPipelineExecute: VerdictCarry + PassExecution {
 impl FunctionPipelineExecute for StaysVerified {
     fn execute<'ctx, B, P, Kinds>(
         passes: &mut P,
-        module: Module<'ctx, B, Verified>,
-        function: FunctionView<'ctx, B>,
+        module: Module<B, Verified>,
+        function: FunctionId<Dyn, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Verified>>
+    ) -> IrResult<Module<B, Verified>>
     where
         B: ModuleBrand + 'ctx,
         P: FunctionPassList<'ctx, B, Kinds, Verdict = Self>,
     {
-        passes.run_all((), function, fam)?;
+        passes.run_all((), view_in(&module, function), fam)?;
         Ok(module)
     }
 }
@@ -912,16 +1016,16 @@ impl FunctionPipelineExecute for StaysVerified {
 impl FunctionPipelineExecute for Downgrades {
     fn execute<'ctx, B, P, Kinds>(
         passes: &mut P,
-        module: Module<'ctx, B, Verified>,
-        function: FunctionView<'ctx, B>,
+        module: Module<B, Verified>,
+        function: FunctionId<Dyn, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Unverified>>
+    ) -> IrResult<Module<B, Unverified>>
     where
         B: ModuleBrand + 'ctx,
         P: FunctionPassList<'ctx, B, Kinds, Verdict = Self>,
     {
         let unverified = module.unverify();
-        passes.run_all(&unverified, function, fam)?;
+        passes.run_all(&unverified, view_in(&unverified, function), fam)?;
         Ok(unverified)
     }
 }
@@ -936,10 +1040,10 @@ impl FunctionPipelineExecute for Downgrades {
 /// is owned solely by the [`ModulePassList`] `run_all` loop, so leaf passes,
 /// nested [`ModulePipeline`]s, and the [`ForEachFunction`] adaptor are all
 /// invalidated from the same place (mirroring [`run_module_pass`]).
-fn run_module_member<'pm, 'ctx, B, A, R, P>(
+fn run_module_member<'m, 'ctx, B, A, R, P>(
     pass: &mut P,
-    token: A::Token<'pm, 'ctx, B>,
-    module: ModuleView<'ctx, B>,
+    token: A::Token<'m, B>,
+    module: ModuleView<'m, B>,
     mam: &mut ModuleAnalysisManager<'ctx, B>,
     fam: &mut FunctionAnalysisManager<'ctx, B>,
 ) -> IrResult<PreservedAnalyses>
@@ -947,15 +1051,15 @@ where
     B: ModuleBrand + 'ctx,
     A: ModAccess,
     R: ModuleAnalysisList<'ctx, B>,
-    P: ModulePass<'ctx, B, Access = A, Requires = R>,
-    'ctx: 'pm,
+    P: ModulePass<B, Access = A, Requires = R> + 'ctx,
+    'ctx: 'm,
 {
     R::prefetch(mam, module)?;
     let report = {
         // `results` and the `&*mam` peek borrow `*mam` only for this block; `fam`
         // is reborrowed at the same scope. Both managers are free again for the
         // loop's `invalidate`/`invalidate_module`. The module `token` is `Copy`
-        // and keeps its own longer `'pm`.
+        // and keeps its own longer `'m`.
         let results = R::collect(&*mam, module)?;
         let cx = ModCx::new(module, token, results, &*mam, fam);
         pass.run(cx)?
@@ -974,52 +1078,52 @@ mod mod_member_sealed {
 #[doc(hidden)]
 pub trait ModMemberExec: ModAccess + mod_member_sealed::Sealed {
     /// Run `pass` at this rung with the member's already-weakened `token`.
-    fn run_member<'pm, 'ctx, B, R, P>(
+    fn run_member<'m, 'ctx, B, R, P>(
         pass: &mut P,
-        token: <Self::Verdict as VerdictCarry>::Token<'pm, 'ctx, B>,
-        module: ModuleView<'ctx, B>,
+        token: <Self::Verdict as VerdictCarry>::Token<'m, B>,
+        module: ModuleView<'m, B>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
-        P: ModulePass<'ctx, B, Access = Self, Requires = R>,
+        P: ModulePass<B, Access = Self, Requires = R> + 'ctx,
         Self::Verdict: VerdictCarry,
-        'ctx: 'pm;
+        'ctx: 'm;
 }
 
 impl ModMemberExec for Inspect {
-    fn run_member<'pm, 'ctx, B, R, P>(
+    fn run_member<'m, 'ctx, B, R, P>(
         pass: &mut P,
         token: (),
-        module: ModuleView<'ctx, B>,
+        module: ModuleView<'m, B>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
-        P: ModulePass<'ctx, B, Access = Inspect, Requires = R>,
-        'ctx: 'pm,
+        P: ModulePass<B, Access = Inspect, Requires = R> + 'ctx,
+        'ctx: 'm,
     {
         run_module_member::<B, Inspect, R, P>(pass, token, module, mam, fam)
     }
 }
 
 impl ModMemberExec for RewriteModule {
-    fn run_member<'pm, 'ctx, B, R, P>(
+    fn run_member<'m, 'ctx, B, R, P>(
         pass: &mut P,
-        token: &'pm Module<'ctx, B, Unverified>,
-        module: ModuleView<'ctx, B>,
+        token: &'m Module<B, Unverified>,
+        module: ModuleView<'m, B>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
         B: ModuleBrand + 'ctx,
         R: ModuleAnalysisList<'ctx, B>,
-        P: ModulePass<'ctx, B, Access = RewriteModule, Requires = R>,
-        'ctx: 'pm,
+        P: ModulePass<B, Access = RewriteModule, Requires = R> + 'ctx,
+        'ctx: 'm,
     {
         run_module_member::<B, RewriteModule, R, P>(pass, token, module, mam, fam)
     }
@@ -1035,35 +1139,36 @@ pub trait ModulePipelineMember<'ctx, B: ModuleBrand + 'ctx, Kind> {
     type MemberVerdict: VerdictCarry;
 
     #[doc(hidden)]
-    fn run_member<'pm>(
+    fn run_member<'m>(
         &mut self,
-        token: <Self::MemberVerdict as VerdictCarry>::Token<'pm, 'ctx, B>,
-        module: ModuleView<'ctx, B>,
+        token: <Self::MemberVerdict as VerdictCarry>::Token<'m, B>,
+        module: ModuleView<'m, B>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
-        'ctx: 'pm;
+        'ctx: 'm;
 }
 
 impl<'ctx, B, T> ModulePipelineMember<'ctx, B, LeafMember> for T
 where
     B: ModuleBrand + 'ctx,
-    T: ModulePass<'ctx, B>,
+    T: ModulePass<B> + 'ctx,
+    T::Requires: ModuleAnalysisList<'ctx, B>,
     T::Access: ModMemberExec,
     <T::Access as ModAccess>::Verdict: VerdictCarry,
 {
     type MemberVerdict = <T::Access as ModAccess>::Verdict;
 
-    fn run_member<'pm>(
+    fn run_member<'m>(
         &mut self,
-        token: <Self::MemberVerdict as VerdictCarry>::Token<'pm, 'ctx, B>,
-        module: ModuleView<'ctx, B>,
+        token: <Self::MemberVerdict as VerdictCarry>::Token<'m, B>,
+        module: ModuleView<'m, B>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
-        'ctx: 'pm,
+        'ctx: 'm,
     {
         <T::Access as ModMemberExec>::run_member::<B, T::Requires, T>(self, token, module, mam, fam)
     }
@@ -1099,15 +1204,15 @@ where
 {
     type MemberVerdict = <P as FunctionPassList<'ctx, B, Kinds>>::Verdict;
 
-    fn run_member<'pm>(
+    fn run_member<'m>(
         &mut self,
-        token: <Self::MemberVerdict as VerdictCarry>::Token<'pm, 'ctx, B>,
-        module: ModuleView<'ctx, B>,
+        token: <Self::MemberVerdict as VerdictCarry>::Token<'m, B>,
+        module: ModuleView<'m, B>,
         _mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
-        'ctx: 'pm,
+        'ctx: 'm,
     {
         let mut preserved = PreservedAnalyses::all();
         for function in module.functions() {
@@ -1144,15 +1249,15 @@ pub trait ModulePassList<'ctx, B: ModuleBrand + 'ctx, Kinds>:
     type Verdict: VerdictCarry;
 
     #[doc(hidden)]
-    fn run_all<'pm>(
+    fn run_all<'m>(
         &mut self,
-        token: <Self::Verdict as VerdictCarry>::Token<'pm, 'ctx, B>,
-        module: ModuleView<'ctx, B>,
+        token: <Self::Verdict as VerdictCarry>::Token<'m, B>,
+        module: ModuleView<'m, B>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
-        'ctx: 'pm;
+        'ctx: 'm;
 }
 
 macro_rules! impl_module_pass_list {
@@ -1174,15 +1279,15 @@ macro_rules! impl_module_pass_list {
                     $(<$member as ModulePipelineMember<'ctx, B, $kind>>::MemberVerdict),+
                 );
 
-            fn run_all<'pm>(
+            fn run_all<'m>(
                 &mut self,
-                token: <Self::Verdict as VerdictCarry>::Token<'pm, 'ctx, B>,
-                module: ModuleView<'ctx, B>,
+                token: <Self::Verdict as VerdictCarry>::Token<'m, B>,
+                module: ModuleView<'m, B>,
                 mam: &mut ModuleAnalysisManager<'ctx, B>,
                 fam: &mut FunctionAnalysisManager<'ctx, B>,
             ) -> IrResult<PreservedAnalyses>
             where
-                'ctx: 'pm,
+                'ctx: 'm,
             {
                 let mut preserved = PreservedAnalyses::all();
                 $(
@@ -1240,7 +1345,7 @@ impl<P> ModulePipeline<P> {
     /// leaf/nested/for-each dispatch tuple.
     pub fn run<'ctx, B, Kinds>(
         &mut self,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         analyses: &mut Analyses<'ctx, B>,
     ) -> IrResult<
         <<P as ModulePassList<'ctx, B, Kinds>>::Verdict as PassExecution>::OutModule<'ctx, B>,
@@ -1269,15 +1374,15 @@ where
 {
     type MemberVerdict = <P as ModulePassList<'ctx, B, Kinds>>::Verdict;
 
-    fn run_member<'pm>(
+    fn run_member<'m>(
         &mut self,
-        token: <Self::MemberVerdict as VerdictCarry>::Token<'pm, 'ctx, B>,
-        module: ModuleView<'ctx, B>,
+        token: <Self::MemberVerdict as VerdictCarry>::Token<'m, B>,
+        module: ModuleView<'m, B>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<PreservedAnalyses>
     where
-        'ctx: 'pm,
+        'ctx: 'm,
     {
         self.passes.run_all(token, module, mam, fam)
     }
@@ -1288,9 +1393,9 @@ where
 #[doc(hidden)]
 pub trait ModulePipelineExecute: VerdictCarry + PassExecution {
     #[doc(hidden)]
-    fn execute<'ctx, B, P, Kinds>(
+    fn execute<'m, 'ctx, B, P, Kinds>(
         passes: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
     ) -> IrResult<<Self as PassExecution>::OutModule<'ctx, B>>
@@ -1300,12 +1405,12 @@ pub trait ModulePipelineExecute: VerdictCarry + PassExecution {
 }
 
 impl ModulePipelineExecute for StaysVerified {
-    fn execute<'ctx, B, P, Kinds>(
+    fn execute<'m, 'ctx, B, P, Kinds>(
         passes: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Verified>>
+    ) -> IrResult<Module<B, Verified>>
     where
         B: ModuleBrand + 'ctx,
         P: ModulePassList<'ctx, B, Kinds, Verdict = Self>,
@@ -1317,12 +1422,12 @@ impl ModulePipelineExecute for StaysVerified {
 }
 
 impl ModulePipelineExecute for Downgrades {
-    fn execute<'ctx, B, P, Kinds>(
+    fn execute<'m, 'ctx, B, P, Kinds>(
         passes: &mut P,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         mam: &mut ModuleAnalysisManager<'ctx, B>,
         fam: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Unverified>>
+    ) -> IrResult<Module<B, Unverified>>
     where
         B: ModuleBrand + 'ctx,
         P: ModulePassList<'ctx, B, Kinds, Verdict = Self>,
@@ -1370,7 +1475,10 @@ mod erased {
         ProvidesToken, VerdictCarry,
     };
     use crate::IrResult;
-    use crate::analysis::{FunctionAnalysisManager, ModuleAnalysisManager, PreservedAnalyses};
+    use crate::analysis::{
+        FunctionAnalysisList, FunctionAnalysisManager, ModuleAnalysisList, ModuleAnalysisManager,
+        PreservedAnalyses,
+    };
     use crate::module::{Module, ModuleBrand, ModuleView, Unverified};
     use crate::pass_context::FunctionView;
 
@@ -1393,12 +1501,14 @@ mod erased {
         /// (projected to `()` for a read-only pass, `&Module<Unverified>` for a
         /// mutating one), run it, and invalidate `fam` from the report — the same
         /// per-member flow the tuple pipelines use, just behind `dyn`.
-        fn run_erased(
+        fn run_erased<'m>(
             &mut self,
-            token: &Module<'ctx, B, Unverified>,
-            function: FunctionView<'ctx, B>,
+            token: &'m Module<B, Unverified>,
+            function: FunctionView<'m, B>,
             fam: &mut FunctionAnalysisManager<'ctx, B>,
-        ) -> IrResult<PreservedAnalyses>;
+        ) -> IrResult<PreservedAnalyses>
+        where
+            'ctx: 'm;
 
         /// The pass's `NAME` (instrumentation-facing; object-safe accessor).
         fn name(&self) -> &str;
@@ -1414,17 +1524,21 @@ mod erased {
     impl<'ctx, B, P> ErasedFunctionPass<'ctx, B> for P
     where
         B: ModuleBrand + 'ctx,
-        P: FunctionPass<'ctx, B>,
+        P: FunctionPass<B> + 'ctx,
+        P::Requires: FunctionAnalysisList<'ctx, B>,
         P::Access: FnMemberExec,
         <P::Access as FnAccess>::Verdict: VerdictCarry,
         Downgrades: ProvidesToken<<P::Access as FnAccess>::Verdict>,
     {
-        fn run_erased(
+        fn run_erased<'m>(
             &mut self,
-            token: &Module<'ctx, B, Unverified>,
-            function: FunctionView<'ctx, B>,
+            token: &'m Module<B, Unverified>,
+            function: FunctionView<'m, B>,
             fam: &mut FunctionAnalysisManager<'ctx, B>,
-        ) -> IrResult<PreservedAnalyses> {
+        ) -> IrResult<PreservedAnalyses>
+        where
+            'ctx: 'm,
+        {
             // Project the container's single downgraded token down to THIS pass's
             // rung token: a read-only member drops it to `()`, a mutating member
             // receives the shared `&Module<Unverified>` unchanged (`ProvidesToken`).
@@ -1456,13 +1570,15 @@ mod erased {
         /// Prefetch the module `Requires`, build the rung context from `token`, run
         /// the pass, and return the report's preservation set. The container owns
         /// invalidation (mirrors `run_module_member`), so this does not invalidate.
-        fn run_erased(
+        fn run_erased<'m>(
             &mut self,
-            token: &Module<'ctx, B, Unverified>,
-            module: ModuleView<'ctx, B>,
+            token: &'m Module<B, Unverified>,
+            module: ModuleView<'m, B>,
             mam: &mut ModuleAnalysisManager<'ctx, B>,
             fam: &mut FunctionAnalysisManager<'ctx, B>,
-        ) -> IrResult<PreservedAnalyses>;
+        ) -> IrResult<PreservedAnalyses>
+        where
+            'ctx: 'm;
 
         /// The pass's `NAME`.
         fn name(&self) -> &str;
@@ -1475,18 +1591,22 @@ mod erased {
     impl<'ctx, B, P> ErasedModulePass<'ctx, B> for P
     where
         B: ModuleBrand + 'ctx,
-        P: ModulePass<'ctx, B>,
+        P: ModulePass<B> + 'ctx,
+        P::Requires: ModuleAnalysisList<'ctx, B>,
         P::Access: ModMemberExec,
         <P::Access as ModAccess>::Verdict: VerdictCarry,
         Downgrades: ProvidesToken<<P::Access as ModAccess>::Verdict>,
     {
-        fn run_erased(
+        fn run_erased<'m>(
             &mut self,
-            token: &Module<'ctx, B, Unverified>,
-            module: ModuleView<'ctx, B>,
+            token: &'m Module<B, Unverified>,
+            module: ModuleView<'m, B>,
             mam: &mut ModuleAnalysisManager<'ctx, B>,
             fam: &mut FunctionAnalysisManager<'ctx, B>,
-        ) -> IrResult<PreservedAnalyses> {
+        ) -> IrResult<PreservedAnalyses>
+        where
+            'ctx: 'm,
+        {
             let member_token =
                 <Downgrades as ProvidesToken<<P::Access as ModAccess>::Verdict>>::member_token(
                     token,
@@ -1556,7 +1676,7 @@ impl ReadOnlyMod for Inspect {}
 /// trait — the only place `dyn` appears for pass *dispatch*. (The unrelated
 /// `Box<dyn ExactSizeIterator>` in `ModuleFunctionViews` is plain std iterator
 /// type-erasure, with no bearing on pass coherence.)
-pub struct DynFunctionPipeline<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub struct DynFunctionPipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<Box<dyn ErasedFunctionPass<'ctx, B> + 'ctx>>,
 }
 
@@ -1570,7 +1690,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynFunctionPipeline<'ctx, B> {
     /// on CLI flags, etc. — the runtime-composition property tuples cannot express.
     pub fn push<P>(&mut self, pass: P)
     where
-        P: FunctionPass<'ctx, B> + 'ctx,
+        P: FunctionPass<B> + 'ctx,
+        P::Requires: FunctionAnalysisList<'ctx, B>,
         P::Access: FnMemberExec,
         <P::Access as FnAccess>::Verdict: VerdictCarry,
         Downgrades: ProvidesToken<<P::Access as FnAccess>::Verdict>,
@@ -1605,19 +1726,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynFunctionPipeline<'ctx, B> {
     /// before the next runs. Always returns `Module<Unverified>` (D8).
     pub fn run<F>(
         &mut self,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         function: F,
         analyses: &mut Analyses<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Unverified>>
+    ) -> IrResult<Module<B, Unverified>>
     where
-        F: Into<FunctionView<'ctx, B>>,
+        F: IntoFunctionId<B>,
     {
-        let function = function.into();
+        let function = function.into_function_id();
         // Downgrade once; thread the shared `&Module<Unverified>` to every member.
         let unverified = module.unverify();
+        let view = view_in(&unverified, function);
         let fam = analyses.function_manager_mut();
         for pass in &mut self.passes {
-            pass.run_erased(&unverified, function, fam)?;
+            pass.run_erased(&unverified, view, fam)?;
         }
         Ok(unverified)
     }
@@ -1635,7 +1757,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for DynFunctionPipeline<'ctx, B> {
 /// straight through, with no mutation and no re-verification (D8). A mutating pass
 /// fails to compile at `push` — that missing impl is the type-level guarantee of
 /// the verified output.
-pub struct DynReadOnlyFunctionPipeline<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub struct DynReadOnlyFunctionPipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<Box<dyn ErasedFunctionPass<'ctx, B> + 'ctx>>,
 }
 
@@ -1651,7 +1773,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynReadOnlyFunctionPipeline<'ctx, B> {
     /// enter the container).
     pub fn push<P>(&mut self, pass: P)
     where
-        P: FunctionPass<'ctx, B> + 'ctx,
+        P: FunctionPass<B> + 'ctx,
+        P::Requires: FunctionAnalysisList<'ctx, B>,
         P::Access: ReadOnlyFn,
     {
         self.passes.push(Box::new(pass));
@@ -1681,23 +1804,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynReadOnlyFunctionPipeline<'ctx, B> {
     /// verified module straight through — no mutation, no re-verification (D8).
     pub fn run<F>(
         &mut self,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         function: F,
         analyses: &mut Analyses<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Verified>>
+    ) -> IrResult<Module<B, Verified>>
     where
-        F: Into<FunctionView<'ctx, B>>,
+        F: IntoFunctionId<B>,
     {
-        let function = function.into();
-        // A throwaway unverified alias, only to satisfy the erased signature: every
-        // member is `Inspect`, so `ProvidesToken` projects the token to `()` and it
-        // never reaches a mutator. The verified `module` is returned untouched.
-        let scratch = module.scratch_unverified();
+        let function = function.into_function_id();
+        // Downgrade only to satisfy the erased signature: every member is
+        // `Inspect`, so `ProvidesToken` projects the token to `()` and it never
+        // reaches a mutator. Nothing was mutated, so the token is re-stamped
+        // `Verified` on the way out with no re-verification (D8).
+        let unverified = module.unverify();
+        let view = view_in(&unverified, function);
         let fam = analyses.function_manager_mut();
         for pass in &mut self.passes {
-            pass.run_erased(&scratch, function, fam)?;
+            pass.run_erased(&unverified, view, fam)?;
         }
-        Ok(module)
+        Ok(unverified.assume_verified())
     }
 }
 
@@ -1715,7 +1840,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for DynReadOnlyFunctionPipeline<'ctx, 
 /// [`DynFunctionPipeline`]. `push` any [`ModulePass`], `run` over the whole module;
 /// always yields `Module<Unverified>` (D8). Invalidates both managers after each
 /// member (mirrors [`ModulePassList`]).
-pub struct DynModulePipeline<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub struct DynModulePipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<Box<dyn ErasedModulePass<'ctx, B> + 'ctx>>,
 }
 
@@ -1728,7 +1853,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
     /// Append a pass to the end of the pipeline (usable in a loop).
     pub fn push<P>(&mut self, pass: P)
     where
-        P: ModulePass<'ctx, B> + 'ctx,
+        P: ModulePass<B> + 'ctx,
+        P::Requires: ModuleAnalysisList<'ctx, B>,
         P::Access: ModMemberExec,
         <P::Access as ModAccess>::Verdict: VerdictCarry,
         Downgrades: ProvidesToken<<P::Access as ModAccess>::Verdict>,
@@ -1761,9 +1887,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
     /// `Module<Unverified>` (D8).
     pub fn run(
         &mut self,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         analyses: &mut Analyses<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Unverified>> {
+    ) -> IrResult<Module<B, Unverified>> {
         let unverified = module.unverify();
         let view = unverified.as_view();
         let (mam, fam) = analyses.managers_mut();
@@ -1786,7 +1912,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for DynModulePipeline<'ctx, B> {
 /// [`DynReadOnlyFunctionPipeline`]. `push` is bounded to [`ReadOnlyMod`] (only
 /// [`Inspect`] passes), and `run` threads the original `Module<Verified>` through
 /// untouched (D8).
-pub struct DynReadOnlyModulePipeline<'ctx, B: ModuleBrand + 'ctx = Brand<'ctx>> {
+pub struct DynReadOnlyModulePipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<Box<dyn ErasedModulePass<'ctx, B> + 'ctx>>,
 }
 
@@ -1800,7 +1926,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynReadOnlyModulePipeline<'ctx, B> {
     /// only [`Inspect`] passes; a mutating pass fails to compile here.
     pub fn push<P>(&mut self, pass: P)
     where
-        P: ModulePass<'ctx, B> + 'ctx,
+        P: ModulePass<B> + 'ctx,
+        P::Requires: ModuleAnalysisList<'ctx, B>,
         P::Access: ReadOnlyMod,
     {
         self.passes.push(Box::new(pass));
@@ -1831,20 +1958,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> DynReadOnlyModulePipeline<'ctx, B> {
     /// re-verification (D8).
     pub fn run(
         &mut self,
-        module: Module<'ctx, B, Verified>,
+        module: Module<B, Verified>,
         analyses: &mut Analyses<'ctx, B>,
-    ) -> IrResult<Module<'ctx, B, Verified>> {
-        // Throwaway unverified alias to satisfy the erased signature; every member
-        // is `Inspect`, so the token projects to `()` and never reaches a mutator.
-        let scratch = module.scratch_unverified();
-        let view = module.as_view();
+    ) -> IrResult<Module<B, Verified>> {
+        // Downgrade only to satisfy the erased signature; every member is
+        // `Inspect`, so the token projects to `()` and never reaches a mutator.
+        // Nothing was mutated, so the token is re-stamped `Verified` on the way
+        // out with no re-verification (D8).
+        let unverified = module.unverify();
+        let view = unverified.as_view();
         let (mam, fam) = analyses.managers_mut();
         for pass in &mut self.passes {
-            let pa = pass.run_erased(&scratch, view, mam, fam)?;
+            let pa = pass.run_erased(&unverified, view, mam, fam)?;
             mam.invalidate(view, &pa)?;
             fam.invalidate_module(view, &pa)?;
         }
-        Ok(module)
+        Ok(unverified.assume_verified())
     }
 }
 

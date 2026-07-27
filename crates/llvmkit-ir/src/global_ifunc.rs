@@ -8,32 +8,34 @@ use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
 use super::global_value::{Linkage, Visibility};
 use super::metadata::MetadataAttachmentSet;
-use super::module::{Brand, Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
-use super::r#type::{Type, TypeId, TypeKind};
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueId, ValueKindData, sealed};
+use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
+use super::r#type::{Type, TypeKind, TypeSlot};
+use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
+use super::value_id::GlobalIFuncId;
 
 #[derive(Debug)]
 pub(super) struct GlobalIFuncData {
     pub(super) name: String,
-    pub(super) value_type: TypeId,
+    pub(super) value_type: TypeSlot,
     pub(super) address_space: u32,
-    pub(super) resolver: Cell<ValueId>,
+    pub(super) resolver: Cell<ValueSlot>,
     pub(super) linkage: Cell<Linkage>,
     pub(super) visibility: Cell<Visibility>,
     pub(super) partition: RefCell<Option<String>>,
-    pub(super) metadata: RefCell<MetadataAttachmentSet>,
+    pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GlobalIFunc<'ctx, B: ModuleBrand = Brand<'ctx>> {
-    pub(super) id: ValueId,
+pub struct GlobalIFunc<'ctx, B: ModuleBrand> {
+    pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
-    pub(super) ty: TypeId,
+    pub(super) ty: TypeSlot,
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
     #[inline]
-    pub(super) fn from_parts_unchecked<M>(id: ValueId, module: M, ty: TypeId) -> Self
+    pub(super) fn from_parts_unchecked<M>(id: ValueSlot, module: M, ty: TypeSlot) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
     {
@@ -51,6 +53,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
             module: self.module,
             ty: self.ty,
         }
+    }
+
+    /// Storable, module-tagged [`GlobalIFuncId`] for this `ifunc` (llvmkit
+    /// 2.0), resolvable via [`Module::view`](crate::Module::view) /
+    /// [`Module::try_view`](crate::Module::try_view).
+    #[inline]
+    pub fn id(self) -> GlobalIFuncId<B> {
+        GlobalIFuncId::from_raw(self.module.id(), self.id)
     }
 
     #[inline]
@@ -111,7 +121,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
 
     pub fn set_resolver<C: IsConstant<'ctx, B>>(
         self,
-        _module: &Module<'ctx, B, Unverified>,
+        _module: &'ctx Module<B, Unverified>,
         resolver: C,
     ) -> IrResult<()> {
         let constant = resolver.as_constant();
@@ -137,7 +147,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_linkage(self, _module: &Module<'ctx, B, Unverified>, linkage: Linkage) {
+    pub fn set_linkage(self, _module: &'ctx Module<B, Unverified>, linkage: Linkage) {
         self.data().linkage.set(linkage);
     }
 
@@ -147,35 +157,50 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
     }
 
     #[inline]
-    pub fn set_visibility(self, _module: &Module<'ctx, B, Unverified>, visibility: Visibility) {
+    pub fn set_visibility(self, _module: &'ctx Module<B, Unverified>, visibility: Visibility) {
         self.data().visibility.set(visibility);
     }
 
-    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
+    pub fn metadata(self) -> MetadataAttachmentSet<B> {
+        MetadataAttachmentSet::from_stored(&self.data().metadata.borrow())
+    }
+
+    /// Crate-internal: the stored attachment set, for the printer and the
+    /// verifier, which already work inside the owning module.
+    pub(crate) fn metadata_stored(
+        self,
+    ) -> core::cell::Ref<'ctx, MetadataAttachmentSet<StoredBrand>> {
         self.data().metadata.borrow()
     }
 
+    /// Set or replace one metadata attachment.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
+    /// module — the module token proves *which* module may be mutated, and the
+    /// id's tag is what proves the node belongs to it.
     pub fn set_metadata(
         self,
-        _module: &Module<'ctx, B, Unverified>,
-        kind: crate::metadata::MetadataAttachmentKind,
-        id: crate::metadata::MetadataId,
-    ) {
+        module: &'ctx Module<B, Unverified>,
+        kind: MetadataAttachmentKind,
+        id: MetadataId<B>,
+    ) -> IrResult<()> {
+        let id = id.into_stored(module.id())?;
         self.data().metadata.borrow_mut().insert(kind, id);
+        Ok(())
     }
 
     pub fn partition(self) -> Option<String> {
         self.data().partition.borrow().clone()
     }
 
-    pub fn set_partition<P>(self, _module: &Module<'ctx, B, Unverified>, partition: P)
+    pub fn set_partition<P>(self, _module: &'ctx Module<B, Unverified>, partition: P)
     where
         P: Into<String>,
     {
         *self.data().partition.borrow_mut() = Some(partition.into());
     }
 
-    pub fn clear_partition(self, _module: &Module<'ctx, B, Unverified>) {
+    pub fn clear_partition(self, _module: &'ctx Module<B, Unverified>) {
         *self.data().partition.borrow_mut() = None;
     }
 }
@@ -187,6 +212,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalIFunc<'ctx, B> {
         GlobalIFunc::into_erased(self)
     }
 }
+crate::value::impl_into_erased_value_for_handle!(GlobalIFunc);
 impl<'ctx, B: ModuleBrand + 'ctx> IsConstant<'ctx, B> for GlobalIFunc<'ctx, B> {
     #[inline]
     fn as_constant(self) -> Constant<'ctx, B> {
@@ -203,12 +229,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalIFunc<'ctx, B> {
     fn name(self) -> Option<String> {
         self.into_erased().name()
     }
-    fn set_name<Name>(self, _module_token: &Module<'ctx, B, Unverified>, _name: Name)
+    fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
     where
         Name: Into<String>,
     {
     }
-    fn clear_name(self, _module_token: &Module<'ctx, B, Unverified>) {}
+    fn clear_name(self, _module_token: &'ctx Module<B, Unverified>) {}
 }
 impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalIFunc<'_, B> {
     fn debug_loc(self) -> Option<DebugLoc> {
@@ -247,12 +273,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalIFunc<'ctx, 
     }
 }
 
-pub struct GlobalIFuncBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
+pub struct GlobalIFuncBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
-    value_type: TypeId,
-    resolver: ValueId,
-    resolver_type: TypeId,
+    value_type: TypeSlot,
+    resolver: ValueSlot,
+    resolver_type: TypeSlot,
     address_space: u32,
     linkage: Linkage,
     visibility: Visibility,
@@ -260,15 +286,11 @@ pub struct GlobalIFuncBuilder<'ctx, B: ModuleBrand = Brand<'ctx>> {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
-    pub(super) fn new<M, C>(
-        module: M,
-        name: impl Into<String>,
-        value_type: Type<'ctx, B>,
-        resolver: C,
-    ) -> Self
+    pub(super) fn new<M, C, N>(module: M, name: N, value_type: Type<'ctx, B>, resolver: C) -> Self
     where
         M: Into<ModuleRef<'ctx, B>>,
         C: IsConstant<'ctx, B>,
+        N: Into<String>,
     {
         let module = module.into();
         let resolver = resolver.as_constant();
@@ -304,7 +326,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
         self
     }
 
-    pub fn build(self) -> IrResult<GlobalIFunc<'ctx, B>> {
+    /// Materialise the `ifunc`, returning its storable [`GlobalIFuncId`].
+    /// Resolve the id back into a borrowing [`GlobalIFunc`] with
+    /// [`Module::view`](crate::Module::view).
+    pub fn build(self) -> IrResult<GlobalIFuncId<B>> {
         if !is_valid_ifunc_linkage(self.linkage) {
             return Err(IrError::InvalidOperation {
                 message: "invalid linkage type for ifunc",
@@ -324,7 +349,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
                 got: Type::new(self.resolver_type, self.module).kind_label(),
             });
         }
-        self.module.module().install_global_ifunc::<B>(self)
+        self.module
+            .module()
+            .install_global_ifunc::<B>(self)
+            .map(|f| f.id())
     }
 
     pub(super) fn into_data(self) -> (String, GlobalIFuncData, u32) {

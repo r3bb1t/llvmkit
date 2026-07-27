@@ -11,15 +11,19 @@ use llvmkit_ir::{FnCx, FnReport, FunctionPass, IrResult, ModuleBrand, ReshapeCfg
 
 struct CondBrDoubleRemove;
 
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for CondBrDoubleRemove {
+impl<B: ModuleBrand> FunctionPass<B> for CondBrDoubleRemove {
     type Access = ReshapeCfg;
     type Requires = ();
     const NAME: &'static str = "cond-br-double-remove";
 
-    fn run(&mut self, cx: FnCx<'_, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport> {
+    fn run<'m, 'ctx>(&mut self, cx: FnCx<'m, '_, 'ctx, B, ReshapeCfg, ()>) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    {
         let reshape = cx.mutate();
         let bb = reshape.function().entry_block().expect("entry");
-        let e = reshape.edit_cond_br(&bb)?;
+        let e = reshape.edit_cond_br(bb.id())?;
         // `remove_then` consumes `e`; the second removal is a use-after-move.
         e.remove_then()?;
         e.remove_else()?;

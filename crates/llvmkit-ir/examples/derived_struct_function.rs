@@ -1,4 +1,4 @@
-use llvmkit_ir::{IRBuilder, IrError, IrStruct, Linkage, Module, NoFolder};
+use llvmkit_ir::{IRBuilder, IrError, IrStruct, Linkage, NoFolder, module_new};
 
 #[derive(IrStruct)]
 struct Point {
@@ -37,14 +37,15 @@ fn main() -> Result<(), IrError> {
         + rust_window.normal_position.min.x
         + rust_window.normal_position.max.y;
 
-    let ir = Module::with_new("window", |m| {
+    let ir = {
+        let m = module_new!("window")?;
         let f = m.add_typed_function_of::<NormalizePlacement, _>(
             "normalize_window_placement",
             Linkage::External,
         )?;
-        let entry = f.append_basic_block(&m, "entry");
+        let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-        let (placement,) = f.params();
+        let (placement,) = m.view(f).params();
 
         let normal_position = placement.normal_position(&b)?;
         let min = normal_position.min(&b)?;
@@ -52,10 +53,10 @@ fn main() -> Result<(), IrError> {
         let min_x = min.x(&b)?;
         let max_y = max.y(&b)?;
 
-        let rebuilt_min = PointValue::build(&m, &b, min_x, max_y, "normal_position.min")?;
-        let rebuilt_rect = RectValue::build(&m, &b, rebuilt_min, max, "normal_position")?;
+        let rebuilt_min = PointValue::build(m.as_view(), &b, min_x, max_y, "normal_position.min")?;
+        let rebuilt_rect = RectValue::build(m.as_view(), &b, rebuilt_min, max, "normal_position")?;
         let rebuilt = WindowPlacementValue::build(
-            &m,
+            m.as_view(),
             &b,
             placement.show_cmd(&b)?,
             rebuilt_rect,
@@ -63,8 +64,8 @@ fn main() -> Result<(), IrError> {
         )?;
         b.build_ret(rebuilt)?;
 
-        Ok(format!("{m}"))
-    })?;
+        format!("{m}")
+    };
 
     print!("{ir}");
     Ok(())

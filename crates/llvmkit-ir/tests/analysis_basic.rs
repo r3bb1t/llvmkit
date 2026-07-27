@@ -16,6 +16,7 @@ use llvmkit_ir::{
     IrError, IrResult, Linkage, Module, ModuleAnalysis, ModuleAnalysisManager,
     ModuleAnalysisResult, ModuleBrand, ModuleView, PreservedAnalyses, Value,
 };
+use llvmkit_ir::{DynBrand, Unverified};
 
 #[derive(Clone)]
 struct CountFunctionAnalysis {
@@ -30,11 +31,14 @@ struct CountFunctionResult {
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for CountFunctionAnalysis {
     type Result = CountFunctionResult;
 
-    fn run(
+    fn run<'v>(
         &self,
-        function: FunctionView<'ctx, B>,
+        function: FunctionView<'v, B>,
         _am: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Self::Result> {
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
         self.runs.set(self.runs.get() + 1);
         let instructions = function
             .basic_blocks()
@@ -45,12 +49,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for CountFunctionAna
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for CountFunctionResult {
-    fn invalidate(
+    fn invalidate<'v>(
         &mut self,
-        _function: FunctionView<'ctx, B>,
+        _function: FunctionView<'v, B>,
         pa: &PreservedAnalyses,
         _inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
-    ) -> IrResult<bool> {
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
         let checker = pa.checker::<CountFunctionAnalysis>();
         Ok(!(checker.preserved() || checker.preserved_set::<AllAnalysesOnFunction>()))
     }
@@ -69,11 +76,14 @@ struct CountModuleResult {
 impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysis<'ctx, B> for CountModuleAnalysis {
     type Result = CountModuleResult;
 
-    fn run(
+    fn run<'v>(
         &self,
-        module: ModuleView<'ctx, B>,
+        module: ModuleView<'v, B>,
         _am: &mut ModuleAnalysisManager<'ctx, B>,
-    ) -> IrResult<Self::Result> {
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
         self.runs.set(self.runs.get() + 1);
         Ok(CountModuleResult {
             functions: module.functions().len(),
@@ -82,12 +92,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysis<'ctx, B> for CountModuleAnalysi
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisResult<'ctx, B> for CountModuleResult {
-    fn invalidate(
+    fn invalidate<'v>(
         &mut self,
-        _module: ModuleView<'ctx, B>,
+        _module: ModuleView<'v, B>,
         pa: &PreservedAnalyses,
         _inv: &mut ModuleAnalysisInvalidator<'_, 'ctx, B>,
-    ) -> IrResult<bool> {
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
         let checker = pa.checker::<CountModuleAnalysis>();
         Ok(!(checker.preserved() || checker.preserved_set::<AllAnalysesOnModule>()))
     }
@@ -102,11 +115,14 @@ struct DependsOnMissingFunctionResult;
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DependsOnMissingFunctionAnalysis {
     type Result = DependsOnMissingFunctionResult;
 
-    fn run(
+    fn run<'v>(
         &self,
-        _function: FunctionView<'ctx, B>,
+        _function: FunctionView<'v, B>,
         _am: &mut FunctionAnalysisManager<'ctx, B>,
-    ) -> IrResult<Self::Result> {
+    ) -> IrResult<Self::Result>
+    where
+        'ctx: 'v,
+    {
         Ok(DependsOnMissingFunctionResult)
     }
 }
@@ -114,45 +130,51 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for DependsOnMissing
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B>
     for DependsOnMissingFunctionResult
 {
-    fn invalidate(
+    fn invalidate<'v>(
         &mut self,
-        _function: FunctionView<'ctx, B>,
+        _function: FunctionView<'v, B>,
         _pa: &PreservedAnalyses,
         inv: &mut FunctionAnalysisInvalidator<'_, 'ctx, B>,
-    ) -> IrResult<bool> {
+    ) -> IrResult<bool>
+    where
+        'ctx: 'v,
+    {
         inv.invalidate::<CountFunctionAnalysis>()
     }
 }
 
+/// The shared fixture is a helper, not a `#[test]` body: the harness runs
+/// tests in parallel, so a `module_new!` brand minted here would be claimed by
+/// several threads at once. [`DynBrand`] is registry-exempt and admits any
+/// number of live modules, which is exactly what a reusable fixture needs.
 fn with_sample_module<R, F>(run: F) -> Result<R, IrError>
 where
-    F: for<'ctx> FnOnce(Module<'ctx>) -> Result<R, IrError>,
+    F: FnOnce(Module<DynBrand, Unverified>) -> Result<R, IrError>,
 {
-    Module::with_new("analysis", |module| {
-        let f = module
-            .add_typed_function::<(), (), _>("f", Linkage::External)?
-            .as_function();
-        let g = module
-            .add_typed_function::<(), (), _>("g", Linkage::External)?
-            .as_function();
-        let h = module
-            .add_typed_function::<(), (), _>("h", Linkage::External)?
-            .as_function();
+    let module = Module::dynamic("analysis");
+    let f = module
+        .add_typed_function::<(), (), _>("f", Linkage::External)?
+        .as_function();
+    let g = module
+        .add_typed_function::<(), (), _>("g", Linkage::External)?
+        .as_function();
+    let h = module
+        .add_typed_function::<(), (), _>("h", Linkage::External)?
+        .as_function();
 
-        let entry = f.append_basic_block(&module, "entry");
-        let b = IRBuilder::new_for::<()>(&module).position_at_end(entry);
-        b.build_call_dyn(g, Vec::<Value>::new(), "")?;
-        b.build_call_dyn(h, Vec::<Value>::new(), "")?;
-        b.build_ret_void();
+    let entry = module.view(f).append_basic_block(&module, "entry");
+    let b = IRBuilder::new_for::<()>(&module).position_at_end(entry);
+    b.build_call_dyn(g, Vec::<Value<'_, _>>::new(), "")?;
+    b.build_call_dyn(h, Vec::<Value<'_, _>>::new(), "")?;
+    b.build_ret_void();
 
-        for function in [g, h] {
-            let entry = function.append_basic_block(&module, "entry");
-            IRBuilder::new_for::<()>(&module)
-                .position_at_end(entry)
-                .build_ret_void();
-        }
-        run(module)
-    })
+    for function in [g, h] {
+        let entry = module.view(function).append_basic_block(&module, "entry");
+        IRBuilder::new_for::<()>(&module)
+            .position_at_end(entry)
+            .build_ret_void();
+    }
+    run(module)
 }
 
 /// `llvmkit-specific subset`: ports the API-supported assertions from
@@ -502,7 +524,7 @@ fn preserved_analyses_explicit_keys_intersect_and_abandon() {
 #[test]
 fn function_analysis_runs_once_caches_and_invalidates() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.function_by_name_dyn("f").expect("sample has f");
+        let f = m.view(m.function_by_name_dyn("f").expect("sample has f"));
         let runs = Rc::new(Cell::new(0));
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(CountFunctionAnalysis { runs: runs.clone() });
@@ -579,7 +601,7 @@ fn module_analysis_runs_once_caches_and_invalidates() -> Result<(), IrError> {
 #[test]
 fn invalidator_reports_missing_cached_dependency() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.function_by_name_dyn("f").expect("sample has f");
+        let f = m.view(m.function_by_name_dyn("f").expect("sample has f"));
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DependsOnMissingFunctionAnalysis);
         let _ = fam.get_result::<DependsOnMissingFunctionAnalysis, _>(f)?;
@@ -603,7 +625,7 @@ fn invalidator_reports_missing_cached_dependency() -> Result<(), IrError> {
 #[test]
 fn module_level_invalidation_honors_fam_proxy_and_function_set() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.function_by_name_dyn("f").expect("sample has f");
+        let f = m.view(m.function_by_name_dyn("f").expect("sample has f"));
         let runs = Rc::new(Cell::new(0));
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(CountFunctionAnalysis { runs: runs.clone() });
@@ -638,7 +660,7 @@ fn module_level_invalidation_honors_fam_proxy_and_function_set() -> Result<(), I
 #[test]
 fn dominator_tree_analysis_caches_and_cfg_preserves() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.function_by_name_dyn("f").expect("sample has f");
+        let f = m.view(m.function_by_name_dyn("f").expect("sample has f"));
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DominatorTreeAnalysis);
 

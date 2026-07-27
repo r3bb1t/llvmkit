@@ -18,6 +18,7 @@ mod analysis_switch;
 mod constant_folding;
 mod fmf;
 mod medium;
+mod remove_incoming;
 mod typestate;
 mod verifier_basic;
 mod zero_incoming_phi;

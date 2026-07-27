@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/compile_fail/verified_module_metadata_is_immutable.rs:49:23
+   |
+49 |     inst.set_metadata(&verified, MetadataAttachmentKind::Dbg, node);
+   |          ------------ ^^^^^^^^^ expected `&Module<DynBrand>`, found `&Module<DynBrand, Verified>`
+   |          |
+   |          arguments to this method are incorrect
+   |
+   = note: expected reference `&Module<DynBrand, Unverified>`
+              found reference `&Module<DynBrand, Verified>`
+note: method defined here
+  --> src/instruction.rs
+   |
+   |     pub fn set_metadata(
+   |            ^^^^^^^^^^^^

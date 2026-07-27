@@ -2,7 +2,7 @@
 //!
 //! Expands an inherent `impl Pass { fn run(&mut self, cx: FnCx<Self>) -> .. }`
 //! block into exactly the raw [`FunctionPass`] trait impl a user could
-//! hand-write: it supplies the `impl<'ctx, B: ModuleBrand + 'ctx>` header, the
+//! hand-write: it supplies the `impl<B: ModuleBrand>` header, the
 //! `type Access`/`type Requires`/`const NAME` associated-item block, and the
 //! canonical `run` signature with its lifetimes — nothing else. Zero runtime
 //! cost: the output is byte-for-byte the impl behind the sugar.
@@ -42,16 +42,19 @@ fn try_expand(attr: TokenStream, item: TokenStream) -> Result<TokenStream2> {
     let inherent = pass.inherent();
 
     Ok(quote! {
-        impl<'ctx, B: #ir::ModuleBrand + 'ctx> #ir::FunctionPass<'ctx, B> for #self_ty {
+        impl<B: #ir::ModuleBrand> #ir::FunctionPass<B> for #self_ty {
             type Access = #ir::#access;
             type Requires = #requires_ty;
             const NAME: &'static str = #name;
             #required_item
 
-            fn run(
+            fn run<'m, 'ctx>(
                 &mut self,
-                #cx_ident: #ir::FnCx<'_, '_, 'ctx, B, #ir::#access, #requires_ty>,
+                #cx_ident: #ir::FnCx<'m, '_, 'ctx, B, #ir::#access, #requires_ty>,
             ) -> #ir::IrResult<#ir::FnReport>
+            where
+                'ctx: 'm,
+                Self: 'ctx,
             #body
         }
 
