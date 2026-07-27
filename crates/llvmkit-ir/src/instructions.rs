@@ -32,7 +32,12 @@ use super::basic_block::IntoBasicBlockLabel;
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::derived_types::FunctionType;
-use super::float_kind::{FloatKind, IntoFloatValue};
+use super::float_kind::FloatKind;
+// Only the crate-internal raw-phi authoring surface lifts through these, and
+// that surface is `#[cfg(test)]` — block arguments are the public way to
+// author a phi. See `docs/design/phi-type-guarantees-design.md`, slice 7.
+#[cfg(test)]
+use super::float_kind::IntoFloatValue;
 use super::fmf::FastMathFlags;
 use super::function::FunctionValue;
 use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
@@ -49,9 +54,10 @@ use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use super::sync_scope::SyncScope;
 use super::term_open_state::{Closed as TermClosed, Open as TermOpen, TermOpenState};
 use super::r#type::{Type, TypeData, TypeSlot};
+#[cfg(test)]
+use super::value::IntoPointerValue;
 use super::value::{
-    FloatValue, IntValue, IntoPointerValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot,
-    ValueUse,
+    FloatValue, IntValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot, ValueUse,
 };
 use super::value_id::{
     AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FpPhiInstId, FreezeInstId,
@@ -1607,7 +1613,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
 // today — the parser and SSA builder add incomings through the erased
 // `phi_add_incoming_from_value` path — so `dead_code` is allowed in non-test
 // builds; the in-crate raw-phi tests exercise it.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Returns `Self` so calls chain.
@@ -1826,7 +1832,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     /// Append `(value, block)` to the incoming list. Mirrors
     /// `PHINode::addIncoming`. Errors if `value`'s type does not match
@@ -2039,7 +2045,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     /// Append `(value, block)` to the incoming list. Rejects a second entry
     /// for the same block with a different value

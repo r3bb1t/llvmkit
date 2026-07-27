@@ -6458,7 +6458,7 @@ where
     /// No production caller today (parser/SSA use the `_dyn`/erased paths), so
     /// `dead_code` is allowed in non-test builds; the in-crate raw-phi tests
     /// exercise it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn build_int_phi<W, Name>(&self, name: Name) -> IrResult<PhiInstId<W, B>>
     where
         Name: AsRef<str>,
@@ -6504,7 +6504,7 @@ where
     /// No production caller today (parser/SSA use the `_dyn`/erased paths), so
     /// `dead_code` is allowed in non-test builds; the in-crate raw-phi tests
     /// exercise it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn build_fp_phi<K, Name>(&self, name: Name) -> IrResult<FpPhiInstId<K, B>>
     where
         Name: AsRef<str>,
@@ -6549,7 +6549,7 @@ where
     /// No production caller today (parser/SSA use the `_dyn`/erased paths), so
     /// `dead_code` is allowed in non-test builds; the in-crate raw-phi tests
     /// exercise it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn build_pointer_phi<Name>(&self, name: Name) -> IrResult<PointerPhiInstId<B>>
     where
         Name: AsRef<str>,

@@ -71,15 +71,11 @@ claim in §4 becomes true rather than documented-around.
    `OperandWidthMismatch`'s two-shape overload, the 6 pre-existing
    `#[allow(clippy::type_complexity)]` on dev, literal-widening (task #72), and the strict
    cut (Cycle 2). *(The `clippy::type_complexity` allows are gone; `#[allow(...)]`
-   is now banned outright repo-wide. Six `#[cfg_attr(not(test), allow(dead_code))]`
-   on the crate-internal raw-phi items still violate that ban and are tracked in
-   `docs/future-work.md` — the clean fix changes what
-   `raw_phi_builder_is_unnameable` proves, so it waits out the freeze.)*
-3. **No `TypeProof` object.** An `IntValue<W>` / `IntType<W>` already *is* the proof;
-   boxing its `TypeId` adds indirection and a `debug_assert`. Rejected in favour of the
-   typed-append family below.
-4. **Zero user-facing change.** `from_value_unchecked` is `pub(crate)`; users cannot call
-   it today and will not see this work. Public API and printed IR are unchanged.
+   is now banned outright repo-wide. The `clippy::type_complexity` allows are gone, and so are the six
+  `#[cfg_attr(not(test), allow(dead_code))]` on the crate-internal raw-phi
+  items — those became `#[cfg(test)]` at the 0.1.0 freeze, since their only
+  callers were ever `src/phi_raw_tests/`. No `#[allow(...)]` in any form
+  remains in the crate sources.
 
 ## Architecture
 

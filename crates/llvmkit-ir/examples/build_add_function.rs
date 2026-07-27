@@ -26,7 +26,7 @@ fn build() -> Result<(), IrError> {
 
     let b = IRBuilder::at_end(entry);
     let (lhs, rhs) = m.view(f).params();
-    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    let sum = b.build_int_add(lhs, rhs, "sum")?;
     b.build_ret(sum)?;
 
     print!("{m}");

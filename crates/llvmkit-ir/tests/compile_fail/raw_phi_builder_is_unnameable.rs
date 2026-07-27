@@ -1,17 +1,23 @@
 //! llvmkit typestate compile-fail (Doctrine D1 / slice 7 "the break").
 //!
-//! Since slice 7, block arguments (`IRBuilder::append_block_with_params` plus
-//! the `build_*_with_args` branch builders) are the ONLY public way to author a
-//! phi: a branch carries its successor's parameter values, so the edge and its
-//! incomings move together and an incomplete or desynced phi is
-//! *unrepresentable* through the public API rather than merely rejected at
-//! `Module::verify()`.
+//! Block arguments are the public way to author a phi: a branch carries its
+//! successor's parameter values, so on the paths that use them the edge and its
+//! incomings move together and cannot drift apart. That is a property of *those
+//! paths*, not of the whole surface — `build_br` does not check arity against a
+//! parameterised target, and whole-graph phi coherence stays `Module::verify()`'s
+//! job. See `docs/type-safety-vs-llvm.md` §9 for the honest limit.
 //!
-//! The raw typed-phi builders (`build_int_phi`, `build_fp_phi`,
-//! `build_pointer_phi`) and the `add_incoming` mutator are `pub(crate)`, so
-//! external code cannot name them — that visibility is what keeps a phi
-//! unobservable mid-construction from outside the crate. This fixture pins it:
-//! the three marker-form `build_*_phi` builders are unnameable from outside.
+//! What this fixture pins is narrower and absolute: the three marker-form raw
+//! phi builders are not callable from another crate. They are `pub(crate)`
+//! *and*, since the 0.1.0 freeze, `#[cfg(test)]` — their only callers were ever
+//! the in-crate `phi_raw_tests` module, so in a dependent crate's build of
+//! `llvmkit-ir` they do not exist at all. The error is `E0599` "no method
+//! named", not the `E0624` "private method" this fixture asserted while they
+//! were merely private.
+//!
+//! That is the stronger of the two claims. A private method still exists and a
+//! later `pub` slip would silently expose it; a method compiled out cannot be
+//! reached by any visibility mistake.
 
 use llvmkit_ir::{Dyn, IRBuilder, Linkage, Module};
 
@@ -22,9 +28,9 @@ fn main() {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let bb = m.view(f).append_basic_block(&m, "bb");
     let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
-    // The three marker-form `build_*_phi` builders are `pub(crate)` since
-    // slice 7 -- none are nameable here. The public path is
-    // `b.append_block_with_params(f, &[i32_ty], "bb")`.
+    // None of the three exist in a non-test build of the crate. The public path
+    // is `append_block_with_params` for the block, then `build_br_with_args` /
+    // `build_cond_br_with_args` to carry the incomings along each edge.
     let _int = b.build_int_phi::<i32, _>("p");
     let _fp = b.build_fp_phi::<f64, _>("q");
     let _ptr = b.build_pointer_phi("r");

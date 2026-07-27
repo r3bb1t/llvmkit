@@ -164,27 +164,26 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   it wants the `switch`/`invoke` gap and its compile-fail fixtures landing in the
   same cycle, rather than a quarter-fix re-freezing an inconsistent surface.
 
-- **Six `#[cfg_attr(not(test), allow(dead_code))]` violate the `#[allow]` ban**
-  (found during the 2.0-E doc reconciliation; pre-existing). AGENTS.md bans
-  `#[allow(...)]` unconditionally — "not anything else" — and a `cfg_attr`
-  wrapper does not exempt it. The sites are the crate-internal raw-phi
-  authoring surface: `PhiInst`/`FpPhiInst`/`PointerPhiInst::add_incoming`
-  (`instructions.rs:1610`, `:1829`, `:2042`) and
-  `IRBuilder::build_int_phi`/`build_fp_phi`/`build_pointer_phi`
-  (`ir_builder.rs:6461`, `:6507`, `:6552`). They became dead in non-test builds
-  when block arguments took over as the public phi-authoring surface; their only
-  callers are the `#[cfg(test)]` module `src/phi_raw_tests/`.
+- ~~**Six `#[cfg_attr(not(test), allow(dead_code))]` violate the `#[allow]` ban**~~
+  — **done (2026-07-27, at the 0.1.0 freeze).** AGENTS.md bans `#[allow(...)]`
+  unconditionally — "not anything else" — and a `cfg_attr` wrapper does not
+  exempt it. All six sat on the crate-internal raw-phi authoring surface
+  (`PhiInst`/`FpPhiInst`/`PointerPhiInst::add_incoming` in `instructions.rs`,
+  and `IRBuilder::build_int_phi`/`build_fp_phi`/`build_pointer_phi`), which went
+  dead in non-test builds when block arguments took over as the public
+  phi-authoring surface.
 
-  The law's prescribed fix ("drop the dead code") means `#[cfg(test)]` on the
-  items, which is also the idiomatic Rust for test-only infrastructure. The
-  catch is `tests/compile_fail/raw_phi_builder_is_unnameable.rs`: it currently
-  proves the builder is *private* (`E0603`), and under `#[cfg(test)]` it would
-  instead prove the builder *does not exist* in a dependent crate's build — a
-  different, arguably stronger claim, but one that needs the `.stderr`
-  re-blessed on 1.96.0 and the fixture's doc comment rewritten to say what it
-  now proves. Deliberately not done inside the 0.1.0 freeze: re-pointing a
-  doctrine fixture is not a mechanical re-bless, and the suppression is
-  test-visibility hygiene rather than a soundness or API issue.
+  Fixed the way the law prescribes — drop the dead code — by marking all six
+  `#[cfg(test)]`, since their only callers were ever `src/phi_raw_tests/`. Two
+  imports (`IntoFloatValue`, `IntoPointerValue`) became test-only with them and
+  are gated the same way rather than suppressed.
+
+  This re-pointed `tests/compile_fail/raw_phi_builder_is_unnameable.rs`: it used
+  to prove the builders are *private* (`E0624`) and now proves they *do not
+  exist* in a dependent crate's build (`E0599`). That is the stronger claim — a
+  private method still exists and a later `pub` slip would expose it, whereas a
+  method compiled out cannot be reached at all. Fixture doc comment rewritten
+  and `.stderr` regenerated on 1.96.0.
 
 - **Metadata is the one currency 2.0 did not tag** (found during the 2.0-E
   freeze sweep, widened by that cycle's whole-branch review; **pre-existing, not
