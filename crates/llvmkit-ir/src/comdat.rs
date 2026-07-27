@@ -128,9 +128,19 @@ impl<'ctx, B: crate::module::ModuleBrand> ComdatRef<'ctx, B> {
         self.data().selection_kind.get()
     }
 
-    /// Update the selection kind. Mirrors
-    /// `Comdat::setSelectionKind`.
-    pub fn set_selection_kind(self, kind: SelectionKind) {
+    /// Update the selection kind. Mirrors `Comdat::setSelectionKind`.
+    ///
+    /// Takes the `Unverified` module token, like every other mutator in the
+    /// crate, so `verify(self)` really does consume mutation capability. The
+    /// selection kind is printed (`$name = comdat <kind>`), so without the
+    /// token a [`Module<B, Verified>`](crate::Module)'s IR could be changed
+    /// after verification — `Module::get_comdat` is state-generic, so a
+    /// verified module does hand out a `ComdatRef`.
+    pub fn set_selection_kind(
+        self,
+        _module_token: &crate::module::Module<B, crate::module::Unverified>,
+        kind: SelectionKind,
+    ) {
         self.data().selection_kind.set(kind);
     }
 }

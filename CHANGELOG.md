@@ -94,7 +94,8 @@ produced.
 - `docs/type-safety-vs-llvm.md` worked examples re-spelled against the
   lifetime-free `Module<B, S>`.
 - The **"2 environmental `.stderr` fixtures"** caveat is retired from
-  `docs/pass-facing-type-safety.md`, `docs/unforgeable-markers-design.md`, and
+  `docs/design/pass-facing-type-safety.md`,
+  `docs/design/unforgeable-markers-design.md`, and
   the `docs/future-work.md` backlog item that asked for a canonical re-bless.
   It was never real: both fixtures pass on the pinned 1.96.0 toolchain, and the
   mismatch only ever appeared under a newer rustc. Gated on `cargo +1.96.0` the
@@ -337,7 +338,8 @@ suites and the parser round-trip corpus pass untouched at every slice.
 The first cycle of a redesign that replaces the closure-scoped, lifetime-branded
 handle system with owned modules and storable, module-tagged id handles. This
 cycle is additive and internal groundwork; later cycles flip the builders to
-return ids and delete `Module::with_new`. See `docs/` for the migration.
+return ids and delete `Module::with_new`. The migration is spelled out break by
+break in the `[0.1.0]` section above, under the cycle that made each one.
 
 #### Added
 

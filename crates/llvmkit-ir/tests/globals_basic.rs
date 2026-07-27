@@ -459,13 +459,13 @@ fn comdat_all_selection_kinds() {
     let m = module_new!("m").expect("fresh module");
     m.get_or_insert_comdat("comdat.any");
     m.get_or_insert_comdat("comdat.exactmatch")
-        .set_selection_kind(SelectionKind::ExactMatch);
+        .set_selection_kind(&m, SelectionKind::ExactMatch);
     m.get_or_insert_comdat("comdat.largest")
-        .set_selection_kind(SelectionKind::Largest);
+        .set_selection_kind(&m, SelectionKind::Largest);
     m.get_or_insert_comdat("comdat.noduplicates")
-        .set_selection_kind(SelectionKind::NoDeduplicate);
+        .set_selection_kind(&m, SelectionKind::NoDeduplicate);
     m.get_or_insert_comdat("comdat.samesize")
-        .set_selection_kind(SelectionKind::SameSize);
+        .set_selection_kind(&m, SelectionKind::SameSize);
     let text = module_text(&m);
     assert!(text.contains("$comdat.any = comdat any\n"), "got:\n{text}");
     assert!(

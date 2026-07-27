@@ -1,11 +1,16 @@
 # Future work
 
-This document captures everything the `feature-1/irbuilder-type-safety`
-session's audits found but did not implement. Each item cites the audit
-source (source file or upstream reference) so a later session can pick it
-up cold. Transcribed faithfully from that session's approved design and
-plan documents (kept outside the repository), plus a "Session follow-ups"
-section for items individual tasks punted during execution.
+The live backlog: what is known-missing, what was deliberately deferred, and
+**why** in each case. Several rustdoc comments in `crates/` point here rather
+than restating a deferral inline, so entries are written to be read cold.
+
+Each item cites its source — a file and symbol, an upstream reference, or the
+cycle that decided it. Items that later shipped are struck through and dated
+rather than deleted, so a reader can tell "never done" from "done, here is what
+actually landed".
+
+It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
+accumulated every cycle since; the oldest sections are still organised that way.
 
 ## Killer-feature designs (deferred)
 
@@ -118,7 +123,7 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
 ## Type-system follow-ups
 
 - **Block-argument edges are only half-guarded, and only on half the
-  terminators** (found 2026-07-27 re-reading `docs/phi-type-guarantees-design.md`
+  terminators** (found 2026-07-27 re-reading `docs/design/phi-type-guarantees-design.md`
   against the tree; the design promised both halves and neither was noticed
   missing for 17 days, through the 0.1.0 freeze). Two distinct gaps, which
   should be closed together or not at all — fixing one leaves the surface
@@ -627,11 +632,8 @@ shipped, the **"branching bugs impossible at the type level"** program's typed
 surfaces are largely complete. What remains is deliberately out of scope rather
 than pending:
 
-- **Universal per-function branding (`build_body`)** — designed and spec'd
-  (`docs/superpowers/specs/2026-07-20-per-fn-branding-design.md`: a defaulted
-  `Fb: FnBrand = FnErased`, a generative `FnScoped<'fid>` opted into via
-  `func.build_body(|fb| …)`, with `build_br` requiring a matching brand so
-  branded labels cannot escape the body), then **deferred out of the type-safety
+- **Universal per-function branding (`build_body`)** — designed in full, then
+  **deferred out of the type-safety
   program** after re-analysis against the actual consumers. The evidence points
   one way: (1) regular authoring gains nothing — the default is `FnErased`, so
   existing `position_at_end` sites stay byte-identical and untouched, leaving the
@@ -639,8 +641,28 @@ than pending:
   lifter, stores SSA registers as **function arguments** (for concolic
   constant-visibility) and **rebuilds CFGs from runtime-recovered structure**, so
   a compile-time, un-nameable per-function `'fid` fights its model rather than
-  helping it — its edges are recovered, not statically authored. The locked API
-  decisions survive in the spec; the rung is not pursued in this program.
+  helping it — its edges are recovered, not statically authored.
+
+  **The locked design, recorded here because its spec does not ship.** The
+  original write-up lives under `docs/superpowers/`, which is gitignored, so it
+  is unreachable for anyone reading the repository; these are the decisions
+  worth keeping. `FunctionValue` gains a defaulted brand parameter
+  `Fb: FnBrand = FnErased`, so every existing call site is unchanged. Opting in
+  goes through `func.build_body(|fb| …)`, which mints a generative
+  `FnScoped<'fid>` for the closure body; `build_br` (and the other
+  branch builders) require the target label's `Fb` to match the builder's, so a
+  label minted in one function's body is not the right *type* to branch to from
+  another's. That is what makes a cross-function branch — LLVM's "Referring to a
+  basic block in another function!" — a compile error instead of a verifier
+  finding.
+
+  Two things changed under it since: llvmkit 2.0 deleted the closure-scoped
+  module constructor, so `build_body` would reintroduce the one shape the
+  redesign removed; and block targets are now storable `BlockId<R, B, Params>`
+  ids rather than borrowed labels, so a per-function *lifetime* has nothing to
+  attach to. A 2.0-shaped revival would need a per-function marker on `BlockId`
+  itself. Until then the rule stays a `Module::verify()` check — see the "br
+  target is not a basic block of the parent function" family in `verifier.rs`.
   Revisit only as its own opt-in cycle if a concrete authoring need appears.
 - **Whole-graph verifier territory** — phi-incoming completeness against the
   final predecessor set for builder-constructed IR, and dominance, are permanent

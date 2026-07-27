@@ -433,6 +433,11 @@ reach codegen through upstream LLVM, and `llvmkit` when the task is IR
 construction / analysis and compile-time misuse safety matters more than
 having `libLLVM`'s full backend behind it.
 
+Migrating an existing inkwell codebase? [INKWELL_MIGRATION.md](INKWELL_MIGRATION.md)
+is a side-by-side guide: the API mapping table, the three structural differences
+to read first (no `Context` lifetime, owned modules, ids rather than handles),
+and the ledger of what each migration buys you at compile time.
+
 ### Where llvmkit improves on upstream LLVM
 
 `llvmkit` models a subset of LLVM and stops at IR construction, analysis, and
@@ -842,12 +847,21 @@ section) for the scoped-out items.
 <repo root>/
 ├── Cargo.toml                       # [workspace] only
 ├── llvmkit/                         # umbrella crate
+├── docs/                            # see docs/README.md for the index
+│   ├── type-safety-vs-llvm.md       #   current: the main technical reference
+│   ├── ir-struct-derive.md          #   current: IrStruct user guide
+│   ├── future-work.md               #   current: the live backlog
+│   └── design/                      #   dated records of shipped subsystems
 └── crates/
     ├── llvmkit-support/             # Span, Spanned<T>, SourceMap
     ├── llvmkit-asmparser/           # Lexer + .ll parser
     ├── llvmkit-macros/              # IrStruct derive, #[function_pass]/#[module_pass]
     └── llvmkit-ir/                  # Typed IR model, builder, verifier, passes
 ```
+
+`docs/` sits at the workspace root, so it is not part of the published `.crate`
+and does not appear on docs.rs — it is a repository-facing tree. API
+documentation ships as rustdoc.
 
 Every Rust file that ports LLVM behavior pairs to a specific upstream LLVM
 concept. See [AGENTS.md](AGENTS.md) for the detailed source-tree map and the

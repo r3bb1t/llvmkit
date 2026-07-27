@@ -95,7 +95,7 @@ Doctrine: unrepresentable > witnessed > tested, never trusted.
 ## Docs & bookkeeping
 
 - `docs/type-safety-vs-llvm.md`: rewrite the phi sections (the open/closed typestate account, the `PhiKind` rediscovery account, and the "verifier-only" boundary): public authoring is block-arguments (SIL-style) so desync/incompleteness are unrepresentable; internal paths are witnessed (type + duplicate checks, parse-time completeness); mutation carries the fix; `Module::verify()` remains the final gate (dominance, plus everything, for defense in depth).
-- `docs/pass-facing-type-safety.md`: add the phi package to the shipped list per wave. `CHANGELOG`: wave-1 entries (placement, new error variant, parser rejections) + wave-2 major breaking entry (raw phi authoring internal → block-args surface) with migration table.
+- `pass-facing-type-safety.md`: add the phi package to the shipped list per wave. `CHANGELOG`: wave-1 entries (placement, new error variant, parser rejections) + wave-2 major breaking entry (raw phi authoring internal → block-args surface) with migration table.
 - `docs/future-work.md`: strike "inserting PHIs is future work" (slice 8); keep the general in-pass builder note; record the indirectbr-to-param-block restriction.
 
 ## Testing / gates

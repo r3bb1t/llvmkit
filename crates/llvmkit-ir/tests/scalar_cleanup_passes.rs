@@ -39,7 +39,7 @@ fn instsimplify_pass_folds_constant_add() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Worklist user-cascade lock (design spec `docs/worklist-erase-safe-cursor-design.md`,
+/// Worklist user-cascade lock (design spec `docs/design/worklist-erase-safe-cursor-design.md`,
 /// Testing → Cascade-tests). InstSimplify seeds the worklist in program order and
 /// drains it LIFO, so a dependent user is popped *before* its def: here `%b` pops
 /// first and cannot fold (its operand `%a` is not yet constant), then `%a` folds to

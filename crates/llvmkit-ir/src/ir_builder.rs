@@ -7900,7 +7900,7 @@ where
     /// `like: IntValue<'ctx, W, B>` is W-typed, so the result is W-typed. This is the
     /// only sanctioned way to attach an `IntValue<W>` marker to a freshly-appended
     /// instruction whose type comes from an operand -- it removes the `from_value_unchecked`
-    /// assertion at the call site (see docs/unforgeable-markers-design.md, census pattern 1).
+    /// assertion at the call site (see docs/design/unforgeable-markers-design.md, census pattern 1).
     fn append_int_like<W: IntWidth, N: AsRef<str>>(
         &self,
         like: IntValue<'ctx, W, B>,
@@ -7930,7 +7930,7 @@ where
     /// narrow), so the result is W-typed. The sanctioned constructor for results whose type
     /// comes from a typed DESTINATION handle -- casts, comparisons at a fixed `i1`, loads --
     /// removing the `from_value_unchecked` assertion at the call site
-    /// (docs/unforgeable-markers-design.md, census pattern 2).
+    /// (docs/design/unforgeable-markers-design.md, census pattern 2).
     fn append_int_at<W: IntWidth, N: AsRef<str>>(
         &self,
         ty: IntType<'ctx, W, B>,
@@ -7962,7 +7962,7 @@ where
     /// Routes through [`Self::build_load_inner`] so the DataLayout default-align fill
     /// is preserved (a raw `append_int_at` would skip it and emit `align 0`). This
     /// removes the `from_value_unchecked` assertion at the load site
-    /// (docs/unforgeable-markers-design.md, census pattern 2 -- load variant).
+    /// (docs/design/unforgeable-markers-design.md, census pattern 2 -- load variant).
     fn append_int_load<W: IntWidth, N: AsRef<str>>(
         &self,
         ty: IntType<'ctx, W, B>,
@@ -7994,7 +7994,7 @@ where
     /// so provably a pointer type), and `PointerValue` asserts only pointer-ness — which
     /// `ptr_ty` supplies. The sanctioned constructor for pointer-result builders
     /// (alloca / GEP / int→ptr / addrspacecast / pointer bitcast); removes the
-    /// `from_value_unchecked` assertion (docs/unforgeable-markers-design.md, census pattern 6).
+    /// `from_value_unchecked` assertion (docs/design/unforgeable-markers-design.md, census pattern 6).
     fn append_ptr<N: AsRef<str>>(
         &self,
         ptr_ty: PointerType<'ctx, B>,

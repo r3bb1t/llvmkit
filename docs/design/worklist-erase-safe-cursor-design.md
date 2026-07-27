@@ -2,7 +2,7 @@
 
 Date: 2026-07-10. Target: `crates/llvmkit-ir` (`worklist.rs` new, `pass_context.rs`,
 `dce.rs`, `inst_simplify.rs`). Branch flow: `feature-N/*` → `dev`. This is the
-Package 3 deferred perf item from `docs/pass-facing-type-safety.md` (items 1–2)
+Package 3 deferred perf item from `pass-facing-type-safety.md` (items 1–2)
 and `docs/future-work.md`, now designed in detail.
 
 > **Shipped, and re-checked against 0.1.0 (2026-07-27).** This is a dated design

@@ -1711,7 +1711,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(self.expected("comdat selection kind"));
         };
         let comdat = self.module.get_or_insert_comdat(&name);
-        comdat.set_selection_kind(kind);
+        comdat.set_selection_kind(self.module, kind);
         Ok(())
     }
 
