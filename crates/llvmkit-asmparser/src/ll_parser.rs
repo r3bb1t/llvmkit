@@ -32,6 +32,10 @@ use core::marker::PhantomData;
 use llvmkit_ir::attributes::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, MemoryEffects, MemoryLocation, ModRefInfo,
 };
+use llvmkit_ir::metadata::{
+    DebugMetadataOperand, DebugRecord, MetadataAttachmentKind, MetadataFieldValue, MetadataId,
+    MetadataKind,
+};
 use std::collections::HashMap;
 
 use llvmkit_ir::{
@@ -58,6 +62,19 @@ use super::numbered_values::NumberedValues;
 use super::parse_error::{DiagLoc, ParseError, ParseResult};
 use super::parse_error::{SymbolId, SymbolKind};
 use super::slot_mapping::{GlobalRef, SlotMapping};
+
+/// Unwrap an `IrResult` from a metadata API the parser drives against **its own**
+/// module.
+///
+/// Every metadata id the parser hands back to `self.module` was minted by that
+/// same module a moment earlier (`metadata_reserve`, `metadata_string`,
+/// `metadata_node`, ...), so the module-tag check on the way in cannot fail and
+/// the slot cannot be out of range. Naming that once here keeps the parser free
+/// of a raw-slot escape hatch: it speaks the tagged currency like any other
+/// caller and simply has no foreign ids to hand over.
+fn own_metadata<T>(result: IrResult<T>) -> T {
+    result.expect("metadata id minted by the module the parser is populating")
+}
 
 type ParsedGlobalInitializer<'ctx, B> = (
     Option<Constant<'ctx, B>>,
@@ -179,8 +196,8 @@ struct TypeEntry<'ctx, B: ModuleBrand> {
     ty: Type<'ctx, B>,
 }
 
-struct MetadataSlotEntry {
-    id: llvmkit_ir::metadata::MetadataSlot,
+struct MetadataSlotEntry<B: ModuleBrand> {
+    id: MetadataId<B>,
     defined: bool,
     first_ref: Span,
 }
@@ -195,10 +212,7 @@ struct FunctionSuffix<'ctx, B: ModuleBrand> {
     prefix_data: Option<llvmkit_ir::Constant<'ctx, B>>,
     prologue_data: Option<llvmkit_ir::Constant<'ctx, B>>,
     personality_fn: Option<ParsedPersonalityFn<'ctx, B>>,
-    metadata: Vec<(
-        llvmkit_ir::metadata::MetadataAttachmentKind,
-        llvmkit_ir::metadata::MetadataSlot,
-    )>,
+    metadata: Vec<(MetadataAttachmentKind, MetadataId<B>)>,
     _marker: core::marker::PhantomData<&'ctx ()>,
 }
 
@@ -252,9 +266,9 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     numbered_globals: NumberedValues<GlobalRef<'ctx, B>>,
     numbered_attr_groups: NumberedValues<llvmkit_ir::attributes::AttributeStorage>,
 
-    /// Maps a textual metadata slot (`!N`) to the `MetadataSlot` it names and
+    /// Maps a textual metadata slot (`!N`) to the [`MetadataId`] it names and
     /// whether a matching `!N = ...` definition was seen.
-    metadata_slots: HashMap<u32, MetadataSlotEntry>,
+    metadata_slots: HashMap<u32, MetadataSlotEntry<B>>,
     deferred_global_initializers: Vec<DeferredGlobalInitializer<'ctx, B>>,
     deferred_block_addresses: Vec<DeferredBlockAddress<'ctx, B>>,
     deferred_personality_fns: Vec<DeferredPersonalityFn<'ctx, B>>,
@@ -905,7 +919,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Self::new(src, module)
     }
 
-    fn resolve_md_slot(&mut self, slot: u32, loc: Span) -> llvmkit_ir::metadata::MetadataSlot {
+    fn resolve_md_slot(&mut self, slot: u32, loc: Span) -> MetadataId<B> {
         if let Some(entry) = self.metadata_slots.get(&slot) {
             return entry.id;
         }
@@ -924,9 +938,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn define_md_slot(
         &mut self,
         slot: u32,
-        content: llvmkit_ir::metadata::MetadataKind,
+        content: MetadataKind<B>,
         loc: Span,
-    ) -> ParseResult<llvmkit_ir::metadata::MetadataSlot> {
+    ) -> ParseResult<MetadataId<B>> {
         if let Some(entry) = self.metadata_slots.get_mut(&slot) {
             if entry.defined {
                 return Err(ParseError::Redefinition {
@@ -935,12 +949,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     loc: DiagLoc::span(loc),
                 });
             }
-            // The slot was reserved by *this* module (`resolve_md_slot` ->
-            // `metadata_reserve`), so it is always in range here; a failure
-            // would mean the parser handed one module's slot to another.
+            // The id was reserved by *this* module (`resolve_md_slot` ->
+            // `metadata_reserve`), so its tag matches and its slot is in range.
             self.module
                 .metadata_set(entry.id, content)
-                .expect("metadata slot was reserved by this module");
+                .expect("metadata id was reserved by this module");
             entry.defined = true;
             return Ok(entry.id);
         }
@@ -948,7 +961,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let id = self.module.metadata_reserve();
         self.module
             .metadata_set(id, content)
-            .expect("slot returned by metadata_reserve on this module");
+            .expect("id returned by metadata_reserve on this module");
         self.metadata_slots.insert(
             slot,
             MetadataSlotEntry {
@@ -1925,8 +1938,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     /// `!name = !{ !N, !N, ... }`. Mirrors `LLParser::parseNamedMetadata`.
     fn parse_named_metadata(&mut self) -> ParseResult<()> {
-        use llvmkit_ir::metadata::MetadataRef;
-
         let name = match self.peek() {
             Token::MetadataVar(bytes) => std::str::from_utf8(bytes.as_ref())
                 .map_err(|_| self.expected("valid UTF-8 metadata name"))?
@@ -1952,8 +1963,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // `nmd_idx` came from `get_or_insert_named_metadata` on this
                 // same module, so the node always exists.
                 self.module
-                    .named_metadata_add_operand(nmd_idx, MetadataRef(id))
-                    .expect("named metadata index minted by this module");
+                    .named_metadata_add_operand(nmd_idx, id)
+                    .expect("named metadata index and id minted by this module");
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
                 }
@@ -1972,8 +1983,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_metadata_value_operand(&mut self) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         if matches!(self.peek(), Token::MetadataVar(_)) {
             let kind = self.parse_md_node_after_bang(false)?;
-            let id = self.module.metadata_node(kind);
-            return Ok(self.module.metadata_as_value(id));
+            let id = own_metadata(self.module.metadata_node(kind));
+            return Ok(own_metadata(self.module.metadata_as_value(id)));
         }
 
         self.expect_exclaim("'!' in metadata operand")?;
@@ -1994,11 +2005,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                 }
                 self.expect_punct(PunctKind::RBrace, "'}' closing metadata tuple")?;
-                self.module.metadata_tuple(operands)
+                own_metadata(self.module.metadata_tuple(operands))
             }
             Token::SpecializedMetadata(_) | Token::MetadataVar(_) => {
                 let kind = self.parse_md_node_after_bang(false)?;
-                self.module.metadata_node(kind)
+                own_metadata(self.module.metadata_node(kind))
             }
             _ => {
                 let loc = self.loc();
@@ -2006,23 +2017,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.resolve_md_slot(slot, loc)
             }
         };
-        Ok(self.module.metadata_as_value(id))
+        Ok(own_metadata(self.module.metadata_as_value(id)))
     }
 
-    fn parse_metadata_attachment_operand(
-        &mut self,
-    ) -> ParseResult<llvmkit_ir::metadata::MetadataSlot> {
+    fn parse_metadata_attachment_operand(&mut self) -> ParseResult<MetadataId<B>> {
         match self.peek() {
             Token::MetadataVar(_) => {
                 let kind = self.parse_md_node_after_bang(false)?;
-                Ok(self.module.metadata_node(kind))
+                Ok(own_metadata(self.module.metadata_node(kind)))
             }
             Token::Exclaim => {
                 self.bump()?;
                 match self.peek() {
                     Token::LBrace | Token::SpecializedMetadata(_) | Token::MetadataVar(_) => {
                         let kind = self.parse_md_node_after_bang(false)?;
-                        Ok(self.module.metadata_node(kind))
+                        Ok(own_metadata(self.module.metadata_node(kind)))
                     }
                     _ => {
                         let loc = self.loc();
@@ -2037,10 +2046,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn parse_named_metadata_attachment(
         &mut self,
-    ) -> ParseResult<(
-        llvmkit_ir::metadata::MetadataAttachmentKind,
-        llvmkit_ir::metadata::MetadataSlot,
-    )> {
+    ) -> ParseResult<(MetadataAttachmentKind, MetadataId<B>)> {
         let name = match self.peek() {
             Token::MetadataVar(bytes) => std::str::from_utf8(bytes.as_ref())
                 .map_err(|_| self.expected("valid UTF-8 metadata attachment name"))?
@@ -2049,10 +2055,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         self.bump()?;
         let id = self.parse_metadata_attachment_operand()?;
-        Ok((
-            llvmkit_ir::metadata::MetadataAttachmentKind::from_name(&name),
-            id,
-        ))
+        Ok((MetadataAttachmentKind::from_name(&name), id))
     }
 
     /// Parse a single metadata tuple operand: an inline `!"string"`
@@ -2060,20 +2063,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// inline-string form is what the AsmWriter emits for `MDString`
     /// tuple operands (`!{!"rsp"}`), so this keeps writer output
     /// round-trippable.
-    fn parse_md_tuple_operand(&mut self) -> ParseResult<llvmkit_ir::metadata::MetadataRef> {
-        use llvmkit_ir::metadata::MetadataRef;
+    fn parse_md_tuple_operand(&mut self) -> ParseResult<MetadataId<B>> {
         if matches!(self.peek(), Token::Kw(Keyword::Null)) {
             self.bump()?;
-            let id = self
-                .module
-                .metadata_node(llvmkit_ir::metadata::MetadataKind::Null);
-            return Ok(MetadataRef(id));
+            return Ok(own_metadata(self.module.metadata_node(MetadataKind::Null)));
         }
 
         if matches!(self.peek(), Token::MetadataVar(_)) {
             let content = self.parse_md_node_after_bang(false)?;
-            let id = self.module.metadata_node(content);
-            return Ok(MetadataRef(id));
+            return Ok(own_metadata(self.module.metadata_node(content)));
         }
 
         if matches!(
@@ -2089,33 +2087,28 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let constant = self
                 .parse_constant(ty)?
                 .ok_or_else(|| self.expected("typed metadata constant"))?;
-            let id = self.module.metadata_constant(constant);
-            return Ok(MetadataRef(id));
+            return Ok(own_metadata(self.module.metadata_constant(constant)));
         }
 
         self.expect_exclaim("'!' in metadata tuple operand")?;
         match self.peek() {
             Token::StringConstant(_) => {
                 let s = self.parse_string_constant("metadata string operand")?;
-                Ok(MetadataRef(self.module.metadata_string(s)))
+                Ok(self.module.metadata_string(s))
             }
             Token::LBrace | Token::SpecializedMetadata(_) | Token::MetadataVar(_) => {
                 let content = self.parse_md_node_after_bang(false)?;
-                let id = self.module.metadata_node(content);
-                Ok(MetadataRef(id))
+                Ok(own_metadata(self.module.metadata_node(content)))
             }
             _ => {
                 let loc = self.loc();
                 let slot = self.parse_uint32("metadata operand number")?;
-                Ok(MetadataRef(self.resolve_md_slot(slot, loc)))
+                Ok(self.resolve_md_slot(slot, loc))
             }
         }
     }
 
-    fn parse_md_node_after_bang(
-        &mut self,
-        distinct: bool,
-    ) -> ParseResult<llvmkit_ir::metadata::MetadataKind> {
+    fn parse_md_node_after_bang(&mut self, distinct: bool) -> ParseResult<MetadataKind<B>> {
         match self.peek() {
             Token::LBrace => {
                 self.bump()?;
@@ -2199,10 +2192,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn parse_metadata_field_value(
-        &mut self,
-    ) -> ParseResult<llvmkit_ir::metadata::MetadataFieldValue> {
-        use llvmkit_ir::metadata::{MetadataFieldValue, MetadataRef};
+    fn parse_metadata_field_value(&mut self) -> ParseResult<MetadataFieldValue<B>> {
+        use llvmkit_ir::metadata::MetadataFieldValue;
         match self.peek() {
             Token::Kw(Keyword::Null) => {
                 self.bump()?;
@@ -2227,7 +2218,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             Token::MetadataVar(_) => {
                 let content = self.parse_md_node_after_bang(false)?;
-                Ok(MetadataFieldValue::Metadata(MetadataRef(
+                Ok(MetadataFieldValue::Metadata(own_metadata(
                     self.module.metadata_node(content),
                 )))
             }
@@ -2250,22 +2241,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                     Token::StringConstant(_) => {
                         let s = self.parse_string_constant("metadata string")?;
-                        Ok(MetadataFieldValue::Metadata(MetadataRef(
-                            self.module.metadata_string(s),
-                        )))
+                        Ok(MetadataFieldValue::Metadata(self.module.metadata_string(s)))
                     }
                     Token::SpecializedMetadata(_) | Token::MetadataVar(_) => {
                         let content = self.parse_md_node_after_bang(false)?;
-                        Ok(MetadataFieldValue::Metadata(MetadataRef(
+                        Ok(MetadataFieldValue::Metadata(own_metadata(
                             self.module.metadata_node(content),
                         )))
                     }
                     _ => {
                         let loc = self.loc();
                         let slot = self.parse_uint32("metadata field metadata reference")?;
-                        Ok(MetadataFieldValue::Metadata(MetadataRef(
+                        Ok(MetadataFieldValue::Metadata(
                             self.resolve_md_slot(slot, loc),
-                        )))
+                        ))
                     }
                 }
             }
@@ -2306,28 +2295,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_debug_metadata_operand(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-    ) -> ParseResult<llvmkit_ir::metadata::DebugMetadataOperand> {
+    ) -> ParseResult<DebugMetadataOperand<B>> {
         if matches!(
             self.peek(),
             Token::Exclaim | Token::SpecializedMetadata(_) | Token::MetadataVar(_)
         ) {
             let id = self.parse_metadata_attachment_operand()?;
-            return Ok(llvmkit_ir::metadata::DebugMetadataOperand::Metadata(
-                llvmkit_ir::metadata::MetadataRef(id),
-            ));
+            return Ok(DebugMetadataOperand::Metadata(id));
         }
 
         let ty = self.parse_type(false)?;
         let value = self.parse_value(state, ty)?;
-        Ok(llvmkit_ir::metadata::DebugMetadataOperand::Value(
-            value.slot(),
-        ))
+        Ok(DebugMetadataOperand::Value(value.id()))
     }
 
     fn parse_debug_record(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
-    ) -> ParseResult<llvmkit_ir::metadata::DebugRecord> {
+    ) -> ParseResult<DebugRecord<B>> {
         use llvmkit_ir::metadata::{DebugRecord, DebugVariableRecord, DebugVariableRecordKind};
 
         let record_type = match self.peek() {
@@ -2396,7 +2381,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &mut self,
         state: &PerFunctionState<'ctx, B>,
         bb_value: llvmkit_ir::Value<'ctx, B>,
-        pending_debug_records: &mut Vec<llvmkit_ir::metadata::DebugRecord>,
+        pending_debug_records: &mut Vec<DebugRecord<B>>,
     ) -> ParseResult<()> {
         let bb = state.value_as_block_view(bb_value, self.loc())?;
         self.skip_trailing_metadata(&bb)?;
@@ -2409,7 +2394,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     loc: DiagLoc::span(self.loc()),
                 })?;
             for record in pending_debug_records.drain(..) {
-                inst.push_debug_record(self.module, record);
+                own_metadata(inst.push_debug_record(self.module, record));
             }
         }
         Ok(())
@@ -2435,11 +2420,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.bump()?;
             let id = self.parse_metadata_attachment_operand()?;
             if let Some(inst) = bb.instructions().last() {
-                inst.set_metadata(
+                own_metadata(inst.set_metadata(
                     self.module,
-                    llvmkit_ir::metadata::MetadataAttachmentKind::from_name(&name),
+                    MetadataAttachmentKind::from_name(&name),
                     id,
-                );
+                ));
             }
         }
         Ok(())
@@ -3202,7 +3187,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // slot-numbering tables, so resolve the freshly minted id once here.
         let g = self.module.view(g);
         for (kind, id) in metadata {
-            g.set_metadata(self.module, kind, id);
+            own_metadata(g.set_metadata(self.module, kind, id));
         }
         if let Some(value) = deferred_initializer {
             self.deferred_global_initializers
@@ -5436,7 +5421,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
         }
         for (kind, id) in suffix.metadata {
-            f.set_metadata(self.module, kind, id);
+            own_metadata(f.set_metadata(self.module, kind, id));
         }
         if let NameOrId::Id(id) = name_id
             && self.numbered_globals.get(id).is_none()
@@ -5649,7 +5634,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
         }
         for (kind, id) in suffix.metadata {
-            f.set_metadata(self.module, kind, id);
+            own_metadata(f.set_metadata(self.module, kind, id));
         }
         if let NameOrId::Id(id) = name_id
             && self.numbered_globals.get(id).is_none()

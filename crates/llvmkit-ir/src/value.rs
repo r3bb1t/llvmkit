@@ -260,7 +260,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
         self.id
     }
 
-    /// Storable, module-tagged [`ValueId`] for this value (llvmkit 2.0).
+    /// Storable, module-tagged [`ValueId`] for this value (0.0.4).
     ///
     /// Unlike [`slot`](Self::slot) — which returns the bare, untagged arena
     /// [`ValueSlot`] — the returned [`ValueId`] carries the owning
@@ -706,7 +706,7 @@ macro_rules! decl_value_handle {
                 Value { id: self.id, module: self.module, ty: self.ty }
             }
 
-            /// Storable, module-tagged id for this value (llvmkit 2.0),
+            /// Storable, module-tagged id for this value (0.0.4),
             /// resolvable via [`Module::view`](crate::Module::view) /
             /// [`Module::try_view`](crate::Module::try_view).
             #[inline]
@@ -1798,7 +1798,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntValue<'ctx, W, B> {
             ty: self.ty,
         }
     }
-    /// Storable, module-tagged [`IntValueId<W>`] for this value (llvmkit 2.0),
+    /// Storable, module-tagged [`IntValueId<W>`] for this value (0.0.4),
     /// resolvable via [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view). Preserves the width
     /// marker `W`.

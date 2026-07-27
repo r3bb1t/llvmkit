@@ -10,7 +10,7 @@
 //! requires today.
 
 use llvmkit_ir::metadata::{
-    DebugMetadataOperand, DebugRecord, DebugVariableRecord, DebugVariableRecordKind, MetadataRef,
+    DebugMetadataOperand, DebugRecord, DebugVariableRecord, DebugVariableRecordKind, MetadataId,
 };
 use llvmkit_ir::{
     Dyn, IRBuilder, IntValue, IrError, Linkage, NoFolder, iter::BlockCursor, module_new,
@@ -298,10 +298,10 @@ fn metadata_constant_operand_counts_as_structural_value_use() -> Result<(), IrEr
     let c = i64_ty.const_int(4_i64);
     assert_eq!(c.into_erased().num_uses(), 0);
 
-    let md = m.metadata_constant(c);
-    let tuple = m.metadata_tuple([MetadataRef(md)]);
+    let md = m.metadata_constant(c)?;
+    let tuple = m.metadata_tuple([md])?;
     let idx = m.get_or_insert_named_metadata("uses");
-    m.named_metadata_add_operand(idx, MetadataRef(tuple))?;
+    m.named_metadata_add_operand(idx, tuple)?;
 
     assert_eq!(c.into_erased().num_uses(), 1);
     assert_eq!(c.into_erased().users().len(), 0);
@@ -367,17 +367,17 @@ fn debug_record_value_operand_counts_as_structural_use_and_erases() -> Result<()
     let (inst, cursor) = BlockCursor::at_start(block)
         .next()
         .expect("sum instruction");
-    let md = m.metadata_tuple(Vec::<MetadataRef>::new());
+    let md = m.metadata_tuple(Vec::<MetadataId<_>>::new())?;
     inst.push_debug_record(
         &m,
         DebugRecord::Variable(DebugVariableRecord::new(
             DebugVariableRecordKind::Value,
-            DebugMetadataOperand::Value(x.into_erased().slot()),
+            DebugMetadataOperand::Value(x.into_erased().id()),
             md,
             md,
             md,
         )),
-    );
+    )?;
 
     assert_eq!(x.into_erased().num_uses(), 1);
     assert_eq!(x.into_erased().users().len(), 0);
@@ -414,17 +414,17 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
     let cursor = BlockCursor::at_start(block);
     let (source_inst, cursor) = cursor.next().expect("source instruction");
     let (anchor_inst, cursor) = cursor.next().expect("anchor instruction");
-    let md = m.metadata_tuple(Vec::<MetadataRef>::new());
+    let md = m.metadata_tuple(Vec::<MetadataId<_>>::new())?;
     anchor_inst.push_debug_record(
         &m,
         DebugRecord::Variable(DebugVariableRecord::new(
             DebugVariableRecordKind::Value,
-            DebugMetadataOperand::Value(m.view(source).into_erased().slot()),
+            DebugMetadataOperand::Value(m.view(source).into_erased().id()),
             md,
             md,
             md,
         )),
-    );
+    )?;
 
     let replacement = i32_ty.const_int(42_i32);
     assert_eq!(m.view(source).into_erased().num_uses(), 1);
@@ -440,7 +440,7 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
     };
     assert_eq!(
         record.location(),
-        DebugMetadataOperand::Value(replacement.into_erased().slot())
+        DebugMetadataOperand::Value(replacement.into_erased().id())
     );
     let block = cursor.into_block();
     let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(block);

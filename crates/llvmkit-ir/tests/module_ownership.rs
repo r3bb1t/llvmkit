@@ -22,9 +22,13 @@
 
 use std::thread;
 
+use llvmkit_ir::metadata::{
+    DebugMetadataOperand, DebugRecord, DebugVariableRecord, DebugVariableRecordKind,
+};
 use llvmkit_ir::{
-    BlockId, Dyn, DynBrand, FunctionId, IRBuilder, IntValue, IrError, Linkage, Module, ModuleBrand,
-    Unverified, Verified, module_new,
+    BlockId, Dyn, DynBrand, FunctionId, IRBuilder, InstructionView, IntValue, IrError, Linkage,
+    MetadataAttachmentKind, MetadataField, MetadataFieldValue, MetadataKind, Module, ModuleBrand,
+    NoFolder, SpecializedMetadataKind, SpecializedMetadataNode, Unverified, Verified, module_new,
 };
 
 /// Declare a brand type exactly as a user would.
@@ -396,5 +400,179 @@ fn branded_once_retires_the_brand_so_no_successor_can_exist() -> Result<(), IrEr
         Module::branded_once::<OnceOnly, _>("successor"),
         Err(IrError::BrandRetired { .. })
     ));
+    Ok(())
+}
+
+// --------------------------------------------------------------------------
+// The metadata currency carries the same tag
+// --------------------------------------------------------------------------
+
+/// A metadata node minted in one module and handed to another is refused, even
+/// when its arena slot is perfectly **in range** over there.
+///
+/// This is the case a range check cannot catch and the one the crate's law is
+/// really about: before `MetadataId` carried a `ModuleId` tag, a metadata
+/// handle was a bare `usize`, so module A's slot 0 was module B's slot 0 and the
+/// printer resolved it against B's arena — a different node, silently. The two
+/// modules here are deliberately *shaped the same*, so a tag-blind resolver
+/// would find a plausible node rather than an empty slot.
+///
+/// Both modules are [`DynBrand`], which is the interesting brand: two
+/// `Module<DynBrand>` handles have the same *type*, so nothing but the runtime
+/// tag can separate them. (Two distinct named brands are separated statically
+/// instead — `tests/compile_fail/cross_module_metadata_attachment.rs`.)
+#[test]
+fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrError> {
+    let a = Module::dynamic("a");
+    let b = Module::dynamic("b");
+
+    // Same shape in both, so the foreign slot is in range in the target.
+    let a_node = a.metadata_tuple([a.metadata_string("from-a")])?;
+    let b_node = b.metadata_tuple([b.metadata_string("from-b")])?;
+    assert_eq!(
+        a.metadata_count(),
+        b.metadata_count(),
+        "the two arenas must be the same size for this test to mean anything"
+    );
+
+    // ---- module-level constructors ----
+    assert!(matches!(
+        b.metadata_tuple([a_node]),
+        Err(IrError::ForeignMetadataId)
+    ));
+    assert!(matches!(
+        b.metadata_tuple_with_distinct(true, [a_node]),
+        Err(IrError::ForeignMetadataId)
+    ));
+    assert!(matches!(
+        b.metadata_node(MetadataKind::Ref(a_node)),
+        Err(IrError::ForeignMetadataId)
+    ));
+    assert!(matches!(
+        b.metadata_specialized(
+            SpecializedMetadataNode::new(SpecializedMetadataKind::DIFile).field(
+                MetadataField::new("filename", MetadataFieldValue::Metadata(a_node))
+            )
+        ),
+        Err(IrError::ForeignMetadataId)
+    ));
+    assert!(matches!(
+        b.metadata_as_value(a_node),
+        Err(IrError::ForeignMetadataId)
+    ));
+    assert!(matches!(
+        b.metadata_set(a_node, MetadataKind::Null),
+        Err(IrError::ForeignMetadataId)
+    ));
+    let named = b.get_or_insert_named_metadata("b.named");
+    assert!(matches!(
+        b.named_metadata_add_operand(named, a_node),
+        Err(IrError::ForeignMetadataId)
+    ));
+
+    // ---- lookup: `None`, never module B's node at the same index ----
+    assert!(
+        b.metadata_get(a_node).is_none(),
+        "a foreign id must not resolve to whatever sits at that index here"
+    );
+    assert!(
+        b.metadata_get(b_node).is_some(),
+        "the check is discriminating, not a blanket refusal"
+    );
+
+    // ---- attachment setters on the global / function handles ----
+    let i8_ty = b.i8_type();
+    let g = b.add_global("g", i8_ty.const_zero())?;
+    assert!(matches!(
+        b.view(g)
+            .set_metadata(&b, MetadataAttachmentKind::AbsoluteSymbol, a_node),
+        Err(IrError::ForeignMetadataId)
+    ));
+
+    // ---- attachment + debug-record setters on an instruction ----
+    let void_ty = b.void_type();
+    let fn_ty = b.fn_type_no_params(void_ty, false);
+    let f = b.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = b.view(f).append_basic_block(&b, "entry");
+    let builder = IRBuilder::with_folder(&b, NoFolder).position_at_end(entry);
+    let sum = builder.build_int_add::<i8, _, _, _>(
+        i8_ty.const_int(1_u8),
+        i8_ty.const_int(2_u8),
+        "sum",
+    )?;
+    builder.build_ret_void()?;
+    let inst = InstructionView::try_from(b.view(sum).into_erased())?;
+
+    assert!(matches!(
+        inst.set_metadata(&b, MetadataAttachmentKind::Prof, a_node),
+        Err(IrError::ForeignMetadataId)
+    ));
+    assert!(matches!(
+        inst.push_debug_record(
+            &b,
+            DebugRecord::Variable(DebugVariableRecord::new(
+                DebugVariableRecordKind::Value,
+                DebugMetadataOperand::Metadata(a_node),
+                b_node,
+                b_node,
+                b_node,
+            )),
+        ),
+        Err(IrError::ForeignMetadataId)
+    ));
+    // ...including when only the *value* operand is foreign.
+    let a_void_ty = a.void_type();
+    let a_fn_ty = a.fn_type_no_params(a_void_ty, false);
+    let a_fn = a.add_function_dyn("a_fn", a_fn_ty, Linkage::External)?;
+    let a_entry = a.view(a_fn).append_basic_block(&a, "entry");
+    let a_builder = IRBuilder::with_folder(&a, NoFolder).position_at_end(a_entry);
+    let a_i8 = a.i8_type();
+    let a_sum = a_builder.build_int_add::<i8, _, _, _>(
+        a_i8.const_int(1_u8),
+        a_i8.const_int(2_u8),
+        "sum",
+    )?;
+    a_builder.build_ret_void()?;
+    assert!(matches!(
+        inst.push_debug_record(
+            &b,
+            DebugRecord::Variable(DebugVariableRecord::new(
+                DebugVariableRecordKind::Value,
+                DebugMetadataOperand::Value(a.view(a_sum).into_erased().id()),
+                b_node,
+                b_node,
+                b_node,
+            )),
+        ),
+        Err(IrError::ForeignValueId)
+    ));
+
+    // Nothing foreign made it in: module B still prints only its own node, and
+    // the instruction carries no attachment at all.
+    assert!(inst.metadata().is_empty());
+    assert!(inst.debug_records().is_empty());
+    let text = format!("{b}");
+    assert!(text.contains("from-b"), "{text}");
+    assert!(!text.contains("from-a"), "{text}");
+    Ok(())
+}
+
+/// The native path still works end to end, so the tag check above is a real
+/// discrimination rather than a wall: the same calls with the target module's
+/// own ids succeed and print.
+#[test]
+fn a_native_metadata_id_still_resolves_and_prints() -> Result<(), IrError> {
+    let m = Module::dynamic("native");
+    let node = m.metadata_tuple([m.metadata_string("x")])?;
+    let named = m.get_or_insert_named_metadata("my.named");
+    m.named_metadata_add_operand(named, node)?;
+    assert!(matches!(
+        m.metadata_get(node),
+        Some(MetadataKind::Tuple { .. })
+    ));
+
+    let text = format!("{m}");
+    assert!(text.contains("!0 = !{!\"x\"}"), "{text}");
+    assert!(text.contains("!my.named = !{!0}"), "{text}");
     Ok(())
 }

@@ -15,7 +15,7 @@ small set of built-in analyses (`DominatorTreeAnalysis`, `KnownBitsAnalysis`,
 `SimplifyDemandedBitsPass`) ship, but a broad transform library,
 `PassBuilder`-style runnable pipelines, bitcode, and code generation do not.
 
-The API described here is the one frozen for **0.1.0** (2026-07-26).
+The API described here is the one frozen for **0.0.4** (2026-07-26).
 
 ## Three structural differences to read first
 
@@ -382,6 +382,6 @@ compile-fail fixtures in `crates/llvmkit-ir/tests/compile_fail/` lock these:
   any mutating pass downgrades it to `Module<B, Unverified>`.
 - Saved-handle mutators require `&Module<B, Unverified>`, so verified modules
   cannot be mutated through old handles without explicitly `unverify()`ing. As
-  of 0.1.0 this includes the instruction metadata mutators
+  of 0.0.4 this includes the instruction metadata mutators
   (`InstructionView::set_metadata`, `push_debug_record`, and their
   `Instruction` twins), which previously took no token.

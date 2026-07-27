@@ -55,7 +55,7 @@ use super::int_width::IntWidth;
 use super::intrinsics::{IntrinsicDescriptor, IntrinsicFunctionData, IntrinsicId};
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::MetadataAttachmentSet;
-use super::metadata::{MetadataAttachmentKind, MetadataSlot};
+use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use super::module::{
     Module, ModuleBrand, ModuleRef, ModuleView, Unverified, UseListOrderRecord,
     validate_use_list_order_indexes,
@@ -104,7 +104,7 @@ pub(super) struct FunctionData {
     pub(super) attributes: RefCell<AttributeStorage>,
     pub(super) function_attr_groups: RefCell<Vec<u32>>,
     pub(super) use_list_orders: RefCell<Vec<UseListOrderRecord>>,
-    pub(super) metadata: RefCell<MetadataAttachmentSet>,
+    pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
     pub(super) intrinsic: Option<IntrinsicFunctionData>,
     pub(super) symbol_table: ValueSymbolTable,
 }
@@ -575,17 +575,32 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         *self.data().comdat.borrow_mut() = None;
     }
 
-    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
+    pub fn metadata(self) -> MetadataAttachmentSet<B> {
+        MetadataAttachmentSet::from_stored(&self.data().metadata.borrow())
+    }
+
+    /// Crate-internal: the stored attachment set, for the printer and the
+    /// verifier, which already work inside the owning module.
+    pub(crate) fn metadata_stored(
+        self,
+    ) -> core::cell::Ref<'ctx, MetadataAttachmentSet<StoredBrand>> {
         self.data().metadata.borrow()
     }
 
+    /// Set or replace one metadata attachment.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
+    /// module — the module token proves *which* module may be mutated, and the
+    /// id's tag is what proves the node belongs to it.
     pub fn set_metadata(
         self,
-        _module: &'ctx Module<B, Unverified>,
+        module: &'ctx Module<B, Unverified>,
         kind: MetadataAttachmentKind,
-        id: MetadataSlot,
-    ) {
+        id: MetadataId<B>,
+    ) -> IrResult<()> {
+        let id = id.into_stored(module.id())?;
         self.data().metadata.borrow_mut().insert(kind, id);
+        Ok(())
     }
 
     /// Add an attribute at `index` to an already-created function.

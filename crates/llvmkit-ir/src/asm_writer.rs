@@ -52,7 +52,7 @@ use super::intrinsics::{PrettyPrintArg, descriptor_for_callee};
 use super::marker::Dyn;
 use super::metadata::{
     DebugMetadataOperand, DebugRecord, MetadataAttachmentSet, MetadataKind, MetadataSlot,
-    MetadataStore, SpecializedMetadataKind, SpecializedMetadataNode,
+    MetadataStore, SpecializedMetadataKind, SpecializedMetadataNode, StoredBrand,
 };
 use super::module::{
     DynBrand, ModuleBrand, ModuleCore, ModuleView, UseListOrderBBRecord, UseListOrderRecord,
@@ -1034,7 +1034,13 @@ pub(super) fn fmt_instruction(
     let module_view = inst.module();
     let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
-    fmt_metadata_attachments(f, &inst.metadata(), module_view.core_ref(), &md, &md_slots)
+    fmt_metadata_attachments(
+        f,
+        &inst.metadata_stored(),
+        module_view.core_ref(),
+        &md,
+        &md_slots,
+    )
 }
 
 fn fmt_binop(
@@ -2403,7 +2409,7 @@ fn fmt_attribute_stored<'ctx, B: ModuleBrand + 'ctx>(
 
 fn fmt_debug_metadata_operand(
     f: &mut fmt::Formatter<'_>,
-    operand: DebugMetadataOperand,
+    operand: DebugMetadataOperand<StoredBrand>,
     module: &ModuleCore,
     store: &MetadataStore,
     md_slots: &[Option<usize>],
@@ -2411,13 +2417,14 @@ fn fmt_debug_metadata_operand(
 ) -> fmt::Result {
     match operand {
         DebugMetadataOperand::Metadata(md) => {
-            fmt_metadata_operand(f, md.0, module, store, md_slots)
+            fmt_metadata_operand(f, md.slot(), module, store, md_slots)
         }
         DebugMetadataOperand::Value(id) => {
-            let data = module.context().value_data(id);
+            let slot = id.slot();
+            let data = module.context().value_data(slot);
             fmt_operand(
                 f,
-                Value::<DynBrand>::from_parts(id, module, data.ty),
+                Value::<DynBrand>::from_parts(slot, module, data.ty),
                 Some(slots),
             )
         }
@@ -2426,7 +2433,7 @@ fn fmt_debug_metadata_operand(
 
 fn fmt_debug_record(
     f: &mut fmt::Formatter<'_>,
-    record: &DebugRecord,
+    record: &DebugRecord<StoredBrand>,
     module: &ModuleCore,
     store: &MetadataStore,
     md_slots: &[Option<usize>],
@@ -2438,12 +2445,12 @@ fn fmt_debug_record(
             write!(f, "#dbg_{}(", record.kind().name())?;
             fmt_debug_metadata_operand(f, record.location(), module, store, md_slots, slots)?;
             f.write_str(", ")?;
-            fmt_metadata_operand(f, record.variable(), module, store, md_slots)?;
+            fmt_metadata_operand(f, record.variable().slot(), module, store, md_slots)?;
             f.write_str(", ")?;
-            fmt_metadata_operand(f, record.expression(), module, store, md_slots)?;
+            fmt_metadata_operand(f, record.expression().slot(), module, store, md_slots)?;
             f.write_str(", ")?;
             if let Some(assign_id) = record.assign_id() {
-                fmt_metadata_operand(f, assign_id, module, store, md_slots)?;
+                fmt_metadata_operand(f, assign_id.slot(), module, store, md_slots)?;
                 f.write_str(", ")?;
             }
             if let Some(address_location) = record.address_location() {
@@ -2451,17 +2458,17 @@ fn fmt_debug_record(
                 f.write_str(", ")?;
             }
             if let Some(address_expression) = record.address_expression() {
-                fmt_metadata_operand(f, address_expression, module, store, md_slots)?;
+                fmt_metadata_operand(f, address_expression.slot(), module, store, md_slots)?;
                 f.write_str(", ")?;
             }
-            fmt_metadata_operand(f, record.debug_loc(), module, store, md_slots)?;
+            fmt_metadata_operand(f, record.debug_loc().slot(), module, store, md_slots)?;
             f.write_str(")")
         }
         DebugRecord::Label { label, debug_loc } => {
             f.write_str("#dbg_label(")?;
-            fmt_metadata_operand(f, *label, module, store, md_slots)?;
+            fmt_metadata_operand(f, label.slot(), module, store, md_slots)?;
             f.write_str(", ")?;
-            fmt_metadata_operand(f, *debug_loc, module, store, md_slots)?;
+            fmt_metadata_operand(f, debug_loc.slot(), module, store, md_slots)?;
             f.write_str(")")
         }
     }
@@ -2489,7 +2496,7 @@ pub(super) fn fmt_basic_block<S: BlockTerminationState>(
     let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
     for inst in bb.instructions() {
-        for record in inst.debug_records().iter() {
+        for record in inst.debug_records_stored().iter() {
             fmt_debug_record(f, record, module_view.core_ref(), &md, &md_slots, slots)?;
             f.write_str("\n")?;
         }
@@ -2626,7 +2633,13 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         let module_view = func.module();
         let md = module_view.metadata_store();
         let md_slots = metadata_slot_map(md.nodes());
-        fmt_metadata_attachments(f, &func.metadata(), module_view.core_ref(), &md, &md_slots)?;
+        fmt_metadata_attachments(
+            f,
+            &func.metadata_stored(),
+            module_view.core_ref(),
+            &md,
+            &md_slots,
+        )?;
     }
     if header == "declare" {
         return f.write_str("\n");
@@ -2849,7 +2862,7 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
                     if j > 0 {
                         f.write_str(", ")?;
                     }
-                    fmt_metadata_operand(f, op.0, m, &md, &slots)?;
+                    fmt_metadata_operand(f, op.slot(), m, &md, &slots)?;
                 }
                 f.write_str("}\n")?;
             }
@@ -2874,7 +2887,7 @@ fn fmt_md_string(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
 /// never assigns standalone metadata slots to `MDString`s.
 fn fmt_metadata_node(
     f: &mut fmt::Formatter<'_>,
-    node: &MetadataKind,
+    node: &MetadataKind<StoredBrand>,
     module: &ModuleCore,
     store: &MetadataStore,
     slots: &[Option<usize>],
@@ -2892,24 +2905,25 @@ fn fmt_metadata_node(
                 if i > 0 {
                     f.write_str(", ")?;
                 }
-                fmt_metadata_operand(f, op.0, module, store, slots)?;
+                fmt_metadata_operand(f, op.slot(), module, store, slots)?;
             }
             f.write_str("}")
         }
-        MetadataKind::Ref(id) => fmt_metadata_operand(f, *id, module, store, slots),
+        MetadataKind::Ref(id) => fmt_metadata_operand(f, id.slot(), module, store, slots),
         MetadataKind::Specialized(node) => {
             fmt_specialized_metadata_node(f, node, module, store, slots)
         }
         MetadataKind::Constant(id) => {
-            let data = module.context().value_data(*id);
-            let value = Value::<DynBrand>::from_parts(*id, module, data.ty);
+            let slot = id.slot();
+            let data = module.context().value_data(slot);
+            let value = Value::<DynBrand>::from_parts(slot, module, data.ty);
             fmt_operand(f, value, None)
         }
     }
 }
 fn fmt_specialized_metadata_node(
     f: &mut fmt::Formatter<'_>,
-    node: &SpecializedMetadataNode,
+    node: &SpecializedMetadataNode<StoredBrand>,
     module: &ModuleCore,
     store: &MetadataStore,
     slots: &[Option<usize>],
@@ -2935,7 +2949,7 @@ fn fmt_specialized_metadata_node(
             }
             MetadataFieldValue::Enum(s) => f.write_str(s)?,
             MetadataFieldValue::Metadata(md) => {
-                fmt_metadata_operand(f, md.0, module, store, slots)?
+                fmt_metadata_operand(f, md.slot(), module, store, slots)?
             }
             MetadataFieldValue::MetadataList(items) => {
                 f.write_str("!{")?;
@@ -2943,7 +2957,7 @@ fn fmt_specialized_metadata_node(
                     if j > 0 {
                         f.write_str(", ")?;
                     }
-                    fmt_metadata_operand(f, md.0, module, store, slots)?;
+                    fmt_metadata_operand(f, md.slot(), module, store, slots)?;
                 }
                 f.write_str("}")?;
             }
@@ -2954,14 +2968,14 @@ fn fmt_specialized_metadata_node(
 
 fn fmt_metadata_attachments(
     f: &mut fmt::Formatter<'_>,
-    attachments: &MetadataAttachmentSet,
+    attachments: &MetadataAttachmentSet<StoredBrand>,
     module: &ModuleCore,
     store: &MetadataStore,
     slots: &[Option<usize>],
 ) -> fmt::Result {
     for (kind, id) in attachments.iter() {
         write!(f, ", !{} ", kind.name())?;
-        fmt_metadata_operand(f, *id, module, store, slots)?;
+        fmt_metadata_operand(f, id.slot(), module, store, slots)?;
     }
     Ok(())
 }
@@ -2990,7 +3004,7 @@ fn fmt_metadata_operand(
     }
 }
 
-fn is_inline_metadata_node(node: &MetadataKind) -> bool {
+fn is_inline_metadata_node(node: &MetadataKind<StoredBrand>) -> bool {
     matches!(node, MetadataKind::Null | MetadataKind::Constant(_))
         || matches!(
             node,
@@ -2999,7 +3013,7 @@ fn is_inline_metadata_node(node: &MetadataKind) -> bool {
         )
 }
 
-fn metadata_slot_map(nodes: &[MetadataKind]) -> Vec<Option<usize>> {
+fn metadata_slot_map(nodes: &[MetadataKind<StoredBrand>]) -> Vec<Option<usize>> {
     let mut slots = vec![None; nodes.len()];
     let mut next = 0;
     for (i, node) in nodes.iter().enumerate() {
@@ -3112,7 +3126,13 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
     let module_view = g.module();
     let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
-    fmt_metadata_attachments(f, &g.metadata(), g.module().core_ref(), &md, &md_slots)
+    fmt_metadata_attachments(
+        f,
+        &g.metadata_stored(),
+        g.module().core_ref(),
+        &md,
+        &md_slots,
+    )
 }
 
 pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
@@ -3153,7 +3173,13 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     let module_view = a.module();
     let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
-    fmt_metadata_attachments(f, &a.metadata(), a.module().core_ref(), &md, &md_slots)?;
+    fmt_metadata_attachments(
+        f,
+        &a.metadata_stored(),
+        a.module().core_ref(),
+        &md,
+        &md_slots,
+    )?;
     f.write_str("\n")
 }
 
@@ -3183,7 +3209,13 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     let module_view = i.module();
     let md = module_view.metadata_store();
     let md_slots = metadata_slot_map(md.nodes());
-    fmt_metadata_attachments(f, &i.metadata(), i.module().core_ref(), &md, &md_slots)?;
+    fmt_metadata_attachments(
+        f,
+        &i.metadata_stored(),
+        i.module().core_ref(),
+        &md,
+        &md_slots,
+    )?;
     f.write_str("\n")
 }
 

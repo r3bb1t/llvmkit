@@ -2,7 +2,7 @@
 
 **Status:** approved design, 2026-07-16. Cycle 1.5 of the "No silent erasure" program.
 
-> **Outcome, recorded 2026-07-27 (llvmkit 0.1.0).** This design shipped, and it
+> **Outcome, recorded 2026-07-27 (llvmkit 0.0.4).** This design shipped, and it
 > shipped as the **audited seal**, not the hard seal — see "The seal, and its
 > honest limit" below, which posed that as the one open question. `value` and
 > `ir_builder` are sibling modules and the constructors need `ir_builder`-private
@@ -73,7 +73,7 @@ claim in §4 becomes true rather than documented-around.
    cut (Cycle 2). *(The `clippy::type_complexity` allows are gone; `#[allow(...)]`
    is now banned outright repo-wide. The `clippy::type_complexity` allows are gone, and so are the six
   `#[cfg_attr(not(test), allow(dead_code))]` on the crate-internal raw-phi
-  items — those became `#[cfg(test)]` at the 0.1.0 freeze, since their only
+  items — those became `#[cfg(test)]` in 0.0.4, since their only
   callers were ever `src/phi_raw_tests/`. No `#[allow(...)]` in any form
   remains in the crate sources.
 

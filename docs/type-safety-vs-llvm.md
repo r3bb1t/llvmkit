@@ -26,6 +26,7 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | Custom folder returns a wrong-*width* typed fold result | D4 | Folder hooks return raw `Value *`; the builder inserts whatever comes back, and the mistyped constant surfaces later as malformed IR | The typed hook's signature pins the return type, so an external folder cannot spell a **concrete** wrong width (`E0308`, locked by `tests/compile_fail/folder_typed_wrong_width.rs`). Where a signature *cannot* pin it — `W = IntDyn` names no width, and the crate-internal `from_value_unchecked` can mint any marker — the builder re-checks each fold result's runtime type against the operand / cast destination, for **every** marker (see §4; the check was previously skipped for static markers, which was circular) |
 | Insert after a terminated block | D1 | Insertion point is a mutable iterator into a `BasicBlock *` | Terminator builders consume the builder (`self` by value) and return a `Terminated` view. `BasicBlock` is `!Copy`, so `position_at_end` *moves* it: a retained `Unterminated` handle cannot be re-positioned into either (`E0382`, locked by `tests/compile_fail/retained_unterminated_block_cannot_reposition.rs` and `builder_cannot_terminate_twice.rs`) |
 | Mutate instruction metadata on a module already verified, or from a read-only pass | D8, D2 | `Instruction::setMetadata` is a plain non-const method; `verifyModule` is a free function returning a `bool` the caller may ignore, and nothing connects the two | `InstructionView::set_metadata` / `push_debug_record` (and their `Instruction` twins) demand a `&Module<B, Unverified>` token, which a `Verified` module cannot supply and an `Inspect`-rung pass never holds (`E0308`, locked by `tests/compile_fail/verified_module_metadata_is_immutable.rs`) |
+| Metadata node from another module attached, referenced, or looked up | D7 | `MDNode *` records no owning module; the attachment is accepted and surfaces (if at all) as a corrupt dump | The metadata currency is `MetadataId<B>` — brand statically, `ModuleId` tag at run time. Wrong brand is a compile error (`tests/compile_fail/cross_module_metadata_attachment.rs`); wrong module under one brand is `IrError::ForeignMetadataId` at a single arena choke point (`tests/module_ownership.rs`) |
 | Keep a handle to a block or value after its module is gone | D2, D7 | A `BasicBlock *` outliving its `Module` is a dangling pointer, diagnosed at no stage | A module is an owned value, so every borrowing handle (`BasicBlock`, `FunctionValue`, `Value`, every `*View`) carries a `'ctx` borrow of it and cannot escape its scope (`E0597`, locked by `tests/compile_fail/view_cannot_outlive_its_module.rs`). The `.id()` form of the same program compiles — which is why a stale *id* is a run-time rejection while a stale *view* is unconstructible |
 | Return a value from a `void` function, or `ret void` from a value-returning function | D1, D4 | `CreateRet(Value *)` / `CreateRetVoid()` are just methods; mismatch is verifier/runtime state | `IRBuilder<..., R>` exposes return methods according to the function return marker |
 | Read a typed result from a `void` call | D3, D4 | Caller must inspect the call/function type | `CallInst<'ctx, ()>` exposes no typed result accessor |
@@ -33,7 +34,7 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | Recover lifecycle authority from a copyable value, block, or use-list | D2, D9 | Any retained `Instruction *` can be reused for mutation | Copyable rediscovery APIs return `InstructionView`; only builder output, `BlockCursor`, and detached reinsertion produce `Instruction<Attached>` |
 | Add more incoming edges or destinations after a variable-arity instruction is finalized | D1, D2 | Caller discipline plus verifier | `PhiInst<Open>` / `SwitchInst<Open>` / `IndirectBrInst<Open>` / `LandingPadInst<Open>` / `CatchSwitchInst<Open>` are linear; `finish()` returns closed views without mutators |
 | Misplace a phi, mistype a phi incoming, or give one predecessor two different incoming values | D1, D4 | Builder accepts all three; the verifier later reports `PhiNotAtTop` or the type / predecessor mismatch | `build_*_phi` always insert at the block's PHI head (placement correct by construction); `add_incoming` — the typed path *and* the untyped parser/SSA-builder path — type-checks the incoming and rejects a differing duplicate for one predecessor as `IrError::AmbiguousPhiIncoming`; whole-graph incoming-vs-predecessor completeness stays in `Module::verify()` |
-| Branch carries the wrong number of, or wrong-typed, values for its successor's block parameters | D1, D4 | The successor's head-phis are filled `PHINode`-by-`PHINode`; a miscounted or mistyped incoming is an `assert` / verifier concern | A typed successor label carries a `Params` schema; `head.call(args)` (a `BlockCall`) requires `args: CallArgs<Params>`, so a wrong arity or a wrong-typed block-argument position is a compile error, reusing the typed-`build_call` machinery. The erased `append_block_with_params` / `build_*_with_args` path stays call-site-checked (`IrError::PhiArgArityMismatch` / type mismatch). **Neither closes the plain-`br` door**: `build_br`/`build_cond_br` take any `IntoBasicBlockLabel`, whose `BlockId` impl erases `Params`, so branching to a parameterised block *without* arguments compiles and the resulting incomplete phi is a `Module::verify()` finding (§9) |
+| Branch carries the wrong number of, or wrong-typed, values for its successor's block parameters | D1, D4 | The successor's head-phis are filled `PHINode`-by-`PHINode`; a miscounted or mistyped incoming is an `assert` / verifier concern | A typed successor label carries a `Params` schema; `head.call(args)` (a `BlockCall`) requires `args: CallArgs<Params>`, so a wrong arity or a wrong-typed block-argument position is a compile error, reusing the typed-`build_call` machinery. The erased `append_block_with_params` / `build_*_with_args` path stays call-site-checked (`IrError::PhiArgArityMismatch` / type mismatch). **The plain-`br` door is shut at run time, not at compile time**: `build_br`/`build_cond_br` still take any `IntoBasicBlockLabel`, whose `BlockId` impl erases `Params`, so a plain branch to a parameterised block still *compiles* — but every plain terminator edge (`br`, `cond_br`, `switch` default and cases, both `invoke` edges, `callbr`, `indirectbr`) now rejects a parameterised target with `IrError::PhiArgArityMismatch` before the terminator is emitted, so the incomplete phi is no longer reachable (§9) |
 | Add a wrong-width case value to a `switch` | D4 | Builder accepts any `ConstantInt *`; a case whose integer width ≠ the condition is caught later by `Verifier::visitSwitchInst` (`"Switch constants must all be same type as switch value!"`) | `build_switch::<W>` pins the condition width `W`, and `SwitchInst::add_case` then carries an `IntoIntValue<'ctx, W, B>` bound, so a wrong-width case is a compile error; the erased `build_switch_dyn` (`IntDyn`) keeps the same rule as a runtime `IrError::TypeMismatch` check for parsed / SSA-builder input |
 | Jump through a non-pointer `indirectbr` address | D4 | `CreateIndirectBr` accepts any `Value *`; a non-pointer address is caught later by `Verifier::visitIndirectBrInst` (`"Indirectbr operand must have pointer type!"`) | `build_indirectbr`'s address is bound `IntoPointerValue<'ctx, B>`, so a typed non-pointer address is a compile error. There is no erased overload: `IntoPointerValue` has no impl for a bare `Value`, so a parsed address must first be narrowed by `TryFrom` (`ll_parser.rs::parse_indirectbr` does exactly that), which is where the pointer check lands. Either way the rule is out of `Module::verify()` |
 | Make a structurally-invalid CFG edge edit — remove an `invoke`/`callbr` edge or the sole edge of an unconditional `br`, remove a `switch` default, or collapse a `cond_br` twice | D1, D2 | Edge edits are raw pointer manipulation (`setSuccessor` / `removePredecessor` / branch replacement); an edit that orphans a mandatory edge yields malformed IR the verifier catches later, if at all | `FnReshape::edit_terminator` narrows the terminator into a per-kind typed handle (`BrEdit` / `CondBrEdit` / `SwitchEdit` / `InvokeEdit` / `CallBrEdit`) whose method set fixes the legal edits: a removal that would orphan a mandatory edge has no method to spell (`E0599`), and `remove_then` / `remove_else` consume the handle, so a double collapse is use-after-move (`E0382`). Each redirect/remove maintains the successors' phis mechanically, poison-erasing an emptied phi for `BasicBlock::removePredecessor` parity |
@@ -46,10 +47,11 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | External crate authoring a module pass | D8, D1 | `PassInfoMixin` plus manual plugin registration wiring | Implement `ModulePass` (or the `#[module_pass]` sugar), symmetric with function passes — no registration step |
 | Author a pass with the wrong rung, no name, or an undeclared analysis | D1, D8 | `PassInfoMixin` + plugin registration; a wrong rung, missing name, or typo'd pipeline entry fails at plugin-load or run time, if at all | `#[function_pass]` / `#[module_pass]` expand to the trait impl and make each slip a pinpointed compile error (a module-only rung fails the `FnAccess` bound, a missing `name` is a `syn::Error`, an undeclared analysis fails a `#[diagnostic::on_unimplemented]` bound) |
 
-### The D7 rows have two carve-outs
+### The D7 rows have one carve-out (and one that closed)
 
 The D7 rows above say "compile error". That is exact only when the two modules
-carry **different named brands**. Two things fall outside that:
+carry **different named brands**. One thing still falls outside that, and one
+that used to — metadata — no longer does:
 
 **(a) Same-brand pairs fall back to the runtime tag.** Two `Module::dynamic`
 modules share `DynBrand`, and a re-issued `branded` brand names two generations
@@ -61,25 +63,28 @@ is a checked rejection, not a type error. Read every "wrong module is a compile
 error" row below as "wrong *brand* is a compile error; wrong module under the
 same brand is a checked run-time rejection".
 
-**(b) Metadata carries neither half.** Everything else the D7 rows claim is
-about the *value* currencies — `Value`, `BasicBlock`, constants, functions,
-globals, and the storable ids over them — each of which carries the brand `B`
-statically *and* a `ModuleId` tag at run time. `metadata.rs::MetadataSlot`
-is a bare `usize` arena index, and the `ValueSlot` inside
-`DebugMetadataOperand::Value` is likewise bare. Neither half of D7 reaches them:
-there is no `B` for two modules' slots to differ in, and no tag for an arena
-boundary to check. An **out-of-range** slot is rejected —
-`Module::metadata_set` and `Module::named_metadata_add_operand` return
-`IrError::UnknownMetadataSlot { index, len }` — but an **in-range** slot minted
-by another module still resolves silently against the wrong arena and prints the
-wrong node. This predates the 2.0 handle model and is not a regression of it.
-The `Unverified`-token requirement described in section 10 bounds *reachability*
-(mutating metadata now requires code that already holds the target module's
-token) without closing the hole. Tracked in `docs/future-work.md`.
+**(b) Metadata carries both halves as of the 0.0.4 polish freeze.** Through
+0.0.4 it carried neither: `metadata.rs::MetadataSlot` was a bare `usize`
+arena index, and the `ValueSlot` inside `DebugMetadataOperand::Value` was
+likewise bare, so there was no `B` for two modules' handles to differ in and no
+tag for an arena boundary to check. An in-range handle minted by module A and
+attached in module B resolved against B's arena and printed the wrong node,
+silently.
 
-So: "cross-module mixing is caught" is true of values, blocks, and constants —
-statically across named brands, by the tag within one — and is **not** true of
-metadata slots at all. This page is only worth reading if it says which.
+The polish cycle split that currency the way cycle A split the value currency.
+`MetadataSlot` is now crate-internal, and the public currency is
+**`MetadataId<B>`** — `{ tag: ModuleId, slot: MetadataSlot }`, `Copy`, `Send`,
+`'static`, brand-invariant. Two named brands make a mix-up a type error
+(`tests/compile_fail/cross_module_metadata_attachment.rs`); within one brand the
+tag catches it as `IrError::ForeignMetadataId`, at a single choke point every
+metadata API routes through
+(`tests/module_ownership.rs::a_metadata_id_from_another_module_is_refused_everywhere`).
+`IrError::UnknownMetadataSlot { index, len }` remains for the *other* case — a
+native id whose slot is past the end of the arena.
+
+So: "cross-module mixing is caught" is now true of metadata on the same terms as
+values, blocks, and constants — statically across named brands, by the tag
+within one. Only carve-out (a) still applies.
 
 ## Runtime errors, fatal verifier passes, and assertions in LLVM C++
 
@@ -267,11 +272,11 @@ Result: compile error — `ConstantIntValue<'_, i64, Left>` does not implement
 trait implementation, expected `Left`, found `Right`*. No verifier pass, no
 fatal abort, no delayed broken module.
 
-The scope of that *static* guarantee is values, blocks, and constants under
-**distinct named brands**. Two `DynBrand` modules, or two generations of one
-re-issued `branded` brand, share a type and are separated by the runtime tag
-instead. And it does not extend to metadata slots at all, which carry neither a
-brand nor a tag — see the two carve-outs under the summary table.
+The scope of that *static* guarantee is values, blocks, constants, and (since
+the 0.0.4 polish freeze) metadata nodes under **distinct named brands**. Two
+`DynBrand` modules, or two generations of one re-issued `branded` brand, share a
+type and are separated by the runtime tag instead — see carve-out (a) under the
+summary table.
 
 ## 2. Cross-module branch targets
 
@@ -322,8 +327,10 @@ resolve and the `BlockId` bullet above is what catches it, at run time.
 
 Note what the trait deliberately does **not** carry: `Params`. Its `BlockId`
 impl calls `BasicBlockLabel::erase_params`, so a parameterised block is an
-ordinary branch target at a plain `build_br`. The parameter schema is honoured
-by the `BlockCall` edge only — see §9.
+ordinary branch target *to the type system* at a plain `build_br`. The parameter
+schema is honoured at compile time by the `BlockCall` edge only; the plain
+builders catch a parameterised target at run time instead, rejecting it with
+`IrError::PhiArgArityMismatch` — see §9.
 
 Bad Rust program, from `tests/compile_fail/cross_module_branch_target.rs`:
 
@@ -759,19 +766,9 @@ printer, and verifier are unchanged.
 
 **The honest limit, because it is the sort of thing this page exists to state.**
 The block-argument surface is a *better door*, not a sealed one. Nothing in the
-type system forces a caller through it, and three public spellings still land an
+type system forces a caller through it, and two public spellings still land an
 incomplete or desynced phi at `Module::verify()` rather than earlier:
 
-- **A plain `br` to a parameterised block.** `ir_builder.rs::build_br` and
-  `build_cond_br` are bound only by `IntoBasicBlockLabel`, and that trait's
-  `BlockId<R, B, Params>` impl calls `BasicBlockLabel::erase_params` — the
-  parameter schema is honoured by the `BlockCall` edge, never by a plain label
-  position (see the trait's own doc comment in `basic_block.rs`). Neither
-  builder performs an arity check. So `build_br(hdr_target)` against the `hdr`
-  above compiles, emits the edge, and seeds nothing; the head-phi is then one
-  incoming short and `verifier.rs::check_phi` reports it ("phi has N incoming
-  entries but block has M predecessors"). This is the one place a reader might
-  reasonably expect the typed `Params` marker to bite and it does not.
 - **`remove_incoming` is public** (see below) and can empty or desync a phi
   outright; `phi_raw_tests/remove_incoming.rs::remove_incoming_leaves_the_verifier_to_flag_the_missing_edge`
   locks precisely that outcome.
@@ -780,9 +777,26 @@ incomplete or desynced phi at `Module::verify()` rather than earlier:
   `phi_add_incoming_from_value`) is unsupported but reachable from outside the
   crate, and it *is* the bare-phi-then-bolt-edges shape.
 
+The third spelling that used to belong on that list — **a plain `br` to a
+parameterised block** — was closed in `feature-34/polish-freeze`. It still
+*compiles* (the label positions erase `Params`, by design), but every plain
+terminator edge now checks its target before emitting and rejects a
+parameterised one with `IrError::PhiArgArityMismatch`: `build_br`,
+`build_cond_br`, `build_switch` / `build_switch_dyn` and `SwitchInst::add_case`,
+all four `invoke` entry points, `build_callbr*`, and
+`IndirectBrInst::add_destination`. `switch` and `invoke` also gained the
+argument-carrying forms they were designed with and never got
+(`build_switch_with_args` / `build_switch_dyn_with_args`,
+`build_invoke_with_args` / `build_invoke_dyn_with_args`), so every terminator
+that can reach a parameterised block either carries its arguments or does not
+build. The guard keys on *block parameters*, not on "the block contains phis",
+so the parser's back-edges, `SsaBuilder`'s unsealed loop headers, and
+pass-inserted phis are unaffected.
+
 So the accurate claim is: block arguments make the desync **unrepresentable in
-the code that uses them**, and the raw typed builders that used to be the easy
-way to get it wrong are gone from the public surface (`E0624`, locked by
+the code that uses them**, the plain-branch door is shut at build time, and the
+raw typed builders that used to be the easy way to get it wrong are gone from
+the public surface (`E0599`, locked by
 `tests/compile_fail/raw_phi_builder_is_unnameable.rs`). Whole-graph
 incoming-vs-predecessor coherence remains `Module::verify()`'s job, for
 builder-constructed IR as much as for parsed IR.
@@ -960,9 +974,13 @@ analogue: `Instruction::setMetadata` is a plain non-const method, `verifyModule`
 is a free function returning a `bool` a caller may ignore, and nothing connects
 the two.
 
-This bounds *reachability* of the metadata arena — mutating it now requires code
-that already holds the target module's token. It does not make metadata slots
-module-safe; see carve-out (b) under the summary table.
+That bounds *reachability* of the metadata arena — mutating it requires code
+that already holds the target module's token. The polish freeze then made the
+metadata **currency** module-safe as well: `set_metadata` and
+`push_debug_record` take `MetadataId<B>` rather than a bare slot, and the token
+they already demanded is what supplies the `ModuleId` the id's tag is compared
+against, so both calls now return `IrResult<()>` and reject a foreign node with
+`IrError::ForeignMetadataId`. See carve-out (b) under the summary table.
 
 This does not remove the verifier. It makes the verifier's result impossible to
 forget in typed APIs.
@@ -1257,14 +1275,13 @@ type system. Runtime verification still owns:
 - data-layout-dependent size/alignment rules;
 - verifier rules for attributes, globals, atomics, calls, EH pads, and metadata
   that depend on whole-instruction or whole-module context;
-- **metadata-slot provenance, which is not fully covered even at runtime.**
-  `MetadataSlot` is a bare arena index with neither a brand nor a `ModuleId`
-  tag, so an out-of-range slot is rejected
-  (`IrError::UnknownMetadataSlot { index, len }`) but an in-range slot from
-  another module resolves silently against the wrong arena. Stated here rather
-  than left implied, because it is the one currency *neither* half of D7 reaches
-  — a same-brand value mix-up is at least caught by the tag; a metadata slot
-  mix-up is not caught at all. Tracked in `docs/future-work.md`.
+- metadata *content* rules — that a `!range` tuple has an even, non-zero
+  operand count of integer constants, that `!absolute_symbol` is not the empty
+  range, that an attachment sits on an opcode that accepts it. Metadata
+  **provenance** is no longer on this list: since the 0.0.4 polish freeze a
+  metadata handle is a tagged, branded `MetadataId<B>`, so a foreign node is
+  `IrError::ForeignMetadataId` at the attach site rather than a silent
+  mis-resolve at print time.
 
 The rule of thumb is simple: if Rust can know the invariant from the types at the
 call site, `llvmkit` makes it a type error. If the invariant depends on the whole
@@ -1292,7 +1309,7 @@ emits, so they are documented here rather than left to surprise a diff:
 
 ## Proof in the repository
 
-The compile-fail suite locks these guarantees with `trybuild`. As of 0.1.0 it
+The compile-fail suite locks these guarantees with `trybuild`. As of 0.0.4 it
 registers **83 fixtures — 82 `t.compile_fail` plus 1 `t.pass` — and the baseline
 is 0 failures**. All of them live in `crates/llvmkit-ir/tests/compile_fail/` and
 are registered in `crates/llvmkit-ir/tests/typestate_compile_fail.rs`.

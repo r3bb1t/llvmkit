@@ -44,7 +44,10 @@ fn values_matching(known: &KnownBits) -> Vec<ApInt> {
     values
 }
 
-fn foreach_known_bits(width: u32, mut f: impl FnMut(KnownBits)) {
+fn foreach_known_bits<F>(width: u32, mut f: F)
+where
+    F: FnMut(KnownBits),
+{
     let limit = 1u64 << width;
     for zero in 0..limit {
         for one in 0..limit {

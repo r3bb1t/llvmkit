@@ -28,7 +28,7 @@ use super::IrResult;
 use super::align::Align;
 use super::atomic_ordering::AtomicOrdering;
 use super::atomicrmw_binop::AtomicRMWBinOp;
-use super::basic_block::IntoBasicBlockLabel;
+use super::basic_block::{BasicBlockLabel, IntoBasicBlockLabel, require_no_block_parameters};
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::derived_types::FunctionType;
@@ -452,7 +452,7 @@ macro_rules! decl_handle_scaffold {
 }
 
 /// Give a marker-free opcode handle the two id accessors every handle in the
-/// crate shares (llvmkit 2.0): `.id()` mints the storable, module-tagged
+/// crate shares (0.0.4): `.id()` mints the storable, module-tagged
 /// instruction id its builder hands back — so a handle recovered through
 /// [`Module::view`](crate::Module::view) or an [`InstructionKind`] match can go
 /// back into a side table — and `.slot()` is the bare arena index.
@@ -2863,20 +2863,67 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
         self.retag()
     }
 
-    /// Shared case-append body: push `(case_value_id, target)` and register
-    /// the switch as a user of the case value. Both `add_case` flavours
-    /// funnel through here once their width discipline (compile-time for
-    /// static `W`, runtime for [`IntDyn`]) has been discharged.
+    /// Shared case-append body for the *public* `add_case` flavours: validate,
+    /// reject a parameterised target, then record. Both flavours funnel
+    /// through here once their width discipline (compile-time for static `W`,
+    /// runtime for [`IntDyn`]) has been discharged.
+    ///
+    /// A case edge added this way carries no block arguments, so its target
+    /// must not be a **parameterised** block — the same guard the plain
+    /// terminator builders apply, reported as
+    /// [`crate::IrError::PhiArgArityMismatch`]. The argument-carrying route is
+    /// [`IRBuilder::build_switch_with_args`](crate::IRBuilder::build_switch_with_args)
+    /// (and its erased twin), which spells every case at the call and hands
+    /// back an already-[`TermClosed`] switch — so a `switch` reaching a
+    /// parameterised block either carries that block's arguments or does not
+    /// build.
     fn push_case_checked<R, Target>(self, v: Value<'ctx, B>, target: Target) -> IrResult<Self>
     where
         R: ReturnMarker,
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
+        let target = self.validate_case(v, target)?;
+        require_no_block_parameters(self.module, target.slot())?;
+        Ok(self.record_case(v, target))
+    }
+
+    /// Append a case whose target's block parameters this call's caller has
+    /// **already seeded**, skipping the parameterised-target rejection
+    /// `push_case_checked` applies. Crate-internal: only
+    /// [`IRBuilder::build_switch_with_args`](crate::IRBuilder::build_switch_with_args)
+    /// and its erased twin reach for it, after `add_block_args` has recorded
+    /// each edge's incomings.
+    pub(crate) fn push_case_seeded<R, Target>(
+        self,
+        v: Value<'ctx, B>,
+        target: Target,
+    ) -> IrResult<Self>
+    where
+        R: ReturnMarker,
+        Target: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let target = self.validate_case(v, target)?;
+        Ok(self.record_case(v, target))
+    }
+
+    /// Check a case value against the switch condition and resolve its target
+    /// label. Runs before anything is recorded, so a rejected case leaves the
+    /// case list untouched.
+    ///
+    /// Defence in depth: the case value's runtime type must still equal the
+    /// condition's. For a typed switch this is guaranteed by the
+    /// `IntoIntValue<'ctx, W, B>` bound; for the erased switch it is the
+    /// primary check (mirrors `Verifier::visitSwitchInst`).
+    fn validate_case<R, Target>(
+        &self,
+        v: Value<'ctx, B>,
+        target: Target,
+    ) -> IrResult<BasicBlockLabel<'ctx, R, B>>
+    where
+        R: ReturnMarker,
+        Target: IntoBasicBlockLabel<'ctx, R, B>,
+    {
         let module = self.module.module();
-        // Defence in depth: the case value's runtime type must still equal
-        // the condition's. For a typed switch this is guaranteed by the
-        // `IntoIntValue<'ctx, W, B>` bound; for the erased switch it is the
-        // primary check (mirrors `Verifier::visitSwitchInst`).
         let cond_ty = self.payload().cond.get();
         let cond_ty = module.context().value_data(cond_ty).ty;
         if v.ty != cond_ty {
@@ -2885,20 +2932,30 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
                 got: v.ty().kind_label(),
             });
         }
+        target.into_basic_block_label(self.module)
+    }
+
+    /// Push `(case_value_id, target)` onto the case list and register the
+    /// switch as a user of the case value. Infallible: every check the case
+    /// has to pass ran in `validate_case` / the caller's guard.
+    fn record_case<R: ReturnMarker>(
+        self,
+        v: Value<'ctx, B>,
+        target: BasicBlockLabel<'ctx, R, B>,
+    ) -> Self {
         let v_id = v.id;
-        let bb_id = target.into_basic_block_label(self.module)?.slot();
         self.payload()
             .cases
             .borrow_mut()
-            .push((core::cell::Cell::new(v_id), bb_id));
-        // Register the switch as a user of the case value.
-        module
+            .push((core::cell::Cell::new(v_id), target.slot()));
+        self.module
+            .module()
             .context()
             .value_data(v_id)
             .use_list
             .borrow_mut()
             .push(ValueUse::Instruction(self.id));
-        Ok(self)
+        self
     }
 }
 
@@ -3040,15 +3097,25 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
 
 impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
     /// Append a destination block. Mirrors `IndirectBrInst::addDestination`.
+    ///
+    /// An `indirectbr` edge carries no block arguments and has no
+    /// argument-carrying form — the address picks the destination at run time,
+    /// so there is nothing to attach a per-edge argument list to. A
+    /// **parameterised** destination (one from
+    /// [`IRBuilder::append_block_with_params`](crate::IRBuilder::append_block_with_params)
+    /// or its siblings) is therefore rejected outright with
+    /// [`crate::IrError::PhiArgArityMismatch`], the documented restriction the
+    /// block-argument design called for. A block that merely *contains* phis is
+    /// unaffected, so the classic phi-with-`indirectbr` shape still parses and
+    /// round-trips from `.ll`.
     pub fn add_destination<R, Target>(self, target: Target) -> IrResult<Self>
     where
         R: ReturnMarker,
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        self.payload()
-            .destinations
-            .borrow_mut()
-            .push(target.into_basic_block_label(self.module)?.slot());
+        let target = target.into_basic_block_label(self.module)?;
+        require_no_block_parameters(self.module, target.slot())?;
+        self.payload().destinations.borrow_mut().push(target.slot());
         Ok(self)
     }
     /// Consume the open `indirectbr` and return its [`TermClosed`] view.

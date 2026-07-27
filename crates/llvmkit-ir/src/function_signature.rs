@@ -314,7 +314,7 @@ where
     }
 
     /// Storable, module-tagged [`TypedFunctionId<Ret, Params>`] for this
-    /// function (llvmkit 2.0), resolvable via
+    /// function (0.0.4), resolvable via
     /// [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view). The full schema rides on
     /// the id, so the view re-mints this facade rather than a raw
@@ -479,7 +479,7 @@ where
     }
 
     /// Storable, module-tagged [`TypedVarArgsFunctionId<Ret, Params>`] for
-    /// this function (llvmkit 2.0), resolvable via
+    /// this function (0.0.4), resolvable via
     /// [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view).
     #[inline]

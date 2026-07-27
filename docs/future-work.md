@@ -122,50 +122,71 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
 
 ## Type-system follow-ups
 
-- **Block-argument edges are only half-guarded, and only on half the
-  terminators** (found 2026-07-27 re-reading `docs/design/phi-type-guarantees-design.md`
-  against the tree; the design promised both halves and neither was noticed
-  missing for 17 days, through the 0.1.0 freeze). Two distinct gaps, which
-  should be closed together or not at all — fixing one leaves the surface
-  inconsistent in a way that is arguably worse than the status quo:
+- ~~**Block-argument edges are only half-guarded, and only on half the
+  terminators**~~ (found 2026-07-27 re-reading
+  `docs/design/phi-type-guarantees-design.md` against the tree; the design
+  promised both halves and neither was noticed missing for 17 days, through the
+  0.0.4 freeze) — **done (2026-07-27, `feature-34/polish-freeze`).** Both gaps
+  were closed in one change, as the entry insisted they had to be: closing
+  either alone would have left `br`/`cond_br` guarded while `switch`/`invoke`
+  silently were not.
 
-  1. **A plain branch into a parameterised block is not rejected.**
-     `IRBuilder::build_br` (and `build_cond_br`) resolves its target and records
-     the edge with **no param-count check** — see `ir_builder.rs::build_br`. The
-     design specified "plain `build_br`/`build_cond_br` to a param-block →
-     immediate arity error". What ships instead adds no incomings, leaving an
-     incomplete phi that surfaces at `Module::verify()`
-     (`PhiEmptyInReachableBlock` / the shared `check_phi` count guard) or, for
-     `.ll` input, at parse time. On the design's own ladder — *unrepresentable >
-     witnessed > tested* — the guarantee fell two rungs.
+  1. **A plain branch into a parameterised block is now rejected.**
+     `IRBuilder::build_br` / `build_cond_br` / `build_switch(_dyn)` (default
+     edge) / `SwitchInst::add_case` / every `build_invoke*` (both edges) /
+     `build_callbr*` (default and indirect edges) /
+     `IndirectBrInst::add_destination` all route their successors through one
+     guard, `basic_block.rs::require_no_block_parameters`, which reports the
+     existing `IrError::PhiArgArityMismatch` — the same error a wrong argument
+     *count* already got from `build_br_with_args`, so one mistake reads the
+     same wherever it is caught. The check runs before the terminator is
+     emitted, so a rejected edge leaves no half-formed instruction.
 
-     The check is cheap to write: `add_block_args` already scans the target's
-     leading head-phis to compute arity, so `build_br` can reuse it. It is **not
-     free at run time**, though — that scan walks the target block's instruction
-     list, so putting it on the hot path taxes every unconditional branch,
-     including the majority targeting param-less blocks. Guard it with an
-     early-out (is the target's first instruction a phi at all?) before scanning.
+     **The early-out is not the one this entry proposed, and the difference is
+     load-bearing.** "Is the target's first instruction a phi?" would have
+     broken the two authoring paths that legitimately branch into a block whose
+     head-phis are not block *parameters*: the `.ll` parser (a back-edge to an
+     already-parsed loop header) and `SsaBuilder` (a back-edge to an unsealed
+     header whose reads have minted operandless phis, completed later at
+     `seal_block`). Both seed those phis through their own checked paths, and
+     neither can spell an argument list. So a block instead records the
+     parameter count it was *created* with — a `Cell<usize>` on
+     `BasicBlockData`, set only by `append_block_with_params`,
+     `append_block_with_named_params`, and `append_block_typed` — and the guard
+     early-outs on that single read. It is cheaper than the proposed scan-gate
+     (no instruction-list touch at all on the hot path) and it is the more
+     honest predicate: *parameterised* is a property of how the block was
+     authored, not of what its first instruction happens to be. The scan
+     survives as the shared `block_parameter_phis`, which both `add_block_args`
+     and the guard's error message read, so "how many parameters" has one
+     definition. `plain_branch_into_auto_ssa_phi_block_still_builds`
+     (`tests/block_args_terminators.rs`) pins the distinction.
 
-  2. **`switch` and `invoke` have no argument-carrying form.**
-     `build_br_with_args` / `build_cond_br_with_args` (and the typed
-     `build_br_call` / `build_cond_br_call`) exist; `build_switch_with_args` and
-     the invoke variant were designed and never built. Because the raw
-     `add_incoming` is `pub(crate)`, the public `IRBuilder` can *create* a switch
-     or invoke edge into a parameterised block but cannot supply its incoming
-     values at all. `SsaBuilder` (which covers `switch`) and
-     `FnReshape::insert_phi` are the working routes, so this is a hole in one
-     authoring path rather than a dead end — but it means the claim "block
-     arguments are the only public phi-authoring surface" holds only for
-     `br`/`cond_br`.
+  2. **`switch` and `invoke` have argument-carrying forms.**
+     `build_switch_with_args` / `build_switch_dyn_with_args` take the default
+     edge as a `(target, args)` pair plus a `(case_value, target, args)` triple
+     per case — the whole case list at the call, so the returned `SwitchInst`
+     is already `TermClosed` and no later `add_case` can bolt on an unseeded
+     edge. `build_invoke_with_args` / `build_invoke_dyn_with_args` take a
+     `(destination, args)` pair for each of the two mandatory edges. All four
+     bundle each edge with its arguments into one parameter (the case list
+     forces that shape, and it keeps `invoke`'s call arguments and result name
+     out of an eight-parameter signature), and all four validate arity and
+     argument types up front, per edge, exactly as `build_cond_br_with_args`
+     does — sharing its documented non-atomicity across edges.
 
-  **Why this was not done inside the 0.1.0 freeze:** adding the guard converts
-  code that today builds fine and fails later at `verify()` into code that fails
-  immediately at `build_br` — a behavior break. Taking that break is right, but
-  it wants the `switch`/`invoke` gap and its compile-fail fixtures landing in the
-  same cycle, rather than a quarter-fix re-freezing an inconsistent surface.
+  **Residual, deliberately reject-only:** `indirectbr`, `callbr`, and the
+  *indirect-callee* and *inline-asm-callee* `invoke` shapes have no
+  argument-carrying twin — an `indirectbr`/`callbr` indirect edge is selected at
+  run time, so there is nothing to hang a per-edge argument list on, and the two
+  exotic invoke callees would need their own signature explosion for no known
+  consumer. A parameterised destination is rejected there rather than silently
+  under-seeded; authoring a phi in such a block goes through `SsaBuilder` or
+  `FnReshape::insert_phi`, on a block created with plain `append_basic_block`.
+  For `indirectbr` this is precisely the restriction the design asked for.
 
 - ~~**Six `#[cfg_attr(not(test), allow(dead_code))]` violate the `#[allow]` ban**~~
-  — **done (2026-07-27, at the 0.1.0 freeze).** AGENTS.md bans `#[allow(...)]`
+  — **done (2026-07-27, at the 0.0.4 freeze).** AGENTS.md bans `#[allow(...)]`
   unconditionally — "not anything else" — and a `cfg_attr` wrapper does not
   exempt it. All six sat on the crate-internal raw-phi authoring surface
   (`PhiInst`/`FpPhiInst`/`PointerPhiInst::add_incoming` in `instructions.rs`,
@@ -185,40 +206,59 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   method compiled out cannot be reached at all. Fixture doc comment rewritten
   and `.stderr` regenerated on 1.96.0.
 
-- **Metadata is the one currency 2.0 did not tag** (found during the 2.0-E
-  freeze sweep, widened by that cycle's whole-branch review; **pre-existing, not
-  a 2.0 regression** — 2.0 tagged the *value* currency and left this one
-  behind). `MetadataSlot` is a bare `usize` arena index, and the `ValueSlot`
-  inside `DebugMetadataOperand::Value` is likewise bare: neither carries a
-  `ModuleId` tag or a brand. So **neither half of D7 reaches metadata** —
-  distinct brand types do not separate two modules' slots (there is no `B` to
-  differ), and there is no tag for the arena boundary to check. A slot minted
-  from module A (`handle.slot()` is public, because `llvmkit-asmparser` needs it
-  for uselistorder records and phi source locations) reaching module B resolves
-  against **B's** arena in `asm_writer::fmt_debug_metadata_operand` /
-  `fmt_metadata_operand`.
+- ~~**Metadata is the one currency 2.0 did not tag**~~ — **done (2026-07-27, at
+  the 0.0.4 freeze).** Found during the cycle E freeze sweep and pre-existing
+  rather than a 2.0 regression: 2.0 tagged the *value* currency and left this
+  one behind. `MetadataSlot` was a bare `usize` arena index and the `ValueSlot`
+  inside `DebugMetadataOperand::Value` was likewise bare, so **neither half of
+  D7 reached metadata** — no `B` for two modules' handles to differ in, and no
+  tag for the arena boundary to check. An *in-range* slot minted in module A and
+  attached in module B resolved against **B's** arena in
+  `asm_writer::fmt_debug_metadata_operand` / `fmt_metadata_operand` and printed
+  the wrong node, silently. Cycle E had bounded the *reachability* of that
+  mistake (every attach point demands the target module's `Unverified` token,
+  and out-of-range slots became `IrError::UnknownMetadataSlot`) without closing
+  the hole.
 
-  **What cycle E did close**, in the same sweep: every attach point now demands
-  the target module's `Unverified` token (`InstructionView::set_metadata`,
-  `push_debug_record`, and their `Instruction` twins — matching the
-  `FunctionValue`/`GlobalVariable` setters that always had it), and the two
-  APIs that took an untagged index without checking it now return
-  `Err(IrError::UnknownMetadataSlot)` instead of no-opping silently
-  (`Module::metadata_set`) or panicking (`named_metadata_add_operand`). That
-  removes the `Verified`-module and `Inspect`-pass routes entirely and rejects
-  out-of-range slots. It bounds reachability; it does not close the hole.
+  Closed by mirroring cycle A's value split exactly:
 
-  **What remains:** an *in-range* slot from another module, attached by code
-  holding that module's `Unverified` token, still mis-resolves silently. A
-  range check does **not** substitute for a tag — slots are plain arena indices,
-  so module A's slot 5 is in-range in module B. Closing it means giving
-  `MetadataSlot` (and transitively `DebugMetadataOperand`, `DebugRecord`,
-  `DebugVariableRecord`) a `B` parameter and a tagged payload, so the public
-  constructors take tagged ids and the check lands at the same arena choke
-  point every other id already goes through. That ripples into
-  `InstructionData`, the `.ll` parser's debug-record and metadata paths, and
-  the printer — a cycle of its own, not a polish item, which is why 2.0 froze
-  without it.
+  - `MetadataSlot` stays the bare arena index and became **crate-internal**,
+    alongside `MetadataStore`. It is reachable only from the storage side.
+  - **`MetadataId<B: ModuleBrand>`** is the public currency —
+    `{ tag: ModuleId, slot: MetadataSlot }`, `Copy + Send + 'static`, brand
+    phantom `PhantomData<fn(B) -> B>`. `MetadataRef` (a `pub` newtype with a
+    `pub` field — a forgery hole of its own) is gone; `MetadataId` replaces it
+    everywhere.
+  - Every vocabulary type that carries a metadata reference gained the `B`:
+    `MetadataKind`, `SpecializedMetadataNode`, `MetadataField`,
+    `MetadataFieldValue`, `DebugRecord`, `DebugVariableRecord`,
+    `DebugMetadataOperand` (whose `Value` arm now carries `ValueId<B>`), and
+    `MetadataAttachmentSet`. `ModuleCore` is brand-free and cannot store a
+    generic, so the arena holds those same types at a crate-private
+    `StoredBrand`; the two forms meet at exactly two crate-internal
+    conversions — `into_stored`, which performs the tag check, and
+    `from_stored`, a pure retag of ids the arena already owns.
+  - The check lands at **one** choke point. `MetadataId::slot` exists only on
+    `MetadataId<StoredBrand>`, so the only route from a caller's id to an arena
+    index is `MetadataId::into_stored` / `ModuleCore::metadata_slot_of`, which
+    compares the `ModuleId` first. Forgetting the check one level up is not
+    expressible.
+  - A foreign id is **`IrError::ForeignMetadataId`** (new; the metadata twin of
+    `ForeignValueId`) on every entry point that accepts one, which made
+    `metadata_tuple` / `metadata_tuple_with_distinct` / `metadata_specialized` /
+    `metadata_node` / `metadata_as_value`, every `set_metadata` setter
+    (instruction, function, and the three globals), and `push_debug_record`
+    fallible. `metadata_constant` joined them for the same reason on the value
+    side. `UnknownMetadataSlot` keeps the
+    out-of-range case, now reachable only for a *native* id.
+
+  The `.ll` parser holds `MetadataId<B>` in its `!N` bookkeeping and needed no
+  raw-slot escape hatch: every id it hands back was minted by the module it is
+  populating. Printed IR is byte-identical — the byte-locked example suites and
+  the parser round-trip corpus are unchanged. Locked by
+  `tests/module_ownership.rs::a_metadata_id_from_another_module_is_refused_everywhere`
+  (runtime tag, two `DynBrand` modules with identically-shaped arenas) and
+  `tests/compile_fail/cross_module_metadata_attachment.rs` (two named brands).
 
 - **Const-generic `VectorType<E, Len<N>>` / `ArrayType<E, ArrLen<N>>` — shipped**
   (`feature-17/const-generic-vec-array`, S1–S6). `VectorType`/`VectorValue` and
@@ -331,7 +371,7 @@ deferred it.
   `ret_void`/`unreachable` terminators only. Aggregate variable categories
   (per-field fan-out through `StructSchema`) and `invoke`/`callbr`/EH
   terminators are the documented future scope in the module's own doc comment.
-- **`IrField::ir_type` accepting a module view -- done** (llvmkit 2.0 cycle C,
+- **`IrField::ir_type` accepting a module view -- done** (0.0.4 cycle C,
   `feature-32/owned-modules`). `IrField::ir_type`, `StructSchema::field_types` /
   `ir_type`, `FunctionReturn::ir_type`, `FunctionParam::ir_type` and
   `FunctionParamList::ir_types` now take `ModuleView<'ctx, B>` instead of
@@ -479,7 +519,7 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   plus the `llvm.global_ctors` machinery -- is deferred until an in-tree
   consumer needs it.
 - ~~**`Module::scratch_unverified` footgun**~~ -- **done (2026-07-26, cycle
-  2.0-C1)**. `scratch_unverified` doesn't exist anymore. `feat(2.0-C1): Module
+  cycle C1)**. `scratch_unverified` doesn't exist anymore. `feat(cycle C1): Module
   owns its ModuleCore` replaced it with `Module<B, Unverified>::assume_verified`
   (`module.rs` ~4090, still `pub(crate)`), called from the read-only `Dyn`
   pipelines' `run` methods (`DynReadOnlyFunctionPipeline::run` /
@@ -494,7 +534,7 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   throwaway one, so the caller-marker gap the old bullet worried about has
   nothing left to guard against.
 - ~~**Compile-fail `.stderr` canonical-rustc bless**~~ -- **done (2026-07-26,
-  cycle 2.0-D/E)**. There were never two "environmental" drifts: gated on the
+  cycle cycle D/E)**. There were never two "environmental" drifts: gated on the
   pinned CI toolchain (`cargo +1.96.0`), `folder_typed_wrong_width` and
   `extract_value_empty_indices` both pass, and the whole suite's baseline is
   **0 failures of 83 registered fixtures**. The mismatch only ever appeared
@@ -655,7 +695,7 @@ than pending:
   basic block in another function!" — a compile error instead of a verifier
   finding.
 
-  Two things changed under it since: llvmkit 2.0 deleted the closure-scoped
+  Two things changed under it since: 0.0.4 deleted the closure-scoped
   module constructor, so `build_body` would reintroduce the one shape the
   redesign removed; and block targets are now storable `BlockId<R, B, Params>`
   ids rather than borrowed labels, so a per-function *lifetime* has nothing to

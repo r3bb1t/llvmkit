@@ -1716,7 +1716,7 @@ fn sealed_single_pred_cycle_read_resolves_poison_variable() -> Result<(), IrErro
 }
 
 // --------------------------------------------------------------------------
-// llvmkit 2.0 cycle D1: the cursor model
+// 0.0.4 cycle D1: the cursor model
 //
 // The three tests below are the runtime successors of the compile-fail
 // fixtures `ssa_def_unpositioned.rs`, `ssa_use_after_terminator.rs` and

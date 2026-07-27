@@ -23,7 +23,7 @@
 //! `use_*_var`/the terminator family
 //! `br`/`cond_br`/`switch`/`ret`/`ret_void`/`unreachable`.
 //!
-//! # The cursor model (llvmkit 2.0 cycle D)
+//! # The cursor model (0.0.4 cycle D)
 //!
 //! `SsaBuilder` is **one type**. Its insertion point is *data* — a
 //! `cursor: Option<BlockId<..>>` field — not a type-state parameter that

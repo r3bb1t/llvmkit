@@ -41,7 +41,10 @@ use super::align::{Align, MaybeAlign};
 use super::array_len::ArrayLen;
 use super::atomic_ordering::AtomicOrdering;
 use super::atomicrmw_binop::AtomicRMWBinOp;
-use super::basic_block::{BasicBlock, BlockCall, IntoBasicBlockLabel};
+use super::basic_block::{
+    BasicBlock, BasicBlockLabel, BlockCall, IntoBasicBlockLabel, block_parameter_phis,
+    require_no_block_parameters,
+};
 use super::block_params::{BlockParams, BlockParamsDyn};
 use super::block_state::{Terminated, Unterminated};
 use super::calling_conv::CallingConv;
@@ -103,7 +106,7 @@ use super::module::{
 use super::struct_body_state::StructBodyDyn;
 use super::struct_schema::{FieldOf, IntoIrField, IrField, StructFieldAt, StructSchema};
 use super::sync_scope::SyncScope;
-use super::term_open_state::Open;
+use super::term_open_state::{Closed, Open};
 use super::r#type::{IrType, MAX_INT_BITS, MIN_INT_BITS, Type, TypeData, TypeSlot};
 use super::typed_pointer_value::TypedPointerValue;
 use super::value::{
@@ -156,6 +159,37 @@ pub type TerminatedBlockSwitch<'ctx, R, B> = (
 pub type TerminatedBlockSwitchTyped<'ctx, R, W, B> = (
     BasicBlock<'ctx, R, Terminated, B>,
     SwitchInst<'ctx, Open, B, W>,
+);
+
+/// Pair returned by the width-erased block-argument switch builder
+/// [`IRBuilder::build_switch_dyn_with_args`]. The case list arrives complete —
+/// every case is spelled at the call, with its own block arguments — so the
+/// switch comes back already [`Closed`]: there is no `add_case` on it, and
+/// therefore no way to bolt on a later case whose target's block parameters
+/// nothing seeds. Erased sibling of [`TerminatedBlockSwitchTypedClosed`].
+pub type TerminatedBlockSwitchClosed<'ctx, R, B> = (
+    BasicBlock<'ctx, R, Terminated, B>,
+    SwitchInst<'ctx, Closed, B>,
+);
+
+/// Pair returned by the TYPED block-argument switch builder
+/// [`IRBuilder::build_switch_with_args`]: the terminated parent block plus a
+/// [`Closed`], width-`W` [`SwitchInst`]. Typed sibling of
+/// [`TerminatedBlockSwitchClosed`]; see it for why the case list is closed.
+pub type TerminatedBlockSwitchTypedClosed<'ctx, R, W, B> = (
+    BasicBlock<'ctx, R, Terminated, B>,
+    SwitchInst<'ctx, Closed, B, W>,
+);
+
+/// One `switch` case edge after the block-argument switch builders have
+/// lowered it: the erased case value, its resolved target label, and the block
+/// arguments that edge carries into the target's parameters. Crate-internal —
+/// the shared seeding tail's working shape, named so the signature stays
+/// readable.
+type LoweredSwitchCase<'ctx, 'args, R, B> = (
+    Value<'ctx, B>,
+    BasicBlockLabel<'ctx, R, B>,
+    &'args [Value<'ctx, B>],
 );
 
 /// Pair returned by `indirectbr` builders before destination insertion closes.
@@ -212,7 +246,7 @@ mod state_sealed {
 /// external crates cannot invent new states. Public so a caller writing
 /// its own state-generic wrapper over an `IRBuilder` field can name the
 /// bound. (The in-crate Braun-SSA [`SsaBuilder`](crate::SsaBuilder) used
-/// to be such a caller; since llvmkit 2.0 cycle D it is one type whose
+/// to be such a caller; since 0.0.4 cycle D it is one type whose
 /// cursor is data, and always stores a `Positioned` inner builder.)
 pub trait BuilderPositionState: state_sealed::Sealed + 'static {}
 
@@ -774,7 +808,7 @@ where
     /// already carry the builder brand `B`; remaining predecessor-set
     /// coherence is verified by [`Module::verify`](crate::Module::verify).
     ///
-    /// Every parameter speaks the storable-id currency (llvmkit 2.0): `phi_val`
+    /// Every parameter speaks the storable-id currency (0.0.4): `phi_val`
     /// and `val` take anything that lifts to an erased value — including the
     /// phi ids the phi builders hand back and any value id — and `block` takes
     /// any [`IntoBasicBlockLabel`], so a [`BlockId`] recovered from a
@@ -949,6 +983,7 @@ where
         for ty in param_types {
             params.push(self.make_phi_in_block(bb_id, ty.id(), ""));
         }
+        bb.set_parameter_count(param_types.len());
         Ok((bb, params))
     }
 
@@ -981,6 +1016,7 @@ where
         for (ty, param_name) in params {
             out.push(self.make_phi_in_block(bb_id, ty.id(), param_name));
         }
+        bb.set_parameter_count(params.len());
         Ok((bb, out))
     }
 
@@ -1031,6 +1067,7 @@ where
         for ty in &param_types {
             phi_values.push(self.make_phi_in_block(bb_id, ty.id(), ""));
         }
+        bb.set_parameter_count(param_types.len());
         // One head-phi per `ir_types` entry was built in order, so the
         // per-position `values_from_phi_values` wraps cannot mistype; the
         // capability token is minted here exactly as `TypedFunctionValue`
@@ -6580,13 +6617,69 @@ where
 
     // ---- Branch / Unreachable ----
 
+    /// Resolve a branch target for an edge that carries **no** block
+    /// arguments, rejecting a target created with block parameters.
+    ///
+    /// The plain terminator builders funnel their every successor through
+    /// here, so "this edge seeds nothing, therefore its target must need
+    /// nothing seeded" is checked once, in one place. Returns the resolved
+    /// label so the caller can go straight on to emitting the terminator —
+    /// the check runs *before* any instruction is appended, so a rejected
+    /// edge leaves no half-formed terminator behind.
+    ///
+    /// See [`require_no_block_parameters`] for the cost story: an ordinary
+    /// (param-less) target costs one `Cell` read on top of the label
+    /// resolution the builder had to do anyway.
+    fn plain_edge_target<T>(&self, target: T) -> IrResult<BasicBlockLabel<'ctx, R, B>>
+    where
+        T: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let target = target.into_basic_block_label(module_ref)?;
+        require_no_block_parameters(module_ref, target.slot())?;
+        Ok(target)
+    }
+
     /// Produce `br label %target`. Mirrors `IRBuilder::CreateBr`.
     ///
     /// Consumes `self`: the builder's insertion block is terminated and
     /// returned alongside the new terminator instruction. The branch
     /// target may be in any termination state -- backward edges (loop
     /// back-edges) target already-terminated blocks.
+    ///
+    /// A plain `br` carries no block arguments, so `target` must not be a
+    /// **parameterised** block — one created by
+    /// [`append_block_with_params`](Self::append_block_with_params), its naming
+    /// twin, or [`append_block_typed`](Self::append_block_typed). Such an edge
+    /// would seed none of the target's parameters and leave an incomplete phi
+    /// for a distant [`Module::verify`](crate::Module::verify) to find, so it is
+    /// rejected here with [`IrError::PhiArgArityMismatch`] — the same error a
+    /// wrong argument *count* gets from
+    /// [`build_br_with_args`](Self::build_br_with_args), which is what to reach
+    /// for instead. Blocks that merely *contain* phis (parsed `.ll`, auto-SSA,
+    /// pass-created) are not parameterised and are unaffected: their incomings
+    /// arrive through their own checked paths.
+    ///
+    /// The check runs before the terminator is emitted, so a rejected branch
+    /// appends nothing. `self` is consumed either way, exactly as when the
+    /// target fails to resolve ([`IrError::ForeignValueId`]) or as when
+    /// `build_br_with_args` rejects an argument: the insertion block is left
+    /// unterminated and a fresh builder must be positioned at it to retry.
     pub fn build_br<T>(self, target: T) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+    where
+        T: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let target = self.plain_edge_target(target)?;
+        self.build_br_seeded(target)
+    }
+
+    /// Emit `br label %target` with the parameterised-target guard already
+    /// discharged: either the caller has just seeded `target`'s block
+    /// parameters ([`build_br_with_args`](Self::build_br_with_args),
+    /// [`build_br_call`](Self::build_br_call)) or it ran
+    /// [`plain_edge_target`](Self::plain_edge_target) first
+    /// ([`build_br`](Self::build_br)).
+    fn build_br_seeded<T>(self, target: T) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
     where
         T: IntoBasicBlockLabel<'ctx, R, B>,
     {
@@ -6604,7 +6697,35 @@ where
     /// `IRBuilder::CreateCondBr`.
     ///
     /// Consumes `self`; both target blocks may be in any termination state.
+    ///
+    /// Neither arm carries block arguments, so neither target may be a
+    /// **parameterised** block — both are checked, before the terminator is
+    /// emitted, exactly as [`build_br`](Self::build_br) checks its single
+    /// target and with the same [`IrError::PhiArgArityMismatch`]. Use
+    /// [`build_cond_br_with_args`](Self::build_cond_br_with_args) when either
+    /// successor has parameters; it takes a per-edge argument list, so one
+    /// parameterised and one ordinary arm is spelled with an empty slice for
+    /// the ordinary one.
     pub fn build_cond_br<C, Then, Else>(
+        self,
+        cond: C,
+        then_bb: Then,
+        else_bb: Else,
+    ) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+    where
+        C: IntoIntValue<'ctx, bool, B>,
+        Then: IntoBasicBlockLabel<'ctx, R, B>,
+        Else: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let then_bb = self.plain_edge_target(then_bb)?;
+        let else_bb = self.plain_edge_target(else_bb)?;
+        self.build_cond_br_seeded(cond, then_bb, else_bb)
+    }
+
+    /// Emit `br i1 <cond>, label %then, label %else` with the
+    /// parameterised-target guard already discharged on both arms — the
+    /// conditional twin of [`build_br_seeded`](Self::build_br_seeded).
+    fn build_cond_br_seeded<C, Then, Else>(
         self,
         cond: C,
         then_bb: Then,
@@ -6665,7 +6786,7 @@ where
         // `self` — the incoming edges name *this* block as their predecessor.
         let pred = self.insert_block().id();
         self.add_block_args(target, pred, args)?;
-        self.build_br(target)
+        self.build_br_seeded(target)
     }
 
     /// Produce `br i1 <cond>, label %then, label %else` while carrying block
@@ -6711,7 +6832,7 @@ where
         let pred = self.insert_block().id();
         self.add_block_args(then_bb, pred, then_args)?;
         self.add_block_args(else_bb, pred, else_args)?;
-        self.build_cond_br(cond, then_bb, else_bb)
+        self.build_cond_br_seeded(cond, then_bb, else_bb)
     }
 
     /// Seed a target block's parameters with the values a branch carries into
@@ -6743,22 +6864,11 @@ where
         let label_ty = self.module.label_type::<B>().as_type().id();
         let target = target.into_basic_block_label(module_ref)?;
 
-        // The target block's parameters are its leading head-phis, in order.
-        // Scan from the block top and stop at the first non-phi (phis are
-        // grouped at the head) — the pattern the CFG splitter uses.
-        let target_block =
-            BasicBlock::<Dyn, Terminated, B>::from_parts(target.slot(), module_ref, label_ty);
-        let mut param_phis: Vec<ValueSlot> = Vec::new();
-        for inst_id in target_block.instruction_ids() {
-            let data = self.module.context().value_data(inst_id);
-            let ValueKindData::Instruction(inst) = &data.kind else {
-                continue;
-            };
-            let InstructionKindData::Phi(_) = &inst.kind else {
-                break;
-            };
-            param_phis.push(inst_id);
-        }
+        // The target block's parameters are its leading head-phis, in order —
+        // the shared scan the plain-branch guard also reads, so the arity
+        // enforced here and the arity a plain branch is rejected for are one
+        // fact.
+        let param_phis: Vec<ValueSlot> = block_parameter_phis(module_ref, target.slot());
 
         // Arity: exactly one argument per parameter. Caught here so a wrong
         // count fails at the branch rather than at a distant `verify()`.
@@ -6851,7 +6961,7 @@ where
         // `self` — the incoming edges name *this* block as their predecessor.
         let pred = self.insert_block().id();
         self.add_block_args(target, pred, &args)?;
-        self.build_br(target)
+        self.build_br_seeded(target)
     }
 
     /// Produce `br i1 <cond>, label %then, label %else` for two **typed**
@@ -6889,7 +6999,7 @@ where
         let pred = self.insert_block().id();
         self.add_block_args(then_target, pred, &then_args)?;
         self.add_block_args(else_target, pred, &else_args)?;
-        self.build_cond_br(cond, then_target, else_target)
+        self.build_cond_br_seeded(cond, then_target, else_target)
     }
 
     /// Produce a TYPED `switch <cond>, label <default> [...]` whose
@@ -6912,6 +7022,15 @@ where
     /// [`build_call`](Self::build_call) / [`build_call_dyn`](Self::build_call_dyn)
     /// and [`build_invoke`](Self::build_invoke) /
     /// [`build_invoke_dyn`](Self::build_invoke_dyn).
+    /// The default target carries no block arguments, so it must not be a
+    /// **parameterised** block — the same guard, and the same
+    /// [`IrError::PhiArgArityMismatch`], that
+    /// [`build_br`](Self::build_br) applies. Every case target added through
+    /// the returned handle is guarded identically by
+    /// [`SwitchInst::add_case`]. Use
+    /// [`build_switch_with_args`](Self::build_switch_with_args) when the
+    /// default or any case reaches a parameterised block: it spells the whole
+    /// case list at the call, each edge with its own arguments.
     pub fn build_switch<W, C, DefaultTarget, Name>(
         self,
         cond: C,
@@ -6926,7 +7045,34 @@ where
     {
         let module_ref = ModuleRef::<B>::new(self.module);
         let cond_id = cond.into_int_value(module_ref)?.slot();
-        let default_target = default_target.into_basic_block_label(ModuleRef::new(self.module))?;
+        let default_target = self.plain_edge_target(default_target)?;
+        self.build_switch_seeded::<W, _, _>(cond_id, default_target, name)
+    }
+
+    /// Emit `switch <cond>, label <default> [...]` with the
+    /// parameterised-target guard already discharged on the default edge:
+    /// either the caller has just seeded it
+    /// ([`build_switch_with_args`](Self::build_switch_with_args) and its erased
+    /// twin) or it ran [`plain_edge_target`](Self::plain_edge_target) first.
+    ///
+    /// `W` is the condition width the returned [`Open`] handle carries; the
+    /// erased builders instantiate it at [`IntDyn`], which is what makes this
+    /// one body serve both flavours. The condition arrives pre-lowered as a
+    /// [`ValueSlot`] because the typed and erased callers reach it through
+    /// different bounds ([`IntoIntValue`] vs [`IntoErasedValue`]).
+    fn build_switch_seeded<W, DefaultTarget, Name>(
+        self,
+        cond_id: ValueSlot,
+        default_target: DefaultTarget,
+        name: Name,
+    ) -> IrResult<TerminatedBlockSwitchTyped<'ctx, R, W, B>>
+    where
+        W: IntWidth,
+        Name: AsRef<str>,
+        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let default_target = default_target.into_basic_block_label(module_ref)?;
         let void_ty = self.module.void_type::<B>().as_type().id();
         let payload = SwitchInstData::new(cond_id, default_target.slot());
         let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
@@ -6935,6 +7081,160 @@ where
             bb.retag_termination::<Terminated>(),
             SwitchInst::<Open, B, W>::from_raw(inst.slot(), module_ref, void_ty),
         ))
+    }
+
+    /// Produce a TYPED `switch` whose default edge **and every case edge**
+    /// carry block arguments into their target's parameters. The switch
+    /// generalisation of
+    /// [`build_cond_br_with_args`](Self::build_cond_br_with_args): where a
+    /// `cond_br` has two edges each with its own argument list, a `switch` has
+    /// a default plus N cases.
+    ///
+    /// **Every edge is one parameter, bundled with the values it carries** —
+    /// `default` is a `(target, args)` pair and each entry of `cases` a
+    /// `(case_value, target, args)` triple. The case list forces that shape
+    /// (an iterator has to yield one item per case), and applying it to the
+    /// default too keeps the whole call reading the same way. The frozen
+    /// [`build_br_with_args`](Self::build_br_with_args) /
+    /// [`build_cond_br_with_args`](Self::build_cond_br_with_args) keep their
+    /// flat `target, args` parameter pairs; their edge count is fixed at one
+    /// and two.
+    ///
+    /// The whole case list is spelled here rather than chained through
+    /// [`SwitchInst::add_case`], because an edge and the values it carries have
+    /// to move together: the returned [`SwitchInst`] is therefore already
+    /// [`Closed`], and there is no way to bolt on a later case whose target's
+    /// parameters nothing seeds.
+    ///
+    /// Each edge's arity ([`IrError::PhiArgArityMismatch`]) and argument types
+    /// ([`IrError::TypeMismatch`]) are checked before that edge's
+    /// parameter-phis are seeded, and every case value and target is lowered
+    /// up front — so a malformed case fails before any incoming is recorded and
+    /// before the terminator is emitted. As with
+    /// [`build_cond_br_with_args`](Self::build_cond_br_with_args) this is *not*
+    /// one atomic transaction across edges: two edges into the *same* target
+    /// with differing arguments record the first and then reject the second
+    /// ([`IrError::AmbiguousPhiIncoming`]), leaving the block unterminated for
+    /// [`verify()`](crate::Module::verify) to catch. Two edges into the same
+    /// target with the *same* arguments are legal — that is the ordinary
+    /// multi-case-to-one-block shape.
+    ///
+    /// Typed member of the pair, so it takes the unsuffixed name and its erased
+    /// sibling is
+    /// [`build_switch_dyn_with_args`](Self::build_switch_dyn_with_args): the
+    /// condition width `W` is inferred from `cond` and every case value shares
+    /// it, so a wrong-width case is a *compile* error exactly as in
+    /// [`build_switch`](Self::build_switch).
+    ///
+    /// Consumes `self`; every target may be in any termination state.
+    pub fn build_switch_with_args<'args, W, C, DefaultTarget, Cases, CaseValue, CaseTarget, Name>(
+        self,
+        cond: C,
+        default: (DefaultTarget, &'args [Value<'ctx, B>]),
+        cases: Cases,
+        name: Name,
+    ) -> IrResult<TerminatedBlockSwitchTypedClosed<'ctx, R, W, B>>
+    where
+        'ctx: 'args,
+        W: IntWidth,
+        C: IntoIntValue<'ctx, W, B>,
+        Name: AsRef<str>,
+        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
+        Cases: IntoIterator<Item = (CaseValue, CaseTarget, &'args [Value<'ctx, B>])>,
+        CaseValue: IntoIntValue<'ctx, W, B>,
+        CaseTarget: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let cond_id = cond.into_int_value(module_ref)?.slot();
+        let lowered = cases
+            .into_iter()
+            .map(|(case_value, case_target, case_args)| {
+                let value = IsValue::into_erased(case_value.into_int_value(module_ref)?);
+                let target = case_target.into_basic_block_label(module_ref)?;
+                Ok((value, target, case_args))
+            })
+            .collect::<IrResult<Vec<_>>>()?;
+        self.build_switch_over_seeded_edges(cond_id, default, lowered, name)
+    }
+
+    /// Produce a width-ERASED `switch` whose default edge and every case edge
+    /// carry block arguments. Erased sibling of
+    /// [`build_switch_with_args`](Self::build_switch_with_args) — see it for
+    /// the edge/argument contract, which is identical.
+    ///
+    /// `cond` and each case value are bound by [`IntoErasedValue`], so the
+    /// condition's width is not pinned and each case value's width is checked
+    /// against it at *runtime* ([`IrError::TypeMismatch`]), exactly as
+    /// [`build_switch_dyn`](Self::build_switch_dyn) + [`SwitchInst::add_case`]
+    /// do. Prefer the typed form where the width is statically known.
+    pub fn build_switch_dyn_with_args<'args, C, DefaultTarget, Cases, CaseValue, CaseTarget, Name>(
+        self,
+        cond: C,
+        default: (DefaultTarget, &'args [Value<'ctx, B>]),
+        cases: Cases,
+        name: Name,
+    ) -> IrResult<TerminatedBlockSwitchClosed<'ctx, R, B>>
+    where
+        'ctx: 'args,
+        C: IntoErasedValue<'ctx, B>,
+        Name: AsRef<str>,
+        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
+        Cases: IntoIterator<Item = (CaseValue, CaseTarget, &'args [Value<'ctx, B>])>,
+        CaseValue: IntoErasedValue<'ctx, B>,
+        CaseTarget: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let cond_id = cond.into_erased_value(module_ref)?.id;
+        let lowered = cases
+            .into_iter()
+            .map(|(case_value, case_target, case_args)| {
+                let value = case_value.into_erased_value(module_ref)?;
+                let target = case_target.into_basic_block_label(module_ref)?;
+                Ok((value, target, case_args))
+            })
+            .collect::<IrResult<Vec<_>>>()?;
+        self.build_switch_over_seeded_edges::<IntDyn, _, _>(cond_id, default, lowered, name)
+    }
+
+    /// Seed every edge of a `switch` and then emit it, cases included.
+    ///
+    /// Shared tail of [`build_switch_with_args`](Self::build_switch_with_args)
+    /// and [`build_switch_dyn_with_args`](Self::build_switch_dyn_with_args),
+    /// which differ only in how they lower the condition and the case values.
+    /// The default edge is seeded first, then each case in order; the
+    /// terminator is emitted only once every edge's arguments have been
+    /// accepted, and the cases go on through the pre-seeded
+    /// [`SwitchInst::push_case_seeded`] so the plain-branch guard does not
+    /// reject the very targets this call just supplied arguments for.
+    fn build_switch_over_seeded_edges<'args, W, DefaultTarget, Name>(
+        self,
+        cond_id: ValueSlot,
+        default: (DefaultTarget, &'args [Value<'ctx, B>]),
+        cases: Vec<LoweredSwitchCase<'ctx, 'args, R, B>>,
+        name: Name,
+    ) -> IrResult<TerminatedBlockSwitchTypedClosed<'ctx, R, W, B>>
+    where
+        'ctx: 'args,
+        W: IntWidth,
+        Name: AsRef<str>,
+        DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let (default_target, default_args) = default;
+        let default_target = default_target.into_basic_block_label(module_ref)?;
+        // Capture the predecessor id before the terminator builder consumes
+        // `self` — every incoming this call records names *this* block.
+        let pred = self.insert_block().id();
+        self.add_block_args(default_target.id(), pred, default_args)?;
+        for (_, target, args) in &cases {
+            self.add_block_args(target.id(), pred, args)?;
+        }
+        let (bb, open) = self.build_switch_seeded::<W, _, _>(cond_id, default_target, name)?;
+        let mut open = open;
+        for (value, target, _) in cases {
+            open = open.push_case_seeded(value, target)?;
+        }
+        Ok((bb, open.finish()))
     }
 
     /// Produce a width-ERASED `switch <cond>, label <default> [...]`.
@@ -6953,6 +7253,11 @@ where
     /// known — it makes a wrong-width case a compile error. This form is
     /// what the `.ll` parser and the auto-SSA builder land on, since
     /// neither knows the condition's width until run time.
+    ///
+    /// The default target is guarded against **parameterised** blocks exactly
+    /// as [`build_switch`](Self::build_switch)'s is; reach for
+    /// [`build_switch_dyn_with_args`](Self::build_switch_dyn_with_args) when an
+    /// edge needs to carry block arguments.
     pub fn build_switch_dyn<C, DefaultTarget, Name>(
         self,
         cond: C,
@@ -6964,17 +7269,9 @@ where
         C: IntoErasedValue<'ctx, B>,
         DefaultTarget: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let default_target = default_target.into_basic_block_label(ModuleRef::new(self.module))?;
+        let default_target = self.plain_edge_target(default_target)?;
         let cond_v = cond.into_erased_value(ModuleRef::new(self.module))?;
-        let void_ty = self.module.void_type::<B>().as_type().id();
-        let payload = SwitchInstData::new(cond_v.id, default_target.slot());
-        let inst = self.append_instruction(void_ty, InstructionKindData::Switch(payload), name);
-        let module_ref = ModuleRef::<B>::new(self.module);
-        let bb = self.into_insert_block();
-        Ok((
-            bb.retag_termination::<Terminated>(),
-            SwitchInst::<Open, B>::from_raw(inst.slot(), module_ref, void_ty),
-        ))
+        self.build_switch_seeded::<IntDyn, _, _>(cond_v.id, default_target, name)
     }
 
     /// Produce `indirectbr <addr>, [...]`. Mirrors
@@ -7044,7 +7341,102 @@ where
     }
 
     /// Produce a TYPED `invoke` with explicit call-site configuration.
+    ///
+    /// Neither the normal nor the unwind edge carries block arguments, so
+    /// neither destination may be a **parameterised** block — both are checked
+    /// before the terminator is emitted, with the same
+    /// [`IrError::PhiArgArityMismatch`] [`build_br`](Self::build_br) reports.
+    /// [`build_invoke_with_args`](Self::build_invoke_with_args) is the
+    /// argument-carrying form; both `invoke` edges are mandatory, so it takes
+    /// an argument list for each.
     pub fn build_invoke_with_config<Ret, Params, A, Normal, Unwind>(
+        self,
+        callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+        args: A,
+        normal_dest: Normal,
+        unwind_dest: Unwind,
+        config: CallSiteConfig,
+    ) -> IrResult<TerminatedBlockTypedInvoke<'ctx, R, Ret, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+        A: CallArgs<'ctx, Params, B>,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let normal_dest = self.plain_edge_target(normal_dest)?;
+        let unwind_dest = self.plain_edge_target(unwind_dest)?;
+        self.build_invoke_seeded(callee, args, normal_dest, unwind_dest, config)
+    }
+
+    /// Produce a TYPED `invoke` whose normal and unwind edges each carry block
+    /// arguments into their destination's parameters. The `invoke` member of
+    /// the [`build_br_with_args`](Self::build_br_with_args) family: an edge and
+    /// the values it carries move together, so a destination's parameter-phis
+    /// cannot be left one incoming short.
+    ///
+    /// Both edges are mandatory on an `invoke`, so both are supplied, each as a
+    /// `(destination, args)` pair — the same bundled-edge shape
+    /// [`build_switch_with_args`](Self::build_switch_with_args) uses, and what
+    /// keeps `invoke`'s own call arguments and result name from crowding the
+    /// signature. Pass an empty slice for a destination that has no parameters.
+    ///
+    /// `args` is the *call*'s argument list (compile-time-checked against the
+    /// callee schema `Params`, as in [`build_invoke`](Self::build_invoke));
+    /// the slice inside each edge pair holds that edge's *block* arguments,
+    /// checked for arity ([`IrError::PhiArgArityMismatch`]) and type
+    /// ([`IrError::TypeMismatch`]) against the destination's leading head-phis
+    /// before either edge is seeded and before the terminator is emitted.
+    ///
+    /// The normal edge is seeded first; as with
+    /// [`build_cond_br_with_args`](Self::build_cond_br_with_args), this is not
+    /// one atomic transaction across the two edges — a differing-value
+    /// duplicate on a shared destination is rejected
+    /// ([`IrError::AmbiguousPhiIncoming`]) after the first edge is recorded,
+    /// and the `invoke` is never emitted.
+    ///
+    /// Consumes `self`; both destinations may be in any termination state.
+    pub fn build_invoke_with_args<Ret, Params, A, Normal, Unwind, Name>(
+        self,
+        callee: TypedFunctionValue<'ctx, Ret, Params, B>,
+        args: A,
+        normal: (Normal, &[Value<'ctx, B>]),
+        unwind: (Unwind, &[Value<'ctx, B>]),
+        name: Name,
+    ) -> IrResult<TerminatedBlockTypedInvoke<'ctx, R, Ret, B>>
+    where
+        Ret: FunctionReturn,
+        Params: FunctionParamList,
+        A: CallArgs<'ctx, Params, B>,
+        Name: AsRef<str>,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let (normal_dest, normal_args) = normal;
+        let (unwind_dest, unwind_args) = unwind;
+        let normal_dest = normal_dest.into_basic_block_label(module_ref)?;
+        let unwind_dest = unwind_dest.into_basic_block_label(module_ref)?;
+        // Capture the predecessor id before the terminator builder consumes
+        // `self` — the incoming edges name *this* block as their predecessor.
+        let pred = self.insert_block().id();
+        self.add_block_args(normal_dest.id(), pred, normal_args)?;
+        self.add_block_args(unwind_dest.id(), pred, unwind_args)?;
+        self.build_invoke_seeded(
+            callee,
+            args,
+            normal_dest,
+            unwind_dest,
+            CallSiteConfig::new(name.as_ref()),
+        )
+    }
+
+    /// Emit a TYPED `invoke` with the parameterised-destination guard already
+    /// discharged on both edges: either the caller has just seeded them
+    /// ([`build_invoke_with_args`](Self::build_invoke_with_args)) or it ran
+    /// [`plain_edge_target`](Self::plain_edge_target) on each
+    /// ([`build_invoke_with_config`](Self::build_invoke_with_config)).
+    fn build_invoke_seeded<Ret, Params, A, Normal, Unwind>(
         self,
         callee: TypedFunctionValue<'ctx, Ret, Params, B>,
         args: A,
@@ -7130,7 +7522,75 @@ where
     }
 
     /// Produce `invoke` with explicit call-site configuration.
+    ///
+    /// Both destinations are guarded against **parameterised** blocks exactly
+    /// as [`build_invoke_with_config`](Self::build_invoke_with_config)'s are;
+    /// [`build_invoke_dyn_with_args`](Self::build_invoke_dyn_with_args) is the
+    /// argument-carrying form.
     pub fn build_invoke_dyn_with_config<R2, I, V, Normal, Unwind>(
+        self,
+        callee: FunctionValue<'ctx, R2, B>,
+        args: I,
+        normal_dest: Normal,
+        unwind_dest: Unwind,
+        config: CallSiteConfig,
+    ) -> IrResult<TerminatedBlockInvoke<'ctx, R, R2, B>>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: IntoErasedValue<'ctx, B>,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let normal_dest = self.plain_edge_target(normal_dest)?;
+        let unwind_dest = self.plain_edge_target(unwind_dest)?;
+        self.build_invoke_dyn_seeded(callee, args, normal_dest, unwind_dest, config)
+    }
+
+    /// Produce an `invoke` whose normal and unwind edges each carry block
+    /// arguments into their destination's parameters. Erased sibling of
+    /// [`build_invoke_with_args`](Self::build_invoke_with_args) — see it for
+    /// the edge/argument contract, which is identical; only the callee's
+    /// schema is erased (the call arguments are checked against the callee's
+    /// declared signature at run time, as in
+    /// [`build_invoke_dyn`](Self::build_invoke_dyn)).
+    pub fn build_invoke_dyn_with_args<R2, I, V, Normal, Unwind, Name>(
+        self,
+        callee: FunctionValue<'ctx, R2, B>,
+        args: I,
+        normal: (Normal, &[Value<'ctx, B>]),
+        unwind: (Unwind, &[Value<'ctx, B>]),
+        name: Name,
+    ) -> IrResult<TerminatedBlockInvoke<'ctx, R, R2, B>>
+    where
+        R2: ReturnMarker,
+        I: IntoIterator<Item = V>,
+        V: IntoErasedValue<'ctx, B>,
+        Name: AsRef<str>,
+        Normal: IntoBasicBlockLabel<'ctx, R, B>,
+        Unwind: IntoBasicBlockLabel<'ctx, R, B>,
+    {
+        let module_ref = ModuleRef::<B>::new(self.module);
+        let (normal_dest, normal_args) = normal;
+        let (unwind_dest, unwind_args) = unwind;
+        let normal_dest = normal_dest.into_basic_block_label(module_ref)?;
+        let unwind_dest = unwind_dest.into_basic_block_label(module_ref)?;
+        let pred = self.insert_block().id();
+        self.add_block_args(normal_dest.id(), pred, normal_args)?;
+        self.add_block_args(unwind_dest.id(), pred, unwind_args)?;
+        self.build_invoke_dyn_seeded(
+            callee,
+            args,
+            normal_dest,
+            unwind_dest,
+            CallSiteConfig::new(name.as_ref()),
+        )
+    }
+
+    /// Emit an erased `invoke` with the parameterised-destination guard
+    /// already discharged on both edges — the erased twin of
+    /// [`build_invoke_seeded`](Self::build_invoke_seeded).
+    fn build_invoke_dyn_seeded<R2, I, V, Normal, Unwind>(
         self,
         callee: FunctionValue<'ctx, R2, B>,
         args: I,
@@ -7181,6 +7641,13 @@ where
     /// is supplied explicitly, mirroring `IRBuilder::CreateInvoke(FunctionType*,
     /// Value* Callee, ...)`. Used by the parser for `invoke ... %fp(...)`.
     /// Arguments are validated against the spelled `fn_ty`.
+    ///
+    /// Both destinations are guarded against **parameterised** blocks like
+    /// every other plain terminator edge. There is no argument-carrying twin
+    /// for the *indirect*-callee shape (recorded in `docs/future-work.md`), so
+    /// a parameterised destination is reachable only through
+    /// [`build_invoke_dyn_with_args`](Self::build_invoke_dyn_with_args), whose
+    /// callee is a named function.
     pub fn build_indirect_invoke_dyn_with_config<R2, I, V, Normal, Unwind, Callee>(
         self,
         callee: Callee,
@@ -7199,8 +7666,8 @@ where
         Callee: IntoPointerValue<'ctx, B>,
     {
         let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
-        let normal_dest = normal_dest.into_basic_block_label(ModuleRef::new(self.module))?;
-        let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
+        let normal_dest = self.plain_edge_target(normal_dest)?;
+        let unwind_dest = self.plain_edge_target(unwind_dest)?;
         let callee_v = IsValue::into_erased(callee);
         let ret_ty = fn_ty.return_type().id();
         let (name, calling_conv, attrs) = config.into_parts();
@@ -7257,6 +7724,10 @@ where
     }
 
     /// Produce an inline-assembly `invoke` with explicit call-site configuration.
+    ///
+    /// Both destinations are guarded against **parameterised** blocks like
+    /// every other plain terminator edge; as with the indirect-callee form
+    /// there is no argument-carrying twin for an inline-asm callee.
     pub fn build_inline_asm_invoke_with_config<R2, I, V, Normal, Unwind>(
         self,
         asm: InlineAsm<'ctx, B>,
@@ -7272,8 +7743,8 @@ where
         Normal: IntoBasicBlockLabel<'ctx, R, B>,
         Unwind: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let normal_dest = normal_dest.into_basic_block_label(ModuleRef::new(self.module))?;
-        let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
+        let normal_dest = self.plain_edge_target(normal_dest)?;
+        let unwind_dest = self.plain_edge_target(unwind_dest)?;
         let asm_v = asm.into_erased();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
@@ -7341,6 +7812,14 @@ where
     }
 
     /// Produce `callbr` with explicit call-site configuration.
+    ///
+    /// The default destination and every indirect destination are guarded
+    /// against **parameterised** blocks like every other plain terminator
+    /// edge. `callbr` has no argument-carrying form — its indirect edges are
+    /// taken by inline assembly at run time, so there is nothing to hang a
+    /// per-edge argument list on — so a parameterised destination is rejected
+    /// outright ([`IrError::PhiArgArityMismatch`]), the same way an
+    /// `indirectbr` destination is.
     pub fn build_callbr_with_config<R2, I, V, Default, Indirects, Indirect>(
         self,
         callee: FunctionValue<'ctx, R2, B>,
@@ -7357,7 +7836,7 @@ where
         Indirects: IntoIterator<Item = Indirect>,
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let default_dest = default_dest.into_basic_block_label(ModuleRef::new(self.module))?;
+        let default_dest = self.plain_edge_target(default_dest)?;
         let callee_v = callee.into_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
@@ -7371,10 +7850,7 @@ where
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueSlot> = indirect_dests
             .into_iter()
-            .map(|d| {
-                d.into_basic_block_label(ModuleRef::new(self.module))
-                    .map(|l| l.slot())
-            })
+            .map(|d| self.plain_edge_target(d).map(|l| l.slot()))
             .collect::<IrResult<_>>()?;
         let payload = CallBrInstData::new_with_attrs(
             callee_v.id,
@@ -7422,6 +7898,9 @@ where
     }
 
     /// Produce an inline-assembly `callbr` with explicit call-site configuration.
+    ///
+    /// Every destination is guarded against **parameterised** blocks, exactly
+    /// as in [`build_callbr_with_config`](Self::build_callbr_with_config).
     pub fn build_inline_asm_callbr_with_config<R2, I, V, Default, Indirects, Indirect>(
         self,
         asm: InlineAsm<'ctx, B>,
@@ -7438,7 +7917,7 @@ where
         Indirects: IntoIterator<Item = Indirect>,
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let default_dest = default_dest.into_basic_block_label(ModuleRef::new(self.module))?;
+        let default_dest = self.plain_edge_target(default_dest)?;
         let asm_v = asm.into_erased();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
@@ -7458,10 +7937,7 @@ where
         self.validate_call_site_args(fn_ty, &arg_ids)?;
         let indirect_ids: Vec<ValueSlot> = indirect_dests
             .into_iter()
-            .map(|d| {
-                d.into_basic_block_label(ModuleRef::new(self.module))
-                    .map(|l| l.slot())
-            })
+            .map(|d| self.plain_edge_target(d).map(|l| l.slot()))
             .collect::<IrResult<_>>()?;
         let (name, calling_conv, attrs) = config.into_parts();
         let payload = CallBrInstData::new_with_attrs(

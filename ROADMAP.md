@@ -4,13 +4,14 @@ This roadmap is focused on making `llvmkit` a practical pure-Rust replacement fo
 
 ## Current baseline
 
-Released: **0.1.0** (2026-07-26), tracking LLVM 22.1.4 (`llvmorg-22.1.4`). That
-release froze the public API.
+In development toward **0.0.4**, tracking LLVM 22.1.4 (`llvmorg-22.1.4`). The
+last release published to crates.io is 0.0.3; 0.0.4 is unreleased and settles
+the public API after a broad reshape.
 
 Shipped today:
 
-- **Owned modules and storable ids — the llvmkit 2.0 handle model, shipped in
-  0.1.0.** `Module<B, S>` has no lifetime parameter, owns its storage, and is
+- **Owned modules and storable ids — the 0.0.4 handle model, shipped in
+  0.0.4.** `Module<B, S>` has no lifetime parameter, owns its storage, and is
   `Send`, so it can be returned from a function, stored in a struct or a `Vec`,
   and moved across a thread boundary. Declarations and value-producing
   `build_*` calls return a `Copy + Send` **id** (`IntValueId<W, B>`,
@@ -631,9 +632,10 @@ The per-API delta is tracked in [`INKWELL_MIGRATION.md`](INKWELL_MIGRATION.md).
 >   closure form (`parse_assembly`) remains only for callers who need the
 >   `ParsedModule` slot mapping, which borrows the module it was parsed from.
 >   Printing is `Display` on `Module` / `ModuleView` (`format!("{module}")`).
-> - **A frozen public API.** 0.1.0 is the stability point: the module,
->   handle/id, builder, and pass surfaces are no longer expected to move under
->   downstream code.
+> - **A settled public API.** 0.0.4 stops the churn in the module, handle/id,
+>   builder, and pass surfaces. It is *not* a stability promise — the crate is
+>   pre-1.0 and every `0.0.x` is mutually incompatible under Cargo's rules.
+>   Expect further breaks; expect them to be deliberate and spelled out.
 
 ### Work items
 
@@ -759,19 +761,27 @@ Widen from controlled textual IR to broader LLVM ecosystem compatibility.
 
 ## Suggested release sequence
 
-### 0.1: Folding and ValueTracking foundation — **released 2026-07-26**
+Ordered stages, not version numbers. Which release carries which stage is decided
+when the stage lands, not now — the crate is pre-1.0, versions stay `0.0.x`
+until there is a reason to claim otherwise, and pinning a feature set to `0.1`
+before knowing what `0.1` should mean is a promise this file cannot keep.
 
-Shipped as `0.1.0`. It carried everything this entry planned, plus the llvmkit
-2.0 handle redesign, which was not on the list when the list was written:
+### Stage 1: Folding and ValueTracking foundation — **ships as 0.0.4**
+
+Carries everything this entry planned, plus the id-first handle redesign, which
+was not on the list when the list was written:
 
 - ConstantFolder / ConstantFold parity foundation for the modeled IR surface.
 - ValueTracking hardening required by initial cleanup passes.
 - InstSimplify + DCE.
-- Owned modules, storable ids, brand-as-type module identity, and the public
-  API freeze (see "Current baseline"). The version went `0.0.4` → `0.1.0`
-  rather than `0.0.5` to signal a deliberate, broad break.
+- Owned modules, storable ids, brand-as-type module identity, and the settled
+  public API (see "Current baseline"). This ships as 0.0.4, the version the
+  workspace already carried — no bump is needed, because 0.0.4 was never
+  published. Under Cargo's pre-1.0 rules every `0.0.x` is already mutually
+  incompatible, so the break needs no wider signal, and a minor bump would
+  imply a stability the crate does not yet have.
 
-### 0.2: Lifting cleanup pipeline
+### Stage 2: Lifting cleanup pipeline
 
 - InstCombine subset.
 - SimplifyCFG.
@@ -781,7 +791,7 @@ Shipped as `0.1.0`. It carried everything this entry planned, plus the llvmkit
 - PseudoStackPromotionPass.
 - `cleanup-lift` named pipeline.
 
-### 0.3: Memory and SSA promotion
+### Stage 3: Memory and SSA promotion
 
 - BasicAA.
 - MemoryLocation.
@@ -790,7 +800,7 @@ Shipped as `0.1.0`. It carried everything this entry planned, plus the llvmkit
 - EarlyCSE.
 - GVN-lite.
 
-### 0.4: Loop and stronger analysis
+### Stage 4: Loop and stronger analysis
 
 - LoopInfo.
 - PostDominatorTree.
@@ -799,7 +809,7 @@ Shipped as `0.1.0`. It carried everything this entry planned, plus the llvmkit
 - ADCE / BDCE.
 - Opaque predicate detection.
 
-### 0.5: Obfuscation and deobfuscation suite
+### Stage 5: Obfuscation and deobfuscation suite
 
 - Basic-block splitting.
 - Instruction substitution.
@@ -808,7 +818,7 @@ Shipped as `0.1.0`. It carried everything this entry planned, plus the llvmkit
 - Opaque predicate generation/removal.
 - Dispatcher/jump-table recovery improvements.
 
-### 0.6+: Ecosystem compatibility
+### Stage 6 and beyond: Ecosystem compatibility
 
 - Bitcode.
 - Debug metadata preservation.
@@ -822,7 +832,8 @@ Shipped as `0.1.0`. It carried everything this entry planned, plus the llvmkit
 
 Planned, not written. They were blocked on exactly one thing: an API not stable
 enough to wrap, since wrapping a moving surface means rewriting the wrapper on
-every break. The 0.1.0 freeze is what removes that blocker. Bindings are **not**
+every break. 0.0.4 is where that surface stops moving week to week — settled,
+not frozen, since the crate is pre-1.0. Bindings are **not**
 out of scope — what is out of scope for the project is code generation, target
 backends, linking / object emission, and any dependency on `llvm-sys`,
 `inkwell`, or `libLLVM`.

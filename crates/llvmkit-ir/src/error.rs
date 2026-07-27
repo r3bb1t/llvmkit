@@ -909,22 +909,17 @@ pub enum IrError {
     #[error("value id belongs to a different Module")]
     ForeignValueId,
 
-    /// A [`MetadataSlot`](crate::metadata::MetadataSlot) or a named-metadata
-    /// index named nothing in the target [`Module`](crate::Module).
+    /// A [`MetadataId`](crate::MetadataId) or a named-metadata index named
+    /// nothing in the target [`Module`](crate::Module) — the id's tag matched,
+    /// but its slot is past the end of the arena.
     ///
-    /// The metadata currency is the one place 2.0 did not reach: a slot is a
-    /// bare arena index carrying neither a [`ModuleId`](crate::ModuleId) tag
-    /// nor a brand, so it is only meaningful against the module that minted
-    /// it. Handing one to a *different* module is therefore not a type error,
-    /// and the arena cannot tell a foreign slot from a native one — only an
-    /// out-of-range slot is detectable, and that is what this reports. It is
-    /// raised by [`Module::metadata_set`](crate::Module::metadata_set) and
-    /// [`Module::named_metadata_add_operand`](crate::Module::named_metadata_add_operand),
-    /// which previously no-opped silently and panicked respectively.
-    ///
-    /// An *in-range* foreign slot still mis-resolves. See the "Type-system
-    /// follow-ups" entry in `docs/future-work.md` for why closing that needs a
-    /// tagged metadata payload rather than another check here.
+    /// Raised by [`Module::metadata_set`](crate::Module::metadata_set),
+    /// [`Module::metadata_as_value`](crate::Module::metadata_as_value), and
+    /// [`Module::named_metadata_add_operand`](crate::Module::named_metadata_add_operand)
+    /// (whose `index` is a plain named-node position, not a tagged id). A
+    /// *foreign* id is [`ForeignMetadataId`](Self::ForeignMetadataId) instead:
+    /// the tag separates the two cases, so an in-range slot from another module
+    /// is rejected rather than silently mis-resolved.
     #[error("metadata slot {index} names nothing in this Module (holds {len})")]
     UnknownMetadataSlot {
         /// The index that was out of range.
@@ -932,6 +927,23 @@ pub enum IrError {
         /// How many entries the target store actually holds.
         len: usize,
     },
+
+    /// A [`MetadataId`](crate::MetadataId) was used against a different
+    /// [`Module`](crate::Module) than the one that minted it. The id's module
+    /// tag did not match the target module, so it cannot name a node there.
+    ///
+    /// The metadata twin of [`ForeignValueId`](Self::ForeignValueId), raised by
+    /// every module-level metadata API that accepts an id
+    /// ([`Module::metadata_tuple`](crate::Module::metadata_tuple),
+    /// [`metadata_node`](crate::Module::metadata_node),
+    /// [`metadata_set`](crate::Module::metadata_set),
+    /// [`named_metadata_add_operand`](crate::Module::named_metadata_add_operand),
+    /// …) and by the attachment setters
+    /// ([`InstructionView::set_metadata`](crate::InstructionView::set_metadata),
+    /// [`push_debug_record`](crate::InstructionView::push_debug_record), and
+    /// the `FunctionValue` / global siblings).
+    #[error("metadata id belongs to a different Module")]
+    ForeignMetadataId,
 
     /// [`crate::SsaState::for_function`] was given a function that
     /// already has a body. The layer must observe every CFG edge from

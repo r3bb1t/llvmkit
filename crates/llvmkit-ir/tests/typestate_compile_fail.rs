@@ -99,7 +99,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/typed_call_wrong_arg_type_lifted.rs");
     t.compile_fail("tests/compile_fail/typed_call_void_result_use.rs");
     t.compile_fail("tests/compile_fail/typed_call_cross_module_arg.rs");
-    // llvmkit 2.0 cycle D1 (`SsaBuilder` converges on the cursor model):
+    // 0.0.4 cycle D1 (`SsaBuilder` converges on the cursor model):
     // three former fixtures here — `ssa_def_unpositioned`,
     // `ssa_finish_positioned`, `ssa_use_after_terminator` — proved the SSA
     // layer's `Unpositioned`/`Positioned` type-state, which cycle D
@@ -173,7 +173,7 @@ fn typestate_compile_fail() {
     // moves from `verify()` to build/compile time. The primary error is our
     // own `IntoPointerValue` trait bound, stable across rustc versions.
     t.compile_fail("tests/compile_fail/indirectbr_non_pointer_address.rs");
-    // llvmkit 2.0 cycle A slice A4 (no-silent-erasure at operand positions):
+    // 0.0.4 cycle A slice A4 (no-silent-erasure at operand positions):
     // the three typed value ids lift into their handle via `IntoIntValue` &c,
     // but the *erased* `ValueId` deliberately does not — erased -> typed must
     // be spelled with `try_view`, never lifted implicitly. The primary error
@@ -181,12 +181,19 @@ fn typestate_compile_fail() {
     // versions (`B` is pinned by the argument brand, so no incidental
     // inference failure masks it).
     t.compile_fail("tests/compile_fail/erased_id_not_int_operand.rs");
-    // llvmkit 2.0 cycle C4 (owned modules, branded by type): two *named* brands
+    // 0.0.4 cycle C4 (owned modules, branded by type): two *named* brands
     // separate two modules statically, so a storable id minted by one is not
     // even the right type to hand to the other's resolver. The compile-time
     // twin of `module_ownership.rs`'s stale-generation test, which locks the
     // runtime half for two generations of the *same* brand.
     t.compile_fail("tests/compile_fail/cross_named_brand_id_view.rs");
+    // 0.0.4 polish freeze: the same law, now reaching the *metadata* currency.
+    // A metadata handle used to be a bare arena index with neither a brand nor
+    // a `ModuleId` tag, so one module's node could be attached to another and
+    // silently mis-resolve. `MetadataId<B>` carries both; two named brands make
+    // the mix-up a type error, and `module_ownership.rs` locks the runtime tag
+    // for the same-brand / `DynBrand` case.
+    t.compile_fail("tests/compile_fail/cross_module_metadata_attachment.rs");
     // Pins the premise of the `Send` compile-assert in `module_ownership.rs`:
     // the brand type used there really is `!Send`, so asserting that
     // `Module<NotSendBrand, S>: Send` is not vacuous.

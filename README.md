@@ -14,7 +14,7 @@ Tracking **LLVM 22.1.4** (`llvmorg-22.1.4`, released 2026-04-21).
 
 Shipped today:
 
-- **Owned modules and storable ids** — the 0.1.0 handle model. `Module<B, S>`
+- **Owned modules and storable ids** — the 0.0.4 handle model. `Module<B, S>`
   has no lifetime parameter, owns its storage, and is `Send`, so it can be
   returned, stored in a struct, collected into a `Vec`, and moved between
   threads. Declarations and value-producing `build_*` calls return a
@@ -501,7 +501,9 @@ Python and Java bindings are planned. They have not been written yet for one
 reason: the API was not stable enough to wrap. Wrapping a moving surface means
 rewriting the wrapper on every break, which is the failure mode
 [llvmlite](https://github.com/numba/llvmlite) describes chasing upstream LLVM's
-unstable C++ API. The 0.1.0 freeze is what removes that blocker.
+unstable C++ API. 0.0.4 is where that surface stops moving week to week — not
+a stability promise (the crate is pre-1.0 and every `0.0.x` is mutually
+incompatible), but settled enough that a wrapper is worth writing.
 
 Keeping the surface *wrappable* has been a standing constraint on every API
 decision along the way, which is why the shape below fell out rather than
@@ -522,12 +524,10 @@ having to be retrofitted:
   verdict — an error a wrapper can raise as an exception, not UB.
 - **Misuse of a *handle or id* is an `IrError` or a deterministic panic, never
   a dangling read.** `#![forbid(unsafe_code)]` holds across the workspace, so
-  the worst a forged or stale handle can do is get rejected. The one currency
-  this does not yet cover is metadata: a `MetadataSlot` is a bare arena index
-  with no module tag, so an *in-range* slot from another module mis-resolves
-  rather than erroring. Attaching one requires that module's `Unverified`
-  token, so it cannot happen through a read-only view or a verified module —
-  see the "Known gaps" section of the changelog.
+  the worst a forged or stale handle can do is get rejected. That holds without
+  exception, metadata included: a metadata node is named by a `MetadataId<B>`
+  carrying the owning module's `ModuleId`, and a foreign one is
+  `IrError::ForeignMetadataId` at the arena boundary.
 
 What a wrapper will still build itself: an id table. Ids are opaque — their
 `(ModuleId, slot)` payload is private, and there is deliberately no
@@ -917,15 +917,13 @@ locks.
   carries (`IrError::ForeignValueId`). Compile-time separation is the guarantee;
   the runtime tag is the backstop that keeps the erased case sound rather than
   silently miscompiling. See [Same-module safety](#same-module-safety).
-  **The stated limit:** "operand" here means the value/block/function currency —
-  the handles and ids, which all carry `B`. Metadata is a separate currency that
-  2.0 did not reach: a `MetadataSlot` is a bare arena index with neither a brand
-  nor a tag, so neither half of D7 applies to it. Out-of-range slots are
-  rejected (`IrError::UnknownMetadataSlot`); an in-range slot from another
-  module still mis-resolves. Every API that attaches one demands the target
-  module's `Unverified` token, which bounds the exposure to code that already
-  holds mutation authority over that module — but does not close it. Tracked in
-  `docs/future-work.md`.
+  **Metadata is included.** It used to be the one currency outside D7 — a bare
+  arena index with neither a brand nor a tag, so an in-range node from another
+  module mis-resolved silently. Since 0.0.4 the public currency is
+  `MetadataId<B>`, which carries both halves like every other id: a mix-up
+  across named brands is a compile error, and within one brand it is
+  `IrError::ForeignMetadataId`. `IrError::UnknownMetadataSlot` now reports only
+  a *native* id whose slot is out of range.
 - **D8. Verified guarantees are explicit.** Verification consumes an
   unverified token and produces `Module<B, Verified>`. A pass pipeline's
   output typestate is *derived* from its members' capability rungs: an

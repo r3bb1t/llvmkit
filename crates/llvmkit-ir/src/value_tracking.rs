@@ -760,7 +760,8 @@ fn range_metadata_known_bits<'ctx, B: ModuleBrand + 'ctx>(
     let module = module_view.core_ref();
     let store = module_view.metadata_store();
     let expected_ty = scalar_type_id(module, value.ty().id);
-    let Some(ranges) = constant_ranges_from_metadata(module, &store, range_id, expected_ty) else {
+    let Some(ranges) = constant_ranges_from_metadata(module, &store, range_id.slot(), expected_ty)
+    else {
         return KnownBits::unknown(bit_width);
     };
     ranges_known_bits(ranges, bit_width)

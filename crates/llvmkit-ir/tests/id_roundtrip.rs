@@ -1,4 +1,4 @@
-//! Public-surface coverage for the llvmkit 2.0 value-id family (cycle A):
+//! Public-surface coverage for the 0.0.4 value-id family (cycle A):
 //! `handle.id()` mints a storable, module-tagged id, and
 //! [`Module::view`] / [`Module::try_view`] resolve it back into a borrowing
 //! handle.

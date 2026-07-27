@@ -176,7 +176,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             self.verify_constant_tree(init)?;
         }
-        if let Some(range_id) = g.metadata().get(&MetadataAttachmentKind::AbsoluteSymbol) {
+        if let Some(range_id) = g
+            .metadata_stored()
+            .get(&MetadataAttachmentKind::AbsoluteSymbol)
+        {
             let pointer_width = self
                 .module
                 .data_layout()
@@ -184,7 +187,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             let pointer_int_ty = self.module.context().int_type(pointer_width);
             self.verify_range_like_metadata_global(
                 g,
-                range_id,
+                range_id.slot(),
                 pointer_int_ty,
                 RangeLikeMetadataKind::AbsoluteSymbol,
             )?;
@@ -688,7 +691,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         inst: &InstructionView<'ctx, B>,
         kind: &InstructionKindData,
     ) -> IrResult<()> {
-        let Some(range_id) = inst.metadata().get(&MetadataAttachmentKind::Range) else {
+        let Some(range_id) = inst.metadata_stored().get(&MetadataAttachmentKind::Range) else {
             return Ok(());
         };
         if !matches!(
@@ -708,7 +711,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             f,
             bb,
             inst,
-            range_id,
+            range_id.slot(),
             scalar_type_id(self.module, inst.ty().id),
             RangeLikeMetadataKind::Range,
         )
@@ -774,13 +777,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let mut first_range = None;
         let mut last_range = None;
         for (idx, pair) in operands.chunks_exact(2).enumerate() {
-            let Some((low_ty, low)) = metadata_constant_int(self.module, &store, pair[0].0) else {
+            let Some((low_ty, low)) = metadata_constant_int(self.module, &store, pair[0].slot())
+            else {
                 return Err(fail(
                     VerifierRule::RangeMetadataMalformed,
                     "The lower limit must be an integer!".to_string(),
                 ));
             };
-            let Some((high_ty, high)) = metadata_constant_int(self.module, &store, pair[1].0)
+            let Some((high_ty, high)) = metadata_constant_int(self.module, &store, pair[1].slot())
             else {
                 return Err(fail(
                     VerifierRule::RangeMetadataMalformed,

@@ -1,4 +1,4 @@
-//! llvmkit 2.0 cycle E compile-fail (Doctrine D8, D2).
+//! 0.0.4 cycle E compile-fail (Doctrine D8, D2).
 //!
 //! `verify(self)` consumes mutation capability. Every mutator in the crate
 //! demands a `&Module<B, Unverified>` token, so once the module has been

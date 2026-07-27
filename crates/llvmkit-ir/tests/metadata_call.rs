@@ -9,7 +9,7 @@
 
 use llvmkit_ir::{
     AttrIndex, AttrKind, Attribute, Dyn, IRBuilder, InstructionView, IrError, Linkage,
-    MetadataAttachmentKind, MetadataRef, NoFolder, Ptr, VerifierRule, module_new,
+    MetadataAttachmentKind, NoFolder, Ptr, VerifierRule, module_new,
 };
 
 fn assert_line(text: &str, expected: &str) {
@@ -53,8 +53,8 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
 
     // !N = !{!"rsp"}  — a tuple whose only operand is the register name.
     let s = m.metadata_string("rsp");
-    let node = m.metadata_tuple([MetadataRef(s)]);
-    let md = m.metadata_as_value(node);
+    let node = m.metadata_tuple([s])?;
+    let md = m.metadata_as_value(node)?;
 
     // declare i64  @llvm.read_register.i64(metadata)
     let read = m.get_or_insert_intrinsic_declaration_by_name("llvm.read_register.i64")?;
@@ -167,9 +167,9 @@ fn post_construction_function_attributes() -> Result<(), IrError> {
 fn metadata_as_value_is_uniqued() {
     let m = module_new!("u").expect("fresh module");
     let s = m.metadata_string("rsp");
-    let node = m.metadata_tuple([MetadataRef(s)]);
-    let a = m.metadata_as_value(node);
-    let b = m.metadata_as_value(node);
+    let node = m.metadata_tuple([s]).expect("native operand");
+    let a = m.metadata_as_value(node).expect("native node");
+    let b = m.metadata_as_value(node).expect("native node");
     assert_eq!(a, b, "same metadata node must yield the same Value");
 }
 
@@ -192,7 +192,7 @@ fn metadata_string_as_value_prints_inline() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let s = m.metadata_string("rsp");
-    let md = m.metadata_as_value(s);
+    let md = m.metadata_as_value(s)?;
     b.build_call_dyn(g, [md], "")?;
     b.build_ret_void()?;
 
@@ -210,10 +210,9 @@ fn metadata_string_as_value_prints_inline() -> Result<(), IrError> {
 fn string_referenced_by_named_metadata_is_not_dangling() {
     let m = module_new!("d").expect("fresh module");
     let s = m.metadata_string("x");
-    let tuple = m.metadata_tuple([MetadataRef(s)]);
+    let tuple = m.metadata_tuple([s]).expect("native operand");
     let idx = m.get_or_insert_named_metadata("my.named");
-    m.named_metadata_add_operand(idx, MetadataRef(tuple))
-        .unwrap();
+    m.named_metadata_add_operand(idx, tuple).unwrap();
 
     let text = format!("{m}");
     assert_line(&text, r#"!0 = !{!"x"}"#);
@@ -226,12 +225,15 @@ fn string_referenced_by_named_metadata_is_not_dangling() {
 fn metadata_constant_tuple_prints_typed_constants() {
     let m = module_new!("mdc").expect("fresh module");
     let i64_ty = m.i64_type();
-    let one = m.metadata_constant(i64_ty.const_int(1_i64));
-    let five = m.metadata_constant(i64_ty.const_int(5_i64));
-    let tuple = m.metadata_tuple([MetadataRef(one), MetadataRef(five)]);
+    let one = m
+        .metadata_constant(i64_ty.const_int(1_i64))
+        .expect("native constant");
+    let five = m
+        .metadata_constant(i64_ty.const_int(5_i64))
+        .expect("native constant");
+    let tuple = m.metadata_tuple([one, five]).expect("native operands");
     let idx = m.get_or_insert_named_metadata("ranges");
-    m.named_metadata_add_operand(idx, MetadataRef(tuple))
-        .unwrap();
+    m.named_metadata_add_operand(idx, tuple).unwrap();
 
     let text = format!("{m}");
     assert_line(&text, "!0 = !{i64 1, i64 5}");
@@ -251,11 +253,11 @@ fn range_metadata_on_load_verifies_and_prints() -> Result<(), IrError> {
     let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let ld = b.build_int_load::<i8, _, _>(p, "v")?;
-    let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
-    let hi = m.metadata_constant(i8_ty.const_int(0x20_u8));
-    let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
+    let lo = m.metadata_constant(i8_ty.const_int(0x10_u8))?;
+    let hi = m.metadata_constant(i8_ty.const_int(0x20_u8))?;
+    let range = m.metadata_tuple([lo, hi])?;
     let inst = InstructionView::try_from(b.view(ld).into_erased())?;
-    inst.set_metadata(&m, MetadataAttachmentKind::Range, range);
+    inst.set_metadata(&m, MetadataAttachmentKind::Range, range)?;
     b.build_ret(ld)?;
 
     m.verify_borrowed()?;
@@ -278,10 +280,10 @@ fn range_metadata_rejects_odd_operand_count() -> Result<(), IrError> {
     let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let ld = b.build_int_load::<i8, _, _>(p, "v")?;
-    let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
-    let range = m.metadata_tuple([MetadataRef(lo)]);
+    let lo = m.metadata_constant(i8_ty.const_int(0x10_u8))?;
+    let range = m.metadata_tuple([lo])?;
     let inst = InstructionView::try_from(b.view(ld).into_erased())?;
-    inst.set_metadata(&m, MetadataAttachmentKind::Range, range);
+    inst.set_metadata(&m, MetadataAttachmentKind::Range, range)?;
     b.build_ret(ld)?;
 
     let err = m
@@ -307,9 +309,9 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
     let callee = m
         .add_typed_function::<i8, (Ptr,), _>("callee", Linkage::External)?
         .as_function();
-    let lo = m.metadata_constant(i8_ty.const_int(0_i8));
-    let hi = m.metadata_constant(i8_ty.const_int(1_i8));
-    let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
+    let lo = m.metadata_constant(i8_ty.const_int(0_i8))?;
+    let hi = m.metadata_constant(i8_ty.const_int(1_i8))?;
+    let range = m.metadata_tuple([lo, hi])?;
 
     let call_host_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
     let call_host = m.add_function_dyn("call_host", call_host_ty, Linkage::External)?;
@@ -318,7 +320,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(call_host).param(0)?.try_into()?;
     let call = b.view(b.build_call_dyn(callee, [p.into_erased()], "v")?);
     call.as_view()
-        .set_metadata(&m, MetadataAttachmentKind::Range, range);
+        .set_metadata(&m, MetadataAttachmentKind::Range, range)?;
     let ret = call.return_int_value();
     b.build_ret(ret)?;
 
@@ -341,7 +343,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
         )?;
     invoke
         .as_view()
-        .set_metadata(&m, MetadataAttachmentKind::Range, range);
+        .set_metadata(&m, MetadataAttachmentKind::Range, range)?;
     let invoke_value: llvmkit_ir::IntValue<'_, i8, _> = invoke.to_erased().try_into()?;
     IRBuilder::new_for::<Dyn>(&m)
         .position_at_end(normal)
@@ -365,11 +367,11 @@ fn range_metadata_rejects_non_load_call_invoke_user() -> Result<(), IrError> {
     let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let add =
         b.build_int_add::<i8, _, _, _>(i8_ty.const_int(1_u8), i8_ty.const_int(2_u8), "sum")?;
-    let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
-    let hi = m.metadata_constant(i8_ty.const_int(0x20_u8));
-    let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
+    let lo = m.metadata_constant(i8_ty.const_int(0x10_u8))?;
+    let hi = m.metadata_constant(i8_ty.const_int(0x20_u8))?;
+    let range = m.metadata_tuple([lo, hi])?;
     let inst = InstructionView::try_from(b.view(add).into_erased())?;
-    inst.set_metadata(&m, MetadataAttachmentKind::Range, range);
+    inst.set_metadata(&m, MetadataAttachmentKind::Range, range)?;
     b.build_ret(add)?;
 
     let err = m
@@ -393,11 +395,11 @@ fn absolute_symbol_zero_zero_is_empty_range() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
     let g = m.add_global("absolute_zero_zero", i8_ty.const_zero())?;
-    let lo = m.metadata_constant(i64_ty.const_int(0_i64));
-    let hi = m.metadata_constant(i64_ty.const_int(0_i64));
-    let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
+    let lo = m.metadata_constant(i64_ty.const_int(0_i64))?;
+    let hi = m.metadata_constant(i64_ty.const_int(0_i64))?;
+    let range = m.metadata_tuple([lo, hi])?;
     m.view(g)
-        .set_metadata(&m, MetadataAttachmentKind::AbsoluteSymbol, range);
+        .set_metadata(&m, MetadataAttachmentKind::AbsoluteSymbol, range)?;
 
     let err = m
         .verify_borrowed()

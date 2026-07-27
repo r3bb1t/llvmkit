@@ -88,8 +88,8 @@ use super::llvm_context::Context;
 use super::marker::Dyn;
 use super::marker::ReturnMarker;
 use super::metadata::{
-    MetadataAttachmentSet, MetadataKind, MetadataRef, MetadataSlot, MetadataStore,
-    SpecializedMetadataNode,
+    MetadataAttachmentSet, MetadataId, MetadataKind, MetadataSlot, MetadataStore,
+    SpecializedMetadataNode, StoredBrand,
 };
 use super::named_md_node::NamedMDNode;
 use super::pass_context::{FunctionView, ModuleFunctionViews};
@@ -102,7 +102,7 @@ use super::unnamed_addr::UnnamedAddr;
 use super::value::{Value, ValueData, ValueKindData, ValueSlot, ValueUse};
 use super::value_id::{
     FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, TypedFunctionId, TypedVarArgsFunctionId,
-    ViewIn,
+    ValueId, ViewIn,
 };
 use super::vec_len::{Len, LenDyn};
 use super::verifier::Verifier;
@@ -663,7 +663,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariableView<'ctx, B> {
     }
 
     #[inline]
-    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
+    pub fn metadata(self) -> MetadataAttachmentSet<B> {
         self.global.metadata()
     }
 }
@@ -736,7 +736,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasView<'ctx, B> {
     }
 
     #[inline]
-    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
+    pub fn metadata(self) -> MetadataAttachmentSet<B> {
         self.alias.metadata()
     }
 
@@ -799,7 +799,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncView<'ctx, B> {
     }
 
     #[inline]
-    pub fn metadata(self) -> core::cell::Ref<'ctx, MetadataAttachmentSet> {
+    pub fn metadata(self) -> MetadataAttachmentSet<B> {
         self.ifunc.metadata()
     }
 
@@ -1575,7 +1575,7 @@ pub(super) struct ModuleCore {
     metadata: core::cell::RefCell<MetadataStore>,
     /// Named metadata nodes (`!llvm.module.flags`, `!llvm.ident`, ...).
     /// Mirrors `Module::NamedMDList`. Insertion order is preserved.
-    named_metadata: core::cell::RefCell<Vec<NamedMDNode>>,
+    named_metadata: core::cell::RefCell<Vec<NamedMDNode<StoredBrand>>>,
     /// Uniquing cache for [`metadata_as_value`](Self::metadata_as_value):
     /// maps a metadata node to its wrapping value so repeated wraps of the
     /// same node return the identical `Value`. Mirrors LLVM's uniqued
@@ -2318,46 +2318,80 @@ impl<'ctx> ModuleCore {
     }
 
     // ---- Metadata ----
+    //
+    // `ModuleCore` is brand-free, so these are generic in `B`: the brand rides
+    // on the caller's ids and on the ids handed back, while the arena speaks
+    // the crate-private storage form. Every one of them that *accepts* an id
+    // routes it through `MetadataId::into_stored`, which compares the module
+    // tag — the single choke point for the metadata currency, the same role
+    // `ViewIn::resolve_in` plays for the value currency.
 
     /// Intern a metadata string node. Returns an existing id if an
     /// identical string was already interned. Mirrors `MDString::get`.
-    pub fn metadata_string<S>(&self, s: S) -> MetadataSlot
+    pub fn metadata_string<B, S>(&self, s: S) -> MetadataId<B>
     where
+        B: ModuleBrand,
         S: Into<String>,
     {
-        self.metadata.borrow_mut().get_string(s)
+        let slot = self.metadata.borrow_mut().get_string(s);
+        MetadataId::from_raw(self.id, slot)
     }
 
     /// Create a metadata tuple node. Mirrors `MDTuple::get` (distinct).
     ///
     /// Accepts anything that borrows as a slice of
-    /// [`MetadataRef`](crate::metadata::MetadataRef) — both an owned
-    /// `Vec` and a borrowed `&[..]` work.
-    pub fn metadata_tuple<Ops>(&self, operands: Ops) -> MetadataSlot
+    /// [`MetadataId`](crate::MetadataId) — both an owned `Vec` and a borrowed
+    /// `&[..]` work.
+    pub fn metadata_tuple<B, Ops>(&self, operands: Ops) -> IrResult<MetadataId<B>>
     where
-        Ops: AsRef<[MetadataRef]>,
+        B: ModuleBrand,
+        Ops: AsRef<[MetadataId<B>]>,
     {
-        self.metadata
-            .borrow_mut()
-            .get_tuple(operands.as_ref().to_vec())
+        self.metadata_tuple_with_distinct(false, operands)
     }
+
     /// Create a tuple node with explicit distinctness.
-    pub fn metadata_tuple_with_distinct<Ops>(&self, distinct: bool, operands: Ops) -> MetadataSlot
+    pub fn metadata_tuple_with_distinct<B, Ops>(
+        &self,
+        distinct: bool,
+        operands: Ops,
+    ) -> IrResult<MetadataId<B>>
     where
-        Ops: AsRef<[MetadataRef]>,
+        B: ModuleBrand,
+        Ops: AsRef<[MetadataId<B>]>,
     {
-        self.metadata
+        let operands = operands
+            .as_ref()
+            .iter()
+            .map(|id| id.into_stored(self.id))
+            .collect::<IrResult<Vec<_>>>()?;
+        let slot = self
+            .metadata
             .borrow_mut()
-            .get_tuple_with_distinct(distinct, operands.as_ref().to_vec())
+            .get_tuple_with_distinct(distinct, operands);
+        Ok(MetadataId::from_raw(self.id, slot))
     }
 
     /// Create a specialized debug metadata node.
-    pub fn metadata_specialized(&self, node: SpecializedMetadataNode) -> MetadataSlot {
-        self.metadata.borrow_mut().get_specialized(node)
+    pub fn metadata_specialized<B>(
+        &self,
+        node: SpecializedMetadataNode<B>,
+    ) -> IrResult<MetadataId<B>>
+    where
+        B: ModuleBrand,
+    {
+        let node = node.into_stored(self.id)?;
+        let slot = self.metadata.borrow_mut().get_specialized(node);
+        Ok(MetadataId::from_raw(self.id, slot))
     }
+
     /// Store an already-parsed metadata node and return its id.
-    pub fn metadata_node(&self, kind: MetadataKind) -> MetadataSlot {
-        let (id, value_use) = {
+    pub fn metadata_node<B>(&self, kind: MetadataKind<B>) -> IrResult<MetadataId<B>>
+    where
+        B: ModuleBrand,
+    {
+        let kind = kind.into_stored(self.id)?;
+        let (slot, value_use) = {
             let mut store = self.metadata.borrow_mut();
             match kind {
                 MetadataKind::String(s) => (store.get_string(s), None),
@@ -2366,102 +2400,141 @@ impl<'ctx> ModuleCore {
                 }
                 MetadataKind::Specialized(node) => (store.get_specialized(node), None),
                 MetadataKind::Constant(value_id) => {
-                    let id = store.get_constant(value_id);
-                    (id, Some(value_id))
+                    let slot = store.get_constant(value_id);
+                    (slot, Some(value_id.slot()))
                 }
-                MetadataKind::Ref(id) => (id, None),
+                MetadataKind::Ref(id) => (id.slot(), None),
                 MetadataKind::Null => {
-                    let id = store.reserve();
-                    store.set(id, MetadataKind::Null);
-                    (id, None)
+                    let slot = store.reserve();
+                    store.set(slot, MetadataKind::Null);
+                    (slot, None)
                 }
             }
         };
-        if let Some(value_id) = value_use {
-            self.register_metadata_value_use(id, value_id);
+        if let Some(value_slot) = value_use {
+            self.register_metadata_value_use(slot, value_slot);
         }
-        id
+        Ok(MetadataId::from_raw(self.id, slot))
     }
 
     /// Reserve a fresh metadata node id with placeholder content, to be
     /// filled via [`metadata_set`](Self::metadata_set). Used by the parser
     /// to resolve forward references without assuming textual `!N` slots
     /// equal arena indices.
-    pub fn metadata_reserve(&self) -> MetadataSlot {
-        self.metadata.borrow_mut().reserve()
+    pub fn metadata_reserve<B>(&self) -> MetadataId<B>
+    where
+        B: ModuleBrand,
+    {
+        let slot = self.metadata.borrow_mut().reserve();
+        MetadataId::from_raw(self.id, slot)
     }
 
     /// Overwrite a reserved metadata node with concrete content. Pairs
     /// with [`metadata_reserve`](Self::metadata_reserve).
     ///
-    /// `Err(IrError::UnknownMetadataSlot)` when `id` names nothing here. It
-    /// used to no-op silently, which the 2.0 law forbids: a slot carries no
-    /// module tag, so a slot from another module reaching this call is exactly
-    /// the mistake worth reporting.
-    pub fn metadata_set(&self, id: MetadataSlot, kind: MetadataKind) -> IrResult<()> {
-        {
-            let store = self.metadata.borrow();
-            if store.get(id).is_none() {
-                return Err(IrError::UnknownMetadataSlot {
-                    index: id.index(),
-                    len: store.len(),
-                });
-            }
-        }
-        if let Some(MetadataKind::Constant(value_id)) = self.metadata.borrow().get(id).cloned() {
-            self.deregister_metadata_value_use(id, value_id);
+    /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
+    /// module, `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    pub fn metadata_set<B>(&self, id: MetadataId<B>, kind: MetadataKind<B>) -> IrResult<()>
+    where
+        B: ModuleBrand,
+    {
+        let slot = self.metadata_slot_of(id)?;
+        let kind = kind.into_stored(self.id)?;
+        if let Some(MetadataKind::Constant(value_id)) = self.metadata.borrow().get(slot).cloned() {
+            self.deregister_metadata_value_use(slot, value_id.slot());
         }
         let value_use = match kind {
-            MetadataKind::Constant(value_id) => Some(value_id),
+            MetadataKind::Constant(value_id) => Some(value_id.slot()),
             MetadataKind::Null
             | MetadataKind::String(_)
             | MetadataKind::Tuple { .. }
             | MetadataKind::Ref(_)
             | MetadataKind::Specialized(_) => None,
         };
-        self.metadata.borrow_mut().set(id, kind);
-        if let Some(value_id) = value_use {
-            self.register_metadata_value_use(id, value_id);
+        self.metadata.borrow_mut().set(slot, kind);
+        if let Some(value_slot) = value_use {
+            self.register_metadata_value_use(slot, value_slot);
         }
         Ok(())
     }
 
-    pub(super) fn metadata_constant_value(&self, value_id: ValueSlot) -> MetadataSlot {
-        let id = self.metadata.borrow_mut().get_constant(value_id);
-        self.register_metadata_value_use(id, value_id);
-        id
+    /// The metadata arena's boundary: compare `id`'s module tag against this
+    /// module, then range-check the slot it names.
+    ///
+    /// Nothing else in the crate turns a caller's [`MetadataId`] into a
+    /// [`MetadataSlot`] — `MetadataId::slot` exists only on the storage brand —
+    /// so the tag check cannot be skipped one level up.
+    fn metadata_slot_of<B>(&self, id: MetadataId<B>) -> IrResult<MetadataSlot>
+    where
+        B: ModuleBrand,
+    {
+        let slot = id.into_stored(self.id)?.slot();
+        let store = self.metadata.borrow();
+        if store.get(slot).is_none() {
+            return Err(IrError::UnknownMetadataSlot {
+                index: slot.index(),
+                len: store.len(),
+            });
+        }
+        Ok(slot)
     }
 
-    pub(super) fn rewrite_metadata_value(&self, id: MetadataSlot, from: ValueSlot, to: ValueSlot) {
+    pub(super) fn metadata_constant_value<B>(&self, value_id: ValueSlot) -> MetadataId<B>
+    where
+        B: ModuleBrand,
+    {
+        let slot = self
+            .metadata
+            .borrow_mut()
+            .get_constant(ValueId::from_raw(self.id, value_id));
+        self.register_metadata_value_use(slot, value_id);
+        MetadataId::from_raw(self.id, slot)
+    }
+
+    pub(super) fn rewrite_metadata_value(
+        &self,
+        slot: MetadataSlot,
+        from: ValueSlot,
+        to: ValueSlot,
+    ) {
         let mut store = self.metadata.borrow_mut();
-        if let Some(MetadataKind::Constant(value_id)) = store.get_mut(id)
-            && *value_id == from
+        if let Some(MetadataKind::Constant(value_id)) = store.get_mut(slot)
+            && value_id.slot() == from
         {
-            *value_id = to;
+            let tag = value_id.tag();
+            *value_id = ValueId::from_raw(tag, to);
         }
     }
 
-    fn register_metadata_value_use(&self, metadata_id: MetadataSlot, value_id: ValueSlot) {
+    fn register_metadata_value_use(&self, metadata_slot: MetadataSlot, value_id: ValueSlot) {
         self.ctx
             .value_data(value_id)
             .use_list
             .borrow_mut()
-            .push(ValueUse::Metadata(metadata_id));
+            .push(ValueUse::Metadata(metadata_slot));
     }
 
-    fn deregister_metadata_value_use(&self, metadata_id: MetadataSlot, value_id: ValueSlot) {
+    fn deregister_metadata_value_use(&self, metadata_slot: MetadataSlot, value_id: ValueSlot) {
         let mut uses = self.ctx.value_data(value_id).use_list.borrow_mut();
         if let Some(pos) = uses
             .iter()
-            .position(|edge| *edge == ValueUse::Metadata(metadata_id))
+            .position(|edge| *edge == ValueUse::Metadata(metadata_slot))
         {
             uses.remove(pos);
         }
     }
 
-    /// Look up a metadata node by id.
-    pub fn metadata_get(&self, id: MetadataSlot) -> Option<MetadataKind> {
-        self.metadata.borrow().get(id).cloned()
+    /// Look up a metadata node by id. `None` for a foreign id or one whose
+    /// slot names nothing here — never another module's node.
+    pub fn metadata_get<B>(&self, id: MetadataId<B>) -> Option<MetadataKind<B>>
+    where
+        B: ModuleBrand,
+    {
+        let slot = id.into_stored(self.id).ok()?.slot();
+        self.metadata
+            .borrow()
+            .get(slot)
+            .map(MetadataKind::from_stored)
     }
 
     /// Number of numbered metadata nodes. `MDString`s are uniqued metadata
@@ -2500,13 +2573,19 @@ impl<'ctx> ModuleCore {
 
     /// Append an operand to a named metadata node (by index).
     ///
-    /// `Err(IrError::UnknownMetadataSlot)` when `index` names no node here.
-    /// The index comes from
-    /// [`get_or_insert_named_metadata`](Self::get_or_insert_named_metadata)
-    /// and carries no module tag, so an index minted against another module
-    /// used to panic (out of range) or silently append to the wrong node (in
-    /// range) — neither of which an infallible signature may hide.
-    pub fn named_metadata_add_operand(&self, index: usize, op: MetadataRef) -> IrResult<()> {
+    /// `Err(IrError::ForeignMetadataId)` when `op` was minted by another
+    /// module. `Err(IrError::UnknownMetadataSlot)` when `index` names no node
+    /// here: the index comes from
+    /// [`get_or_insert_named_metadata`](Self::get_or_insert_named_metadata) and
+    /// is a plain position carrying no module tag, so an index minted against
+    /// another module used to panic (out of range) or silently append to the
+    /// wrong node (in range) — neither of which an infallible signature may
+    /// hide.
+    pub fn named_metadata_add_operand<B>(&self, index: usize, op: MetadataId<B>) -> IrResult<()>
+    where
+        B: ModuleBrand,
+    {
+        let op = op.into_stored(self.id)?;
         let mut nmd = self.named_metadata.borrow_mut();
         let len = nmd.len();
         match nmd.get_mut(index) {
@@ -2524,7 +2603,7 @@ impl<'ctx> ModuleCore {
     }
 
     /// Crate-internal: borrow named metadata list for printing.
-    pub(super) fn named_metadata_list(&self) -> core::cell::Ref<'_, Vec<NamedMDNode>> {
+    pub(super) fn named_metadata_list(&self) -> core::cell::Ref<'_, Vec<NamedMDNode<StoredBrand>>> {
         self.named_metadata.borrow()
     }
 
@@ -2918,7 +2997,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
 
     /// Resolve a storable value id (from [`Value::id`](crate::Value::id)
     /// and its per-kind siblings) back into its borrowing handle — the
-    /// resolution boundary for the llvmkit 2.0 id family.
+    /// resolution boundary for the 0.0.4 id family.
     ///
     /// This is the module-tag choke point: the id's tag is compared against
     /// this module's [`ModuleId`] *before* the arena is touched, so an id
@@ -3012,7 +3091,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// Deliberately **not** part of the `get_* -> Option<Id>` symmetry the rest
     /// of the lookups follow. A comdat is not a `Value`: it lives in its own
     /// table, and [`ComdatId`] is a bare `u32` index carrying neither a
-    /// [`ModuleId`] tag nor a brand, so it is not a member of the llvmkit 2.0 id
+    /// [`ModuleId`] tag nor a brand, so it is not a member of the 0.0.4 id
     /// family and [`view`](Self::view) cannot resolve it. Returning it here
     /// would hand back something strictly *weaker* than the handle — untagged,
     /// unbranded, and unresolvable — so the handle stays.
@@ -3961,81 +4040,132 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         InlineAsm::from_parts(id, self.module_ref(), ptr_ty)
     }
 
-    pub fn metadata_string<S>(&'ctx self, s: S) -> MetadataSlot
+    // ---- Metadata ----
+    //
+    // The public face of the metadata currency. Every entry point that accepts
+    // a [`MetadataId`] is fallible, because a caller can always hand over an id
+    // minted by a *different* module: that is `IrError::ForeignMetadataId`,
+    // never a silent mis-resolve against this module's arena. The two that
+    // cannot fail — interning a string and reserving a fresh node — say so by
+    // returning the id directly.
+
+    /// Intern a metadata string node, returning its storable
+    /// [`MetadataId`]. Mirrors `MDString::get`.
+    pub fn metadata_string<S>(&'ctx self, s: S) -> MetadataId<B>
     where
         S: Into<String>,
     {
         self.core().metadata_string(s)
     }
 
-    pub fn metadata_tuple<Ops>(&'ctx self, operands: Ops) -> MetadataSlot
+    /// Create a metadata tuple node. Mirrors `MDTuple::get`.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` if any operand was minted by another
+    /// module.
+    pub fn metadata_tuple<Ops>(&'ctx self, operands: Ops) -> IrResult<MetadataId<B>>
     where
-        Ops: AsRef<[MetadataRef]>,
+        Ops: AsRef<[MetadataId<B>]>,
     {
         self.core().metadata_tuple(operands)
     }
 
+    /// Create a metadata tuple node with explicit distinctness.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` if any operand was minted by another
+    /// module.
     pub fn metadata_tuple_with_distinct<Ops>(
         &'ctx self,
         distinct: bool,
         operands: Ops,
-    ) -> MetadataSlot
+    ) -> IrResult<MetadataId<B>>
     where
-        Ops: AsRef<[MetadataRef]>,
+        Ops: AsRef<[MetadataId<B>]>,
     {
         self.core().metadata_tuple_with_distinct(distinct, operands)
     }
 
-    pub fn metadata_constant<C>(&'ctx self, c: C) -> MetadataSlot
+    /// Wrap a constant as a typed metadata operand (`i64 1`, `ptr null`, ...).
+    ///
+    /// `Err(IrError::ForeignValueId)` when `c` belongs to another module. Under
+    /// a shared brand ([`DynBrand`], or a re-issued named brand) the handle's
+    /// type says nothing about *which* module minted it, so the node would
+    /// otherwise be interned here pointing at a value slot that means something
+    /// else in this arena.
+    pub fn metadata_constant<C>(&'ctx self, c: C) -> IrResult<MetadataId<B>>
     where
         C: IsConstant<'ctx, B>,
     {
-        let id = c.as_constant().id;
-        self.core().metadata_constant_value(id)
+        let constant = c.as_constant();
+        if constant.module.id() != self.core().id() {
+            return Err(IrError::ForeignValueId);
+        }
+        Ok(self.core().metadata_constant_value(constant.id))
     }
 
-    pub fn metadata_specialized(&'ctx self, node: SpecializedMetadataNode) -> MetadataSlot {
+    /// Create a specialized `DI*` metadata node.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` if any field references a node minted
+    /// by another module.
+    pub fn metadata_specialized(
+        &'ctx self,
+        node: SpecializedMetadataNode<B>,
+    ) -> IrResult<MetadataId<B>> {
         self.core().metadata_specialized(node)
     }
 
-    pub fn metadata_node(&'ctx self, kind: MetadataKind) -> MetadataSlot {
+    /// Store an already-built metadata node and return its id.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` if the node references a node — or a
+    /// value — minted by another module.
+    pub fn metadata_node(&'ctx self, kind: MetadataKind<B>) -> IrResult<MetadataId<B>> {
         self.core().metadata_node(kind)
     }
 
-    pub fn metadata_as_value(&'ctx self, md: MetadataSlot) -> Value<'ctx, B> {
+    /// Wrap a metadata node so it can appear where a [`Value`] is expected.
+    /// Mirrors LLVM's uniqued `MetadataAsValue::get`.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `md` was minted by another
+    /// module, `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    pub fn metadata_as_value(&'ctx self, md: MetadataId<B>) -> IrResult<Value<'ctx, B>> {
+        let slot = self.core().metadata_slot_of(md)?;
         let ty = self.core().ctx.metadata();
-        if let Some(&id) = self.core().metadata_as_value_cache.borrow().get(&md) {
-            return Value::from_parts(id, self.module_ref(), ty);
+        if let Some(&id) = self.core().metadata_as_value_cache.borrow().get(&slot) {
+            return Ok(Value::from_parts(id, self.module_ref(), ty));
         }
         let id = self.core().ctx.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
-            kind: ValueKindData::MetadataAsValue(md),
+            kind: ValueKindData::MetadataAsValue(slot),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.core()
             .metadata_as_value_cache
             .borrow_mut()
-            .insert(md, id);
-        Value::from_parts(id, self.module_ref(), ty)
+            .insert(slot, id);
+        Ok(Value::from_parts(id, self.module_ref(), ty))
     }
 
-    pub fn metadata_reserve(&'ctx self) -> MetadataSlot {
+    /// Reserve a fresh metadata node id with placeholder content, to be filled
+    /// via [`metadata_set`](Self::metadata_set). Used by the parser to resolve
+    /// forward references without assuming textual `!N` slots equal arena
+    /// indices.
+    pub fn metadata_reserve(&'ctx self) -> MetadataId<B> {
         self.core().metadata_reserve()
     }
 
     /// Overwrite a reserved metadata node, pairing with `metadata_reserve`.
     ///
-    /// `Err(IrError::UnknownMetadataSlot)` when `id` names nothing in this
-    /// module. It used to no-op silently, which the 2.0 contract forbids: a
-    /// metadata slot carries no module tag, so a slot from another module
-    /// reaching this call is exactly the mistake worth reporting.
-    pub fn metadata_set(&'ctx self, id: MetadataSlot, kind: MetadataKind) -> IrResult<()> {
+    /// `Err(IrError::ForeignMetadataId)` when `id` was minted by another
+    /// module; `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    /// It used to no-op silently, which the 2.0 contract forbids.
+    pub fn metadata_set(&'ctx self, id: MetadataId<B>, kind: MetadataKind<B>) -> IrResult<()> {
         self.core().metadata_set(id, kind)
     }
 
-    pub fn metadata_get(&'ctx self, id: MetadataSlot) -> Option<MetadataKind> {
+    /// Look up a metadata node by id. `None` when `id` belongs to another
+    /// module or names nothing here — never another module's node.
+    pub fn metadata_get(&'ctx self, id: MetadataId<B>) -> Option<MetadataKind<B>> {
         self.core().metadata_get(id)
     }
 
@@ -4052,12 +4182,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
 
     /// Append an operand to a named metadata node.
     ///
-    /// `Err(IrError::UnknownMetadataSlot)` when `index` names no node here. The
-    /// index comes from `get_or_insert_named_metadata` and carries no module
-    /// tag, so an index minted against another module used to panic (out of
-    /// range) or silently append to the wrong node (in range) — neither of
+    /// `Err(IrError::ForeignMetadataId)` when `op` was minted by another
+    /// module. `Err(IrError::UnknownMetadataSlot)` when `index` names no node
+    /// here: the index comes from `get_or_insert_named_metadata` and carries no
+    /// module tag, so an index minted against another module used to panic (out
+    /// of range) or silently append to the wrong node (in range) — neither of
     /// which an infallible signature may hide.
-    pub fn named_metadata_add_operand(&'ctx self, index: usize, op: MetadataRef) -> IrResult<()> {
+    pub fn named_metadata_add_operand(&'ctx self, index: usize, op: MetadataId<B>) -> IrResult<()> {
         self.core().named_metadata_add_operand(index, op)
     }
 

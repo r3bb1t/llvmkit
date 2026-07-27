@@ -1,5 +1,5 @@
 //! Storable, module-tagged value ids and the [`Module`](crate::Module)
-//! view-minting API (llvmkit 2.0, cycle A).
+//! view-minting API (0.0.4, cycle A).
 //!
 //! Every lifetime-borrowing value handle in this crate ([`Value`],
 //! [`IntValue`], [`FunctionValue`],
@@ -152,6 +152,28 @@ decl_value_id! {
     /// marker, so [`Module::view`](crate::Module::view) recovers the value's
     /// cached type from the arena when minting the handle.
     ValueId
+}
+
+impl<B: ModuleBrand> ValueId<B> {
+    /// Crate-internal: the module tag this id carries.
+    ///
+    /// Reserved for the metadata layer, whose stored/public boundary
+    /// (`metadata::DebugMetadataOperand`, `metadata::MetadataKind::Constant`)
+    /// carries value ids and performs its own tag check with it. Every other
+    /// consumer resolves through [`ViewIn`], which compares the tag itself.
+    #[inline]
+    pub(crate) fn tag(self) -> ModuleId {
+        self.tag
+    }
+
+    /// Crate-internal: the arena slot this id names, **without** the module-tag
+    /// check [`ViewIn::resolve_in`] performs. Paired with [`tag`](Self::tag) and
+    /// reserved for the same metadata-layer boundary, which compares the tag
+    /// before it reads the slot.
+    #[inline]
+    pub(crate) fn slot(self) -> ValueSlot {
+        self.slot
+    }
 }
 
 decl_value_id! {

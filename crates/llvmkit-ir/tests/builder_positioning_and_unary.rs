@@ -118,7 +118,7 @@ fn restore_insert_point_rejects_terminated_block() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific (llvmkit 2.0 id currency). Closest upstream construct is
+/// llvmkit-specific (0.0.4 id currency). Closest upstream construct is
 /// `Builder.SetInsertPoint(BB)` in `IRBuilder.h`, which takes a raw
 /// `BasicBlock*` recovered from a walk. Our linear
 /// [`IRBuilder::position_at_end`] consumes an `Unterminated` block token, so a

@@ -171,7 +171,10 @@ struct GenError {
 }
 
 impl GenError {
-    fn new(message: impl Into<String>) -> Self {
+    fn new<M>(message: M) -> Self
+    where
+        M: Into<String>,
+    {
         Self {
             message: message.into(),
         }
@@ -504,7 +507,10 @@ impl<'a> Lexer<'a> {
         Some(ch)
     }
 
-    fn error(&self, message: impl Into<String>) -> GenError {
+    fn error<M>(&self, message: M) -> GenError
+    where
+        M: Into<String>,
+    {
         GenError::new(format!(
             "{}:{}:{}: {}",
             self.file,
@@ -541,7 +547,10 @@ impl<T> Located<T> {
         }
     }
 
-    fn error(&self, message: impl Into<String>) -> GenError {
+    fn error<M>(&self, message: M) -> GenError
+    where
+        M: Into<String>,
+    {
         GenError::new(format!(
             "{}:{}:{}: {}",
             self.file,
@@ -1278,7 +1287,10 @@ impl Parser {
         self.pos >= self.tokens.len()
     }
 
-    fn error_here(&self, message: impl Into<String>) -> GenError {
+    fn error_here<M>(&self, message: M) -> GenError
+    where
+        M: Into<String>,
+    {
         if let Some(tok) = self.peek() {
             GenError::new(format!(
                 "{}:{}:{}: {}",
@@ -1393,7 +1405,10 @@ impl EnvStack {
         self.scopes.pop();
     }
 
-    fn set(&mut self, name: impl Into<String>, value: Value) {
+    fn set<N>(&mut self, name: N, value: Value)
+    where
+        N: Into<String>,
+    {
         self.scopes
             .last_mut()
             .expect("scope stack has root")

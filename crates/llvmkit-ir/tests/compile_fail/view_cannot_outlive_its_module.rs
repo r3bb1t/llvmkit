@@ -1,4 +1,4 @@
-//! llvmkit 2.0 cycle C/E compile-fail (Doctrine D2, D7).
+//! 0.0.4 cycle C/E compile-fail (Doctrine D2, D7).
 //!
 //! The counterpart to the id family's whole reason for existing. Since cycle C
 //! a `Module<B, S>` is an ordinary owned value that can be dropped, so the

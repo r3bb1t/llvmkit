@@ -1,4 +1,4 @@
-//! **The consumer proof for llvmkit 2.0.** A binary lifter as a plain,
+//! **The consumer proof for 0.0.4.** A binary lifter as a plain,
 //! re-entrant, movable value.
 //!
 //! This example is the shape the pre-2.0 API could not express at all, and

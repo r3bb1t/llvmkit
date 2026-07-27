@@ -9,7 +9,7 @@
 //!
 //! What this fixture pins is narrower and absolute: the three marker-form raw
 //! phi builders are not callable from another crate. They are `pub(crate)`
-//! *and*, since the 0.1.0 freeze, `#[cfg(test)]` — their only callers were ever
+//! *and*, since the 0.0.4 freeze, `#[cfg(test)]` — their only callers were ever
 //! the in-crate `phi_raw_tests` module, so in a dependent crate's build of
 //! `llvmkit-ir` they do not exist at all. The error is `E0599` "no method
 //! named", not the `E0624` "private method" this fixture asserted while they

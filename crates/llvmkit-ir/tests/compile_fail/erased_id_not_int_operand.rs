@@ -1,5 +1,5 @@
 //! llvmkit-specific compile-fail (Doctrine D7 / no-silent-erasure) for the
-//! llvmkit 2.0 value-id family, not a 1:1 LLVM test port.
+//! 0.0.4 value-id family, not a 1:1 LLVM test port.
 //!
 //! The three *typed* ids ([`IntValueId`](llvmkit_ir::IntValueId) /
 //! [`FloatValueId`](llvmkit_ir::FloatValueId) /

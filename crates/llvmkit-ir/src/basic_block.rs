@@ -34,7 +34,7 @@ use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, V
 use super::value_id::BlockId;
 use super::value_id::ViewIn;
 use super::{DebugLoc, IrError, IrResult, Type};
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
 
@@ -51,6 +51,22 @@ pub(super) struct BasicBlockData {
     pub(super) parent: RefCell<Option<ValueSlot>>,
     /// Linear list of instruction value ids in program order.
     pub(super) instructions: RefCell<Vec<ValueSlot>>,
+    /// How many **block parameters** this block was created with, in the
+    /// Swift-SIL / MLIR sense: the count declared by
+    /// [`IRBuilder::append_block_with_params`](crate::IRBuilder::append_block_with_params),
+    /// its naming twin, or the typed
+    /// [`append_block_typed`](crate::IRBuilder::append_block_typed). Zero for
+    /// every other block — a plain `append_basic_block`, a parsed `.ll` block,
+    /// an auto-SSA block, a pass-created block — even when such a block
+    /// carries leading phis, because those phis are seeded through their own
+    /// checked paths rather than by branch arguments.
+    ///
+    /// This is *not* the parameter list; the parameters themselves are the
+    /// block's leading head-phis (see
+    /// [`block_parameter_phis`]). It is the one-`Cell` fact that lets
+    /// [`require_no_block_parameters`] leave the hot path — every branch to a
+    /// param-less block — without touching the instruction list.
+    pub(super) parameter_count: Cell<usize>,
 }
 
 impl BasicBlockData {
@@ -60,6 +76,7 @@ impl BasicBlockData {
         Self {
             parent: RefCell::new(parent),
             instructions: RefCell::new(Vec::new()),
+            parameter_count: Cell::new(0),
         }
     }
 }
@@ -145,7 +162,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand, Params:
 /// checked [`IRBuilder::position_at_end_dyn`](crate::IRBuilder::position_at_end_dyn)
 /// with a [`BlockId`] for that.
 ///
-/// Since llvmkit 2.0 this is the ephemeral read view, not the stored currency:
+/// Since 0.0.4 this is the ephemeral read view, not the stored currency:
 /// producers hand back [`BlockId`] and consumers accept it, so a label is
 /// something you *take* to read a block, not something you keep.
 pub struct BasicBlockLabel<
@@ -228,7 +245,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx, Params: BlockParams>
     }
 
     /// Storable, module-tagged [`BlockId<R, B, Params>`] for this block
-    /// (llvmkit 2.0), resolvable via [`Module::view`](crate::Module::view) /
+    /// (0.0.4), resolvable via [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view) back into a copyable
     /// [`BasicBlockLabel`]. Preserves the return-shape and parameter markers.
     #[inline]
@@ -543,7 +560,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
 
     /// Copyable label *view* of this block.
     ///
-    /// Crate-internal since llvmkit 2.0: [`BlockId`] is the branch-target and
+    /// Crate-internal since 0.0.4: [`BlockId`] is the branch-target and
     /// PHI-predecessor currency a caller stores and passes around, minted with
     /// [`id`](Self::id); [`BasicBlockLabel`] is the ephemeral view, reached
     /// publicly through [`Module::view`](crate::Module::view) /
@@ -587,7 +604,7 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 
     /// Storable, module-tagged [`BlockId<R, B, Params>`] for this block
-    /// (llvmkit 2.0), resolvable via [`Module::view`](crate::Module::view) /
+    /// (0.0.4), resolvable via [`Module::view`](crate::Module::view) /
     /// [`Module::try_view`](crate::Module::try_view) back into a copyable
     /// [`BasicBlockLabel`]. The block handle is linear (`!Copy`), so this
     /// borrows `self` and leaves it usable — minting a `Copy` id from a
@@ -833,6 +850,116 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
             .unwrap_or(list.len());
         list.insert(at, id);
     }
+
+    /// Record that this block was created with `count` **block parameters**.
+    /// Crate-internal: only the three block-parameter constructors
+    /// ([`IRBuilder::append_block_with_params`](crate::IRBuilder::append_block_with_params),
+    /// [`append_block_with_named_params`](crate::IRBuilder::append_block_with_named_params),
+    /// [`append_block_typed`](crate::IRBuilder::append_block_typed)) call it,
+    /// right after materialising that many head-phis.
+    ///
+    /// The count is what makes "is this a parameterised block?" a single
+    /// [`Cell`] read for [`require_no_block_parameters`], so an argument-less
+    /// branch to an ordinary block never walks an instruction list.
+    #[inline]
+    pub(crate) fn set_parameter_count(&self, count: usize) {
+        self.data().parameter_count.set(count);
+    }
+}
+
+// --------------------------------------------------------------------------
+// Block parameters (the block-argument authoring model)
+// --------------------------------------------------------------------------
+
+/// Borrow a block's storage payload straight from the arena, given its slot.
+///
+/// The slot always comes from a resolved [`BasicBlockLabel`], which is only
+/// ever minted over a real basic block — the same invariant
+/// [`BasicBlock::data`] relies on.
+fn block_data<'ctx, B: ModuleBrand>(
+    module: ModuleRef<'ctx, B>,
+    block: ValueSlot,
+) -> &'ctx BasicBlockData {
+    match &module.module().context().value_data(block).kind {
+        ValueKindData::BasicBlock(data) => data,
+        _ => unreachable!("branch-target invariant: a resolved label names a basic block"),
+    }
+}
+
+/// The value-ids of `block`'s **parameters**: its leading head-phis, in
+/// declaration order.
+///
+/// Scans from the block top and stops at the first non-phi — phis are grouped
+/// at the head (an invariant `insert_instruction_at_phi_head` keeps at
+/// construction time and the verifier re-checks), so the leading run of phis
+/// *is* the parameter list.
+///
+/// Single source of truth for "how many parameters does this block have":
+/// shared by the block-argument seeding path
+/// (`IRBuilder::add_block_args`) and by [`require_no_block_parameters`],
+/// so the arity a `_with_args` builder checks against and the arity a plain
+/// branch is rejected for cannot drift apart.
+pub(crate) fn block_parameter_phis<'ctx, B: ModuleBrand>(
+    module: ModuleRef<'ctx, B>,
+    block: ValueSlot,
+) -> Vec<ValueSlot> {
+    let context = module.module().context();
+    let instructions = block_data(module, block).instructions.borrow();
+    let mut params = Vec::new();
+    for id in instructions.iter().copied() {
+        let ValueKindData::Instruction(inst) = &context.value_data(id).kind else {
+            continue;
+        };
+        let InstructionKindData::Phi(_) = &inst.kind else {
+            break;
+        };
+        params.push(id);
+    }
+    params
+}
+
+/// Reject an edge that carries **no** block arguments into a block created
+/// *with* block parameters.
+///
+/// This is the guard on the plain terminator builders — `build_br`,
+/// `build_cond_br`, `build_switch`/`build_switch_dyn`'s default target and
+/// [`SwitchInst::add_case`](crate::SwitchInst::add_case), both edges of every
+/// `build_invoke*`, `build_callbr*`'s default and indirect destinations, and
+/// [`IndirectBrInst::add_destination`](crate::IndirectBrInst::add_destination).
+/// Branching
+/// into a parameterised block without arguments adds no incomings, so the
+/// target's parameter-phis stay one entry short — an incomplete phi that used
+/// to surface only at [`Module::verify`](crate::Module::verify)
+/// (`PhiEmptyInReachableBlock`, or the shared `check_phi` count guard). The
+/// caller must use the argument-carrying builder for that edge instead.
+///
+/// Reports the same [`IrError::PhiArgArityMismatch`] the `_with_args` builders
+/// already produce for a wrong argument count, so one wrong count reads the
+/// same wherever it is caught.
+///
+/// **Hot path.** Every unconditional branch in every program reaches here, and
+/// the overwhelming majority target param-less blocks. The declared-parameter
+/// [`Cell`] read is the early-out: only a block that was *created* with
+/// parameters walks its instruction list, and only to name the arity in the
+/// error. A parsed `.ll` block, an auto-SSA block mid-Braun-construction, and a
+/// pass-created block all leave on the first line even when they carry leading
+/// phis — those phis are not block parameters and their incomings arrive
+/// through their own checked paths.
+pub(crate) fn require_no_block_parameters<'ctx, B: ModuleBrand>(
+    module: ModuleRef<'ctx, B>,
+    target: ValueSlot,
+) -> IrResult<()> {
+    if block_data(module, target).parameter_count.get() == 0 {
+        return Ok(());
+    }
+    // The parameters are the leading head-phis, not the recorded count: if a
+    // pass has since erased them there is nothing left to seed, and rejecting
+    // with `expected: 0` would be a nonsense diagnostic.
+    let expected = block_parameter_phis(module, target).len();
+    if expected == 0 {
+        return Ok(());
+    }
+    Err(IrError::PhiArgArityMismatch { expected, got: 0 })
 }
 
 // --------------------------------------------------------------------------

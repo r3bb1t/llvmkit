@@ -5,7 +5,7 @@ Date: 2026-07-10. Target: `crates/llvmkit-ir` (`worklist.rs` new, `pass_context.
 Package 3 deferred perf item from `pass-facing-type-safety.md` (items 1–2)
 and `docs/future-work.md`, now designed in detail.
 
-> **Shipped, and re-checked against 0.1.0 (2026-07-27).** This is a dated design
+> **Shipped, and re-checked against 0.0.4 (2026-07-27).** This is a dated design
 > record, not a manual — the design landed on `feature-10/worklist-cursor`
 > essentially as written, and the code samples below have been re-synced to the
 > signatures that actually shipped. Three deltas worth naming up front:

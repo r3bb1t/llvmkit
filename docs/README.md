@@ -13,7 +13,7 @@ reached, correct as of its date and not maintained afterwards.
 | [Future work](future-work.md) | The live backlog: known gaps, deferred items, and the reasoning behind each deferral. Several rustdoc comments in `crates/` point here for *why* a hole is still open. |
 
 Start with the repository [`README.md`](../README.md) for the quick tour and
-[`CHANGELOG.md`](../CHANGELOG.md) for the 0.1.0 migration — each break is spelled
+[`CHANGELOG.md`](../CHANGELOG.md) for the 0.0.4 migration — each break is spelled
 out under the cycle that made it. Coming from `inkwell`, read
 [`INKWELL_MIGRATION.md`](../INKWELL_MIGRATION.md).
 
