@@ -36,6 +36,14 @@ jobs:
       - name: Check formatting
         run: cargo fmt -- --check
 
+      - name: Check per-package licenses match the root
+        run: |
+          for dir in llvmkit crates/llvmkit-support crates/llvmkit-asmparser \
+                     crates/llvmkit-ir crates/llvmkit-macros; do
+            cmp LICENSE "$dir/LICENSE" \
+              || { echo "::error::$dir/LICENSE differs from the root LICENSE"; exit 1; }
+          done
+
       - name: Check examples compile
         run: cargo check --workspace --examples
 
