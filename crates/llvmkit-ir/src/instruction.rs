@@ -432,17 +432,29 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         self.data().metadata.borrow()
     }
 
-    /// Set or replace one metadata attachment.
-    pub fn set_metadata(&self, kind: MetadataAttachmentKind, id: MetadataSlot) {
-        self.as_view().set_metadata(kind, id);
+    /// Set or replace one metadata attachment. Takes the `Unverified` module
+    /// token — see [`InstructionView::set_metadata`].
+    pub fn set_metadata(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        kind: MetadataAttachmentKind,
+        id: MetadataSlot,
+    ) {
+        self.as_view().set_metadata(module_token, kind, id);
     }
 
     pub fn debug_records(&self) -> core::cell::Ref<'_, [DebugRecord]> {
         core::cell::Ref::map(self.data().debug_records.borrow(), Vec::as_slice)
     }
 
-    pub fn push_debug_record(&self, record: DebugRecord) {
-        self.as_view().push_debug_record(record);
+    /// Append a debug record. Takes the `Unverified` module token — see
+    /// [`InstructionView::push_debug_record`].
+    pub fn push_debug_record(
+        &self,
+        module_token: &'ctx Module<B, Unverified>,
+        record: DebugRecord,
+    ) {
+        self.as_view().push_debug_record(module_token, record);
     }
 
     /// Set the textual name.
@@ -546,7 +558,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     }
 
     /// Set or replace one metadata attachment.
-    pub fn set_metadata(&self, kind: MetadataAttachmentKind, id: MetadataSlot) {
+    ///
+    /// Takes the `Unverified` module token, like every other mutator on this
+    /// type and like the metadata setters on
+    /// [`FunctionValue`] and
+    /// [`GlobalVariable`](crate::GlobalVariable), so `verify(self)` really does
+    /// consume mutation capability: an attachment cannot be rewritten through a
+    /// [`Module<B, Verified>`](crate::Module), and an `Inspect`-rung pass —
+    /// which only ever holds read-only views — cannot reach it at all.
+    ///
+    /// The token also supplies the module identity that [`MetadataSlot`] lacks.
+    /// A slot carries no `ModuleId` tag and no brand, so it is only meaningful
+    /// against the module that minted it; requiring the token is what keeps
+    /// "the slot and the instruction come from the same module" expressible.
+    /// It is not yet *checked* — see the "Type-system follow-ups" entry in
+    /// `docs/future-work.md`.
+    pub fn set_metadata(
+        &self,
+        _module_token: &'ctx Module<B, Unverified>,
+        kind: MetadataAttachmentKind,
+        id: MetadataSlot,
+    ) {
         self.data().metadata.borrow_mut().insert(kind, id);
     }
 
@@ -554,7 +586,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
         core::cell::Ref::map(self.data().debug_records.borrow(), Vec::as_slice)
     }
 
-    pub fn push_debug_record(&self, record: DebugRecord) {
+    /// Append a debug record. Takes the `Unverified` module token for the same
+    /// reason as [`set_metadata`](Self::set_metadata).
+    pub fn push_debug_record(
+        &self,
+        _module_token: &'ctx Module<B, Unverified>,
+        record: DebugRecord,
+    ) {
         let mut records = self.data().debug_records.borrow_mut();
         let record_index = records.len();
         register_debug_record_uses(self.id, record_index, &record, self.module.module());

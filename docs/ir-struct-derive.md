@@ -33,13 +33,15 @@ type NormalizePlacement = fn(WindowPlacement) -> WindowPlacement;
 
 fn build() -> Result<String, IrError> {
     let m = module_new!("window")?;
+    // `add_typed_function_of` returns a storable `TypedFunctionId`; `m.view(f)`
+    // is the ephemeral borrowing facade you call methods on.
     let f = m.add_typed_function_of::<NormalizePlacement, _>(
         "normalize_window_placement",
         Linkage::External,
     )?;
-    let entry = f.append_basic_block(&m, "entry");
+    let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let (placement,) = f.params();
+    let (placement,) = m.view(f).params();
 
     let normal_position = placement.normal_position(&b)?;
     let min = normal_position.min(&b)?;
@@ -47,10 +49,10 @@ fn build() -> Result<String, IrError> {
     let min_x = min.x(&b)?;
     let max_y = max.y(&b)?;
 
-    let rebuilt_min = PointValue::build(&m, &b, min_x, max_y, "normal_position.min")?;
-    let rebuilt_rect = RectValue::build(&m, &b, rebuilt_min, max, "normal_position")?;
+    let rebuilt_min = PointValue::build(m.as_view(), &b, min_x, max_y, "normal_position.min")?;
+    let rebuilt_rect = RectValue::build(m.as_view(), &b, rebuilt_min, max, "normal_position")?;
     let rebuilt = WindowPlacementValue::build(
-        &m,
+        m.as_view(),
         &b,
         placement.show_cmd(&b)?,
         rebuilt_rect,
@@ -61,6 +63,8 @@ fn build() -> Result<String, IrError> {
     Ok(format!("{m}"))
 }
 ```
+
+The runnable form of this is `crates/llvmkit-ir/examples/derived_struct_function.rs`.
 
 The emitted IR is ordinary LLVM IR:
 
@@ -94,11 +98,13 @@ For `struct Point { x: i32, y: i32 }`, the derive creates:
 - `PointValue<'ctx, B>`: a branded wrapper around `StructValue<'ctx, B>`.
 - `impl StructSchema for Point`: returns `%Point = type { i32, i32 }` in the
   target module, reusing an existing matching `%Point` body and rejecting a
-  mismatched one with `IrError::StructBodyMismatch`.
+  mismatched one with `IrError::StructBodyMismatch`. Its `ir_type` /
+  `field_types` take a `ModuleView<'ctx, B>`, not a `&Module`.
 - Field accessors on `PointValue`, such as `x(&builder)` and `y(&builder)`,
   implemented with `IRBuilder::build_extract_field`.
-- `PointValue::build(&module, &builder, x, y, name)`, implemented as a poison
-  aggregate plus `insertvalue` steps.
+- `PointValue::build(module_view, &builder, x, y, name)` — the first argument is
+  a `ModuleView<'ctx, B>`, spelled `m.as_view()` at the call site — implemented
+  as a poison aggregate plus `insertvalue` steps.
 - `PointValue::try_from(raw)` for `StructValue`, `Value`, `Argument`,
   `Constant`, and attached `Instruction` sources. Each conversion validates the
   raw struct against the `Point` schema before returning `PointValue`.
@@ -180,7 +186,7 @@ Use the generated `TryFrom` impls when a raw value already exists and should be
 validated against a known schema:
 
 ```rust
-let raw = f.as_function().param(0)?;
+let raw = m.view(f).as_function().param(0)?;
 let placement = WindowPlacementValue::try_from(raw)?;
 let normal_position = placement.normal_position(&builder)?;
 ```
@@ -198,7 +204,7 @@ A derived struct can appear directly in typed function facades:
 ```rust
 type NormalizePlacement = fn(WindowPlacement) -> WindowPlacement;
 let f = m.add_typed_function_of::<NormalizePlacement, _>("normalize", Linkage::External)?;
-let (placement,) = f.params(); // WindowPlacementValue<'ctx, B>
+let (placement,) = m.view(f).params(); // WindowPlacementValue<'ctx, B>
 ```
 
 The function-pointer alias is parsed at compile time. `fn`, `unsafe fn`,
@@ -215,10 +221,10 @@ let f = m.add_typed_function::<WindowPlacement, StructFields<WindowPlacement>, _
     "normalize_fields",
     Linkage::External,
 )?;
-let entry = f.append_basic_block(&m, "entry");
-let b = f.builder(&m).position_at_end(entry);
-let (show_cmd, normal_position) = f.params();
-let rebuilt = WindowPlacementValue::build(&m, &b, show_cmd, normal_position, "rebuilt")?;
+let entry = m.view(f).append_basic_block(&m, "entry");
+let b = m.view(f).builder(&m).position_at_end(entry);
+let (show_cmd, normal_position) = m.view(f).params();
+let rebuilt = WindowPlacementValue::build(m.as_view(), &b, show_cmd, normal_position, "rebuilt")?;
 ```
 
 `StructFields<S>` unpacks only `S`'s top-level fields. Nested structs remain

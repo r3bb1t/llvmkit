@@ -909,6 +909,30 @@ pub enum IrError {
     #[error("value id belongs to a different Module")]
     ForeignValueId,
 
+    /// A [`MetadataSlot`](crate::metadata::MetadataSlot) or a named-metadata
+    /// index named nothing in the target [`Module`](crate::Module).
+    ///
+    /// The metadata currency is the one place 2.0 did not reach: a slot is a
+    /// bare arena index carrying neither a [`ModuleId`](crate::ModuleId) tag
+    /// nor a brand, so it is only meaningful against the module that minted
+    /// it. Handing one to a *different* module is therefore not a type error,
+    /// and the arena cannot tell a foreign slot from a native one — only an
+    /// out-of-range slot is detectable, and that is what this reports. It is
+    /// raised by [`Module::metadata_set`](crate::Module::metadata_set) and
+    /// [`Module::named_metadata_add_operand`](crate::Module::named_metadata_add_operand),
+    /// which previously no-opped silently and panicked respectively.
+    ///
+    /// An *in-range* foreign slot still mis-resolves. See the "Type-system
+    /// follow-ups" entry in `docs/future-work.md` for why closing that needs a
+    /// tagged metadata payload rather than another check here.
+    #[error("metadata slot {index} names nothing in this Module (holds {len})")]
+    UnknownMetadataSlot {
+        /// The index that was out of range.
+        index: usize,
+        /// How many entries the target store actually holds.
+        len: usize,
+    },
+
     /// [`crate::SsaState::for_function`] was given a function that
     /// already has a body. The layer must observe every CFG edge from
     /// birth (Braun's algorithm needs to see every `br` as it is

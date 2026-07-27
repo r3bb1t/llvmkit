@@ -966,9 +966,13 @@ fn comdat_get_or_insert_is_idempotent() {
     let m = module_new!("m").expect("fresh module");
     let a = m.get_or_insert_comdat("c1");
     let b = m.get_or_insert_comdat("c1");
-    assert_eq!(a.id(), b.id());
+    // Identity is `(module, ComdatId)` and is compared through the handle's
+    // own `PartialEq`. The raw index has no public accessor: it carries no
+    // module tag and no brand, so publishing it would hand out a token weaker
+    // than the handle and no public API accepts one.
+    assert_eq!(a, b);
     let c = m.get_or_insert_comdat("c2");
-    assert_ne!(a.id(), c.id());
+    assert_ne!(a, c);
 }
 
 /// `llvmkit-specific`: ports the explicit Rust API split for global

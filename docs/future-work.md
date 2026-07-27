@@ -117,28 +117,104 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
 
 ## Type-system follow-ups
 
-- **The debug-record sub-surface still speaks untagged slots** (found during the
-  2.0-E freeze sweep; **pre-existing, not a 2.0 regression** — 2.0 tagged the
-  *value* currency and left this one behind). `DebugMetadataOperand::Value`
-  carries a bare `ValueSlot` and `DebugVariableRecord`
-  carries bare `MetadataSlot`s; neither has a `ModuleId` tag or a brand, and
-  `Instruction::push_debug_record` performs no provenance check. A slot minted
+- **Block-argument edges are only half-guarded, and only on half the
+  terminators** (found 2026-07-27 re-reading `docs/phi-type-guarantees-design.md`
+  against the tree; the design promised both halves and neither was noticed
+  missing for 17 days, through the 0.1.0 freeze). Two distinct gaps, which
+  should be closed together or not at all — fixing one leaves the surface
+  inconsistent in a way that is arguably worse than the status quo:
+
+  1. **A plain branch into a parameterised block is not rejected.**
+     `IRBuilder::build_br` (and `build_cond_br`) resolves its target and records
+     the edge with **no param-count check** — see `ir_builder.rs::build_br`. The
+     design specified "plain `build_br`/`build_cond_br` to a param-block →
+     immediate arity error". What ships instead adds no incomings, leaving an
+     incomplete phi that surfaces at `Module::verify()`
+     (`PhiEmptyInReachableBlock` / the shared `check_phi` count guard) or, for
+     `.ll` input, at parse time. On the design's own ladder — *unrepresentable >
+     witnessed > tested* — the guarantee fell two rungs.
+
+     The check is cheap to write: `add_block_args` already scans the target's
+     leading head-phis to compute arity, so `build_br` can reuse it. It is **not
+     free at run time**, though — that scan walks the target block's instruction
+     list, so putting it on the hot path taxes every unconditional branch,
+     including the majority targeting param-less blocks. Guard it with an
+     early-out (is the target's first instruction a phi at all?) before scanning.
+
+  2. **`switch` and `invoke` have no argument-carrying form.**
+     `build_br_with_args` / `build_cond_br_with_args` (and the typed
+     `build_br_call` / `build_cond_br_call`) exist; `build_switch_with_args` and
+     the invoke variant were designed and never built. Because the raw
+     `add_incoming` is `pub(crate)`, the public `IRBuilder` can *create* a switch
+     or invoke edge into a parameterised block but cannot supply its incoming
+     values at all. `SsaBuilder` (which covers `switch`) and
+     `FnReshape::insert_phi` are the working routes, so this is a hole in one
+     authoring path rather than a dead end — but it means the claim "block
+     arguments are the only public phi-authoring surface" holds only for
+     `br`/`cond_br`.
+
+  **Why this was not done inside the 0.1.0 freeze:** adding the guard converts
+  code that today builds fine and fails later at `verify()` into code that fails
+  immediately at `build_br` — a behavior break. Taking that break is right, but
+  it wants the `switch`/`invoke` gap and its compile-fail fixtures landing in the
+  same cycle, rather than a quarter-fix re-freezing an inconsistent surface.
+
+- **Six `#[cfg_attr(not(test), allow(dead_code))]` violate the `#[allow]` ban**
+  (found during the 2.0-E doc reconciliation; pre-existing). AGENTS.md bans
+  `#[allow(...)]` unconditionally — "not anything else" — and a `cfg_attr`
+  wrapper does not exempt it. The sites are the crate-internal raw-phi
+  authoring surface: `PhiInst`/`FpPhiInst`/`PointerPhiInst::add_incoming`
+  (`instructions.rs:1610`, `:1829`, `:2042`) and
+  `IRBuilder::build_int_phi`/`build_fp_phi`/`build_pointer_phi`
+  (`ir_builder.rs:6461`, `:6507`, `:6552`). They became dead in non-test builds
+  when block arguments took over as the public phi-authoring surface; their only
+  callers are the `#[cfg(test)]` module `src/phi_raw_tests/`.
+
+  The law's prescribed fix ("drop the dead code") means `#[cfg(test)]` on the
+  items, which is also the idiomatic Rust for test-only infrastructure. The
+  catch is `tests/compile_fail/raw_phi_builder_is_unnameable.rs`: it currently
+  proves the builder is *private* (`E0603`), and under `#[cfg(test)]` it would
+  instead prove the builder *does not exist* in a dependent crate's build — a
+  different, arguably stronger claim, but one that needs the `.stderr`
+  re-blessed on 1.96.0 and the fixture's doc comment rewritten to say what it
+  now proves. Deliberately not done inside the 0.1.0 freeze: re-pointing a
+  doctrine fixture is not a mechanical re-bless, and the suppression is
+  test-visibility hygiene rather than a soundness or API issue.
+
+- **Metadata is the one currency 2.0 did not tag** (found during the 2.0-E
+  freeze sweep, widened by that cycle's whole-branch review; **pre-existing, not
+  a 2.0 regression** — 2.0 tagged the *value* currency and left this one
+  behind). `MetadataSlot` is a bare `usize` arena index, and the `ValueSlot`
+  inside `DebugMetadataOperand::Value` is likewise bare: neither carries a
+  `ModuleId` tag or a brand. So **neither half of D7 reaches metadata** —
+  distinct brand types do not separate two modules' slots (there is no `B` to
+  differ), and there is no tag for the arena boundary to check. A slot minted
   from module A (`handle.slot()` is public, because `llvmkit-asmparser` needs it
-  for uselistorder and phi source locations) can therefore be pushed into module
-  B's instruction, where `asm_writer::fmt_debug_metadata_operand` resolves it via
-  `module.context().value_data(slot)` against **B's** arena — a silent
-  mis-resolve, or an out-of-range panic if B's arena is shorter. This is the one
-  place the 2.0 law "a foreign handle is an `IrError` or a deterministic panic,
-  never a silent mis-resolve" does not hold.
-  Closing it means giving `DebugMetadataOperand` (and transitively `DebugRecord`
-  and `DebugVariableRecord`) a `B` parameter and a tagged payload, so that the
-  public constructor takes a `ValueId<B>` and the tag check lands at the same
-  arena choke point every other id already goes through. That ripples into
-  `InstructionData`, the `.ll` parser's debug-record path, and the printer — a
-  cycle of its own, not a polish item, which is why 2.0 froze without it.
-  Deliberately deferred rather than papered over: a range check does **not**
-  substitute, because slots are plain arena indices and module A's slot 5 is
-  in-range in module B.
+  for uselistorder records and phi source locations) reaching module B resolves
+  against **B's** arena in `asm_writer::fmt_debug_metadata_operand` /
+  `fmt_metadata_operand`.
+
+  **What cycle E did close**, in the same sweep: every attach point now demands
+  the target module's `Unverified` token (`InstructionView::set_metadata`,
+  `push_debug_record`, and their `Instruction` twins — matching the
+  `FunctionValue`/`GlobalVariable` setters that always had it), and the two
+  APIs that took an untagged index without checking it now return
+  `Err(IrError::UnknownMetadataSlot)` instead of no-opping silently
+  (`Module::metadata_set`) or panicking (`named_metadata_add_operand`). That
+  removes the `Verified`-module and `Inspect`-pass routes entirely and rejects
+  out-of-range slots. It bounds reachability; it does not close the hole.
+
+  **What remains:** an *in-range* slot from another module, attached by code
+  holding that module's `Unverified` token, still mis-resolves silently. A
+  range check does **not** substitute for a tag — slots are plain arena indices,
+  so module A's slot 5 is in-range in module B. Closing it means giving
+  `MetadataSlot` (and transitively `DebugMetadataOperand`, `DebugRecord`,
+  `DebugVariableRecord`) a `B` parameter and a tagged payload, so the public
+  constructors take tagged ids and the check lands at the same arena choke
+  point every other id already goes through. That ripples into
+  `InstructionData`, the `.ll` parser's debug-record and metadata paths, and
+  the printer — a cycle of its own, not a polish item, which is why 2.0 froze
+  without it.
 
 - **Const-generic `VectorType<E, Len<N>>` / `ArrayType<E, ArrLen<N>>` — shipped**
   (`feature-17/const-generic-vec-array`, S1–S6). `VectorType`/`VectorValue` and
@@ -398,18 +474,26 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   that pattern -- `declare_runtime_fn` / `append_ctor` / `add_global` helpers
   plus the `llvm.global_ctors` machinery -- is deferred until an in-tree
   consumer needs it.
-- **`Module::scratch_unverified` footgun** -- the read-only `Dyn` containers
-  (`pass_manager.rs`) call the `pub(crate)` `Module::scratch_unverified`
-  (`module.rs` ~2977) to mint a throwaway `Unverified` alias purely to satisfy
-  the erased pass signature; every member is `Inspect`, so the token projects
-  to `()` and never reaches a mutator. It is sound today by that argument, but
-  a `pub(crate)` unverify with no caller marker is a footgun -- a sealed
-  caller-marker token would pin that only the read-only drivers can mint it.
+- ~~**`Module::scratch_unverified` footgun**~~ -- **done (2026-07-26, cycle
+  2.0-C1)**. `scratch_unverified` doesn't exist anymore. `feat(2.0-C1): Module
+  owns its ModuleCore` replaced it with `Module<B, Unverified>::assume_verified`
+  (`module.rs` ~4090, still `pub(crate)`), called from the read-only `Dyn`
+  pipelines' `run` methods (`DynReadOnlyFunctionPipeline::run` /
+  `DynReadOnlyModulePipeline::run`, `pass_manager.rs` ~1819-1825 and
+  ~1968-1976): `module.unverify()` hands out the token, every queued pass is
+  `Inspect` so it projects to `()` and never reaches a mutator, and
+  `unverified.assume_verified()` re-stamps that same token `Verified` with no
+  re-verification. The original footgun doesn't apply anymore: a `Module` now
+  *owns* its core by move rather than pointing at shared storage, so there is
+  no way to mint a second live token over the same data. `assume_verified`
+  round-trips the one token the pipeline already holds -- it doesn't conjure a
+  throwaway one, so the caller-marker gap the old bullet worried about has
+  nothing left to guard against.
 - ~~**Compile-fail `.stderr` canonical-rustc bless**~~ -- **done (2026-07-26,
   cycle 2.0-D/E)**. There were never two "environmental" drifts: gated on the
   pinned CI toolchain (`cargo +1.96.0`), `folder_typed_wrong_width` and
   `extract_value_empty_indices` both pass, and the whole suite's baseline is
-  **0 failures of 82 registered fixtures**. The mismatch only ever appeared
+  **0 failures of 83 registered fixtures**. The mismatch only ever appeared
   when the suite was run on a *newer* rustc than the pin. Every `.stderr` in
   the tree is blessed on 1.96.0; re-bless there and nowhere else.
 

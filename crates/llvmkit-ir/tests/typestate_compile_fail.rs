@@ -198,4 +198,11 @@ fn typestate_compile_fail() {
     // a stale *id* is a run-time rejection (`module_ownership.rs`) while a
     // stale *view* cannot be constructed at all.
     t.compile_fail("tests/compile_fail/view_cannot_outlive_its_module.rs");
+    // Cycle E: instruction metadata was the one mutator that took no
+    // `&Module<B, Unverified>` token, so a `Verified` module's printed IR could
+    // be changed through a read-only `InstructionView` — and an `Inspect`-rung
+    // pass, which holds only views, could rewrite `!dbg` while the driver
+    // reported everything preserved. The token is now required, matching the
+    // metadata setters on `FunctionValue`/`GlobalVariable` and `set_name`.
+    t.compile_fail("tests/compile_fail/verified_module_metadata_is_immutable.rs");
 }

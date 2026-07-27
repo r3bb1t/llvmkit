@@ -115,12 +115,13 @@ impl<'ctx, B: crate::module::ModuleBrand> ComdatRef<'ctx, B> {
         &self.data().name
     }
 
-    /// Comdat arena id. Stable for the lifetime of the owning
-    /// module.
-    #[inline]
-    pub fn id(self) -> ComdatId {
-        self.id
-    }
+    // No public `id()`. `ComdatId` is a bare `u32` index carrying neither a
+    // `ModuleId` tag nor a brand, so it is not a member of the 2.0 id family
+    // and `Module::view` cannot resolve it — which is exactly why
+    // `Module::get_comdat` returns this handle rather than an id. Handing the
+    // raw index out anyway would have published a token no public API accepts,
+    // strictly weaker than the handle it came from. It is crate-internal
+    // storage, reachable through `ComdatRef` and nothing else.
 
     /// Selection kind currently stored under this comdat.
     pub fn selection_kind(self) -> SelectionKind {

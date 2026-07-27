@@ -301,7 +301,7 @@ fn metadata_constant_operand_counts_as_structural_value_use() -> Result<(), IrEr
     let md = m.metadata_constant(c);
     let tuple = m.metadata_tuple([MetadataRef(md)]);
     let idx = m.get_or_insert_named_metadata("uses");
-    m.named_metadata_add_operand(idx, MetadataRef(tuple));
+    m.named_metadata_add_operand(idx, MetadataRef(tuple))?;
 
     assert_eq!(c.into_erased().num_uses(), 1);
     assert_eq!(c.into_erased().users().len(), 0);
@@ -368,13 +368,16 @@ fn debug_record_value_operand_counts_as_structural_use_and_erases() -> Result<()
         .next()
         .expect("sum instruction");
     let md = m.metadata_tuple(Vec::<MetadataRef>::new());
-    inst.push_debug_record(DebugRecord::Variable(DebugVariableRecord::new(
-        DebugVariableRecordKind::Value,
-        DebugMetadataOperand::Value(x.into_erased().slot()),
-        md,
-        md,
-        md,
-    )));
+    inst.push_debug_record(
+        &m,
+        DebugRecord::Variable(DebugVariableRecord::new(
+            DebugVariableRecordKind::Value,
+            DebugMetadataOperand::Value(x.into_erased().slot()),
+            md,
+            md,
+            md,
+        )),
+    );
 
     assert_eq!(x.into_erased().num_uses(), 1);
     assert_eq!(x.into_erased().users().len(), 0);
@@ -412,13 +415,16 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
     let (source_inst, cursor) = cursor.next().expect("source instruction");
     let (anchor_inst, cursor) = cursor.next().expect("anchor instruction");
     let md = m.metadata_tuple(Vec::<MetadataRef>::new());
-    anchor_inst.push_debug_record(DebugRecord::Variable(DebugVariableRecord::new(
-        DebugVariableRecordKind::Value,
-        DebugMetadataOperand::Value(m.view(source).into_erased().slot()),
-        md,
-        md,
-        md,
-    )));
+    anchor_inst.push_debug_record(
+        &m,
+        DebugRecord::Variable(DebugVariableRecord::new(
+            DebugVariableRecordKind::Value,
+            DebugMetadataOperand::Value(m.view(source).into_erased().slot()),
+            md,
+            md,
+            md,
+        )),
+    );
 
     let replacement = i32_ty.const_int(42_i32);
     assert_eq!(m.view(source).into_erased().num_uses(), 1);

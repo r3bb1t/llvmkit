@@ -930,13 +930,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     loc: DiagLoc::span(loc),
                 });
             }
-            self.module.metadata_set(entry.id, content);
+            // The slot was reserved by *this* module (`resolve_md_slot` ->
+            // `metadata_reserve`), so it is always in range here; a failure
+            // would mean the parser handed one module's slot to another.
+            self.module
+                .metadata_set(entry.id, content)
+                .expect("metadata slot was reserved by this module");
             entry.defined = true;
             return Ok(entry.id);
         }
 
         let id = self.module.metadata_reserve();
-        self.module.metadata_set(id, content);
+        self.module
+            .metadata_set(id, content)
+            .expect("slot returned by metadata_reserve on this module");
         self.metadata_slots.insert(
             slot,
             MetadataSlotEntry {
@@ -1941,8 +1948,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let loc = self.loc();
                 let slot = self.parse_uint32("metadata operand number")?;
                 let id = self.resolve_md_slot(slot, loc);
+                // `nmd_idx` came from `get_or_insert_named_metadata` on this
+                // same module, so the node always exists.
                 self.module
-                    .named_metadata_add_operand(nmd_idx, MetadataRef(id));
+                    .named_metadata_add_operand(nmd_idx, MetadataRef(id))
+                    .expect("named metadata index minted by this module");
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
                 }
@@ -2398,7 +2408,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     loc: DiagLoc::span(self.loc()),
                 })?;
             for record in pending_debug_records.drain(..) {
-                inst.push_debug_record(record);
+                inst.push_debug_record(self.module, record);
             }
         }
         Ok(())
@@ -2425,6 +2435,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let id = self.parse_metadata_attachment_operand()?;
             if let Some(inst) = bb.instructions().last() {
                 inst.set_metadata(
+                    self.module,
                     llvmkit_ir::metadata::MetadataAttachmentKind::from_name(&name),
                     id,
                 );

@@ -5,6 +5,19 @@ Date: 2026-07-10. Target: `crates/llvmkit-ir` (`worklist.rs` new, `pass_context.
 Package 3 deferred perf item from `docs/pass-facing-type-safety.md` (items 1–2)
 and `docs/future-work.md`, now designed in detail.
 
+> **Shipped, and re-checked against 0.1.0 (2026-07-27).** This is a dated design
+> record, not a manual — the design landed on `feature-10/worklist-cursor`
+> essentially as written, and the code samples below have been re-synced to the
+> signatures that actually shipped. Three deltas worth naming up front:
+> `FnPatch::erase` takes the `NonTerminator` **by reference** (`&inst`), not by
+> value; `Worklist` is generic in the module brand (`Worklist<B>`, storing
+> `ValueId<B>`) and is publicly re-exported from the crate root; and
+> `FnPatch::worklist()` **panics** on a nested scope rather than silently
+> reseeding. Prose written in the future tense ("`FnPatch` gains…") is the
+> original design voice and is left as-is, and the "Context" section below
+> describes `dce.rs` / `inst_simplify.rs` as they were *before* this work —
+> neither restart-scans today.
+
 ## Context
 
 `DcePass` and `InstSimplifyPass` (`dce.rs`, `inst_simplify.rs`) both hand-roll the
@@ -53,9 +66,9 @@ bypass — because we already have LLVM/MLIR's single mutation channel: `FnPatch
 
 A SetVector mirroring LLVM's `InstructionWorklist`:
 
-- Backing store: `Vec<ValueId>` (LIFO stack) + `HashSet<ValueId>` (dedup).
+- Backing store: `Vec<ValueId<B>>` (LIFO stack) + `HashSet<ValueId<B>>` (dedup).
 - `push(id)` — no-op if already queued.
-- `pop(&mut self, module) -> Option<NonTerminator>` — pops the next id, reconstructs
+- `pop(&mut self, module: ModuleRef<'ctx, B>) -> Option<NonTerminator<'ctx, B>>` — pops the next id, reconstructs
   its `NonTerminator`, and returns it; skips any id that no longer resolves to a
   non-terminator **instruction** (a cheap O(1) value-kind check, not an O(block)
   "is it still in its block" scan). `None` when drained. **`pop` releases the id
@@ -71,7 +84,9 @@ surfaces from `pop`. The O(1) kind-check on `pop` is only a defensive guard agai
 a reused slot; a full "still in its block" scan would reintroduce O(n²) at seed
 time and is deliberately avoided.
 
-Stores bare `ValueId`s, so it is lifetime-free and unit-testable in isolation.
+Stores bare `ValueId<B>`s — `Copy + Send + 'static` — so it is lifetime-free and
+unit-testable in isolation; the `ModuleRef` needed to rebuild a handle is passed
+to `pop` rather than stored.
 Drain order is LIFO but **irrelevant to output**: DCE's transitive-dead closure and
 InstSimplify's fold-to-constant fixpoint are order-independent, so any drain order
 yields the identical surviving instruction set — the basis of the byte-identical
@@ -82,16 +97,21 @@ guarantee.
 `FnPatch` gains an opt-in worklist slot alongside the existing `dirty` cell:
 
 ```rust
-worklist: RefCell<Option<Worklist>>,   // None (default) = today's behavior exactly
+worklist: RefCell<Option<Worklist<B>>>,   // None (default) = today's behavior exactly
 ```
 
 When a worklist is active, the mutator's **own** methods maintain it:
 
-- `erase(x)` — after erasing, for each operand-defining instruction of `x`, `push`
-  it (it lost a use → maybe dead); then `remove(x.id())` from the worklist.
-  Operand ids come from the existing crate-internal `Instruction::operand_ids()`.
-- `replace_all_uses(x, v)` — after RAUW, `push` each of `x`'s former users
-  (`Value::users()`; they got a new operand → maybe simplify).
+- `erase(&x)` — the operand ids are captured *before* the erase drops their uses;
+  each is pushed (it lost a use → maybe dead), then `x`'s own id is removed from
+  the worklist, and only then is the instruction erased. Operand ids come from the
+  crate-internal `InstructionView::operand_ids()`. Every operand is pushed
+  unconditionally — `pop` skips any id that is not an instruction — so no filter is
+  needed at the push site.
+- `replace_all_uses(&x, v)` — the former users are collected *before* the RAUW
+  rewires them (`Value::users()`), and pushed after (they got a new operand →
+  maybe simplify). The collection happens only when a worklist is active, so the
+  inactive path stays allocation-free.
 
 When `worklist` is `None`, both methods are byte-for-byte today's methods: no
 overhead and no behavior change for non-worklist passes. Because every erase/RAUW
@@ -101,7 +121,7 @@ goes through `FnPatch`, a worklist pass cannot bypass maintenance (the MLIR
 ## Component 3 — Erase-safe function-body cursor (`pass_context.rs`)
 
 ```rust
-impl FnPatch {
+impl<'m, 'r, 'ctx, B, R> FnPatch<'m, 'r, 'ctx, B, R> {
     /// Early-increment walk over every non-terminator of the function body, in
     /// program order. Snapshots each block's instruction ids up front and walks
     /// by index, so erasing the *yielded* instruction does not disturb the walk
@@ -110,7 +130,7 @@ impl FnPatch {
     /// terminator. Cascades (erasing instructions *ahead* of the cursor) are the
     /// worklist's job, not the cursor's — a bare-cursor pass that needs them
     /// should drive a worklist instead.
-    pub fn body_instructions(&self) -> impl Iterator<Item = NonTerminator<'ctx, B>> + '_;
+    pub fn body_instructions(&self) -> impl Iterator<Item = NonTerminator<'m, B>> + '_;
 }
 ```
 
@@ -121,11 +141,11 @@ yields `Instruction<Attached>`); that primitive is unchanged.
 ## Component 4 — `WorklistScope` driver handle (`worklist.rs`)
 
 ```rust
-let wl = patch.worklist();          // activates + seeds all non-terminators
-while let Some(inst) = wl.next() {  // liveness-safe pop
+let scope = patch.worklist();          // activates + seeds all non-terminators
+while let Some(inst) = scope.next() {  // liveness-safe pop
     // pass body mutates via `patch` directly; the mutation auto-cascades
 }
-// `wl` drop deactivates the worklist slot
+drop(scope);                           // deactivates the worklist slot
 ```
 
 `patch.worklist()` returns a `WorklistScope` borrowing `&patch`: on creation it
@@ -136,35 +156,47 @@ sets `patch.worklist = Some(Worklist::new())` and seeds it from
 loop composes without a borrow conflict; `next()`'s pop and the mutators' pushes
 touch the `RefCell` in disjoint, sequential borrows.
 
+Only one scope may be live on a given `FnPatch`: the shared slot holds one
+worklist and either scope's `Drop` resets it to `None`, so a nested scope would
+silently reseed and leave the outer one inert. `worklist()` **asserts** against
+that rather than failing quietly.
+
 ## Component 5 — Pass rewrites (`dce.rs`, `inst_simplify.rs`)
 
 ```rust
 // DcePass::run
 let patch = cx.mutate();
-let wl = patch.worklist();
-while let Some(inst) = wl.next() {
+let scope = patch.worklist();
+while let Some(inst) = scope.next() {
     if is_trivially_dead(&inst.as_view()) {
-        patch.erase(inst);                       // auto-pushes operand-defs, self-removes
+        patch.erase(&inst);                      // auto-pushes operand-defs, self-removes
     }
 }
+drop(scope);
 Ok(patch.done())
 
 // InstSimplifyPass::run
 let patch = cx.mutate();
 let dl = patch.function().module().data_layout().clone();
-let wl = patch.worklist();
-while let Some(inst) = wl.next() {
+let scope = patch.worklist();
+while let Some(inst) = scope.next() {
     let view = inst.as_view();
     if !view.to_erased().has_uses() { continue; }            // upstream !use_empty guard
     if let Some(c) = constant_fold_instruction(&view, &dl, None)? {
         patch.replace_all_uses(&view, c)?;                   // auto-pushes users
         if crate::dce::is_trivially_dead(&view) {
-            patch.erase(inst);
+            patch.erase(&inst);
         }
     }
 }
+drop(scope);
 Ok(patch.done())
 ```
+
+(The shipped `InstSimplifyPass` grew a second arm here in the phi-guarantees
+work — a uniform phi folds to its common incoming through the same
+`replace_all_uses` path, so the user cascade re-queues its former users. That
+is an added fold, not a change to the worklist protocol.)
 
 `is_trivially_dead` and the fold logic are unchanged. The two passes cascade in
 opposite directions (operands vs users) yet neither writes a `push` — the mutation
@@ -187,9 +219,13 @@ preservation/verification behavior is identical.
 - **Cursor test:** `body_instructions()` yields each non-terminator once, and
   erasing the *yielded* instruction mid-iteration does not disturb the walk (the
   early-increment property); it never yields the terminator.
-- All five CI gates: `cargo fmt -- --check`, `cargo clippy --workspace --all-targets
-  --all-features -- -D warnings`, `RUSTDOCFLAGS=-D warnings cargo doc --no-deps
-  --all-features -p llvmkit-ir`, `cargo test --workspace --all-features`, `cargo audit`.
+- The CI gates, run on the pinned toolchain (`cargo +1.96.0`, matching
+  `.github/workflows/ci.yml`): `cargo fmt -- --check`,
+  `cargo check --workspace --examples`,
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+  `cargo doc --workspace --no-deps --all-features` under `RUSTDOCFLAGS=-D warnings`,
+  `cargo test --workspace --all-targets --all-features`,
+  `cargo test --workspace --doc --all-features`, `cargo audit`.
 
 ## Sequencing
 

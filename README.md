@@ -17,11 +17,17 @@ Shipped today:
 - **Owned modules and storable ids** — the 0.1.0 handle model. `Module<B, S>`
   has no lifetime parameter, owns its storage, and is `Send`, so it can be
   returned, stored in a struct, collected into a `Vec`, and moved between
-  threads. Every declaration and every `build_*` returns a `Copy + Send`
-  **id** (`IntValueId<W, B>`, `BlockId<R, B, Params>`, `FunctionId<R, B>`,
-  `GlobalId<B>`, …) that carries the module's identity without borrowing it;
-  the borrowing handles are minted per operation from `m.view(id)` /
-  `m.try_view(id)`. A module's identity is the `B: ModuleBrand` *type*, in
+  threads. Declarations and value-producing `build_*` calls return a
+  `Copy + Send` **id** (`IntValueId<W, B>`, `FunctionId<R, B>`, `GlobalId<B>`,
+  …) that carries the module's identity without borrowing it. Blocks are
+  minted as linear, `!Copy` handles instead (`append_basic_block` returns a
+  `BasicBlock<..>`, `append_block_with_params` a `BlockWithParams<..>`);
+  calling `.id()` on one gives the storable `BlockId<R, B, Params>`.
+  Terminator builders (`build_br`, `build_cond_br`, `build_ret`, …) consume
+  the builder and hand back the terminated block alongside the new
+  instruction, not an id. The borrowing handles themselves are minted per
+  operation from `m.view(id)` / `m.try_view(id)`. A module's identity is the
+  `B: ModuleBrand` *type*, in
   three rungs — `module_new!` (unnameable, generated at the expansion site),
   `Module::branded::<B>` (a named brand, at most one live module per brand),
   and `Module::dynamic` (`DynBrand`, unlimited live modules, separated by the
@@ -192,9 +198,10 @@ fn build_typed_call() -> Result<(), IrError> {
     let b = IRBuilder::at_end(entry);
     let (x, y) = m.view(caller).params();
 
-    // `call.result()` is already `IntValue<i32>` -- no `try_into`.
+    // `build_call` hands back a storable `TypedCallInstId`; `b.view(..)` reaches
+    // the handle, whose `result()` is already `IntValue<i32>` -- no `try_into`.
     let call = b.build_call(m.view(callee), (x, y), "r")?;
-    b.build_ret(call.result())?;
+    b.build_ret(b.view(call).result())?;
 
     print!("{m}");
     Ok(())
@@ -337,19 +344,36 @@ and no label plumbing to get wrong. Compare the loop body of
 (auto-SSA) -- both are byte-parity locked to print the identical `.ll`:
 
 ```rust
-// Manual phi wiring (the crate-internal raw-phi shape): declare empty phis up
-// front, build the loop body, then patch both incoming edges by hand. The
-// builders hand back storable phi ids; `b.view(..)` reaches the typed handle.
-let acc_phi = b.view(b.build_int_phi::<i32, _>("acc")?);
-let i_phi = b.view(b.build_int_phi::<i32, _>("i")?);
-let acc = acc_phi.as_int_value();
-let i = i_phi.as_int_value();
+// Explicit phis, via block parameters (examples/factorial.rs). A loop header's
+// parameters ARE its head-phis: you declare them on the block, and each branch
+// into it carries its incomings as block arguments. There is no phi to
+// pre-declare and no incoming-edge list to patch after the fact -- an edge that
+// forgets an argument, or carries the wrong type or arity, does not compile.
+let (loop_bb, params) = bwp.append_block_with_named_params(
+    m.view(f).as_function(),
+    &[(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
+    "loop",
+)?;
+let loop_label = loop_bb.id();       // storable `BlockId` — the branch currency
+
+// entry: enter the loop carrying the initial values `[ acc = 1, i = %n ]`.
+b.build_cond_br_with_args(is_zero, base_label, &[], loop_label,
+    &[i32_ty.const_int(1_i32).into_erased(), n.into_erased()])?;
+
+// loop: read the header params, compute, re-enter carrying the back-edge values.
+let acc: IntValue<'_, i32, _> = params[0].try_into()?;
+let i: IntValue<'_, i32, _> = params[1].try_into()?;
 let next_acc = b.build_int_mul(acc, i, "next_acc")?;
 let next_i = b.build_int_sub(i, 1_i32, "next_i")?;
-// ... build the rest of the loop body, then:
-acc_phi.add_incoming(1_i32, entry_label)?.add_incoming(next_acc, loop_label)?;
-i_phi.add_incoming(n, entry_label)?.add_incoming(next_i, loop_label)?;
+b.build_cond_br_with_args(done, exit_label, &[], loop_label,
+    &[m.view(next_acc).into_erased(), m.view(next_i).into_erased()])?;
 ```
+
+(The raw `build_int_phi` / `add_incoming` pair that predates block parameters is
+`pub(crate)` and cannot be called from outside the crate — that is deliberate,
+and a compile-fail fixture pins it. Block parameters and `SsaBuilder` are the
+two public ways to author a phi; `FnReshape::insert_phi` is the third, for
+passes editing existing IR.)
 
 ```rust
 // Auto-SSA (examples/factorial_auto_ssa.rs): declare typed variables once;
@@ -448,7 +472,7 @@ and no runtime check to reach. Upstream accepts each of these as `Value *` and
 reports them from `Verifier.cpp`, later, if verification runs at all. The
 mapping from each upstream verifier message to the llvmkit type that forecloses
 it is tabulated in [Type Safety: llvmkit vs. LLVM C++](docs/type-safety-vs-llvm.md),
-and 81 compile-fail fixtures lock the guarantees.
+and 82 compile-fail fixtures lock the guarantees.
 
 **3. Verification is a typestate, not a function you must remember to call.**
 `Module::verify(self)` consumes `Module<B, Unverified>` and returns
@@ -466,12 +490,17 @@ erased `Dyn` forms deliberately trade them back for runtime checks so parsed and
 dynamic IR still works, and none of it helps if you need codegen — upstream is
 the only option there.
 
-### Bindings-readiness
+### Bindings
 
-`llvmkit` ships no Python or Java bindings, and writing them is out of scope
-here. What *is* in scope — and is a standing constraint on every API decision —
-is that the surface stays shaped so a wrapper can be written later without
-fighting it. Concretely:
+Python and Java bindings are planned. They have not been written yet for one
+reason: the API was not stable enough to wrap. Wrapping a moving surface means
+rewriting the wrapper on every break, which is the failure mode
+[llvmlite](https://github.com/numba/llvmlite) describes chasing upstream LLVM's
+unstable C++ API. The 0.1.0 freeze is what removes that blocker.
+
+Keeping the surface *wrappable* has been a standing constraint on every API
+decision along the way, which is why the shape below fell out rather than
+having to be retrofitted:
 
 - **Nothing is reachable only from inside a closure.** `Module::branded::<B>`,
   `Module::dynamic`, and `module_new!` all return an owned module. A binding's
@@ -486,11 +515,16 @@ fighting it. Concretely:
   uniqueness registry, so many live modules are legal, and separation falls
   back to the runtime `ModuleId` tag with `IrError::ForeignValueId` as the
   verdict — an error a wrapper can raise as an exception, not UB.
-- **Every misuse is an `IrError` or a deterministic panic, never a dangling
-  read.** `#![forbid(unsafe_code)]` holds across the workspace, so the worst a
-  forged or stale handle can do is get rejected.
+- **Misuse of a *handle or id* is an `IrError` or a deterministic panic, never
+  a dangling read.** `#![forbid(unsafe_code)]` holds across the workspace, so
+  the worst a forged or stale handle can do is get rejected. The one currency
+  this does not yet cover is metadata: a `MetadataSlot` is a bare arena index
+  with no module tag, so an *in-range* slot from another module mis-resolves
+  rather than erroring. Attaching one requires that module's `Unverified`
+  token, so it cannot happen through a read-only view or a verified module —
+  see the "Known gaps" section of the changelog.
 
-What a wrapper still has to build itself: an id table. Ids are opaque — their
+What a wrapper will still build itself: an id table. Ids are opaque — their
 `(ModuleId, slot)` payload is private, and there is deliberately no
 `from_raw_parts` — so a binding keeps its own `Vec`/`HashMap` of live ids and
 hands the host language an index into it, which is what
@@ -677,7 +711,11 @@ struct EraseDeadInstruction;
 impl EraseDeadInstruction {
     fn run(&mut self, cx: FnCx<Self>) -> IrResult<FnReport> {
         let mut patch = cx.mutate();     // consumes `cx` — no all-preserved report left
-        // ... locate a dead InstructionView `dead` and: patch.erase(&dead)?;
+        // ... locate a dead instruction, then narrow it to a `NonTerminator`:
+        //     if let Some(dead) = view.as_non_terminator() { patch.erase(&dead); }
+        // `erase` accepts *only* a `NonTerminator`, so erasing a terminator —
+        // which would break this rung's CFG-preserved floor — is a compile
+        // error, not a runtime rejection. It is infallible: no `?`.
         Ok(patch.done())                 // floor = CFG analyses preserved (PatchBody rung)
     }
 }
@@ -807,6 +845,7 @@ section) for the scoped-out items.
 └── crates/
     ├── llvmkit-support/             # Span, Spanned<T>, SourceMap
     ├── llvmkit-asmparser/           # Lexer + .ll parser
+    ├── llvmkit-macros/              # IrStruct derive, #[function_pass]/#[module_pass]
     └── llvmkit-ir/                  # Typed IR model, builder, verifier, passes
 ```
 
@@ -864,6 +903,15 @@ locks.
   carries (`IrError::ForeignValueId`). Compile-time separation is the guarantee;
   the runtime tag is the backstop that keeps the erased case sound rather than
   silently miscompiling. See [Same-module safety](#same-module-safety).
+  **The stated limit:** "operand" here means the value/block/function currency —
+  the handles and ids, which all carry `B`. Metadata is a separate currency that
+  2.0 did not reach: a `MetadataSlot` is a bare arena index with neither a brand
+  nor a tag, so neither half of D7 applies to it. Out-of-range slots are
+  rejected (`IrError::UnknownMetadataSlot`); an in-range slot from another
+  module still mis-resolves. Every API that attaches one demands the target
+  module's `Unverified` token, which bounds the exposure to code that already
+  holds mutation authority over that module — but does not close it. Tracked in
+  `docs/future-work.md`.
 - **D8. Verified guarantees are explicit.** Verification consumes an
   unverified token and produces `Module<B, Verified>`. A pass pipeline's
   output typestate is *derived* from its members' capability rungs: an

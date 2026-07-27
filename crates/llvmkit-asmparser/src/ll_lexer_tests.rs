@@ -2,8 +2,6 @@
 //! is a tight, exact assertion (token kind + span) so regressions point
 //! straight at the offending case.
 
-#![allow(clippy::needless_pass_by_value)]
-
 use super::*;
 use llvmkit_support::{Span, Spanned};
 use std::borrow::Cow;

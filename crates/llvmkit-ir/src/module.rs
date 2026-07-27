@@ -427,7 +427,7 @@ macro_rules! module_new {
 ///   [`id`](Self::id). It says "I can find the arena", nothing more.
 /// - [`ModuleView`] is the **read capability**. It is what a user receives from
 ///   a handle's `module()` accessor, and it carries the full read surface plus
-///   all 40-odd type constructors.
+///   all 35 type constructors.
 ///
 /// A function that takes a `ModuleRef` is therefore stating that it only needs
 /// to resolve slots — not that it may read the module or intern new types. That
@@ -2392,7 +2392,21 @@ impl<'ctx> ModuleCore {
 
     /// Overwrite a reserved metadata node with concrete content. Pairs
     /// with [`metadata_reserve`](Self::metadata_reserve).
-    pub fn metadata_set(&self, id: MetadataSlot, kind: MetadataKind) {
+    ///
+    /// `Err(IrError::UnknownMetadataSlot)` when `id` names nothing here. It
+    /// used to no-op silently, which the 2.0 law forbids: a slot carries no
+    /// module tag, so a slot from another module reaching this call is exactly
+    /// the mistake worth reporting.
+    pub fn metadata_set(&self, id: MetadataSlot, kind: MetadataKind) -> IrResult<()> {
+        {
+            let store = self.metadata.borrow();
+            if store.get(id).is_none() {
+                return Err(IrError::UnknownMetadataSlot {
+                    index: id.index(),
+                    len: store.len(),
+                });
+            }
+        }
         if let Some(MetadataKind::Constant(value_id)) = self.metadata.borrow().get(id).cloned() {
             self.deregister_metadata_value_use(id, value_id);
         }
@@ -2408,6 +2422,7 @@ impl<'ctx> ModuleCore {
         if let Some(value_id) = value_use {
             self.register_metadata_value_use(id, value_id);
         }
+        Ok(())
     }
 
     pub(super) fn metadata_constant_value(&self, value_id: ValueSlot) -> MetadataSlot {
@@ -2486,8 +2501,23 @@ impl<'ctx> ModuleCore {
     }
 
     /// Append an operand to a named metadata node (by index).
-    pub fn named_metadata_add_operand(&self, index: usize, op: MetadataRef) {
-        self.named_metadata.borrow_mut()[index].add_operand(op);
+    ///
+    /// `Err(IrError::UnknownMetadataSlot)` when `index` names no node here.
+    /// The index comes from
+    /// [`get_or_insert_named_metadata`](Self::get_or_insert_named_metadata)
+    /// and carries no module tag, so an index minted against another module
+    /// used to panic (out of range) or silently append to the wrong node (in
+    /// range) — neither of which an infallible signature may hide.
+    pub fn named_metadata_add_operand(&self, index: usize, op: MetadataRef) -> IrResult<()> {
+        let mut nmd = self.named_metadata.borrow_mut();
+        let len = nmd.len();
+        match nmd.get_mut(index) {
+            Some(node) => {
+                node.add_operand(op);
+                Ok(())
+            }
+            None => Err(IrError::UnknownMetadataSlot { index, len }),
+        }
     }
 
     /// Number of named metadata nodes.
@@ -2838,7 +2868,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// Symmetric with the `add_*` family. The marker check is unchanged: a
     /// signature that does not match `R` is
     /// [`IrError::ReturnTypeMismatch`], not a silently-widened id.
-    pub fn function_by_name<R>(&'ctx self, name: &str) -> IrResult<Option<FunctionId<R, B>>>
+    pub fn function_by_name<R>(&self, name: &str) -> IrResult<Option<FunctionId<R, B>>>
     where
         R: crate::marker::ReturnMarker,
     {
@@ -2930,6 +2960,57 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
         I: ViewIn<'ctx, B>,
     {
         id.resolve_in(self.module_ref())
+    }
+
+    // ---- By-name lookups ----
+    //
+    // State-generic since cycle E. These return either a capability-free
+    // `Copy + Send` id or, for comdats, a read-only handle — nothing that can
+    // mutate — so restricting them to `Module<B, Unverified>` bought no safety
+    // and left a verified module with no O(1) route to a symbol at all: the
+    // only alternative was a linear scan of `as_view().globals()` comparing
+    // names. `function_by_name` / `function_by_name_dyn` already lived here.
+
+    /// Look up a global variable by name, returning its storable
+    /// [`GlobalId`].
+    ///
+    /// Symmetric with [`add_global`](Self::add_global) and the rest of the
+    /// `add_global_*` family: a lookup hands back the same currency a
+    /// declaration does. Reach the borrowing [`GlobalVariable`] with
+    /// [`view`](Self::view).
+    ///
+    /// The id borrows nothing, so this takes `&self`.
+    pub fn get_global(&self, name: &str) -> Option<GlobalId<B>> {
+        let slot = self.core().global_by_name.borrow().get(name).copied()?;
+        Some(GlobalId::from_raw(self.core().id, slot))
+    }
+
+    /// Look up a global alias by name, returning its storable
+    /// [`GlobalAliasId`]. Symmetric with
+    /// [`alias_builder`](Self::alias_builder)'s `build()`.
+    pub fn get_alias(&self, name: &str) -> Option<GlobalAliasId<B>> {
+        let slot = self.core().alias_by_name.borrow().get(name).copied()?;
+        Some(GlobalAliasId::from_raw(self.core().id, slot))
+    }
+
+    /// Look up an ifunc by name, returning its storable [`GlobalIFuncId`].
+    /// Symmetric with [`ifunc_builder`](Self::ifunc_builder)'s `build()`.
+    pub fn get_ifunc(&self, name: &str) -> Option<GlobalIFuncId<B>> {
+        let slot = self.core().ifunc_by_name.borrow().get(name).copied()?;
+        Some(GlobalIFuncId::from_raw(self.core().id, slot))
+    }
+
+    /// Look up a comdat by name.
+    ///
+    /// Deliberately **not** part of the `get_* -> Option<Id>` symmetry the rest
+    /// of the lookups follow. A comdat is not a `Value`: it lives in its own
+    /// table, and [`ComdatId`] is a bare `u32` index carrying neither a
+    /// [`ModuleId`] tag nor a brand, so it is not a member of the llvmkit 2.0 id
+    /// family and [`view`](Self::view) cannot resolve it. Returning it here
+    /// would hand back something strictly *weaker* than the handle — untagged,
+    /// unbranded, and unresolvable — so the handle stays.
+    pub fn get_comdat(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
+        self.core().get_comdat::<B>(name)
     }
 }
 
@@ -3763,20 +3844,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         crate::global_variable::GlobalBuilder::new(self.module_ref(), name, value_type)
     }
 
-    /// Look up a global variable by name, returning its storable
-    /// [`GlobalId`].
-    ///
-    /// Symmetric with [`add_global`](Self::add_global) and the rest of the
-    /// `add_global_*` family: a lookup hands back the same currency a
-    /// declaration does. Reach the borrowing [`GlobalVariable`] with
-    /// [`view`](Self::view).
-    ///
-    /// The id borrows nothing, so this takes `&self`.
-    pub fn get_global(&self, name: &str) -> Option<GlobalId<B>> {
-        let slot = self.core().global_by_name.borrow().get(name).copied()?;
-        Some(GlobalId::from_raw(self.core().id, slot))
-    }
-
     pub fn alias_builder<C, Name>(
         &'ctx self,
         name: Name,
@@ -3788,14 +3855,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Name: Into<String>,
     {
         GlobalAliasBuilder::new(self.module_ref(), name, value_type, aliasee)
-    }
-
-    /// Look up a global alias by name, returning its storable
-    /// [`GlobalAliasId`]. Symmetric with
-    /// [`alias_builder`](Self::alias_builder)'s `build()`.
-    pub fn get_alias(&self, name: &str) -> Option<GlobalAliasId<B>> {
-        let slot = self.core().alias_by_name.borrow().get(name).copied()?;
-        Some(GlobalAliasId::from_raw(self.core().id, slot))
     }
 
     pub fn alias_empty(&'ctx self) -> bool {
@@ -3813,13 +3872,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Name: Into<String>,
     {
         GlobalIFuncBuilder::new(self.module_ref(), name, value_type, resolver)
-    }
-
-    /// Look up an ifunc by name, returning its storable [`GlobalIFuncId`].
-    /// Symmetric with [`ifunc_builder`](Self::ifunc_builder)'s `build()`.
-    pub fn get_ifunc(&self, name: &str) -> Option<GlobalIFuncId<B>> {
-        let slot = self.core().ifunc_by_name.borrow().get(name).copied()?;
-        Some(GlobalIFuncId::from_raw(self.core().id, slot))
     }
 
     pub fn ifunc_empty(&'ctx self) -> bool {
@@ -3879,19 +3931,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
 
     pub fn get_or_insert_comdat(&'ctx self, name: &str) -> ComdatRef<'ctx, B> {
         self.core().get_or_insert_comdat::<B, _>(name)
-    }
-
-    /// Look up a comdat by name.
-    ///
-    /// Deliberately **not** part of the `get_* -> Option<Id>` symmetry the rest
-    /// of the lookups follow. A comdat is not a `Value`: it lives in its own
-    /// table, and [`ComdatId`] is a bare `u32` index carrying neither a
-    /// [`ModuleId`] tag nor a brand, so it is not a member of the llvmkit 2.0 id
-    /// family and [`view`](Self::view) cannot resolve it. Returning it here
-    /// would hand back something strictly *weaker* than the handle — untagged,
-    /// unbranded, and unresolvable — so the handle stays.
-    pub fn get_comdat(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
-        self.core().get_comdat::<B>(name)
     }
 
     pub fn inline_asm<Asm, Constraints>(
@@ -3992,12 +4031,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().metadata_reserve()
     }
 
+    /// Overwrite a reserved metadata node, pairing with `metadata_reserve`.
+    ///
+    /// `Err(IrError::UnknownMetadataSlot)` when `id` names nothing in this
+    /// module. It used to no-op silently, which the 2.0 contract forbids: a
+    /// metadata slot carries no module tag, so a slot from another module
+    /// reaching this call is exactly the mistake worth reporting.
     pub fn metadata_set(
         &'ctx self,
         id: crate::metadata::MetadataSlot,
         kind: crate::metadata::MetadataKind,
-    ) {
-        self.core().metadata_set(id, kind);
+    ) -> IrResult<()> {
+        self.core().metadata_set(id, kind)
     }
 
     pub fn metadata_get(
@@ -4018,8 +4063,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().get_or_insert_named_metadata(name)
     }
 
-    pub fn named_metadata_add_operand(&'ctx self, index: usize, op: MetadataRef) {
-        self.core().named_metadata_add_operand(index, op);
+    /// Append an operand to a named metadata node.
+    ///
+    /// `Err(IrError::UnknownMetadataSlot)` when `index` names no node here. The
+    /// index comes from `get_or_insert_named_metadata` and carries no module
+    /// tag, so an index minted against another module used to panic (out of
+    /// range) or silently append to the wrong node (in range) — neither of
+    /// which an infallible signature may hide.
+    pub fn named_metadata_add_operand(&'ctx self, index: usize, op: MetadataRef) -> IrResult<()> {
+        self.core().named_metadata_add_operand(index, op)
     }
 
     pub fn named_metadata_count(&'ctx self) -> usize {

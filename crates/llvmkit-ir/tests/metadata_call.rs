@@ -212,7 +212,8 @@ fn string_referenced_by_named_metadata_is_not_dangling() {
     let s = m.metadata_string("x");
     let tuple = m.metadata_tuple([MetadataRef(s)]);
     let idx = m.get_or_insert_named_metadata("my.named");
-    m.named_metadata_add_operand(idx, MetadataRef(tuple));
+    m.named_metadata_add_operand(idx, MetadataRef(tuple))
+        .unwrap();
 
     let text = format!("{m}");
     assert_line(&text, r#"!0 = !{!"x"}"#);
@@ -229,7 +230,8 @@ fn metadata_constant_tuple_prints_typed_constants() {
     let five = m.metadata_constant(i64_ty.const_int(5_i64));
     let tuple = m.metadata_tuple([MetadataRef(one), MetadataRef(five)]);
     let idx = m.get_or_insert_named_metadata("ranges");
-    m.named_metadata_add_operand(idx, MetadataRef(tuple));
+    m.named_metadata_add_operand(idx, MetadataRef(tuple))
+        .unwrap();
 
     let text = format!("{m}");
     assert_line(&text, "!0 = !{i64 1, i64 5}");
@@ -253,7 +255,7 @@ fn range_metadata_on_load_verifies_and_prints() -> Result<(), IrError> {
     let hi = m.metadata_constant(i8_ty.const_int(0x20_u8));
     let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
     let inst = InstructionView::try_from(b.view(ld).into_erased())?;
-    inst.set_metadata(MetadataAttachmentKind::Range, range);
+    inst.set_metadata(&m, MetadataAttachmentKind::Range, range);
     b.build_ret(ld)?;
 
     m.verify_borrowed()?;
@@ -279,7 +281,7 @@ fn range_metadata_rejects_odd_operand_count() -> Result<(), IrError> {
     let lo = m.metadata_constant(i8_ty.const_int(0x10_u8));
     let range = m.metadata_tuple([MetadataRef(lo)]);
     let inst = InstructionView::try_from(b.view(ld).into_erased())?;
-    inst.set_metadata(MetadataAttachmentKind::Range, range);
+    inst.set_metadata(&m, MetadataAttachmentKind::Range, range);
     b.build_ret(ld)?;
 
     let err = m
@@ -316,7 +318,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(call_host).param(0)?.try_into()?;
     let call = b.view(b.build_call_dyn(callee, [p.into_erased()], "v")?);
     call.as_view()
-        .set_metadata(MetadataAttachmentKind::Range, range);
+        .set_metadata(&m, MetadataAttachmentKind::Range, range);
     let ret = call.return_int_value();
     b.build_ret(ret)?;
 
@@ -339,7 +341,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
         )?;
     invoke
         .as_view()
-        .set_metadata(MetadataAttachmentKind::Range, range);
+        .set_metadata(&m, MetadataAttachmentKind::Range, range);
     let invoke_value: llvmkit_ir::IntValue<'_, i8, _> = invoke.to_erased().try_into()?;
     IRBuilder::new_for::<Dyn>(&m)
         .position_at_end(normal)
@@ -367,7 +369,7 @@ fn range_metadata_rejects_non_load_call_invoke_user() -> Result<(), IrError> {
     let hi = m.metadata_constant(i8_ty.const_int(0x20_u8));
     let range = m.metadata_tuple([MetadataRef(lo), MetadataRef(hi)]);
     let inst = InstructionView::try_from(b.view(add).into_erased())?;
-    inst.set_metadata(MetadataAttachmentKind::Range, range);
+    inst.set_metadata(&m, MetadataAttachmentKind::Range, range);
     b.build_ret(add)?;
 
     let err = m

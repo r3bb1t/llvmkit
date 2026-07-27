@@ -80,6 +80,15 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchEdge<B> {
     }
 }
 
+/// The function id plus the `dflt` / `other` / `merge` `Dyn` block ids
+/// returned by [`build_switch_merge`].
+type SwitchMergeBuild<B> = IrResult<(
+    crate::FunctionId<Dyn, B>,
+    BlockId<Dyn, B>,
+    BlockId<Dyn, B>,
+    BlockId<Dyn, B>,
+)>;
+
 /// Build a `switch`-fed merge with a two-incoming phi, returning the function
 /// and the `dflt` / `other` / `merge` `Dyn` labels.
 ///
@@ -95,15 +104,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchEdge<B> {
 /// `entry → merge` edge must drop the phi's `entry` incoming to stay coherent.
 /// `dflt` is the switch default and ends in a plain `br` (a non-switch `from`);
 /// `other` is the case-1 target — both feed the edge-op guard negatives below.
-#[allow(clippy::type_complexity)]
 fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
     m: &'ctx Module<B, crate::Unverified>,
-) -> IrResult<(
-    crate::FunctionId<Dyn, B>,
-    BlockId<Dyn, B>,
-    BlockId<Dyn, B>,
-    BlockId<Dyn, B>,
-)> {
+) -> SwitchMergeBuild<B> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -260,6 +263,11 @@ fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
     Ok(())
 }
 
+/// The function id plus the `shared` / `new` `Dyn` block ids returned by
+/// [`build_switch_default_parallel`].
+type SwitchDefaultParallelBuild<B> =
+    IrResult<(crate::FunctionId<Dyn, B>, BlockId<Dyn, B>, BlockId<Dyn, B>)>;
+
 /// Build a `switch` whose DEFAULT and case-0 both target `shared`, so `entry`
 /// reaches `shared` through two parallel edges. A third predecessor `mid` gives
 /// `shared` three predecessors total.
@@ -275,10 +283,9 @@ fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
 /// Redirecting the case-0 edge (`redirect_successor(shared, new)`) leaves the
 /// DEFAULT still targeting `shared`, so `entry` survives as a predecessor of
 /// `shared` through the default — `shared`'s phi must keep one `entry` incoming.
-#[allow(clippy::type_complexity)]
 fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
     m: &'ctx Module<B, crate::Unverified>,
-) -> IrResult<(crate::FunctionId<Dyn, B>, BlockId<Dyn, B>, BlockId<Dyn, B>)> {
+) -> SwitchDefaultParallelBuild<B> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;

@@ -1292,11 +1292,17 @@ impl_function_signature!(
 
 /// Inputs that can fill the call-argument slot described by schema
 /// token `P` in a typed call. Mirrors the multi-source posture of
-/// [`IntoIrField`](crate::IntoIrField): typed handles, constants, Rust
-/// literals, `Argument`, and erased `Value` all lift through the
-/// underlying operand traits. Cross-module rejection lives inside
-/// those traits' `into_*_value(module)` methods (D7), not at the call
-/// site.
+/// [`IntoIrField`](crate::IntoIrField): typed handles, their storable
+/// ids, constants, and Rust literals all lift through the underlying
+/// operand traits. Cross-module rejection lives inside those traits'
+/// `into_*_value(module)` methods (D7), not at the call site.
+///
+/// An **erased** `Value` does *not* lift here. The no-silent-erasure cut
+/// removed those impls: widening a typed argument to `Value` at a typed
+/// call site would discard exactly the width/kind the schema exists to
+/// check. Spell the narrowing (`TryFrom`) if you are starting from an
+/// erased handle, or use the `_dyn` call builders, which take erased
+/// arguments by design and check them at build time.
 ///
 /// ## Diagnostic behavior
 ///

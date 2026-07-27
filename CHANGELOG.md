@@ -49,6 +49,23 @@ produced.
   not a `Value`, and `ComdatId` is a bare `u32` carrying neither a `ModuleId`
   tag nor a brand, so it is not a member of the id family and `view` cannot
   resolve it.
+- **The by-name lookups are state-generic.** `get_global`, `get_alias`,
+  `get_ifunc`, and `get_comdat` moved out of the `Module<B, Unverified>` impl
+  into the state-generic one, where `function_by_name` / `function_by_name_dyn`
+  already lived. They return a capability-free id (or, for comdats, a read-only
+  handle), so the `Unverified` restriction bought no safety — it only meant a
+  `Module<B, Verified>` had *no* O(1) route to a symbol, leaving a linear scan
+  over `as_view().globals()` as the only option. `function_by_name::<R>` also
+  relaxes `&'ctx self` to `&self`, matching the other five.
+- **`ComdatRef::id` is removed.** It handed out a `ComdatId` that no public API
+  accepts — untagged, unbranded, and unresolvable by `view`, which is exactly
+  the argument `get_comdat` makes for returning a handle instead. Comdat
+  identity is `(module, ComdatId)` and is compared through `ComdatRef`'s
+  `PartialEq`, so `a == b` replaces `a.id() == b.id()`.
+- **Instruction metadata mutators take the `Unverified` module token.**
+  `InstructionView::set_metadata`, `InstructionView::push_debug_record`, and
+  their `Instruction` twins gain a leading `&Module<B, Unverified>` parameter.
+  See *Fixed*, below, for what this closes.
 
 #### Documentation
 
@@ -64,13 +81,16 @@ produced.
   and an owned module (so a lifter can suspend, move threads, and resume),
   unrepresentable-versus-diagnosed error classes, and verification as a
   typestate rather than a function you must remember to call.
-- New README section, **Bindings-readiness**: the standing constraint 2.0 was
-  designed under — nothing reachable only from inside a closure, no lifetime in
-  any storable type, `DynBrand` as the rung a wrapper uses, and every misuse an
-  `IrError` or a deterministic panic rather than a dangling read. Bindings
-  themselves remain out of scope; what a wrapper still supplies is its own id
-  table, since an id's `(ModuleId, slot)` payload is private and there is
-  deliberately no `from_raw_parts`.
+- New README section, **Bindings**: Python and Java bindings are planned and
+  were blocked on exactly one thing — an API not yet stable enough to wrap,
+  since wrapping a moving surface means rewriting the wrapper on every break.
+  This release is what unblocks them. The section records the standing
+  constraint 2.0 was designed under, which is why the surface is already
+  wrappable: nothing reachable only from inside a closure, no lifetime in any
+  storable type, `DynBrand` as the rung a wrapper uses, and misuse of a handle
+  or id an `IrError` or a deterministic panic rather than a dangling read. A
+  wrapper still supplies its own id table, since an id's `(ModuleId, slot)`
+  payload is private and there is deliberately no `from_raw_parts`.
 - `docs/type-safety-vs-llvm.md` worked examples re-spelled against the
   lifetime-free `Module<B, S>`.
 - The **"2 environmental `.stderr` fixtures"** caveat is retired from
@@ -78,7 +98,7 @@ produced.
   the `docs/future-work.md` backlog item that asked for a canonical re-bless.
   It was never real: both fixtures pass on the pinned 1.96.0 toolchain, and the
   mismatch only ever appeared under a newer rustc. Gated on `cargo +1.96.0` the
-  trybuild baseline is **0 failures of 82 registered fixtures** (81
+  trybuild baseline is **0 failures of 83 registered fixtures** (82
   `compile_fail` + 1 `pass`).
 
 #### Added
@@ -93,16 +113,50 @@ produced.
   the compile-time law that makes the id family necessary rather than merely
   convenient, since the `.id()` form of the identical program *does* compile.
 
+#### Fixed
+
+- **Instruction metadata now requires the `Unverified` module token.**
+  `InstructionView::set_metadata` / `push_debug_record` (and their
+  `Instruction` twins) took no token, while the metadata setters on
+  `FunctionValue` and `GlobalVariable` — and `set_name` / `clear_name` on the
+  very same type — always had. The omission punched through two guarantees at
+  once: a `Module<B, Verified>`'s printed IR could be changed through a
+  read-only `InstructionView` with the typestate still claiming verification
+  (D8), and an `Inspect`-rung pass, which is handed only views, could rewrite
+  `!dbg` attachments while the driver derived `Module<B, Verified>` and
+  reported everything preserved. Both are now type errors, locked by
+  `tests/compile_fail/verified_module_metadata_is_immutable.rs`.
+- **`Module::metadata_set` and `Module::named_metadata_add_operand` are
+  fallible.** The first silently no-opped on an unknown slot — the exact silent
+  no-op the 2.0 contract forbids — and the second panicked with a bare
+  `index out of bounds`. Both now return
+  `Err(IrError::UnknownMetadataSlot { index, len })`.
+
 #### Known gaps (deliberately not closed before the freeze)
 
-- The debug-record sub-surface still speaks untagged slots:
-  `DebugMetadataOperand::Value` carries a bare `ValueSlot` with no `ModuleId`
-  tag and no brand, so a slot from one module can be pushed into another's
-  instruction and mis-resolve when printed. Pre-existing, not a 2.0 regression —
-  2.0 tagged the value currency and left this one behind. Closing it needs a `B`
-  parameter and a tagged payload on `DebugMetadataOperand`/`DebugRecord`, which
-  ripples into `InstructionData`, the `.ll` parser, and the printer: a cycle of
-  its own. See `docs/future-work.md`, "Type-system follow-ups".
+- **Metadata is the one currency 2.0 did not tag.** A `MetadataSlot` (and the
+  `ValueSlot` inside `DebugMetadataOperand::Value`) is a bare arena index
+  carrying neither a `ModuleId` tag nor a brand, so neither half of D7 reaches
+  it: distinct brand types do not separate two modules' metadata slots, and
+  there is no tag to check at the arena boundary. An **out-of-range** slot is
+  now rejected (above); an **in-range** slot from another module still
+  mis-resolves — `asm_writer` will print whatever node that index happens to
+  name in the target module.
+
+  Pre-existing, not a 2.0 regression: 2.0 tagged the value currency and left
+  this one behind. What the token fix above changes is the *reachability*, not
+  the hole — every API that attaches a slot now demands the target module's
+  `Unverified` token, so the mistake requires code that already holds mutation
+  authority over that module, and can no longer be made through a read-only
+  view, a verified module, or an inspect-only pass.
+
+  A range check does not substitute for a tag, because slots are plain indices
+  and module A's slot 5 is in-range in module B. Closing it properly means a
+  `B` parameter and a tagged payload on `MetadataSlot`,
+  `DebugMetadataOperand`, `DebugRecord`, and `DebugVariableRecord`, rippling
+  into `InstructionData`, the `.ll` parser's debug-record path, and the
+  printer — a cycle of its own. See `docs/future-work.md`, "Type-system
+  follow-ups".
 
 ### llvmkit 2.0 — the SSA session is a value (cycle D)
 

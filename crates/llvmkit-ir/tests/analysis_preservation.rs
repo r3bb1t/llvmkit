@@ -235,21 +235,24 @@ impl<B: ModuleBrand> FunctionPass<B> for InsertMergePhi<B> {
     }
 }
 
-/// Build a verifying diamond `entry -> {left, right} -> merge` returning `i32`.
-/// `left` defines `%lv = add %a, 10`, `right` defines `%rv = add %a, 20`, and
-/// `merge` initially just `ret 0` (no phi yet — a pass inserts one). Returns the
-/// function plus the two arm values and the two arm labels the pass will feed as
-/// phi incomings.
-#[allow(clippy::type_complexity)]
-fn build_diamond<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, llvmkit_ir::Unverified>,
-) -> IrResult<(
+/// The function id, plus the `left`/`right` arm value and block ids, returned
+/// by [`build_diamond`].
+type DiamondBuild<B> = IrResult<(
     llvmkit_ir::FunctionId<Dyn, B>,
     ValueId<B>,
     BlockId<Dyn, B>,
     ValueId<B>,
     BlockId<Dyn, B>,
-)> {
+)>;
+
+/// Build a verifying diamond `entry -> {left, right} -> merge` returning `i32`.
+/// `left` defines `%lv = add %a, 10`, `right` defines `%rv = add %a, 20`, and
+/// `merge` initially just `ret 0` (no phi yet — a pass inserts one). Returns the
+/// function plus the two arm values and the two arm labels the pass will feed as
+/// phi incomings.
+fn build_diamond<'ctx, B: ModuleBrand + 'ctx>(
+    m: &'ctx Module<B, llvmkit_ir::Unverified>,
+) -> DiamondBuild<B> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -532,6 +535,15 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchCase<B> {
     }
 }
 
+/// The function id, the `old`/`new` `Dyn` block ids, and the seed value,
+/// returned by [`build_switch_redirect`].
+type SwitchRedirectBuild<B> = IrResult<(
+    llvmkit_ir::FunctionId<Dyn, B>,
+    BlockId<Dyn, B>,
+    BlockId<Dyn, B>,
+    ValueId<B>,
+)>;
+
 /// Build a `switch` whose case-0 edge can be redirected, plus a `new` block
 /// already carrying a phi, returning the function, the `old`/`new` `Dyn`
 /// labels, and a value (`%ev`, defined in `entry`) to seed `new`'s phi.
@@ -546,15 +558,9 @@ impl<B: ModuleBrand> FunctionPass<B> for RedirectSwitchCase<B> {
 ///
 /// `redirect_edge(entry, old, new, [%ev])` retargets the case-0 edge onto `new`
 /// and adds `[ %ev, %entry ]` to `new`'s phi.
-#[allow(clippy::type_complexity)]
 fn build_switch_redirect<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, llvmkit_ir::Unverified>,
-) -> IrResult<(
-    llvmkit_ir::FunctionId<Dyn, B>,
-    BlockId<Dyn, B>,
-    BlockId<Dyn, B>,
-    ValueId<B>,
-)> {
+) -> SwitchRedirectBuild<B> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -1036,18 +1042,21 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
 // gone; the compile-time guarantee is covered by the typed-edit compile-fail
 // fixtures.
 
-/// Builds `entry: br %c ? t : e` with the two arms pointed at `t_name`/`e_name`,
-/// plus a spare `new` block — the shared skeleton for the branch-edge rejection
-/// guards below. Returns the function and the `Dyn` labels for `old`/`new`.
-#[allow(clippy::type_complexity)]
-fn build_cond_br_pair<'ctx, B: ModuleBrand + 'ctx>(
-    m: &'ctx Module<B, llvmkit_ir::Unverified>,
-    then_is_new: bool,
-) -> IrResult<(
+/// The function id plus the `old`/`new` `Dyn` block ids returned by
+/// [`build_cond_br_pair`].
+type CondBrPairBuild<B> = IrResult<(
     llvmkit_ir::FunctionId<Dyn, B>,
     BlockId<Dyn, B>,
     BlockId<Dyn, B>,
-)> {
+)>;
+
+/// Builds `entry: br %c ? t : e` with the two arms pointed at `t_name`/`e_name`,
+/// plus a spare `new` block — the shared skeleton for the branch-edge rejection
+/// guards below. Returns the function and the `Dyn` labels for `old`/`new`.
+fn build_cond_br_pair<'ctx, B: ModuleBrand + 'ctx>(
+    m: &'ctx Module<B, llvmkit_ir::Unverified>,
+    then_is_new: bool,
+) -> CondBrPairBuild<B> {
     let i32_ty = m.i32_type();
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
@@ -1185,7 +1194,6 @@ fn redirect_edge_rejects_cond_br_already_reaching_new() -> Result<(), IrError> {
 ///
 /// Returns the function plus `new`'s `Dyn` label (a spare, phi-less block for the
 /// redirect test — a redirect onto it seeds an empty `phi_values`).
-#[allow(clippy::type_complexity)]
 fn build_cond_br_both_arms_phi<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, llvmkit_ir::Unverified>,
 ) -> IrResult<(llvmkit_ir::FunctionId<Dyn, B>, BlockId<Dyn, B>)> {
