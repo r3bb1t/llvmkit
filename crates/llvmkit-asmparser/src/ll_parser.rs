@@ -274,6 +274,7 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     deferred_global_initializers: Vec<DeferredGlobalInitializer<'ctx, B>>,
     deferred_block_addresses: Vec<DeferredBlockAddress<'ctx, B>>,
     deferred_personality_fns: Vec<DeferredPersonalityFn<'ctx, B>>,
+    deferred_alias_targets: Vec<DeferredAliasTarget<'ctx, B>>,
     deferred_intrinsic_attribute_checks: Vec<DeferredIntrinsicAttributeCheck>,
     forward_function_decls: HashMap<String, Span>,
     _brand: PhantomData<B>,
@@ -310,6 +311,22 @@ struct DeferredPersonalityFn<'ctx, B: ModuleBrand> {
     function: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>,
     name: String,
     loc: Span,
+}
+
+/// An alias or ifunc whose target names a global that had not been declared
+/// yet. The printer emits aliases and ifuncs before function declarations, so
+/// a printed module routinely forward-references its own resolver; globals
+/// have carried deferred initializers for the same reason since the parser
+/// was written.
+struct DeferredAliasTarget<'ctx, B: ModuleBrand> {
+    object: DeferredAliasObject<'ctx, B>,
+    name: String,
+    loc: Span,
+}
+
+enum DeferredAliasObject<'ctx, B: ModuleBrand> {
+    Alias(llvmkit_ir::GlobalAlias<'ctx, B>),
+    IFunc(llvmkit_ir::GlobalIFunc<'ctx, B>),
 }
 
 struct DeferredIntrinsicAttributeCheck {
@@ -870,6 +887,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             metadata_slots: HashMap::new(),
             deferred_global_initializers: Vec::new(),
             deferred_personality_fns: Vec::new(),
+            deferred_alias_targets: Vec::new(),
             deferred_intrinsic_attribute_checks: Vec::new(),
             forward_function_decls: HashMap::new(),
             _brand: PhantomData,
@@ -1026,6 +1044,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.resolve_deferred_global_initializers()?;
         self.resolve_deferred_block_addresses()?;
         self.resolve_deferred_personality_fns()?;
+        self.resolve_deferred_alias_targets()?;
         self.validate_deferred_intrinsic_attribute_checks()?;
         self.validate_forward_function_decls()?;
 
@@ -1103,6 +1122,31 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             item.placeholder
                 .replace_all_uses_with(resolved)
                 .map_err(|e| self.builder_err("forward blockaddress", e))?;
+        }
+        Ok(())
+    }
+
+    fn resolve_deferred_alias_targets(&mut self) -> ParseResult<()> {
+        let deferred = std::mem::take(&mut self.deferred_alias_targets);
+        for item in deferred {
+            let target = self
+                .resolve_global_name_as_constant(item.name.clone())
+                .map_err(|err| match err {
+                    ParseError::UndefinedSymbol { kind, id, .. } => ParseError::UndefinedSymbol {
+                        kind,
+                        id,
+                        loc: DiagLoc::span(item.loc),
+                    },
+                    other => other,
+                })?;
+            match item.object {
+                DeferredAliasObject::Alias(a) => a
+                    .set_aliasee(self.module, target)
+                    .map_err(|e| self.builder_err("deferred alias target", e))?,
+                DeferredAliasObject::IFunc(i) => i
+                    .set_resolver(self.module, target)
+                    .map_err(|e| self.builder_err("deferred ifunc resolver", e))?,
+            }
         }
         Ok(())
     }
@@ -3119,6 +3163,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let ty = self.parse_type(false)?;
         let (initializer, deferred_initializer) = if has_linkage && is_declaration_linkage(linkage)
         {
+            // Upstream parses the initializer and then rejects it, so the
+            // diagnostic names the actual problem. Detect the same case here:
+            // anything that is not a property comma, a new top-level entity,
+            // or end of input can only be an initializer.
+            if self.starts_global_initializer() {
+                // `External` is the default linkage, so its keyword is the
+                // empty string; name it explicitly rather than printing ''.
+                let spelled = match linkage.keyword() {
+                    "" => "external",
+                    other => other,
+                };
+                return Err(ParseError::Expected {
+                    expected: format!(
+                        "no initializer: a global with '{spelled}' linkage is a declaration"
+                    ),
+                    loc: DiagLoc::span(self.loc()),
+                });
+            }
             (None, None)
         } else {
             self.parse_global_initializer(ty)?
@@ -3265,23 +3327,34 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
 
         let value_type = self.parse_type(false)?;
-        self.expect_punct(
-            PunctKind::Comma,
-            "expected comma after alias or ifunc's type",
-        )?;
+        self.expect_punct(PunctKind::Comma, "',' after the alias or ifunc type")?;
         let target_ty = self.parse_type(false)?;
+        let target_loc = self.loc();
         match target_ty.into_type_enum() {
             AnyTypeEnum::Pointer(_) => {}
             _ => {
                 return Err(ParseError::Expected {
-                    expected: "An alias or ifunc must have pointer type".into(),
+                    expected: "pointer type for the alias or ifunc target".into(),
                     loc: DiagLoc::span(self.loc()),
                 });
             }
         }
-        let target = self
-            .parse_constant(target_ty)?
-            .ok_or_else(|| self.expected("alias or ifunc target constant"))?;
+        // A forward-referenced target becomes a null placeholder patched at
+        // end of module, exactly as `personality` already handles the same
+        // ordering problem.
+        let (target, forward_target) = match self.parse_alias_target(target_ty) {
+            Ok(c) => (c, None),
+            Err(ParseError::UndefinedSymbol {
+                id: SymbolId::Named(name),
+                ..
+            }) => {
+                let AnyTypeEnum::Pointer(pty) = target_ty.into_type_enum() else {
+                    return Err(self.expected("pointer type for alias or ifunc target"));
+                };
+                (pty.const_null().as_constant(), Some(name))
+            }
+            Err(other) => return Err(other),
+        };
 
         let mut partition = None;
         while self.eat_punct(PunctKind::Comma)? {
@@ -3314,8 +3387,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 expected: format!("valid alias definition: {e}"),
                 loc: DiagLoc::span(decl_loc),
             })?;
+            let a_view = self.module.view(a);
+            if let Some(name) = forward_target {
+                self.deferred_alias_targets.push(DeferredAliasTarget {
+                    object: DeferredAliasObject::Alias(a_view),
+                    name,
+                    loc: target_loc,
+                });
+            }
             if let NameOrId::Id(id) = name_id {
-                let a = self.module.view(a);
+                let a = a_view;
                 self.numbered_globals
                     .add(id, GlobalRef::Alias(a))
                     .map_err(|source| ParseError::InvalidSlotId {
@@ -3337,8 +3418,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 expected: format!("valid ifunc definition: {e}"),
                 loc: DiagLoc::span(decl_loc),
             })?;
+            let i_view = self.module.view(i);
+            if let Some(name) = forward_target {
+                self.deferred_alias_targets.push(DeferredAliasTarget {
+                    object: DeferredAliasObject::IFunc(i_view),
+                    name,
+                    loc: target_loc,
+                });
+            }
             if let NameOrId::Id(id) = name_id {
-                let i = self.module.view(i);
+                let i = i_view;
                 self.numbered_globals
                     .add(id, GlobalRef::IFunc(i))
                     .map_err(|source| ParseError::InvalidSlotId {
@@ -3348,6 +3437,28 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
         }
         Ok(())
+    }
+
+    fn parse_alias_target(
+        &mut self,
+        target_ty: Type<'ctx, B>,
+    ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
+        self.parse_constant(target_ty)?
+            .ok_or_else(|| self.expected("alias or ifunc target constant"))
+    }
+
+    /// Whether the token after a global's type begins an initializer. The only
+    /// other legal continuations are a property list (`, section ...`), the
+    /// next top-level entity, or end of input.
+    fn starts_global_initializer(&self) -> bool {
+        match self.peek() {
+            Token::Eof | Token::Comma => false,
+            Token::Kw(keyword) => !keyword_starts_top_level_entity(*keyword),
+            Token::GlobalVar(_) | Token::GlobalId(_) => false,
+            Token::ComdatVar(_) | Token::LocalVar(_) | Token::LocalVarId(_) => false,
+            Token::Exclaim | Token::MetadataVar(_) => false,
+            _ => true,
+        }
     }
 
     fn parse_global_initializer(

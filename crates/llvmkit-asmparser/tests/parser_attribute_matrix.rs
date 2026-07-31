@@ -220,30 +220,48 @@ fn dso_specifiers_on_global_objects() {
 }
 
 #[test]
-fn dso_local_ifunc_parses_and_prints() {
-    // Ifuncs parse and print the specifier; full round-trip is blocked by a
-    // pre-existing, dso-independent gap (below).
-    let m = parse_dynamic("declare ptr @r()\n@i = dso_local ifunc i32 (i32), ptr @r\n")
-        .expect("dso_local ifunc");
-    let printed = format!("{m}");
-    assert!(printed.contains("dso_local ifunc"), "{printed}");
+fn dso_local_ifunc_round_trips() {
+    parse_print_reparse(
+        "dso_local ifunc",
+        "declare ptr @r()\n@i = dso_local ifunc i32 (i32), ptr @r\n",
+        "dso_local ifunc",
+    );
 }
 
-/// Pre-existing gap, pinned so it cannot be forgotten: the printer emits
-/// ifuncs before function declarations, and the parser cannot forward-reference
-/// an ifunc resolver, so a printed module with an ifunc whose resolver is a
-/// declared function does not re-parse. Nothing to do with attributes — the
-/// snippet below contains none. Recorded in `docs/future-work.md`; when the
-/// parser learns deferred alias/ifunc targets, this test flips to asserting
-/// the round-trip and the ifunc case above joins the matrix.
+/// Aliases and ifuncs may name a target declared later in the file — which is
+/// exactly what the printer produces, since it emits them before function
+/// declarations. A forward target becomes a null placeholder patched at end of
+/// module (the mechanism `personality` already used for the same ordering
+/// problem), so printed modules round-trip. A target that is never defined at
+/// all must still be an error.
 #[test]
-fn known_gap_ifunc_forward_resolver_round_trip() {
-    let m = parse_dynamic("declare ptr @r()\n@i = ifunc i32 (i32), ptr @r\n").expect("parse");
-    let printed = format!("{m}");
-    let Err(err) = parse_dynamic(printed.as_str()) else {
-        panic!("if this now round-trips, delete this test and un-gap the matrix");
+fn alias_and_ifunc_forward_targets() {
+    parse_print_reparse(
+        "ifunc forward resolver",
+        "declare ptr @r()\n@i = ifunc i32 (i32), ptr @r\n",
+        "ifunc",
+    );
+    parse_print_reparse(
+        "alias forward target",
+        "@a = alias i32, ptr @t\n@t = global i32 0\n",
+        "alias",
+    );
+    parse_print_reparse(
+        "alias to later function",
+        "@a = alias i32 (i32), ptr @f\ndefine i32 @f(i32 %x) { ret i32 %x }\n",
+        "alias",
+    );
+    // Backward references keep working.
+    parse_print_reparse(
+        "alias backward target",
+        "@t = global i32 0\n@a = alias i32, ptr @t\n",
+        "alias",
+    );
+
+    let Err(err) = parse_dynamic("@a = alias i32, ptr @nope\n") else {
+        panic!("a target that is never defined must not parse");
     };
-    assert!(format!("{err}").contains('r'), "{err}");
+    assert!(format!("{err}").contains("nope"), "{err}");
 }
 
 // -- whole-program shapes: what clang actually emits -------------------------

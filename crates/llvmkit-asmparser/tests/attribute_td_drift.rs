@@ -1,0 +1,243 @@
+//! Anti-drift guard for the attribute keyword table.
+//!
+//! `ll_lexer/keywords.rs` hand-mirrors LLVM's `Attributes.td`, and that is how
+//! Milestone 0's ~21 missing keywords went unnoticed: nothing tied the table to
+//! its source. Upstream does not have this problem because its lexer and parser
+//! both `#include` the TableGen-generated `Attributes.inc`
+//! (`LLLexer.cpp:701-704`, `LLParser.cpp:1547-1551`), so their list *cannot*
+//! drift.
+//!
+//! Full generation is the wrong shape here: llvmkit deliberately models a
+//! subset of LLVM's attributes, and generating the table would force modeling
+//! all of them (and would mean generating part of the 700-variant `Keyword`
+//! enum). This test gives the same guarantee without that cost — it parses the
+//! vendored `Attributes.td` and asserts every attribute is either **accepted**
+//! by the parser in a position `Attributes.td` declares for it, or **listed
+//! below** as deliberately not modeled yet.
+//!
+//! So a new upstream attribute, or one we silently stop accepting, fails CI.
+//! The `.td` is vendored under this crate's `tablegen/` (tracked, unlike
+//! `orig_cpp/`), so the guard runs everywhere the tests do.
+
+use std::collections::BTreeSet;
+
+use llvmkit_asmparser::parse_dynamic;
+
+const ATTRIBUTES_TD: &str = include_str!("../tablegen/llvm-22.1.4/include/llvm/IR/Attributes.td");
+
+/// Attributes LLVM 22.1.4 defines that llvmkit does not model yet. Every entry
+/// is a deliberate omission, not an oversight: adding one to the parser means
+/// deleting its line here, and a new upstream attribute fails this test until
+/// it is either implemented or consciously added.
+///
+/// Kept as the spelled `.ll` keyword, sorted.
+const NOT_YET_MODELED: &[&str] = &[
+    "allocptr",
+    "allocsize",
+    "builtin",
+    "coro_elide_safe",
+    "coro_only_destroy_when_complete",
+    "dead_on_return",
+    "dead_on_unwind",
+    "fn_ret_thunk_extern",
+    "hybrid_patchable",
+    "initializes",
+    "jumptable",
+    "naked",
+    "nobuiltin",
+    "nocf_check",
+    "nodivergencesource",
+    "noext",
+    "nofpclass",
+    "noimplicitfloat",
+    "noprofile",
+    "noredzone",
+    "nosanitize_bounds",
+    "nosanitize_coverage",
+    "null_pointer_is_valid",
+    "optdebug",
+    "optforfuzzing",
+    "preallocated",
+    "presplitcoroutine",
+    "returns_twice",
+    "safestack",
+    "sanitize_alloc_token",
+    "sanitize_hwaddress",
+    "sanitize_memory",
+    "sanitize_memtag",
+    "sanitize_numerical_stability",
+    "sanitize_realtime",
+    "sanitize_realtime_blocking",
+    "sanitize_thread",
+    "sanitize_type",
+    "shadowcallstack",
+    "skipprofile",
+    "swiftasync",
+    "swifterror",
+    "vscale_range",
+];
+
+/// One attribute as `Attributes.td` declares it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct TdAttribute {
+    keyword: String,
+    /// `EnumAttr`, `IntAttr`, `TypeAttr`, … — decides the spelling we probe.
+    kind: String,
+    fn_attr: bool,
+    param_attr: bool,
+    ret_attr: bool,
+}
+
+/// Parse the `def <Name> : <Kind>Attr<"<keyword>", …, [<positions>]>;` lines.
+/// `StrBoolAttr` carries no positions and is a string-valued attribute
+/// (`"no-inline-line-tables"`), which the parser already accepts generically,
+/// so those are skipped.
+fn parse_attributes_td(src: &str) -> Vec<TdAttribute> {
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("def ") else {
+            continue;
+        };
+        let Some((_name, decl)) = rest.split_once(" : ") else {
+            continue;
+        };
+        let Some((kind, args)) = decl.split_once('<') else {
+            continue;
+        };
+        if !kind.ends_with("Attr") || kind == "StrBoolAttr" {
+            continue;
+        }
+        // The keyword is the first string literal in the argument list.
+        let Some(open) = args.find('"') else { continue };
+        let Some(close) = args[open + 1..].find('"') else {
+            continue;
+        };
+        let keyword = args[open + 1..open + 1 + close].to_string();
+        if keyword.is_empty() {
+            continue;
+        }
+        out.push(TdAttribute {
+            keyword,
+            kind: kind.to_string(),
+            fn_attr: args.contains("FnAttr"),
+            param_attr: args.contains("ParamAttr"),
+            ret_attr: args.contains("RetAttr"),
+        });
+    }
+    out
+}
+
+/// Probe one attribute in every position `Attributes.td` declares for it,
+/// trying each spelling LLVM's grammar allows for its kind. An attribute
+/// counts as modeled if *any* spelling parses in *any* declared position —
+/// the question is "does the parser know this attribute", not "does it accept
+/// one canned form". `align`, `uwtable`, `memory`, `captures`, and
+/// `nofpclass` all have bespoke grammars, which is exactly why a single
+/// spelling would report false gaps.
+fn parser_accepts(attr: &TdAttribute) -> bool {
+    let kw = &attr.keyword;
+    let mut spellings = vec![kw.clone()];
+    match attr.kind.as_str() {
+        "IntAttr" => {
+            spellings.push(format!("{kw}(8)"));
+            spellings.push(format!("{kw} 8"));
+            spellings.push(format!("{kw}(none)"));
+            spellings.push(format!("{kw}(sync)"));
+        }
+        "TypeAttr" => spellings.push(format!("{kw}(%s)")),
+        "ConstantRangeAttr" => spellings.push(format!("{kw}(i32 0, 10)")),
+        "ConstantRangeListAttr" => spellings.push(format!("{kw}((0, 4))")),
+        // String-valued attributes are accepted generically as `"key"="value"`.
+        "ComplexStrAttr" => spellings.push(format!("\"{kw}\"=\"x\"")),
+        _ => {}
+    }
+
+    let mut sources = Vec::new();
+    for spelled in &spellings {
+        if attr.fn_attr {
+            sources.push(format!(
+                "define void @f() #0 {{ ret void }}\nattributes #0 = {{ {spelled} }}\n"
+            ));
+        }
+        if attr.param_attr {
+            sources.push(format!(
+                "%s = type {{ i32 }}\ndefine void @f(ptr {spelled} %p) {{ ret void }}\n"
+            ));
+        }
+        if attr.ret_attr {
+            sources.push(format!(
+                "%s = type {{ i32 }}\ndefine {spelled} ptr @f(ptr %p) {{ ret ptr %p }}\n"
+            ));
+        }
+    }
+    if sources.is_empty() {
+        return true; // no modeled position to probe
+    }
+    sources
+        .iter()
+        .any(|src| parse_dynamic(src.as_str()).is_ok())
+}
+
+#[test]
+fn vendored_attributes_td_is_parseable() {
+    let attrs = parse_attributes_td(ATTRIBUTES_TD);
+    assert!(
+        attrs.len() > 80,
+        "expected to recognise most of Attributes.td's attribute defs, got {}",
+        attrs.len()
+    );
+    // Spot-check the shapes this milestone added, so a change in the `.td`
+    // grammar that silently stops matching is caught here rather than showing
+    // up as a mysteriously shrinking attribute set.
+    let by_kw = |k: &str| attrs.iter().find(|a| a.keyword == k).cloned();
+    let uwtable = by_kw("uwtable").expect("uwtable present");
+    assert_eq!(uwtable.kind, "IntAttr");
+    assert!(uwtable.fn_attr);
+    let byval = by_kw("byval").expect("byval present");
+    assert_eq!(byval.kind, "TypeAttr");
+    assert!(byval.param_attr);
+}
+
+#[test]
+fn no_unmodeled_attribute_is_silently_missing() {
+    let attrs = parse_attributes_td(ATTRIBUTES_TD);
+    let allowed: BTreeSet<&str> = NOT_YET_MODELED.iter().copied().collect();
+
+    let mut missing_and_unlisted = Vec::new();
+    for attr in &attrs {
+        if allowed.contains(attr.keyword.as_str()) {
+            continue;
+        }
+        if !parser_accepts(attr) {
+            missing_and_unlisted.push(format!("{} ({})", attr.keyword, attr.kind));
+        }
+    }
+    missing_and_unlisted.sort();
+
+    assert!(
+        missing_and_unlisted.is_empty(),
+        "these LLVM 22.1.4 attributes are neither accepted by the parser nor \
+         listed in NOT_YET_MODELED — implement them, or add them to the list \
+         with intent:\n  {}",
+        missing_and_unlisted.join("\n  ")
+    );
+}
+
+#[test]
+fn not_yet_modeled_list_has_no_stale_entries() {
+    let attrs = parse_attributes_td(ATTRIBUTES_TD);
+    let known: BTreeSet<&str> = attrs.iter().map(|a| a.keyword.as_str()).collect();
+
+    let mut stale = Vec::new();
+    for entry in NOT_YET_MODELED {
+        if !known.contains(entry) {
+            stale.push(*entry);
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "NOT_YET_MODELED names attributes that LLVM 22.1.4 does not define \
+         (typo, or upstream removed them): {stale:?}"
+    );
+}
