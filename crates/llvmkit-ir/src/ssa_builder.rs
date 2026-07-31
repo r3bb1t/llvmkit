@@ -53,6 +53,7 @@
 //! branch. The working builder is minted from `(&module, function,
 //! &mut state)` and dropped again between steps.
 
+use crate::Branded;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -418,7 +419,8 @@ struct VarData {
 /// assert!(format!("{m}").contains("ret void"));
 /// # Ok(()) }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Branded)]
+#[branded(Debug, Clone)]
 pub struct SsaState<B: ModuleBrand> {
     /// The function this state is authoring. Every builder minted from it
     /// must name the same function ([`IrError::SsaForeignFunction`]).

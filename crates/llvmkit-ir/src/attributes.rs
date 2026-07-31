@@ -19,6 +19,7 @@
 //!   list maps function / return / per-parameter slots to attribute
 //!   sets.
 
+use crate::Branded;
 use core::iter::FusedIterator;
 use std::fmt;
 
@@ -479,7 +480,8 @@ impl fmt::Display for AttrKind {
 /// (`Attribute::int`, `Attribute::type_attr`, etc.) refuse mismatched
 /// kinds at runtime; in practice consumers should use the convenience
 /// builders instead of constructing variants directly.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Branded)]
+#[branded(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Attribute<'ctx, B: ModuleBrand> {
     /// Flag-only attribute (`AlwaysInline`, `NoReturn`, ...).
     Enum(AttrKind),
@@ -588,6 +590,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Attribute<'ctx, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Enum(k) => f.write_str(k.name()),
+            Self::Int(AttrKind::Alignment, v) => write!(f, "align {v}"),
+            Self::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
+            Self::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
             Self::Int(k, v) => write!(f, "{}({v})", k.name()),
             Self::Type(k, t) => write!(f, "{}({t})", k.name()),
             Self::Range { ty, lower, upper } => write!(
@@ -631,7 +636,8 @@ impl AttrIndex {
 /// `AttributeSet` (`Attributes.h`); the storage shape here is a flat
 /// `Vec` rather than the upstream `FoldingSet`-uniqued node, which is
 /// fine for the foundation.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(Branded)]
+#[branded(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct AttributeSet<'ctx, B: ModuleBrand> {
     attrs: Vec<Attribute<'ctx, B>>,
 }
@@ -706,7 +712,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FromIterator<Attribute<'ctx, B>> for Attribute
 /// Per-index attribute table. Mirrors `AttributeList` (`Attributes.h`)
 /// in shape; storage is flat (a small `Vec<(AttrIndex, AttributeSet)>`)
 /// instead of the upstream FoldingSet, which is fine for the foundation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Branded)]
+#[branded(Debug, Clone, PartialEq, Eq)]
 pub struct AttributeList<'ctx, B: ModuleBrand> {
     entries: Vec<(AttrIndex, AttributeSet<'ctx, B>)>,
 }
@@ -814,6 +821,9 @@ impl fmt::Display for AttributeStored {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Enum(k) => f.write_str(k.name()),
+            Self::Int(AttrKind::Alignment, v) => write!(f, "align {v}"),
+            Self::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
+            Self::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
             Self::Int(k, v) => write!(f, "{}({v})", k.name()),
             Self::Type(_, _) | Self::Range { .. } => {
                 unreachable!("typed attributes need a module context to print")
@@ -1000,7 +1010,7 @@ mod tests {
         );
         assert_eq!(
             format!("{}", TestAttribute::<'_>::Int(AttrKind::Alignment, 8)),
-            "align(8)"
+            "align 8"
         );
         let s = TestAttribute::<'_>::string("target-features", "+sse2");
         assert_eq!(format!("{s}"), "\"target-features\"=\"+sse2\"");

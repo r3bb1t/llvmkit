@@ -29,6 +29,8 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
+use llvmkit_macros::Branded;
+
 use llvmkit_ir::{
     Dyn, FunctionValue, GlobalAlias, GlobalIFunc, GlobalVariable, MetadataId, ModuleBrand, Type,
     attributes::AttributeStorage,
@@ -38,7 +40,7 @@ use crate::numbered_values::NumberedValues;
 
 /// Erased handle for a slot-numbered global. Mirrors the `GlobalValue *`
 /// payload of upstream `SlotMapping::GlobalValues`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 #[non_exhaustive]
 pub enum GlobalRef<'ctx, B: ModuleBrand> {
     /// Function definition or declaration. Carries the [`Dyn`] return marker
@@ -90,7 +92,8 @@ impl<'ctx, B: ModuleBrand> From<GlobalIFunc<'ctx, B>> for GlobalRef<'ctx, B> {
 /// Lifetime brand: `'ctx` ties every stored handle to a single
 /// [`llvmkit_ir::Module`]. Cross-module mixing is rejected by the borrow
 /// checker (Doctrine D7).
-#[derive(Debug)]
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct SlotMapping<'ctx, B: ModuleBrand> {
     /// Numbered globals — `@0`, `@1`, ... — keyed by slot id.
     pub global_values: NumberedValues<GlobalRef<'ctx, B>>,

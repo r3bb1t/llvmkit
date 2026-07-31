@@ -146,6 +146,7 @@ name = "llvmkit-asmparser"
 version = "0.0.4"
 dependencies = [
  "llvmkit-ir",
+ "llvmkit-macros",
  "llvmkit-support",
  "thiserror",
 ]

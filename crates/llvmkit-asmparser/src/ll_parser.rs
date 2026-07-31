@@ -50,6 +50,7 @@ use llvmkit_ir::{
     constant_fold_select_instruction, derived_types::PointerType, resolve_intrinsic_name,
     shufflevector_mask_from_constant,
 };
+use llvmkit_macros::Branded;
 use llvmkit_support::{Span, Spanned};
 
 use super::asm_parser_context::AsmParserContext;
@@ -191,7 +192,8 @@ fn keyword_text(k: Keyword) -> &'static str {
 /// `NumberedTypes` maps: we keep the type handle plus the location of the
 /// most recent forward reference so `validateEndOfModule` can
 /// blame the right span if the definition never lands.
-#[derive(Debug, Clone, Copy)]
+#[derive(Branded)]
+#[branded(Debug, Clone, Copy)]
 struct TypeEntry<'ctx, B: ModuleBrand> {
     ty: Type<'ctx, B>,
 }
@@ -281,7 +283,8 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
 /// module-level slot mapping so callers can re-use it for follow-on
 /// `parse_constant_value` / `parse_type` calls (mirrors upstream's
 /// `parseAssemblyString(..., SlotMapping *)` pattern).
-#[derive(Debug, Default)]
+#[derive(Branded)]
+#[branded(Debug, Default)]
 pub struct ParsedModule<'ctx, B: ModuleBrand> {
     pub slot_mapping: SlotMapping<'ctx, B>,
     pub summary_index: Option<ModuleSummaryIndex>,
@@ -376,7 +379,8 @@ enum ExpectedIntWidth {
     Bits(u32),
 }
 
-#[derive(Debug)]
+#[derive(Branded)]
+#[branded(Debug)]
 enum ValId<'ctx, B: ModuleBrand> {
     LocalId(u32),
     GlobalId(u32),
@@ -826,6 +830,7 @@ fn is_valid_shufflevector<'ctx, B: ModuleBrand + 'ctx>(
 #[derive(Clone, Copy)]
 struct ParsedAliasHeader {
     linkage: Linkage,
+    dso_locality: llvmkit_ir::DsoLocality,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
     thread_local_mode: ThreadLocalMode,
@@ -3035,6 +3040,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             },
             _ => (Linkage::External, false),
         };
+        let dso_locality = self.parse_optional_dso_locality()?;
         let visibility = if self.eat_keyword(Keyword::Default)? {
             Visibility::Default
         } else if self.eat_keyword(Keyword::Hidden)? {
@@ -3086,6 +3092,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 decl_loc,
                 ParsedAliasHeader {
                     linkage,
+                    dso_locality,
                     visibility,
                     dll_storage_class,
                     thread_local_mode,
@@ -3158,6 +3165,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .module
             .global_builder(&name_string, ty)
             .linkage(linkage)
+            .dso_locality(dso_locality)
             .visibility(visibility)
             .dll_storage_class(dll_storage_class)
             .thread_local_mode(thread_local_mode)
@@ -3214,6 +3222,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         header: ParsedAliasHeader,
     ) -> ParseResult<()> {
         let linkage = header.linkage;
+        let dso_locality = header.dso_locality;
         let visibility = header.visibility;
         let dll_storage_class = header.dll_storage_class;
         let thread_local_mode = header.thread_local_mode;
@@ -3293,6 +3302,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .module
                 .alias_builder(&name_string, value_type, target)
                 .linkage(linkage)
+                .dso_locality(dso_locality)
                 .visibility(visibility)
                 .dll_storage_class(dll_storage_class)
                 .thread_local_mode(thread_local_mode)
@@ -3318,6 +3328,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .module
                 .ifunc_builder(&name_string, value_type, target)
                 .linkage(linkage)
+                .dso_locality(dso_locality)
                 .visibility(visibility);
             if let Some(p) = partition {
                 builder = builder.partition(p);
@@ -3517,6 +3528,34 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
         if let Some(ty) = expected_ty {
             match ty.into_type_enum() {
+                AnyTypeEnum::Array(array_ty) if matches!(self.peek(), Token::Kw(Keyword::C)) => {
+                    self.bump()?;
+                    let bytes: Vec<u8> = match self.peek() {
+                        Token::StringConstant(b) => b.as_ref().to_vec(),
+                        _ => return Err(self.expected("string constant after 'c'")),
+                    };
+                    self.bump()?;
+                    let AnyTypeEnum::Int(elem_ty) = array_ty.element().into_type_enum() else {
+                        return Err(self.expected("i8 array type for c\"...\" constant"));
+                    };
+                    let mut values = Vec::with_capacity(bytes.len());
+                    for b in &bytes {
+                        let c = elem_ty.const_int_checked(u64::from(*b)).map_err(|e| {
+                            ParseError::Expected {
+                                expected: format!("i8 array element for c\"...\" constant: {e}"),
+                                loc: DiagLoc::span(self.loc()),
+                            }
+                        })?;
+                        values.push(c.as_constant());
+                    }
+                    let c = array_ty
+                        .const_array(values)
+                        .map_err(|e| ParseError::Expected {
+                            expected: format!("valid c\"...\" constant: {e}"),
+                            loc: DiagLoc::span(self.loc()),
+                        })?;
+                    return Ok(ValId::Constant(c.as_constant()));
+                }
                 AnyTypeEnum::Array(array_ty) if matches!(self.peek(), Token::LSquare) => {
                     self.expect_punct(PunctKind::LSquare, "'[' to open array constant")?;
                     let values = if matches!(self.peek(), Token::RSquare) {
@@ -4787,6 +4826,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Keyword::Optnone => AttrKind::OptimizeNone,
             Keyword::Optsize => AttrKind::OptimizeForSize,
             Keyword::Speculatable => AttrKind::Speculatable,
+            Keyword::Inreg => AttrKind::InReg,
+            Keyword::Nest => AttrKind::Nest,
+            Keyword::Swiftself => AttrKind::SwiftSelf,
+            Keyword::Norecurse => AttrKind::NoRecurse,
+            Keyword::Hot => AttrKind::Hot,
+            Keyword::Inlinehint => AttrKind::InlineHint,
+            Keyword::SanitizeAddress => AttrKind::SanitizeAddress,
+            Keyword::Nonlazybind => AttrKind::NonLazyBind,
+            Keyword::Minsize => AttrKind::MinSize,
+            Keyword::Ssp => AttrKind::StackProtect,
+            Keyword::Sspstrong => AttrKind::StackProtectStrong,
+            Keyword::Sspreq => AttrKind::StackProtectReq,
             _ => return None,
         })
     }
@@ -4940,7 +4991,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 Token::Kw(Keyword::Alignstack) => {
                     self.bump()?;
+                    self.expect_punct(PunctKind::LParen, "'(' in alignstack attribute")?;
                     let value = self.parse_uint64("alignstack value")?;
+                    self.expect_punct(PunctKind::RParen, "')' after alignstack value")?;
                     let attr = Attribute::<B>::int(AttrKind::StackAlignment, value)
                         .ok_or_else(|| self.expected("attribute"))?;
                     out.add(index, attr);
@@ -4957,6 +5010,74 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         .ok_or_else(|| self.expected("memory attribute"))?;
                     self.bump()?;
                     out.add(index, Attribute::<B>::memory(effects));
+                }
+                Token::Kw(Keyword::Uwtable) => {
+                    self.bump()?;
+                    let kind = if self.eat_punct(PunctKind::LParen)? {
+                        let kind = if self.eat_keyword(Keyword::Sync)? {
+                            1
+                        } else if self.eat_keyword(Keyword::Async)? {
+                            2
+                        } else {
+                            return Err(self.expected("'sync' or 'async' in uwtable"));
+                        };
+                        self.expect_punct(PunctKind::RParen, "')' after uwtable kind")?;
+                        kind
+                    } else {
+                        2
+                    };
+                    let attr = Attribute::<B>::int(AttrKind::UWTable, kind)
+                        .ok_or_else(|| self.expected("attribute"))?;
+                    out.add(index, attr);
+                }
+                Token::Kw(kw @ (Keyword::Dereferenceable | Keyword::DereferenceableOrNull)) => {
+                    let kind = if *kw == Keyword::Dereferenceable {
+                        AttrKind::Dereferenceable
+                    } else {
+                        AttrKind::DereferenceableOrNull
+                    };
+                    self.bump()?;
+                    self.expect_punct(PunctKind::LParen, "'(' in dereferenceable attribute")?;
+                    let bytes = self.parse_uint64("dereferenceable byte count")?;
+                    self.expect_punct(PunctKind::RParen, "')' after dereferenceable byte count")?;
+                    let attr = Attribute::<B>::int(kind, bytes)
+                        .ok_or_else(|| self.expected("attribute"))?;
+                    out.add(index, attr);
+                }
+                Token::Kw(
+                    kw @ (Keyword::Byval
+                    | Keyword::Byref
+                    | Keyword::Inalloca
+                    | Keyword::Sret
+                    | Keyword::Elementtype),
+                ) => {
+                    let kind = match kw {
+                        Keyword::Byval => AttrKind::ByVal,
+                        Keyword::Byref => AttrKind::ByRef,
+                        Keyword::Inalloca => AttrKind::InAlloca,
+                        Keyword::Sret => AttrKind::StructRet,
+                        _ => AttrKind::ElementType,
+                    };
+                    self.bump()?;
+                    self.expect_punct(PunctKind::LParen, "'(' in type attribute")?;
+                    let ty = self.parse_type(false)?;
+                    self.expect_punct(PunctKind::RParen, "')' after type attribute")?;
+                    let attr = Attribute::<B>::type_attr(kind, ty)
+                        .ok_or_else(|| self.expected("attribute"))?;
+                    out.add(index, attr);
+                }
+                Token::Kw(Keyword::Captures) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::LParen, "'(' in captures attribute")?;
+                    if !self.eat_keyword(Keyword::None)? {
+                        return Err(self.expected(
+                            "captures components other than `none` are not supported yet",
+                        ));
+                    }
+                    self.expect_punct(PunctKind::RParen, "')' after captures(none)")?;
+                    let attr = Attribute::<B>::enum_attr(AttrKind::NoCapture)
+                        .ok_or_else(|| self.expected("attribute"))?;
+                    out.add(index, attr);
                 }
                 Token::Kw(Keyword::Range) => {
                     let attr = self.parse_range_attribute()?;
@@ -8707,7 +8828,8 @@ fn parse_hex_apfloat(semantics: ApFloatSemantics, digits: &str) -> IrResult<ApFl
 
 /// Outgoing reference to an incoming phi value that could not be resolved
 /// immediately (forward reference). Resolved by `PerFunctionState::finish`.
-#[derive(Clone, Debug)]
+#[derive(Branded)]
+#[branded(Clone, Debug)]
 enum PhiValRef<'ctx, B: ModuleBrand> {
     /// Already resolved to a concrete value.
     Resolved(llvmkit_ir::Value<'ctx, B>),

@@ -13,13 +13,16 @@ categories.workspace   = true
 
 [features]
 default = ["macros"]
-macros = ["dep:llvmkit-macros"]
+# The dependency itself is unconditional: the crate's own types use
+# `#[derive(Branded)]`. This feature gates only the user-facing macro
+# re-exports (`IrStruct`, `#[function_pass]`, `#[module_pass]`).
+macros = []
 gen-intrinsics = []
 
 [dependencies]
 bitflags  = "2"
 boxcar    = "0.2"
-llvmkit-macros = { workspace = true, optional = true }
+llvmkit-macros = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

@@ -3,10 +3,11 @@ use llvmkit_ir::{
     ModuleBrand, ModuleView, StructFields, StructSchema, StructSchemaValue, StructValue, Type,
     TypeKindLabel, ValidatedStructValue, Value, module_new,
 };
+use llvmkit_macros::Branded;
 
 struct Point;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 struct PointValue<'ctx, B: ModuleBrand> {
     raw: StructValue<'ctx, B>,
 }
@@ -189,7 +190,7 @@ impl StructSchema for EmptyName {
 
 struct Rect;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 struct RectValue<'ctx, B: ModuleBrand> {
     raw: StructValue<'ctx, B>,
 }

@@ -52,6 +52,7 @@
 
 #![deny(missing_docs)]
 
+use crate::Branded;
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
 
@@ -90,7 +91,7 @@ use super::worklist::Worklist;
 /// Stores the raw parts of the viewed block rather than a [`BasicBlock`]
 /// (which is a deliberately non-`Copy` linear handle), so the read-only view
 /// is `Copy` like its sibling [`FunctionView`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct BasicBlockView<'ctx, B: ModuleBrand> {
     id: ValueSlot,
     module: ModuleRef<'ctx, B>,
@@ -226,7 +227,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIterator for BasicBlockView<'ctx, B> {
 }
 
 /// Read-only view of a function under its owning module brand.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct FunctionView<'ctx, B: ModuleBrand> {
     function: FunctionValue<'ctx, Dyn, B>,
 }
@@ -380,7 +381,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoFunctionId<B> for Functio
 }
 
 /// Mutation-capable view of one function body.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct FunctionBody<'ctx, B: ModuleBrand> {
     function: FunctionValue<'ctx, Dyn, B>,
 }

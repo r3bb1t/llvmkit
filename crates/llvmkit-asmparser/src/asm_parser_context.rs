@@ -35,6 +35,8 @@
 
 use std::collections::HashMap;
 
+use llvmkit_macros::Branded;
+
 use llvmkit_ir::{
     BasicBlock, BasicBlockLabel, BlockId, BlockTerminationState, Dyn, FunctionValue,
     InstructionView, ModuleBrand, ReturnMarker, Value,
@@ -56,7 +58,8 @@ pub enum LocationError {
 
 /// Forward / reverse location maps for one IR-handle category, keyed on
 /// the erased [`Value`] identity.
-#[derive(Debug)]
+#[derive(Branded)]
+#[branded(Debug)]
 struct LocMap<'ctx, B: ModuleBrand> {
     forward: HashMap<Value<'ctx, B>, FileLocRange>,
     /// Reverse map kept sorted by `range.start` for binary-search queries.
@@ -126,7 +129,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> LocMap<'ctx, B> {
 /// Mirrors the three tables of upstream `AsmParserContext` (functions,
 /// blocks, instructions). Lifetime brand `'ctx` ties every entry to a
 /// single [`llvmkit_ir::Module`] (Doctrine D7).
-#[derive(Debug)]
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct AsmParserContext<'ctx, B: ModuleBrand> {
     functions: LocMap<'ctx, B>,
     blocks: LocMap<'ctx, B>,

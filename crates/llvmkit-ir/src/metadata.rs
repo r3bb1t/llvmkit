@@ -31,6 +31,7 @@
 
 use core::marker::PhantomData;
 
+use crate::Branded;
 use crate::error::{IrError, IrResult};
 use crate::module::{Invariant, ModuleBrand, ModuleId};
 use crate::value::ValueSlot;
@@ -373,7 +374,8 @@ impl SpecializedMetadataKind {
 // --------------------------------------------------------------------------
 
 /// A typed field value inside a specialized `DI*` node.
-#[derive(Debug, Clone)]
+#[derive(Branded)]
+#[branded(Debug, Clone)]
 pub enum MetadataFieldValue<B: ModuleBrand> {
     Null,
     Bool(bool),
@@ -422,7 +424,8 @@ impl<B: ModuleBrand> MetadataFieldValue<B> {
 }
 
 /// One `name: value` pair in a specialized `DI*` node.
-#[derive(Debug, Clone)]
+#[derive(Branded)]
+#[branded(Debug, Clone)]
 pub struct MetadataField<B: ModuleBrand> {
     name: String,
     value: MetadataFieldValue<B>,
@@ -463,7 +466,8 @@ impl<B: ModuleBrand> MetadataField<B> {
 }
 
 /// Stored specialized node. Field order is significant and mirrors source.
-#[derive(Debug, Clone)]
+#[derive(Branded)]
+#[branded(Debug, Clone)]
 pub struct SpecializedMetadataNode<B: ModuleBrand> {
     distinct: bool,
     kind: SpecializedMetadataKind,
@@ -543,7 +547,7 @@ impl<B: ModuleBrand> SpecializedMetadataNode<B> {
 
 /// Metadata operand used by new-format `#dbg_*` records. Operands are stored by
 /// id so the record remains lifetime-free inside instruction storage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub enum DebugMetadataOperand<B: ModuleBrand> {
     Metadata(MetadataId<B>),
     Value(ValueId<B>),
@@ -619,7 +623,8 @@ impl DebugVariableRecordKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Branded)]
+#[branded(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DebugVariableRecord<B: ModuleBrand> {
     kind: DebugVariableRecordKind,
     location: DebugMetadataOperand<B>,
@@ -733,7 +738,8 @@ impl<B: ModuleBrand> DebugVariableRecord<B> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Branded)]
+#[branded(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DebugRecord<B: ModuleBrand> {
     Variable(DebugVariableRecord<B>),
     Label {
@@ -808,7 +814,8 @@ impl DebugRecord<StoredBrand> {
 // --------------------------------------------------------------------------
 
 /// Base metadata discriminant. Mirrors `Metadata::MetadataKind` in `Metadata.h`.
-#[derive(Debug, Clone)]
+#[derive(Branded)]
+#[branded(Debug, Clone)]
 pub enum MetadataKind<B: ModuleBrand> {
     /// `null` metadata operand placeholder.
     Null,
@@ -876,7 +883,8 @@ impl<B: ModuleBrand> MetadataKind<B> {
 
 /// Ordered metadata attachment set. Duplicate kinds replace the old node while
 /// preserving insertion position, matching LLVM attachment semantics.
-#[derive(Debug, Clone)]
+#[derive(Branded)]
+#[branded(Debug, Clone)]
 pub struct MetadataAttachmentSet<B: ModuleBrand> {
     entries: Vec<(MetadataAttachmentKind, MetadataId<B>)>,
 }

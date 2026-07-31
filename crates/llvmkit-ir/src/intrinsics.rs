@@ -5,6 +5,7 @@
 //! needed by existing analysis and verifier paths.
 use core::num::NonZeroU32;
 
+use crate::Branded;
 use crate::attributes::{AttrIndex, AttrKind, Attribute, AttributeStorage, MemoryEffects};
 use crate::derived_types::FunctionType;
 use crate::error::{IrError, IrResult};
@@ -16,7 +17,8 @@ use std::borrow::Cow;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct IntrinsicId(NonZeroU32);
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
+#[branded(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct IntrinsicDescriptor<'ctx, B: ModuleBrand> {
     id: IntrinsicId,
     overloads: Box<[Type<'ctx, B>]>,

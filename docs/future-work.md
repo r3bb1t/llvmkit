@@ -12,6 +12,66 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## Parser — deferred alias/ifunc targets (found 2026-07-31)
+
+The printer emits aliases and ifuncs before function declarations (upstream
+`printGlobal` order), but the parser resolves an alias/ifunc target eagerly at
+the declaration, so a printed module whose ifunc resolver is a function
+declared later does not re-parse (`use of undefined Global`). Globals already
+have deferred-initializer machinery; aliases and ifuncs need the same
+treatment (a placeholder target patched at end-of-module). Pinned by
+`parser_attribute_matrix.rs::known_gap_ifunc_forward_resolver_round_trip` —
+when fixed, that test flips to asserting the round-trip.
+
+## Bare brands / `Branded` derive — home and follow-ups (2026-07-31)
+
+- **`llvmkit-macros` is the permanent home of the `Branded` derive, not a
+  stopgap.** Upstream LLVM's answer to drift-prone repetitive definitions is
+  build-time generation (its lexer and parser both `#include` the
+  TableGen-generated `Attributes.inc` — `LLLexer.cpp:701-704`,
+  `LLParser.cpp:1547-1551` in the vendored 22.1.4 tree); `gen_intrinsics` in
+  `build.rs` and the macros crate are this project's two arms of the same
+  philosophy. The ecosystem norm agrees (`serde_derive`, `thiserror-impl` are
+  permanent companion crates).
+- **Optional simplification, not planned work:** RFC 3698 (`macro_derive`,
+  rust-lang/rust#143549) would let the derive live inside `llvmkit-ir` as a
+  `macro_rules!` derive. It is nightly-only with open stabilization blockers.
+  If it ever stabilizes at or below the pinned toolchain, the migration is one
+  re-export line (`lib.rs`'s `pub(crate) use llvmkit_macros::Branded`) — worth
+  doing only if `llvmkit-macros` optionality matters then.
+- **Fold backlog: ~30 hand-written bound-free impl families remain** (≈150
+  impls) that predate the derive and could migrate to `#[derive(Branded)]`
+  one family at a time: `Type`, `Value`, `IntValue`, `FloatValue`,
+  `ArrayValue`, `VectorValue`, `ModuleRef`, `ModuleView`, `FunctionValue`,
+  `CallInst`/`TypedCallInst`, the phi handles, `SwitchInst`/`IndirectBrInst`/
+  `InvokeInst`/`LandingPadInst`/`CatchSwitchInst`, `IntType`/`FloatType`/
+  `ArrayType`/`StructType`/`VectorType`, `TypedPointerValue`, `SsaBlock`, the
+  SSA variables, `MetadataId`, `Instruction`. Each fold must compare the
+  hand-written `PartialEq`/`Hash` field walk against the full field list and
+  keep custom `Debug` bodies manual (several print computed values). Sound as
+  they are; this is deduplication, not a fix.
+
+## 0.0.4 program plan — deviation records (2026-07-31)
+
+A post-freeze verification pass compared the shipped library against the
+2026-07-24 id-first program plan. Four deviations; one resolved in code (the
+supertrait drop above), three resolved by record — reality wins:
+
+1. **`BasicBlockLabel` lives by design.** The plan's law 6 said "deleted",
+   contradicting law 1 ("every handle survives as the view layer"). The
+   implementation resolved the contradiction correctly: `BlockId` is the
+   storable id, `BasicBlockLabel` the view it resolves to.
+2. **The tag check lives at the id→slot boundary, not inside the arena
+   accessors.** Plan invariant 5 predates A1's decision to make slots bare
+   untagged indices; once slots carry no tag, `Context::value_data` has
+   nothing to check. The check sits in `into_stored` / `resolve_in`.
+   Verified unbypassable: public methods *return* raw slots (19 of them),
+   none accept one, none construct one.
+3. **`ValueSlot`/`TypeSlot` stay `pub`** — `llvmkit-asmparser` genuinely
+   consumes them. Narrowing that surface (the parser carrying tagged ids
+   instead) is folded into the Milestone 0 parser cycle, which reworks that
+   crate anyway.
+
 ## Killer-feature designs (deferred)
 
 - **Inline IR macro DSL** -- a `ir!{ %sum = add i32 %a, %b }` proc-macro

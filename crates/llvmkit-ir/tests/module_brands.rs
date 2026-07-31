@@ -23,14 +23,35 @@ use llvmkit_ir::{
     module_new,
 };
 
-/// Declare a brand type exactly as a user would: a unit struct, the six
-/// derives [`ModuleBrand`] requires, and the empty impl.
+/// Declare a brand type exactly as a user would: a bare unit struct and the
+/// empty impl. [`ModuleBrand`] demands nothing else — no derives — so every
+/// test in this file doubles as proof that bare brands work.
 macro_rules! brand {
     ($name:ident) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         struct $name;
         impl ModuleBrand for $name {}
     };
+}
+
+/// The headline of the relaxation, stated as its own test: a brand type that
+/// implements nothing at all — not `Clone`, not `Debug` — builds, verifies,
+/// and prints a module end-to-end.
+#[test]
+fn bare_brand_builds_a_module() {
+    struct Bare;
+    impl ModuleBrand for Bare {}
+
+    let m = Module::branded::<Bare, _>("bare").expect("brand is free");
+    let f = m
+        .add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)
+        .expect("declare");
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IRBuilder::at_end(entry);
+    let (lhs, rhs) = m.view(f).params();
+    let sum = b.build_int_add(lhs, rhs, "sum").expect("add");
+    b.build_ret(sum).expect("ret");
+    let verified = m.verify().expect("verifies");
+    assert!(format!("{verified}").contains("define i32 @add"));
 }
 
 // --------------------------------------------------------------------------

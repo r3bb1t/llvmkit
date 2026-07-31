@@ -19,12 +19,13 @@ use super::comdat::ComdatRef;
 use super::constant::{Constant, IsConstant};
 use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, ValueCategoryLabel};
-use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
+use super::global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
 use super::value_id::GlobalId;
+use crate::Branded;
 
 use super::constants::ConstantIntValue;
 use super::metadata::MetadataAttachmentSet;
@@ -50,6 +51,7 @@ pub(super) struct GlobalVariableData {
     pub(super) externally_initialized: Cell<bool>,
     pub(super) initializer: Cell<Option<ValueSlot>>,
     pub(super) linkage: Cell<Linkage>,
+    pub(super) dso_locality: Cell<DsoLocality>,
     pub(super) visibility: Cell<Visibility>,
     pub(super) dll_storage_class: Cell<DllStorageClass>,
     pub(super) thread_local_mode: Cell<ThreadLocalMode>,
@@ -76,7 +78,7 @@ pub(super) struct GlobalVariableData {
 /// (`ptr addrspace(N)`). Use [`Self::value_type`] to obtain the type
 /// of the stored data, and [`Self::initializer`] to read the
 /// initializer when one is present.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct GlobalVariable<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
@@ -333,6 +335,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     #[inline]
     pub fn linkage(self) -> Linkage {
         self.data().linkage.get()
+    }
+
+    /// DSO locality (`dso_local` / `dso_preemptable`). Mirrors
+    /// `GlobalValue::isDSOLocal`.
+    pub fn dso_locality(self) -> DsoLocality {
+        self.data().dso_locality.get()
+    }
+
+    /// Set the DSO locality. Mirrors `GlobalValue::setDSOLocal`.
+    pub fn set_dso_locality(self, _module: &'ctx Module<B, Unverified>, dso: DsoLocality) {
+        self.data().dso_locality.set(dso);
     }
 
     /// Update the linkage. Mirrors `GlobalValue::setLinkage`.
@@ -615,6 +628,7 @@ pub struct GlobalBuilder<'ctx, B: ModuleBrand> {
     externally_initialized: bool,
     initializer: Option<ValueSlot>,
     linkage: Linkage,
+    dso_locality: DsoLocality,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
     thread_local_mode: ThreadLocalMode,
@@ -640,6 +654,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             externally_initialized: false,
             initializer: None,
             linkage: Linkage::External,
+            dso_locality: DsoLocality::Default,
             visibility: Visibility::Default,
             dll_storage_class: DllStorageClass::Default,
             thread_local_mode: ThreadLocalMode::NotThreadLocal,
@@ -667,6 +682,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
     /// Linkage. Mirrors the `Linkage` ctor argument.
     pub fn linkage(mut self, linkage: Linkage) -> Self {
         self.linkage = linkage;
+        self
+    }
+
+    /// DSO locality (`dso_local` / `dso_preemptable`). Mirrors
+    /// `GlobalValue::setDSOLocal`.
+    pub fn dso_locality(mut self, dso: DsoLocality) -> Self {
+        self.dso_locality = dso;
         self
     }
 
@@ -770,6 +792,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             externally_initialized,
             initializer,
             linkage,
+            dso_locality,
             visibility,
             dll_storage_class,
             thread_local_mode,
@@ -787,6 +810,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             externally_initialized: Cell::new(externally_initialized),
             initializer: Cell::new(initializer),
             linkage: Cell::new(linkage),
+            dso_locality: Cell::new(dso_locality),
             visibility: Cell::new(visibility),
             dll_storage_class: Cell::new(dll_storage_class),
             thread_local_mode: Cell::new(thread_local_mode),

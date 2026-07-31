@@ -7,6 +7,37 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### Parser — ordinary `clang` output now parses (Milestone 0, keyword slice)
+
+#### Added
+
+- **The ~21 attribute keywords real compiler output uses**: `uwtable` (with
+  the kind grammar — bare means async, `uwtable(sync)` round-trips),
+  `norecurse`, `hot`, `inlinehint`, `sanitize_address`, `ssp`, `sspstrong`,
+  `sspreq`, `nonlazybind`, `minsize`; parameter attributes `byval(T)`,
+  `sret(T)`, `byref(T)`, `inalloca(T)`, `elementtype(T)`,
+  `dereferenceable(N)`, `dereferenceable_or_null(N)`, `inreg`, `nest`,
+  `swiftself`; and `captures(none)`, mapped to the modeled `nocapture` (other
+  capture components are a pinpointed error, never a silent drop).
+- **`dso_local` / `dso_preemptable` on global variables, aliases, and
+  ifuncs** — stored, printed in upstream `printGlobal` order, and settable via
+  the same getter/setter surface every other global property has. Previously
+  the specifiers were accepted on `define`/`declare` only, which alone
+  rejected plain `clang` output.
+- **`c"..."` string-constant initializers** (`@.str = ... c"hello\0"`),
+  which the printer already emitted but the parser could not read back.
+- The probe matrix that found all of this ships as
+  `tests/parser_attribute_matrix.rs`, including clang-shaped `-O0` and `-O2`
+  whole programs asserted to parse, verify, and round-trip.
+
+#### Fixed
+
+- The attribute Displays printed parameter alignment as `align(4)`; the
+  grammar everywhere — including our own parser — is `align 4`. All three
+  print sites now emit the space form.
+- `alignstack` parsed a space form the printer never produced; it now uses
+  the upstream paren form `alignstack(N)` end to end.
+
 ## [0.0.4] — unreleased
 
 The id-first redesign. Cycles A–E reshaped the core currency of the API —
@@ -28,6 +59,34 @@ let f = m.add_typed_function::<i32, (i32, i32), _>  // declarations return ids
     ("add", Linkage::External)?;
 let entry = m.view(f).append_basic_block(&m, "entry");   // ids resolve to handles
 ```
+
+### Bare brands — `ModuleBrand` drops its supertraits
+
+#### Changed (breaking-loosening)
+
+- **A brand is now a bare unit struct.** `ModuleBrand`'s supertraits
+  (`Copy + Debug + Eq + Hash`) are gone; the trait is `'static` only, so
+  `struct LiftedBin; impl ModuleBrand for LiftedBin {}` is a complete brand
+  declaration. Every brand that compiled before still compiles — this is a
+  loosening — but generic code that *relied* on receiving those impls through
+  a `B: ModuleBrand` bound must now ask for them explicitly.
+- The supertraits existed because ~100 brand-generic container types used std
+  `#[derive]`, which bounds every type parameter whether or not a field uses
+  it. Those containers now use **`#[derive(Branded)]`** from `llvmkit-macros`:
+  the same impls with the item's generics copied verbatim and no inferred
+  bounds. `PartialEq`/`Hash` are generated from one shared field walk (the
+  contract cannot drift), and a wrong `Copy` is still rejected by the compiler
+  (`E0204`, locked by a compile-fail fixture).
+- **`llvmkit-macros` is now a required dependency of `llvmkit-ir`** (and of
+  `llvmkit-asmparser`). A proc-macro crate is build-time only — it contributes
+  nothing to the built artifact. The `macros` feature still gates exactly what
+  it gated before: the user-facing `IrStruct` / `#[function_pass]` /
+  `#[module_pass]` re-exports.
+- **`Debug` on view types no longer prints phantom fields**, following the
+  `decl_value_id!` convention. `#[derive(IrStruct)]`'s generated `<Struct>Value`
+  wrapper emits the same bound-free impls inline.
+- `module_new!`'s generated brand struct is bare (no derives) — the registry
+  keys on `TypeId` alone.
 
 ### Packaging
 

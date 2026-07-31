@@ -14,9 +14,10 @@ use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use super::r#type::{Type, TypeSlot};
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
 use super::{DebugLoc, IrError, IrResult};
+use crate::Branded;
 
 /// Typed handle for a function parameter.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct Argument<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,

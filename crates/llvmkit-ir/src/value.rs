@@ -24,6 +24,7 @@
 //!   the matching kind. Bound generic code with the sealed
 //!   [`IsValue`] / [`Typed`] / [`HasName`] / [`HasDebugLoc`] traits.
 
+use crate::Branded;
 use core::cell::RefCell;
 use core::iter::FusedIterator;
 use core::num::NonZeroUsize;
@@ -692,7 +693,7 @@ macro_rules! decl_value_handle {
         type_predicate $pred:expr
     ) => {
         $(#[$attr])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[derive(Branded)]
         pub struct $name<'ctx, B: ModuleBrand> {
             pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
@@ -1193,7 +1194,7 @@ impl<'ctx, E: VecElem, const N: u64, B: ModuleBrand + 'ctx> From<ArrayValue<'ctx
 }
 
 /// Value whose type is a struct.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct StructValue<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,

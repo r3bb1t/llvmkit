@@ -18,12 +18,13 @@
 
 use core::fmt;
 
+use crate::Branded;
 use crate::error::{IrError, IrResult, TypeKindLabel};
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeSlot};
 
 /// Typed pointer (`<elem>*`, `<elem> addrspace(N)*`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct TypedPointerType<'ctx, B: ModuleBrand> {
     pub(crate) id: TypeSlot,
     pub(crate) module: ModuleRef<'ctx, B>,

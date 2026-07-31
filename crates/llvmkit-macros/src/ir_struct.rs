@@ -164,9 +164,45 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         .map(|(generic, ty)| quote! { #generic: #ir::IntoIrField<'ctx, #ty, B> });
 
     Ok(quote! {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         #vis struct #value_ident<'ctx, B: #ir::ModuleBrand> {
             raw: #ir::StructValue<'ctx, B>,
+        }
+
+        // Bound-free std impls, spelled out instead of derived: a std derive
+        // would demand `B: Clone`/`Debug`/… of the brand, and brands are bare
+        // unit structs. Mirrors the `Branded` derive's output for this shape.
+        #[automatically_derived]
+        impl<'ctx, B: #ir::ModuleBrand> ::core::clone::Clone for #value_ident<'ctx, B> {
+            #[inline]
+            fn clone(&self) -> Self {
+                *self
+            }
+        }
+        #[automatically_derived]
+        impl<'ctx, B: #ir::ModuleBrand> ::core::marker::Copy for #value_ident<'ctx, B> {}
+        #[automatically_derived]
+        impl<'ctx, B: #ir::ModuleBrand> ::core::fmt::Debug for #value_ident<'ctx, B> {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                f.debug_struct(::core::stringify!(#value_ident))
+                    .field("raw", &self.raw)
+                    .finish()
+            }
+        }
+        #[automatically_derived]
+        impl<'ctx, B: #ir::ModuleBrand> ::core::cmp::PartialEq for #value_ident<'ctx, B> {
+            #[inline]
+            fn eq(&self, other: &Self) -> bool {
+                self.raw == other.raw
+            }
+        }
+        #[automatically_derived]
+        impl<'ctx, B: #ir::ModuleBrand> ::core::cmp::Eq for #value_ident<'ctx, B> {}
+        #[automatically_derived]
+        impl<'ctx, B: #ir::ModuleBrand> ::core::hash::Hash for #value_ident<'ctx, B> {
+            #[inline]
+            fn hash<__H: ::core::hash::Hasher>(&self, state: &mut __H) {
+                ::core::hash::Hash::hash(&self.raw, state);
+            }
         }
 
         impl<'ctx, B> #value_ident<'ctx, B>
