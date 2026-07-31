@@ -527,19 +527,20 @@ impl ApFloat {
         }
     }
 
+    /// Quiet a signaling NaN, **preserving its payload and sign**.
+    ///
+    /// Ports `IEEEFloat::makeQuiet` (`APFloat.cpp:4723`), which is exactly one
+    /// operation — `APInt::tcSetBit(significandParts(), precision - 2)`. It
+    /// does not rebuild the value, so the payload survives; that is what makes
+    /// `snan123 + 1.0` produce `nan123` rather than a default quiet NaN, as
+    /// every `SpecialCaseTests` row in `APFloatTest.cpp` asserts.
     pub fn make_quiet(&self) -> ApFloat {
         if !self.is_nan() || !self.is_signaling() {
             return self.clone();
         }
-        Self::qnan(
-            self.semantics,
-            if self.is_negative() {
-                ApFloatSign::Negative
-            } else {
-                ApFloatSign::Positive
-            },
-            NanPayload::Absent,
-        )
+        let mut bits = self.to_bits();
+        bits.set_bit(quiet_bit_index(self.semantics));
+        Self::from_bits_unchecked(self.semantics, bits.words())
     }
 
     fn convert_quiet_nan_to(&self, semantics: ApFloatSemantics) -> ApFloat {
@@ -1778,6 +1779,28 @@ enum FiniteBinaryOp {
 enum MagnitudeOp {
     Add,
     Subtract,
+}
+
+/// Index, within the stored bit pattern, of the bit that distinguishes a quiet
+/// NaN from a signaling one.
+///
+/// Upstream spells this `semantics->precision - 2` as an offset into
+/// `significandParts()` (`IEEEFloat::makeQuiet`, `APFloat.cpp:4723`). For every
+/// semantics with an implicit leading significand bit, and for x87 where the
+/// leading bit is stored explicitly, that offset is also the index into the
+/// whole stored pattern, so `precision() - 2` is used directly.
+///
+/// `PpcDoubleDouble` is the exception, and deliberately so: upstream stores it
+/// as a `DoubleAPFloat` pair and `APFloat::makeQuiet` reaches it through
+/// `getIEEE()` (`APFloat.h:1298`), which is the **high** `double`. So the bit
+/// is the `IeeeDouble` quiet bit displaced into the high word, not an offset
+/// derived from this semantics' own 106-bit precision — that number describes
+/// the pair's combined significand and has no single quiet bit.
+fn quiet_bit_index(semantics: ApFloatSemantics) -> u32 {
+    match semantics {
+        ApFloatSemantics::PpcDoubleDouble => 64 + (ApFloatSemantics::IeeeDouble.precision() - 2),
+        other => other.precision() - 2,
+    }
 }
 
 fn special_binary_result(

@@ -7,6 +7,47 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ApFloat bit-exactness audit (three fixes)
+
+Audited against LLVM's own `llvm/unittests/ADT/APFloatTest.cpp` from the
+vendored 22.1.4 tree, not against hand-derived expectations. All 784 rows of
+the `add` / `subtract` / `multiply` / `divide` special-case tables now ship as
+`llvmkit-ir/tests/ap_float_upstream_arithmetic.rs`.
+
+#### Fixed
+
+- **A signaling NaN lost its payload when it was quieted.** `make_quiet`
+  rebuilt a default quiet NaN instead of setting the quiet bit, so
+  `snan123 + 1.0` produced a bare `nan` where LLVM produces `nan123`. It now
+  ports `IEEEFloat::makeQuiet` (`APFloat.cpp:4723`) exactly — one bit set, sign
+  and payload untouched. This was the *only* divergence in the 784-row
+  arithmetic matrix: it accounted for all 104 failing rows, and every row not
+  involving a signaling NaN already matched bit for bit.
+- **`fp128` hex literals parsed with their two 64-bit halves transposed.**
+  `0xL…` is not a big-endian 128-bit number: `LLLexer::HexToIntPair`
+  (`LLLexer.cpp:86`) reads the first sixteen hex digits into the APInt's *low*
+  word. llvmkit read the whole string big-endian, so
+  `0xL00000000000000003FFF000000000000` — LLVM's spelling of 1.0 — was read as
+  a subnormal, and printing it back produced a different spelling.
+- **`ppc_fp128` printed its two components in the wrong order.** Upstream
+  writes the leading double first (`AsmWriter.cpp:1611-1616` prints
+  `getLoBits(64)` first, and its low word holds `DoubleAPFloat::Floats[0]`).
+  Values were never wrong here — llvmkit stores the pair mirrored from upstream
+  and the two mirrorings cancelled on the parse side — but the printed text
+  disagreed with LLVM, and `parse → print` oscillated between two spellings.
+
+  Two round-trip fixtures asserted the transposed spellings and were updated;
+  they had encoded the defect.
+
+#### Known divergence, now recorded and pinned
+
+- `ApFloat::to_bits` does **not** agree with upstream's `bitcastToAPInt` for
+  `PpcDoubleDouble` alone: llvmkit keeps the leading double in the high word
+  where upstream keeps it in the low word. Invisible to finite arithmetic
+  (llvmkit sums both components) and invisible in the textual form (reader and
+  printer both compensate); visible only to a raw-bit reader. Pinned by
+  `llvmkit-ir/tests/ap_float_ppc_word_order.rs`.
+
 ### Lexer diagnostics name what the lexer choked on
 
 #### Changed

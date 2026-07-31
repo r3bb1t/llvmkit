@@ -8916,8 +8916,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .map_err(|_| self.expected("valid hex bfloat literal"))?,
                 FpLit::HexX87(s) => parse_hex_apfloat(ApFloatSemantics::X87DoubleExtended, s)
                     .map_err(|_| self.expected("valid hex x87 literal"))?,
-                FpLit::HexQuad(s) => parse_hex_apfloat(ApFloatSemantics::IeeeQuad, s)
+                FpLit::HexQuad(s) => parse_hex_apfloat_pair(ApFloatSemantics::IeeeQuad, s)
                     .map_err(|_| self.expected("valid hex quad literal"))?,
+                // NOT the pair reader, because llvmkit's `PpcDoubleDouble` bit
+                // layout is itself the mirror of upstream's: `ppc_words`
+                // (`ap_float.rs`) reads the *high* word as the leading double,
+                // where `DoubleAPFloat::bitcastToAPInt` puts the leading double
+                // in the low word. The two mirrorings cancel, so reading the
+                // digits big-endian assigns the halves exactly as upstream's
+                // `HexToIntPair` does. See `parse_hex_apfloat_pair` for why
+                // `fp128`, which has no component pair, needs the other reader.
                 FpLit::HexPpc128(s) => parse_hex_apfloat(ApFloatSemantics::PpcDoubleDouble, s)
                     .map_err(|_| self.expected("valid hex ppc128 literal"))?,
             },
@@ -8928,9 +8936,65 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     }
 }
 
+/// `0xH`, `0xR`, `0x…`, and `0xK` — forms whose hex digits are a plain
+/// big-endian integer of the semantics' own width.
+///
+/// `0xK` (`x86_fp80`) belongs here even though upstream reads it through
+/// `FP80HexToIntPair` (`LLLexer.cpp:107`): that helper takes the first four
+/// digits as the high word and the next sixteen as the low word, which for an
+/// 80-bit value is exactly big-endian order. `AsmWriter` prints it the same
+/// way, `getHiBits(16)` then `getLoBits(64)` (`AsmWriter.cpp:1599-1604`).
 fn parse_hex_apfloat(semantics: ApFloatSemantics, digits: &str) -> IrResult<ApFloat> {
     let bits = ApInt::from_string(semantics.bit_width(), digits, 16)?;
     ApFloat::from_bits(semantics, &bits)
+}
+
+/// `0xL` (`fp128`) and `0xM` (`ppc_fp128`) — **not** big-endian.
+///
+/// Ports `LLLexer::HexToIntPair` (`LLLexer.cpp:86`) exactly: the first sixteen
+/// hex digits are the *low* 64-bit word and the next sixteen are the high
+/// word, which is also the order `AsmWriter` prints them in — `getLoBits(64)`
+/// then `getHiBits(64)` (`AsmWriter.cpp:1605-1616`). Reading these as one
+/// big-endian 128-bit number transposes the halves, which both changes the
+/// value and makes `parse → print` non-idempotent against llvmkit's own
+/// printer.
+///
+/// Upstream's fewer-than-sixteen-digit behaviour is mirrored too, quirk
+/// included: the low word is only filled when at least sixteen digits are
+/// present, so a short literal such as `0xL1` lands entirely in the *high*
+/// word.
+fn parse_hex_apfloat_pair(semantics: ApFloatSemantics, digits: &str) -> IrResult<ApFloat> {
+    let bytes = digits.as_bytes();
+    let (low_digits, high_digits) = if bytes.len() >= 16 {
+        digits.split_at(16)
+    } else {
+        ("", digits)
+    };
+    let low = hex_word(low_digits)?;
+    let high = hex_word(high_digits)?;
+    let bits = ApInt::from_words(semantics.bit_width(), &[low, high]);
+    ApFloat::from_bits(semantics, &bits)
+}
+
+/// One 64-bit word of a `0xL` / `0xM` literal. At most sixteen hex digits, so
+/// the accumulation cannot overflow; more than that is upstream's
+/// "constant bigger than 128 bits detected".
+fn hex_word(digits: &str) -> IrResult<u64> {
+    if digits.len() > 16 {
+        return Err(IrError::InvalidOperation {
+            message: "hexadecimal float word is longer than 16 digits",
+        });
+    }
+    let mut word = 0u64;
+    for byte in digits.bytes() {
+        let digit = char::from(byte)
+            .to_digit(16)
+            .ok_or(IrError::InvalidOperation {
+                message: "hexadecimal float literal has a non-hex digit",
+            })?;
+        word = word * 16 + u64::from(digit);
+    }
+    Ok(word)
 }
 
 // ── Helper enums ────────────────────────────────────────────────────────────

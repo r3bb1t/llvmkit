@@ -118,6 +118,12 @@ fn decimal_x86_fp80_literal_keeps_bits_beyond_host_double() {
 /// llvmkit-specific subset of
 /// `llvm/lib/Support/APFloat.cpp::DoubleAPFloat::convertFromString`:
 /// decimal ppc_fp128 tokens keep the low double component below host precision.
+///
+/// The **leading** component is written first (`0x3FF0000000000000`, exactly
+/// 1.0), then the residual — upstream's order, since `AsmWriter` prints
+/// `getLoBits(64)` first and upstream's low word holds
+/// `DoubleAPFloat::Floats[0]`. This expectation previously had the two halves
+/// the other way round, matching a printer that disagreed with LLVM.
 #[test]
 fn decimal_ppc_fp128_literal_keeps_low_component_beyond_host_double() {
     let text = parse_and_render(
@@ -125,12 +131,18 @@ fn decimal_ppc_fp128_literal_keeps_low_component_beyond_host_double() {
         b"@p = global ppc_fp128 1.0000000000000001\n",
     );
     assert!(
-        text.contains("@p = global ppc_fp128 0xM3C9CD2B297D889BC3FF0000000000000"),
+        text.contains("@p = global ppc_fp128 0xM3FF00000000000003C9CD2B297D889BC"),
         "{text}"
     );
 }
 
 /// Port of `LLLexer.cpp` hex APFloat token forms and parser semantic lowering.
+///
+/// Every form now round-trips to **its own spelling**, which is the property
+/// `LLLexer::HexToIntPair` and `AsmWriter` give upstream. `0xL` and `0xM`
+/// previously came back with their two 64-bit halves transposed, because the
+/// parser read the digits as one big-endian 128-bit number where upstream
+/// reads the first sixteen into the *low* word.
 #[test]
 fn exotic_hex_float_literals_round_trip_bits() {
     let text = parse_and_render(
@@ -140,7 +152,7 @@ fn exotic_hex_float_literals_round_trip_bits() {
     assert!(text.contains("@h = global half 0xH3C00"), "{text}");
     assert!(text.contains("@b = global bfloat 0xR3F80"), "{text}");
     assert!(
-        text.contains("@q = global fp128 0xL00000000000000003FFF000000000000"),
+        text.contains("@q = global fp128 0xL3FFF0000000000000000000000000000"),
         "{text}"
     );
     assert!(
@@ -148,7 +160,7 @@ fn exotic_hex_float_literals_round_trip_bits() {
         "{text}"
     );
     assert!(
-        text.contains("@p = global ppc_fp128 0xM00000000000000003FF0000000000000"),
+        text.contains("@p = global ppc_fp128 0xM3FF00000000000000000000000000000"),
         "{text}"
     );
 }
