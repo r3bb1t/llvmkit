@@ -128,6 +128,28 @@ llvmkit does not need to copy Mergen. The actionable takeaway is that a practica
 
 ## Milestone 0: Textual `.ll` parser completeness
 
+### Status (2026-07-31)
+
+**The keyword inventory below is closed.** All listed function attributes,
+parameter/return attributes (including the typed `byval(T)`/`sret(T)` family
+and `uwtable`'s kind grammar), and `dso_local`/`dso_preemptable` on globals,
+aliases, and ifuncs now parse, print, and round-trip. Landing the probe matrix
+as a test (`parser_attribute_matrix.rs`) immediately surfaced and fixed three
+more gaps the keyword census could not see: `c"..."` string-constant
+initializers (in every clang module as `@.str`), the printer emitting
+parameter `align(4)` where the grammar everywhere is `align 4`, and
+`alignstack` parsing a space form while printing the upstream paren form.
+Both clang-shaped acceptance programs (-O0 and -O2) parse, verify, and
+round-trip in that test file.
+
+Remaining in this milestone: work item 4 (the diagnostics sweep), the
+pre-existing ifunc-forward-resolver round-trip gap (pinned by
+`known_gap_ifunc_forward_resolver_round_trip`; needs deferred alias/ifunc
+targets in the parser), and the durable anti-drift step — generating the
+attribute keyword table from the vendored `Attributes.td` the way upstream's
+lexer does (`LLLexer.cpp:701-704`), which also means vendoring that `.td`
+into the shipped `tablegen/` tree.
+
 ### Why this is first
 
 Measured 2026-07-27 by consuming the published crate surface from an external

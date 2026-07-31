@@ -3528,6 +3528,34 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
         if let Some(ty) = expected_ty {
             match ty.into_type_enum() {
+                AnyTypeEnum::Array(array_ty) if matches!(self.peek(), Token::Kw(Keyword::C)) => {
+                    self.bump()?;
+                    let bytes: Vec<u8> = match self.peek() {
+                        Token::StringConstant(b) => b.as_ref().to_vec(),
+                        _ => return Err(self.expected("string constant after 'c'")),
+                    };
+                    self.bump()?;
+                    let AnyTypeEnum::Int(elem_ty) = array_ty.element().into_type_enum() else {
+                        return Err(self.expected("i8 array type for c\"...\" constant"));
+                    };
+                    let mut values = Vec::with_capacity(bytes.len());
+                    for b in &bytes {
+                        let c = elem_ty.const_int_checked(u64::from(*b)).map_err(|e| {
+                            ParseError::Expected {
+                                expected: format!("i8 array element for c\"...\" constant: {e}"),
+                                loc: DiagLoc::span(self.loc()),
+                            }
+                        })?;
+                        values.push(c.as_constant());
+                    }
+                    let c = array_ty
+                        .const_array(values)
+                        .map_err(|e| ParseError::Expected {
+                            expected: format!("valid c\"...\" constant: {e}"),
+                            loc: DiagLoc::span(self.loc()),
+                        })?;
+                    return Ok(ValId::Constant(c.as_constant()));
+                }
                 AnyTypeEnum::Array(array_ty) if matches!(self.peek(), Token::LSquare) => {
                     self.expect_punct(PunctKind::LSquare, "'[' to open array constant")?;
                     let values = if matches!(self.peek(), Token::RSquare) {
@@ -4963,7 +4991,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 Token::Kw(Keyword::Alignstack) => {
                     self.bump()?;
+                    self.expect_punct(PunctKind::LParen, "'(' in alignstack attribute")?;
                     let value = self.parse_uint64("alignstack value")?;
+                    self.expect_punct(PunctKind::RParen, "')' after alignstack value")?;
                     let attr = Attribute::<B>::int(AttrKind::StackAlignment, value)
                         .ok_or_else(|| self.expected("attribute"))?;
                     out.add(index, attr);
