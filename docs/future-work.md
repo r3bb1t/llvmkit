@@ -12,16 +12,23 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
-## Parser — deferred alias/ifunc targets (found 2026-07-31)
+## ~~Parser — deferred alias/ifunc targets~~ (found and fixed 2026-07-31)
 
-The printer emits aliases and ifuncs before function declarations (upstream
-`printGlobal` order), but the parser resolves an alias/ifunc target eagerly at
-the declaration, so a printed module whose ifunc resolver is a function
-declared later does not re-parse (`use of undefined Global`). Globals already
-have deferred-initializer machinery; aliases and ifuncs need the same
-treatment (a placeholder target patched at end-of-module). Pinned by
-`parser_attribute_matrix.rs::known_gap_ifunc_forward_resolver_round_trip` —
-when fixed, that test flips to asserting the round-trip.
+~~The printer emits aliases and ifuncs before function declarations, but the
+parser resolved their target eagerly, so a printed module whose ifunc resolver
+was declared later did not re-parse.~~ **Fixed:** forward targets become a null
+placeholder patched at end of module, mirroring `personality`. Covered by
+`parser_attribute_matrix.rs::alias_and_ifunc_forward_targets`.
+
+## Parser — lexer diagnostics carry no text (found 2026-07-31)
+
+`LexError::UnknownToken` renders as a bare `invalid token`, so an unknown
+attribute keyword, a bogus global property, and a malformed `uwtable(...)` kind
+all produce the same uninformative message. The lexer has the offending bytes
+at each of its 11 construction sites; threading them into the variant would let
+the message name what it choked on (`unknown keyword 'bogusattr'`). Deliberately
+out of Milestone 0's scope — it is a lexer-wide refactor, not a parser fix —
+but it is the largest remaining diagnostics win.
 
 ## Bare brands / `Branded` derive — home and follow-ups (2026-07-31)
 

@@ -7,6 +7,33 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### Parser — Milestone 0 complete
+
+#### Added
+
+- **Aliases and ifuncs may name a target declared later in the file.** The
+  printer emits them before function declarations, so a printed module whose
+  ifunc resolver is a declared function previously failed to re-parse. Forward
+  targets now become a placeholder patched at end of module, mirroring the
+  mechanism `personality` already used. Backward references and genuinely
+  undefined targets are unchanged.
+- **An anti-drift guard for the attribute keyword table.** `Attributes.td` is
+  vendored under `llvmkit-asmparser/tablegen/`, and a test asserts every LLVM
+  22.1.4 attribute is either accepted by the parser in a position the `.td`
+  declares for it, or named in an explicit `NOT_YET_MODELED` list. A new
+  upstream attribute, or one the parser silently stops accepting, now fails
+  CI — the failure mode that hid the ~21 missing keywords in the first place.
+
+#### Fixed
+
+- A global with declaration linkage (`external`, `extern_weak`) carrying an
+  initializer reported `expected top-level entity`, pointing at the wrong
+  construct entirely. It now reports that a global with that linkage is a
+  declaration and takes no initializer.
+- Two parser messages read wrong through the `expected {}` frame: a doubled
+  `expected expected comma after …`, and a capitalised sentence
+  (`An alias or ifunc must have pointer type`) wedged into the fragment slot.
+
 ### Parser — ordinary `clang` output now parses (Milestone 0, keyword slice)
 
 #### Added
