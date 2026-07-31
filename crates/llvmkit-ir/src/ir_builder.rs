@@ -35,6 +35,7 @@ pub mod constant_folder;
 pub mod folder;
 pub mod no_folder;
 
+use crate::Branded;
 use core::marker::PhantomData;
 
 use super::align::{Align, MaybeAlign};
@@ -257,7 +258,8 @@ impl BuilderPositionState for Positioned {}
 /// `IRBuilderBase::InsertPoint` in `IRBuilder.h`. The `block` is `None`
 /// when the builder was unpositioned at save time; `before` is `None`
 /// when the saved location was end-of-block.
-#[derive(Debug)]
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct InsertPoint<'ctx, R: ReturnMarker, B: ModuleBrand> {
     pub(super) block_id: Option<ValueSlot>,
     pub(super) before: Option<ValueSlot>,
@@ -9497,7 +9499,8 @@ mod tests {
     /// `narrow_folded_int` / `narrow_folded_cast_int` never run on this
     /// path; the only remaining guard is the builder's own
     /// `accept_folded_int` / `accept_folded_cast_int` type check.
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Branded)]
+    #[branded(Debug, Clone, Copy)]
     struct HostileTypedFolder<'ctx, B: ModuleBrand + 'ctx> {
         /// Always a 64-bit constant, deliberately the wrong width for any
         /// 32-bit `W` the builder calls this with.
@@ -9549,7 +9552,8 @@ mod tests {
     /// asked for. Drives the two float acceptors
     /// (`accept_folded_fp` / `accept_folded_cast_fp`), which the same
     /// `bf57e17` change made unconditional.
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Branded)]
+    #[branded(Debug, Clone, Copy)]
     struct HostileTypedFpFolder<'ctx, B: ModuleBrand + 'ctx> {
         /// Always a `double` constant, deliberately the wrong kind for any
         /// `float` `K` the builder calls this with.

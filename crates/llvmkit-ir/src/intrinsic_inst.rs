@@ -8,22 +8,23 @@ use super::marker::{Dyn, ReturnMarker};
 use super::module::ModuleBrand;
 use super::value::Value;
 use super::value_id::IntrinsicInstId;
+use crate::Branded;
 
 /// A call whose callee is a generated LLVM intrinsic declaration.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct IntrinsicInst<'ctx, R: ReturnMarker, B: ModuleBrand> {
     call: CallInst<'ctx, R, B>,
     id: IntrinsicId,
 }
 
 /// Memory intrinsic call wrapper for `llvm.memcpy`, `llvm.memmove`, and `llvm.memset`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct MemIntrinsic<'ctx, B: ModuleBrand, R: ReturnMarker = Dyn> {
     inner: IntrinsicInst<'ctx, R, B>,
 }
 
 /// Lifetime intrinsic call wrapper for `llvm.lifetime.start/end`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct LifetimeIntrinsic<'ctx, B: ModuleBrand, R: ReturnMarker = Dyn> {
     inner: IntrinsicInst<'ctx, R, B>,
 }

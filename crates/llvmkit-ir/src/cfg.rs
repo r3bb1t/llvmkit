@@ -2,6 +2,7 @@
 //! used by verifier and analysis code: successor, predecessor, and edge
 //! enumeration over `BasicBlock` / terminator instruction structure.
 
+use crate::Branded;
 use core::iter::FusedIterator;
 use std::collections::HashMap;
 
@@ -21,7 +22,7 @@ use super::value_id::{BlockId, FunctionId};
 ///
 /// Lifetime-free like the ids it holds — resolve an endpoint with
 /// [`Module::view`](crate::Module::view) when you need to read the block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct BasicBlockEdge<B: ModuleBrand> {
     start: BlockId<Dyn, B>,
     end: BlockId<Dyn, B>,
@@ -48,7 +49,8 @@ impl<B: ModuleBrand> BasicBlockEdge<B> {
 
 /// Recomputed CFG view for one function. Successor/predecessor lists
 /// preserve duplicate edges, matching LLVM's CFG iterators.
-#[derive(Debug, Clone)]
+#[derive(Branded)]
+#[branded(Debug, Clone)]
 pub struct FunctionCfg<'ctx, B: ModuleBrand + 'ctx> {
     function: FunctionValue<'ctx, Dyn, B>,
     successors: HashMap<ValueSlot, Vec<ValueSlot>>,

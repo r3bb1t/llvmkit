@@ -35,6 +35,7 @@ use super::float_kind::IntoConstantFloat;
 use super::int_width::IntoConstantInt;
 use super::module::ModuleBrand;
 use super::value::ValueKindData;
+use crate::Branded;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::module::{Module, ModuleRef, Unverified};
 use crate::r#type::{Type, TypeSlot};
@@ -436,7 +437,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> BlockAddressPlaceholder<'ctx, B> {
 /// passes.
 ///
 /// [`ConstantIntValue`]: crate::constants::ConstantIntValue
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct Constant<'ctx, B: ModuleBrand> {
     pub(crate) id: ValueSlot,
     pub(crate) module: ModuleRef<'ctx, B>,

@@ -25,6 +25,7 @@
 //! - [`BasicMetadataTypeEnum`] - basic + metadata, used for variadic
 //!   intrinsic argument typing.
 
+use crate::Branded;
 use core::fmt;
 use core::iter::FusedIterator;
 
@@ -1219,7 +1220,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TargetExtType<'ctx, B> {
 // --------------------------------------------------------------------------
 
 /// Exhaustive enum over every type kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub enum AnyTypeEnum<'ctx, B: ModuleBrand> {
     Void(VoidType<'ctx, B>),
     Int(IntType<'ctx, IntDyn, B>),
@@ -1304,7 +1305,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for AnyTypeEnum<'ctx, B> {
 /// in the type system - that any `SizedType` you hold is provably
 /// sized: methods that require sizedness can take it directly without
 /// runtime checks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct SizedType<'ctx, B: ModuleBrand>(pub(super) Type<'ctx, B>);
 
 impl<'ctx, B: ModuleBrand> SizedType<'ctx, B> {
@@ -1343,7 +1344,7 @@ impl<'ctx, B: ModuleBrand> fmt::Display for SizedType<'ctx, B> {
 
 /// First-class types that may carry an SSA value: integer / float /
 /// pointer / array / struct / vector. Mirrors LLVM's "basic" type group.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub enum BasicTypeEnum<'ctx, B: ModuleBrand> {
     Int(IntType<'ctx, IntDyn, B>),
     Float(FloatType<'ctx, FloatDyn, B>),
@@ -1411,7 +1412,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for BasicTypeEnum<'ctx, B> {
 
 /// Basic + metadata. Used for the typing of variadic intrinsics whose
 /// arguments may include `metadata` slots (e.g. `@llvm.dbg.value`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub enum BasicMetadataTypeEnum<'ctx, B: ModuleBrand> {
     Int(IntType<'ctx, IntDyn, B>),
     Float(FloatType<'ctx, FloatDyn, B>),
@@ -1476,7 +1477,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for BasicMetadataTypeEnum<'ctx, B
 /// Aggregate marker - array or struct. Vectors are deliberately excluded
 /// so `extractvalue` / `insertvalue` cannot accept a vector source
 /// (matches `Type.h` + LangRef).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub enum AggregateType<'ctx, B: ModuleBrand> {
     Array(ArrayType<'ctx, ElemDyn, ArrLenDyn, B>),
     Struct(StructType<'ctx, StructBodyDyn, B>),

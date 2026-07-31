@@ -21,6 +21,7 @@
 
 use super::module::ModuleBrand;
 use super::value::Value;
+use crate::Branded;
 
 /// A read-only view of one operand-edge: "user `U` references value
 /// `V` at operand index `i`".
@@ -28,7 +29,7 @@ use super::value::Value;
 /// Lifetimes match the originating [`User`](crate::user::User) borrow.
 /// The view is `Copy`; mutating the use-graph goes through `User`'s
 /// own (yet-to-land) editing methods.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct Use<'ctx, B: ModuleBrand> {
     user: Value<'ctx, B>,
     operand: Value<'ctx, B>,

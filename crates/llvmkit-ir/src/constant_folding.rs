@@ -38,6 +38,7 @@ use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, Type, TypeData};
 use super::value::{IsValue, Value, ValueKindData, ValueSlot};
 use super::vec_len::LenDyn;
 use super::{ApInt, Dyn, FunctionValue, IrError, IrResult};
+use crate::Branded;
 
 /// Whether folds that depend on host/libm floating-point determinism are allowed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -99,7 +100,8 @@ impl PreservedCastFlags {
 }
 
 /// Constant pointer offset relative to one global object.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
+#[branded(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ConstantOffsetFromGlobal<'ctx, B: ModuleBrand> {
     global: GlobalVariable<'ctx, B>,
     offset: ApInt,

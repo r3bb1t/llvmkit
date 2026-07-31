@@ -51,9 +51,10 @@ use super::value::{
     HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, ValueUse, sealed,
 };
 use super::vec_len::VecLen;
+use crate::Branded;
 use core::convert::Infallible;
 use core::fmt;
-use core::hash::{Hash, Hasher};
+use core::hash::Hash;
 use core::marker::PhantomData;
 
 use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
@@ -198,6 +199,8 @@ decl_constant_handle!(
 // --------------------------------------------------------------------------
 
 /// Integer constant of width `W`.
+#[derive(Branded)]
+#[branded(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConstantIntValue<'ctx, W: IntWidth, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
@@ -205,27 +208,6 @@ pub struct ConstantIntValue<'ctx, W: IntWidth, B: ModuleBrand> {
     pub(super) _w: PhantomData<W>,
 }
 
-impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Clone for ConstantIntValue<'ctx, W, B> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Copy for ConstantIntValue<'ctx, W, B> {}
-impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PartialEq for ConstantIntValue<'ctx, W, B> {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id && self.module == other.module && self.ty == other.ty
-    }
-}
-impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Eq for ConstantIntValue<'ctx, W, B> {}
-impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> Hash for ConstantIntValue<'ctx, W, B> {
-    fn hash<H: Hasher>(&self, h: &mut H) {
-        self.id.hash(h);
-        self.module.hash(h);
-        self.ty.hash(h);
-    }
-}
 impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> fmt::Debug for ConstantIntValue<'ctx, W, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ConstantIntValue")
@@ -410,6 +392,8 @@ impl_constant_int_static_try_from!(i128, 128);
 // --------------------------------------------------------------------------
 
 /// Floating-point constant of kind `K`.
+#[derive(Branded)]
+#[branded(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConstantFloatValue<'ctx, K: FloatKind, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
@@ -417,26 +401,6 @@ pub struct ConstantFloatValue<'ctx, K: FloatKind, B: ModuleBrand> {
     pub(super) _k: PhantomData<K>,
 }
 
-impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Clone for ConstantFloatValue<'ctx, K, B> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Copy for ConstantFloatValue<'ctx, K, B> {}
-impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> PartialEq for ConstantFloatValue<'ctx, K, B> {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id && self.module == other.module && self.ty == other.ty
-    }
-}
-impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Eq for ConstantFloatValue<'ctx, K, B> {}
-impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> Hash for ConstantFloatValue<'ctx, K, B> {
-    fn hash<H: Hasher>(&self, h: &mut H) {
-        self.id.hash(h);
-        self.module.hash(h);
-        self.ty.hash(h);
-    }
-}
 impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> fmt::Debug for ConstantFloatValue<'ctx, K, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ConstantFloatValue")
@@ -979,7 +943,8 @@ impl<'ctx, E: VecElem, L: VecLen, B: ModuleBrand + 'ctx> VectorType<'ctx, E, L, 
 // Parser-needed ConstantExpr and special constants
 // --------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Branded)]
+#[branded(Debug, Clone)]
 pub struct ConstantExprOptions<'ctx, B: ModuleBrand> {
     source_ty: Option<Type<'ctx, B>>,
     flags: ConstantExprFlags,

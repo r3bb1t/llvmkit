@@ -18,6 +18,7 @@
 //! rather than silently slipping through a wildcard. Exhaustiveness is
 //! the safety feature, not an oversight.
 
+use crate::Branded;
 use core::iter::FusedIterator;
 
 use super::asm_writer::{SlotTracker, fmt_instruction};
@@ -343,7 +344,7 @@ pub struct Instruction<'ctx, S: state::InstructionState, B: ModuleBrand> {
 /// copyable containers such as basic blocks and use-lists; it exposes
 /// inspection, metadata, naming, and operand access without lifecycle
 /// mutation capabilities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct InstructionView<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
@@ -1657,7 +1658,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<Instruction<'ctx, state::Attached, B>> fo
 /// return [`PointerValue`](crate::PointerValue) from `src()`).
 ///
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
-#[derive(Debug)]
+#[derive(Branded)]
+#[branded(Debug)]
 pub enum CastKind<'ctx, B: ModuleBrand> {
     Trunc(TruncInst<'ctx, B>),
     ZExt(ZExtInst<'ctx, B>),
@@ -1771,7 +1773,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
 /// `as_int_value()` lied on `f64`/pointer phis.
 ///
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`].
-#[derive(Debug)]
+#[derive(Branded)]
+#[branded(Debug)]
 pub enum PhiKind<'ctx, B: ModuleBrand> {
     Int(PhiInst<'ctx, IntDyn, B>),
     Fp(FpPhiInst<'ctx, FloatDyn, B>),
@@ -1876,7 +1879,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
 /// compile in every pass that has not considered it — that compile error
 /// is the safety feature (a silent `_` fallthrough would let a new opcode
 /// take whatever behavior the wildcard happens to have).
-#[derive(Debug)]
+#[derive(Branded)]
+#[branded(Debug)]
 pub enum InstructionKind<'ctx, B: ModuleBrand> {
     Add(AddInst<'ctx, B>),
     Sub(SubInst<'ctx, B>),
@@ -1968,7 +1972,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionKind<'ctx, B> {
 ///
 /// Deliberately **exhaustive** for the same reason as [`InstructionKind`]:
 /// a new terminator opcode must break every downstream `match`.
-#[derive(Debug)]
+#[derive(Branded)]
+#[branded(Debug)]
 pub enum TerminatorKind<'ctx, B: ModuleBrand> {
     Ret(RetInst<'ctx, B>),
     Br(BranchInst<'ctx, B>),
@@ -1990,7 +1995,8 @@ pub enum TerminatorKind<'ctx, B: ModuleBrand> {
 /// other category and so require the caller to remember which to call —
 /// [`InstructionView::classify`] is total: it always names the category, so
 /// a forgotten `is_terminator()` guard cannot mis-handle a terminator.
-#[derive(Debug)]
+#[derive(Branded)]
+#[branded(Debug)]
 pub enum Classified<'ctx, B: ModuleBrand> {
     /// A non-terminator instruction.
     Inst(InstructionKind<'ctx, B>),
@@ -2004,7 +2010,7 @@ pub enum Classified<'ctx, B: ModuleBrand> {
 /// erasing a terminator is a *compile* error rather than a runtime
 /// rejection — a terminator-erase that would break a `PatchBody` pass's
 /// "CFG preserved" floor is unrepresentable.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct NonTerminator<'ctx, B: ModuleBrand> {
     view: InstructionView<'ctx, B>,
 }

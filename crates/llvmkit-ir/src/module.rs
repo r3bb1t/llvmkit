@@ -39,6 +39,7 @@
 //! ifuncs, and the typestate struct-body setters — requires the unverified
 //! [`Module`] token instead.
 
+use crate::Branded;
 use core::any::TypeId;
 use core::hash::{Hash, Hasher};
 use core::iter::FusedIterator;
@@ -549,14 +550,15 @@ impl<B: ModuleBrand> core::fmt::Debug for ModuleRef<'_, B> {
 /// [`ModuleRef`] is the bare **storage pointer** grade. The two have the same
 /// layout on purpose — see [`ModuleRef`]'s "Why this is not `ModuleView`"
 /// section for why they stay distinct types.
-#[derive(Clone, Copy)]
+#[derive(Branded)]
+#[branded(Clone, Copy)]
 pub struct ModuleView<'ctx, B: ModuleBrand> {
     core: &'ctx ModuleCore,
     _brand: Invariant<B>,
 }
 
 /// Read-only branded view of a global variable.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct GlobalVariableView<'ctx, B: ModuleBrand> {
     global: GlobalVariable<'ctx, B>,
 }
@@ -669,7 +671,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariableView<'ctx, B> {
 }
 
 /// Read-only branded view of a global alias.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct GlobalAliasView<'ctx, B: ModuleBrand> {
     alias: GlobalAlias<'ctx, B>,
 }
@@ -747,7 +749,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasView<'ctx, B> {
 }
 
 /// Read-only branded view of a global ifunc.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct GlobalIFuncView<'ctx, B: ModuleBrand> {
     ifunc: GlobalIFunc<'ctx, B>,
 }
@@ -810,7 +812,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncView<'ctx, B> {
 }
 
 /// Read-only branded view of a COMDAT.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct ComdatView<'ctx, B: ModuleBrand> {
     comdat: ComdatRef<'ctx, B>,
 }

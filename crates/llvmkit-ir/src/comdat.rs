@@ -16,6 +16,7 @@
 //! to avoid arena cross-references.
 
 use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
+use crate::Branded;
 use core::fmt;
 
 /// Comdat arena index. Stable for the lifetime of the owning
@@ -98,7 +99,8 @@ impl ComdatData {
 /// Borrowed handle for a [`ComdatData`]. Mirrors how upstream LLVM
 /// passes `Comdat *` around: cheap, copy-able. Identity is
 /// (module, ComdatId).
-#[derive(Clone, Copy)]
+#[derive(Branded)]
+#[branded(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ComdatRef<'ctx, B: ModuleBrand> {
     pub(crate) module: ModuleRef<'ctx, B>,
     pub(crate) id: ComdatId,
@@ -139,21 +141,6 @@ impl<'ctx, B: ModuleBrand> ComdatRef<'ctx, B> {
     /// verified module does hand out a `ComdatRef`.
     pub fn set_selection_kind(self, _module_token: &Module<B, Unverified>, kind: SelectionKind) {
         self.data().selection_kind.set(kind);
-    }
-}
-
-impl<B: ModuleBrand> PartialEq for ComdatRef<'_, B> {
-    fn eq(&self, other: &Self) -> bool {
-        self.module == other.module && self.id == other.id
-    }
-}
-
-impl<B: ModuleBrand> Eq for ComdatRef<'_, B> {}
-
-impl<B: ModuleBrand> core::hash::Hash for ComdatRef<'_, B> {
-    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
-        self.module.hash(h);
-        self.id.hash(h);
     }
 }
 

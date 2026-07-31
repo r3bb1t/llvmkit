@@ -26,6 +26,7 @@
 use core::marker::PhantomData;
 
 use super::value::ValueKindData;
+use crate::Branded;
 use crate::derived_types::FunctionType;
 use crate::module::{ModuleBrand, ModuleRef, ModuleView};
 use crate::r#type::TypeSlot;
@@ -153,7 +154,7 @@ pub(crate) struct InlineAsmData {
 /// Shape mirrors [`GlobalVariable`](crate::global_variable::GlobalVariable)
 /// / [`FunctionValue`](crate::function::FunctionValue): a `(ValueSlot,
 /// ModuleRef, TypeSlot)` triple plus the cached pointer type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct InlineAsm<'ctx, B: ModuleBrand> {
     pub(crate) id: ValueSlot,
     pub(crate) module: ModuleRef<'ctx, B>,

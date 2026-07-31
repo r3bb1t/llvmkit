@@ -371,3 +371,8 @@ pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
 
 #[cfg(feature = "macros")]
 pub use llvmkit_macros::{IrStruct, function_pass, module_pass};
+
+// Crate-internal: the bound-free derive every branded view type uses. One
+// re-export so the sites say `use crate::Branded;` — if the derive ever moves
+// in-crate (RFC 3698 `macro_derive`), this is the only line that changes.
+pub(crate) use llvmkit_macros::Branded;
