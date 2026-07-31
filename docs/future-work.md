@@ -12,6 +12,17 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## Parser — deferred alias/ifunc targets (found 2026-07-31)
+
+The printer emits aliases and ifuncs before function declarations (upstream
+`printGlobal` order), but the parser resolves an alias/ifunc target eagerly at
+the declaration, so a printed module whose ifunc resolver is a function
+declared later does not re-parse (`use of undefined Global`). Globals already
+have deferred-initializer machinery; aliases and ifuncs need the same
+treatment (a placeholder target patched at end-of-module). Pinned by
+`parser_attribute_matrix.rs::known_gap_ifunc_forward_resolver_round_trip` —
+when fixed, that test flips to asserting the round-trip.
+
 ## Bare brands / `Branded` derive — home and follow-ups (2026-07-31)
 
 - **`llvmkit-macros` is the permanent home of the `Branded` derive, not a

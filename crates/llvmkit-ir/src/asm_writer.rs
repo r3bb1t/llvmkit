@@ -23,7 +23,7 @@ use core::fmt::Write as _;
 use std::collections::HashMap;
 
 use super::atomic_ordering::AtomicOrdering;
-use super::attributes::{AttributeStorage, AttributeStored};
+use super::attributes::{AttrKind, AttributeStorage, AttributeStored};
 use super::basic_block::BasicBlock;
 use super::block_state::BlockTerminationState;
 use super::comdat::ComdatRef;
@@ -2388,6 +2388,9 @@ fn fmt_attribute_stored<'ctx, B: ModuleBrand + 'ctx>(
 ) -> fmt::Result {
     match attr {
         AttributeStored::Enum(k) => f.write_str(k.name()),
+        AttributeStored::Int(AttrKind::Alignment, v) => write!(f, "align {v}"),
+        AttributeStored::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
+        AttributeStored::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
         AttributeStored::Int(k, v) => write!(f, "{}({v})", k.name()),
         AttributeStored::Type(k, ty_id) => write!(f, "{}({})", k.name(), Type::new(*ty_id, module)),
         AttributeStored::Range { ty, lower, upper } => write!(
@@ -3054,6 +3057,10 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
         f.write_str(" ")?;
     }
 
+    if let Some(s) = g.dso_locality().keyword() {
+        f.write_str(s)?;
+        f.write_str(" ")?;
+    }
     // Visibility / DLL / TLS / unnamed-addr. Each prints with a
     // trailing space when present. Order mirrors `printGlobal`.
     if let Some(s) = g.visibility().keyword() {
@@ -3146,6 +3153,10 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
         f.write_str(linkage_kw)?;
         f.write_str(" ")?;
     }
+    if let Some(s) = a.dso_locality().keyword() {
+        f.write_str(s)?;
+        f.write_str(" ")?;
+    }
     if let Some(s) = a.visibility().keyword() {
         f.write_str(s)?;
         f.write_str(" ")?;
@@ -3192,6 +3203,10 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     let linkage_kw = i.linkage().keyword();
     if !linkage_kw.is_empty() {
         f.write_str(linkage_kw)?;
+        f.write_str(" ")?;
+    }
+    if let Some(s) = i.dso_locality().keyword() {
+        f.write_str(s)?;
         f.write_str(" ")?;
     }
     if let Some(s) = i.visibility().keyword() {

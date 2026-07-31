@@ -7,7 +7,7 @@ use super::DebugLoc;
 use super::constant::{Constant, IsConstant};
 use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
-use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
+use super::global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 use super::metadata::MetadataAttachmentSet;
 use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
@@ -23,6 +23,7 @@ pub(super) struct GlobalAliasData {
     pub(super) address_space: u32,
     pub(super) aliasee: Cell<ValueSlot>,
     pub(super) linkage: Cell<Linkage>,
+    pub(super) dso_locality: Cell<DsoLocality>,
     pub(super) visibility: Cell<Visibility>,
     pub(super) dll_storage_class: Cell<DllStorageClass>,
     pub(super) thread_local_mode: Cell<ThreadLocalMode>,
@@ -149,6 +150,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
     #[inline]
     pub fn linkage(self) -> Linkage {
         self.data().linkage.get()
+    }
+
+    /// DSO locality (`dso_local` / `dso_preemptable`). Mirrors
+    /// `GlobalValue::isDSOLocal`.
+    pub fn dso_locality(self) -> DsoLocality {
+        self.data().dso_locality.get()
+    }
+
+    /// Set the DSO locality. Mirrors `GlobalValue::setDSOLocal`.
+    pub fn set_dso_locality(self, _module: &'ctx Module<B, Unverified>, dso: DsoLocality) {
+        self.data().dso_locality.set(dso);
     }
 
     #[inline]
@@ -316,6 +328,7 @@ pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand> {
     aliasee_type: TypeSlot,
     address_space: u32,
     linkage: Linkage,
+    dso_locality: DsoLocality,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
     thread_local_mode: ThreadLocalMode,
@@ -341,6 +354,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
             aliasee_type: aliasee.ty,
             address_space,
             linkage: Linkage::External,
+            dso_locality: DsoLocality::Default,
             visibility: Visibility::Default,
             dll_storage_class: DllStorageClass::Default,
             thread_local_mode: ThreadLocalMode::NotThreadLocal,
@@ -351,6 +365,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
 
     pub fn linkage(mut self, linkage: Linkage) -> Self {
         self.linkage = linkage;
+        self
+    }
+
+    /// DSO locality (`dso_local` / `dso_preemptable`). Mirrors
+    /// `GlobalValue::setDSOLocal`.
+    pub fn dso_locality(mut self, dso: DsoLocality) -> Self {
+        self.dso_locality = dso;
         self
     }
 
@@ -420,6 +441,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
             aliasee_type: _,
             address_space,
             linkage,
+            dso_locality,
             visibility,
             dll_storage_class,
             thread_local_mode,
@@ -432,6 +454,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
             address_space,
             aliasee: Cell::new(aliasee),
             linkage: Cell::new(linkage),
+            dso_locality: Cell::new(dso_locality),
             visibility: Cell::new(visibility),
             dll_storage_class: Cell::new(dll_storage_class),
             thread_local_mode: Cell::new(thread_local_mode),
