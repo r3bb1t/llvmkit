@@ -19,6 +19,7 @@
 //!   list maps function / return / per-parameter slots to attribute
 //!   sets.
 
+use crate::Branded;
 use core::iter::FusedIterator;
 use std::fmt;
 
@@ -479,7 +480,8 @@ impl fmt::Display for AttrKind {
 /// (`Attribute::int`, `Attribute::type_attr`, etc.) refuse mismatched
 /// kinds at runtime; in practice consumers should use the convenience
 /// builders instead of constructing variants directly.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Branded)]
+#[branded(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Attribute<'ctx, B: ModuleBrand> {
     /// Flag-only attribute (`AlwaysInline`, `NoReturn`, ...).
     Enum(AttrKind),
@@ -631,7 +633,8 @@ impl AttrIndex {
 /// `AttributeSet` (`Attributes.h`); the storage shape here is a flat
 /// `Vec` rather than the upstream `FoldingSet`-uniqued node, which is
 /// fine for the foundation.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(Branded)]
+#[branded(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct AttributeSet<'ctx, B: ModuleBrand> {
     attrs: Vec<Attribute<'ctx, B>>,
 }
@@ -706,7 +709,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FromIterator<Attribute<'ctx, B>> for Attribute
 /// Per-index attribute table. Mirrors `AttributeList` (`Attributes.h`)
 /// in shape; storage is flat (a small `Vec<(AttrIndex, AttributeSet)>`)
 /// instead of the upstream FoldingSet, which is fine for the foundation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Branded)]
+#[branded(Debug, Clone, PartialEq, Eq)]
 pub struct AttributeList<'ctx, B: ModuleBrand> {
     entries: Vec<(AttrIndex, AttributeSet<'ctx, B>)>,
 }

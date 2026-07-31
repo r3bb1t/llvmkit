@@ -1,5 +1,6 @@
 //! Module-level indirect function. Mirrors `llvm/include/llvm/IR/GlobalIFunc.h`.
 
+use crate::Branded;
 use core::cell::{Cell, RefCell};
 
 use super::DebugLoc;
@@ -26,7 +27,7 @@ pub(super) struct GlobalIFuncData {
     pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct GlobalIFunc<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,

@@ -29,6 +29,34 @@ let f = m.add_typed_function::<i32, (i32, i32), _>  // declarations return ids
 let entry = m.view(f).append_basic_block(&m, "entry");   // ids resolve to handles
 ```
 
+### Bare brands — `ModuleBrand` drops its supertraits
+
+#### Changed (breaking-loosening)
+
+- **A brand is now a bare unit struct.** `ModuleBrand`'s supertraits
+  (`Copy + Debug + Eq + Hash`) are gone; the trait is `'static` only, so
+  `struct LiftedBin; impl ModuleBrand for LiftedBin {}` is a complete brand
+  declaration. Every brand that compiled before still compiles — this is a
+  loosening — but generic code that *relied* on receiving those impls through
+  a `B: ModuleBrand` bound must now ask for them explicitly.
+- The supertraits existed because ~100 brand-generic container types used std
+  `#[derive]`, which bounds every type parameter whether or not a field uses
+  it. Those containers now use **`#[derive(Branded)]`** from `llvmkit-macros`:
+  the same impls with the item's generics copied verbatim and no inferred
+  bounds. `PartialEq`/`Hash` are generated from one shared field walk (the
+  contract cannot drift), and a wrong `Copy` is still rejected by the compiler
+  (`E0204`, locked by a compile-fail fixture).
+- **`llvmkit-macros` is now a required dependency of `llvmkit-ir`** (and of
+  `llvmkit-asmparser`). A proc-macro crate is build-time only — it contributes
+  nothing to the built artifact. The `macros` feature still gates exactly what
+  it gated before: the user-facing `IrStruct` / `#[function_pass]` /
+  `#[module_pass]` re-exports.
+- **`Debug` on view types no longer prints phantom fields**, following the
+  `decl_value_id!` convention. `#[derive(IrStruct)]`'s generated `<Struct>Value`
+  wrapper emits the same bound-free impls inline.
+- `module_new!`'s generated brand struct is bare (no derives) — the registry
+  keys on `TypeId` alone.
+
 ### Packaging
 
 #### Fixed

@@ -198,6 +198,11 @@ fn typestate_compile_fail() {
     // the brand type used there really is `!Send`, so asserting that
     // `Module<NotSendBrand, S>: Send` is not vacuous.
     t.compile_fail("tests/compile_fail/not_send_brand_is_really_not_send.rs");
+    // Bare brands (0.0.4 freeze): `#[derive(Branded)]` emits `impl Copy`
+    // without inferred bounds, but the compiler still checks the fields —
+    // a non-`Copy` field under the default full-six request is `E0204`,
+    // never a silently wrong `Copy`.
+    t.compile_fail("tests/compile_fail/branded_copy_needs_copy_fields.rs");
     // Cycle E: a module is an owned value that can be dropped, so a borrowing
     // handle minted from it cannot outlive it (`E0597`). The compile-time law
     // that makes the storable id family necessary rather than merely

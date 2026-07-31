@@ -148,14 +148,13 @@ Check(OpInst->getFunction() == BB->getParent(),
       "Referring to an instruction in another function!", &I);
 ```
 
-In `llvmkit` a module's identity is a **type**. Any type satisfying
-`module.rs::ModuleBrand` may be a brand — all four supertraits below are
-load-bearing, not decorative — and for a *named* brand a process-global
-registry keeps at most one live module at a time, so at any given instant a
-named brand points at exactly one module:
+In `llvmkit` a module's identity is a **type**. Any `'static` type may be a
+brand — the trait demands nothing else, so a bare unit struct qualifies — and
+for a *named* brand a process-global registry keeps at most one live module at
+a time, so at any given instant a named brand points at exactly one module:
 
 ```rust
-pub trait ModuleBrand: Copy + core::fmt::Debug + Eq + Hash + 'static {}
+pub trait ModuleBrand: 'static {}
 
 impl Module<DynBrand, Unverified> {
     // At most one live module per brand; the brand is freed on drop.

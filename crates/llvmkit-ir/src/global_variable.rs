@@ -25,6 +25,7 @@ use super::r#type::{Type, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
 use super::value_id::GlobalId;
+use crate::Branded;
 
 use super::constants::ConstantIntValue;
 use super::metadata::MetadataAttachmentSet;
@@ -76,7 +77,7 @@ pub(super) struct GlobalVariableData {
 /// (`ptr addrspace(N)`). Use [`Self::value_type`] to obtain the type
 /// of the stored data, and [`Self::initializer`] to read the
 /// initializer when one is present.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct GlobalVariable<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,

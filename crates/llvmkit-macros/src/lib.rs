@@ -16,6 +16,7 @@
 
 use proc_macro::TokenStream;
 
+mod branded;
 mod function_pass;
 mod ir_struct;
 mod module_pass;
@@ -24,6 +25,35 @@ mod pass_macro_shared;
 #[proc_macro_derive(IrStruct, attributes(llvmkit))]
 pub fn derive_ir_struct(input: TokenStream) -> TokenStream {
     ir_struct::derive(input)
+}
+
+/// Std-trait impls **without the inferred per-parameter bounds** std derive
+/// adds — built for the llvmkit family's phantom-branded types.
+///
+/// `#[derive(Clone)]` on `struct V<'ctx, B: ModuleBrand>` emits
+/// `impl<'ctx, B: ModuleBrand + Clone> Clone …`, bounding every type
+/// parameter whether or not a field uses it. llvmkit's view types carry
+/// their brand and marker parameters only as `PhantomData`, so those bounds
+/// are always spurious. This derive emits the same impls with the item's
+/// generics copied verbatim and nothing added.
+///
+/// Without a helper attribute the set is `Clone`, `Copy`, `Debug`,
+/// `PartialEq`, `Eq`, `Hash`. `#[branded(…)]` names an explicit subset and
+/// may add `Default` (structs only):
+///
+/// ```ignore
+/// #[derive(Branded)]
+/// #[branded(Debug, Clone)]
+/// pub struct FunctionCfg<'ctx, B: ModuleBrand + 'ctx> { /* … */ }
+/// ```
+///
+/// `Debug` skips phantom fields (last path segment `PhantomData` or
+/// `Invariant`); `PartialEq` and `Hash` are generated from one shared field
+/// walk so their contract cannot drift; a `Copy` request on a type with a
+/// non-`Copy` field is still rejected by the compiler (E0204).
+#[proc_macro_derive(Branded, attributes(branded))]
+pub fn derive_branded(input: TokenStream) -> TokenStream {
+    branded::derive(input)
 }
 
 /// Author a `FunctionPass` from a plain inherent `impl` block.

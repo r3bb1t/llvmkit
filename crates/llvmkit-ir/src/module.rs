@@ -39,6 +39,7 @@
 //! ifuncs, and the typestate struct-body setters — requires the unverified
 //! [`Module`] token instead.
 
+use crate::Branded;
 use core::any::TypeId;
 use core::hash::{Hash, Hasher};
 use core::iter::FusedIterator;
@@ -184,24 +185,22 @@ impl ModuleId {
 /// `Invariant<B>` = `PhantomData<fn(B) -> B>`, which is inhabited-free,
 /// invariant in `B`, and `Send + Sync` whatever `B` is.
 ///
-/// # The supertraits, and why they are not decorative
-///
-/// A brand type must be `Copy + Debug + Eq + Hash`. Nothing in the crate calls
-/// those methods *on a brand* — they exist because roughly a hundred
-/// brand-generic containers (`Argument<'ctx, B>`, every instruction handle,
-/// every view, …) use `#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]`, and
-/// a `derive` on a generic type emits a `where B: Clone` / `B: Debug` / … bound
-/// whether or not `B` appears in a position that needs it. Dropping the
-/// supertraits would mean replacing every one of those derives with a manual
-/// impl. Satisfying them costs a user one line:
+/// # No supertraits — a brand is a bare unit struct
 ///
 /// ```
-/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// struct LiftedBin;
 /// impl llvmkit_ir::ModuleBrand for LiftedBin {}
 /// ```
 ///
-/// [`module_new!`](crate::module_new) emits that line for you.
+/// The trait demands nothing of the type: no derives, no `Copy`, no `Debug`.
+/// Until 0.0.4 froze, it carried `Copy + Debug + Eq + Hash` — not because any
+/// code called those methods on a brand (none ever did), but because the
+/// brand-generic containers used std `#[derive]`, and a std derive on a
+/// generic type emits `where B: Clone` / `B: Debug` / … bounds whether or not
+/// `B` appears in a position that needs them. Those containers now use the
+/// `Branded` derive from `llvmkit-macros`, which copies each type's generics
+/// verbatim and adds no bounds, so the requirement disappeared. Deriving
+/// traits on your brand type remains legal — just never required.
 ///
 /// # Why `'static` *is* a supertrait
 ///
@@ -210,7 +209,7 @@ impl ModuleId {
 /// and the bound lives here rather than being repeated on each registering
 /// constructor. A brand is a pure marker — it names a module, it does not
 /// borrow one — so `'static` costs a user nothing.
-pub trait ModuleBrand: Copy + core::fmt::Debug + Eq + Hash + 'static {}
+pub trait ModuleBrand: 'static {}
 
 /// Brand for modules that opt out of compile-time identity separation.
 ///
@@ -406,7 +405,6 @@ macro_rules! module_new {
         // land in the caller's scope under a nameable, collision-prone name.
         // The block scope is the whole mechanism that makes the brand unnameable
         // and distinct per expansion site.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         struct __LlvmkitGeneratedBrand;
         impl $crate::ModuleBrand for __LlvmkitGeneratedBrand {}
         $crate::Module::branded::<__LlvmkitGeneratedBrand, _>($name)
@@ -549,14 +547,15 @@ impl<B: ModuleBrand> core::fmt::Debug for ModuleRef<'_, B> {
 /// [`ModuleRef`] is the bare **storage pointer** grade. The two have the same
 /// layout on purpose — see [`ModuleRef`]'s "Why this is not `ModuleView`"
 /// section for why they stay distinct types.
-#[derive(Clone, Copy)]
+#[derive(Branded)]
+#[branded(Clone, Copy)]
 pub struct ModuleView<'ctx, B: ModuleBrand> {
     core: &'ctx ModuleCore,
     _brand: Invariant<B>,
 }
 
 /// Read-only branded view of a global variable.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct GlobalVariableView<'ctx, B: ModuleBrand> {
     global: GlobalVariable<'ctx, B>,
 }
@@ -669,7 +668,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariableView<'ctx, B> {
 }
 
 /// Read-only branded view of a global alias.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct GlobalAliasView<'ctx, B: ModuleBrand> {
     alias: GlobalAlias<'ctx, B>,
 }
@@ -747,7 +746,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasView<'ctx, B> {
 }
 
 /// Read-only branded view of a global ifunc.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct GlobalIFuncView<'ctx, B: ModuleBrand> {
     ifunc: GlobalIFunc<'ctx, B>,
 }
@@ -810,7 +809,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncView<'ctx, B> {
 }
 
 /// Read-only branded view of a COMDAT.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Branded)]
 pub struct ComdatView<'ctx, B: ModuleBrand> {
     comdat: ComdatRef<'ctx, B>,
 }

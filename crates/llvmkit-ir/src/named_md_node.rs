@@ -1,6 +1,7 @@
 //! NamedMDNode storage. Mirrors `llvm/include/llvm/IR/Metadata.h`'s
 //! `NamedMDNode` class. Each node is a named list of [`MetadataId`].
 
+use crate::Branded;
 use crate::metadata::MetadataId;
 use crate::module::ModuleBrand;
 
@@ -10,7 +11,8 @@ use crate::module::ModuleBrand;
 /// module stores its own nodes under the crate-private storage brand, and
 /// `Module::named_metadata_add_operand` tag-checks a caller's
 /// [`MetadataId<B>`] before it lands here.
-#[derive(Debug, Clone)]
+#[derive(Branded)]
+#[branded(Debug, Clone)]
 pub struct NamedMDNode<B: ModuleBrand> {
     name: String,
     operands: Vec<MetadataId<B>>,
