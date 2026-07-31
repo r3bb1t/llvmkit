@@ -7,6 +7,32 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### Lexer diagnostics name what the lexer choked on
+
+#### Changed
+
+- **BREAKING: `LexError::UnknownToken` gained a `reason` field.** It used to
+  render as a bare `invalid token` at every one of its ten construction sites,
+  so a misspelled attribute, a stray byte, a `$` with no comdat name, and a
+  hexadecimal float prefix with no digits were indistinguishable. Each now
+  reports its own message: `unknown keyword 'nocalback'`, `no token starts with
+  '\x01'`, `expected a comdat name after '$'`, `expected hexadecimal digits
+  after '0xK'`, `'.' is a token only as part of '...'`, and so on. Callers that
+  matched `LexError::UnknownToken { span }` need `{ span, .. }`; the new
+  `UnknownTokenReason` is a public enum, so the reason can be matched on rather
+  than parsed out of a string.
+
+  This is a deliberate improvement on upstream, not a port. `LLLexer` records
+  no message at any of these sites — it returns a bare `lltok::Error` and lets
+  `LLParser` describe the failure from the surrounding production. That is
+  adequate when the parser is always the caller; llvmkit's lexer is public, so
+  its errors have to stand on their own.
+
+- The span reported for an unknown *keyword* now covers the whole word instead
+  of its first byte. The cursor rewind that produced the one-byte span is
+  upstream behaviour (`LLLexer.cpp:1073`) and is unchanged — only the reported
+  span moved, because a caret under the `n` of `nocalback` helps nobody.
+
 ### Parser — Milestone 0 complete
 
 #### Added

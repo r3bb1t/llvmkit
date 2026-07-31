@@ -7379,7 +7379,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             });
         }
         let mask = self.parse_global_value(mask_ty).map_err(|err| match err {
-            ParseError::Lex(LexError::UnknownToken { span }) => ParseError::Expected {
+            ParseError::Lex(LexError::UnknownToken { span, .. }) => ParseError::Expected {
                 expected: "valid shufflevector mask element".into(),
                 loc: DiagLoc::span(span),
             },

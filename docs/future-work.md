@@ -20,15 +20,33 @@ was declared later did not re-parse.~~ **Fixed:** forward targets become a null
 placeholder patched at end of module, mirroring `personality`. Covered by
 `parser_attribute_matrix.rs::alias_and_ifunc_forward_targets`.
 
-## Parser — lexer diagnostics carry no text (found 2026-07-31)
+## ~~Parser — lexer diagnostics carry no text~~ (found 2026-07-31, fixed 2026-07-31)
 
-`LexError::UnknownToken` renders as a bare `invalid token`, so an unknown
+~~`LexError::UnknownToken` renders as a bare `invalid token`, so an unknown
 attribute keyword, a bogus global property, and a malformed `uwtable(...)` kind
-all produce the same uninformative message. The lexer has the offending bytes
-at each of its 11 construction sites; threading them into the variant would let
-the message name what it choked on (`unknown keyword 'bogusattr'`). Deliberately
-out of Milestone 0's scope — it is a lexer-wide refactor, not a parser fix —
-but it is the largest remaining diagnostics win.
+all produce the same uninformative message.~~ **Fixed** in
+`feature-39/lexer-diagnostics`: the variant gained a
+`reason: UnknownTokenReason` payload and every one of the ten construction
+sites names its own failure — `unknown keyword 'nocalback'`, `no token starts
+with '\x01'`, `expected a comdat name after '$'`, `expected hexadecimal digits
+after '0xK'`, and so on. `LexError::UnknownToken` stays a single variant on
+purpose: the parser genuinely uses it as the category "the lexer could not form
+a token here, let me supply production context", and splitting it would have
+forced both re-mapping sites to enumerate every reason.
+
+Two things worth knowing for anyone extending it:
+
+- **There is no upstream message to port.** `LLLexer` returns a bare
+  `lltok::Error` at all of these sites and records nothing
+  (`LLLexer.cpp:205,229,336,379,1074,1099,1174,1236,1245`); `LLParser` supplies
+  the wording from the surrounding production. That is adequate when the parser
+  is always the caller, which is true for `llvm-as` and false for llvmkit,
+  whose lexer is public. So these messages are a deliberate improvement on
+  upstream rather than a port, and the tests say so.
+- **The unknown-keyword span was widened to the whole word** while the cursor
+  rewind (`self.pos = tok_start + 1`, upstream's `LLLexer.cpp:1073` behaviour)
+  was kept exactly. A caret under the `n` of `nocalback` helps nobody. Lexing
+  behaviour is unchanged; only the reported span moved.
 
 ## Bare brands / `Branded` derive — home and follow-ups (2026-07-31)
 

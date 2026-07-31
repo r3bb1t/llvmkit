@@ -401,7 +401,14 @@ mod types {
         // Bare `i` with no digits has no integer-type interpretation and is
         // not a keyword → error. (Matches LLLexer.cpp:1073 fallthrough.)
         let err = first_err("i ");
-        assert!(matches!(err, LexError::UnknownToken { .. }));
+        let LexError::UnknownToken {
+            reason: UnknownTokenReason::UnknownKeyword { word },
+            ..
+        } = &err
+        else {
+            panic!("expected an unknown-keyword reason; got {err:?}");
+        };
+        assert_eq!(&**word, "i");
     }
 }
 
@@ -526,7 +533,13 @@ mod numbers {
     #[test]
     fn plus_without_digit_errors() {
         let err = first_err("+");
-        assert!(matches!(err, LexError::UnknownToken { .. }));
+        assert!(matches!(
+            err,
+            LexError::UnknownToken {
+                reason: UnknownTokenReason::IncompleteSigil { sigil: '+', .. },
+                ..
+            }
+        ));
     }
 }
 
@@ -851,7 +864,13 @@ mod errors {
     #[test]
     fn unknown_token_for_question_mark() {
         let err = first_err("?");
-        assert!(matches!(err, LexError::UnknownToken { .. }));
+        assert!(matches!(
+            err,
+            LexError::UnknownToken {
+                reason: UnknownTokenReason::StrayByte { byte: b'?' },
+                ..
+            }
+        ));
     }
 
     /// Mirrors `LLLexer::LexAt` numeric-id overflow diagnostic in
@@ -872,6 +891,105 @@ mod errors {
         // bad byte, not the start of input.
         let err = first_err("42 ?");
         assert_eq!(err.span(), Span::new(3, 4));
+    }
+}
+
+/// llvmkit-specific, with **no upstream counterpart**: `LLLexer` records no
+/// message at any of these sites (it returns a bare `lltok::Error` and lets
+/// `LLParser` describe the failure from context). These tests pin that every
+/// reason reaches the rendered message, so a user learns what the lexer
+/// choked on rather than reading "invalid token" eleven different ways.
+mod unknown_token_reasons {
+    use super::*;
+
+    /// Every one of these must render its own message; the shared prefix of
+    /// the old behaviour was the defect.
+    fn reason_of(src: &str) -> UnknownTokenReason {
+        match first_err(src) {
+            LexError::UnknownToken { reason, .. } => reason,
+            other => panic!("expected UnknownToken for {src:?}; got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stray_byte_names_the_character() {
+        assert_eq!(reason_of("?"), UnknownTokenReason::StrayByte { byte: b'?' });
+        assert_eq!(format!("{}", reason_of("?")), "no token starts with '?'");
+    }
+
+    /// A non-printable byte must not be pasted raw into the message.
+    #[test]
+    fn stray_byte_escapes_non_printables() {
+        assert_eq!(
+            format!("{}", reason_of("\u{1}")),
+            r"no token starts with '\x01'"
+        );
+    }
+
+    #[test]
+    fn each_sigil_names_what_it_wanted() {
+        for (src, sigil, expected) in [
+            ("@", '@', "a name or a number"),
+            ("%", '%', "a name or a number"),
+            ("$", '$', "a comdat name"),
+            ("^x", '^', "a summary id"),
+            ("+", '+', "a digit"),
+            ("-", '-', "a number or a label"),
+        ] {
+            assert_eq!(
+                reason_of(src),
+                UnknownTokenReason::IncompleteSigil { sigil, expected },
+                "for input {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lone_dot_says_so() {
+        assert_eq!(reason_of("."), UnknownTokenReason::LoneDot);
+    }
+
+    /// `-42` is a valid integer literal; `+42` is not a token at all, because
+    /// a `+`-prefixed literal must be floating-point.
+    #[test]
+    fn positive_integer_is_not_a_token() {
+        assert_eq!(reason_of("+42"), UnknownTokenReason::PositiveFpWithoutPoint);
+        assert_eq!(kinds("+4.2"), vec![Token::FloatLit(FpLit::Decimal("+4.2"))]);
+    }
+
+    #[test]
+    fn hex_fp_prefix_is_reported_whole() {
+        let UnknownTokenReason::HexFpWithoutDigits { prefix } = reason_of("0xZ") else {
+            panic!("expected a hex-fp reason");
+        };
+        assert_eq!(&*prefix, "0x");
+
+        let UnknownTokenReason::HexFpWithoutDigits { prefix } = reason_of("0xKZ") else {
+            panic!("expected a hex-fp reason");
+        };
+        assert_eq!(&*prefix, "0xK");
+    }
+
+    /// The headline case: a misspelled attribute keyword. This is what the
+    /// old bare "invalid token" cost a user the most.
+    #[test]
+    fn unknown_keyword_names_the_word() {
+        let reason = reason_of("nocalback");
+        assert_eq!(
+            reason,
+            UnknownTokenReason::UnknownKeyword {
+                word: "nocalback".into()
+            }
+        );
+        assert_eq!(format!("{reason}"), "unknown keyword 'nocalback'");
+    }
+
+    /// The reported span covers the whole word even though the cursor rewinds
+    /// to one byte (upstream's `LLLexer.cpp:1073` behaviour, kept): a caret
+    /// under the `n` of `nocalback` would help nobody.
+    #[test]
+    fn unknown_keyword_span_covers_the_whole_word() {
+        assert_eq!(first_err("nocalback").span(), Span::new(0, 9));
     }
 }
 

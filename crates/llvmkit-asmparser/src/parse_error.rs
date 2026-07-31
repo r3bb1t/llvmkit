@@ -194,6 +194,7 @@ pub type ParseResult<T> = Result<T, ParseError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ll_lexer::UnknownTokenReason;
 
     /// Ports the wording used by `LLParser::tokError("expected ...")` in
     /// `LLParser.cpp`. The Rust analogue routes the message through a
@@ -235,10 +236,14 @@ mod tests {
     #[test]
     fn lex_error_passes_through() {
         let lex = LexError::UnknownToken {
+            reason: UnknownTokenReason::StrayByte { byte: b'?' },
             span: Span::new(0, 1),
         };
         let err: ParseError = lex.clone().into();
         assert_eq!(err.loc().map(|l| l.span), Some(lex.span()));
+        // The reason survives the conversion rather than being flattened to a
+        // generic string, so a caller can still match on it.
+        assert!(format!("{err}").contains("no token starts with '?'"));
     }
 
     /// Ports the upstream `parseType`-arm rejection of out-of-range integer
