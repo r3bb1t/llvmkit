@@ -288,7 +288,7 @@ pub fn parse_type<'ctx, B: ModuleBrand + 'ctx>(
         None => Parser::new(src, module)?,
     };
     parser.parse_standalone_type().map_err(|err| match err {
-        ParseError::Lex(LexError::UnknownToken { span }) => ParseError::Expected {
+        ParseError::Lex(LexError::UnknownToken { span, .. }) => ParseError::Expected {
             expected: "end of string".into(),
             loc: DiagLoc::span(span),
         },

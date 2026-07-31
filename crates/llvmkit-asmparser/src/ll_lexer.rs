@@ -70,11 +70,54 @@ pub enum LexError {
     #[error("hexadecimal constant too large for {target:?} (16-bit)")]
     HexFpTooLarge { target: HexFpKind, span: Span },
 
-    #[error("invalid token")]
-    UnknownToken { span: Span },
+    /// No token could be formed at `span`. [`UnknownTokenReason`] says why.
+    #[error("{reason}")]
+    UnknownToken {
+        reason: UnknownTokenReason,
+        span: Span,
+    },
 
     #[error("expected '*' after '/' to start block comment")]
     StraySlash { span: Span },
+}
+
+/// Why no token could be formed — the payload of [`LexError::UnknownToken`].
+///
+/// **This has no upstream counterpart, deliberately.** `LLLexer` returns a
+/// bare `lltok::Error` at every one of these sites and records no message,
+/// leaving `LLParser` to describe the failure from the surrounding production
+/// (`LLLexer.cpp:205,229,336,379,1074,1099,1174,1236,1245`). That works for
+/// `llvm-as`, where the parser is always the caller. llvmkit's lexer is a
+/// public API, so its errors have to stand alone — and even inside the parser,
+/// "unknown keyword 'nocalback'" beats "expected top-level entity".
+#[derive(Clone, PartialEq, Eq, Hash, Debug, thiserror::Error)]
+pub enum UnknownTokenReason {
+    /// A byte that begins no token at all — `LLLexer::LexToken`'s `default:`.
+    #[error("no token starts with '{}'", .byte.escape_ascii())]
+    StrayByte { byte: u8 },
+
+    /// A sigil not followed by the construct it introduces, as in `@` at end
+    /// of input or `^x`.
+    #[error("expected {expected} after '{sigil}'")]
+    IncompleteSigil { sigil: char, expected: &'static str },
+
+    /// A lone `.`, which is a token only as part of `...`.
+    #[error("'.' is a token only as part of '...'")]
+    LoneDot,
+
+    /// `+42` — a `+`-prefixed literal is floating-point, so the `.` is
+    /// mandatory. (`-42` is a valid *integer*; `+42` is not a token at all.)
+    #[error("expected '.' in the '+'-prefixed floating-point literal")]
+    PositiveFpWithoutPoint,
+
+    /// A hexadecimal float prefix with no hexadecimal digits after it.
+    #[error("expected hexadecimal digits after '{prefix}'")]
+    HexFpWithoutDigits { prefix: Box<str> },
+
+    /// A word matching no keyword, opcode, primitive type, or structured
+    /// prefix. The overwhelmingly common case: a misspelled attribute.
+    #[error("unknown keyword '{word}'")]
+    UnknownKeyword { word: Box<str> },
 }
 
 impl LexError {
@@ -91,7 +134,7 @@ impl LexError {
             | LexError::IntegerOverflow128 { span }
             | LexError::IntegerWidthOutOfRange { span, .. }
             | LexError::HexFpTooLarge { span, .. }
-            | LexError::UnknownToken { span }
+            | LexError::UnknownToken { span, .. }
             | LexError::StraySlash { span } => *span,
         }
     }
@@ -286,9 +329,10 @@ impl<'src> Lexer<'src> {
 
                 c if c.is_ascii_alphabetic() || c == b'_' => return self.lex_identifier(),
 
-                _ => {
+                byte => {
                     self.bump();
                     return Err(LexError::UnknownToken {
+                        reason: UnknownTokenReason::StrayByte { byte },
                         span: self.current_span(),
                     });
                 }
@@ -395,6 +439,10 @@ impl<'src> Lexer<'src> {
         }
 
         Err(LexError::UnknownToken {
+            reason: UnknownTokenReason::IncompleteSigil {
+                sigil: self.src[self.tok_start] as char,
+                expected: "a name or a number",
+            },
             span: self.current_span(),
         })
     }
@@ -443,6 +491,10 @@ impl<'src> Lexer<'src> {
         }
 
         Err(LexError::UnknownToken {
+            reason: UnknownTokenReason::IncompleteSigil {
+                sigil: '$',
+                expected: "a comdat name",
+            },
             span: self.current_span(),
         })
     }
@@ -477,6 +529,10 @@ impl<'src> Lexer<'src> {
         self.bump(); // '^'
         if !matches!(self.peek(), Some(b'0'..=b'9')) {
             return Err(LexError::UnknownToken {
+                reason: UnknownTokenReason::IncompleteSigil {
+                    sigil: '^',
+                    expected: "a summary id",
+                },
                 span: self.current_span(),
             });
         }
@@ -603,6 +659,7 @@ impl<'src> Lexer<'src> {
         // Bare '.' isn't a token in LLVM IR.
         self.bump();
         Err(LexError::UnknownToken {
+            reason: UnknownTokenReason::LoneDot,
             span: self.current_span(),
         })
     }
@@ -625,6 +682,10 @@ impl<'src> Lexer<'src> {
                 ));
             }
             return Err(LexError::UnknownToken {
+                reason: UnknownTokenReason::IncompleteSigil {
+                    sigil: '-',
+                    expected: "a number or a label",
+                },
                 span: self.current_span(),
             });
         }
@@ -696,6 +757,10 @@ impl<'src> Lexer<'src> {
         self.bump(); // '+'
         if !matches!(self.peek(), Some(b'0'..=b'9')) {
             return Err(LexError::UnknownToken {
+                reason: UnknownTokenReason::IncompleteSigil {
+                    sigil: '+',
+                    expected: "a digit",
+                },
                 span: self.current_span(),
             });
         }
@@ -706,6 +771,7 @@ impl<'src> Lexer<'src> {
         // Must have a '.'.
         if self.peek() != Some(b'.') {
             return Err(LexError::UnknownToken {
+                reason: UnknownTokenReason::PositiveFpWithoutPoint,
                 span: self.current_span(),
             });
         }
@@ -761,9 +827,12 @@ impl<'src> Lexer<'src> {
         let digits_start = self.pos;
         if !matches!(self.peek(), Some(c) if c.is_ascii_hexdigit()) {
             // Bad token; LLLexer.cpp:1097-1100 rewinds to TokStart+1 and
-            // returns an error. Mirror it.
+            // returns an error. Mirror it. The reported span follows the
+            // rewind, but the *message* names the whole prefix the user wrote.
+            let prefix: Box<str> = ascii_str(&self.src[self.tok_start..digits_start]).into();
             self.pos = self.tok_start + 1;
             return Err(LexError::UnknownToken {
+                reason: UnknownTokenReason::HexFpWithoutDigits { prefix },
                 span: self.current_span(),
             });
         }
@@ -898,10 +967,14 @@ impl<'src> Lexer<'src> {
         }
 
         // Truly unknown — rewind to a single byte and emit error (LLLexer.cpp:1073).
+        // The rewind is upstream's cursor behavior and is kept exactly; the
+        // reported span stays the whole word, because a caret under one letter
+        // of a misspelled keyword helps nobody.
+        let reason = UnknownTokenReason::UnknownKeyword {
+            word: String::from_utf8_lossy(word).into_owned().into_boxed_str(),
+        };
         self.pos = self.tok_start + 1;
-        Err(LexError::UnknownToken {
-            span: self.current_span(),
-        })
+        Err(LexError::UnknownToken { reason, span })
     }
 
     /// Classify words with structured prefixes: `DW_..._`, `DIFlag`, `DISPFlag`,
