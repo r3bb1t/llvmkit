@@ -142,13 +142,27 @@ parameter `align(4)` where the grammar everywhere is `align 4`, and
 Both clang-shaped acceptance programs (-O0 and -O2) parse, verify, and
 round-trip in that test file.
 
-Remaining in this milestone: work item 4 (the diagnostics sweep), the
-pre-existing ifunc-forward-resolver round-trip gap (pinned by
-`known_gap_ifunc_forward_resolver_round_trip`; needs deferred alias/ifunc
-targets in the parser), and the durable anti-drift step — generating the
-attribute keyword table from the vendored `Attributes.td` the way upstream's
-lexer does (`LLLexer.cpp:701-704`), which also means vendoring that `.td`
-into the shipped `tablegen/` tree.
+**Milestone 0 is complete.** The three remaining items closed on the same
+date:
+
+- **Work item 4, diagnostics.** A declaration-linkage global carrying an
+  initializer reported `expected top-level entity`, blaming the wrong
+  construct; it now names the actual problem. Two messages that read wrong
+  through the `expected {}` frame were fixed alongside.
+- **Deferred alias/ifunc targets.** Aliases and ifuncs resolved their target
+  eagerly, so a printed module whose ifunc resolver was declared later did not
+  re-parse. Forward targets now become a placeholder patched at end of module,
+  reusing the mechanism `personality` already had.
+- **Anti-drift, by guard rather than generation.** `Attributes.td` is vendored
+  under `crates/llvmkit-asmparser/tablegen/` (tracked, unlike `orig_cpp/`) and
+  `attribute_td_drift.rs` asserts every LLVM 22.1.4 attribute is either
+  accepted by the parser in a declared position or named in an explicit
+  `NOT_YET_MODELED` list. Generating the keyword table outright was considered
+  and rejected: llvmkit deliberately models a subset, so generation would force
+  modeling all of it and would mean generating part of the 700-variant
+  `Keyword` enum. The guard gives the same "cannot silently drift" property —
+  verified red-green in both directions — at a fraction of the cost. Growing
+  the modeled set is now a matter of deleting lines from that list.
 
 ### Why this is first
 
