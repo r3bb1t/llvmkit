@@ -34,18 +34,24 @@ of them predate 2.0. Where the two disagree, this subsection wins.
   `Send` — and can be moved into a struct, a `Vec`, or another thread. `S` is
   the verification typestate (`Unverified` / `Verified`).
 - A module's identity is the brand *type*:
-  `pub trait ModuleBrand: Copy + Debug + Eq + Hash + 'static {}`. It is
-  **unsealed** — users declare their own — but all four supertraits are
-  load-bearing: roughly a hundred brand-generic containers `#[derive]` those
-  traits, and a `derive` on a generic type emits a `where B: Clone` / `B: Debug`
-  bound whether or not `B` needs it; `'static` is what lets the uniqueness
-  registry key brands by `TypeId`. A user-declared brand is therefore two lines:
+  `pub trait ModuleBrand: 'static {}`. It is **unsealed** — users declare their
+  own — and demands nothing of the type: a brand is a bare unit struct.
+  `'static` is the only bound, and only because the uniqueness registry keys
+  brands by `TypeId`. A user-declared brand is two lines:
 
   ```rust
-  #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
   struct LiftedBin;
   impl llvmkit_ir::ModuleBrand for LiftedBin {}
   ```
+
+  It carried `Copy + Debug + Eq + Hash` until the 0.0.4 freeze, not because
+  anything called those methods on a brand but because the brand-generic
+  containers used std `#[derive]`, which bounds every type parameter whether or
+  not a field uses it. **Those containers now use `#[derive(Branded)]`** from
+  `llvmkit-macros`: identical impls with the item's generics copied verbatim
+  and no inferred bounds. When you add a branded type, derive `Branded`, not
+  the std traits — a std derive silently reintroduces the bounds the brand no
+  longer satisfies, and the compiler will point at the *use* site, not yours.
 
 - Three ways to make a module, all returning an owned value:
   `module_new!("name")` (emits the struct above under an unnameable name, one
@@ -161,7 +167,7 @@ Workspace shape (see each crate's `Cargo.toml` for details):
 - `crates/llvmkit-ir/` — the IR data model, builder, verifier, AsmWriter, analyses, and pass layer. The bulk of the workspace.
 - `crates/llvmkit-support/` — shared helpers (`Span`, `Spanned<T>`, `SourceMap`).
 - `crates/llvmkit-asmparser/` — textual IR lexer and `.ll` parser.
-- `crates/llvmkit-macros/` — the proc-macro crate behind `#[derive(IrStruct)]`, `#[function_pass]`, and `#[module_pass]`. Pulled in by `llvmkit-ir`'s default `macros` feature; never depended on directly.
+- `crates/llvmkit-macros/` — the proc-macro crate behind `#[derive(Branded)]`, `#[derive(IrStruct)]`, `#[function_pass]`, and `#[module_pass]`. A **required** dependency of `llvmkit-ir` and `llvmkit-asmparser` (proc-macro crates are build-time only — they contribute nothing to the built artifact); the `macros` feature now gates only the *user-facing* re-exports `IrStruct` / `function_pass` / `module_pass`. `Branded` is re-exported crate-internally as `pub(crate) use llvmkit_macros::Branded` so every use site reads `use crate::Branded;`.
 
 Reference C++ tree at `orig_cpp/llvm-project-llvmorg-22.1.4/` is **read-only**:
 never modified, never built, never shipped. `compile_commands.json` for clangd
@@ -264,7 +270,7 @@ anchors, not as an exhaustive inventory):
     │       ├── lib.rs
     │       ├── span.rs              # Span + Spanned<T>
     │       └── source_map.rs        # byte-offset → (line, col)
-    ├── llvmkit-macros/              # proc macros: IrStruct, function_pass, module_pass
+    ├── llvmkit-macros/              # proc macros: Branded, IrStruct, function_pass, module_pass
     │   └── src/
     │       ├── lib.rs
     │       ├── ir_struct.rs

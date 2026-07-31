@@ -35,7 +35,7 @@ Shipped today:
 - **`.ll` lexer** — done. `llvmkit-asmparser` ports
   `llvm/lib/AsmParser/LLLexer.cpp` and borrows directly from the source slice,
   allocating only when escape decoding actually changes bytes.
-- **`.ll` parser** — done for the constructive subset. Parses module-level
+- **`.ll` parser** — parses ordinary compiler output. Parses module-level
   directives (target datalayout/triple, module asm, type definitions, globals,
   function declarations and definitions), all instruction opcodes, metadata
   (standalone numbered nodes, named metadata, instruction trailing attachments),
@@ -43,12 +43,16 @@ Shipped today:
   zeroinitializer, global/function references, and represented `ConstantExpr`
   forms for parser-needed opcodes, including upstream vector GEP, bitcast, cast,
   and select folding fixtures). Round-trip tested via `format!("{module}")`.
-  **Not yet ordinary `clang` output:** roughly 21 attribute keywords are
-  missing — `byval(T)` and `sret(T)` among them — and `dso_local` is accepted on
-  `define` / `declare` but not on globals, which is enough to reject a plain
-  `clang -O0` or `-O2` dump. The structure around them parses; see
-  [Milestone 0](ROADMAP.md#milestone-0-textual-ll-parser-completeness) for the
-  measured inventory. Closing it is the next thing on the roadmap.
+  Attribute coverage spans the function, parameter, and return attributes real
+  compiler output uses — the typed `byval(T)` / `sret(T)` family, `uwtable`'s
+  kind grammar, both `dereferenceable` forms — plus `dso_local` on every global
+  object and `c"..."` string constants. **`clang -O0` and `-O2` output parses,
+  verifies, and round-trips**, asserted on whole programs in
+  `tests/parser_attribute_matrix.rs`. A companion guard parses the vendored
+  `Attributes.td` and fails CI if an upstream attribute is neither accepted nor
+  listed as deliberately unmodeled, so the keyword table cannot silently drift
+  from LLVM again. Not yet modeled: bitcode, and the 43 attributes named in
+  that guard's list.
 - **Typed IR data model** — done. `llvmkit-ir` ships interned types, typed
   values, typed constants, functions, basic blocks, globals, comdats, data
   layout, target triple, module asm directives, and LLVM-style function-local

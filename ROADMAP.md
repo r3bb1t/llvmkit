@@ -48,10 +48,9 @@ Shipped today:
 
 Hard gaps for replacing more LLVM/Inkwell workflows:
 
-- **Ordinary `clang` output does not parse.** The structural surface is broad —
-  see Milestone 0 for the measured inventory — but ~21 attribute keywords and
-  `dso_local` on globals are missing, and that is enough to reject plain
-  `clang -O0` / `-O2` output. This is the first item on the roadmap.
+- ~~Ordinary `clang` output does not parse.~~ **Closed 2026-07-31** (Milestone
+  0). `clang -O0` / `-O2` output parses, verifies, and round-trips; a guard over
+  the vendored `Attributes.td` keeps the keyword table from drifting again.
 - No runnable pass pipeline. `pass_pipeline.rs` parses
   `"cleanup-lift,instcombine"` into scope-typed data, and nothing consumes it:
   there is no NAME→pass-constructor registry, so a parsed recipe cannot be run
@@ -112,7 +111,7 @@ llvmkit does not need to copy Mergen. The actionable takeaway is that a practica
 
 | Priority | Area | Why it is first-class |
 |---|---|---|
-| P0 | Textual `.ll` parser completeness | Ordinary `clang` / `rustc` output has to parse before anything downstream can matter. Measured 2026-07-27: it does not. |
+| ~~P0~~ | ~~Textual `.ll` parser completeness~~ | **Done 2026-07-31 (Milestone 0).** Ordinary `clang` output parses, verifies, and round-trips; the keyword table is guarded against drift from `Attributes.td`. |
 | P0 | ConstantFold / ConstantFolder parity maintenance and extension | Keep the shipped local simplifier aligned with LLVM as new modeled opcodes, types, and ConstantExpr forms land. |
 | P0 | KnownBits / ValueTracking | Needed for opaque predicates, alignment, bit-mask simplification, flag recovery, indirect-branch reasoning. |
 | P0 | Core scalar cleanup passes | Needed to replace the most common LLVM `O1` / `O2` cleanup wins after lifting. |
@@ -904,13 +903,15 @@ was not on the list when the list was written:
   incompatible, so the break needs no wider signal, and a minor bump would
   imply a stability the crate does not yet have.
 
-### Stage 2: Parser completeness and release hygiene — **the next step**
+### Stage 2: Parser completeness and release hygiene — **parser done; publish remains**
 
 Small, mechanical, and independently checkable against `llvm-as`. It is first
 because every later stage is worth more once real-world IR can get in.
 
-- Milestone 0 in full: the ~21 missing attribute keywords, `dso_local` on
-  globals and aliases, and the probe matrix landed as a test.
+- ~~Milestone 0 in full~~ — **done 2026-07-31**: the attribute keywords,
+  `dso_local` on every global object, `c"..."` constants, deferred alias/ifunc
+  targets, the diagnostics sweep, the probe matrix, and the `Attributes.td`
+  drift guard.
 - The crates.io release checklist below.
 - Optionally start the `missing_docs` ratchet on the small crates, where
   coverage is already within reach.
@@ -983,8 +984,8 @@ remains in library source. Publishing works today. What is left:
       work of the LLVM Project, since Apache-2.0 section 4(a) requires
       recipients of a distribution to receive a copy. Each package directory now
       carries a verbatim copy, and CI compares all five against the root.
-- [ ] Add a `README.md` for `llvmkit-macros`, the one member without one; its
-      crates.io page is otherwise blank.
+- [x] Add a `README.md` for `llvmkit-macros`, the one member without one; its
+      crates.io page is otherwise blank. **Done 2026-07-31.**
 - [ ] Add `[package.metadata.docs.rs]` so docs.rs builds are pinned and
       deterministic rather than default-feature guesses.
 - [ ] Add a `cargo package --workspace` step to CI. It is the gate that proves

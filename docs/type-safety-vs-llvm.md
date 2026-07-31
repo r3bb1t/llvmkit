@@ -501,7 +501,6 @@ erasure"* entry; the seam is locked from both sides by
 Bad Rust helper, from `tests/compile_fail/custom_folder_wrong_brand.rs`:
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Foreign;
 impl ModuleBrand for Foreign {}
 

@@ -63,11 +63,11 @@ them for you. Inside a pass, `FnReshape::insert_phi` is the third route.
 Every module carries a compile-time brand — a `'static` type that names it.
 `module_new!("name")` mints a fresh one per expansion site,
 `Module::branded::<B>` takes a brand you name, and `Module::dynamic` opts out in
-favour of the runtime module tag alone. A brand you declare yourself is one
-line of derives plus an empty impl:
+favour of the runtime module tag alone. A brand you declare yourself is a
+bare unit struct plus an empty impl — `ModuleBrand` requires nothing but
+`'static`:
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct LiftedBin;
 impl llvmkit_ir::ModuleBrand for LiftedBin {}
 ```
