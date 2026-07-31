@@ -830,6 +830,7 @@ fn is_valid_shufflevector<'ctx, B: ModuleBrand + 'ctx>(
 #[derive(Clone, Copy)]
 struct ParsedAliasHeader {
     linkage: Linkage,
+    dso_locality: llvmkit_ir::DsoLocality,
     visibility: Visibility,
     dll_storage_class: DllStorageClass,
     thread_local_mode: ThreadLocalMode,
@@ -3039,6 +3040,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             },
             _ => (Linkage::External, false),
         };
+        let dso_locality = self.parse_optional_dso_locality()?;
         let visibility = if self.eat_keyword(Keyword::Default)? {
             Visibility::Default
         } else if self.eat_keyword(Keyword::Hidden)? {
@@ -3090,6 +3092,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 decl_loc,
                 ParsedAliasHeader {
                     linkage,
+                    dso_locality,
                     visibility,
                     dll_storage_class,
                     thread_local_mode,
@@ -3162,6 +3165,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .module
             .global_builder(&name_string, ty)
             .linkage(linkage)
+            .dso_locality(dso_locality)
             .visibility(visibility)
             .dll_storage_class(dll_storage_class)
             .thread_local_mode(thread_local_mode)
@@ -3218,6 +3222,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         header: ParsedAliasHeader,
     ) -> ParseResult<()> {
         let linkage = header.linkage;
+        let dso_locality = header.dso_locality;
         let visibility = header.visibility;
         let dll_storage_class = header.dll_storage_class;
         let thread_local_mode = header.thread_local_mode;
@@ -3297,6 +3302,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .module
                 .alias_builder(&name_string, value_type, target)
                 .linkage(linkage)
+                .dso_locality(dso_locality)
                 .visibility(visibility)
                 .dll_storage_class(dll_storage_class)
                 .thread_local_mode(thread_local_mode)
@@ -3322,6 +3328,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .module
                 .ifunc_builder(&name_string, value_type, target)
                 .linkage(linkage)
+                .dso_locality(dso_locality)
                 .visibility(visibility);
             if let Some(p) = partition {
                 builder = builder.partition(p);

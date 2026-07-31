@@ -3054,6 +3054,10 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
         f.write_str(" ")?;
     }
 
+    if let Some(s) = g.dso_locality().keyword() {
+        f.write_str(s)?;
+        f.write_str(" ")?;
+    }
     // Visibility / DLL / TLS / unnamed-addr. Each prints with a
     // trailing space when present. Order mirrors `printGlobal`.
     if let Some(s) = g.visibility().keyword() {
@@ -3146,6 +3150,10 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
         f.write_str(linkage_kw)?;
         f.write_str(" ")?;
     }
+    if let Some(s) = a.dso_locality().keyword() {
+        f.write_str(s)?;
+        f.write_str(" ")?;
+    }
     if let Some(s) = a.visibility().keyword() {
         f.write_str(s)?;
         f.write_str(" ")?;
@@ -3192,6 +3200,10 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     let linkage_kw = i.linkage().keyword();
     if !linkage_kw.is_empty() {
         f.write_str(linkage_kw)?;
+        f.write_str(" ")?;
+    }
+    if let Some(s) = i.dso_locality().keyword() {
+        f.write_str(s)?;
         f.write_str(" ")?;
     }
     if let Some(s) = i.visibility().keyword() {

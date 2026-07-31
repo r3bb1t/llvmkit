@@ -7,7 +7,7 @@ use super::DebugLoc;
 use super::constant::{Constant, IsConstant};
 use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
-use super::global_value::{Linkage, Visibility};
+use super::global_value::{DsoLocality, Linkage, Visibility};
 use super::metadata::MetadataAttachmentSet;
 use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
@@ -22,6 +22,7 @@ pub(super) struct GlobalIFuncData {
     pub(super) address_space: u32,
     pub(super) resolver: Cell<ValueSlot>,
     pub(super) linkage: Cell<Linkage>,
+    pub(super) dso_locality: Cell<DsoLocality>,
     pub(super) visibility: Cell<Visibility>,
     pub(super) partition: RefCell<Option<String>>,
     pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
@@ -145,6 +146,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
     #[inline]
     pub fn linkage(self) -> Linkage {
         self.data().linkage.get()
+    }
+
+    /// DSO locality (`dso_local` / `dso_preemptable`). Mirrors
+    /// `GlobalValue::isDSOLocal`.
+    pub fn dso_locality(self) -> DsoLocality {
+        self.data().dso_locality.get()
+    }
+
+    /// Set the DSO locality. Mirrors `GlobalValue::setDSOLocal`.
+    pub fn set_dso_locality(self, _module: &'ctx Module<B, Unverified>, dso: DsoLocality) {
+        self.data().dso_locality.set(dso);
     }
 
     #[inline]
@@ -282,6 +294,7 @@ pub struct GlobalIFuncBuilder<'ctx, B: ModuleBrand> {
     resolver_type: TypeSlot,
     address_space: u32,
     linkage: Linkage,
+    dso_locality: DsoLocality,
     visibility: Visibility,
     partition: Option<String>,
 }
@@ -304,6 +317,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
             resolver_type: resolver.ty,
             address_space,
             linkage: Linkage::External,
+            dso_locality: DsoLocality::Default,
             visibility: Visibility::Default,
             partition: None,
         }
@@ -311,6 +325,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
 
     pub fn linkage(mut self, linkage: Linkage) -> Self {
         self.linkage = linkage;
+        self
+    }
+
+    /// DSO locality (`dso_local` / `dso_preemptable`). Mirrors
+    /// `GlobalValue::setDSOLocal`.
+    pub fn dso_locality(mut self, dso: DsoLocality) -> Self {
+        self.dso_locality = dso;
         self
     }
 
@@ -365,6 +386,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
             resolver_type: _,
             address_space,
             linkage,
+            dso_locality,
             visibility,
             partition,
         } = self;
@@ -374,6 +396,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncBuilder<'ctx, B> {
             address_space,
             resolver: Cell::new(resolver),
             linkage: Cell::new(linkage),
+            dso_locality: Cell::new(dso_locality),
             visibility: Cell::new(visibility),
             partition: RefCell::new(partition),
             metadata: RefCell::new(MetadataAttachmentSet::new()),
