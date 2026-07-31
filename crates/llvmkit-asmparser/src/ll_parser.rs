@@ -4798,6 +4798,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Keyword::Optnone => AttrKind::OptimizeNone,
             Keyword::Optsize => AttrKind::OptimizeForSize,
             Keyword::Speculatable => AttrKind::Speculatable,
+            Keyword::Inreg => AttrKind::InReg,
+            Keyword::Nest => AttrKind::Nest,
+            Keyword::Swiftself => AttrKind::SwiftSelf,
+            Keyword::Norecurse => AttrKind::NoRecurse,
+            Keyword::Hot => AttrKind::Hot,
+            Keyword::Inlinehint => AttrKind::InlineHint,
+            Keyword::SanitizeAddress => AttrKind::SanitizeAddress,
+            Keyword::Nonlazybind => AttrKind::NonLazyBind,
+            Keyword::Minsize => AttrKind::MinSize,
+            Keyword::Ssp => AttrKind::StackProtect,
+            Keyword::Sspstrong => AttrKind::StackProtectStrong,
+            Keyword::Sspreq => AttrKind::StackProtectReq,
             _ => return None,
         })
     }
@@ -4968,6 +4980,74 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         .ok_or_else(|| self.expected("memory attribute"))?;
                     self.bump()?;
                     out.add(index, Attribute::<B>::memory(effects));
+                }
+                Token::Kw(Keyword::Uwtable) => {
+                    self.bump()?;
+                    let kind = if self.eat_punct(PunctKind::LParen)? {
+                        let kind = if self.eat_keyword(Keyword::Sync)? {
+                            1
+                        } else if self.eat_keyword(Keyword::Async)? {
+                            2
+                        } else {
+                            return Err(self.expected("'sync' or 'async' in uwtable"));
+                        };
+                        self.expect_punct(PunctKind::RParen, "')' after uwtable kind")?;
+                        kind
+                    } else {
+                        2
+                    };
+                    let attr = Attribute::<B>::int(AttrKind::UWTable, kind)
+                        .ok_or_else(|| self.expected("attribute"))?;
+                    out.add(index, attr);
+                }
+                Token::Kw(kw @ (Keyword::Dereferenceable | Keyword::DereferenceableOrNull)) => {
+                    let kind = if *kw == Keyword::Dereferenceable {
+                        AttrKind::Dereferenceable
+                    } else {
+                        AttrKind::DereferenceableOrNull
+                    };
+                    self.bump()?;
+                    self.expect_punct(PunctKind::LParen, "'(' in dereferenceable attribute")?;
+                    let bytes = self.parse_uint64("dereferenceable byte count")?;
+                    self.expect_punct(PunctKind::RParen, "')' after dereferenceable byte count")?;
+                    let attr = Attribute::<B>::int(kind, bytes)
+                        .ok_or_else(|| self.expected("attribute"))?;
+                    out.add(index, attr);
+                }
+                Token::Kw(
+                    kw @ (Keyword::Byval
+                    | Keyword::Byref
+                    | Keyword::Inalloca
+                    | Keyword::Sret
+                    | Keyword::Elementtype),
+                ) => {
+                    let kind = match kw {
+                        Keyword::Byval => AttrKind::ByVal,
+                        Keyword::Byref => AttrKind::ByRef,
+                        Keyword::Inalloca => AttrKind::InAlloca,
+                        Keyword::Sret => AttrKind::StructRet,
+                        _ => AttrKind::ElementType,
+                    };
+                    self.bump()?;
+                    self.expect_punct(PunctKind::LParen, "'(' in type attribute")?;
+                    let ty = self.parse_type(false)?;
+                    self.expect_punct(PunctKind::RParen, "')' after type attribute")?;
+                    let attr = Attribute::<B>::type_attr(kind, ty)
+                        .ok_or_else(|| self.expected("attribute"))?;
+                    out.add(index, attr);
+                }
+                Token::Kw(Keyword::Captures) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::LParen, "'(' in captures attribute")?;
+                    if !self.eat_keyword(Keyword::None)? {
+                        return Err(self.expected(
+                            "captures components other than `none` are not supported yet",
+                        ));
+                    }
+                    self.expect_punct(PunctKind::RParen, "')' after captures(none)")?;
+                    let attr = Attribute::<B>::enum_attr(AttrKind::NoCapture)
+                        .ok_or_else(|| self.expected("attribute"))?;
+                    out.add(index, attr);
                 }
                 Token::Kw(Keyword::Range) => {
                     let attr = self.parse_range_attribute()?;

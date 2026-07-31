@@ -590,6 +590,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Attribute<'ctx, B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Enum(k) => f.write_str(k.name()),
+            Self::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
+            Self::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
             Self::Int(k, v) => write!(f, "{}({v})", k.name()),
             Self::Type(k, t) => write!(f, "{}({t})", k.name()),
             Self::Range { ty, lower, upper } => write!(
@@ -818,6 +820,8 @@ impl fmt::Display for AttributeStored {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Enum(k) => f.write_str(k.name()),
+            Self::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
+            Self::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
             Self::Int(k, v) => write!(f, "{}({v})", k.name()),
             Self::Type(_, _) | Self::Range { .. } => {
                 unreachable!("typed attributes need a module context to print")
