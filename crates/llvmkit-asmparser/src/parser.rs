@@ -82,7 +82,6 @@ where
 /// use llvmkit_asmparser::parse_branded;
 /// use llvmkit_ir::ModuleBrand;
 ///
-/// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// struct Lifted;
 /// impl ModuleBrand for Lifted {}
 ///

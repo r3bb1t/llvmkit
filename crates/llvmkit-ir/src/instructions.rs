@@ -82,7 +82,7 @@ macro_rules! decl_binop_handle {
         $variant:ident
     ) => {
         $(#[$attr])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Branded)]
         pub struct $name<'ctx, B: ModuleBrand> {
             pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,
@@ -1105,7 +1105,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> RetInst<'ctx, B> {
 macro_rules! decl_cast_handle {
     (@struct $(#[$attr:meta])* $name:ident, $opcode:ident) => {
         $(#[$attr])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Branded)]
         pub struct $name<'ctx, B: ModuleBrand> {
             pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,

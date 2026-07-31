@@ -53,7 +53,7 @@ macro_rules! decl_type_handle {
         $name:ident, $label:ident, predicate $pred:expr
     ) => {
         $(#[$attr])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[derive(Branded)]
         pub struct $name<'ctx, B: ModuleBrand> {
             pub(super) id: TypeSlot,
             pub(super) module: ModuleRef<'ctx, B>,

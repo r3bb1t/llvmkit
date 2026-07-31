@@ -54,7 +54,6 @@ use super::vec_len::VecLen;
 use crate::Branded;
 use core::convert::Infallible;
 use core::fmt;
-use core::hash::Hash;
 use core::marker::PhantomData;
 
 use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
@@ -75,7 +74,7 @@ macro_rules! decl_constant_handle {
         type_predicate $pred:expr
     ) => {
         $(#[$attr])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[derive(Branded)]
         pub struct $name<'ctx, B: ModuleBrand> {
             pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,

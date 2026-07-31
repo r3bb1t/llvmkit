@@ -693,7 +693,7 @@ macro_rules! decl_value_handle {
         type_predicate $pred:expr
     ) => {
         $(#[$attr])*
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        #[derive(Branded)]
         pub struct $name<'ctx, B: ModuleBrand> {
             pub(super) id: ValueSlot,
             pub(super) module: ModuleRef<'ctx, B>,

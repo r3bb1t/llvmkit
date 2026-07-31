@@ -12,8 +12,10 @@ use llvmkit_ir::{
     Linkage, ModuleBrand, MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type,
     UDivFlags, Value, constant_fold_binary_instruction, module_new,
 };
+use llvmkit_macros::Branded;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Branded)]
+#[branded(Debug, Clone, Copy)]
 enum FolderReturn<'ctx, B: ModuleBrand> {
     Value(Value<'ctx, B>),
     NoWrapCall {
@@ -24,7 +26,8 @@ enum FolderReturn<'ctx, B: ModuleBrand> {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Branded)]
+#[branded(Debug, Clone, Copy)]
 struct ReturningFolder<'ctx, B: ModuleBrand> {
     result: FolderReturn<'ctx, B>,
 }
@@ -877,7 +880,8 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
 /// carried inside the folder, so the trait-required `fold_bin_op_dyn`
 /// override -- generic over any `Value<'ctx, B>` operand -- can answer with
 /// it unconditionally.
-#[derive(Debug, Clone, Copy)]
+#[derive(Branded)]
+#[branded(Debug, Clone, Copy)]
 struct WideningDynFolder<'ctx, B: llvmkit_ir::ModuleBrand> {
     replacement: Value<'ctx, B>,
 }
@@ -993,7 +997,8 @@ fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
 /// `Ok(Some(concrete_width_value))` inside a generic `fold_int_bin_op<W>`
 /// override as `E0308: mismatched types`. `narrow` does not breach that
 /// wall -- it returns the caller's `W`, never a concrete one.
-#[derive(Debug, Clone, Copy)]
+#[derive(Branded)]
+#[branded(Debug, Clone, Copy)]
 struct NarrowingTypedFolder<'ctx, B: llvmkit_ir::ModuleBrand> {
     /// An erased 64-bit constant, deliberately the wrong width for the
     /// 32-bit operands the test folds. Erased (`Value`, not

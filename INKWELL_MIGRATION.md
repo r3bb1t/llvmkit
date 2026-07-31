@@ -280,22 +280,21 @@ module per named brand (`IrError::BrandInUse` / `BrandRetired`); `DynBrand` is
 exempt from it, which is precisely why it buys no compile-time separation.
 Handles from two distinct brands cannot be mixed in normal code.
 
-The trait is empty and unsealed, so you can name your own brand — but it has
-supertraits, and they are load-bearing rather than decorative:
+The trait is empty and unsealed, so you can name your own brand — a bare unit
+struct is a complete declaration:
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct LiftedBin;
 impl llvmkit_ir::ModuleBrand for LiftedBin {}
 
 let m = llvmkit_ir::Module::branded::<LiftedBin, _>("lifted")?;
 ```
 
-`ModuleBrand: Copy + Debug + Eq + Hash + 'static`. The four data supertraits are
-there because the brand-generic handles use `#[derive(...)]`, and a `derive` on
-a generic type emits a `where B: Clone` / `B: Debug` / … bound whether or not
-`B` occupies a position that needs it; `'static` is there because the uniqueness
-registry keys brands by `TypeId`. `module_new!` emits the derive line for you.
+`ModuleBrand: 'static` — nothing more. The `'static` exists because the
+uniqueness registry keys brands by `TypeId`. (Until the 0.0.4 freeze the trait
+also required `Copy + Debug + Eq + Hash`, an artifact of the brand-generic
+handles using std `#[derive]`; they now use a bound-free derive, so the
+requirement is gone.)
 
 Because a brand is a type rather than a lifetime, the module token is an ordinary
 owned value: `Module<B, Unverified>` has no lifetime parameter. Handles still

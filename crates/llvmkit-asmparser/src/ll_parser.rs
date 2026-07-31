@@ -50,6 +50,7 @@ use llvmkit_ir::{
     constant_fold_select_instruction, derived_types::PointerType, resolve_intrinsic_name,
     shufflevector_mask_from_constant,
 };
+use llvmkit_macros::Branded;
 use llvmkit_support::{Span, Spanned};
 
 use super::asm_parser_context::AsmParserContext;
@@ -191,7 +192,8 @@ fn keyword_text(k: Keyword) -> &'static str {
 /// `NumberedTypes` maps: we keep the type handle plus the location of the
 /// most recent forward reference so `validateEndOfModule` can
 /// blame the right span if the definition never lands.
-#[derive(Debug, Clone, Copy)]
+#[derive(Branded)]
+#[branded(Debug, Clone, Copy)]
 struct TypeEntry<'ctx, B: ModuleBrand> {
     ty: Type<'ctx, B>,
 }
@@ -281,7 +283,8 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
 /// module-level slot mapping so callers can re-use it for follow-on
 /// `parse_constant_value` / `parse_type` calls (mirrors upstream's
 /// `parseAssemblyString(..., SlotMapping *)` pattern).
-#[derive(Debug, Default)]
+#[derive(Branded)]
+#[branded(Debug, Default)]
 pub struct ParsedModule<'ctx, B: ModuleBrand> {
     pub slot_mapping: SlotMapping<'ctx, B>,
     pub summary_index: Option<ModuleSummaryIndex>,
@@ -376,7 +379,8 @@ enum ExpectedIntWidth {
     Bits(u32),
 }
 
-#[derive(Debug)]
+#[derive(Branded)]
+#[branded(Debug)]
 enum ValId<'ctx, B: ModuleBrand> {
     LocalId(u32),
     GlobalId(u32),
@@ -8707,7 +8711,8 @@ fn parse_hex_apfloat(semantics: ApFloatSemantics, digits: &str) -> IrResult<ApFl
 
 /// Outgoing reference to an incoming phi value that could not be resolved
 /// immediately (forward reference). Resolved by `PerFunctionState::finish`.
-#[derive(Clone, Debug)]
+#[derive(Branded)]
+#[branded(Clone, Debug)]
 enum PhiValRef<'ctx, B: ModuleBrand> {
     /// Already resolved to a concrete value.
     Resolved(llvmkit_ir::Value<'ctx, B>),
