@@ -7,6 +7,37 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ApFloat audit, continued: three more defects
+
+Ports of the `APFloat` classification, factory, and small-operation tests from
+`llvm/unittests/ADT/APFloatTest.cpp` — twenty upstream `TEST(...)` blocks —
+found three more divergences.
+
+#### Fixed
+
+- **`ilogb` answered `0` for almost everything.** It delegated to
+  `exact_log2_abs`, which is `None` unless the value is *exactly* a power of
+  two, and then defaulted to `0`. So `ilogb(0x1.ffffffffffffep-1023)` reported
+  `0` where upstream reports `-1023`, and every NaN, zero, and infinity
+  reported `0` as well. It now ports the free function `llvm::ilogb`: the
+  unbiased exponent of any finite non-zero value, denormals included, with
+  upstream's sentinels exposed as `ApFloat::ILOGB_NAN` / `ILOGB_ZERO` /
+  `ILOGB_INF` (`APFloat::IEK_NaN` / `IEK_Zero` / `IEK_Inf`).
+- **`ppc_fp128` factories left a negative-zero residual.** `inf`, `smallest`,
+  `smallest_normalized`, and the NaN constructors signed the value by flipping
+  the whole 128-bit pattern, which negates the residual half too. Upstream's
+  `DoubleAPFloat` factories sign only the leading component and set the
+  residual with `Floats[1].makeZero(/*Neg=*/false)`. `makeLargest` is the
+  deliberate exception — it negates both — and is left alone.
+
+#### Added
+
+- **`ApFloat::is_smallest_normalized`**, which had no counterpart at all
+  despite `TEST(APFloatTest, IsSmallestNormalized)` exercising it across every
+  semantics. Ports both upstream implementations, using the numeric comparison
+  `DoubleAPFloat` uses: a bitwise test would additionally demand the `ppc_fp128`
+  residual's sign, where a `(smallest normal, -0.0)` pair counts upstream.
+
 ### ApFloat bit-exactness audit (three fixes)
 
 Audited against LLVM's own `llvm/unittests/ADT/APFloatTest.cpp` from the

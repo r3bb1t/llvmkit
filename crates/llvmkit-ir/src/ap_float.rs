@@ -268,7 +268,7 @@ impl ApFloat {
         if matches!(sign, ApFloatSign::Negative) {
             value = value.change_sign();
         }
-        value
+        positive_ppc_residual(value)
     }
 
     pub fn qnan(
@@ -320,7 +320,7 @@ impl ApFloat {
         if matches!(sign, ApFloatSign::Negative) {
             value = value.change_sign();
         }
-        value
+        positive_ppc_residual(value)
     }
 
     pub fn smallest_normalized(semantics: ApFloatSemantics, sign: ApFloatSign) -> ApFloat {
@@ -344,7 +344,7 @@ impl ApFloat {
         if matches!(sign, ApFloatSign::Negative) {
             value = value.change_sign();
         }
-        value
+        positive_ppc_residual(value)
     }
 
     pub fn add(&self, rhs: &ApFloat, rounding: RoundingMode) -> (ApFloat, ApFloatStatus) {
@@ -1115,6 +1115,29 @@ impl ApFloat {
         ))
     }
 
+    /// Whether this is the smallest *normal* magnitude for its semantics.
+    ///
+    /// Ports both upstream implementations, which agree in effect:
+    /// `IEEEFloat::isSmallestNormalized` checks "normal, minimum exponent,
+    /// significand all zeros except the implicit MSB", while
+    /// `DoubleAPFloat::isSmallestNormalized` builds the reference value and
+    /// asks `compare(...) == cmpEqual`. The numeric comparison is used here
+    /// because it is the one that is right for **both**: for `PpcDoubleDouble`
+    /// a bitwise test would additionally demand the residual's *sign*, and a
+    /// `(smallest normal, -0.0)` pair is smallest-normalized upstream.
+    #[inline]
+    pub fn is_smallest_normalized(&self) -> bool {
+        self.is_finite_non_zero()
+            && self.compare(&Self::smallest_normalized(
+                self.semantics,
+                if self.is_negative() {
+                    ApFloatSign::Negative
+                } else {
+                    ApFloatSign::Positive
+                },
+            )) == ApFloatCmpResult::Equal
+    }
+
     #[inline]
     pub fn is_integer(&self) -> bool {
         if self.is_zero() {
@@ -1186,8 +1209,52 @@ impl ApFloat {
         }
     }
 
+    /// `ilogb` returns this for a NaN. Mirrors `APFloat::IEK_NaN`.
+    pub const ILOGB_NAN: i32 = i32::MIN;
+    /// `ilogb` returns this for a zero. Mirrors `APFloat::IEK_Zero`.
+    pub const ILOGB_ZERO: i32 = i32::MIN + 1;
+    /// `ilogb` returns this for an infinity. Mirrors `APFloat::IEK_Inf`.
+    pub const ILOGB_INF: i32 = i32::MAX;
+
+    /// The unbiased base-2 exponent — `floor(log2(|self|))` for any finite
+    /// non-zero value, including denormals.
+    ///
+    /// Ports the free function `llvm::ilogb` in `APFloat.cpp`: the three
+    /// special categories answer with the sentinels above, a normal value
+    /// answers with its stored exponent, and a denormal is normalized first so
+    /// its answer is the exponent it *would* have had.
+    ///
+    /// This is **not** `exact_log2_abs`, which this used to delegate to.
+    /// `exact_log2_abs` answers `None` unless the value is exactly a power of
+    /// two, so every other finite value — and every special — reported `0`:
+    /// `ilogb(0x1.ffffffffffffep-1023)` said `0` where upstream says `-1023`,
+    /// and `ilogb(inf)` said `0` rather than the infinity sentinel.
     pub fn ilogb(&self) -> i32 {
-        self.exact_log2_abs().unwrap_or(0)
+        if self.is_nan() {
+            return Self::ILOGB_NAN;
+        }
+        if self.is_zero() {
+            return Self::ILOGB_ZERO;
+        }
+        if self.is_infinity() {
+            return Self::ILOGB_INF;
+        }
+        let Some(components) = self.binary_components() else {
+            return Self::ILOGB_NAN;
+        };
+        let Some(scale) = component_scale(&components) else {
+            return Self::ILOGB_NAN;
+        };
+        // `magnitude` is the significand as an integer scaled by `2^scale`, so
+        // the position of its most significant set bit carries the rest of the
+        // exponent. A finite non-zero value always has one.
+        let Some(top_bit) = components.magnitude.active_bits().checked_sub(1) else {
+            return Self::ILOGB_ZERO;
+        };
+        i32::try_from(top_bit)
+            .ok()
+            .and_then(|top_bit| scale.checked_add(top_bit))
+            .unwrap_or(Self::ILOGB_NAN)
     }
 
     pub fn scalbn(&self, exponent: i32, rounding: RoundingMode) -> (ApFloat, ApFloatStatus) {
@@ -1311,7 +1378,7 @@ impl ApFloat {
         if matches!(sign, ApFloatSign::Negative) {
             value = value.change_sign();
         }
-        value
+        positive_ppc_residual(value)
     }
 
     fn from_bits_unchecked(semantics: ApFloatSemantics, words: &[u64]) -> ApFloat {
@@ -1787,6 +1854,30 @@ enum MagnitudeOp {
 /// is the `IeeeDouble` quiet bit displaced into the high word, not an offset
 /// derived from this semantics' own 106-bit precision — that number describes
 /// the pair's combined significand and has no single quiet bit.
+/// Force a `PpcDoubleDouble` value's residual half to **positive** zero.
+///
+/// Upstream's `DoubleAPFloat` factories sign only the leading component and
+/// then set the residual with `Floats[1].makeZero(/*Neg=*/false)` —
+/// `makeInf`, `makeZero`, `makeSmallest`, `makeSmallestNormalized`, and
+/// `makeNaN` all do exactly that. Negating the whole 128-bit pattern instead,
+/// as a plain `change_sign` does, leaves a `-0.0` residual that upstream never
+/// produces, which is visible to `bitwise_is_equal` and to anything printing
+/// the raw halves.
+///
+/// **`makeLargest` is the deliberate exception** and must not route through
+/// here: it builds both halves and then calls `changeSign()`, so its residual
+/// *is* negated. Every other semantics is returned untouched.
+fn positive_ppc_residual(value: ApFloat) -> ApFloat {
+    if !matches!(value.semantics, ApFloatSemantics::PpcDoubleDouble) {
+        return value;
+    }
+    // llvmkit keeps the leading component in the high word (see
+    // `ppc_words`), so the residual is word 0.
+    let bits = value.to_bits();
+    let leading = bits.words().get(1).copied().unwrap_or(0);
+    ApFloat::from_bits_unchecked(ApFloatSemantics::PpcDoubleDouble, &[0, leading])
+}
+
 /// Where a NaN payload lives in the stored bit pattern: `(shift, width)`.
 ///
 /// Upstream masks the payload to `precision - 1` bits of the significand

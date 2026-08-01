@@ -1477,3 +1477,23 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_hex_float_word_order.rs::fp128_one_uses_upstream_word_order` | `llvm/lib/AsmParser/LLLexer.cpp::HexToIntPair` — first sixteen hex digits are the APInt's *low* word, so `0xL0…03FFF0…0` is 1.0 | mirror |
 | `crates/llvmkit-asmparser/tests/parser_hex_float_word_order.rs::ppc_fp128_one_uses_upstream_word_order` | `llvm/lib/AsmParser/LLLexer.cpp::HexToIntPair` + `llvm/lib/IR/AsmWriter.cpp::WriteConstantInternal` (`getLoBits(64)` first); the leading double is written first | mirror |
 | `crates/llvmkit-asmparser/tests/parser_hex_float_word_order.rs::x86_fp80_stays_big_endian` | `llvm/lib/AsmParser/LLLexer.cpp::FP80HexToIntPair` + `WriteConstantInternal` (`getHiBits(16)` then `getLoBits(64)`) — a plain big-endian 80-bit number in both directions | mirror |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::get_one` | `llvm/unittests/ADT/APFloatTest.cpp::TEST(APFloatTest, getOne)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::get_zero` | `TEST(APFloatTest, getZero)` — the rows for the seven modeled semantics; the `PPCDoubleDouble` pattern is mirrored, see `ap_float_ppc_word_order.rs` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::make_nan` | `TEST(APFloatTest, makeNaN)` — the twenty `IEEEsingle`/`IEEEdouble` rows, driven as upstream's `nanbitsFromAPInt` does | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::is_signaling` | `TEST(APFloatTest, isSignaling)`; the `classify() -> FPClassTest` assertions are unmodeled and omitted | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::is_negative` | `TEST(APFloatTest, isNegative)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::is_normal` | `TEST(APFloatTest, isNormal)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::is_finite` | `TEST(APFloatTest, isFinite)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::is_nan` | `TEST(APFloatTest, isNaN)`, including its sweep over every semantics with a NaN | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::is_infinity` | `TEST(APFloatTest, isInfinity)`, including its sweep over every semantics with an infinity | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::is_finite_non_zero` | `TEST(APFloatTest, isFiniteNonZero)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::is_integer` | `TEST(APFloatTest, isInteger)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::denormal` | `TEST(APFloatTest, Denormal)` — the four modeled semantics it covers | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::is_smallest_normalized` | `TEST(APFloatTest, IsSmallestNormalized)` over the modeled semantics, including the four-step `next` walk; `getAllOnesValue` has no llvmkit counterpart and that row is omitted | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::abs` | `TEST(APFloatTest, abs)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::neg` | `TEST(APFloatTest, neg)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::ilogb` | `TEST(APFloatTest, ilogb)`, including the `IEK_NaN` / `IEK_Zero` / `IEK_Inf` sentinels | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::x87_largest` | `TEST(APFloatTest, x87Largest)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::x87_next` | `TEST(APFloatTest, x87Next)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::exact_inverse` | `TEST(APFloatTest, exactInverse)` for the modeled semantics; upstream's host-`float`/`double` constructors are spelled as the equivalent literals | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::comparisons` | `TEST(APFloatTest, Comparisons)` — the ten ordered values compared pairwise | port |
