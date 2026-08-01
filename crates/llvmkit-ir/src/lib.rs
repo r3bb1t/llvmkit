@@ -364,7 +364,8 @@ pub use int_width::{
 };
 pub use value_tracking::{
     KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery,
-    compute_known_bits, is_known_non_zero, is_known_one, is_known_zero, known_bits_from_operator,
+    compute_known_bits, compute_max_significant_bits, compute_num_sign_bits, is_known_non_zero,
+    is_known_one, is_known_zero, known_bits_from_operator,
 };
 pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.
