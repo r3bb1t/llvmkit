@@ -548,20 +548,69 @@ impl ApFloat {
         Self::from_bits_unchecked(self.semantics, bits.words())
     }
 
-    fn convert_quiet_nan_to(&self, semantics: ApFloatSemantics) -> ApFloat {
-        if self.is_signaling() {
-            Self::snan(
-                semantics,
-                sign_from_negative(self.is_negative()),
-                NanPayload::Absent,
+    /// Convert a NaN to another semantics, carrying its payload.
+    ///
+    /// Ports the `category == fcNaN` arm of `IEEEFloat::convert`. The
+    /// significand is shifted by the precision difference — right on a
+    /// truncation, where bits that fall off make the conversion lossy, and
+    /// left on an extension — and the result is always *quiet*: upstream
+    /// quiets a signaling source explicitly, and a quiet source already
+    /// carries its quiet bit through the shift. A signaling source also raises
+    /// invalid-op, which is what stops a signaling NaN from becoming an
+    /// infinity when a truncation drops every payload bit.
+    ///
+    /// The reassembly goes back through [`Self::nan`] rather than laying out
+    /// bits here, so the payload masking, the quiet bit, and x87's explicit
+    /// integer bit all keep exactly one definition.
+    fn convert_nan_to(
+        &self,
+        to_semantics: ApFloatSemantics,
+    ) -> (ApFloat, ApFloatStatus, LosesInfo) {
+        let signaling = self.is_signaling();
+        let sign = sign_from_negative(self.is_negative());
+        let (from_shift, from_width) = nan_payload_field(self.semantics);
+        let from_precision = nan_significand_precision(self.semantics);
+        let to_precision = nan_significand_precision(to_semantics);
+
+        let width = self.semantics.bit_width().max(to_semantics.bit_width());
+        let significand = self
+            .to_bits()
+            .zext_or_trunc(width)
+            .checked_lshr(from_shift)
+            .unwrap_or_else(|| ApInt::zero(width))
+            .bitand(&ApInt::low_bits_set(width, from_width));
+
+        let shift = i64::from(to_precision) - i64::from(from_precision);
+        let (payload, lost) = if shift < 0 {
+            let drop = u32::try_from(-shift).unwrap_or(width);
+            let dropped = significand.bitand(&ApInt::low_bits_set(width, drop));
+            (
+                significand
+                    .checked_lshr(drop)
+                    .unwrap_or_else(|| ApInt::zero(width)),
+                !dropped.is_zero(),
             )
         } else {
-            Self::qnan(
-                semantics,
-                sign_from_negative(self.is_negative()),
-                NanPayload::Absent,
+            let grow = u32::try_from(shift).unwrap_or(0);
+            (
+                significand
+                    .checked_shl(grow)
+                    .unwrap_or_else(|| ApInt::zero(width)),
+                false,
             )
-        }
+        };
+
+        let status = if signaling {
+            ApFloatStatus::INVALID_OP
+        } else {
+            ApFloatStatus::OK
+        };
+        let loses = if lost { LosesInfo::Yes } else { LosesInfo::No };
+        (
+            Self::nan(to_semantics, sign, NanPayload::Bits(&payload), false),
+            status,
+            loses,
+        )
     }
 
     pub fn convert(
@@ -582,11 +631,7 @@ impl ApFloat {
                 ApFloatStatus::OK,
             )
         } else if self.is_nan() {
-            let mut status = ApFloatStatus::OK;
-            if self.is_signaling() {
-                status.insert(ApFloatStatus::INVALID_OP);
-            }
-            (self.make_quiet().convert_quiet_nan_to(to_semantics), status)
+            return self.convert_nan_to(to_semantics);
         } else if matches!(self.semantics, ApFloatSemantics::PpcDoubleDouble) {
             convert_ppc_double_double(self, to_semantics, rounding)
                 .unwrap_or_else(|| (self.clone(), ApFloatStatus::INVALID_OP))
@@ -1890,6 +1935,17 @@ fn nan_payload_field(semantics: ApFloatSemantics) -> (u32, u32) {
     match semantics {
         ApFloatSemantics::PpcDoubleDouble => (64, ApFloatSemantics::IeeeDouble.precision() - 1),
         other => (0, other.precision() - 1),
+    }
+}
+
+/// The significand precision `IEEEFloat::convert` shifts a NaN payload by.
+///
+/// `PpcDoubleDouble` again answers for its leading `double`, since that half
+/// is where its NaN lives.
+fn nan_significand_precision(semantics: ApFloatSemantics) -> u32 {
+    match semantics {
+        ApFloatSemantics::PpcDoubleDouble => ApFloatSemantics::IeeeDouble.precision(),
+        other => other.precision(),
     }
 }
 

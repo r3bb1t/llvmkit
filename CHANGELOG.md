@@ -7,6 +7,25 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ApFloat `convert` carries NaN payloads
+
+#### Fixed
+
+- **Converting a NaN between semantics discarded its payload.** The NaN arm of
+  `convert` rebuilt a bare quiet NaN in the target semantics, so
+  `snan` widened from `float` to `x86_fp80` produced the default pattern
+  instead of upstream's payload-carrying one, and no truncation could ever
+  report a lost payload. It now ports the `fcNaN` arm of `IEEEFloat::convert`:
+  the significand is shifted by the precision difference — right on a
+  truncation, where dropped bits make the conversion lossy, left on an
+  extension — and the result is always quiet, with a signaling source raising
+  invalid-op. That last rule is what keeps a signaling NaN from becoming an
+  infinity when a truncation drops every payload bit.
+
+  Reassembly routes back through the NaN constructor rather than laying out
+  bits at the call site, so payload masking, the quiet bit, and x87's explicit
+  integer bit keep one definition each.
+
 ### ApFloat audit, continued: three more defects
 
 Ports of the `APFloat` classification, factory, and small-operation tests from

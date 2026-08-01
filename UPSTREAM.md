@@ -1497,3 +1497,4 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::x87_next` | `TEST(APFloatTest, x87Next)` | port |
 | `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::exact_inverse` | `TEST(APFloatTest, exactInverse)` for the modeled semantics; upstream's host-`float`/`double` constructors are spelled as the equivalent literals | port |
 | `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::comparisons` | `TEST(APFloatTest, Comparisons)` — the ten ordered values compared pairwise | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_convert.rs::upstream_convert` | `llvm/unittests/ADT/APFloatTest.cpp::TEST(APFloatTest, convert)` — ported in upstream's order, asserting the converted value, the `losesInfo` flag, and the status where upstream checks it | port |
