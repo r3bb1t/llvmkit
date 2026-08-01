@@ -95,6 +95,7 @@ const MODELED_KNOWN_BITS: &[(&str, &str)] = &[
     ("isNonNegative", "is_non_negative"),
     ("isNonPositive", "is_non_positive"),
     ("isNonZero", "is_non_zero"),
+    ("isSignUnknown", "is_sign_unknown"),
     ("isStrictlyPositive", "is_strictly_positive"),
     ("isUnknown", "is_unknown"),
     ("isZero", "is_zero"),
@@ -111,7 +112,9 @@ const MODELED_KNOWN_BITS: &[(&str, &str)] = &[
     ("resetAll", "unknown"),
     ("reverseBits", "reverse_bits"),
     ("sadd_sat", "sadd_sat"),
+    ("sdiv", "sdiv / sdiv_with_exact"),
     ("setAllConflict", "set_all_conflict"),
+    ("setAllOnes", "set_all_ones"),
     ("setAllZero", "set_all_zero"),
     ("sext", "sext"),
     ("sextInReg", "sext_in_reg"),
@@ -142,37 +145,27 @@ const MODELED_KNOWN_BITS: &[(&str, &str)] = &[
     ("zextOrTrunc", "zext_or_trunc"),
 ];
 
-/// `KnownBits` operations llvmkit does **not** model, with the reason.
+/// `KnownBits` operations llvmkit does **not** model.
 ///
-/// Derived from `KnownBits.h` at LLVM [`DERIVED_FROM_LLVM`]. Four are genuine
-/// capability gaps; the fifth is a naming asymmetry worth closing.
-const KNOWN_BITS_GAPS: &[(&str, &str)] = &[
-    (
-        "flipSignBit",
-        "the dual of makeNegative / makeNonNegative, which are both modeled. No \
-         ported transfer function reaches for it yet",
-    ),
-    (
-        "isSignUnknown",
-        "the third case alongside isNegative / isNonNegative, both modeled. \
-         Spellable today as !is_negative() && !is_non_negative()",
-    ),
-    (
-        "remGetLowBits",
-        "an internal helper of the urem / srem transfer functions; llvmkit's urem \
-         and srem inline the same reasoning instead of exposing it",
-    ),
-    (
-        "sdiv",
-        "SPELLING, not a capability gap: sdiv(a, b) is sdiv_with_exact(a, b, \
-         false). The asymmetry is that udiv exposes both spellings while sdiv \
-         exposes only the flag-taking one",
-    ),
-    (
-        "setAllOnes",
-        "the dual of setAllZero, which is modeled — sets the value to all-ones \
-         rather than all-zero",
-    ),
+/// **Empty, and asserted to stay empty.** Every operation `KnownBits.h`
+/// declares public is modeled; see [`KNOWN_BITS_PRIVATE_UPSTREAM`] for the two
+/// that look missing but are upstream internals. Adding an entry here trips
+/// `known_bits_public_surface_is_complete`, which is the point — a regression
+/// or a newly-synced upstream method has to be acknowledged, not absorbed.
+const KNOWN_BITS_GAPS: &[(&str, &str)] = &[];
+
+/// `KnownBits` members that are **private** in `KnownBits.h` and so are not
+/// part of the surface at all.
+///
+/// Both are declared outside the `public:` section upstream (`flipSignBit`
+/// above the first `public:`, `remGetLowBits` under the trailing `private:`),
+/// and both exist in llvmkit as module-private free functions in
+/// `known_bits.rs`. An earlier revision of this ledger listed them as gaps;
+/// that was wrong in both directions — they are neither public upstream nor
+/// absent here.
+const KNOWN_BITS_PRIVATE_UPSTREAM: &[(&str, &str)] = &[
+    ("flipSignBit", "known_bits.rs::flip_sign_bit"),
+    ("remGetLowBits", "known_bits.rs::rem_get_low_bits"),
 ];
 
 /// ValueTracking entry points llvmkit models, as `(upstream, llvmkit)`.
@@ -283,6 +276,7 @@ fn exercises_every_modeled_known_bits_operation() {
     let _ = a.bit_width();
     let _ = a.has_conflict();
     let _ = a.is_unknown();
+    let _ = a.is_sign_unknown();
     let _ = a.is_constant();
     let _ = a.is_known_zero(0);
     let _ = a.is_known_one(1);
@@ -318,6 +312,7 @@ fn exercises_every_modeled_known_bits_operation() {
     let _ = a.union_with(&b);
     let mut scratch = a.clone();
     scratch.set_all_zero();
+    scratch.set_all_ones();
     scratch.set_all_conflict();
     scratch.insert_bits(&one_bit, 0);
     scratch.make_negative();
@@ -346,6 +341,7 @@ fn exercises_every_modeled_known_bits_operation() {
     let _ = KnownBits::ashr_with_flags(&a, &b, false, false);
     let _ = KnownBits::udiv(&a, &b);
     let _ = KnownBits::udiv_with_exact(&a, &b, false);
+    let _ = KnownBits::sdiv(&a, &b);
     let _ = KnownBits::sdiv_with_exact(&a, &b, false);
     let _ = KnownBits::urem(&a, &b);
     let _ = KnownBits::srem(&a, &b);
@@ -417,7 +413,6 @@ fn ledger_tables_are_consistent() {
         ("ValueTracking", MODELED_VALUE_TRACKING, VALUE_TRACKING_GAPS),
     ] {
         assert!(!modeled.is_empty(), "{label}: modeled table is empty");
-        assert!(!gaps.is_empty(), "{label}: gap table is empty");
 
         let modeled_names: Vec<&str> = modeled.iter().map(|(upstream, _)| *upstream).collect();
         let unique: BTreeSet<&str> = modeled_names.iter().copied().collect();
@@ -456,5 +451,37 @@ fn ledger_tables_are_consistent() {
     assert!(
         !DERIVED_FROM_LLVM.is_empty(),
         "the gap lists must name the LLVM release they were derived from"
+    );
+
+    // The private-upstream list is neither modeled nor a gap; it must not
+    // collide with either.
+    let modeled: BTreeSet<&str> = MODELED_KNOWN_BITS.iter().map(|(u, _)| *u).collect();
+    for (private, llvmkit) in KNOWN_BITS_PRIVATE_UPSTREAM {
+        assert!(
+            !modeled.contains(private),
+            "`{private}` is private upstream but listed as modeled public API"
+        );
+        assert!(
+            !llvmkit.trim().is_empty(),
+            "`{private}` records no llvmkit location"
+        );
+    }
+}
+
+/// Every operation `KnownBits.h` declares public is modeled.
+///
+/// The assertion is the tripwire: adding a `KNOWN_BITS_GAPS` entry — because a
+/// method regressed, or because an LLVM sync introduced one — fails here and
+/// forces the gap to be acknowledged rather than quietly absorbed into a list
+/// nobody reads. No upstream counterpart; see the module docs.
+#[test]
+fn known_bits_public_surface_is_complete() {
+    assert!(
+        KNOWN_BITS_GAPS.is_empty(),
+        "KnownBits.h is no longer fully modeled: {:?}",
+        KNOWN_BITS_GAPS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
     );
 }

@@ -70,26 +70,24 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 | `SolveQuadraticEquationWrap` | SCEV-specific; belongs with a SCEV port, not with `ApInt`. |
 | `GetMostSignificantDifferentBitExaustive` | The non-exhaustive fixture is ported; the exhaustive variant re-derives the same property over an 8-bit sweep. |
 
-## KnownBits — five operations not modeled (2026-08-01)
+## ~~KnownBits — operations not modeled~~ — closed (2026-08-01)
 
-Surfaced by rebuilding `crates/llvmkit-ir/tests/value_tracking_parity.rs` into
-a real ledger. Diffing `KnownBits.h` at LLVM 22.1.4 against llvmkit's
-`KnownBits` puts 93 of 98 upstream operations in the modeled column. The
-remaining five:
+`KnownBits.h`'s **public** surface is now fully modeled. The ledger
+(`crates/llvmkit-ir/tests/value_tracking_parity.rs`) asserts an empty gap list,
+so a regression or a newly-synced upstream method has to be acknowledged rather
+than absorbed.
 
-| Upstream | Status |
-|---|---|
-| `setAllOnes` | Genuine gap. The dual of `setAllZero`, which *is* modeled. |
-| `flipSignBit` | Genuine gap. The dual of `makeNegative` / `makeNonNegative`, both modeled. Nothing in the ported transfer functions reaches for it yet. |
-| `isSignUnknown` | Genuine gap. The third case alongside `isNegative` / `isNonNegative`. Spellable today as `!is_negative() && !is_non_negative()`. |
-| `remGetLowBits` | Genuine gap, but internal — a helper of the `urem`/`srem` transfer functions. llvmkit's `urem` and `srem` inline the same reasoning rather than exposing it. |
-| `sdiv` | **Spelling, not a gap.** `sdiv(a, b)` is `sdiv_with_exact(a, b, false)`. The asymmetry is that `udiv` exposes *both* spellings while `sdiv` exposes only the flag-taking one. |
+Three were implemented to close it: `setAllOnes` → `set_all_ones`,
+`isSignUnknown` → `is_sign_unknown`, and the plain two-argument `sdiv`
+alongside the existing `sdiv_with_exact` (upstream spells the pair as one
+function with `Exact = false` defaulted; llvmkit spells it as a pair, matching
+`udiv` / `udiv_with_exact`).
 
-None is load-bearing for anything llvmkit currently computes, which is why
-they went unnoticed. The first three are a few lines each; the blocker is D11,
-not difficulty — each needs a ported test, and `KnownBitsTest.cpp` should be
-checked for coverage before they land. `sdiv` is a one-line addition for
-symmetry.
+Two entries an earlier revision of the ledger listed as gaps were **wrong in
+both directions**: `flipSignBit` and `remGetLowBits` are declared outside
+`public:` in `KnownBits.h`, and both already existed in llvmkit as
+module-private free functions in `known_bits.rs`. They are neither public
+upstream nor absent here, and the ledger now records them as such.
 
 ## KnownBits / ValueTracking — the PHI recurrence arm (2026-08-01)
 
