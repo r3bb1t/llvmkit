@@ -2006,7 +2006,7 @@ fn fold_undef_int_binary<'ctx, B: ModuleBrand + 'ctx>(
         BinaryOpcode::Mul if lhs_undef && rhs_undef => undef(),
         BinaryOpcode::Mul => {
             let known = if lhs_undef { rhs } else { lhs };
-            if constant_is_one_bit_set_low(known) {
+            if constant_has_low_bit_set(known) {
                 undef()
             } else {
                 zero()
@@ -2063,15 +2063,15 @@ fn constant_not<'ctx, B: ModuleBrand + 'ctx>(
     build_binary_constant_or_expr(BinaryOpcode::Xor, value, all_ones)
 }
 
-fn constant_is_one_bit_set_low<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
+fn constant_has_low_bit_set<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
     if let Ok(value) = ConstantIntValue::<IntDyn, B>::try_from(constant) {
-        return value.ap_int().is_one_bit_set(0);
+        return value.ap_int().bit(0);
     }
     aggregate_elements(constant).is_some_and(|elements| {
         !elements.is_empty()
             && elements
                 .iter()
-                .all(|element| constant_is_one_bit_set_low(*element))
+                .all(|element| constant_has_low_bit_set(*element))
     })
 }
 

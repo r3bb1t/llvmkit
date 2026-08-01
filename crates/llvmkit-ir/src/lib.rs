@@ -154,7 +154,7 @@ pub use analysis::{
 };
 pub use ap_float::{
     ApFloat, ApFloatCategory, ApFloatCmpResult, ApFloatNextDirection, ApFloatSemantics,
-    ApFloatSign, ApFloatStatus, Exactness, LosesInfo, NanPayload, RoundingMode,
+    ApFloatSign, ApFloatStatus, BinaryExponent, Exactness, LosesInfo, NanPayload, RoundingMode,
 };
 pub use ap_int::{ApInt, ApIntDivRem, ApIntRounding, ApIntSignedness, ApIntTruncation};
 pub use argument::Argument;

@@ -875,7 +875,7 @@ fn reverse_bits(value: &ApInt) -> ApInt {
     let mut out = ApInt::zero(width);
     let mut bit = 0;
     while bit < width {
-        if value.is_one_bit_set(bit) {
+        if value.bit(bit) {
             out = out.bitor(&ApInt::one_bit_set(width, width - bit - 1));
         }
         bit += 1;

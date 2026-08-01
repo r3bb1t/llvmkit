@@ -294,6 +294,66 @@ impl ApInt {
         self.words = updated.words;
     }
 
+    /// Set the bits in `[lo, hi)`. Mirrors `APInt::setBits`, which asserts
+    /// `lo <= hi <= bit_width`; out-of-range requests are no-ops here rather
+    /// than panics, matching the rest of this type's bit accessors.
+    pub fn set_bits(&mut self, lo: u32, hi: u32) {
+        if lo >= hi {
+            return;
+        }
+        let mask = Self::bits_set(self.bit_width, lo, hi.min(self.bit_width));
+        let updated = ApInt::bitor(self, &mask);
+        self.words = updated.words;
+    }
+
+    /// Clear the bits in `[lo, hi)`. Mirrors `APInt::clearBits`.
+    pub fn clear_bits(&mut self, lo: u32, hi: u32) {
+        if lo >= hi {
+            return;
+        }
+        let mask = Self::bits_set(self.bit_width, lo, hi.min(self.bit_width));
+        let updated = ApInt::bitand(self, &mask.not());
+        self.words = updated.words;
+    }
+
+    /// Clear the bottom `count` bits. Mirrors `APInt::clearLowBits`.
+    pub fn clear_low_bits(&mut self, count: u32) {
+        let keep = Self::high_bits_set(self.bit_width, self.bit_width.saturating_sub(count));
+        let updated = ApInt::bitand(self, &keep);
+        self.words = updated.words;
+    }
+
+    /// Clear the top `count` bits. Mirrors `APInt::clearHighBits`.
+    pub fn clear_high_bits(&mut self, count: u32) {
+        let keep = Self::low_bits_set(self.bit_width, self.bit_width.saturating_sub(count));
+        let updated = ApInt::bitand(self, &keep);
+        self.words = updated.words;
+    }
+
+    /// Set every bit to 1. Mirrors `APInt::setAllBits`.
+    pub fn set_all_bits(&mut self) {
+        self.words = Self::all_ones(self.bit_width).words;
+    }
+
+    /// Set every bit to 0. Mirrors `APInt::clearAllBits`.
+    pub fn clear_all_bits(&mut self) {
+        self.words = Self::zero(self.bit_width).words;
+    }
+
+    /// Toggle every bit. Mirrors `APInt::flipAllBits`.
+    pub fn flip_all_bits(&mut self) {
+        self.words = self.clone().not().words;
+    }
+
+    /// Toggle a single bit. Mirrors `APInt::flipBit`; out of range is a no-op.
+    pub fn flip_bit(&mut self, bit: u32) {
+        if self.bit(bit) {
+            self.clear_bit(bit);
+        } else {
+            self.set_bit(bit);
+        }
+    }
+
     pub fn insert_bits(&mut self, src: &ApInt, bit_position: u32) {
         let mut bit = 0;
         while bit < src.bit_width {
@@ -451,9 +511,16 @@ impl ApInt {
         self.is_negative() || self.is_zero()
     }
 
+    /// Whether `bit` is set **and is the only bit set**.
+    ///
+    /// Mirrors `APInt::isOneBitSet`, which is `(*this)[BitNo] && popcount() ==
+    /// 1`. This used to answer the first half only — upstream's name over
+    /// [`bit`](Self::bit)'s meaning — so a port of LLVM code calling
+    /// `isOneBitSet` would have silently accepted values with other bits set.
+    /// Every in-tree caller wanted `bit` and now says so.
     #[inline]
     pub fn is_one_bit_set(&self, bit: u32) -> bool {
-        bit < self.bit_width && self.bit(bit)
+        self.bit(bit) && self.popcount() == 1
     }
 
     #[inline]
@@ -752,6 +819,457 @@ impl ApInt {
     pub fn negate(&self) -> ApInt {
         self.not()
             .wrapping_add(&Self::from_words(self.bit_width, &[1]))
+    }
+
+    /// Rotate left by `amount` bits. Mirrors `APInt::rotl`.
+    pub fn rotl(&self, amount: u32) -> ApInt {
+        if self.bit_width == 0 {
+            return self.clone();
+        }
+        let amount = amount % self.bit_width;
+        if amount == 0 {
+            return self.clone();
+        }
+        ApInt::bitor(&self.shl(amount), &self.lshr(self.bit_width - amount))
+    }
+
+    /// Rotate right by `amount` bits. Mirrors `APInt::rotr`.
+    pub fn rotr(&self, amount: u32) -> ApInt {
+        if self.bit_width == 0 {
+            return self.clone();
+        }
+        let amount = amount % self.bit_width;
+        if amount == 0 {
+            return self.clone();
+        }
+        ApInt::bitor(&self.lshr(amount), &self.shl(self.bit_width - amount))
+    }
+
+    /// Rotate left by an amount held in an `ApInt` of any width. Mirrors
+    /// `APInt::rotl(const APInt &)`, which reduces the amount through
+    /// `rotateModulo` first.
+    #[inline]
+    pub fn rotl_by(&self, amount: &ApInt) -> ApInt {
+        self.rotl(self.rotate_modulo(amount))
+    }
+
+    /// Rotate right by an amount held in an `ApInt` of any width. Mirrors
+    /// `APInt::rotr(const APInt &)`.
+    #[inline]
+    pub fn rotr_by(&self, amount: &ApInt) -> ApInt {
+        self.rotr(self.rotate_modulo(amount))
+    }
+
+    /// Reduce a rotate amount of arbitrary width modulo this value's width.
+    /// Ports the file-local `rotateModulo` in `APInt.cpp`, which widens the
+    /// amount first so the `urem` cannot divide by zero — an `ApInt` of width
+    /// one can only hold 0 or 1, and `1 % 1` must be computable.
+    fn rotate_modulo(&self, amount: &ApInt) -> u32 {
+        if self.bit_width == 0 {
+            return 0;
+        }
+        let widened = if amount.bit_width < self.bit_width {
+            match amount.zext(self.bit_width) {
+                Some(widened) => widened,
+                None => return 0,
+            }
+        } else {
+            amount.clone()
+        };
+        let modulus = Self::from_words(widened.bit_width, &[u64::from(self.bit_width)]);
+        let Some(remainder) = widened.checked_urem(&modulus) else {
+            return 0;
+        };
+        // A remainder modulo `bit_width` is below `bit_width`, so it fits the
+        // same `u32`; `limited_value` caps it there in any case.
+        let reduced = remainder.limited_value(u64::from(self.bit_width));
+        u32::try_from(reduced).unwrap_or(self.bit_width)
+    }
+
+    /// Funnel shift left: the high `bit_width` bits of `(hi:lo) << shift`.
+    /// Mirrors `APIntOps::fshl`, which reduces the shift with the same
+    /// `rotateModulo` the rotates use. `None` when the widths differ.
+    pub fn fshl(hi: &ApInt, lo: &ApInt, shift: &ApInt) -> Option<ApInt> {
+        hi.same_width(lo)?;
+        let amount = hi.rotate_modulo(shift);
+        if amount == 0 {
+            return Some(hi.clone());
+        }
+        Some(ApInt::bitor(
+            &hi.shl(amount),
+            &lo.lshr(hi.bit_width - amount),
+        ))
+    }
+
+    /// Funnel shift right: the low `bit_width` bits of `(hi:lo) >> shift`.
+    /// Mirrors `APIntOps::fshr`.
+    pub fn fshr(hi: &ApInt, lo: &ApInt, shift: &ApInt) -> Option<ApInt> {
+        hi.same_width(lo)?;
+        let amount = hi.rotate_modulo(shift);
+        if amount == 0 {
+            return Some(lo.clone());
+        }
+        Some(ApInt::bitor(
+            &hi.shl(hi.bit_width - amount),
+            &lo.lshr(amount),
+        ))
+    }
+
+    /// Carry-less multiply — the same schoolbook product with `xor` in place of
+    /// addition. Mirrors `APIntOps::clmul`.
+    pub fn carryless_mul(&self, rhs: &ApInt) -> Option<ApInt> {
+        self.same_width(rhs)?;
+        let mut result = Self::zero(self.bit_width);
+        for bit in 0..self.bit_width {
+            if rhs.bit(bit) {
+                result = ApInt::bitxor(&result, &self.shl(bit));
+            }
+        }
+        Some(result)
+    }
+
+    /// The bit-reversed carry-less product. Mirrors `APIntOps::clmulr`, which
+    /// is `bitreverse(clmul(bitreverse(a), bitreverse(b)))`.
+    pub fn carryless_mul_reversed(&self, rhs: &ApInt) -> Option<ApInt> {
+        Some(
+            self.reverse_bits()
+                .carryless_mul(&rhs.reverse_bits())?
+                .reverse_bits(),
+        )
+    }
+
+    /// The high half of the carry-less product. Mirrors `APIntOps::clmulh`,
+    /// which is `clmulr(a, b) >> 1`.
+    pub fn carryless_mul_high(&self, rhs: &ApInt) -> Option<ApInt> {
+        Some(self.carryless_mul_reversed(rhs)?.lshr(1))
+    }
+
+    /// The bottom `count` bits, zero-extended within the same width. Mirrors
+    /// `APInt::getLoBits`.
+    #[inline]
+    pub fn lo_bits(&self, count: u32) -> ApInt {
+        ApInt::bitand(self, &Self::low_bits_set(self.bit_width, count))
+    }
+
+    /// The top `count` bits, shifted down to the bottom of the same width.
+    /// Mirrors `APInt::getHiBits`.
+    #[inline]
+    pub fn hi_bits(&self, count: u32) -> ApInt {
+        self.lshr(self.bit_width.saturating_sub(count))
+    }
+
+    /// Whether the value repeats a `splat_size_in_bits`-wide pattern.
+    ///
+    /// Mirrors `APInt::isSplat`, which is the rotate-and-compare trick.
+    /// Upstream asserts that the size divides the width; llvmkit runs the same
+    /// comparison without asserting, so a size that does not divide the width
+    /// answers whatever that comparison says rather than trapping.
+    #[inline]
+    pub fn is_splat(&self, splat_size_in_bits: u32) -> bool {
+        self.eq_ap_int(&self.rotl(splat_size_in_bits))
+    }
+
+    /// `floor(log2(self))`, or `None` for zero.
+    ///
+    /// Mirrors `APInt::logBase2`, which is `getActiveBits() - 1` and therefore
+    /// wraps to `UINT32_MAX` on zero. The wrap is upstream's out-of-band
+    /// marker, not a value; it is spelled `None` here.
+    #[inline]
+    pub fn log_base2(&self) -> Option<u32> {
+        self.active_bits().checked_sub(1)
+    }
+
+    /// `ceil(log2(self))`. Mirrors `APInt::ceilLogBase2`, including its answer
+    /// of `bit_width` for zero — there `self - 1` wraps to all-ones.
+    #[inline]
+    pub fn ceil_log_base2(&self) -> u32 {
+        self.wrapping_sub(&Self::from_words(self.bit_width, &[1]))
+            .active_bits()
+    }
+
+    /// `log2` rounded to the nearest integer, or `None` for zero.
+    ///
+    /// Mirrors `APInt::nearestLogBase2`, whose zero answer is the `UINT32_MAX`
+    /// marker. Upstream computes `logBase2(x) + x[logBase2(x) - 1]`; the
+    /// one-bit-wide special case falls out of the same formula here because
+    /// `bit(u32::MAX)` is `false`.
+    pub fn nearest_log_base2(&self) -> Option<u32> {
+        let lg = self.log_base2()?;
+        Some(lg + u32::from(self.bit(lg.wrapping_sub(1))))
+    }
+
+    /// `log2(self)` when the value is exactly a power of two, else `None`.
+    /// Mirrors `APInt::exactLogBase2`, whose `-1` is spelled `None` here.
+    #[inline]
+    pub fn exact_log_base2(&self) -> Option<u32> {
+        if self.is_power_of_2() {
+            self.log_base2()
+        } else {
+            None
+        }
+    }
+
+    /// The high half of the signed full-width product. Mirrors
+    /// `APIntOps::mulhs`; `None` when the widths differ or cannot be doubled.
+    pub fn mul_high_signed(&self, rhs: &ApInt) -> Option<ApInt> {
+        let full_width = self.doubled_width(rhs)?;
+        let lhs = self.sext(full_width)?;
+        let rhs = rhs.sext(full_width)?;
+        Some(
+            lhs.wrapping_mul(&rhs)
+                .extract_bits(self.bit_width, self.bit_width),
+        )
+    }
+
+    /// The high half of the unsigned full-width product. Mirrors
+    /// `APIntOps::mulhu`.
+    pub fn mul_high_unsigned(&self, rhs: &ApInt) -> Option<ApInt> {
+        let full_width = self.doubled_width(rhs)?;
+        let lhs = self.zext(full_width)?;
+        let rhs = rhs.zext(full_width)?;
+        Some(
+            lhs.wrapping_mul(&rhs)
+                .extract_bits(self.bit_width, self.bit_width),
+        )
+    }
+
+    fn doubled_width(&self, rhs: &ApInt) -> Option<u32> {
+        if self.bit_width != rhs.bit_width {
+            return None;
+        }
+        self.bit_width.checked_mul(2)
+    }
+
+    /// Unsigned division under an explicit rounding mode. Mirrors
+    /// `APIntOps::RoundingUDiv`; `udivrem` itself always rounds down.
+    pub fn rounding_udiv(&self, rhs: &ApInt, rounding: ApIntRounding) -> Option<ApInt> {
+        match rounding {
+            ApIntRounding::Down | ApIntRounding::TowardZero => self.checked_udiv(rhs),
+            ApIntRounding::Up => {
+                let (quotient, remainder) = self.udivrem(rhs)?.into_parts();
+                if remainder.is_zero() {
+                    return Some(quotient);
+                }
+                Some(quotient.wrapping_add(&Self::from_words(self.bit_width, &[1])))
+            }
+        }
+    }
+
+    /// Signed division under an explicit rounding mode. Mirrors
+    /// `APIntOps::RoundingSDiv`; `sdivrem` itself rounds toward zero, so the
+    /// other two modes correct the quotient by inspecting the remainder's sign.
+    pub fn rounding_sdiv(&self, rhs: &ApInt, rounding: ApIntRounding) -> Option<ApInt> {
+        match rounding {
+            ApIntRounding::TowardZero => self.checked_sdiv(rhs),
+            ApIntRounding::Down | ApIntRounding::Up => {
+                let (quotient, remainder) = self.sdivrem(rhs)?.into_parts();
+                if remainder.is_zero() {
+                    return Some(quotient);
+                }
+                let one = Self::from_words(self.bit_width, &[1]);
+                // Whether the exact quotient's fractional part is negative.
+                let rounded_up = remainder.is_negative() != rhs.is_negative();
+                Some(match rounding {
+                    ApIntRounding::Down if rounded_up => quotient.wrapping_sub(&one),
+                    ApIntRounding::Down => quotient,
+                    _ if rounded_up => quotient,
+                    _ => quotient.wrapping_add(&one),
+                })
+            }
+        }
+    }
+
+    /// `floor((self + rhs) / 2)` computed without overflow, treating both as
+    /// signed. Mirrors `APIntOps::avgFloorS`.
+    pub fn avg_floor_signed(&self, rhs: &ApInt) -> Option<ApInt> {
+        self.same_width(rhs)?;
+        Some(ApInt::bitand(self, rhs).wrapping_add(&ApInt::bitxor(self, rhs).ashr(1)))
+    }
+
+    /// `floor((self + rhs) / 2)` treating both as unsigned. Mirrors
+    /// `APIntOps::avgFloorU`.
+    pub fn avg_floor_unsigned(&self, rhs: &ApInt) -> Option<ApInt> {
+        self.same_width(rhs)?;
+        Some(ApInt::bitand(self, rhs).wrapping_add(&ApInt::bitxor(self, rhs).lshr(1)))
+    }
+
+    /// `ceil((self + rhs) / 2)` treating both as signed. Mirrors
+    /// `APIntOps::avgCeilS`.
+    pub fn avg_ceil_signed(&self, rhs: &ApInt) -> Option<ApInt> {
+        self.same_width(rhs)?;
+        Some(ApInt::bitor(self, rhs).wrapping_sub(&ApInt::bitxor(self, rhs).ashr(1)))
+    }
+
+    /// `ceil((self + rhs) / 2)` treating both as unsigned. Mirrors
+    /// `APIntOps::avgCeilU`.
+    pub fn avg_ceil_unsigned(&self, rhs: &ApInt) -> Option<ApInt> {
+        self.same_width(rhs)?;
+        Some(ApInt::bitor(self, rhs).wrapping_sub(&ApInt::bitxor(self, rhs).lshr(1)))
+    }
+
+    /// The signed absolute difference. Mirrors `APIntOps::abds`.
+    pub fn abs_diff_signed(&self, rhs: &ApInt) -> Option<ApInt> {
+        self.same_width(rhs)?;
+        Some(if self.sge(rhs) {
+            self.wrapping_sub(rhs)
+        } else {
+            rhs.wrapping_sub(self)
+        })
+    }
+
+    /// The unsigned absolute difference. Mirrors `APIntOps::abdu`.
+    pub fn abs_diff_unsigned(&self, rhs: &ApInt) -> Option<ApInt> {
+        self.same_width(rhs)?;
+        Some(if self.uge(rhs) {
+            self.wrapping_sub(rhs)
+        } else {
+            rhs.wrapping_sub(self)
+        })
+    }
+
+    /// The multiplicative inverse modulo `2^bit_width`, which exists only for
+    /// odd values. Mirrors `APInt::multiplicativeInverse`, whose assertion on
+    /// an even value is spelled `None` here.
+    pub fn multiplicative_inverse(&self) -> Option<ApInt> {
+        if !self.bit(0) {
+            return None;
+        }
+        // Newton's method: `factor *= 2 - self * factor` until the product is 1.
+        let two = Self::from_words(self.bit_width, &[2]);
+        let mut factor = self.clone();
+        loop {
+            let product = self.wrapping_mul(&factor);
+            if product.is_one() {
+                return Some(factor);
+            }
+            factor = factor.wrapping_mul(&two.wrapping_sub(&product));
+        }
+    }
+
+    /// The greatest common divisor. Mirrors
+    /// `APIntOps::GreatestCommonDivisor`, a variant of Stein's algorithm.
+    pub fn greatest_common_divisor(lhs: &ApInt, rhs: &ApInt) -> Option<ApInt> {
+        lhs.same_width(rhs)?;
+        // Fast-path a common case.
+        if lhs.eq_ap_int(rhs) {
+            return Some(lhs.clone());
+        }
+        // Corner cases: if either operand is zero, the other is the gcd.
+        if lhs.is_zero() {
+            return Some(rhs.clone());
+        }
+        if rhs.is_zero() {
+            return Some(lhs.clone());
+        }
+
+        // Count common powers of 2 and remove all other powers of 2.
+        let mut a = lhs.clone();
+        let mut b = rhs.clone();
+        let pow2_a = a.count_trailing_zeros();
+        let pow2_b = b.count_trailing_zeros();
+        let pow2 = pow2_a.min(pow2_b);
+        a = a.lshr(pow2_a - pow2);
+        b = b.lshr(pow2_b - pow2);
+
+        // Both operands are now odd multiples of `2^pow2`:
+        //   gcd(a, b) = gcd(|a - b| / 2^i, min(a, b))
+        while !a.eq_ap_int(&b) {
+            if a.ugt(&b) {
+                a = a.wrapping_sub(&b);
+                a = a.lshr(a.count_trailing_zeros() - pow2);
+            } else {
+                b = b.wrapping_sub(&a);
+                b = b.lshr(b.count_trailing_zeros() - pow2);
+            }
+        }
+        Some(a)
+    }
+
+    /// The index of the most significant bit on which the two values differ,
+    /// or `None` when they are equal. Mirrors
+    /// `APIntOps::GetMostSignificantDifferentBit`; a width mismatch, which
+    /// upstream asserts against, also answers `None`.
+    pub fn most_significant_different_bit(lhs: &ApInt, rhs: &ApInt) -> Option<u32> {
+        lhs.same_width(rhs)?;
+        if lhs.eq_ap_int(rhs) {
+            return None;
+        }
+        lhs.bit_width
+            .checked_sub(ApInt::bitxor(lhs, rhs).count_leading_zeros() + 1)
+    }
+
+    /// `self` raised to `exponent`, wrapping at the width. Mirrors
+    /// `APIntOps::pow`; upstream's assertion against a negative exponent is
+    /// spelled by taking an unsigned one.
+    pub fn pow(&self, exponent: u64) -> ApInt {
+        let mut accumulator = Self::from_words(self.bit_width, &[1]);
+        if exponent == 0 {
+            return accumulator;
+        }
+        let mut base = self.clone();
+        let mut remaining = exponent;
+        while remaining > 0 {
+            while remaining.is_multiple_of(2) {
+                base = base.wrapping_mul(&base);
+                remaining /= 2;
+            }
+            remaining -= 1;
+            accumulator = accumulator.wrapping_mul(&base);
+        }
+        accumulator
+    }
+
+    /// Rescale a bit mask to a different width, where one width is a multiple
+    /// of the other. Mirrors `APIntOps::ScaleBitMask`: widening repeats each
+    /// bit, narrowing folds each group down to one bit — by "all set" when
+    /// `match_all_bits`, otherwise by "any set". `None` when neither width
+    /// divides the other, which upstream asserts against.
+    pub fn scale_bit_mask(&self, new_bit_width: u32, match_all_bits: bool) -> Option<ApInt> {
+        let old_bit_width = self.bit_width;
+        if old_bit_width == new_bit_width {
+            return Some(self.clone());
+        }
+        let (wider, narrower) = if new_bit_width > old_bit_width {
+            (new_bit_width, old_bit_width)
+        } else {
+            (old_bit_width, new_bit_width)
+        };
+        if narrower == 0 || wider % narrower != 0 {
+            return None;
+        }
+
+        let mut scaled = Self::zero(new_bit_width);
+        if self.is_zero() {
+            return Some(scaled);
+        }
+
+        let scale = wider / narrower;
+        if new_bit_width > old_bit_width {
+            // Repeat bits.
+            for bit in 0..old_bit_width {
+                if self.bit(bit) {
+                    scaled.set_bits(bit * scale, (bit + 1) * scale);
+                }
+            }
+        } else {
+            for bit in 0..new_bit_width {
+                let group = self.extract_bits(scale, bit * scale);
+                let carries = if match_all_bits {
+                    group.is_all_ones()
+                } else {
+                    !group.is_zero()
+                };
+                if carries {
+                    scaled.set_bit(bit);
+                }
+            }
+        }
+        Some(scaled)
+    }
+
+    #[inline]
+    fn same_width(&self, rhs: &ApInt) -> Option<()> {
+        (self.bit_width == rhs.bit_width).then_some(())
     }
 
     pub fn checked_shl(&self, amount: u32) -> Option<ApInt> {
@@ -1220,7 +1738,10 @@ impl ApInt {
         digits.iter().rev().collect()
     }
 
-    fn bit(&self, bit: u32) -> bool {
+    /// The value of a single bit. Mirrors `APInt::operator[]`, whose assert on
+    /// an out-of-range index is spelled here as `false` — every bit above the
+    /// width is zero by construction.
+    pub fn bit(&self, bit: u32) -> bool {
         if bit >= self.bit_width {
             return false;
         }
@@ -1284,7 +1805,37 @@ impl ApInt {
         Self::from_words(self.bit_width, &out)
     }
 
-    fn unsigned_cmp(&self, rhs: &ApInt) -> Ordering {
+    /// Total unsigned ordering against a `u64`.
+    ///
+    /// Stands in for upstream's four scalar overloads `ult`/`ule`/`ugt`/`uge`
+    /// taking a `uint64_t`, each of which is `getActiveBits() <= 64 &&
+    /// getZExtValue() <op> RHS`. A value too wide for a `u64` is greater than
+    /// every `u64`, so the one `Ordering` answers all four questions — which is
+    /// why llvmkit does not carry the four booleans.
+    pub fn unsigned_cmp_u64(&self, rhs: u64) -> Ordering {
+        match self.try_zext_u64() {
+            Some(value) => value.cmp(&rhs),
+            None => Ordering::Greater,
+        }
+    }
+
+    /// Total signed ordering against an `i64`.
+    ///
+    /// Stands in for upstream's `slt`/`sle`/`sgt`/`sge` scalar overloads, whose
+    /// wide case is decided by the sign alone (`getSignificantBits() > 64 ?
+    /// isNegative() : getSExtValue() <op> RHS`).
+    pub fn signed_cmp_i64(&self, rhs: i64) -> Ordering {
+        match self.try_sext_i64() {
+            Some(value) => value.cmp(&rhs),
+            None if self.is_negative() => Ordering::Less,
+            None => Ordering::Greater,
+        }
+    }
+
+    /// Total unsigned ordering. Mirrors `APInt::compare`, which returns an
+    /// `int` triple; a width mismatch orders by width rather than trapping.
+    #[inline]
+    pub fn unsigned_cmp(&self, rhs: &ApInt) -> Ordering {
         if self.bit_width != rhs.bit_width {
             return self.bit_width.cmp(&rhs.bit_width);
         }
@@ -1302,7 +1853,9 @@ impl ApInt {
         Ordering::Equal
     }
 
-    fn signed_cmp(&self, rhs: &ApInt) -> Ordering {
+    /// Total signed ordering. Mirrors `APInt::compareSigned`.
+    #[inline]
+    pub fn signed_cmp(&self, rhs: &ApInt) -> Ordering {
         if self.bit_width != rhs.bit_width {
             return self.bit_width.cmp(&rhs.bit_width);
         }
