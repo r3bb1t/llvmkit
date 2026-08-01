@@ -732,10 +732,18 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 
     /// Iterate read-only instruction views in program order.
+    ///
+    /// The `use<..>` bound keeps `&self` *out* of the returned opaque type.
+    /// The iterator owns its ids and a copied [`ModuleRef`], so it borrows
+    /// nothing from the receiver — without the bound, edition 2024 would
+    /// capture the `&self` lifetime anyway and reject
+    /// `blocks.flat_map(|block| block.instructions())`.
     pub fn instructions(
         &self,
-    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> + DoubleEndedIterator + FusedIterator
-    {
+    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + use<'ctx, R, Term, B, Params> {
         let module = self.module;
         let ids = self.instruction_ids();
         ids.into_iter()

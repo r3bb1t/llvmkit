@@ -101,19 +101,12 @@ fn folded_result(module: &Module<DynBrand, Unverified>, function: &str) -> Optio
         .functions()
         .find(|f| f.name() == function)
         .unwrap_or_else(|| panic!("fixture defines @{function}"));
-    // Nested loops rather than `flat_map`: `instructions()` returns an
-    // iterator that borrows the block view, so it cannot outlive a closure
-    // that owns it.
-    let mut found = None;
-    'blocks: for block in f.basic_blocks() {
-        for instruction in block.instructions() {
-            if instruction.name().as_deref() == Some("res") {
-                found = Some(instruction.to_erased());
-                break 'blocks;
-            }
-        }
-    }
-    let result = found.unwrap_or_else(|| panic!("@{function} defines %res"));
+    let result = f
+        .basic_blocks()
+        .flat_map(|block| block.instructions())
+        .find(|instruction| instruction.name().as_deref() == Some("res"))
+        .unwrap_or_else(|| panic!("@{function} defines %res"))
+        .to_erased();
 
     let data_layout = module.data_layout();
     let query = ValueTrackingQuery::new(&data_layout);

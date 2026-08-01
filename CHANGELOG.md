@@ -7,6 +7,33 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### View iterators no longer borrow the view
+
+`function.basic_blocks().flat_map(|block| block.instructions())` — the obvious
+way to walk every instruction in a function — did not compile. It failed with
+E0515, "cannot return value referencing function parameter `block`", and the
+workaround was a nested loop with a labeled break.
+
+The iterator never held anything belonging to the block: it snapshots the
+instruction ids and copies the `ModuleRef`. But edition 2024 captures every
+lifetime in scope in a return-position `impl Trait`, including the `&self` the
+method was called on, so the compiler believed otherwise. The affected returns
+now carry a precise-capturing `use<..>` bound that leaves that lifetime out.
+
+Fixed on `BasicBlock::instructions`, `BasicBlockView::instructions`,
+`PhiInst`/`FpPhiInst`/`PointerPhiInst`/`OtherPhiInst`/`PhiKind::incomings`,
+`SwitchInst::cases`, `IndirectBrInst::destinations`, `LandingPadInst::clauses`,
+`CatchSwitchInst::handlers`, and `FnPatch::body_instructions`.
+
+Iterators that genuinely borrow the receiver are unchanged and still do —
+`AttributeSet::iter` and `AttributeStorage::iter` yield `&Attribute`,
+`Cfg::edges` iterates a borrowed slice, and the `pass_names` family yields
+`&str`. Iterators taking `self` by value (`Module::functions`, `globals`,
+`aliases`, `ifuncs`, `comdats`, `FunctionValue::basic_blocks`, `params`) never
+had the problem.
+
+This is a relaxation: code that compiled before still compiles.
+
 ### Known bits reason about loop recurrences
 
 `compute_known_bits` on a `phi` now recognises a simple two-predecessor

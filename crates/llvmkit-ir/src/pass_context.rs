@@ -149,11 +149,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
     /// Read-only instruction views in program order. Lets an `Inspect`-rung
     /// pass walk a block's instructions without escaping to the underlying
     /// function handle.
+    ///
+    /// Carries the same `use<..>` bound as
+    /// [`BasicBlock::instructions`](crate::BasicBlock::instructions), and for
+    /// the same reason: the iterator borrows nothing from `&self`, so keeping
+    /// that lifetime out of the opaque type is what lets callers `flat_map`
+    /// across blocks.
     #[inline]
     pub fn instructions(
         &self,
-    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>> + DoubleEndedIterator + FusedIterator
-    {
+    ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + use<'ctx, B> {
         let module = self.module;
         let ids = self.as_basic_block().instruction_ids();
         ids.into_iter()
@@ -826,8 +834,14 @@ where
     /// idiom). Yields [`NonTerminator`] (so [`Self::erase`] takes it directly) and
     /// never yields a terminator. Cascades (erasing instructions *ahead* of the
     /// cursor) are a worklist's job, not the cursor's.
+    ///
+    /// The snapshot is why the `use<..>` bound can leave `&self` out: the walk
+    /// owns its ids outright, so the iterator may outlive the borrow it was
+    /// created from.
     #[inline]
-    pub fn body_instructions(&self) -> impl Iterator<Item = NonTerminator<'m, B>> + '_ {
+    pub fn body_instructions(
+        &self,
+    ) -> impl Iterator<Item = NonTerminator<'m, B>> + use<'m, 'r, 'ctx, B, R> {
         let module = self.module.module_ref();
         self.function
             .as_function()
