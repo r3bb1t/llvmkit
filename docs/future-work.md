@@ -70,6 +70,58 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 | `SolveQuadraticEquationWrap` | SCEV-specific; belongs with a SCEV port, not with `ApInt`. |
 | `GetMostSignificantDifferentBitExaustive` | The non-exhaustive fixture is ported; the exhaustive variant re-derives the same property over an 8-bit sweep. |
 
+## ValueTracking.h — the road to 100% (measured 2026-08-01)
+
+`KnownBits.h` is fully modeled. `ValueTracking.h` is not, and the honest
+reason is that its unmodeled entry points are blocked on **missing types**,
+not on missing effort. Measured against the vendored 22.1.4 tree:
+
+| Prerequisite | Upstream size | llvmkit today | Gap |
+|---|---|---|---|
+| `ConstantRange` | 632 (`.h`) + 2314 (`.cpp`) | `constant_range.rs`, 223 lines, **15 of 78** public methods | ~63 methods + `ConstantRangeTest.cpp` (~2800 lines) |
+| `KnownFPClass` / `FPClassTest` | `FloatingPointMode.h` 290, plus ~1500 lines of `computeKnownFPClass` | **absent** | a whole FP lattice |
+| `AssumptionCache` | 280 + 310 | **absent** | also needs `@llvm.assume` modeling |
+| `SelectPatternResult` | declared in `ValueTracking.h` | **absent** | ~250 lines |
+| `TargetLibraryInfo` | 664 | `target_library_info.rs`, 427 lines | partial; may already suffice |
+| `ValueTracking.cpp` itself | 10535 | `value_tracking.rs`, 2259 | ~8300 lines |
+
+Roughly **12–14k lines of ported logic**, plus D11-compliant ported tests for
+each (upstream's `ValueTrackingTest.cpp` is ~5000 lines). Comparable in size to
+the whole ApFloat/ApInt sweep, which was its own multi-cycle program.
+
+**Suggested tranche order.** Tranche 1 needs no new types at all and unblocks
+the most callers, so it should go first regardless of how the rest is
+sequenced:
+
+1. **No new types** — `ComputeNumSignBits`, `ComputeMaxSignificantBits`,
+   `isKnownNegative` / `isKnownPositive` / `isKnownNonNegative`,
+   `isKnownToBeAPowerOfTwo`, `isKnownNonEqual`, `isKnownInversion`,
+   `isKnownNegation`, the Value-level `haveNoCommonBitsSet`. Pure KnownBits
+   consumers plus recursion.
+2. **Poison / UB family** — `canCreatePoison`, `canCreateUndefOrPoison`,
+   `impliesPoison`, `propagatesPoison`, `programUndefinedIfPoison`,
+   `mustTriggerUB`, `isGuaranteedNotToBeUndef`. llvmkit already has
+   `is_guaranteed_not_to_be_poison` internally, so this extends an existing
+   seed. Still no new types.
+3. **`ConstantRange` to completion**, then the families it gates —
+   `computeConstantRange`, the six `computeOverflowFor*`, `getVScaleRange`.
+4. **`SelectPatternResult`** — `getSelectPattern`,
+   `matchDecomposedSelectPattern`, `getMinMaxIntrinsic`,
+   `getInverseMinMaxIntrinsic`.
+5. **Pointer / object analysis** — `getUnderlyingObjects`,
+   `getConstantStringInfo`, `GetStringLength`, `onlyUsedByLifetimeMarkers`.
+6. **Speculation safety** — `isSafeToSpeculativelyExecute*`,
+   `isGuaranteedToTransferExecutionToSuccessor`, `isValidAssumeForContext`.
+7. **`KnownFPClass`** — the largest single piece, and the only one that needs
+   a new lattice rather than a new container.
+8. **`AssumptionCache`** — needs `@llvm.assume` modeled first;
+   `computeKnownBitsFromContext` depends on it.
+
+The ledger in `crates/llvmkit-ir/tests/value_tracking_parity.rs` tracks
+progress: each tranche moves rows from `VALUE_TRACKING_GAPS` into
+`MODELED_VALUE_TRACKING`, and the modeled column is held to the crate by
+calling every entry.
+
 ## ~~KnownBits — operations not modeled~~ — closed (2026-08-01)
 
 `KnownBits.h`'s **public** surface is now fully modeled. The ledger
