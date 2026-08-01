@@ -86,7 +86,7 @@ pub enum LexError {
 /// **This has no upstream counterpart, deliberately.** `LLLexer` returns a
 /// bare `lltok::Error` at every one of these sites and records no message,
 /// leaving `LLParser` to describe the failure from the surrounding production
-/// (`LLLexer.cpp:205,229,336,379,1074,1099,1174,1236,1245`). That works for
+/// (every `return lltok::Error` in `LLLexer`). That works for
 /// `llvm-as`, where the parser is always the caller. llvmkit's lexer is a
 /// public API, so its errors have to stand alone — and even inside the parser,
 /// "unknown keyword 'nocalback'" beats "expected top-level entity".
@@ -966,7 +966,8 @@ impl<'src> Lexer<'src> {
             ));
         }
 
-        // Truly unknown — rewind to a single byte and emit error (LLLexer.cpp:1073).
+        // Truly unknown — rewind to a single byte and emit an error, as the
+        // final fallthrough of `LLLexer::LexIdentifier` does.
         // The rewind is upstream's cursor behavior and is kept exactly; the
         // reported span stays the whole word, because a caret under one letter
         // of a misspelled keyword helps nobody.

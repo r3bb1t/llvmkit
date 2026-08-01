@@ -7,6 +7,96 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ApFloat `convert` carries NaN payloads
+
+#### Fixed
+
+- **Converting a NaN between semantics discarded its payload.** The NaN arm of
+  `convert` rebuilt a bare quiet NaN in the target semantics, so
+  `snan` widened from `float` to `x86_fp80` produced the default pattern
+  instead of upstream's payload-carrying one, and no truncation could ever
+  report a lost payload. It now ports the `fcNaN` arm of `IEEEFloat::convert`:
+  the significand is shifted by the precision difference — right on a
+  truncation, where dropped bits make the conversion lossy, left on an
+  extension — and the result is always quiet, with a signaling source raising
+  invalid-op. That last rule is what keeps a signaling NaN from becoming an
+  infinity when a truncation drops every payload bit.
+
+  Reassembly routes back through the NaN constructor rather than laying out
+  bits at the call site, so payload masking, the quiet bit, and x87's explicit
+  integer bit keep one definition each.
+
+### ApFloat audit, continued: three more defects
+
+Ports of the `APFloat` classification, factory, and small-operation tests from
+`llvm/unittests/ADT/APFloatTest.cpp` — twenty upstream `TEST(...)` blocks —
+found three more divergences.
+
+#### Fixed
+
+- **`ilogb` answered `0` for almost everything.** It delegated to
+  `exact_log2_abs`, which is `None` unless the value is *exactly* a power of
+  two, and then defaulted to `0`. So `ilogb(0x1.ffffffffffffep-1023)` reported
+  `0` where upstream reports `-1023`, and every NaN, zero, and infinity
+  reported `0` as well. It now ports the free function `llvm::ilogb`: the
+  unbiased exponent of any finite non-zero value, denormals included, with
+  upstream's sentinels exposed as `ApFloat::ILOGB_NAN` / `ILOGB_ZERO` /
+  `ILOGB_INF` (`APFloat::IEK_NaN` / `IEK_Zero` / `IEK_Inf`).
+- **`ppc_fp128` factories left a negative-zero residual.** `inf`, `smallest`,
+  `smallest_normalized`, and the NaN constructors signed the value by flipping
+  the whole 128-bit pattern, which negates the residual half too. Upstream's
+  `DoubleAPFloat` factories sign only the leading component and set the
+  residual with `Floats[1].makeZero(/*Neg=*/false)`. `makeLargest` is the
+  deliberate exception — it negates both — and is left alone.
+
+#### Added
+
+- **`ApFloat::is_smallest_normalized`**, which had no counterpart at all
+  despite `TEST(APFloatTest, IsSmallestNormalized)` exercising it across every
+  semantics. Ports both upstream implementations, using the numeric comparison
+  `DoubleAPFloat` uses: a bitwise test would additionally demand the `ppc_fp128`
+  residual's sign, where a `(smallest normal, -0.0)` pair counts upstream.
+
+### ApFloat bit-exactness audit (three fixes)
+
+Audited against LLVM's own `llvm/unittests/ADT/APFloatTest.cpp` from the
+vendored 22.1.4 tree, not against hand-derived expectations. All 784 rows of
+the `add` / `subtract` / `multiply` / `divide` special-case tables now ship as
+`llvmkit-ir/tests/ap_float_upstream_arithmetic.rs`.
+
+#### Fixed
+
+- **A signaling NaN lost its payload when it was quieted.** `make_quiet`
+  rebuilt a default quiet NaN instead of setting the quiet bit, so
+  `snan123 + 1.0` produced a bare `nan` where LLVM produces `nan123`. It now
+  ports `IEEEFloat::makeQuiet` exactly — one bit set, sign
+  and payload untouched. This was the *only* divergence in the 784-row
+  arithmetic matrix: it accounted for all 104 failing rows, and every row not
+  involving a signaling NaN already matched bit for bit.
+- **`fp128` hex literals parsed with their two 64-bit halves transposed.**
+  `0xL…` is not a big-endian 128-bit number: `LLLexer::HexToIntPair` reads the
+  first sixteen hex digits into the APInt's *low* word. llvmkit read the whole string big-endian, so
+  `0xL00000000000000003FFF000000000000` — LLVM's spelling of 1.0 — was read as
+  a subnormal, and printing it back produced a different spelling.
+- **`ppc_fp128` printed its two components in the wrong order.** Upstream
+  writes the leading double first (`WriteConstantInternal` prints
+  `getLoBits(64)` first, and its low word holds `DoubleAPFloat::Floats[0]`).
+  Values were never wrong here — llvmkit stores the pair mirrored from upstream
+  and the two mirrorings cancelled on the parse side — but the printed text
+  disagreed with LLVM, and `parse → print` oscillated between two spellings.
+
+  Two round-trip fixtures asserted the transposed spellings and were updated;
+  they had encoded the defect.
+
+#### Known divergence, now recorded and pinned
+
+- `ApFloat::to_bits` does **not** agree with upstream's `bitcastToAPInt` for
+  `PpcDoubleDouble` alone: llvmkit keeps the leading double in the high word
+  where upstream keeps it in the low word. Invisible to finite arithmetic
+  (llvmkit sums both components) and invisible in the textual form (reader and
+  printer both compensate); visible only to a raw-bit reader. Pinned by
+  `llvmkit-ir/tests/ap_float_ppc_word_order.rs`.
+
 ### Lexer diagnostics name what the lexer choked on
 
 #### Changed
@@ -30,7 +120,7 @@ cut, entries accumulate under **Unreleased**.
 
 - The span reported for an unknown *keyword* now covers the whole word instead
   of its first byte. The cursor rewind that produced the one-byte span is
-  upstream behaviour (`LLLexer.cpp:1073`) and is unchanged — only the reported
+  upstream behaviour (`LLLexer::LexIdentifier`) and is unchanged — only the reported
   span moved, because a caret under the `n` of `nocalback` helps nobody.
 
 ### Parser — Milestone 0 complete

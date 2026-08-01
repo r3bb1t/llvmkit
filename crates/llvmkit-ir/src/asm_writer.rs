@@ -735,9 +735,15 @@ fn fmt_float_constant<B: ModuleBrand>(
             write!(f, "0xL{lo:016X}{hi:016X}")
         }
         TypeData::PpcFp128 => {
+            // Upstream writes the *leading* double first — `AsmWriter.cpp`
+            // prints `getLoBits(64)` then `getHiBits(64)`, and its low word
+            // holds `DoubleAPFloat::Floats[0]`, the leading component. In
+            // llvmkit the pair is stored mirrored (`ap_float.rs::ppc_words`
+            // reads the high word as the leading double), so writing the high
+            // word first is what puts the leading component first.
             let lo = low_u64(bits);
             let hi = low_u64(bits >> 64);
-            write!(f, "0xM{lo:016X}{hi:016X}")
+            write!(f, "0xM{hi:016X}{lo:016X}")
         }
         _ => unreachable!("float-constant ty invariant"),
     }

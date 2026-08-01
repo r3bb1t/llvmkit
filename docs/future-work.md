@@ -38,15 +38,38 @@ Two things worth knowing for anyone extending it:
 
 - **There is no upstream message to port.** `LLLexer` returns a bare
   `lltok::Error` at all of these sites and records nothing
-  (`LLLexer.cpp:205,229,336,379,1074,1099,1174,1236,1245`); `LLParser` supplies
+  (every `return lltok::Error` in `LLLexer`); `LLParser` supplies
   the wording from the surrounding production. That is adequate when the parser
   is always the caller, which is true for `llvm-as` and false for llvmkit,
   whose lexer is public. So these messages are a deliberate improvement on
   upstream rather than a port, and the tests say so.
 - **The unknown-keyword span was widened to the whole word** while the cursor
-  rewind (`self.pos = tok_start + 1`, upstream's `LLLexer.cpp:1073` behaviour)
+  rewind (`self.pos = tok_start + 1`, upstream's `LLLexer::LexIdentifier`
+  behaviour)
   was kept exactly. A caret under the `n` of `nocalback` helps nobody. Lexing
   behaviour is unchanged; only the reported span moved.
+
+## ApFloat audit — remaining ports (2026-08-01)
+
+The `feature-40/apfloat-audit` cycle ported the four `SpecialCaseTests`
+arithmetic tables verbatim (784 rows) and closed the three defects they found.
+What is still only *rule*-covered rather than verbatim-ported:
+
+- **`fromHexadecimalString` / `fromStringSpecials` / `makeNaN`.** `from_string`
+  now implements all three grammars, and `tests/ap_float_from_string.rs` covers
+  the boundaries — but with llvmkit-chosen spellings, so it is registered
+  `llvmkit-specific subset`. Porting those three fixtures verbatim is cheap now
+  that the parser accepts what they are written in.
+- **The rest of the `APFloatTest.cpp` surface** for the seven modeled
+  semantics: `convert` (including NaN-payload truncation across semantics),
+  `next` / `x87Next`, `FMA`, `Comparisons`, `roundToIntegral`, `isInteger`,
+  `exactInverse`, `getExactLog2`, `ilogb`, `scalbn`, `frexp`, `mod`,
+  `remainder`, `toInteger`, the `getLargest` / `getSmallest` /
+  `getSmallestNormalized` / `getZero` / `getOne` factories, and the
+  `PPCDoubleDouble*` family. The `Float8*` / `Float6*` / `Float4*` / `TF32`
+  tests are out of scope — llvmkit does not model those semantics.
+- **`APInt`.** `llvm/unittests/ADT/APIntTest.cpp` has not been swept at all;
+  `tests/ap_int.rs` currently holds seven llvmkit-written tests.
 
 ## Bare brands / `Branded` derive — home and follow-ups (2026-07-31)
 
