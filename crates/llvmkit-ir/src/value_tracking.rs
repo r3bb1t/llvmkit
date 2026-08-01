@@ -1515,7 +1515,9 @@ fn recurrence_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                     known.mark_high_bits_zero(start_bits.count_min_leading_zeros());
                     known.mark_high_bits_one(start_bits.count_min_leading_ones());
                 }
-                _ => {}
+                other => unreachable!(
+                    "the enclosing arm admits only shl/lshr/ashr/udiv/urem, got {other:?}"
+                ),
             }
         }
 
@@ -1564,12 +1566,18 @@ fn recurrence_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                     }
                 }
                 // (mul nsw non-negative, non-negative) --> non-negative
-                BinaryOpcode::Mul
-                    if start_bits.is_non_negative() && step_bits.is_non_negative() =>
-                {
-                    known.make_non_negative();
+                BinaryOpcode::Mul => {
+                    if start_bits.is_non_negative() && step_bits.is_non_negative() {
+                        known.make_non_negative();
+                    }
                 }
-                _ => {}
+                // `and` and `or` reach here only if they somehow carry `nsw`;
+                // upstream's `dyn_cast<OverflowingBinaryOperator>` rejects them
+                // before the switch, and this is where that rejection lands.
+                BinaryOpcode::And | BinaryOpcode::Or => {}
+                other => {
+                    unreachable!("the enclosing arm admits only add/sub/and/or/mul, got {other:?}")
+                }
             }
         }
 
