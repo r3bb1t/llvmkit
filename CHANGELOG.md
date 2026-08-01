@@ -7,6 +7,32 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### The KnownBits / ValueTracking parity ledger is real
+
+`tests/value_tracking_parity.rs` claimed to be the coverage ledger for the
+known-bits surface. Its one test asserted that a `const` array contained the
+same strings it had just been initialised with — it could not fail, and it had
+never recorded any coverage.
+
+It now tabulates the surface: 93 of the 98 `KnownBits.h` operations llvmkit
+models, mapped upstream-name to llvmkit-name, plus the five it does not and
+the reason for each; and the four `ValueTracking.h` entry points modeled
+against the nine families that are absent wholesale. The modeled columns are
+held to the crate by *calling* every entry, so a rename or deletion stops the
+file compiling. The tables are checked for the properties a ledger needs to
+stay readable, and the gap lists record the LLVM release they were derived
+from.
+
+Building it surfaced five `KnownBits` operations with no llvmkit counterpart —
+`setAllOnes`, `flipSignBit`, `isSignUnknown`, `remGetLowBits`, and the
+`sdiv` / `sdiv_with_exact` spelling asymmetry. None is load-bearing for
+anything llvmkit computes today; all five are recorded in
+`docs/future-work.md`.
+
+Because `orig_cpp/` is gitignored, the gap lists cannot be re-derived at test
+time and stay a hand-maintained record — the file says so rather than implying
+otherwise.
+
 ### View iterators no longer borrow the view
 
 `function.basic_blocks().flat_map(|block| block.instructions())` — the obvious

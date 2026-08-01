@@ -70,6 +70,27 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 | `SolveQuadraticEquationWrap` | SCEV-specific; belongs with a SCEV port, not with `ApInt`. |
 | `GetMostSignificantDifferentBitExaustive` | The non-exhaustive fixture is ported; the exhaustive variant re-derives the same property over an 8-bit sweep. |
 
+## KnownBits — five operations not modeled (2026-08-01)
+
+Surfaced by rebuilding `crates/llvmkit-ir/tests/value_tracking_parity.rs` into
+a real ledger. Diffing `KnownBits.h` at LLVM 22.1.4 against llvmkit's
+`KnownBits` puts 93 of 98 upstream operations in the modeled column. The
+remaining five:
+
+| Upstream | Status |
+|---|---|
+| `setAllOnes` | Genuine gap. The dual of `setAllZero`, which *is* modeled. |
+| `flipSignBit` | Genuine gap. The dual of `makeNegative` / `makeNonNegative`, both modeled. Nothing in the ported transfer functions reaches for it yet. |
+| `isSignUnknown` | Genuine gap. The third case alongside `isNegative` / `isNonNegative`. Spellable today as `!is_negative() && !is_non_negative()`. |
+| `remGetLowBits` | Genuine gap, but internal — a helper of the `urem`/`srem` transfer functions. llvmkit's `urem` and `srem` inline the same reasoning rather than exposing it. |
+| `sdiv` | **Spelling, not a gap.** `sdiv(a, b)` is `sdiv_with_exact(a, b, false)`. The asymmetry is that `udiv` exposes *both* spellings while `sdiv` exposes only the flag-taking one. |
+
+None is load-bearing for anything llvmkit currently computes, which is why
+they went unnoticed. The first three are a few lines each; the blocker is D11,
+not difficulty — each needs a ported test, and `KnownBitsTest.cpp` should be
+checked for coverage before they land. `sdiv` is a one-line addition for
+symmetry.
+
 ## KnownBits / ValueTracking — the PHI recurrence arm (2026-08-01)
 
 `computeKnownBitsFromOperator`'s `Instruction::PHI` arm is ported, including
