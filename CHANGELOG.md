@@ -7,6 +7,43 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### Constants are uniqued
+
+Four constant kinds were minting a fresh arena node on every request:
+`GlobalValueRef`, `GepOffset`, `SymbolDelta`, and `SymbolDeltaPlus`. Every
+other kind — ints, floats, null, undef, poison, aggregates, expressions,
+block addresses, `dso_local_equivalent`, `no_cfi`, `none`, `ptrauth` — already
+uniqued. The four now key on their structural fingerprint the same way, so
+llvmkit matches LLVM's rule that two structurally equal constants are one
+node.
+
+#### Fixed
+
+- **Identity comparison on constants under-folded.** Folds ported from
+  upstream write `A == B` on two constants because LLVM uniques `Constant*`.
+  Where llvmkit did not unique, those arms were unreachable for
+  independently-built operands and the fold quietly declined — sound (an
+  `==` that says *true* still implies the same value), but weaker than
+  upstream. The affected arms were `ConstantFoldSelectInstruction`'s
+  `V1 == V2`, `fold_phi`'s cross-incoming comparison, `constant_splat_value`,
+  and the pointer-base comparison in `ConstantFoldCompareInstOperands`.
+- **`base_identity` is retired.** It was the workaround that resolved a
+  `GlobalValueRef`/`GepOffset` wrapper down to the underlying global so the
+  pointer-base fold could compare bases at all. With uniquing, the base
+  comparison is plain `==` — exactly upstream's `Stripped0 == Stripped1`.
+
+#### Note
+
+Forward `blockaddress` placeholders are deliberately **not** uniqued. They
+carry no payload, so uniquing would collapse every pending forward reference
+in a module into one node and resolving the first would resolve them all. The
+constructor is named `push_constant_block_address_placeholder`, not `intern_`,
+for that reason.
+
+llvmkit uniques **per module** rather than per context, because a `Module`
+owns its `Context`. Two modules never share a constant node; a foreign id is
+caught by the module tag check rather than silently matching.
+
 ### `ApInt` sweep complete; sentinels become sum types
 
 Finishes `llvm/unittests/ADT/APIntTest.cpp`: sixty-seven more ported tests

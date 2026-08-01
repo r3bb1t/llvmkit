@@ -72,6 +72,10 @@ pub(crate) struct Context {
     // `LLVMContextImpl::IntConstants` / `FPConstants` / etc.
     int_constants: RefCell<IntConstantMap>,
     float_constants: RefCell<FloatConstantMap>,
+    global_value_ref_constants: RefCell<HashMap<(TypeSlot, ValueSlot), ValueSlot>>,
+    gep_offset_constants: RefCell<GepOffsetConstantMap>,
+    symbol_delta_constants: RefCell<SymbolDeltaConstantMap>,
+    symbol_delta_plus_constants: RefCell<SymbolDeltaPlusConstantMap>,
     null_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
     undef_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
     poison_constants: RefCell<HashMap<TypeSlot, ValueSlot>>,
@@ -92,6 +96,17 @@ type IntConstantMap = HashMap<(TypeSlot, Box<[u64]>), ValueSlot>;
 /// the float's type plus its IEEE bit pattern (held as a `u128` so
 /// every IEEE width up to `fp128` fits without a discriminant).
 type FloatConstantMap = HashMap<(TypeSlot, u128), ValueSlot>;
+/// Intern key for [`ConstantData::GepOffset`](crate::constant::ConstantData::GepOffset):
+/// the pointer type, the host global's value-id, and the byte offset.
+type GepOffsetConstantMap = HashMap<(TypeSlot, ValueSlot, i64), ValueSlot>;
+/// Intern key for [`ConstantData::SymbolDelta`](crate::constant::ConstantData::SymbolDelta):
+/// the integer type and the two symbol value-ids, in order — the delta is not
+/// commutative.
+type SymbolDeltaConstantMap = HashMap<(TypeSlot, ValueSlot, ValueSlot), ValueSlot>;
+/// Intern key for
+/// [`ConstantData::SymbolDeltaPlus`](crate::constant::ConstantData::SymbolDeltaPlus):
+/// the [`SymbolDeltaConstantMap`] key plus the baked-in addend.
+type SymbolDeltaPlusConstantMap = HashMap<(TypeSlot, ValueSlot, ValueSlot, i64), ValueSlot>;
 type PtrauthConstantMap = HashMap<
     (
         TypeSlot,
@@ -161,6 +176,10 @@ impl Context {
             values: boxcar::Vec::new(),
             int_constants: RefCell::new(HashMap::new()),
             float_constants: RefCell::new(HashMap::new()),
+            global_value_ref_constants: RefCell::new(HashMap::new()),
+            gep_offset_constants: RefCell::new(HashMap::new()),
+            symbol_delta_constants: RefCell::new(HashMap::new()),
+            symbol_delta_plus_constants: RefCell::new(HashMap::new()),
             null_constants: RefCell::new(HashMap::new()),
             undef_constants: RefCell::new(HashMap::new()),
             poison_constants: RefCell::new(HashMap::new()),
@@ -621,15 +640,30 @@ impl Context {
         ty: TypeSlot,
         value: ValueSlot,
     ) -> ValueSlot {
-        self.push_value(ValueData {
+        let key = (ty, value);
+        if let Some(&id) = self.global_value_ref_constants.borrow().get(&key) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::GlobalValueRef { value }),
             use_list: core::cell::RefCell::new(Vec::new()),
-        })
+        });
+        self.global_value_ref_constants.borrow_mut().insert(key, id);
+        id
     }
 
+    /// A forward `blockaddress` awaiting its referent.
+    ///
+    /// **The one constant kind that is deliberately not uniqued.** Placeholders
+    /// carry no payload, so every one of them is structurally identical — yet
+    /// each stands for a *different* unresolved reference that the parser
+    /// replaces individually as the named block is reached. Interning them
+    /// would collapse every pending forward reference in a module into one
+    /// node, and resolving the first would silently resolve them all. The name
+    /// says `push`, not `intern`, for that reason.
     pub(crate) fn push_constant_block_address_placeholder(&self, ty: TypeSlot) -> ValueSlot {
         self.push_value(ValueData {
             ty,
@@ -641,21 +675,26 @@ impl Context {
     }
 
     /// Materialise a `getelementptr inbounds (i8, ptr @<base>, i64 <off>)`
-    /// constant of pointer type `ty`. Not interned (each offset-pointer is
-    /// effectively unique and cheap); a fresh value-arena node each call.
+    /// constant of pointer type `ty`.
     pub(crate) fn intern_constant_gep_offset(
         &self,
         ty: TypeSlot,
         base_id: ValueSlot,
         off: i64,
     ) -> ValueSlot {
-        self.push_value(ValueData {
+        let key = (ty, base_id, off);
+        if let Some(&id) = self.gep_offset_constants.borrow().get(&key) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::GepOffset { base_id, off }),
             use_list: core::cell::RefCell::new(Vec::new()),
-        })
+        });
+        self.gep_offset_constants.borrow_mut().insert(key, id);
+        id
     }
 
     pub(crate) fn intern_constant_symbol_delta(
@@ -664,13 +703,19 @@ impl Context {
         hi_id: ValueSlot,
         lo_id: ValueSlot,
     ) -> ValueSlot {
-        self.push_value(ValueData {
+        let key = (ty, hi_id, lo_id);
+        if let Some(&id) = self.symbol_delta_constants.borrow().get(&key) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
             kind: ValueKindData::Constant(ConstantData::SymbolDelta { hi_id, lo_id }),
             use_list: core::cell::RefCell::new(Vec::new()),
-        })
+        });
+        self.symbol_delta_constants.borrow_mut().insert(key, id);
+        id
     }
 
     pub(crate) fn intern_constant_symbol_delta_plus(
@@ -680,7 +725,11 @@ impl Context {
         lo_id: ValueSlot,
         addend: i64,
     ) -> ValueSlot {
-        self.push_value(ValueData {
+        let key = (ty, hi_id, lo_id, addend);
+        if let Some(&id) = self.symbol_delta_plus_constants.borrow().get(&key) {
+            return id;
+        }
+        let id = self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
@@ -690,7 +739,11 @@ impl Context {
                 addend,
             }),
             use_list: core::cell::RefCell::new(Vec::new()),
-        })
+        });
+        self.symbol_delta_plus_constants
+            .borrow_mut()
+            .insert(key, id);
+        id
     }
 
     pub(crate) fn intern_constant_aggregate(
