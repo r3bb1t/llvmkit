@@ -244,6 +244,18 @@ impl KnownBits {
         self.zero.is_zero() && self.one.is_zero()
     }
 
+    /// Returns true if the sign bit is not known either way. Mirrors
+    /// `KnownBits::isSignUnknown`.
+    ///
+    /// The masks are read directly, as upstream does, rather than spelled
+    /// `!is_negative() && !is_non_negative()`: those two answer `false` for a
+    /// zero-width value, which would make this answer `true` for a value that
+    /// has no sign bit at all.
+    #[inline]
+    pub fn is_sign_unknown(&self) -> bool {
+        !self.zero.is_negative() && !self.one.is_negative()
+    }
+
     /// Returns true if every bit has a known value.
     #[inline]
     pub fn is_constant(&self) -> bool {
@@ -464,6 +476,13 @@ impl KnownBits {
     pub fn set_all_zero(&mut self) {
         self.zero = ApInt::all_ones(self.bit_width());
         self.one = ApInt::zero(self.bit_width());
+    }
+
+    /// Make every bit known to be one, discarding what was known before.
+    /// Mirrors `KnownBits::setAllOnes`.
+    pub fn set_all_ones(&mut self) {
+        self.zero = ApInt::zero(self.bit_width());
+        self.one = ApInt::all_ones(self.bit_width());
     }
 
     pub fn set_all_conflict(&mut self) {
@@ -697,6 +716,14 @@ impl KnownBits {
 
     pub fn udiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, exact: bool) -> KnownBits {
         compute_for_udiv(lhs, rhs, exact)
+    }
+
+    /// Signed division transfer. The `exact`-taking twin of upstream's
+    /// defaulted `KnownBits::sdiv(LHS, RHS, Exact = false)`, spelled as a pair
+    /// so it matches [`Self::udiv`] / [`Self::udiv_with_exact`].
+    #[inline]
+    pub fn sdiv(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
+        Self::sdiv_with_exact(lhs, rhs, false)
     }
 
     pub fn sdiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, exact: bool) -> KnownBits {

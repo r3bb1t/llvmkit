@@ -788,3 +788,82 @@ fn ssub_sat_known_negative_overflow_clamps_to_signed_min_without_enumeration() {
     assert_eq!(known.one_mask(), &sign);
     assert_eq!(known.zero_mask(), &ApInt::signed_max_value(64));
 }
+
+/// Port of `llvm/unittests/Support/KnownBitsTest.cpp::TEST(KnownBitsTest, SignBitUnknown)`.
+///
+/// Upstream mutates `Known.Zero` / `Known.One` in place; llvmkit's masks are
+/// private, so each step rebuilds the same state through
+/// [`KnownBits::from_zero_one`]. The sequence of states and the expected
+/// answer at each one are upstream's, unchanged.
+#[test]
+fn sign_bit_unknown_tracks_either_mask() -> Result<(), IrError> {
+    let width = 2;
+    let mut zero = ApInt::zero(width);
+    let mut one = ApInt::zero(width);
+    let sign_unknown = |zero: &ApInt, one: &ApInt| -> Result<bool, IrError> {
+        Ok(KnownBits::from_zero_one(zero.clone(), one.clone())?.is_sign_unknown())
+    };
+
+    assert!(sign_unknown(&zero, &one)?);
+    zero.set_bit(0);
+    assert!(sign_unknown(&zero, &one)?);
+    zero.set_bit(1);
+    assert!(!sign_unknown(&zero, &one)?);
+    zero.clear_bit(0);
+    assert!(!sign_unknown(&zero, &one)?);
+    zero.clear_bit(1);
+    assert!(sign_unknown(&zero, &one)?);
+
+    one.set_bit(0);
+    assert!(sign_unknown(&zero, &one)?);
+    one.set_bit(1);
+    assert!(!sign_unknown(&zero, &one)?);
+    one.clear_bit(0);
+    assert!(!sign_unknown(&zero, &one)?);
+    one.clear_bit(1);
+    assert!(sign_unknown(&zero, &one)?);
+    Ok(())
+}
+
+/// Mirrors `llvm/include/llvm/Support/KnownBits.h::KnownBits::setAllOnes`,
+/// which is `Zero.clearAllBits(); One.setAllBits();`. `KnownBitsTest.cpp` has
+/// no dedicated fixture for it, so this restates that definition and pins it
+/// as the dual of the already-modeled `setAllZero`.
+#[test]
+fn set_all_ones_makes_every_bit_known_one() {
+    let mut known = KnownBits::unknown(8);
+    known.set_all_ones();
+    assert_eq!(known.zero_mask(), &ApInt::zero(8));
+    assert_eq!(known.one_mask(), &ApInt::all_ones(8));
+    assert!(known.is_all_ones());
+    assert!(!known.has_conflict());
+
+    // Discards prior information, as upstream's clear-then-set does.
+    let mut from_constant = KnownBits::make_constant(ApInt::zero(8));
+    from_constant.set_all_ones();
+    assert_eq!(from_constant.one_mask(), &ApInt::all_ones(8));
+
+    // The dual of set_all_zero, which leaves the mirrored state.
+    let mut zeroed = KnownBits::unknown(8);
+    zeroed.set_all_zero();
+    assert_eq!(zeroed.zero_mask(), &ApInt::all_ones(8));
+    assert_eq!(zeroed.one_mask(), &ApInt::zero(8));
+}
+
+/// Mirrors the defaulted parameter of
+/// `llvm/include/llvm/Support/KnownBits.h::KnownBits::sdiv(LHS, RHS, Exact = false)`:
+/// the two-argument spelling is the three-argument one with `Exact` false,
+/// matching the `udiv` / `udiv_with_exact` pair llvmkit already had.
+#[test]
+fn sdiv_defaults_to_inexact() {
+    let lhs = KnownBits::from_ap_int(ApInt::from_words(8, &[0b0011_0000]));
+    let rhs = KnownBits::from_ap_int(ApInt::from_words(8, &[0b0000_0100]));
+    assert_eq!(
+        KnownBits::sdiv(&lhs, &rhs),
+        KnownBits::sdiv_with_exact(&lhs, &rhs, false)
+    );
+    assert_eq!(
+        KnownBits::udiv(&lhs, &rhs),
+        KnownBits::udiv_with_exact(&lhs, &rhs, false)
+    );
+}

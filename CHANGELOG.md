@@ -7,6 +7,30 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### `KnownBits` models all of `KnownBits.h`
+
+Three operations closed the last of the public-surface gap the parity ledger
+found:
+
+#### Added
+
+- `KnownBits::set_all_ones` — makes every bit known-one, discarding prior
+  information. Mirrors `KnownBits::setAllOnes`, the dual of the existing
+  `set_all_zero`.
+- `KnownBits::is_sign_unknown` — true when the sign bit is not known either
+  way. Mirrors `KnownBits::isSignUnknown`. It reads the masks directly rather
+  than being spelled `!is_negative() && !is_non_negative()`, because those two
+  both answer `false` at width zero, which would wrongly report a value with no
+  sign bit as sign-unknown.
+- `KnownBits::sdiv` — the two-argument spelling, `sdiv_with_exact(.., false)`,
+  matching the `udiv` / `udiv_with_exact` pair. Upstream has one `sdiv` with
+  `Exact` defaulted; Rust has no default arguments, so llvmkit spells both.
+
+The ledger now asserts `KnownBits.h` has no remaining gaps. Two entries it
+previously listed — `flipSignBit` and `remGetLowBits` — were recorded in error:
+both are **private** in `KnownBits.h`, and both already existed in llvmkit as
+module-private helpers.
+
 ### The KnownBits / ValueTracking parity ledger is real
 
 `tests/value_tracking_parity.rs` claimed to be the coverage ledger for the
