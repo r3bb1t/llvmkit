@@ -7,6 +7,52 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### `ApInt` sweep complete; sentinels become sum types
+
+Finishes `llvm/unittests/ADT/APIntTest.cpp`: sixty-seven more ported tests
+covering the wide-division paths, the comparison family, the bit-set and
+bit-clear families, saturating and overflow-flagged arithmetic, and the
+operation families llvmkit had never modeled. The division paths — the least
+covered code in `ap_int.rs` — were already bit-exact.
+
+#### Fixed
+
+- **`ApInt::is_one_bit_set` carried upstream's name over a different meaning.**
+  It answered "bit N is set", where `APInt::isOneBitSet` means "bit N is set
+  **and is the only bit set**". No in-tree caller was wrong — all seventeen
+  wanted plain bit access — but a port of LLVM code calling `isOneBitSet` would
+  have silently accepted values with other bits set. The callers now say
+  `bit()`, and `is_one_bit_set` means what upstream means.
+
+#### Changed (breaking)
+
+- **`ApFloat::ilogb` and `ApFloat::frexp` return `BinaryExponent`, not `i32`.**
+  Upstream reserves three `int` values as markers — `IEK_NaN` is `INT_MIN`,
+  `IEK_Zero` is `INT_MIN + 1`, `IEK_Inf` is `INT_MAX` — so a caller that forgets
+  to test for them does arithmetic on `INT_MIN` and the type system cannot tell
+  that apart from a real exponent. The new sum type has `Finite(i32)`, `Zero`,
+  `Infinity`, and `Nan`, so the exponent exists only where it means something.
+  The `ILOGB_NAN` / `ILOGB_ZERO` / `ILOGB_INF` constants are gone.
+- **`ApInt::log_base2`, `nearest_log_base2`, and `exact_log_base2` return
+  `Option<u32>`** for the same reason: upstream's zero answer is an underflowed
+  `unsigned`, and `exactLogBase2`'s "not a power of two" answer is `-1`.
+
+#### Added
+
+`ApInt` gains the operations the sweep found missing, each ported from its
+upstream definition and covered by that definition's test: `bit` (upstream's
+`operator[]`), `set_bits`, `clear_bits`, `clear_low_bits`, `clear_high_bits`,
+`set_all_bits`, `clear_all_bits`, `flip_all_bits`, `flip_bit`, `rotl`, `rotr`,
+`rotl_by`, `rotr_by`, `lo_bits`, `hi_bits`, `is_splat`, the `log_base2` family,
+`mul_high_signed`, `mul_high_unsigned`, `rounding_udiv`, `rounding_sdiv`, the
+four `avg_*` averages, `abs_diff_signed`, `abs_diff_unsigned`,
+`multiplicative_inverse`, `greatest_common_divisor`,
+`most_significant_different_bit`, `pow`, `scale_bit_mask`, `fshl`, `fshr`, and
+the three carry-less multiplies. Comparison gains four total orderings —
+`unsigned_cmp`, `signed_cmp`, `unsigned_cmp_u64`, `signed_cmp_i64` — which
+answer all sixteen of upstream's comparison overloads, including the ones
+against a machine word that llvmkit previously could not express at all.
+
 ### ApFloat audit complete; first `ApInt` sweep
 
 Closes the ApFloat families — `FMA`, `roundToIntegral`, `toInteger` — and

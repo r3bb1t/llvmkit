@@ -1627,7 +1627,7 @@ fn insert_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         .filter(|idx| *idx < lanes)
     {
         demanded_vec.clear_bit(idx);
-        needs_element = demanded.is_one_bit_set(idx);
+        needs_element = demanded.bit(idx);
     }
     let mut known = KnownBits::unknown(value_bit_width(value, query.data_layout()).unwrap_or(0));
     known.set_all_conflict();
@@ -1695,7 +1695,7 @@ fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 value_bit_width(value, query.data_layout()).unwrap_or(0),
             ));
         };
-        if !demanded.is_one_bit_set(lane) {
+        if !demanded.bit(lane) {
             continue;
         }
         if *mask == POISON_MASK_ELEM {
@@ -1758,7 +1758,7 @@ fn aggregate_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         let Ok(lane) = u32::try_from(lane) else {
             return Ok(KnownBits::unknown(width));
         };
-        if !demanded.is_one_bit_set(lane) {
+        if !demanded.bit(lane) {
             continue;
         }
         let element_known =

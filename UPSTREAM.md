@@ -1524,3 +1524,70 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/ap_int_upstream.rs::splat` | `TEST(APIntTest, Splat)` | port |
 | `crates/llvmkit-ir/tests/ap_int_upstream.rs::to_string` | `TEST(APIntTest, toString)`, the rows without the C-literal prefix or separators, which `to_string_radix` does not model | port |
 | `crates/llvmkit-ir/tests/ap_int_upstream.rs::from_string_round_trips_to_string` | closest upstream family `TEST(APIntTest, fromString)`; llvmkit-specific because `ApInt::from_string` does not model upstream signed spellings, so the two directions are checked for agreement instead | llvmkit-specific subset |
+| `crates/llvmkit-ir/tests/ap_int_upstream_divrem.rs::divrem_big1` | `llvm/unittests/ADT/APIntTest.cpp::TEST(APIntTest, divrem_big1)`, through the shared `testDiv` helper | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_divrem.rs::divrem_big2` | `TEST(APIntTest, divrem_big2)`, through the shared `testDiv` helper | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_divrem.rs::divrem_big3` | `TEST(APIntTest, divrem_big3)`, through the shared `testDiv` helper | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_divrem.rs::divrem_big4` | `TEST(APIntTest, divrem_big4)`, through the shared `testDiv` helper | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_divrem.rs::divrem_big5` | `TEST(APIntTest, divrem_big5)`, through the shared `testDiv` helper | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_divrem.rs::divrem_big6` | `TEST(APIntTest, divrem_big6)`, through the shared `testDiv` helper | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_divrem.rs::divrem_big7` | `TEST(APIntTest, divrem_big7)`, through the shared `testDiv` helper | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_divrem.rs::divremuint` | `TEST(APIntTest, divremuint)`, through the `testDiv(APInt, uint64_t, APInt)` helper; llvmkit has no scalar divisor overload, so the divisor is the same-width `ApInt` that overload builds | port (scalar divisor widened) |
+| `crates/llvmkit-ir/tests/ap_int_upstream_divrem.rs::divrem_simple` | `TEST(APIntTest, divrem_simple)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::log2` | `TEST(APIntTest, Log2)`; upstream's `unsigned`/`-1` markers read as `Option<u32>` | port (marker → Option) |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::nearest_log_base2` | `TEST(APIntTest, nearestLogBase2)` minus its `APInt(UINT32_MAX, 0)` row, which allocates half a gigabyte to recheck the zero answer the row above it already checks | port (one row skipped, reason recorded) |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::rotate` | `TEST(APIntTest, Rotate)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::get_lo_bits` | `TEST(APIntTest, getLoBits)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::get_hi_bits` | `TEST(APIntTest, getHiBits)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::clear_low_bits` | `TEST(APIntTest, clearLowBits)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::clear_high_bits` | `TEST(APIntTest, clearHighBits)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::clear_bits` | `TEST(APIntTest, clearBits)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::set_all_bits` | `TEST(APIntTest, setAllBits)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::abs_diff_signed` | `TEST(APIntTest, abds)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::abs_diff_unsigned` | `TEST(APIntTest, abdu)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::rounding_udiv_exhaustive` | `TEST(APIntTest, RoundingUDiv)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::rounding_sdiv_exhaustive` | `TEST(APIntTest, RoundingSDiv)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::average` | `TEST(APIntTest, Average)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::multiplicative_inverse_exhaustive` | `TEST(APIntTest, MultiplicativeInverseExaustive)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::scale_bit_mask` | `TEST(APIntTest, ScaleBitMask)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::greatest_common_divisor` | `TEST(APIntTest, GCD)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::fshl` | `TEST(APIntTest, Fshl)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::fshr` | `TEST(APIntTest, Fshr)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::carryless_mul_reversed` | `TEST(APIntTest, clmulr)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_ops.rs::carryless_mul_high` | `TEST(APIntTest, clmulh)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_compare.rs::compare` | `TEST(APIntTest, compare)`; llvmkit answers upstream's sixteen comparison overloads with four total `Ordering`s, so each row is the same comparison read off the corresponding ordering | port (predicates → Ordering) |
+| `crates/llvmkit-ir/tests/ap_int_upstream_compare.rs::compare_with_raw_integers` | `TEST(APIntTest, compareWithRawIntegers)` | port (predicates → Ordering) |
+| `crates/llvmkit-ir/tests/ap_int_upstream_compare.rs::compare_with_int64_min` | `TEST(APIntTest, compareWithInt64Min)` | port (predicates → Ordering) |
+| `crates/llvmkit-ir/tests/ap_int_upstream_compare.rs::compare_with_half_int64_max` | `TEST(APIntTest, compareWithHalfInt64Max)` | port (predicates → Ordering) |
+| `crates/llvmkit-ir/tests/ap_int_upstream_compare.rs::compare_large_integers` | `TEST(APIntTest, compareLargeIntegers)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::get_bits_set` | `TEST(APIntTest, getBitsSet)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::get_bits_set_with_wrap` | `TEST(APIntTest, getBitsSetWithWrap)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::get_bits_set_from` | `TEST(APIntTest, getBitsSetFrom)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::get_high_bits_set` | `TEST(APIntTest, getHighBitsSet)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::get_low_bits_set` | `TEST(APIntTest, getLowBitsSet)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::set_low_bits` | `TEST(APIntTest, setLowBits)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::set_high_bits` | `TEST(APIntTest, setHighBits)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::set_bits_from` | `TEST(APIntTest, setBitsFrom)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::is_one_bit_set` | `TEST(APIntTest, isOneBitSet)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::is_splat` | `TEST(APIntTest, IsSplat)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::reverse_bits` | `TEST(APIntTest, reverseBits)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::array_access` | `TEST(APIntTest, arrayAccess)`, which reads `APInt::operator[]` — `ApInt::bit` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::shift_left_by_zero` | `TEST(APIntTest, ShiftLeftByZero)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::i61_count` | `TEST(APIntTest, i61_Count)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::i64_arithmetic_right_shift_negative` | `TEST(APIntTest, i64_ArithmeticRightShiftNegative)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::from_array` | `TEST(APIntTest, FromArray)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::value_init` | `TEST(APIntTest, ValueInit)`; llvmkit has no default constructor — every `ApInt` names its width — so the row is spelled with the one-bit width upstream's default produces | port (default ctor spelled explicitly) |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::extract_bits_as_zext_value_rows` | `TEST(APIntTest, extractBitsAsZExtValue)`; llvmkit spells the fused entry point as `extract_bits(..).try_zext_u64()` | port (fused entry point split) |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::insert_bits` | `TEST(APIntTest, insertBitsUInt64)`; llvmkit has no `(uint64_t, bitPosition, numBits)` overload, so each row names the same bits as the `ApInt` of `numBits` width that overload builds internally | port (scalar source widened) |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::concat` | `TEST(APIntTest, concat)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::sext_rows` | `TEST(APIntTest, sext)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::trunc_rows` | `TEST(APIntTest, trunc)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::try_ext` | `TEST(APIntTest, TryExt)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::is_subset_of` | `TEST(APIntTest, isSubsetOf)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::get_most_significant_different_bit` | `TEST(APIntTest, GetMostSignificantDifferentBit)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_bits.rs::hash_map_key` | `TEST(APIntTest, DenseMap)`; llvmkit has no `DenseMap`, and the property under test is `ApInt`'s `Hash`/`Eq`, so the port uses the standard `HashMap` | port (container substituted) |
+| `crates/llvmkit-ir/tests/ap_int_upstream_arithmetic.rs::saturating_math` | `TEST(APIntTest, SaturatingMath)`; the shift rows apply upstream's own `getLimitedValue(BitWidth)` reduction, since llvmkit's shift-saturating entry points take a `u32` | port (shift amount reduced explicitly) |
+| `crates/llvmkit-ir/tests/ap_int_upstream_arithmetic.rs::multiply` | `TEST(APIntTest, multiply)`; upstream's scalar operand overloads build a same-width `APInt` internally, which the port names | port (scalar operand widened) |
+| `crates/llvmkit-ir/tests/ap_int_upstream_arithmetic.rs::umul_ov` | `TEST(APIntTest, umul_ov)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_arithmetic.rs::smul_ov` | `TEST(APIntTest, smul_ov)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_arithmetic.rs::sfloordiv_ov` | `TEST(APIntTest, sfloordiv_ov)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream_arithmetic.rs::pow` | `TEST(APIntTest, PowZeroTo5)`, `PowOneTo16`, `PowerTwoTo10`, `PowerThreeTo3`, `PowerSignedMaxValue`, `PowerMaxValue`, `PowerSignedMinValueTo3`, `PowerSignedMinValueTo1`, and `ZeroToZero` — upstream's nine one-row `APIntOps::pow` tests, gathered into one | port |

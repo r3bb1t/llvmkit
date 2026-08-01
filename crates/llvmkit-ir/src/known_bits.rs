@@ -1526,7 +1526,7 @@ fn compute_for_mul(lhs: &KnownBits, rhs: &KnownBits, no_undef_self_multiply: boo
         if two_tz_plus_one < bit_width {
             result.zero.set_bit(two_tz_plus_one);
         }
-        if trail_zero_lhs < bit_width && lhs.one.is_one_bit_set(trail_zero_lhs) {
+        if trail_zero_lhs < bit_width && lhs.one.bit(trail_zero_lhs) {
             let two_tz_plus_two = two_tz_plus_one.saturating_add(1);
             if two_tz_plus_two < bit_width {
                 result.zero.set_bit(two_tz_plus_two);
@@ -1555,7 +1555,7 @@ fn div_compute_low_bit(
     if !exact {
         return known;
     }
-    if lhs.one.is_one_bit_set(0) {
+    if lhs.one.bit(0) {
         known.one.set_bit(0);
     }
     let min_tz =

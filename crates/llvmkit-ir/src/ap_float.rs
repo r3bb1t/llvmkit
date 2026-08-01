@@ -62,6 +62,43 @@ pub enum ApFloatCategory {
     Zero,
 }
 
+/// The base-2 exponent of a floating-point value, or the reason it has none.
+///
+/// This is the answer [`ApFloat::ilogb`] and [`ApFloat::frexp`] give. Upstream
+/// returns a plain `int` from both and steals three of its values as markers —
+/// `APFloat::IEK_NaN` is `INT_MIN`, `IEK_Zero` is `INT_MIN + 1`, `IEK_Inf` is
+/// `INT_MAX` — so a caller that forgets to test for them goes on to do
+/// arithmetic on `INT_MIN`, and the type system cannot tell it apart from a
+/// real exponent. Rust has sum types, so the categories are variants and the
+/// exponent exists only where it means something.
+///
+/// The encodings are therefore not interchangeable, and there is deliberately
+/// no conversion to upstream's `int`: ported code should match on the variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BinaryExponent {
+    /// `floor(log2(|value|))`. Denormals answer with the exponent they would
+    /// have had if the format could store it, matching `ilogb`.
+    Finite(i32),
+    /// The value is a zero, which has no exponent. `ilogb` alone reports this;
+    /// `frexp` normalizes a zero to `Finite(0)` the way upstream does.
+    Zero,
+    /// The value is an infinity.
+    Infinity,
+    /// The value is a NaN.
+    Nan,
+}
+
+impl BinaryExponent {
+    /// The exponent, if the value had one.
+    #[inline]
+    pub fn finite(self) -> Option<i32> {
+        match self {
+            Self::Finite(exponent) => Some(exponent),
+            Self::Zero | Self::Infinity | Self::Nan => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ApFloatCmpResult {
     LessThan,
@@ -1089,8 +1126,7 @@ impl ApFloat {
 
     #[inline]
     pub fn is_negative(&self) -> bool {
-        self.to_bits()
-            .is_one_bit_set(self.semantics.bit_width() - 1)
+        self.to_bits().bit(self.semantics.bit_width() - 1)
     }
 
     pub fn is_denormal(&self) -> bool {
@@ -1111,7 +1147,7 @@ impl ApFloat {
             return false;
         }
         let quiet_bit = quiet_nan_bit(self.semantics);
-        quiet_bit != 0 && !self.to_bits().is_one_bit_set(quiet_bit)
+        quiet_bit != 0 && !self.to_bits().bit(quiet_bit)
     }
 
     #[inline]
@@ -1313,52 +1349,47 @@ impl ApFloat {
         }
     }
 
-    /// `ilogb` returns this for a NaN. Mirrors `APFloat::IEK_NaN`.
-    pub const ILOGB_NAN: i32 = i32::MIN;
-    /// `ilogb` returns this for a zero. Mirrors `APFloat::IEK_Zero`.
-    pub const ILOGB_ZERO: i32 = i32::MIN + 1;
-    /// `ilogb` returns this for an infinity. Mirrors `APFloat::IEK_Inf`.
-    pub const ILOGB_INF: i32 = i32::MAX;
-
     /// The unbiased base-2 exponent — `floor(log2(|self|))` for any finite
     /// non-zero value, including denormals.
     ///
-    /// Ports the free function `llvm::ilogb` in `APFloat.cpp`: the three
-    /// special categories answer with the sentinels above, a normal value
-    /// answers with its stored exponent, and a denormal is normalized first so
-    /// its answer is the exponent it *would* have had.
+    /// Ports the free function `llvm::ilogb` in `APFloat.cpp`: a normal value
+    /// answers with its stored exponent, a denormal is normalized first so its
+    /// answer is the exponent it *would* have had, and the three special
+    /// categories have no exponent to report. Upstream spells that last part
+    /// with sentinel `int`s (`APFloat::IEK_NaN`, `IEK_Zero`, `IEK_Inf`);
+    /// [`BinaryExponent`] spells it with variants instead.
     ///
     /// This is **not** `exact_log2_abs`, which this used to delegate to.
     /// `exact_log2_abs` answers `None` unless the value is exactly a power of
     /// two, so every other finite value — and every special — reported `0`:
     /// `ilogb(0x1.ffffffffffffep-1023)` said `0` where upstream says `-1023`,
     /// and `ilogb(inf)` said `0` rather than the infinity sentinel.
-    pub fn ilogb(&self) -> i32 {
+    pub fn ilogb(&self) -> BinaryExponent {
         if self.is_nan() {
-            return Self::ILOGB_NAN;
+            return BinaryExponent::Nan;
         }
         if self.is_zero() {
-            return Self::ILOGB_ZERO;
+            return BinaryExponent::Zero;
         }
         if self.is_infinity() {
-            return Self::ILOGB_INF;
+            return BinaryExponent::Infinity;
         }
         let Some(components) = self.binary_components() else {
-            return Self::ILOGB_NAN;
+            return BinaryExponent::Nan;
         };
         let Some(scale) = component_scale(&components) else {
-            return Self::ILOGB_NAN;
+            return BinaryExponent::Nan;
         };
         // `magnitude` is the significand as an integer scaled by `2^scale`, so
         // the position of its most significant set bit carries the rest of the
         // exponent. A finite non-zero value always has one.
         let Some(top_bit) = components.magnitude.active_bits().checked_sub(1) else {
-            return Self::ILOGB_ZERO;
+            return BinaryExponent::Zero;
         };
         i32::try_from(top_bit)
             .ok()
             .and_then(|top_bit| scale.checked_add(top_bit))
-            .unwrap_or(Self::ILOGB_NAN)
+            .map_or(BinaryExponent::Nan, BinaryExponent::Finite)
     }
 
     /// Scale by a power of two.
@@ -1394,34 +1425,37 @@ impl ApFloat {
     /// Split into a fraction in `[0.5, 1)` and a power-of-two exponent.
     ///
     /// Ports the free function `llvm::frexp`, which opens with
-    /// `Exp = ilogb(Val)` and therefore hands back **`ilogb`'s sentinels** for
-    /// the special categories rather than `0`: `ILOGB_NAN` for a NaN and
-    /// `ILOGB_INF` for an infinity. A signaling NaN is quieted, payload
-    /// intact; only a zero answers with an exponent of `0`.
-    pub fn frexp(&self, rounding: RoundingMode) -> (ApFloat, i32, ApFloatStatus) {
+    /// `Exp = ilogb(Val)` and returns early for the two categories that have no
+    /// exponent, so those answers reach the caller as [`ilogb`](Self::ilogb)
+    /// left them: `Nan` for a NaN — quieted, payload intact — and `Infinity`
+    /// for an infinity. A **zero** does not: upstream's
+    /// `Exp = Exp == IEK_Zero ? 0 : Exp + 1` normalizes it, so `frexp` answers
+    /// `Finite(0)` where `ilogb` answers `Zero`.
+    pub fn frexp(&self, rounding: RoundingMode) -> (ApFloat, BinaryExponent, ApFloatStatus) {
         if self.is_nan() {
-            return (self.make_quiet(), Self::ILOGB_NAN, ApFloatStatus::OK);
+            return (self.make_quiet(), BinaryExponent::Nan, ApFloatStatus::OK);
         }
         if self.is_infinity() {
-            return (self.clone(), Self::ILOGB_INF, ApFloatStatus::OK);
+            return (self.clone(), BinaryExponent::Infinity, ApFloatStatus::OK);
         }
+        let zero_exponent = BinaryExponent::Finite(0);
         if self.is_zero() {
-            return (self.clone(), 0, ApFloatStatus::OK);
+            return (self.clone(), zero_exponent, ApFloatStatus::OK);
         }
         let Some(components) = self.binary_components() else {
-            return (self.clone(), 0, ApFloatStatus::INVALID_OP);
+            return (self.clone(), zero_exponent, ApFloatStatus::INVALID_OP);
         };
         let Some(scale) = component_scale(&components) else {
-            return (self.clone(), 0, ApFloatStatus::INVALID_OP);
+            return (self.clone(), zero_exponent, ApFloatStatus::INVALID_OP);
         };
         let Some(active_bits) = i32::try_from(components.magnitude.active_bits()).ok() else {
-            return (self.clone(), 0, ApFloatStatus::INVALID_OP);
+            return (self.clone(), zero_exponent, ApFloatStatus::INVALID_OP);
         };
-        let Some(exp_i32) = scale.checked_add(active_bits) else {
-            return (self.clone(), 0, ApFloatStatus::INVALID_OP);
+        let Some(exponent) = scale.checked_add(active_bits) else {
+            return (self.clone(), zero_exponent, ApFloatStatus::INVALID_OP);
         };
-        let Some(mantissa_scale) = scale.checked_sub(exp_i32) else {
-            return (self.clone(), 0, ApFloatStatus::INVALID_OP);
+        let Some(mantissa_scale) = scale.checked_sub(exponent) else {
+            return (self.clone(), zero_exponent, ApFloatStatus::INVALID_OP);
         };
         let (mantissa, status) = encode_binary_scaled(
             self.semantics,
@@ -1431,7 +1465,7 @@ impl ApFloat {
             rounding,
         )
         .unwrap_or_else(|| (self.clone(), ApFloatStatus::INVALID_OP));
-        (mantissa, exp_i32, status)
+        (mantissa, BinaryExponent::Finite(exponent), status)
     }
 
     #[inline]
@@ -2511,7 +2545,7 @@ fn finite_remainder(
     let twice_remainder = remainder.zext_or_trunc(cmp_width).checked_shl(1)?;
     let rhs_value = rhs_value.zext_or_trunc(cmp_width);
     let round_away_from_remainder = twice_remainder.ugt(&rhs_value)
-        || (twice_remainder.eq_ap_int(&rhs_value) && divrem.quotient().is_one_bit_set(0));
+        || (twice_remainder.eq_ap_int(&rhs_value) && divrem.quotient().bit(0));
     if round_away_from_remainder {
         return encode_binary_scaled(
             semantics,
@@ -2924,7 +2958,7 @@ fn round_apint_div_wide(
     let increment = match rounding {
         RoundingMode::NearestTiesToEven => {
             twice_remainder.ugt(&denominator)
-                || (twice_remainder.eq_ap_int(&denominator) && quotient.is_one_bit_set(0))
+                || (twice_remainder.eq_ap_int(&denominator) && quotient.bit(0))
         }
         RoundingMode::NearestTiesToAway => twice_remainder.uge(&denominator),
         RoundingMode::TowardZero => false,
@@ -2999,7 +3033,7 @@ fn round_power_of_two_div(
     let increment = match rounding {
         RoundingMode::NearestTiesToEven => {
             matches!(half_cmp, Ordering::Greater)
-                || (matches!(half_cmp, Ordering::Equal) && quotient.is_one_bit_set(0))
+                || (matches!(half_cmp, Ordering::Equal) && quotient.bit(0))
         }
         RoundingMode::NearestTiesToAway => !matches!(half_cmp, Ordering::Less),
         RoundingMode::TowardZero => false,
@@ -3048,7 +3082,7 @@ fn any_low_bit_set(value: &ApInt, count: u32) -> bool {
     let mut bit = 0u32;
     let limit = count.min(value.bit_width());
     while bit < limit {
-        if value.is_one_bit_set(bit) {
+        if value.bit(bit) {
             return true;
         }
         bit += 1;
@@ -3060,7 +3094,7 @@ fn low_bits_cmp_half(value: &ApInt, count: u32) -> Ordering {
     let Some(half_bit) = count.checked_sub(1) else {
         return Ordering::Equal;
     };
-    if !value.is_one_bit_set(half_bit) {
+    if !value.bit(half_bit) {
         return Ordering::Less;
     }
     if any_low_bit_set(value, half_bit) {
@@ -3466,7 +3500,7 @@ fn round_apint_div(
     let increment = match rounding {
         RoundingMode::NearestTiesToEven => {
             twice_remainder.ugt(&denominator)
-                || (twice_remainder.eq_ap_int(&denominator) && quotient.is_one_bit_set(0))
+                || (twice_remainder.eq_ap_int(&denominator) && quotient.bit(0))
         }
         RoundingMode::NearestTiesToAway => twice_remainder.uge(&denominator),
         RoundingMode::TowardZero => false,
@@ -3635,7 +3669,7 @@ fn extract_bits_u64(bits: &ApInt, lo: u32, count: u32) -> u64 {
     let mut out = 0u64;
     let mut i = 0u32;
     while i < count && i < 64 {
-        if bits.is_one_bit_set(lo + i) {
+        if bits.bit(lo + i) {
             out |= 1u64 << i;
         }
         i += 1;
@@ -3646,7 +3680,7 @@ fn extract_bits_u64(bits: &ApInt, lo: u32, count: u32) -> u64 {
 fn has_fraction_bits(bits: &ApInt, count: u32) -> bool {
     let mut i = 0u32;
     while i < count {
-        if bits.is_one_bit_set(i) {
+        if bits.bit(i) {
             return true;
         }
         i += 1;

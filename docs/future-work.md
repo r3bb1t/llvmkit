@@ -49,34 +49,26 @@ Two things worth knowing for anyone extending it:
   was kept exactly. A caret under the `n` of `nocalback` helps nobody. Lexing
   behaviour is unchanged; only the reported span moved.
 
-## ~~ApFloat audit~~ / `ApInt` sweep — state (2026-08-01)
+## ~~ApFloat / `ApInt` bit-exactness audit~~ — closed (2026-08-01)
 
-The ApFloat side is **complete**: every `APFloatTest.cpp` family covering the
-seven modeled semantics is ported, and the defects they found are fixed. The
-`Float8*` / `Float6*` / `Float4*` / `TF32` tests are out of scope — llvmkit
-does not model those semantics.
+Both halves are **complete**. Every `APFloatTest.cpp` family covering the seven
+modeled semantics and every `APIntTest.cpp` family llvmkit can express is
+ported, and the fourteen defects they found are fixed. `Float8*` / `Float6*` /
+`Float4*` / `TF32` stay out of scope — llvmkit does not model those semantics.
 
-`APIntTest.cpp` has had its **first** sweep, not a complete one. Ported: the
-counting families, `i1`, `isMask`, `isShiftedMask`, `isPowerOf2`, `byteSwap`,
-the three shift tests, `insertBits`/`extractBits`, `SignbitZeroChecks`,
-`ZeroWidth`, `Splat`, and `toString`. Still unported, in rough order of value:
+What is deliberately **not** ported from `APIntTest.cpp`, and why:
 
-- **`divrem_big1`–`big7`, `divremuint`, `divrem_simple`** — the wide-division
-  paths, the most intricate code in `ap_int.rs` and the least covered.
-- **`SaturatingMath`**, and the `*_ov` overflow-flag family beyond the few spot
-  checks that exist.
-- **`multiply`, `Mulh`, `muli`, `RoundingUDiv`, `RoundingSDiv`, `Average`,
-  `abds`, `abdu`** — arithmetic llvmkit models but has never had checked
-  against upstream.
-- **`compare`, `compareWithRawIntegers`, `compareWithInt64Min`,
-  `compareWithHalfInt64Max`, `compareLargeIntegers`.**
-- **`getBitsSet` family, `clearBits`, `getLoBits`/`getHiBits`,
-  `nearestLogBase2`, `Log2`, `concat`, `sext`, `trunc`, `TryExt`,
-  `isSubsetOf`, `IsSplat`.**
-
-Not applicable: `GCD`, `SolveQuadraticEquationWrap`, `clmul*`, the rotate
-family, `DenseMap`, `ScaleBitMask`, and the `tc*` word-level primitives —
-llvmkit has no counterpart for any of them.
+| Family | Why |
+|---|---|
+| `rvalue_arithmetic`, `rvalue_bitwise`, `rvalue_invert`, `SelfMoveAssignment` | C++ move-semantics fixtures; Rust move semantics make the property they check unrepresentable. |
+| `tcDecrement` | The `tc*` word-level primitives are upstream's internal API. llvmkit stores words in a `Box<[u64]>` and exposes no equivalent surface, by design. |
+| `StringBitsNeeded2` / `8` / `10` / `16`, `StringDeath` | `APInt::getBitsNeeded` sizes a width from a string. `ApInt::from_string` always takes an explicit width, so nothing calls it; `StringDeath` is an assertion-death test. |
+| `mul_clear` | Checks that `operator*=` clears unused bits the same way `operator*` does. llvmkit has one `wrapping_mul`, so the two paths it compares are the same path. |
+| `LargeAPIntConstruction` | Builds `APInt(UINT32_MAX, 0)` — a four-billion-bit value that allocates half a gigabyte. The behavior it guards (no crash on a legal but absurd width) is structural here. |
+| `isAligned` | Needs upstream's `Align` type, which llvmkit does not model on `ApInt`. |
+| `binaryOpsWithRawIntegers` | Upstream's scalar *arithmetic* overloads (`APInt + uint64_t`). llvmkit deliberately requires both operands to name a width; the comparison half of that story is covered by `unsigned_cmp_u64` / `signed_cmp_i64`. |
+| `SolveQuadraticEquationWrap` | SCEV-specific; belongs with a SCEV port, not with `ApInt`. |
+| `GetMostSignificantDifferentBitExaustive` | The non-exhaustive fixture is ported; the exhaustive variant re-derives the same property over an 8-bit sweep. |
 
 ## Bare brands / `Branded` derive — home and follow-ups (2026-07-31)
 

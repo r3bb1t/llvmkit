@@ -6,11 +6,15 @@
 //! below read `None` wherever upstream reads `INT_MIN`. That is a spelling
 //! difference in the return type, not in the logic.
 //!
-//! `frexp`'s exponent for the special categories is `ilogb`'s sentinel, not
-//! zero — upstream's `frexp` opens with `Exp = ilogb(Val)` and returns before
-//! overwriting it for NaN and infinity.
+//! `frexp`'s exponent for the special categories is `ilogb`'s answer, not zero
+//! — upstream's `frexp` opens with `Exp = ilogb(Val)` and returns before
+//! overwriting it for NaN and infinity. Upstream reads those two as the
+//! sentinel `int`s `IEK_NaN` / `IEK_Inf`; llvmkit returns a `BinaryExponent`,
+//! so the ports read its variants, again a spelling difference only.
 
-use llvmkit_ir::{ApFloat, ApFloatSemantics, ApFloatSign, ApInt, NanPayload, RoundingMode};
+use llvmkit_ir::{
+    ApFloat, ApFloatSemantics, ApFloatSign, ApInt, BinaryExponent, NanPayload, RoundingMode,
+};
 
 const HALF: ApFloatSemantics = ApFloatSemantics::IeeeHalf;
 const BFLOAT: ApFloatSemantics = ApFloatSemantics::BFloat;
@@ -92,33 +96,33 @@ fn upstream_frexp() {
     };
 
     let (fraction, exponent) = frexp(&ApFloat::zero(DOUBLE, ApFloatSign::Positive));
-    assert_eq!(exponent, 0);
+    assert_eq!(exponent, BinaryExponent::Finite(0));
     assert!(fraction.is_pos_zero());
 
     let (fraction, exponent) = frexp(&ApFloat::zero(DOUBLE, ApFloatSign::Negative));
-    assert_eq!(exponent, 0);
+    assert_eq!(exponent, BinaryExponent::Finite(0));
     assert!(fraction.is_neg_zero());
 
     let (fraction, exponent) = frexp(&parse(DOUBLE, "1.0"));
-    assert_eq!(exponent, 1);
+    assert_eq!(exponent, BinaryExponent::Finite(1));
     assert!(parse(DOUBLE, "0x1p-1").bitwise_is_equal(&fraction));
 
     let (fraction, exponent) = frexp(&parse(DOUBLE, "-1.0"));
-    assert_eq!(exponent, 1);
+    assert_eq!(exponent, BinaryExponent::Finite(1));
     assert!(parse(DOUBLE, "-0x1p-1").bitwise_is_equal(&fraction));
 
-    // Infinities and NaNs answer with `ilogb`'s sentinels, not zero.
+    // Infinities and NaNs answer with `ilogb`'s category, not zero.
     let (fraction, exponent) = frexp(&ApFloat::inf(DOUBLE, ApFloatSign::Positive));
-    assert_eq!(exponent, ApFloat::ILOGB_INF);
+    assert_eq!(exponent, BinaryExponent::Infinity);
     assert!(fraction.is_infinity() && !fraction.is_negative());
 
     let (fraction, exponent) = frexp(&ApFloat::inf(DOUBLE, ApFloatSign::Negative));
-    assert_eq!(exponent, ApFloat::ILOGB_INF);
+    assert_eq!(exponent, BinaryExponent::Infinity);
     assert!(fraction.is_infinity() && fraction.is_negative());
 
     for sign in [ApFloatSign::Positive, ApFloatSign::Negative] {
         let (fraction, exponent) = frexp(&ApFloat::qnan(DOUBLE, sign, NanPayload::Absent));
-        assert_eq!(exponent, ApFloat::ILOGB_NAN);
+        assert_eq!(exponent, BinaryExponent::Nan);
         assert!(fraction.is_nan());
     }
 
@@ -127,7 +131,7 @@ fn upstream_frexp() {
         ApFloatSign::Positive,
         NanPayload::Absent,
     ));
-    assert_eq!(exponent, ApFloat::ILOGB_NAN);
+    assert_eq!(exponent, BinaryExponent::Nan);
     assert!(fraction.is_nan() && !fraction.is_signaling());
 
     // A signaling NaN is quieted and keeps its payload.
@@ -137,7 +141,7 @@ fn upstream_frexp() {
         ApFloatSign::Positive,
         NanPayload::Bits(&payload),
     ));
-    assert_eq!(exponent, ApFloat::ILOGB_NAN);
+    assert_eq!(exponent, BinaryExponent::Nan);
     assert!(fraction.is_nan() && !fraction.is_signaling());
     assert_eq!(
         fraction
@@ -149,7 +153,7 @@ fn upstream_frexp() {
     );
 
     let (fraction, exponent) = frexp(&parse(DOUBLE, "0x0.ffffp-1"));
-    assert_eq!(exponent, -1);
+    assert_eq!(exponent, BinaryExponent::Finite(-1));
     assert!(parse(DOUBLE, "0x1.fffep-1").bitwise_is_equal(&fraction));
 }
 

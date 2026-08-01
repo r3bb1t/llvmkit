@@ -11,7 +11,7 @@
 
 use llvmkit_ir::{
     ApFloat, ApFloatCmpResult, ApFloatNextDirection, ApFloatSemantics, ApFloatSign, ApFloatStatus,
-    ApInt, NanPayload, RoundingMode,
+    ApInt, BinaryExponent, NanPayload, RoundingMode,
 };
 
 const HALF: ApFloatSemantics = ApFloatSemantics::IeeeHalf;
@@ -522,81 +522,103 @@ fn neg() {
 
 /// Port of `TEST(APFloatTest, ilogb)`.
 ///
-/// Upstream's sentinels are `IEK_NaN = INT_MIN`, `IEK_Zero = INT_MIN + 1`,
-/// `IEK_Inf = INT_MAX` (`APFloat.h`).
+/// Upstream compares against the sentinel `int`s `IEK_NaN = INT_MIN`,
+/// `IEK_Zero = INT_MIN + 1`, `IEK_Inf = INT_MAX` (`APFloat.h`); llvmkit returns
+/// a `BinaryExponent`, so the same comparisons are spelled against its
+/// variants.
 #[test]
 fn ilogb() {
+    let finite = BinaryExponent::Finite;
+
     assert_eq!(
         ApFloat::smallest(DOUBLE, ApFloatSign::Positive).ilogb(),
-        -1074
+        finite(-1074)
     );
     assert_eq!(
         ApFloat::smallest(DOUBLE, ApFloatSign::Negative).ilogb(),
-        -1074
+        finite(-1074)
     );
-    assert_eq!(parse(DOUBLE, "0x1.ffffffffffffep-1024").ilogb(), -1023);
-    assert_eq!(parse(DOUBLE, "0x1.ffffffffffffep-1023").ilogb(), -1023);
-    assert_eq!(parse(DOUBLE, "-0x1.ffffffffffffep-1023").ilogb(), -1023);
-    assert_eq!(parse(DOUBLE, "0x1p-51").ilogb(), -51);
-    assert_eq!(parse(DOUBLE, "0x1.c60f120d9f87cp-1023").ilogb(), -1023);
-    assert_eq!(parse(DOUBLE, "0x0.ffffp-1").ilogb(), -2);
-    assert_eq!(parse(DOUBLE, "0x1.fffep-1023").ilogb(), -1023);
+    assert_eq!(
+        parse(DOUBLE, "0x1.ffffffffffffep-1024").ilogb(),
+        finite(-1023)
+    );
+    assert_eq!(
+        parse(DOUBLE, "0x1.ffffffffffffep-1023").ilogb(),
+        finite(-1023)
+    );
+    assert_eq!(
+        parse(DOUBLE, "-0x1.ffffffffffffep-1023").ilogb(),
+        finite(-1023)
+    );
+    assert_eq!(parse(DOUBLE, "0x1p-51").ilogb(), finite(-51));
+    assert_eq!(
+        parse(DOUBLE, "0x1.c60f120d9f87cp-1023").ilogb(),
+        finite(-1023)
+    );
+    assert_eq!(parse(DOUBLE, "0x0.ffffp-1").ilogb(), finite(-2));
+    assert_eq!(parse(DOUBLE, "0x1.fffep-1023").ilogb(), finite(-1023));
     assert_eq!(
         ApFloat::largest(DOUBLE, ApFloatSign::Positive).ilogb(),
-        1023
+        finite(1023)
     );
     assert_eq!(
         ApFloat::largest(DOUBLE, ApFloatSign::Negative).ilogb(),
-        1023
+        finite(1023)
     );
 
-    assert_eq!(parse(SINGLE, "0x1p+0").ilogb(), 0);
-    assert_eq!(parse(SINGLE, "-0x1p+0").ilogb(), 0);
-    assert_eq!(parse(SINGLE, "0x1p+42").ilogb(), 42);
-    assert_eq!(parse(SINGLE, "0x1p-42").ilogb(), -42);
+    assert_eq!(parse(SINGLE, "0x1p+0").ilogb(), finite(0));
+    assert_eq!(parse(SINGLE, "-0x1p+0").ilogb(), finite(0));
+    assert_eq!(parse(SINGLE, "0x1p+42").ilogb(), finite(42));
+    assert_eq!(parse(SINGLE, "0x1p-42").ilogb(), finite(-42));
 
     assert_eq!(
         ApFloat::inf(SINGLE, ApFloatSign::Positive).ilogb(),
-        i32::MAX
+        BinaryExponent::Infinity
     );
     assert_eq!(
         ApFloat::inf(SINGLE, ApFloatSign::Negative).ilogb(),
-        i32::MAX
+        BinaryExponent::Infinity
     );
     assert_eq!(
         ApFloat::zero(SINGLE, ApFloatSign::Positive).ilogb(),
-        i32::MIN + 1
+        BinaryExponent::Zero
     );
     assert_eq!(
         ApFloat::zero(SINGLE, ApFloatSign::Negative).ilogb(),
-        i32::MIN + 1
+        BinaryExponent::Zero
     );
     assert_eq!(
         ApFloat::qnan(SINGLE, ApFloatSign::Positive, NanPayload::Absent).ilogb(),
-        i32::MIN
+        BinaryExponent::Nan
     );
     assert_eq!(
         ApFloat::snan(SINGLE, ApFloatSign::Positive, NanPayload::Absent).ilogb(),
-        i32::MIN
+        BinaryExponent::Nan
     );
 
-    assert_eq!(ApFloat::largest(SINGLE, ApFloatSign::Positive).ilogb(), 127);
-    assert_eq!(ApFloat::largest(SINGLE, ApFloatSign::Negative).ilogb(), 127);
+    assert_eq!(
+        ApFloat::largest(SINGLE, ApFloatSign::Positive).ilogb(),
+        finite(127)
+    );
+    assert_eq!(
+        ApFloat::largest(SINGLE, ApFloatSign::Negative).ilogb(),
+        finite(127)
+    );
     assert_eq!(
         ApFloat::smallest(SINGLE, ApFloatSign::Positive).ilogb(),
-        -149
+        finite(-149)
     );
     assert_eq!(
         ApFloat::smallest(SINGLE, ApFloatSign::Negative).ilogb(),
-        -149
+        finite(-149)
     );
     assert_eq!(
         ApFloat::smallest_normalized(SINGLE, ApFloatSign::Positive).ilogb(),
-        -126
+        finite(-126)
     );
     assert_eq!(
         ApFloat::smallest_normalized(SINGLE, ApFloatSign::Negative).ilogb(),
-        -126
+        finite(-126)
     );
 }
 
@@ -610,7 +632,7 @@ fn x87_largest() {
 #[test]
 fn x87_next() {
     let (stepped, _) = parse(X87, "-1.0").next(ApFloatNextDirection::TowardPositive);
-    assert_eq!(stepped.ilogb(), -1);
+    assert_eq!(stepped.ilogb(), BinaryExponent::Finite(-1));
 }
 
 /// Port of `TEST(APFloatTest, exactInverse)`, restricted to the modeled
