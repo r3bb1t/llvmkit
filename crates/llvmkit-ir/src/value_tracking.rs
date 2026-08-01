@@ -1595,6 +1595,372 @@ fn recurrence_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     Ok(known)
 }
 
+// --------------------------------------------------------------------------
+// Sign-bit counting
+// --------------------------------------------------------------------------
+
+/// Number of times the sign bit is replicated into the high bits of `value`.
+///
+/// At least one bit always equals the sign bit (itself), so the answer is
+/// never zero. Ports `llvm::ComputeNumSignBits` (`ValueTracking.cpp`).
+pub fn compute_num_sign_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<u32> {
+    let mut stack = HashSet::new();
+    compute_num_sign_bits_inner(value, query, 0, &mut stack)
+}
+
+/// Bits needed to represent `value` as a signed number — its scalar width less
+/// the replicated sign bits, plus one for the sign itself. Ports
+/// `llvm::ComputeMaxSignificantBits`.
+pub fn compute_max_significant_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<u32> {
+    let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
+    let sign_bits = compute_num_sign_bits(value, query)?;
+    Ok(width.saturating_sub(sign_bits).saturating_add(1))
+}
+
+/// Ports `ComputeNumSignBits` — the assert-wrapped caller of
+/// `ComputeNumSignBitsImpl`, which upstream uses to hold the "at least one
+/// sign bit" invariant. Here the floor is enforced rather than asserted, so a
+/// zero can never escape into arithmetic that subtracts from it.
+fn compute_num_sign_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    stack: &mut HashSet<ValueSlot>,
+) -> IrResult<u32> {
+    Ok(compute_num_sign_bits_impl(value, query, depth, stack)?.max(1))
+}
+
+/// Ports `ComputeNumSignBitsImpl` (`ValueTracking.cpp`).
+///
+/// The vector arms (`BitCast` across element widths, `ShuffleVector`,
+/// `ExtractElement`'s demanded-element tracking) are not ported: they read
+/// `getShuffleDemandedElts`, which llvmkit does not model. Each falls through
+/// to the `computeKnownBits` tail, which is what upstream's own `break` in
+/// those arms does when the pattern does not match — weaker, never wrong.
+fn compute_num_sign_bits_impl<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    stack: &mut HashSet<ValueSlot>,
+) -> IrResult<u32> {
+    let ty_bits = value_bit_width(value, query.data_layout()).unwrap_or(0);
+    if ty_bits == 0 {
+        return Ok(1);
+    }
+    if depth >= query.max_depth() {
+        return Ok(1);
+    }
+    if stack.contains(&value.slot()) {
+        return Ok(1);
+    }
+    stack.insert(value.slot());
+    let answer = compute_num_sign_bits_operator(value, query, depth, stack, ty_bits);
+    stack.remove(&value.slot());
+    let first_answer = answer?;
+
+    // `FirstAnswer` is what the operator switch established before falling
+    // through; the tail below can only improve on it.
+    if let Some(exact) = first_answer.exact {
+        return Ok(exact);
+    }
+
+    // Finally, if the top bits are provably all zeros or all ones, use that.
+    let known = compute_known_bits(value, query)?;
+    Ok(first_answer.floor.max(known.count_min_sign_bits()))
+}
+
+/// What the operator switch concluded: either an `exact` answer it returned
+/// outright, or a `floor` it established before falling through to the
+/// `computeKnownBits` tail. Upstream spells these as `return` versus assigning
+/// `FirstAnswer` and `break`ing.
+struct SignBitsFromOperator {
+    exact: Option<u32>,
+    floor: u32,
+}
+
+impl SignBitsFromOperator {
+    fn exact(bits: u32) -> Self {
+        Self {
+            exact: Some(bits),
+            floor: 1,
+        }
+    }
+    fn fall_through() -> Self {
+        Self {
+            exact: None,
+            floor: 1,
+        }
+    }
+    fn floor(bits: u32) -> Self {
+        Self {
+            exact: None,
+            floor: bits,
+        }
+    }
+}
+
+/// The operator switch of `ComputeNumSignBitsImpl`.
+fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    stack: &mut HashSet<ValueSlot>,
+    ty_bits: u32,
+) -> IrResult<SignBitsFromOperator> {
+    let ValueKindData::Instruction(inst) = &value.data().kind else {
+        return Ok(SignBitsFromOperator::fall_through());
+    };
+    let limit = u64::from(ty_bits);
+
+    match &inst.kind {
+        InstructionKindData::Cast(data) => {
+            let src = value_from_id(value, data.src.get());
+            let src_bits = value_bit_width(src, query.data_layout()).unwrap_or(0);
+            match data.kind {
+                // sext adds exactly the widened bits to the source's count.
+                CastOpcode::SExt => {
+                    let tmp = compute_num_sign_bits_inner(src, query, depth + 1, stack)?;
+                    Ok(SignBitsFromOperator::exact(
+                        tmp.saturating_add(ty_bits.saturating_sub(src_bits)),
+                    ))
+                }
+                // trunc keeps whatever sign bits survive the narrowing.
+                CastOpcode::Trunc => {
+                    let tmp = compute_num_sign_bits_inner(src, query, depth + 1, stack)?;
+                    let lost = src_bits.saturating_sub(ty_bits);
+                    Ok(SignBitsFromOperator::exact(if tmp > lost {
+                        tmp - lost
+                    } else {
+                        1
+                    }))
+                }
+                _ => Ok(SignBitsFromOperator::fall_through()),
+            }
+        }
+
+        // sdiv X, C adds floor(log2 C) sign bits for a strictly positive C.
+        InstructionKindData::SDiv(data) => {
+            let rhs = value_from_id(value, data.rhs.get());
+            let Some(denominator) = argument_constant(Some(rhs)) else {
+                return Ok(SignBitsFromOperator::fall_through());
+            };
+            // Ignore a non-positive denominator.
+            if !denominator.is_strictly_positive() {
+                return Ok(SignBitsFromOperator::fall_through());
+            }
+            let lhs = value_from_id(value, data.lhs.get());
+            let num_bits = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
+            let added = denominator.log_base2().unwrap_or(0);
+            Ok(SignBitsFromOperator::exact(
+                ty_bits.min(num_bits.saturating_add(added)),
+            ))
+        }
+
+        // srem X, C lands in (-C, C) for a strictly positive C, which bounds
+        // the leading sign bits below by `ty_bits - ceilLogBase2(C)`.
+        InstructionKindData::SRem(data) => {
+            let lhs = value_from_id(value, data.lhs.get());
+            let mut tmp = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
+            let rhs = value_from_id(value, data.rhs.get());
+            if let Some(denominator) = argument_constant(Some(rhs))
+                && denominator.is_strictly_positive()
+            {
+                tmp = tmp.max(ty_bits.saturating_sub(denominator.ceil_log_base2()));
+            }
+            Ok(SignBitsFromOperator::exact(tmp))
+        }
+
+        // ashr X, C adds C sign bits.
+        InstructionKindData::AShr(data) => {
+            let lhs = value_from_id(value, data.lhs.get());
+            let tmp = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
+            let rhs = value_from_id(value, data.rhs.get());
+            let Some(shift_amount) = argument_constant(Some(rhs)) else {
+                return Ok(SignBitsFromOperator::exact(tmp));
+            };
+            let amount = shift_amount.limited_value(limit);
+            if amount >= limit {
+                // Bad shift.
+                return Ok(SignBitsFromOperator::fall_through());
+            }
+            let amount = u32::try_from(amount).unwrap_or(ty_bits);
+            Ok(SignBitsFromOperator::exact(
+                tmp.saturating_add(amount).min(ty_bits),
+            ))
+        }
+
+        // shl destroys sign bits.
+        InstructionKindData::Shl(data) => {
+            let rhs = value_from_id(value, data.rhs.get());
+            let Some(shift_amount) = argument_constant(Some(rhs)) else {
+                return Ok(SignBitsFromOperator::fall_through());
+            };
+            let amount = shift_amount.limited_value(limit);
+            if amount >= limit {
+                // Bad shift.
+                return Ok(SignBitsFromOperator::fall_through());
+            }
+            let amount = u32::try_from(amount).unwrap_or(ty_bits);
+            // Upstream additionally looks through a `zext` whose extended bits
+            // are all shifted out, treating it as a `sext`. That arm needs the
+            // matcher DSL against the shift amount; without it this falls
+            // through to the known-bits tail, which is weaker, never wrong.
+            let lhs = value_from_id(value, data.lhs.get());
+            let tmp = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
+            if amount >= tmp {
+                // Shifted all sign bits out.
+                return Ok(SignBitsFromOperator::fall_through());
+            }
+            Ok(SignBitsFromOperator::exact(tmp - amount))
+        }
+
+        // Logical binary ops preserve the sign bits at worst. Upstream records
+        // this as `FirstAnswer` and breaks, so the known-bits tail can still
+        // improve on it — hence `floor` rather than `exact`.
+        InstructionKindData::And(data)
+        | InstructionKindData::Or(data)
+        | InstructionKindData::Xor(data) => {
+            let lhs = value_from_id(value, data.lhs.get());
+            let tmp = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
+            if tmp == 1 {
+                return Ok(SignBitsFromOperator::fall_through());
+            }
+            let rhs = value_from_id(value, data.rhs.get());
+            let tmp2 = compute_num_sign_bits_inner(rhs, query, depth + 1, stack)?;
+            Ok(SignBitsFromOperator::floor(tmp.min(tmp2)))
+        }
+
+        // The minimum over both arms. Upstream's signed min/max clamp
+        // recognition (`isSignedMinMaxClamp`) needs the matcher DSL and is not
+        // ported, so this is the plain two-arm minimum.
+        InstructionKindData::Select(data) => {
+            let true_val = value_from_id(value, data.true_val.get());
+            let tmp = compute_num_sign_bits_inner(true_val, query, depth + 1, stack)?;
+            if tmp == 1 {
+                return Ok(SignBitsFromOperator::fall_through());
+            }
+            let false_val = value_from_id(value, data.false_val.get());
+            let tmp2 = compute_num_sign_bits_inner(false_val, query, depth + 1, stack)?;
+            Ok(SignBitsFromOperator::exact(tmp.min(tmp2)))
+        }
+
+        // add carries at most one bit, so at worst one more than its inputs.
+        InstructionKindData::Add(data) => {
+            let lhs = value_from_id(value, data.lhs.get());
+            let tmp = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
+            if tmp == 1 {
+                return Ok(SignBitsFromOperator::fall_through());
+            }
+            // Special case decrementing a value (add X, -1).
+            let rhs = value_from_id(value, data.rhs.get());
+            if argument_constant(Some(rhs)).is_some_and(|c| c.is_all_ones()) {
+                let known = compute_known_bits_inner(lhs, query, depth + 1, stack)?;
+                // A 0-or-1 input gives 0/-1 out, which is all sign bits set.
+                if known
+                    .zero_mask()
+                    .bitor(&ApInt::from_words(ty_bits, &[1]))
+                    .is_all_ones()
+                {
+                    return Ok(SignBitsFromOperator::exact(ty_bits));
+                }
+                // Subtracting one from a positive number cannot carry out.
+                if known.is_non_negative() {
+                    return Ok(SignBitsFromOperator::exact(tmp));
+                }
+            }
+            let tmp2 = compute_num_sign_bits_inner(rhs, query, depth + 1, stack)?;
+            if tmp2 == 1 {
+                return Ok(SignBitsFromOperator::fall_through());
+            }
+            Ok(SignBitsFromOperator::exact(tmp.min(tmp2).saturating_sub(1)))
+        }
+
+        InstructionKindData::Sub(data) => {
+            let rhs = value_from_id(value, data.rhs.get());
+            let tmp2 = compute_num_sign_bits_inner(rhs, query, depth + 1, stack)?;
+            if tmp2 == 1 {
+                return Ok(SignBitsFromOperator::fall_through());
+            }
+            // Handle negation (sub 0, X).
+            let lhs = value_from_id(value, data.lhs.get());
+            if argument_constant(Some(lhs)).is_some_and(|c| c.is_zero()) {
+                let known = compute_known_bits_inner(rhs, query, depth + 1, stack)?;
+                // A 0-or-1 input gives 0/-1 out, which is all sign bits set.
+                if known
+                    .zero_mask()
+                    .bitor(&ApInt::from_words(ty_bits, &[1]))
+                    .is_all_ones()
+                {
+                    return Ok(SignBitsFromOperator::exact(ty_bits));
+                }
+                // Negating a positive keeps the operand's sign-bit count.
+                if known.is_non_negative() {
+                    return Ok(SignBitsFromOperator::exact(tmp2));
+                }
+                // Otherwise fall into the generic sub reasoning below.
+            }
+            let tmp = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
+            if tmp == 1 {
+                return Ok(SignBitsFromOperator::fall_through());
+            }
+            Ok(SignBitsFromOperator::exact(tmp.min(tmp2).saturating_sub(1)))
+        }
+
+        // A mul's output has at most the sum of its inputs' valid bits.
+        InstructionKindData::Mul(data) => {
+            let lhs = value_from_id(value, data.lhs.get());
+            let lhs_bits = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
+            if lhs_bits == 1 {
+                return Ok(SignBitsFromOperator::fall_through());
+            }
+            let rhs = value_from_id(value, data.rhs.get());
+            let rhs_bits = compute_num_sign_bits_inner(rhs, query, depth + 1, stack)?;
+            if rhs_bits == 1 {
+                return Ok(SignBitsFromOperator::fall_through());
+            }
+            let valid = (ty_bits.saturating_sub(lhs_bits).saturating_add(1))
+                .saturating_add(ty_bits.saturating_sub(rhs_bits).saturating_add(1));
+            Ok(SignBitsFromOperator::exact(if valid > ty_bits {
+                1
+            } else {
+                ty_bits - valid + 1
+            }))
+        }
+
+        // The minimum over the incoming values. Upstream declines phis with
+        // more than four incoming edges, and so does this.
+        InstructionKindData::Phi(data) => {
+            let incoming = data.incoming.borrow();
+            // Unreachable blocks may have zero-operand PHI nodes.
+            if incoming.is_empty() || incoming.len() > 4 {
+                return Ok(SignBitsFromOperator::fall_through());
+            }
+            let mut tmp = ty_bits;
+            for (incoming_value, _) in incoming.iter() {
+                if tmp == 1 {
+                    return Ok(SignBitsFromOperator::exact(1));
+                }
+                let operand = value_from_id(value, incoming_value.get());
+                tmp = tmp.min(compute_num_sign_bits_inner(
+                    operand,
+                    query,
+                    depth + 1,
+                    stack,
+                )?);
+            }
+            Ok(SignBitsFromOperator::exact(tmp))
+        }
+
+        _ => Ok(SignBitsFromOperator::fall_through()),
+    }
+}
+
 fn alloca_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     data: &AllocaInstData,

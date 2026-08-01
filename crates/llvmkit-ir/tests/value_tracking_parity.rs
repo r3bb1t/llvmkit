@@ -178,6 +178,8 @@ const KNOWN_BITS_PRIVATE_UPSTREAM: &[(&str, &str)] = &[
 /// purpose — it is an llvmkit-specific dual of `is_known_zero` with no upstream
 /// entry point of its own.
 const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
+    ("ComputeMaxSignificantBits", "compute_max_significant_bits"),
+    ("ComputeNumSignBits", "compute_num_sign_bits"),
     ("MaskedValueIsZero", "is_known_zero"),
     ("computeKnownBits", "compute_known_bits"),
     ("computeKnownBitsFromOperator", "known_bits_from_operator"),
@@ -226,11 +228,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
         "select-pattern matching",
         "getSelectPattern, matchDecomposedSelectPattern, getMinMaxIntrinsic, \
          getInverseMinMaxIntrinsic",
-    ),
-    (
-        "sign-bit counting",
-        "ComputeNumSignBits, ComputeMaxSignificantBits — the KnownBits-level \
-         count_min_sign_bits IS modeled; the Value-level entry points are not",
     ),
     (
         "speculation safety",
@@ -392,10 +389,13 @@ fn exercises_every_modeled_known_bits_operation() {
 #[test]
 fn exercises_every_modeled_value_tracking_entry_point() {
     use llvmkit_ir::{
-        DynBrand, compute_known_bits, is_known_non_zero, is_known_one, is_known_zero,
+        DynBrand, compute_known_bits, compute_max_significant_bits, compute_num_sign_bits,
+        is_known_non_zero, is_known_one, is_known_zero,
     };
 
     let _compute_known_bits = compute_known_bits::<DynBrand>;
+    let _compute_num_sign_bits = compute_num_sign_bits::<DynBrand>;
+    let _compute_max_significant_bits = compute_max_significant_bits::<DynBrand>;
     let _is_known_non_zero = is_known_non_zero::<DynBrand>;
     let _is_known_zero = is_known_zero::<DynBrand>;
     // Not in the table — an llvmkit-specific dual with no upstream entry point.

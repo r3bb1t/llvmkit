@@ -7,6 +7,32 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ValueTracking: sign-bit counting (tranche 1)
+
+First tranche of the `ValueTracking.h` port. Ports
+`llvm::ComputeNumSignBits` and `llvm::ComputeMaxSignificantBits`
+(`ValueTracking.cpp`) — the number of times a value's sign bit is replicated
+into its high bits, and the signed width that implies.
+
+#### Added
+
+- `compute_num_sign_bits` — ports `ComputeNumSignBitsImpl`'s operator switch:
+  `sext`, `trunc`, `sdiv`/`srem` by a positive constant, `ashr`, `shl`,
+  `and`/`or`/`xor`, `select`, `add`, `sub`, `mul` and `phi`, then the
+  `computeKnownBits` tail that improves on whatever the switch established.
+- `compute_max_significant_bits` — `width - sign_bits + 1`.
+
+Four upstream arms are **not** ported, each falling through to the
+known-bits tail exactly as upstream's own `break` does when its pattern fails
+— weaker, never wrong. They are the vector arms (`BitCast` across element
+widths, `ShuffleVector`, `ExtractElement`), which read
+`getShuffleDemandedElts`; the `shl`-through-`zext` look-through and the
+`select` signed min/max clamp, which need the matcher DSL; and the `abs` /
+`smin` / `smax` intrinsic arms.
+
+Upstream asserts its result is never zero; llvmkit enforces that floor
+instead, so a zero cannot escape into the arithmetic that subtracts from it.
+
 ### `KnownBits` models all of `KnownBits.h`
 
 Three operations closed the last of the public-surface gap the parity ledger
