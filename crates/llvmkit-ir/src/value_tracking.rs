@@ -1961,6 +1961,352 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
+// --------------------------------------------------------------------------
+// Undef / poison reasoning
+// --------------------------------------------------------------------------
+
+/// Which of undef and poison a query is asking about. Ports upstream's
+/// `UndefPoisonKind` (`ValueTracking.cpp`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum UndefPoisonKind {
+    PoisonOnly,
+    UndefOrPoison,
+}
+
+impl UndefPoisonKind {
+    /// Ports `includesPoison`. Both kinds include poison; the enum exists to
+    /// let the undef-only questions opt out of the poison-specific arms.
+    fn includes_poison(self) -> bool {
+        matches!(self, Self::PoisonOnly | Self::UndefOrPoison)
+    }
+}
+
+/// Return true when the operator can *create* poison that its operands did not
+/// carry. Ports `llvm::canCreatePoison`.
+///
+/// `consider_flags_and_metadata` mirrors upstream's parameter: with it set, an
+/// operator carrying a poison-generating annotation (`nsw`, `nuw`, `exact`,
+/// `inbounds`, `nneg`, `disjoint`) answers true on that basis alone.
+pub fn can_create_poison<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    consider_flags_and_metadata: bool,
+) -> bool {
+    can_create_undef_or_poison_kind(
+        value,
+        UndefPoisonKind::PoisonOnly,
+        consider_flags_and_metadata,
+    )
+}
+
+/// Return true when the operator can create undef *or* poison. Ports
+/// `llvm::canCreateUndefOrPoison`.
+pub fn can_create_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    consider_flags_and_metadata: bool,
+) -> bool {
+    can_create_undef_or_poison_kind(
+        value,
+        UndefPoisonKind::UndefOrPoison,
+        consider_flags_and_metadata,
+    )
+}
+
+/// Ports the static `canCreateUndefOrPoison(Op, Kind, ConsiderFlagsAndMetadata)`.
+fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    kind: UndefPoisonKind,
+    consider_flags_and_metadata: bool,
+) -> bool {
+    let ValueKindData::Instruction(inst) = &value.data().kind else {
+        // Upstream reaches this through `dyn_cast<Operator>`; a non-operator is
+        // not an operator that can create anything.
+        return false;
+    };
+
+    if consider_flags_and_metadata
+        && kind.includes_poison()
+        && has_poison_generating_annotations(&inst.kind)
+    {
+        return true;
+    }
+
+    match &inst.kind {
+        // Shifts are poison when the amount is out of range.
+        InstructionKindData::Shl(data)
+        | InstructionKindData::AShr(data)
+        | InstructionKindData::LShr(data) => {
+            kind.includes_poison()
+                && !shift_amount_known_in_range(value_from_id(value, data.rhs.get()))
+        }
+
+        // fptosi/fptoui yield poison when the value does not fit the
+        // destination type.
+        InstructionKindData::Cast(data)
+            if matches!(data.kind, CastOpcode::FpToSI | CastOpcode::FpToUI) =>
+        {
+            true
+        }
+
+        // addrspacecast can create poison; every other cast cannot. Upstream
+        // reaches the latter through the `isa<CastInst>` test in `default`.
+        InstructionKindData::Cast(data) => data.kind == CastOpcode::AddrSpaceCast,
+
+        // Upstream returns true unless the call is annotated `noundef` on its
+        // return, or `nocreateundeforpoison` on the callee. llvmkit does not
+        // model `nocreateundeforpoison`, so only the `noundef` half is
+        // consulted; the effect is that some calls answer true where upstream
+        // would answer false — conservative in the safe direction.
+        call @ (InstructionKindData::Call(_)
+        | InstructionKindData::Invoke(_)
+        | InstructionKindData::CallBr(_)) => !call_returns_noundef(call),
+
+        // Out-of-range lane indices give poison.
+        InstructionKindData::ExtractElement(data) => {
+            kind.includes_poison()
+                && !lane_index_known_in_range(
+                    value_from_id(value, data.vector.get()),
+                    value_from_id(value, data.index.get()),
+                )
+        }
+        InstructionKindData::InsertElement(data) => {
+            kind.includes_poison()
+                && !lane_index_known_in_range(
+                    value_from_id(value, data.vector.get()),
+                    value_from_id(value, data.index.get()),
+                )
+        }
+
+        // A poison mask element creates poison.
+        InstructionKindData::ShuffleVector(data) => {
+            kind.includes_poison() && data.mask.contains(&POISON_MASK_ELEM)
+        }
+
+        // These never create undef or poison of their own.
+        InstructionKindData::FNeg(_)
+        | InstructionKindData::Phi(_)
+        | InstructionKindData::Select(_)
+        | InstructionKindData::ExtractValue(_)
+        | InstructionKindData::InsertValue(_)
+        | InstructionKindData::Freeze(_)
+        | InstructionKindData::ICmp(_)
+        | InstructionKindData::FCmp(_)
+        | InstructionKindData::Gep(_) => false,
+
+        // Upstream's `default`: a binary operator cannot create undef or
+        // poison on its own (its flags are handled above); anything else is
+        // conservatively assumed to.
+        other => !is_binary_operator_kind(other),
+    }
+}
+
+/// Ports `Operator::hasPoisonGeneratingAnnotations` for the flags llvmkit
+/// models. The metadata half (`!range`, `!nonnull`, `!align`) is not consulted
+/// because those attach to loads and calls, whose arms already answer
+/// conservatively.
+fn has_poison_generating_annotations(kind: &InstructionKindData) -> bool {
+    match kind {
+        InstructionKindData::Add(data)
+        | InstructionKindData::Sub(data)
+        | InstructionKindData::Mul(data)
+        | InstructionKindData::Shl(data) => data.no_signed_wrap || data.no_unsigned_wrap,
+        InstructionKindData::UDiv(data)
+        | InstructionKindData::SDiv(data)
+        | InstructionKindData::LShr(data)
+        | InstructionKindData::AShr(data) => data.is_exact,
+        InstructionKindData::Or(data) => data.disjoint,
+        InstructionKindData::Gep(data) => !data.flags.is_empty(),
+        InstructionKindData::Cast(data) => data.nneg.get() || data.nuw.get(),
+        _ => false,
+    }
+}
+
+/// Ports `shiftAmountKnownInRange`: a constant shift amount strictly below the
+/// bit width. A non-constant amount answers false.
+fn shift_amount_known_in_range<'ctx, B: ModuleBrand + 'ctx>(shift_amount: Value<'ctx, B>) -> bool {
+    let data_layout = shift_amount.module().data_layout();
+    let Some(width) = value_bit_width(shift_amount, &data_layout) else {
+        return false;
+    };
+    argument_constant(Some(shift_amount))
+        .is_some_and(|amount| amount.limited_value(u64::from(width)) < u64::from(width))
+}
+
+/// True when `index` is a constant lane index within `vector`'s element count.
+/// Ports the `InsertElement` / `ExtractElement` arm's bounds test.
+///
+/// A scalable vector answers false: upstream compares against
+/// `getKnownMinValue()`, which cannot bound the real length, and llvmkit
+/// declines rather than guessing.
+fn lane_index_known_in_range<'ctx, B: ModuleBrand + 'ctx>(
+    vector: Value<'ctx, B>,
+    index: Value<'ctx, B>,
+) -> bool {
+    if vector.ty().kind() != TypeKind::FixedVector {
+        return false;
+    }
+    let Some((_, lanes, _)) = vector.ty().data().as_vector() else {
+        return false;
+    };
+    argument_constant(Some(index))
+        .is_some_and(|idx| idx.limited_value(u64::from(lanes)) < u64::from(lanes))
+}
+
+/// True when the call/invoke/callbr's return carries `noundef`.
+fn call_returns_noundef(kind: &InstructionKindData) -> bool {
+    let attrs = match kind {
+        InstructionKindData::Call(data) => &data.attrs,
+        InstructionKindData::Invoke(data) => &data.attrs,
+        InstructionKindData::CallBr(data) => &data.attrs,
+        _ => return false,
+    };
+    attrs
+        .return_attrs()
+        .get(AttrIndex::Return)
+        .is_some_and(|stored| {
+            stored
+                .iter()
+                .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::NoUndef)))
+        })
+}
+
+/// Ports `llvm::propagatesPoison(const Use &)`: does poison in the
+/// `operand_index`-th operand of `user` make the result poison?
+///
+/// Upstream takes a `Use`, which names both the user and the operand position.
+/// llvmkit has no `Use` type — operands are read positionally — so the pair is
+/// spelled out.
+pub fn propagates_poison<'ctx, B: ModuleBrand + 'ctx>(
+    user: Value<'ctx, B>,
+    operand_index: usize,
+) -> bool {
+    let ValueKindData::Instruction(inst) = &user.data().kind else {
+        return false;
+    };
+    match &inst.kind {
+        InstructionKindData::Freeze(_)
+        | InstructionKindData::Phi(_)
+        | InstructionKindData::Invoke(_) => false,
+        // Only the condition propagates; an unselected arm's poison does not.
+        InstructionKindData::Select(_) => operand_index == 0,
+        InstructionKindData::Call(_) => false,
+        InstructionKindData::ICmp(_)
+        | InstructionKindData::FCmp(_)
+        | InstructionKindData::Gep(_) => true,
+        // Upstream's `default`: binary, unary and cast operators propagate.
+        other => {
+            is_binary_operator_kind(other)
+                || matches!(
+                    other,
+                    InstructionKindData::FNeg(_) | InstructionKindData::Cast(_)
+                )
+        }
+    }
+}
+
+/// True when `kind` is one of LLVM's `BinaryOperator` opcodes.
+fn is_binary_operator_kind(kind: &InstructionKindData) -> bool {
+    binary_operator_parts(kind).is_some()
+}
+
+/// Return true when poison in `value_assumed_poison` implies poison in
+/// `value`. Ports `llvm::impliesPoison`.
+pub fn implies_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value_assumed_poison: Value<'ctx, B>,
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    implies_poison_inner(value_assumed_poison, value, query, 0)
+}
+
+/// Ports the static `impliesPoison(ValAssumedPoison, V, Depth)`.
+fn implies_poison_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value_assumed_poison: Value<'ctx, B>,
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> IrResult<bool> {
+    // Upstream's `MaxDepth` here is 2, not the analysis-wide limit.
+    const MAX_DEPTH: u32 = 2;
+
+    let mut stack = HashSet::new();
+    if is_guaranteed_not_to_be_poison(value_assumed_poison, query, 0, &mut stack)? {
+        return Ok(true);
+    }
+    if directly_implies_poison(value_assumed_poison, value, 0) {
+        return Ok(true);
+    }
+    if depth >= MAX_DEPTH {
+        return Ok(false);
+    }
+
+    // If the assumed-poison value cannot create poison itself, then it is
+    // poison only because an operand is, so recurse into every operand.
+    let ValueKindData::Instruction(_) = &value_assumed_poison.data().kind else {
+        return Ok(false);
+    };
+    if can_create_poison(value_assumed_poison, true) {
+        return Ok(false);
+    }
+    for operand in operands_of(value_assumed_poison) {
+        if !implies_poison_inner(operand, value, query, depth + 1)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Ports `directlyImpliesPoison`.
+///
+/// The `extractvalue` / `WithOverflowInst` arm is not ported: llvmkit does not
+/// model the overflow intrinsics as a distinct instruction class, so the
+/// pattern it matches cannot arise. Its absence only makes the answer weaker.
+fn directly_implies_poison<'ctx, B: ModuleBrand + 'ctx>(
+    value_assumed_poison: Value<'ctx, B>,
+    value: Value<'ctx, B>,
+    depth: u32,
+) -> bool {
+    if value_assumed_poison.slot() == value.slot() {
+        return true;
+    }
+    const MAX_DEPTH: u32 = 2;
+    if depth >= MAX_DEPTH {
+        return false;
+    }
+    let ValueKindData::Instruction(_) = &value.data().kind else {
+        return false;
+    };
+    operands_of(value)
+        .into_iter()
+        .enumerate()
+        .any(|(index, operand)| {
+            propagates_poison(value, index)
+                && directly_implies_poison(value_assumed_poison, operand, depth + 1)
+        })
+}
+
+/// The SSA operands of `value`, as values. Empty for a non-instruction.
+fn operands_of<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Vec<Value<'ctx, B>> {
+    match &value.data().kind {
+        ValueKindData::Instruction(inst) => inst
+            .kind
+            .operand_ids()
+            .into_iter()
+            .map(|slot| value_from_id(value, slot))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Return true when `value` is guaranteed to be neither poison nor a value
+/// derived from poison. Ports `llvm::isGuaranteedNotToBePoison`.
+pub fn is_known_not_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    let mut stack = HashSet::new();
+    is_guaranteed_not_to_be_poison(value, query, 0, &mut stack)
+}
+
 fn alloca_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     data: &AllocaInstData,

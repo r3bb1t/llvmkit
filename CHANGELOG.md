@@ -7,6 +7,34 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ValueTracking: the poison predicates (tranche 2)
+
+Second tranche of the `ValueTracking.h` port. The value-level poison
+reasoning is now modeled; what remains of the family is the CFG walk that
+decides whether poison actually *reaches* undefined behaviour.
+
+#### Added
+
+- `can_create_poison` / `can_create_undef_or_poison` — ports
+  `llvm::canCreatePoison` and `llvm::canCreateUndefOrPoison`, including the
+  `ConsiderFlagsAndMetadata` parameter. An operator carrying `nsw`, `nuw`,
+  `exact`, `disjoint`, `nneg` or a gep no-wrap flag answers true on that
+  basis alone.
+- `propagates_poison` — ports `llvm::propagatesPoison`. Upstream takes a
+  `Use`, which names a user and an operand position together; llvmkit has no
+  `Use` type, so the pair is spelled out as `(user, operand_index)`.
+- `implies_poison` — ports `llvm::impliesPoison`, with upstream's local
+  recursion limit of 2 (not the analysis-wide depth).
+- `is_known_not_poison` — makes the already-internal
+  `isGuaranteedNotToBePoison` public.
+
+Two upstream arms are not ported and each only weakens an answer: the
+`nocreateundeforpoison` function attribute, which llvmkit does not model, so
+some calls answer "can create poison" where upstream would not; and
+`directlyImpliesPoison`'s `extractvalue`-of-`WithOverflowInst` arm, whose
+pattern cannot arise because llvmkit does not model the overflow intrinsics
+as a distinct instruction class.
+
 ### ValueTracking: sign-bit counting (tranche 1)
 
 First tranche of the `ValueTracking.h` port. Ports

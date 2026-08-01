@@ -181,9 +181,14 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("ComputeMaxSignificantBits", "compute_max_significant_bits"),
     ("ComputeNumSignBits", "compute_num_sign_bits"),
     ("MaskedValueIsZero", "is_known_zero"),
+    ("canCreatePoison", "can_create_poison"),
+    ("canCreateUndefOrPoison", "can_create_undef_or_poison"),
     ("computeKnownBits", "compute_known_bits"),
     ("computeKnownBitsFromOperator", "known_bits_from_operator"),
+    ("impliesPoison", "implies_poison"),
+    ("isGuaranteedNotToBePoison", "is_known_not_poison"),
     ("isKnownNonZero", "is_known_non_zero"),
+    ("propagatesPoison", "propagates_poison"),
 ];
 
 /// The `ValueTracking.h` families llvmkit does not model at all, so the ledger
@@ -219,10 +224,13 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
          getConstantDataArrayInfo, onlyUsedByLifetimeMarkers",
     ),
     (
-        "poison and UB reasoning",
-        "canCreatePoison, impliesPoison, programUndefinedIfPoison, mustTriggerUB, \
-         propagatesPoison — llvmkit models only isGuaranteedNotToBePoison, and \
-         that internally, for the freeze arm",
+        "UB-reachability reasoning",
+        "programUndefinedIfPoison, programUndefinedIfUndefOrPoison, mustTriggerUB, \
+         mustExecuteUBIfPoisonOnPathTo, isGuaranteedNotToBeUndef — the value-level \
+         poison predicates ARE modeled (see canCreatePoison / impliesPoison / \
+         propagatesPoison above); what is missing is the CFG walk that decides \
+         whether poison actually reaches undefined behaviour, which needs \
+         isGuaranteedToTransferExecutionToSuccessor",
     ),
     (
         "select-pattern matching",
@@ -389,13 +397,19 @@ fn exercises_every_modeled_known_bits_operation() {
 #[test]
 fn exercises_every_modeled_value_tracking_entry_point() {
     use llvmkit_ir::{
-        DynBrand, compute_known_bits, compute_max_significant_bits, compute_num_sign_bits,
-        is_known_non_zero, is_known_one, is_known_zero,
+        DynBrand, can_create_poison, can_create_undef_or_poison, compute_known_bits,
+        compute_max_significant_bits, compute_num_sign_bits, implies_poison, is_known_non_zero,
+        is_known_not_poison, is_known_one, is_known_zero, propagates_poison,
     };
 
     let _compute_known_bits = compute_known_bits::<DynBrand>;
     let _compute_num_sign_bits = compute_num_sign_bits::<DynBrand>;
     let _compute_max_significant_bits = compute_max_significant_bits::<DynBrand>;
+    let _can_create_poison = can_create_poison::<DynBrand>;
+    let _can_create_undef_or_poison = can_create_undef_or_poison::<DynBrand>;
+    let _implies_poison = implies_poison::<DynBrand>;
+    let _is_known_not_poison = is_known_not_poison::<DynBrand>;
+    let _propagates_poison = propagates_poison::<DynBrand>;
     let _is_known_non_zero = is_known_non_zero::<DynBrand>;
     let _is_known_zero = is_known_zero::<DynBrand>;
     // Not in the table — an llvmkit-specific dual with no upstream entry point.
