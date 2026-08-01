@@ -144,41 +144,46 @@ impl ApFloat {
         }
     }
 
+    /// Parse a textual float, mirroring `IEEEFloat::convertFromString`
+    /// `IEEEFloat::convertFromString`.
+    ///
+    /// Accepts the three grammars upstream accepts: the specials (`inf`,
+    /// `nan`, a signaling `snan`, and either with a payload —
+    /// `IEEEFloat::convertFromStringSpecials`), hexadecimal
+    /// significands with a mandatory binary exponent (`0x1.fffffep+127` —
+    /// `IEEEFloat::convertFromHexadecimalString`), and decimal.
+    ///
+    /// **Deliberately more permissive than upstream on spelling only.**
+    /// `convertFromStringSpecials` is case-sensitive in an idiosyncratic way —
+    /// it accepts `inf`, `INFINITY`, and `+Inf` but not `INF` — because it is
+    /// written against the spellings LLVM itself emits. llvmkit lowercases
+    /// first, so it accepts any casing. That widens the accepted *set*; it
+    /// changes no value.
     pub fn from_string(
         semantics: ApFloatSemantics,
         text: &str,
         rounding: RoundingMode,
     ) -> IrResult<(ApFloat, ApFloatStatus)> {
         let lower = text.trim().to_ascii_lowercase();
-        if lower == "nan" || lower == "+nan" {
-            return Ok((
-                Self::qnan(semantics, ApFloatSign::Positive, NanPayload::Absent),
-                ApFloatStatus::OK,
-            ));
+        if let Some(value) = string_specials(semantics, &lower) {
+            return Ok((value, ApFloatStatus::OK));
         }
-        if lower == "-nan" {
-            return Ok((
-                Self::qnan(semantics, ApFloatSign::Negative, NanPayload::Absent),
-                ApFloatStatus::OK,
-            ));
-        }
-        if lower == "inf" || lower == "+inf" || lower == "infinity" || lower == "+infinity" {
-            return Ok((
-                Self::inf(semantics, ApFloatSign::Positive),
-                ApFloatStatus::OK,
-            ));
-        }
-        if lower == "-inf" || lower == "-infinity" {
-            return Ok((
-                Self::inf(semantics, ApFloatSign::Negative),
-                ApFloatStatus::OK,
-            ));
+        let (negative, digits) = match lower.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, lower.strip_prefix('+').unwrap_or(&lower)),
+        };
+        if let Some(hex) = digits.strip_prefix("0x") {
+            return hex_to_semantic_float(semantics, negative, hex, rounding).ok_or(
+                IrError::InvalidOperation {
+                    message: "APFloat hexadecimal literal could not be parsed",
+                },
+            );
         }
         if let Some((value, status)) = decimal_to_semantic_float(semantics, &lower, rounding) {
             return Ok((value, status));
         }
         Err(IrError::InvalidOperation {
-            message: "APFloat decimal literal could not be parsed",
+            message: "APFloat literal could not be parsed",
         })
     }
 
@@ -529,7 +534,7 @@ impl ApFloat {
 
     /// Quiet a signaling NaN, **preserving its payload and sign**.
     ///
-    /// Ports `IEEEFloat::makeQuiet` (`APFloat.cpp:4723`), which is exactly one
+    /// Ports `IEEEFloat::makeQuiet`, which is exactly one
     /// operation — `APInt::tcSetBit(significandParts(), precision - 2)`. It
     /// does not rebuild the value, so the payload survives; that is what makes
     /// `snan123 + 1.0` produce `nan123` rather than a default quiet NaN, as
@@ -1250,72 +1255,58 @@ impl ApFloat {
         self.change_sign()
     }
 
+    /// Ports `IEEEFloat::makeNaN`.
+    ///
+    /// The order matters and is upstream's: lay the payload into the
+    /// significand, mask off the bits above it, then set or clear the quiet
+    /// bit — and only if a *signaling* NaN would otherwise have an all-zero
+    /// significand (which would make it an infinity, not a NaN) set the next
+    /// bit down. Building from a fixed "signaling NaN" bit pattern and OR-ing
+    /// the payload in is not the same thing: it leaves that filler bit set
+    /// alongside a payload that never needed it, so `snan123` came out as
+    /// `0x7FA0007B` where LLVM produces `0x7F80007B`.
     fn nan(
         semantics: ApFloatSemantics,
         sign: ApFloatSign,
         payload: NanPayload<'_>,
         signaling: bool,
     ) -> ApFloat {
-        let payload_bits = match payload {
-            NanPayload::Absent => ApInt::zero(semantics.bit_width()),
-            NanPayload::Bits(bits) => bits.zext_or_trunc(semantics.bit_width()),
-        };
-        let mut value = match semantics {
-            ApFloatSemantics::IeeeHalf => {
-                Self::from_bits_unchecked(semantics, &[if signaling { 0x7d00 } else { 0x7e00 }])
+        let width = semantics.bit_width();
+        let quiet_bit = quiet_bit_index(semantics);
+        let (payload_shift, payload_width) = nan_payload_field(semantics);
+
+        let mut significand = match payload {
+            NanPayload::Absent => ApInt::zero(width),
+            NanPayload::Bits(bits) => {
+                let placed = bits
+                    .zext_or_trunc(width)
+                    .checked_shl(payload_shift)
+                    .unwrap_or_else(|| ApInt::zero(width));
+                let mask = ApInt::low_bits_set(width, payload_width)
+                    .checked_shl(payload_shift)
+                    .unwrap_or_else(|| ApInt::zero(width));
+                placed.bitand(&mask)
             }
-            ApFloatSemantics::BFloat => {
-                Self::from_bits_unchecked(semantics, &[if signaling { 0x7fa0 } else { 0x7fc0 }])
-            }
-            ApFloatSemantics::IeeeSingle => Self::from_bits_unchecked(
-                semantics,
-                &[if signaling { 0x7fa0_0000 } else { 0x7fc0_0000 }],
-            ),
-            ApFloatSemantics::IeeeDouble => Self::from_bits_unchecked(
-                semantics,
-                &[if signaling {
-                    0x7ff4_0000_0000_0000
-                } else {
-                    0x7ff8_0000_0000_0000
-                }],
-            ),
-            ApFloatSemantics::IeeeQuad => Self::from_bits_unchecked(
-                semantics,
-                &[
-                    0,
-                    if signaling {
-                        0x7fff_4000_0000_0000
-                    } else {
-                        0x7fff_8000_0000_0000
-                    },
-                ],
-            ),
-            ApFloatSemantics::X87DoubleExtended => Self::from_bits_unchecked(
-                semantics,
-                &[
-                    if signaling {
-                        0xa000_0000_0000_0000
-                    } else {
-                        0xc000_0000_0000_0000
-                    },
-                    0x7fff,
-                ],
-            ),
-            ApFloatSemantics::PpcDoubleDouble => Self::from_bits_unchecked(
-                semantics,
-                &[
-                    0,
-                    if signaling {
-                        0x7ff4_0000_0000_0000
-                    } else {
-                        0x7ff8_0000_0000_0000
-                    },
-                ],
-            ),
         };
-        value = Self {
+
+        if signaling {
+            significand.clear_bit(quiet_bit);
+            if significand.is_zero() {
+                significand.set_bit(quiet_bit - 1);
+            }
+        } else {
+            significand.set_bit(quiet_bit);
+        }
+        if matches!(semantics, ApFloatSemantics::X87DoubleExtended) {
+            // x87 stores the leading significand bit explicitly; upstream sets
+            // it so the result is a NaN rather than a pseudo-NaN.
+            significand.set_bit(quiet_bit + 1);
+        }
+
+        let infinity = Self::inf(semantics, ApFloatSign::Positive).to_bits();
+        let mut value = Self {
             semantics,
-            repr: ApFloatRepr::Bits(ApInt::bitor(&value.to_bits(), &payload_bits)),
+            repr: ApFloatRepr::Bits(ApInt::bitor(&infinity, &significand)),
         };
         if matches!(sign, ApFloatSign::Negative) {
             value = value.change_sign();
@@ -1785,17 +1776,32 @@ enum MagnitudeOp {
 /// NaN from a signaling one.
 ///
 /// Upstream spells this `semantics->precision - 2` as an offset into
-/// `significandParts()` (`IEEEFloat::makeQuiet`, `APFloat.cpp:4723`). For every
+/// `significandParts()` in `IEEEFloat::makeQuiet`. For every
 /// semantics with an implicit leading significand bit, and for x87 where the
 /// leading bit is stored explicitly, that offset is also the index into the
 /// whole stored pattern, so `precision() - 2` is used directly.
 ///
 /// `PpcDoubleDouble` is the exception, and deliberately so: upstream stores it
 /// as a `DoubleAPFloat` pair and `APFloat::makeQuiet` reaches it through
-/// `getIEEE()` (`APFloat.h:1298`), which is the **high** `double`. So the bit
+/// `APFloat::makeQuiet`'s `getIEEE()`, which is the **high** `double`. So the bit
 /// is the `IeeeDouble` quiet bit displaced into the high word, not an offset
 /// derived from this semantics' own 106-bit precision — that number describes
 /// the pair's combined significand and has no single quiet bit.
+/// Where a NaN payload lives in the stored bit pattern: `(shift, width)`.
+///
+/// Upstream masks the payload to `precision - 1` bits of the significand
+/// (`IEEEFloat::makeNaN`, "zero out the excess bits"). For every semantics
+/// with a single significand that is the low `precision - 1` bits of the
+/// pattern. `PpcDoubleDouble` again differs: its NaN lives entirely in one
+/// `double` half, so the payload is that half's 52 significand bits, displaced
+/// into the word llvmkit keeps the leading component in.
+fn nan_payload_field(semantics: ApFloatSemantics) -> (u32, u32) {
+    match semantics {
+        ApFloatSemantics::PpcDoubleDouble => (64, ApFloatSemantics::IeeeDouble.precision() - 1),
+        other => (0, other.precision() - 1),
+    }
+}
+
 fn quiet_bit_index(semantics: ApFloatSemantics) -> u32 {
     match semantics {
         ApFloatSemantics::PpcDoubleDouble => 64 + (ApFloatSemantics::IeeeDouble.precision() - 2),
@@ -2864,6 +2870,103 @@ struct DecimalParts {
     negative: bool,
     digits: String,
     exp10: i32,
+}
+
+/// `inf` / `nan` / `snan`, with an optional sign and an optional NaN payload.
+/// Ports `IEEEFloat::convertFromStringSpecials`; `lower`
+/// is already lowercased and trimmed.
+fn string_specials(semantics: ApFloatSemantics, lower: &str) -> Option<ApFloat> {
+    let (negative, rest) = match lower.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, lower.strip_prefix('+').unwrap_or(lower)),
+    };
+    let sign = sign_from_negative(negative);
+    if rest == "inf" || rest == "infinity" {
+        return Some(ApFloat::inf(semantics, sign));
+    }
+    // A leading `s` marks a signaling NaN. Upstream reads it case-insensitively
+    // even though the rest of this function is case-sensitive.
+    let (signaling, rest) = match rest.strip_prefix('s') {
+        Some(rest) => (true, rest),
+        None => (false, rest),
+    };
+    let payload_text = rest.strip_prefix("nan")?;
+    if payload_text.is_empty() {
+        return Some(ApFloat::nan(semantics, sign, NanPayload::Absent, signaling));
+    }
+    // Upstream allows the payload in parentheses, and takes its radix from the
+    // usual C prefixes: `0x` is hex, a bare leading `0` is octal, else decimal.
+    let payload_text = match payload_text.strip_prefix('(') {
+        Some(inner) => inner.strip_suffix(')').filter(|s| !s.is_empty())?,
+        None => payload_text,
+    };
+    let (radix, payload_digits) = match payload_text.strip_prefix("0x") {
+        Some(hex) => (16, hex),
+        None => match payload_text.strip_prefix('0') {
+            Some(octal) if !octal.is_empty() => (8, octal),
+            _ => (10, payload_text),
+        },
+    };
+    let payload = ApInt::from_string(semantics.bit_width(), payload_digits, radix).ok()?;
+    Some(ApFloat::nan(
+        semantics,
+        sign,
+        NanPayload::Bits(&payload),
+        signaling,
+    ))
+}
+
+/// `0x` significand with a mandatory `p` binary exponent. Ports
+/// `IEEEFloat::convertFromHexadecimalString`; `hex` is
+/// everything after the `0x`, already lowercased and sign-stripped.
+///
+/// Upstream accumulates nibbles straight into the significand and tracks a
+/// lost fraction as it overflows. llvmkit instead builds the exact integer the
+/// digits spell and hands it to the same rational encoder the decimal path
+/// uses, as `value = significand × 2^(exponent − 4 × fractional_digits)`.
+/// Rounding then happens in one place for both grammars.
+fn hex_to_semantic_float(
+    semantics: ApFloatSemantics,
+    negative: bool,
+    hex: &str,
+    rounding: RoundingMode,
+) -> Option<(ApFloat, ApFloatStatus)> {
+    let (significand_text, exponent_text) = hex.split_once('p')?;
+    let exponent: i32 = match exponent_text.strip_prefix('+') {
+        Some(rest) => rest.parse().ok()?,
+        None => exponent_text.parse().ok()?,
+    };
+
+    let mut digits = String::new();
+    let mut fractional_digits: i32 = 0;
+    let mut past_point = false;
+    for ch in significand_text.chars() {
+        if ch == '.' {
+            if past_point {
+                return None;
+            }
+            past_point = true;
+            continue;
+        }
+        ch.to_digit(16)?;
+        digits.push(ch);
+        if past_point {
+            fractional_digits = fractional_digits.checked_add(1)?;
+        }
+    }
+    if digits.is_empty() {
+        return None;
+    }
+
+    // Four bits per nibble, plus headroom so the value is exact before rounding.
+    let width = u32::try_from(digits.len())
+        .ok()?
+        .checked_mul(4)?
+        .checked_add(8)?;
+    let numerator = ApInt::from_string(width, &digits, 16).ok()?;
+    let denominator = ApInt::from_words(width, &[1]);
+    let scale = exponent.checked_sub(fractional_digits.checked_mul(4)?)?;
+    encode_binary_rational_scaled(semantics, negative, numerator, denominator, scale, rounding)
 }
 
 fn decimal_to_semantic_float(

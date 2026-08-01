@@ -118,7 +118,7 @@ of them predate 2.0. Where the two disagree, this subsection wins.
 Implemented today:
 
 - The `.ll` lexer (`llvmkit-asmparser/src/ll_lexer.rs`).
-- The `.ll` parser (`llvmkit-asmparser/src/ll_parser.rs` and `parser.rs`) for the constructive module/function/instruction subset: target datalayout/triple, module asm, types, globals, declarations/definitions, metadata records, use-list directives, summaries, and every shipped opcode.
+- The `.ll` parser (`llvmkit-asmparser/src/ll_parser.rs` and `parser.rs`): target datalayout/triple, module asm, types, globals, declarations/definitions, metadata records, use-list directives, summaries, and every shipped opcode. **Ordinary `clang -O0` / `-O2` output parses, verifies, and round-trips** (Milestone 0, closed 2026-07-31) — the attribute keyword table, `dso_local` on every global object, `c"..."` constants, and deferred alias/ifunc targets all landed, and `tests/attribute_td_drift.rs` fails CI if the keyword table drifts from the vendored `Attributes.td`.
 - The IR data model with **width-typed integers** (`IntType<'ctx, W, B>`, `W in { bool, i8, i16, i32, i64, i128, IntDyn, Width<const N: u32> }`) and **kind-typed floats** (`FloatType<'ctx, K, B>`, `K in { f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128, FloatDyn }`). Every borrowing handle carries the module brand `B` as its last type parameter; call sites infer it from the `Module` or type receiver and never spell it.
 - Sealed marker traits: `IntWidth`, `StaticIntWidth`, `FloatKind`, `StaticFloatKind`, `WiderThan`, `FloatWiderThan`, `ReturnMarker`, `SelectArm`.
 - Multi-source operand traits: `IntoIntValue<W>`, `IntoFloatValue<K>`, `IntoPointerValue`, `IntoConstantInt<W>`, `IntoConstantFloat<K>`, `IntoReturnValue<R>`.
@@ -273,12 +273,16 @@ anchors, not as an exhaustive inventory):
     ├── llvmkit-macros/              # proc macros: Branded, IrStruct, function_pass, module_pass
     │   └── src/
     │       ├── lib.rs
+    │       ├── branded.rs           # #[derive(Branded)] — bound-free std-trait impls
     │       ├── ir_struct.rs
     │       ├── function_pass.rs
     │       ├── module_pass.rs
     │       └── pass_macro_shared.rs
     ├── llvmkit-ir/                  # IR data model
     │   ├── Cargo.toml
+    │   ├── build.rs                 # runs tools/gen_intrinsics.rs
+    │   ├── tools/gen_intrinsics.rs  # expands the vendored .td into intrinsic tables
+    │   ├── tablegen/                # 2.2 MiB of vendored LLVM 22.1.4 .td (tracked)
     │   ├── src/
     │   │   ├── lib.rs
     │   │   ├── type.rs              # Type + TypeData + IrType / TypeKind
@@ -351,7 +355,7 @@ anchors, not as an exhaustive inventory):
     │   │   ├── typed_vector_array.rs # const-generic vector / array ops
     │   │   ├── pass_manager_demo.rs  # capability-graded single-pass driver demo (DominatorTreeAnalysis + Inspect/PatchBody rungs)
     │   │   └── authored_pass.rs      # #[function_pass] / #[module_pass] authoring-sugar demo
-    │   └── tests/                   # ~100 integration files; a few anchors:
+    │   └── tests/                   # ~105 integration files; a few anchors:
     │       ├── asm_writer_basic.rs
     │       ├── vertical_slice.rs
     │       ├── module_brands.rs     # the three brand rungs + registry errors
@@ -359,12 +363,14 @@ anchors, not as an exhaustive inventory):
     │       ├── id_roundtrip.rs      # id → view → id
     │       ├── globals_basic.rs
     │       ├── typestate_compile_fail.rs # the trybuild driver
-    │       └── compile_fail/        # 83 trybuild fixtures (82 compile_fail + 1 pass)
+    │       └── compile_fail/        # 85 trybuild fixtures (84 compile_fail + 1 pass)
     └── llvmkit-asmparser/
         ├── README.md
+        ├── tablegen/                # vendored Attributes.td (tracked; read by the drift guard)
         ├── src/
         │   ├── lib.rs
         │   ├── ll_lexer.rs          # LLLexer.h + LLLexer.cpp
+        │   ├── ll_lexer_tests.rs    # #[path]-included unit tests for the lexer
         │   ├── ll_parser.rs         # LLParser.h + LLParser.cpp
         │   ├── parser.rs            # Parser.h + Parser.cpp facade
         │   ├── asm_parser_context.rs # AsmParserContext.{h,cpp}
@@ -391,7 +397,6 @@ Future work — each entry pairs to a single LLVM C++ file or subsystem:
 
 | Future Rust file / subsystem                         | LLVM source                          |
 |------------------------------------------------------|--------------------------------------|
-| `crates/llvmkit-ir/src/intrinsic_inst.rs`            | `IR/IntrinsicInst.{h,cpp}`           |
 | `crates/llvmkit-ir/src/assembly_annotation_writer.rs` | `IR/AssemblyAnnotationWriter.h` |
 | `crates/llvmkit-bitcode/` (new crate)                | `lib/Bitcode/`, `lib/Bitstream/`     |
 | optimization transforms / pipeline builders          | `lib/Transforms/`, new PM builders   |
@@ -596,7 +601,8 @@ And by `Module::int_type_n::<N>()` for the range check (`MIN_INT_BITS..=MAX_INT_
 - **No silent erasure.** A typed handle or id never widens to an erased one implicitly, at an operand position or a return position. Erasure is spelled: `as_dyn()`, or a call to the `_dyn` method. If a generic narrow is involved, re-check the runtime type at the point of construction rather than trusting a caller-supplied marker.
 - **Modules**: one concept per file; let modules grow before splitting them. `Instructions.h` is 5k lines because it pays for itself; do not pre-split into 40 stub files.
 - **Errors**: one crate-level `enum Error` (or a small per-subsystem enum that flattens into it). Avoid `Box<dyn std::error::Error>` in public signatures.
-- **Comments**: explain *why*, not *what*. When porting a non-obvious C++ trick, link the source file and the symbol — never the line number, which drifts between LLVM versions: `// Mirrors LLParser::parseTopLevelEntities (LLParser.cpp)`.
+- **Comments**: explain *why*, not *what*.
+- **Cite upstream by symbol, never by line number.** This holds *everywhere* an upstream reference appears — code comments, rustdoc, test doc comments, `UPSTREAM.md`, `CHANGELOG.md`, and the files under `docs/`. Name the file and the symbol: `// Mirrors LLParser::parseTopLevelEntities (LLParser.cpp)`. A line number is correct only against one LLVM release; the vendored tree will move, and every `Foo.cpp:1234` in the repo silently becomes a lie the moment it does. A symbol name survives the bump and is what a reader greps for anyway.
 - **Public API**: re-export from `lib.rs`. Keep internal modules non-public until an external use case appears. Prefer the narrowest visibility that compiles: private first, then `pub(in super::some_module)` for a specific parent scope, then `pub(super)`, then `pub(crate)`, and plain `pub` only for real public API. Do not use `pub(crate)` as the default for intra-module sharing.
 - **Public API shape**: user-facing alternate operations are separate methods, not `Option<T>` inputs (`set_*`/`clear_*`, `*_within_none`, `*_to_caller`). Public config/result structs keep fields private and expose constructors plus Rust API Guidelines C-GETTER accessors (`field()`, never `get_field()`). Internal ids and fields may stay direct when they are not user-facing; user-facing ids and other public data use idiomatic getters such as `id()`. Public signatures use imported type names instead of `crate::...` / `super::...`.
 - **Prefer imports over fully qualified paths, and prefer precise parent-relative imports.** Import types, traits, and helper functions at the top of the module (`use super::metadata::MetadataKind;` from same-crate modules) instead of spelling `crate::metadata::MetadataKind` inline. For same-crate code, prefer direct `super::<sibling>` imports over `crate::...`, especially in `use` items; avoid broad `super::super::...` hops unless the file is genuinely nested two module levels below the target and there is no clearer local re-export/import path. Reserve `crate::...` for crate-root re-exports, doctest/user-facing examples, or paths that would become unclear or invalid parent-relative imports. Fully qualified paths are reserved for one-off disambiguation, macro hygiene, macro-generated code where imports would be misleading, or cases where an import would create a real name conflict. When editing code, do not introduce new fully qualified `crate::...` / `super::...` paths in signatures or ordinary expressions; add or extend a `use` item and use the imported name instead.
@@ -641,10 +647,19 @@ cargo +1.96.0 doc --workspace --no-deps --all-features                # rustdoc 
 ```
 
 The full CI gate is exactly that list plus `cargo audit`; reproduce it locally
-before pushing. Baseline on the pin: **0 trybuild failures of 83 registered
-fixtures** (82 `compile_fail` + 1 `pass`).
+before pushing. Baseline on the pin: **0 trybuild failures of 85 registered
+fixtures** (84 `compile_fail` + 1 `pass`).
 
-There is no `build.rs`, no Make/CMake, no submodules. `orig_cpp/` is **not** built — never run `cmake` or `ninja` against it.
+**Do not set `CARGO_INCREMENTAL=0`.** Leave the cache alone; the gates are fast
+enough without disabling it, and forcing full rebuilds on every run wastes
+wall-clock on a machine that may be running other work.
+
+`llvmkit-ir` has a **`build.rs`** — it runs `tools/gen_intrinsics.rs`, which
+expands the vendored `crates/llvmkit-ir/tablegen/` LLVM 22.1.4 `.td` files into
+the intrinsic tables (~2 s; measured, and cheaper than committing the ~13 MB
+expansion — see `ROADMAP.md`, "On the vendored TableGen"). There is no
+Make/CMake and there are no submodules. `orig_cpp/` is **not** built — never run
+`cmake` or `ninja` against it.
 
 ## Commits
 
@@ -655,15 +670,17 @@ There is no `build.rs`, no Make/CMake, no submodules. `orig_cpp/` is **not** bui
 
 ## Testing & QA
 
-The workspace ships a substantial test suite (1,500+ tests across `crates/*/tests/` plus per-module `#[cfg(test)]` blocks; the exact attribute-anchored count and per-test provenance live in `UPSTREAM.md`). The categories:
+The workspace ships a substantial test suite (1,690+ tests across `crates/*/tests/` plus per-module `#[cfg(test)]` blocks; the exact attribute-anchored count and per-test provenance live in `UPSTREAM.md`). The categories:
 
 **Tests are ported, not invented.** Every new opcode, predicate, or instruction lands with tests sourced from one of the upstream LLVM trees:
 
-1. **`orig_cpp/.../llvm/test/Assembler/*.ll`** - the canonical round-trip / format fixtures. Each `.ll` is `RUN: llvm-as | llvm-dis | FileCheck %s` upstream; the `; CHECK:` directives spell the canonical AsmWriter output. We can't run `llvm-as` (no parser yet), but we can build an equivalent module programmatically and assert `format!("{m}")` against the fixture body byte-for-byte. Copy the constructive subset to `tests/fixtures/llvm/<topic>.ll` with a leading comment block citing the upstream path.
-2. **`orig_cpp/.../llvm/unittests/IR/*Test.cpp`** - GoogleTest-flavoured unit tests for `IRBuilder::Create*`, `ConstantInt::get`, etc. Each `TEST_F(*, Foo)` translates to a Rust `#[test]` mirroring the structural assertions (operand wiring, flag bits, result types).
+1. **`orig_cpp/.../llvm/test/Assembler/*.ll`** - the canonical round-trip / format fixtures. Each `.ll` is `RUN: llvm-as | llvm-dis | FileCheck %s` upstream; the `; CHECK:` directives spell the canonical AsmWriter output. The `.ll` parser now reads ordinary compiler output, so a fixture can be driven end-to-end — parse it, verify it, and assert `format!("{m}")` byte-for-byte — as `tests/parser_corpus.rs` does; building the module programmatically and asserting the printed form is still the right shape for a construct the parser deliberately does not model. Copy fixtures to `tests/fixtures/llvm/<topic>.ll` with a leading comment block citing the upstream path.
+2. **`orig_cpp/.../llvm/unittests/{IR,ADT}/*Test.cpp`** - GoogleTest-flavoured unit tests for `IRBuilder::Create*`, `ConstantInt::get`, `APFloat`, `APInt`, etc. Each `TEST(*, Foo)` translates to a Rust `#[test]` mirroring the structural assertions (operand wiring, flag bits, result types).
 3. **`orig_cpp/.../llvm/test/Verifier/*.ll`** - negative tests: malformed IR that LLVM's verifier rejects. Useful for `IrError` coverage on builder methods that surface domain rules.
 
-**Do not invent `.ll` strings or test scenarios** unless upstream genuinely lacks coverage for the construct. When that happens, document the gap inline and cite the closest upstream test family (e.g. `IRBuilderTest::CreateStepVectorI3` for arbitrary-width tests).
+**Port faithfully: no deviation in logic.** "Ported" means the Rust test makes the *same assertions about the same values* as the upstream one — same inputs, built the way upstream builds them; same expected results, spelled the way upstream spells them; same comparison. Do not substitute your own oracle for upstream's. Precomputing the expected values by another route (a script, a hand-derived bit pattern, a different API) turns a port into an invention that merely looks like one, and it silently tests your derivation instead of LLVM's answer. If the port is blocked because llvmkit cannot yet express what the fixture is written in, that gap is the finding — close it, or record it — rather than routing around it. Only the surface syntax may change.
+
+**Do not invent `.ll` strings or test scenarios** unless upstream genuinely lacks coverage for the construct. When that happens, say so inline — state what upstream does not cover and why the case still needs pinning — and cite the closest upstream test family (e.g. `IRBuilderTest::CreateStepVectorI3` for arbitrary-width tests). A test that pins an *llvmkit-specific* property (an internal representation choice, a parse/print idempotence law) is legitimate under this rule, but it must say that it has no upstream counterpart rather than implying one.
 
 **Test provenance registry.** Every `#[test]` in the workspace ships with a doc comment citing the upstream LLVM file, fixture, or `TEST(...)` it ports. The complete registry lives at `UPSTREAM.md` (repo root) and is the authoritative answer to "where does this test come from?". After adding a new test, append the row. Doctrine D11 (full prose in `README.md`, worked examples in `docs/type-safety-vs-llvm.md`) makes this rule mechanical: a test without a citation is a defect, not a stylistic gap.
 

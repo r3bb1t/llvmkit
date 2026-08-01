@@ -19,18 +19,17 @@ the `add` / `subtract` / `multiply` / `divide` special-case tables now ship as
 - **A signaling NaN lost its payload when it was quieted.** `make_quiet`
   rebuilt a default quiet NaN instead of setting the quiet bit, so
   `snan123 + 1.0` produced a bare `nan` where LLVM produces `nan123`. It now
-  ports `IEEEFloat::makeQuiet` (`APFloat.cpp:4723`) exactly — one bit set, sign
+  ports `IEEEFloat::makeQuiet` exactly — one bit set, sign
   and payload untouched. This was the *only* divergence in the 784-row
   arithmetic matrix: it accounted for all 104 failing rows, and every row not
   involving a signaling NaN already matched bit for bit.
 - **`fp128` hex literals parsed with their two 64-bit halves transposed.**
-  `0xL…` is not a big-endian 128-bit number: `LLLexer::HexToIntPair`
-  (`LLLexer.cpp:86`) reads the first sixteen hex digits into the APInt's *low*
-  word. llvmkit read the whole string big-endian, so
+  `0xL…` is not a big-endian 128-bit number: `LLLexer::HexToIntPair` reads the
+  first sixteen hex digits into the APInt's *low* word. llvmkit read the whole string big-endian, so
   `0xL00000000000000003FFF000000000000` — LLVM's spelling of 1.0 — was read as
   a subnormal, and printing it back produced a different spelling.
 - **`ppc_fp128` printed its two components in the wrong order.** Upstream
-  writes the leading double first (`AsmWriter.cpp:1611-1616` prints
+  writes the leading double first (`WriteConstantInternal` prints
   `getLoBits(64)` first, and its low word holds `DoubleAPFloat::Floats[0]`).
   Values were never wrong here — llvmkit stores the pair mirrored from upstream
   and the two mirrorings cancelled on the parse side — but the printed text
@@ -71,7 +70,7 @@ the `add` / `subtract` / `multiply` / `divide` special-case tables now ship as
 
 - The span reported for an unknown *keyword* now covers the whole word instead
   of its first byte. The cursor rewind that produced the one-byte span is
-  upstream behaviour (`LLLexer.cpp:1073`) and is unchanged — only the reported
+  upstream behaviour (`LLLexer::LexIdentifier`) and is unchanged — only the reported
   span moved, because a caret under the `n` of `nocalback` helps nobody.
 
 ### Parser — Milestone 0 complete

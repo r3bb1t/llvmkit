@@ -8940,10 +8940,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 /// big-endian integer of the semantics' own width.
 ///
 /// `0xK` (`x86_fp80`) belongs here even though upstream reads it through
-/// `FP80HexToIntPair` (`LLLexer.cpp:107`): that helper takes the first four
+/// `LLLexer::FP80HexToIntPair`: that helper takes the first four
 /// digits as the high word and the next sixteen as the low word, which for an
 /// 80-bit value is exactly big-endian order. `AsmWriter` prints it the same
-/// way, `getHiBits(16)` then `getLoBits(64)` (`AsmWriter.cpp:1599-1604`).
+/// way, `getHiBits(16)` then `getLoBits(64)`, in `WriteConstantInternal`.
 fn parse_hex_apfloat(semantics: ApFloatSemantics, digits: &str) -> IrResult<ApFloat> {
     let bits = ApInt::from_string(semantics.bit_width(), digits, 16)?;
     ApFloat::from_bits(semantics, &bits)
@@ -8951,10 +8951,11 @@ fn parse_hex_apfloat(semantics: ApFloatSemantics, digits: &str) -> IrResult<ApFl
 
 /// `0xL` (`fp128`) and `0xM` (`ppc_fp128`) — **not** big-endian.
 ///
-/// Ports `LLLexer::HexToIntPair` (`LLLexer.cpp:86`) exactly: the first sixteen
+/// Ports `LLLexer::HexToIntPair` exactly: the first sixteen
 /// hex digits are the *low* 64-bit word and the next sixteen are the high
 /// word, which is also the order `AsmWriter` prints them in — `getLoBits(64)`
-/// then `getHiBits(64)` (`AsmWriter.cpp:1605-1616`). Reading these as one
+/// then `getHiBits(64)`, in `AsmWriter`'s `WriteConstantInternal`.
+/// Reading these as one
 /// big-endian 128-bit number transposes the halves, which both changes the
 /// value and makes `parse → print` non-idempotent against llvmkit's own
 /// printer.

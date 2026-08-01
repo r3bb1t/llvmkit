@@ -1,14 +1,14 @@
 //! Word order of the 128-bit hexadecimal float literals (`0xL`, `0xM`).
 //!
 //! LLVM does **not** spell these as one big-endian 128-bit number. `LLLexer`'s
-//! `HexToIntPair` (`LLLexer.cpp:86`) reads the first sixteen hex digits into
+//! `HexToIntPair` reads the first sixteen hex digits into
 //! `Pair[0]` — the APInt's *low* word — and the second sixteen into `Pair[1]`,
 //! the high word. `AsmWriter` prints them back in that same order,
-//! `getLoBits(64)` then `getHiBits(64)` (`AsmWriter.cpp:1605-1616`). So the
+//! `getLoBits(64)` then `getHiBits(64)` in `WriteConstantInternal`. So the
 //! low half is written first.
 //!
 //! `0xK` (`x86_fp80`) is the exception in the other direction: `FP80HexToIntPair`
-//! (`LLLexer.cpp:107`) reads the first *four* digits into the high word and the
+//! reads the first *four* digits into the high word and the
 //! next sixteen into the low word, and `AsmWriter` prints `getHiBits(16)` then
 //! `getLoBits(64)` — which is exactly a plain big-endian 80-bit number.
 //!

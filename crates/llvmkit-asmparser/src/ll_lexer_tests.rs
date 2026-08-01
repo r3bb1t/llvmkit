@@ -985,7 +985,7 @@ mod unknown_token_reasons {
     }
 
     /// The reported span covers the whole word even though the cursor rewinds
-    /// to one byte (upstream's `LLLexer.cpp:1073` behaviour, kept): a caret
+    /// to one byte (upstream's `LLLexer::LexIdentifier` behaviour, kept): a caret
     /// under the `n` of `nocalback` would help nobody.
     #[test]
     fn unknown_keyword_span_covers_the_whole_word() {
