@@ -450,12 +450,28 @@ impl ApFloat {
 
     pub fn next(&self, direction: ApFloatNextDirection) -> (ApFloat, ApFloatStatus) {
         if self.is_nan() {
-            let status = if self.is_signaling() {
-                ApFloatStatus::INVALID_OP
-            } else {
-                ApFloatStatus::OK
-            };
-            return (self.make_quiet(), status);
+            // IEEE-754R 2008 6.2 par 2: `nextUp(sNaN) = qNaN`, invalid flag
+            // set; `nextUp(qNaN) = qNaN`, which must be the identity so the
+            // payload survives.
+            //
+            // Upstream's `IEEEFloat::next` spells the signaling case
+            // `makeNaN(false, isNegative(), nullptr)` — a **fresh, payload-less**
+            // quiet NaN carrying only the sign — not `makeQuiet()`. The two
+            // differ: quieting `snan` leaves the "make it a NaN, not an
+            // infinity" filler bit set alongside the quiet bit. This is a
+            // deliberate asymmetry with `scalbn` / `frexp` / `convert`, which
+            // *do* quiet in place and keep the payload.
+            if self.is_signaling() {
+                return (
+                    Self::qnan(
+                        self.semantics,
+                        sign_from_negative(self.is_negative()),
+                        NanPayload::Absent,
+                    ),
+                    ApFloatStatus::INVALID_OP,
+                );
+            }
+            return (self.clone(), ApFloatStatus::OK);
         }
         if matches!(self.semantics, ApFloatSemantics::PpcDoubleDouble) {
             return ppc_next(self, direction);
@@ -661,7 +677,50 @@ impl ApFloat {
         (value, status, loses)
     }
 
+    /// Convert to an integer of `width` bits.
+    ///
+    /// Ports `IEEEFloat::convertToInteger`, **including its saturating tail**:
+    /// when the conversion fails, the destination is not left unspecified but
+    /// filled with the type's extreme — zero for a NaN, otherwise the minimum
+    /// or maximum according to the sign. A `double` of `32` converted to `u5`
+    /// therefore yields `31`, not `0`.
     pub fn convert_to_integer(
+        &self,
+        width: u32,
+        signedness: ApIntSignedness,
+        rounding: RoundingMode,
+    ) -> (ApInt, ApFloatStatus, Exactness) {
+        let (value, status, exact) =
+            self.convert_to_integer_unsaturated(width, signedness, rounding);
+        if status.contains(ApFloatStatus::INVALID_OP) {
+            return (self.saturated_integer(width, signedness), status, exact);
+        }
+        (value, status, exact)
+    }
+
+    /// The `fs == opInvalidOp` tail of `IEEEFloat::convertToInteger`: set the
+    /// low `bits` bits, then move the single sign bit up for a negative
+    /// signed result.
+    fn saturated_integer(&self, width: u32, signedness: ApIntSignedness) -> ApInt {
+        let is_signed = matches!(signedness, ApIntSignedness::Signed);
+        if self.is_nan() || width == 0 {
+            return ApInt::zero(width);
+        }
+        let bits = if self.is_negative() {
+            u32::from(is_signed)
+        } else {
+            width.saturating_sub(u32::from(is_signed))
+        };
+        let value = ApInt::low_bits_set(width, bits);
+        if self.is_negative() && is_signed {
+            return value
+                .checked_shl(width - 1)
+                .unwrap_or_else(|| ApInt::zero(width));
+        }
+        value
+    }
+
+    fn convert_to_integer_unsaturated(
         &self,
         width: u32,
         signedness: ApIntSignedness,
@@ -1302,8 +1361,16 @@ impl ApFloat {
             .unwrap_or(Self::ILOGB_NAN)
     }
 
+    /// Scale by a power of two.
+    ///
+    /// Ports the free function `llvm::scalbn`, whose last act is
+    /// `if (X.isNaN()) X.makeQuiet()` — so a signaling NaN comes back quiet,
+    /// with its payload intact.
     pub fn scalbn(&self, exponent: i32, rounding: RoundingMode) -> (ApFloat, ApFloatStatus) {
-        if self.is_zero() || self.is_nan() || self.is_infinity() {
+        if self.is_nan() {
+            return (self.make_quiet(), ApFloatStatus::OK);
+        }
+        if self.is_zero() || self.is_infinity() {
             return (self.clone(), ApFloatStatus::OK);
         }
         let Some(components) = self.binary_components() else {
@@ -1324,11 +1391,21 @@ impl ApFloat {
         .unwrap_or_else(|| (self.clone(), ApFloatStatus::INVALID_OP))
     }
 
+    /// Split into a fraction in `[0.5, 1)` and a power-of-two exponent.
+    ///
+    /// Ports the free function `llvm::frexp`, which opens with
+    /// `Exp = ilogb(Val)` and therefore hands back **`ilogb`'s sentinels** for
+    /// the special categories rather than `0`: `ILOGB_NAN` for a NaN and
+    /// `ILOGB_INF` for an infinity. A signaling NaN is quieted, payload
+    /// intact; only a zero answers with an exponent of `0`.
     pub fn frexp(&self, rounding: RoundingMode) -> (ApFloat, i32, ApFloatStatus) {
-        if self.is_zero() {
-            return (self.clone(), 0, ApFloatStatus::OK);
+        if self.is_nan() {
+            return (self.make_quiet(), Self::ILOGB_NAN, ApFloatStatus::OK);
         }
-        if self.is_nan() || self.is_infinity() {
+        if self.is_infinity() {
+            return (self.clone(), Self::ILOGB_INF, ApFloatStatus::OK);
+        }
+        if self.is_zero() {
             return (self.clone(), 0, ApFloatStatus::OK);
         }
         let Some(components) = self.binary_components() else {

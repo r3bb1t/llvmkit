@@ -1498,3 +1498,29 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::exact_inverse` | `TEST(APFloatTest, exactInverse)` for the modeled semantics; upstream's host-`float`/`double` constructors are spelled as the equivalent literals | port |
 | `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::comparisons` | `TEST(APFloatTest, Comparisons)` — the ten ordered values compared pairwise | port |
 | `crates/llvmkit-ir/tests/ap_float_upstream_convert.rs::upstream_convert` | `llvm/unittests/ADT/APFloatTest.cpp::TEST(APFloatTest, convert)` — ported in upstream's order, asserting the converted value, the `losesInfo` flag, and the status where upstream checks it | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_scaling.rs::upstream_scalbn` | `llvm/unittests/ADT/APFloatTest.cpp::TEST(APFloatTest, scalbn)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_scaling.rs::upstream_frexp` | `TEST(APFloatTest, frexp)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_scaling.rs::upstream_get_exact_log2` | `TEST(APFloatTest, getExactLog2)` over the modeled semantics; `None` stands in for upstream's `INT_MIN` return | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_remainder.rs::upstream_remainder_special_cases` | the 340-row `SpecialCaseTests` table in `TEST(APFloatTest, remainder)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_remainder.rs::upstream_remainder_cases` | the individual `{ f1; f2; expected }` blocks in `TEST(APFloatTest, remainder)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_remainder.rs::upstream_mod_cases` | the individual `{ f1; f2; expected }` blocks in `TEST(APFloatTest, mod)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_next.rs::upstream_next` | `TEST(APFloatTest, next)` — all 44 nextUp/nextDown blocks over the IEEE-754R 2008 special values and the binade/denormal/zero boundaries | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_fma.rs::upstream_fma` | `llvm/unittests/ADT/APFloatTest.cpp::TEST(APFloatTest, FMA)`; upstream's host-float operands are carried as their exact bit patterns | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_fma.rs::upstream_round_to_integral` | `TEST(APFloatTest, roundToIntegral)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_fma.rs::upstream_to_integer` | `TEST(APFloatTest, toInteger)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::i33_count` | `llvm/unittests/ADT/APIntTest.cpp::TEST(APIntTest, i33_Count)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::i65_count` | `TEST(APIntTest, i65_Count)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::i128_positive_count` | `TEST(APIntTest, i128_PositiveCount)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::i128_negative_count` | `TEST(APIntTest, i128_NegativeCount)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::i1_values_and_equalities` | the value and comparison half of `TEST(APIntTest, i1)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::is_mask` | `TEST(APIntTest, isMask)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::is_shifted_mask` | `TEST(APIntTest, isShiftedMask)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::is_power_of_2` | `TEST(APIntTest, isPowerOf2)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::byte_swap` | `TEST(APIntTest, byteSwap)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::shifts` | `TEST(APIntTest, LogicalRightShift)` / `ArithmeticRightShift` / `LeftShift` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::insert_and_extract_bits` | `TEST(APIntTest, insertBits)` and `extractBits`, at the widths llvmkit models | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::signbit_zero_checks` | `TEST(APIntTest, SignbitZeroChecks)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::zero_width` | `TEST(APIntTest, ZeroWidth)`, restricted to the operations llvmkit models | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::splat` | `TEST(APIntTest, Splat)` | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::to_string` | `TEST(APIntTest, toString)`, the rows without the C-literal prefix or separators, which `to_string_radix` does not model | port |
+| `crates/llvmkit-ir/tests/ap_int_upstream.rs::from_string_round_trips_to_string` | closest upstream family `TEST(APIntTest, fromString)`; llvmkit-specific because `ApInt::from_string` does not model upstream signed spellings, so the two directions are checked for agreement instead | llvmkit-specific subset |
