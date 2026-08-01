@@ -7,6 +7,28 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ApFloat audit complete; first `ApInt` sweep
+
+Closes the ApFloat families — `FMA`, `roundToIntegral`, `toInteger` — and
+opens `llvm/unittests/ADT/APIntTest.cpp`, which had never been swept.
+`FMA` and `roundToIntegral` were already bit-exact.
+
+#### Fixed
+
+- **`ApFloat::convert_to_integer` returned zero instead of saturating.** A
+  conversion that cannot fit reports invalid-op *and* fills the destination
+  with the extreme of the target type — the `opInvalidOp` tail of
+  `IEEEFloat::convertToInteger`. A `double` of `32` converted to a 5-bit
+  unsigned now yields `31`, not `0`; a NaN still yields zero, and a negative
+  signed overflow yields the minimum.
+- **`ApInt::is_mask` answered `true` for zero.** It compared the trailing-ones
+  count against the active-bit count, so `0 == 0` made every zero a mask.
+  Upstream requires a non-empty run (`isMask_64` leads with `Value &&`, and the
+  multi-word path requires `Ones > 0`).
+- **`ApInt::to_string_radix` emitted lower-case hexadecimal.**
+  `APInt::toString` defaults to `UpperCase = true`. Only radix 10 reaches the
+  IR printer, so printed IR is unchanged.
+
 ### ApFloat audit: `ilogb`'s three dependants
 
 Ports of `TEST(APFloatTest, scalbn)`, `frexp`, `getExactLog2`, `next`,

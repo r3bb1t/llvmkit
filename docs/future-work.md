@@ -49,27 +49,34 @@ Two things worth knowing for anyone extending it:
   was kept exactly. A caret under the `n` of `nocalback` helps nobody. Lexing
   behaviour is unchanged; only the reported span moved.
 
-## ApFloat audit — remaining ports (2026-08-01)
+## ~~ApFloat audit~~ / `ApInt` sweep — state (2026-08-01)
 
-The `feature-40/apfloat-audit` cycle ported the four `SpecialCaseTests`
-arithmetic tables verbatim (784 rows) and closed the three defects they found.
-What is still only *rule*-covered rather than verbatim-ported:
+The ApFloat side is **complete**: every `APFloatTest.cpp` family covering the
+seven modeled semantics is ported, and the defects they found are fixed. The
+`Float8*` / `Float6*` / `Float4*` / `TF32` tests are out of scope — llvmkit
+does not model those semantics.
 
-- **`fromHexadecimalString` / `fromStringSpecials` / `makeNaN`.** `from_string`
-  now implements all three grammars, and `tests/ap_float_from_string.rs` covers
-  the boundaries — but with llvmkit-chosen spellings, so it is registered
-  `llvmkit-specific subset`. Porting those three fixtures verbatim is cheap now
-  that the parser accepts what they are written in.
-- **The rest of the `APFloatTest.cpp` surface** for the seven modeled
-  semantics: `convert` (including NaN-payload truncation across semantics),
-  `next` / `x87Next`, `FMA`, `Comparisons`, `roundToIntegral`, `isInteger`,
-  `exactInverse`, `getExactLog2`, `ilogb`, `scalbn`, `frexp`, `mod`,
-  `remainder`, `toInteger`, the `getLargest` / `getSmallest` /
-  `getSmallestNormalized` / `getZero` / `getOne` factories, and the
-  `PPCDoubleDouble*` family. The `Float8*` / `Float6*` / `Float4*` / `TF32`
-  tests are out of scope — llvmkit does not model those semantics.
-- **`APInt`.** `llvm/unittests/ADT/APIntTest.cpp` has not been swept at all;
-  `tests/ap_int.rs` currently holds seven llvmkit-written tests.
+`APIntTest.cpp` has had its **first** sweep, not a complete one. Ported: the
+counting families, `i1`, `isMask`, `isShiftedMask`, `isPowerOf2`, `byteSwap`,
+the three shift tests, `insertBits`/`extractBits`, `SignbitZeroChecks`,
+`ZeroWidth`, `Splat`, and `toString`. Still unported, in rough order of value:
+
+- **`divrem_big1`–`big7`, `divremuint`, `divrem_simple`** — the wide-division
+  paths, the most intricate code in `ap_int.rs` and the least covered.
+- **`SaturatingMath`**, and the `*_ov` overflow-flag family beyond the few spot
+  checks that exist.
+- **`multiply`, `Mulh`, `muli`, `RoundingUDiv`, `RoundingSDiv`, `Average`,
+  `abds`, `abdu`** — arithmetic llvmkit models but has never had checked
+  against upstream.
+- **`compare`, `compareWithRawIntegers`, `compareWithInt64Min`,
+  `compareWithHalfInt64Max`, `compareLargeIntegers`.**
+- **`getBitsSet` family, `clearBits`, `getLoBits`/`getHiBits`,
+  `nearestLogBase2`, `Log2`, `concat`, `sext`, `trunc`, `TryExt`,
+  `isSubsetOf`, `IsSplat`.**
+
+Not applicable: `GCD`, `SolveQuadraticEquationWrap`, `clmul*`, the rotate
+family, `DenseMap`, `ScaleBitMask`, and the `tc*` word-level primitives —
+llvmkit has no counterpart for any of them.
 
 ## Bare brands / `Branded` derive — home and follow-ups (2026-07-31)
 

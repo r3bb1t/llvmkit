@@ -501,10 +501,17 @@ impl ApInt {
         self.significant_bits() <= bits
     }
 
+    /// Whether the value is a non-empty run of ones starting at bit zero.
+    ///
+    /// Ports `APInt::isMask`, whose single-word path is `isMask_64`
+    /// (`Value && ((Value + 1) & Value) == 0`) and whose multi-word path
+    /// requires `Ones > 0`. **Zero is not a mask** under either, which is the
+    /// bit this used to get wrong: comparing the trailing-ones count against
+    /// the active-bit count made `0 == 0` answer `true` for every zero.
     #[inline]
     pub fn is_mask(&self) -> bool {
         let trailing = self.count_trailing_ones();
-        trailing == self.active_bits()
+        trailing > 0 && trailing == self.active_bits()
     }
 
     pub fn is_shifted_mask(&self) -> bool {
@@ -1523,10 +1530,11 @@ fn digit_value(ch: char) -> Option<u8> {
     }
 }
 
+/// Upper-case, matching `APInt::toString`'s `UpperCase = true` default.
 fn digit_char(digit: u8) -> char {
     match digit {
         0..=9 => char::from(b'0' + digit),
-        10..=35 => char::from(b'a' + (digit - 10)),
+        10..=35 => char::from(b'A' + (digit - 10)),
         _ => '?',
     }
 }

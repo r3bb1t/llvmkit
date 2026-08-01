@@ -677,7 +677,50 @@ impl ApFloat {
         (value, status, loses)
     }
 
+    /// Convert to an integer of `width` bits.
+    ///
+    /// Ports `IEEEFloat::convertToInteger`, **including its saturating tail**:
+    /// when the conversion fails, the destination is not left unspecified but
+    /// filled with the type's extreme — zero for a NaN, otherwise the minimum
+    /// or maximum according to the sign. A `double` of `32` converted to `u5`
+    /// therefore yields `31`, not `0`.
     pub fn convert_to_integer(
+        &self,
+        width: u32,
+        signedness: ApIntSignedness,
+        rounding: RoundingMode,
+    ) -> (ApInt, ApFloatStatus, Exactness) {
+        let (value, status, exact) =
+            self.convert_to_integer_unsaturated(width, signedness, rounding);
+        if status.contains(ApFloatStatus::INVALID_OP) {
+            return (self.saturated_integer(width, signedness), status, exact);
+        }
+        (value, status, exact)
+    }
+
+    /// The `fs == opInvalidOp` tail of `IEEEFloat::convertToInteger`: set the
+    /// low `bits` bits, then move the single sign bit up for a negative
+    /// signed result.
+    fn saturated_integer(&self, width: u32, signedness: ApIntSignedness) -> ApInt {
+        let is_signed = matches!(signedness, ApIntSignedness::Signed);
+        if self.is_nan() || width == 0 {
+            return ApInt::zero(width);
+        }
+        let bits = if self.is_negative() {
+            u32::from(is_signed)
+        } else {
+            width.saturating_sub(u32::from(is_signed))
+        };
+        let value = ApInt::low_bits_set(width, bits);
+        if self.is_negative() && is_signed {
+            return value
+                .checked_shl(width - 1)
+                .unwrap_or_else(|| ApInt::zero(width));
+        }
+        value
+    }
+
+    fn convert_to_integer_unsaturated(
         &self,
         width: u32,
         signedness: ApIntSignedness,
