@@ -1564,7 +1564,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
+    + use<'ctx, W, B> {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
@@ -1803,7 +1803,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
+    + use<'ctx, K, B> {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
@@ -2017,7 +2017,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
+    + use<'ctx, B> {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
@@ -2205,7 +2205,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
     ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
+    + use<'ctx, B> {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
@@ -2843,7 +2843,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx
     ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
+    + use<'ctx, P, B, W> {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(ValueSlot, ValueSlot)> = self
@@ -3096,8 +3096,10 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, P, B> {
     /// walking `IndirectBrInst::successors()`.
     pub fn destinations(
         &self,
-    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + 'ctx
-    {
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + use<'ctx, P, B> {
         let module_ref = self.module;
         let ids: Vec<ValueSlot> = self.payload().destinations.borrow().clone();
         ids.into_iter()
@@ -3413,7 +3415,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
     ) -> impl ExactSizeIterator<Item = (LandingPadClauseKind, Value<'ctx, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
+    + use<'ctx, P, B> {
         let module = self.module.module();
         let module_ref = self.module;
         let entries: Vec<(LandingPadClauseKind, ValueSlot)> = self
@@ -3750,8 +3752,10 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, P, B> 
     /// `CatchSwitchInst::handlers()`.
     pub fn handlers(
         &self,
-    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>> + DoubleEndedIterator + FusedIterator + 'ctx
-    {
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + use<'ctx, P, B> {
         let module_ref = self.module;
         let ids: Vec<ValueSlot> = self.payload().handlers.borrow().clone();
         ids.into_iter()

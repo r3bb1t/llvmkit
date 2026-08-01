@@ -1818,7 +1818,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PhiKind<'ctx, B> {
     ) -> impl ExactSizeIterator<Item = (Value<'ctx, B>, BlockId<Dyn, B>)>
     + DoubleEndedIterator
     + FusedIterator
-    + 'ctx {
+    + use<'ctx, B> {
         let entries: Vec<(Value<'ctx, B>, BlockId<Dyn, B>)> = match self {
             Self::Int(p) => p.incomings().collect(),
             Self::Fp(p) => p.incomings().collect(),

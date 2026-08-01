@@ -483,6 +483,27 @@ impl KnownBits {
         self.zero.set_bits_from(bit);
     }
 
+    /// Mark the low `count` bits known-zero. Spells upstream's
+    /// `Known.Zero.setLowBits(count)`.
+    #[inline]
+    pub fn mark_low_bits_zero(&mut self, count: u32) {
+        self.zero.set_low_bits(count);
+    }
+
+    /// Mark the high `count` bits known-zero. Spells upstream's
+    /// `Known.Zero.setHighBits(count)`.
+    #[inline]
+    pub fn mark_high_bits_zero(&mut self, count: u32) {
+        self.zero.set_high_bits(count);
+    }
+
+    /// Mark the high `count` bits known-one. Spells upstream's
+    /// `Known.One.setHighBits(count)`.
+    #[inline]
+    pub fn mark_high_bits_one(&mut self, count: u32) {
+        self.one.set_high_bits(count);
+    }
+
     pub fn make_negative(&mut self) {
         self.one.set_sign_bit();
     }

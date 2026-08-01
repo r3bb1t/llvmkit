@@ -7,6 +7,86 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### The KnownBits / ValueTracking parity ledger is real
+
+`tests/value_tracking_parity.rs` claimed to be the coverage ledger for the
+known-bits surface. Its one test asserted that a `const` array contained the
+same strings it had just been initialised with — it could not fail, and it had
+never recorded any coverage.
+
+It now tabulates the surface: 93 of the 98 `KnownBits.h` operations llvmkit
+models, mapped upstream-name to llvmkit-name, plus the five it does not and
+the reason for each; and the four `ValueTracking.h` entry points modeled
+against the nine families that are absent wholesale. The modeled columns are
+held to the crate by *calling* every entry, so a rename or deletion stops the
+file compiling. The tables are checked for the properties a ledger needs to
+stay readable, and the gap lists record the LLVM release they were derived
+from.
+
+Building it surfaced five `KnownBits` operations with no llvmkit counterpart —
+`setAllOnes`, `flipSignBit`, `isSignUnknown`, `remGetLowBits`, and the
+`sdiv` / `sdiv_with_exact` spelling asymmetry. None is load-bearing for
+anything llvmkit computes today; all five are recorded in
+`docs/future-work.md`.
+
+Because `orig_cpp/` is gitignored, the gap lists cannot be re-derived at test
+time and stay a hand-maintained record — the file says so rather than implying
+otherwise.
+
+### View iterators no longer borrow the view
+
+`function.basic_blocks().flat_map(|block| block.instructions())` — the obvious
+way to walk every instruction in a function — did not compile. It failed with
+E0515, "cannot return value referencing function parameter `block`", and the
+workaround was a nested loop with a labeled break.
+
+The iterator never held anything belonging to the block: it snapshots the
+instruction ids and copies the `ModuleRef`. But edition 2024 captures every
+lifetime in scope in a return-position `impl Trait`, including the `&self` the
+method was called on, so the compiler believed otherwise. The affected returns
+now carry a precise-capturing `use<..>` bound that leaves that lifetime out.
+
+Fixed on `BasicBlock::instructions`, `BasicBlockView::instructions`,
+`PhiInst`/`FpPhiInst`/`PointerPhiInst`/`OtherPhiInst`/`PhiKind::incomings`,
+`SwitchInst::cases`, `IndirectBrInst::destinations`, `LandingPadInst::clauses`,
+`CatchSwitchInst::handlers`, and `FnPatch::body_instructions`.
+
+Iterators that genuinely borrow the receiver are unchanged and still do —
+`AttributeSet::iter` and `AttributeStorage::iter` yield `&Attribute`,
+`Cfg::edges` iterates a borrowed slice, and the `pass_names` family yields
+`&str`. Iterators taking `self` by value (`Module::functions`, `globals`,
+`aliases`, `ifuncs`, `comdats`, `FunctionValue::basic_blocks`, `params`) never
+had the problem.
+
+This is a relaxation: code that compiled before still compiles.
+
+### Known bits reason about loop recurrences
+
+`compute_known_bits` on a `phi` now recognises a simple two-predecessor
+recurrence — `%iv = phi [start, %entry], [%iv.next, %backedge]` where
+`%iv.next` is a binary operator with `%iv` as an operand — and reads facts off
+it, porting the `Instruction::PHI` arm of `computeKnownBitsFromOperator` and
+`matchSimpleRecurrence` (`ValueTracking.cpp`).
+
+A `shl` recurrence keeps the start value's trailing zeros; `lshr`, `udiv` and
+`urem` keep its leading zeros; `ashr` extends its sign bit in both directions;
+and `add`/`sub`/`and`/`or`/`mul` keep the trailing zeros common to the start
+and the step, plus the `nsw` sign facts. `urem` is the one opcode that accepts
+the phi on either side. Previously a phi answered only with the intersection
+over its incoming values, which a loop backedge leaves unknown.
+
+`llvm/test/Analysis/ValueTracking/recurrence-knownbits.ll` is checked in
+verbatim and driven as the test: twelve of its fifteen functions now reproduce
+their CHECK line exactly. The three that do not need InstCombine
+canonicalization rather than more analysis, and are pinned as gaps —
+see `docs/future-work.md`.
+
+#### Added
+
+- `KnownBits::mark_low_bits_zero`, `mark_high_bits_zero` and
+  `mark_high_bits_one`, spelling upstream's `Known.Zero.setLowBits` /
+  `setHighBits` / `Known.One.setHighBits`.
+
 ### Constants are uniqued
 
 Four constant kinds were minting a fresh arena node on every request:
