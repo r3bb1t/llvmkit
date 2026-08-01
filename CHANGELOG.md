@@ -7,6 +7,33 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### Known bits reason about loop recurrences
+
+`compute_known_bits` on a `phi` now recognises a simple two-predecessor
+recurrence — `%iv = phi [start, %entry], [%iv.next, %backedge]` where
+`%iv.next` is a binary operator with `%iv` as an operand — and reads facts off
+it, porting the `Instruction::PHI` arm of `computeKnownBitsFromOperator` and
+`matchSimpleRecurrence` (`ValueTracking.cpp`).
+
+A `shl` recurrence keeps the start value's trailing zeros; `lshr`, `udiv` and
+`urem` keep its leading zeros; `ashr` extends its sign bit in both directions;
+and `add`/`sub`/`and`/`or`/`mul` keep the trailing zeros common to the start
+and the step, plus the `nsw` sign facts. `urem` is the one opcode that accepts
+the phi on either side. Previously a phi answered only with the intersection
+over its incoming values, which a loop backedge leaves unknown.
+
+`llvm/test/Analysis/ValueTracking/recurrence-knownbits.ll` is checked in
+verbatim and driven as the test: twelve of its fifteen functions now reproduce
+their CHECK line exactly. The three that do not need InstCombine
+canonicalization rather than more analysis, and are pinned as gaps —
+see `docs/future-work.md`.
+
+#### Added
+
+- `KnownBits::mark_low_bits_zero`, `mark_high_bits_zero` and
+  `mark_high_bits_one`, spelling upstream's `Known.Zero.setLowBits` /
+  `setHighBits` / `Known.One.setHighBits`.
+
 ### Constants are uniqued
 
 Four constant kinds were minting a fresh arena node on every request:

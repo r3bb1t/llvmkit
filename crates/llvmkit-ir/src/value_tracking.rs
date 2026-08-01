@@ -15,7 +15,7 @@ use crate::data_layout::DataLayout;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::instr_types::{
     AllocaInstData, BinaryOpData, BinaryOpcode, CastOpData, CastOpcode, CmpInstData,
-    ExtractElementInstData, GepInstData, InsertElementInstData, POISON_MASK_ELEM,
+    ExtractElementInstData, GepInstData, InsertElementInstData, POISON_MASK_ELEM, PhiData,
     ShuffleVectorInstData,
 };
 use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
@@ -633,32 +633,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 Ok(true_bits.intersect_with(&false_bits))
             }
         }
-        InstructionKindData::Phi(data) => {
-            let incoming = data.incoming.borrow();
-            let mut iter = incoming.iter();
-            let Some((first, _)) = iter.next() else {
-                return Ok(KnownBits::unknown(width));
-            };
-            let mut known = compute_known_bits_inner(
-                value_from_id(value, first.get()),
-                query,
-                depth + 1,
-                stack,
-            )?;
-            for (incoming_value, _) in iter {
-                let next = compute_known_bits_inner(
-                    value_from_id(value, incoming_value.get()),
-                    query,
-                    depth + 1,
-                    stack,
-                )?;
-                known = known.intersect_with(&next);
-                if known.is_unknown() {
-                    break;
-                }
-            }
-            Ok(known)
-        }
+        InstructionKindData::Phi(data) => phi_known_bits(value, data, query, depth, stack),
         InstructionKindData::Freeze(data) => {
             let src = value_from_id(value, data.src.get());
             if is_guaranteed_not_to_be_poison(src, query, depth + 1, stack)? {
@@ -1326,6 +1301,290 @@ fn evaluate_icmp(predicate: IntPredicate, lhs: &ApInt, rhs: &ApInt) -> bool {
         IntPredicate::Slt => lhs.slt(rhs),
         IntPredicate::Sle => lhs.sle(rhs),
     }
+}
+
+/// The binary operator closing a simple two-predecessor recurrence, split into
+/// the parts the known-bits arms need.
+struct SimpleRecurrence {
+    /// The recurrence's binary opcode.
+    opcode: BinaryOpcode,
+    /// The value entering the phi from outside the loop.
+    start: ValueSlot,
+    /// The other operand of the binary operator — the step.
+    step: ValueSlot,
+    /// Whether the phi is the binary operator's *left* operand. Upstream reads
+    /// this back as `BO->getOperand(0) != I` to reject the arms where operand
+    /// order matters (`shl`/`lshr`/`ashr`/`udiv` and `sub`).
+    phi_is_left_operand: bool,
+    /// `nsw` on the binary operator, already gated on `UseInstrInfo`.
+    no_signed_wrap: bool,
+}
+
+/// The binary operator's opcode and operands, for any binary opcode.
+///
+/// Upstream reaches this through `dyn_cast<BinaryOperator>`, which is opcode-
+/// blind; the opcode is only inspected afterwards. Matching the same set here
+/// keeps the *first* qualifying operand the match, exactly as upstream does —
+/// narrowing this to the opcodes the known-bits arms use would let a second
+/// incoming value be matched where upstream stops at the first.
+fn binary_operator_parts(kind: &InstructionKindData) -> Option<(BinaryOpcode, &BinaryOpData)> {
+    Some(match kind {
+        InstructionKindData::Add(b) => (BinaryOpcode::Add, b),
+        InstructionKindData::Sub(b) => (BinaryOpcode::Sub, b),
+        InstructionKindData::Mul(b) => (BinaryOpcode::Mul, b),
+        InstructionKindData::UDiv(b) => (BinaryOpcode::UDiv, b),
+        InstructionKindData::SDiv(b) => (BinaryOpcode::SDiv, b),
+        InstructionKindData::URem(b) => (BinaryOpcode::URem, b),
+        InstructionKindData::SRem(b) => (BinaryOpcode::SRem, b),
+        InstructionKindData::Shl(b) => (BinaryOpcode::Shl, b),
+        InstructionKindData::LShr(b) => (BinaryOpcode::LShr, b),
+        InstructionKindData::AShr(b) => (BinaryOpcode::AShr, b),
+        InstructionKindData::And(b) => (BinaryOpcode::And, b),
+        InstructionKindData::Or(b) => (BinaryOpcode::Or, b),
+        InstructionKindData::Xor(b) => (BinaryOpcode::Xor, b),
+        InstructionKindData::FAdd(b) => (BinaryOpcode::FAdd, b),
+        InstructionKindData::FSub(b) => (BinaryOpcode::FSub, b),
+        InstructionKindData::FMul(b) => (BinaryOpcode::FMul, b),
+        InstructionKindData::FDiv(b) => (BinaryOpcode::FDiv, b),
+        InstructionKindData::FRem(b) => (BinaryOpcode::FRem, b),
+        _ => return None,
+    })
+}
+
+/// Match `%iv = phi [start, %entry], [%iv.next, %backedge]` where `%iv.next`
+/// is a binary operator with `%iv` as one operand.
+///
+/// Ports `matchSimpleRecurrence` / `matchTwoInputRecurrence`
+/// (`ValueTracking.cpp`).
+fn match_simple_recurrence<'ctx, B: ModuleBrand + 'ctx>(
+    phi: Value<'ctx, B>,
+    data: &PhiData,
+    uses_instruction_info: bool,
+) -> Option<SimpleRecurrence> {
+    let incoming = data.incoming.borrow();
+    if incoming.len() != 2 {
+        return None;
+    }
+    for index in 0..2 {
+        let candidate = value_from_id(phi, incoming[index].0.get());
+        let ValueKindData::Instruction(inst) = &candidate.data().kind else {
+            continue;
+        };
+        let Some((opcode, operands)) = binary_operator_parts(&inst.kind) else {
+            continue;
+        };
+        let lhs = operands.lhs.get();
+        let rhs = operands.rhs.get();
+        let phi_slot = phi.slot();
+        if lhs != phi_slot && rhs != phi_slot {
+            continue;
+        }
+        let phi_is_left_operand = lhs == phi_slot;
+        return Some(SimpleRecurrence {
+            opcode,
+            start: incoming[1 - index].0.get(),
+            step: if phi_is_left_operand { rhs } else { lhs },
+            phi_is_left_operand,
+            no_signed_wrap: uses_instruction_info && operands.no_signed_wrap,
+        });
+    }
+    None
+}
+
+/// Known bits for a `phi`.
+///
+/// Ports the `Instruction::PHI` arm of `computeKnownBitsFromOperator`
+/// (`ValueTracking.cpp`): first the simple-recurrence facts, then — only if
+/// those left the result unknown — the intersection over the incoming values.
+///
+/// Two pieces of upstream's arm are **not** ported, both because llvmkit does
+/// not model what they read. Neither can make an answer wrong; each only
+/// leaves it weaker:
+///
+/// - The per-edge context instruction (`RecQ.CxtI = P->getIncomingBlock(..)`)
+///   that lets upstream evaluate an incoming value at the edge it flows in on.
+/// - The `m_Br(m_c_ICmp(..))` refinement that narrows an incoming value by the
+///   branch condition guarding its edge.
+///
+/// One piece is deliberately **not** copied. Upstream gates the intersection
+/// loop on `Depth < MaxAnalysisRecursionDepth - 1` and then recurses at the
+/// fixed depth `MaxAnalysisRecursionDepth - 1`, capping the search under an
+/// incoming value at one level so it does not "spin around in loops". llvmkit
+/// recurses at `depth + 1` instead, because it already terminates by a
+/// different mechanism — the `stack` set rejects re-entering a value that is
+/// mid-computation — and because [`compute_known_bits_inner`] memoizes on
+/// `(slot, query)` with no depth component. Entering an incoming value at a
+/// fixed deep depth would cache the weak answer computed there and hand it to
+/// a later shallow query of the same value. The result is that llvmkit can
+/// answer *more* precisely than upstream for a shallow phi, never less.
+fn phi_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    data: &PhiData,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    stack: &mut HashSet<ValueSlot>,
+) -> IrResult<KnownBits> {
+    let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
+    let mut known = KnownBits::unknown(width);
+
+    if let Some(recurrence) = match_simple_recurrence(value, data, query.uses_instruction_info()) {
+        known = recurrence_known_bits(value, &recurrence, query, depth, stack)?;
+    }
+
+    // Unreachable blocks may have zero-operand PHI nodes.
+    let incoming = data.incoming.borrow();
+    if incoming.is_empty() {
+        return Ok(known);
+    }
+
+    // Otherwise take the intersection of the incoming known-bit sets, taking
+    // conservative care to avoid excessive recursion.
+    if !known.is_unknown() {
+        return Ok(known);
+    }
+    // `None` until the first non-self incoming is folded in, which is what
+    // upstream's `Known.setAllConflict()` seed achieves — conflict is the
+    // identity of `intersectWith`. It also covers upstream's
+    // `isa_and_nonnull<UndefValue>(P->hasConstantValue())` guard: a phi whose
+    // every incoming is a self reference leaves `result` at `None` and answers
+    // unknown, which is where that guard's `break` lands too.
+    let mut result: Option<KnownBits> = None;
+    for (incoming_value, _) in incoming.iter() {
+        // Skip direct self references.
+        if incoming_value.get() == value.slot() {
+            continue;
+        }
+        let next = compute_known_bits_inner(
+            value_from_id(value, incoming_value.get()),
+            query,
+            depth + 1,
+            stack,
+        )?;
+        result = Some(match result {
+            Some(accumulated) => accumulated.intersect_with(&next),
+            None => next,
+        });
+        // If all bits have been ruled out, there is no need to check more
+        // operands.
+        if result.as_ref().is_some_and(KnownBits::is_unknown) {
+            break;
+        }
+    }
+    Ok(result.unwrap_or(known))
+}
+
+/// The simple-recurrence half of the `PHI` arm.
+fn recurrence_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    phi: Value<'ctx, B>,
+    recurrence: &SimpleRecurrence,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    stack: &mut HashSet<ValueSlot>,
+) -> IrResult<KnownBits> {
+    let width = value_bit_width(phi, query.data_layout()).unwrap_or(0);
+    let mut known = KnownBits::unknown(width);
+    let start = value_from_id(phi, recurrence.start);
+
+    match recurrence.opcode {
+        // A shift or udiv recurrence tells us what is shifted in, which
+        // combines with the start value to bound the result. For `urem` the
+        // result can never exceed the start value, and the phi may be either
+        // operand — so unlike the others it does not require the phi on the
+        // left.
+        BinaryOpcode::Shl
+        | BinaryOpcode::LShr
+        | BinaryOpcode::AShr
+        | BinaryOpcode::UDiv
+        | BinaryOpcode::URem => {
+            if !recurrence.phi_is_left_operand && recurrence.opcode != BinaryOpcode::URem {
+                return Ok(known);
+            }
+            let start_bits = compute_known_bits_inner(start, query, depth + 1, stack)?;
+            match recurrence.opcode {
+                // A shl recurrence will only increase the trailing zeros.
+                BinaryOpcode::Shl => {
+                    known.mark_low_bits_zero(start_bits.count_min_trailing_zeros());
+                }
+                // lshr, udiv, and urem recurrences preserve the leading zeros
+                // of the start value.
+                BinaryOpcode::LShr | BinaryOpcode::UDiv | BinaryOpcode::URem => {
+                    known.mark_high_bits_zero(start_bits.count_min_leading_zeros());
+                }
+                // An ashr recurrence extends the initial sign bit.
+                BinaryOpcode::AShr => {
+                    known.mark_high_bits_zero(start_bits.count_min_leading_zeros());
+                    known.mark_high_bits_one(start_bits.count_min_leading_ones());
+                }
+                _ => {}
+            }
+        }
+
+        // Operations where low zero bits in both operands give low zero bits
+        // in the result.
+        BinaryOpcode::Add
+        | BinaryOpcode::Sub
+        | BinaryOpcode::And
+        | BinaryOpcode::Or
+        | BinaryOpcode::Mul => {
+            let step = value_from_id(phi, recurrence.step);
+            let start_bits = compute_known_bits_inner(start, query, depth + 1, stack)?;
+            let step_bits = compute_known_bits_inner(step, query, depth + 1, stack)?;
+            known.mark_low_bits_zero(
+                start_bits
+                    .count_min_trailing_zeros()
+                    .min(step_bits.count_min_trailing_zeros()),
+            );
+
+            if !recurrence.no_signed_wrap {
+                return Ok(known);
+            }
+            // With nsw, the sign of the start value and the step bound the
+            // sign of every iterate: the recurrence can only stay on that side
+            // or be poison.
+            match recurrence.opcode {
+                // (add nsw non-negative, non-negative) --> non-negative
+                // (add nsw negative, negative) --> negative
+                BinaryOpcode::Add => {
+                    if start_bits.is_non_negative() && step_bits.is_non_negative() {
+                        known.make_non_negative();
+                    } else if start_bits.is_negative() && step_bits.is_negative() {
+                        known.make_negative();
+                    }
+                }
+                // (sub nsw non-negative, negative) --> non-negative
+                // (sub nsw negative, non-negative) --> negative
+                BinaryOpcode::Sub => {
+                    if !recurrence.phi_is_left_operand {
+                        return Ok(known);
+                    }
+                    if start_bits.is_non_negative() && step_bits.is_negative() {
+                        known.make_non_negative();
+                    } else if start_bits.is_negative() && step_bits.is_non_negative() {
+                        known.make_negative();
+                    }
+                }
+                // (mul nsw non-negative, non-negative) --> non-negative
+                BinaryOpcode::Mul
+                    if start_bits.is_non_negative() && step_bits.is_non_negative() =>
+                {
+                    known.make_non_negative();
+                }
+                _ => {}
+            }
+        }
+
+        // Every other binary opcode: upstream's `default: break` — the
+        // recurrence contributes nothing.
+        BinaryOpcode::SDiv
+        | BinaryOpcode::SRem
+        | BinaryOpcode::Xor
+        | BinaryOpcode::FAdd
+        | BinaryOpcode::FSub
+        | BinaryOpcode::FMul
+        | BinaryOpcode::FDiv
+        | BinaryOpcode::FRem => {}
+    }
+    Ok(known)
 }
 
 fn alloca_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(

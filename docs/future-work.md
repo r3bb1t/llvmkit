@@ -70,6 +70,48 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 | `SolveQuadraticEquationWrap` | SCEV-specific; belongs with a SCEV port, not with `ApInt`. |
 | `GetMostSignificantDifferentBitExaustive` | The non-exhaustive fixture is ported; the exhaustive variant re-derives the same property over an 8-bit sweep. |
 
+## KnownBits / ValueTracking — the PHI recurrence arm (2026-08-01)
+
+`computeKnownBitsFromOperator`'s `Instruction::PHI` arm is ported, including
+`matchSimpleRecurrence`. `llvm/test/Analysis/ValueTracking/recurrence-knownbits.ll`
+is checked in verbatim and driven by
+`crates/llvmkit-asmparser/tests/value_tracking_recurrence.rs`; twelve of its
+fifteen functions reproduce their CHECK line exactly.
+
+**Three do not, and both reasons are missing transforms rather than missing
+analysis.** They are asserted to stay *unfolded*, so closing either gap trips
+the test rather than passing silently.
+
+| Function | Upstream CHECK | Why it is out of reach |
+|---|---|---|
+| `@test_mul` | `0` | Needs bit 1 of `%iv` known zero. The `mul` arm keeps only `min(countMinTrailingZeros(8), countMinTrailingZeros(2))` = 1 trailing zero. Upstream first canonicalizes `mul i64 %iv, 2` to `shl i64 %iv, 1`, and the *shift* arm then keeps all three trailing zeros of the start value — `@test_shl` is that same recurrence pre-canonicalized, and it does reach its CHECK. Closes when InstCombine's mul-by-power-of-two canonicalization runs. |
+| `@test_and` | `2047` | Needs bits 11..63 known zero *and* bit 10 known **one**. The `and`/`or` arm only ever sets low zero bits, and `min(countMinTrailingZeros(1025), countMinTrailingZeros(1024))` is 0; the fallthrough intersection leaves bit 10 unknown. Upstream gets `2047` by simplifying the loop away, not from known bits. |
+| `@test_or` | `2047` | As `@test_and`. The intersection *does* prove bit 10 is one here, but bits 11..63 stay unknown. |
+
+Two further pieces of the arm are **not** ported because llvmkit does not model
+what they read — the per-edge context instruction
+(`RecQ.CxtI = P->getIncomingBlock(..)`) and the `m_Br(m_c_ICmp(..))` refinement
+that narrows an incoming value by the branch condition guarding its edge.
+Neither can make an answer wrong; each only leaves it weaker.
+
+One divergence is **deliberate**. Upstream gates the incoming-value
+intersection on `Depth < MaxAnalysisRecursionDepth - 1` and recurses at that
+fixed depth, capping the search at one level. llvmkit recurses at `depth + 1`,
+because it already terminates by a different mechanism (the `stack` set rejects
+re-entering a value mid-computation) and because `compute_known_bits_inner`
+memoizes on `(slot, query)` with no depth component — entering at a fixed deep
+depth would cache the weak answer computed there and hand it to a later shallow
+query. llvmkit therefore answers *more* precisely than upstream for a shallow
+phi, never less. `@test_udiv_neg` witnesses it: llvmkit proves 60 leading zeros
+where upstream proves none, and the fixture's own claim (bit 2 unknown) is
+untouched. **If the cache ever becomes depth-keyed, revisit this** — the
+upstream cap would then be portable as-is.
+
+The `nsw` sign-inference paths of the `add`/`sub`/`mul` arm
+(`makeNonNegative` / `makeNegative`) have **no ported fixture**: every
+recurrence in `recurrence-knownbits.ll` uses `nuw` or no flag at all. Worth a
+sweep for an upstream fixture that exercises them.
+
 ## Bare brands / `Branded` derive — home and follow-ups (2026-07-31)
 
 - **`llvmkit-macros` is the permanent home of the `Branded` derive, not a
