@@ -935,14 +935,11 @@ fn fold_matching_cast_pair<'ctx, B: ModuleBrand + 'ctx>(
 /// expression, `lhs`'s type is a (scalar) pointer, and `predicate` is not a
 /// signed comparison.
 ///
-/// Bases are compared via [`base_identity`] rather than `==`: upstream
-/// compares the stripped `Constant*` pointers directly (`Stripped0 ==
-/// Stripped1`), which is sound there only because LLVM uniques `Constant*`
-/// (`@g` always resolves to the same pointer). llvmkit does not unique its
-/// `GlobalValueRef`/`GepOffset` constants, so two independently-built
-/// pointers into the same global strip down to distinct `Constant` handles
-/// with distinct arena ids; `base_identity` resolves through that wrapper
-/// to the shared underlying global/function id instead.
+/// Bases are compared with `==`, exactly as upstream compares the stripped
+/// `Constant*` pointers (`Stripped0 == Stripped1`). That is sound in both
+/// trees for the same reason: LLVM uniques `Constant*`, and llvmkit uniques
+/// its `GlobalValueRef` / `GepOffset` constants, so two independently-built
+/// pointers into the same global strip down to the same arena id.
 fn fold_pointer_base_offset<'ctx, B: ModuleBrand + 'ctx>(
     predicate: IntPredicate,
     lhs: Constant<'ctx, B>,
@@ -958,37 +955,13 @@ fn fold_pointer_base_offset<'ctx, B: ModuleBrand + 'ctx>(
         strip_and_accumulate_constant_offset(lhs, index_bits, is_eq_pred, dl);
     let (rhs_base, rhs_offset) =
         strip_and_accumulate_constant_offset(rhs, index_bits, is_eq_pred, dl);
-    if base_identity(lhs_base) != base_identity(rhs_base) {
+    if lhs_base != rhs_base {
         return None;
     }
     let signed_predicate = predicate.flip_signedness();
     let result = compare_ap_int_with_predicate(signed_predicate, &lhs_offset, &rhs_offset);
     let module = lhs.into_erased().module();
     Some(module.bool_type().const_int(result).as_constant())
-}
-
-/// Canonical identity key for a base pointer returned by
-/// [`strip_and_accumulate_constant_offset`], standing in for upstream's
-/// direct `Constant*` equality (see [`fold_pointer_base_offset`]'s doc
-/// comment for why arena identity alone is insufficient here).
-///
-/// A global/function-backed base resolves to the underlying global's own
-/// [`ValueSlot`] regardless of how many distinct `GlobalValueRef` wrapper
-/// constants happen to name it — including a bare `GepOffset` base,
-/// defensively, though after stripping it should already have been
-/// re-wrapped as a `GlobalValueRef` by
-/// [`strip_and_accumulate_constant_offset`]. Anything else (`undef`, an
-/// unrecognized constant expression, ...) keeps its own arena id as the
-/// key, exactly like the arena-identity comparison this replaces: safe,
-/// since two such constants only compare equal when they are the literal
-/// same value.
-fn base_identity<'ctx, B: ModuleBrand + 'ctx>(base: Constant<'ctx, B>) -> ValueSlot {
-    match &base.into_erased().data().kind {
-        ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => *value,
-        ValueKindData::Function(_) | ValueKindData::GlobalVariable(_) => base.slot(),
-        ValueKindData::Constant(ConstantData::GepOffset { base_id, .. }) => *base_id,
-        _ => base.slot(),
-    }
 }
 
 /// Peel `getelementptr`/`bitcast` constant-expression layers off `pointer`,

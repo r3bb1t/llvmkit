@@ -1180,19 +1180,20 @@ fn non_inbounds_same_base_gep_ult_declines_to_fold() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Non-uniqued-constant parity guard. Unlike the `Expr`-form GEP pair above
-/// (whose `base` operand is one shared `Constant` handle reused for both
-/// sides), these two pointers are each built through
-/// `GlobalVariable::ptr_offset` — llvmkit's compact `GepOffset` encoding —
-/// called independently, which mints a *fresh* arena id every time
-/// (`intern_constant_gep_offset`, `llvm_context.rs`) rather than uniquing
-/// on `(global, offset)` the way LLVM uniques `Constant*`. Before the
-/// base-identity fix, `strip_and_accumulate_constant_offset` could not
-/// resolve a `GepOffset`'s `base_id` (it names the host global directly,
-/// never through a `Constant` wrapper) and bailed immediately with zero
-/// accumulated offset, so the two stripped "bases" were the two original,
-/// arena-distinct `ptr_offset` constants themselves — unequal under plain
-/// `==`, so the fold declined even though both pointers plainly share `@g`.
+/// Same-base guard for llvmkit's compact `GepOffset` encoding. Unlike the
+/// `Expr`-form GEP pair above (whose `base` operand is one shared `Constant`
+/// handle reused for both sides), these two pointers are each built through
+/// an independent `GlobalVariable::ptr_offset` call, so the fold has to reach
+/// the shared `@g` by stripping rather than by being handed it.
+///
+/// This fixture has outlived one bug and one design change. The bug:
+/// `strip_and_accumulate_constant_offset` could not resolve a `GepOffset`'s
+/// `base_id` (it names the host global directly, never through a `Constant`
+/// wrapper) and bailed with zero accumulated offset. The design change:
+/// `intern_constant_gep_offset` now uniques on `(type, global, offset)`, so
+/// two `ptr_offset(4)` calls on the same global are one arena node — which is
+/// what makes the `==` base comparison here mean what upstream's
+/// `Stripped0 == Stripped1` means.
 #[test]
 fn same_base_gep_offset_ult_folds_via_offset_compare() -> Result<(), IrError> {
     let m = module_new!("analysis-gep-offset-base-offset-ult")?;
@@ -1216,16 +1217,16 @@ fn same_base_gep_offset_ult_folds_via_offset_compare() -> Result<(), IrError> {
 }
 
 /// Composed variant of the guard above: each side is a further `getelementptr`
-/// constant expression over its own independently-built `ptr_offset` mid
-/// (`@g + 4` in both cases, but as two arena-distinct `GepOffset`
-/// constants). Exercises the fixed `GepOffset` peel arm as reached
-/// mid-walk from an outer `Expr::GetElementPtr` layer rather than as the
-/// top-level constant, and proves the accumulated offset sums correctly
-/// across both peeled layers (4 + 1 = 5 vs. 4 + 2 = 6, not just the outer
-/// layer's 1 vs. 2): under the old bail, each strip walk stopped at its
-/// own mid `ptr_offset` node with only the outer layer's offset
-/// accumulated, and those two mid nodes — being independently minted —
-/// still compared unequal.
+/// constant expression over a separately-requested `ptr_offset` mid (`@g + 4`
+/// on both sides). Exercises the `GepOffset` peel arm as reached mid-walk from
+/// an outer `Expr::GetElementPtr` layer rather than as the top-level constant,
+/// and proves the accumulated offset sums across both peeled layers
+/// (4 + 1 = 5 vs. 4 + 2 = 6, not just the outer layer's 1 vs. 2).
+///
+/// The two `ptr_offset(4)` calls used to mint two arena-distinct mids, which
+/// is what the peel had to see through; since constants are uniqued they are
+/// one node, and that scenario is no longer representable. The layer-summing
+/// property the fixture actually asserts is unaffected.
 #[test]
 fn nested_gep_over_gep_offset_mid_folds_via_offset_compare() -> Result<(), IrError> {
     let m = module_new!("analysis-gep-offset-nested-mid-ult")?;
@@ -1271,10 +1272,10 @@ fn nested_gep_over_gep_offset_mid_folds_via_offset_compare() -> Result<(), IrErr
     Ok(())
 }
 
-/// Soundness guard for the two fixes above: `base_identity` must still
-/// distinguish genuinely *different* underlying globals, not paper over
-/// every arena-id mismatch it sees. Two `ptr_offset` pointers into two
-/// distinct globals must not fold.
+/// Soundness guard for the two fixtures above: uniquing must collapse only
+/// what is genuinely the same constant. Two `ptr_offset` pointers into two
+/// distinct globals key differently, so they stay distinct arena nodes and
+/// must not fold.
 #[test]
 fn different_base_gep_offset_declines_to_fold() -> Result<(), IrError> {
     let m = module_new!("analysis-gep-offset-different-base")?;

@@ -823,21 +823,16 @@ audit found against vendored `llvmorg-22.1.4` (see CHANGELOG "Constant-folding
 parity"). A whole-branch review confirmed no mis-folds and no over-folds; the
 items below are the deferred / known-remaining points.
 
-- **Constants are not uniqued like upstream `Constant*`.** llvmkit mints a fresh
-  arena id for every `GlobalValueRef` / `GepOffset` / `SymbolDelta` constant
-  (`intern_constant_global_value_ref` / `intern_constant_gep_offset` push without
-  a dedup lookup), whereas LLVM uniques `Constant*` so `@g` is always the same
-  pointer. Any fold that compares constants by identity therefore silently
-  **under**-folds (never mis-folds: `==`-true still implies same value). The
-  `icmp` same-base fold was fixed with `base_identity` (compare underlying global
-  id). Other pre-existing identity-comparison sites with the same latent
-  under-fold, all sound, none yet addressed: `fold_phi`
-  (`constant_folding.rs`, `previous != constant`), select `true_value ==
-  false_value` and `constant_splat_value` (`constant_fold.rs`). The general fix
-  is a constant-uniquing (hash-consed intern) layer for these constant kinds;
-  it would make identity comparison structural everywhere, matching upstream, and
-  retire the `base_identity` workaround — a dedicated cycle, since it changes a
-  deliberate arena characteristic and needs its own review.
+- ~~**Constants are not uniqued like upstream `Constant*`.**~~ **Closed
+  2026-08-01.** `GlobalValueRef`, `GepOffset`, `SymbolDelta`, and
+  `SymbolDeltaPlus` now intern on their structural fingerprint like every other
+  constant kind, so identity comparison is structural everywhere and the
+  `base_identity` workaround is retired. The under-folding arms this entry
+  listed — `fold_phi`, select's `true_value == false_value`,
+  `constant_splat_value`, and the pointer-base comparison — all read plain `==`
+  now, matching upstream. Forward `blockaddress` placeholders stay un-uniqued
+  by design (each is a distinct pending reference); see
+  `tests/constant_uniquing.rs` for the law and its exceptions.
 
 - **`ptrtoint`/`ptrtoaddr` mid-width on `pointer_size != index_size` (CHERI-like)
   layouts — a deliberate, reasoned divergence (needs a decision).** In the
