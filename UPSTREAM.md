@@ -1498,3 +1498,10 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::exact_inverse` | `TEST(APFloatTest, exactInverse)` for the modeled semantics; upstream's host-`float`/`double` constructors are spelled as the equivalent literals | port |
 | `crates/llvmkit-ir/tests/ap_float_upstream_predicates.rs::comparisons` | `TEST(APFloatTest, Comparisons)` — the ten ordered values compared pairwise | port |
 | `crates/llvmkit-ir/tests/ap_float_upstream_convert.rs::upstream_convert` | `llvm/unittests/ADT/APFloatTest.cpp::TEST(APFloatTest, convert)` — ported in upstream's order, asserting the converted value, the `losesInfo` flag, and the status where upstream checks it | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_scaling.rs::upstream_scalbn` | `llvm/unittests/ADT/APFloatTest.cpp::TEST(APFloatTest, scalbn)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_scaling.rs::upstream_frexp` | `TEST(APFloatTest, frexp)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_scaling.rs::upstream_get_exact_log2` | `TEST(APFloatTest, getExactLog2)` over the modeled semantics; `None` stands in for upstream's `INT_MIN` return | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_remainder.rs::upstream_remainder_special_cases` | the 340-row `SpecialCaseTests` table in `TEST(APFloatTest, remainder)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_remainder.rs::upstream_remainder_cases` | the individual `{ f1; f2; expected }` blocks in `TEST(APFloatTest, remainder)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_remainder.rs::upstream_mod_cases` | the individual `{ f1; f2; expected }` blocks in `TEST(APFloatTest, mod)` | port |
+| `crates/llvmkit-ir/tests/ap_float_upstream_next.rs::upstream_next` | `TEST(APFloatTest, next)` — all 44 nextUp/nextDown blocks over the IEEE-754R 2008 special values and the binade/denormal/zero boundaries | port |

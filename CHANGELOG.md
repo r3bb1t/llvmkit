@@ -7,6 +7,29 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ApFloat audit: `ilogb`'s three dependants
+
+Ports of `TEST(APFloatTest, scalbn)`, `frexp`, `getExactLog2`, `next`,
+`remainder` (its 340-row table plus the individual cases), and `mod`. The
+`remainder`, `mod`, and `getExactLog2` families were already bit-exact; the
+other three were not.
+
+#### Fixed
+
+- **`scalbn` left a signaling NaN signaling.** Upstream's last act is
+  `if (X.isNaN()) X.makeQuiet()`, so the result is quiet with its payload
+  intact.
+- **`frexp` reported an exponent of `0` for NaNs and infinities**, and did not
+  quiet a signaling NaN. Upstream opens with `Exp = ilogb(Val)` and returns
+  before overwriting it, so the answer for those categories is `ilogb`'s
+  sentinel — `ILOGB_NAN` and `ILOGB_INF`, not zero. Only a zero answers `0`.
+- **`next` quieted a signaling NaN in place**, keeping the payload and the
+  "make it a NaN, not an infinity" filler bit. Upstream builds a *fresh*
+  payload-less quiet NaN carrying only the sign
+  (`makeNaN(false, isNegative(), nullptr)`). This is a deliberate asymmetry
+  with `scalbn` / `frexp` / `convert`, which do quiet in place — worth knowing
+  before "simplifying" any of the four to share a helper.
+
 ### ApFloat `convert` carries NaN payloads
 
 #### Fixed
