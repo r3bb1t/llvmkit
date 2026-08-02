@@ -105,6 +105,21 @@ sequenced:
    seed. Still no new types.
 3. **`ConstantRange` to completion**, then the families it gates —
    `computeConstantRange`, the six `computeOverflowFor*`, `getVScaleRange`.
+   Cut into five sub-slices, each mergeable on its own (2026-08-01). llvmkit
+   maps 13 of the 78 public methods today; the count below is what each slice
+   adds.
+
+   | Slice | Adds | Content |
+   |---|---|---|
+   | **3a** | ~16 | Bounds and predicates: `getSignedMax`/`Min`, `isSignWrappedSet`, `isUpperSignWrapped`, `isSingleElement`, `isAllNegative`/`isAllNonNegative`/`isAllPositive`, `isSizeLargerThan`, `isSizeStrictlySmallerThan`, `getActiveBits`, `getMinSignedBits`, `getNonEmpty`, `toKnownBits`, `fromKnownBits`. No arithmetic; exhaustively testable at 4 bits. |
+   | **3b** | ~12 | Set operations: `intersectWith`, `unionWith`, `difference`, `subtract`, `inverse`, `splitPosNeg`, `zeroExtend`, `signExtend`, `truncate`, `zextOrTrunc`, `sextOrTrunc`, `castOp`. Depends on 3a. |
+   | **3c** | ~6 | ICmp regions: `makeAllowedICmpRegion`, `makeSatisfyingICmpRegion`, `makeExactICmpRegion`, `makeMaskNotEqualRange`, `getEquivalentICmp`, `icmp`. This is what the phi branch-condition refinement and `computeKnownBitsFromContext` need. |
+   | **3d** | ~30 | Arithmetic — the bulk: `add`, `sub`, `multiply`, the min/max quartet, the div/rem quartet, `binaryAnd`/`Or`/`Xor`/`Not`, the shift trio, `abs`, `ctlz`/`cttz`/`ctpop`, the saturating family, `binaryOp`, `overflowingBinaryOp`, `intrinsic`. |
+   | **3e** | — | The ValueTracking consumers `ConstantRange` was needed for: `computeConstantRange`, `computeOverflowForSigned`/`UnsignedAdd`/`Sub`/`Mul`, `getVScaleRange`. |
+
+   `ConstantRangeTest.cpp` (~2800 lines) is the test source throughout; its
+   exhaustive-over-4-bit-ranges harness ports directly and is the right
+   oracle for every slice.
 4. **`SelectPatternResult`** — `getSelectPattern`,
    `matchDecomposedSelectPattern`, `getMinMaxIntrinsic`,
    `getInverseMinMaxIntrinsic`.

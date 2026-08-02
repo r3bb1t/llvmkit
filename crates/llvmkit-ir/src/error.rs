@@ -567,6 +567,29 @@ pub enum IrError {
         rhs: u32,
     },
 
+    /// A [`ConstantRange`](crate::ConstantRange) was asked for with equal
+    /// endpoints that name neither the empty set nor the full one.
+    ///
+    /// `[lower, upper)` encodes empty as `lower == upper == 0` and full as
+    /// `lower == upper == max`. Any other equal pair is unrepresentable: it
+    /// would describe a range containing nothing while claiming not to be
+    /// empty. Upstream asserts on it in `ConstantRange::ConstantRange`; this
+    /// crate has no runtime asserts in production paths, so the constructor
+    /// rejects instead. Use
+    /// [`ConstantRange::non_empty`](crate::ConstantRange::non_empty) to read
+    /// an equal pair as the full set, which is what
+    /// `ConstantRange::getNonEmpty` does.
+    #[error(
+        "constant range endpoints are equal at {value}, which is neither the minimum \
+         (the empty set) nor the maximum (the full set) for {bit_width} bits"
+    )]
+    DegenerateConstantRange {
+        /// The shared endpoint value, rendered unsigned.
+        value: String,
+        /// Width of the range's integer domain.
+        bit_width: u32,
+    },
+
     /// A statically-lengthed array handle (`ArrayValue<_, ArrLen<N>>`) was
     /// narrowed from an array of a different length. Distinct from
     /// [`OperandWidthMismatch`](Self::OperandWidthMismatch), whose `u32` fields
