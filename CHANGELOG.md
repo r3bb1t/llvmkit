@@ -7,6 +7,38 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### `ConstantRange` bounds and predicates (tranche 3, slice 3a)
+
+Tranche 3 of the `ValueTracking.h` port is `ConstantRange` itself, which
+llvmkit had only as a 223-line seed — 13 of upstream's 78 public methods. It
+is cut into five slices (see `docs/future-work.md`); this is the first.
+
+#### Added
+
+- Signed bounds: `signed_min`, `signed_max`, `is_sign_wrapped_set`,
+  `is_upper_sign_wrapped`.
+- Membership shape: `single_element`, `single_missing_element`,
+  `is_single_element`, `is_size_strictly_smaller_than`, `is_size_larger_than`.
+- Sign predicates: `is_all_negative`, `is_all_non_negative`,
+  `is_all_positive`. The empty set is vacuously all-negative *and*
+  all-positive, as upstream documents.
+- Width queries: `active_bits`, `min_signed_bits`.
+- `non_empty` — the constructor that reads equal endpoints as the full set,
+  mirroring `getNonEmpty`.
+- `from_known_bits` / `to_known_bits`, bridging `ConstantRange` and
+  `KnownBits` in both directions.
+
+#### Fixed
+
+- **`ConstantRange::new` accepted a range that cannot exist.** Equal endpoints
+  encode the two degenerate sets — all-zero is empty, all-ones is full — so
+  any *other* equal pair describes a range containing nothing while answering
+  `false` to both `is_empty_set` and `is_full_set`, which every predicate
+  downstream reads. Upstream asserts against it in
+  `ConstantRange::ConstantRange`; llvmkit silently built it. The constructor
+  now returns the new `IrError::DegenerateConstantRange`. This is a behaviour
+  change on a constructor that was already fallible.
+
 ### ValueTracking: the poison predicates (tranche 2)
 
 Second tranche of the `ValueTracking.h` port. The value-level poison
