@@ -119,6 +119,86 @@ fn estimate_bit_masked_and_lower_bound(lhs: &ConstantRange, rhs: &ConstantRange)
     if by_lhs.ugt(&by_rhs) { by_lhs } else { by_rhs }
 }
 
+/// Trailing-zero counts over a non-wrapped, non-empty `[lower, upper)`.
+///
+/// Ports the file-local `getUnsignedCountTrailingZerosRange`. Upstream asserts
+/// both preconditions; every caller here establishes them, and a violation
+/// falls back to the full set rather than misreporting.
+fn unsigned_count_trailing_zeros_range(lower: &ApInt, upper: &ApInt) -> ConstantRange {
+    let bit_width = lower.bit_width();
+    let one_v = one(bit_width);
+    let count = |v: u32| ApInt::from_words(bit_width, &[u64::from(v)]);
+
+    if lower.eq_ap_int(upper) {
+        return ConstantRange::full(bit_width);
+    }
+    if lower.wrapping_add(&one_v).eq_ap_int(upper) {
+        // One member, so the count is exact.
+        return ConstantRange::single(count(lower.count_trailing_zeros()));
+    }
+    if lower.is_zero() {
+        // Zero contributes the full width, and everything below it is
+        // reachable.
+        return ConstantRange::new(ApInt::zero(bit_width), count(bit_width + 1))
+            .unwrap_or_else(|_| ConstantRange::full(bit_width));
+    }
+
+    // The bits both endpoints agree on cannot be where the lowest set bit
+    // moves, so the longest common prefix bounds the count.
+    let common_prefix_length = lower
+        .bitxor(&upper.wrapping_sub(&one_v))
+        .count_leading_zeros();
+    let highest = (bit_width - common_prefix_length - 1).max(lower.count_trailing_zeros());
+    ConstantRange::new(ApInt::zero(bit_width), count(highest + 1))
+        .unwrap_or_else(|_| ConstantRange::full(bit_width))
+}
+
+/// Population counts over a non-wrapped, non-empty `[lower, upper)`.
+///
+/// Ports the file-local `getUnsignedPopCountRange`.
+fn unsigned_pop_count_range(lower: &ApInt, upper: &ApInt) -> ConstantRange {
+    let bit_width = lower.bit_width();
+    let one_v = one(bit_width);
+    let count = |v: u32| ApInt::from_words(bit_width, &[u64::from(v)]);
+
+    if lower.eq_ap_int(upper) {
+        return ConstantRange::full(bit_width);
+    }
+    if lower.wrapping_add(&one_v).eq_ap_int(upper) {
+        return ConstantRange::single(count(lower.popcount()));
+    }
+
+    let max = upper.wrapping_sub(&one_v);
+    let common_prefix_length = lower.bitxor(&max).count_leading_zeros();
+    let prefix_pop_count = lower.hi_bits(common_prefix_length).popcount();
+    // If the lower endpoint is the prefix followed by zeros, the prefix's own
+    // population is attainable; otherwise at least one more bit is set.
+    let min_bits = prefix_pop_count
+        + u32::from(lower.count_trailing_zeros() < bit_width - common_prefix_length);
+    // Symmetrically at the top: a max of prefix-then-ones attains the full
+    // remaining width, otherwise one less.
+    let max_bits = prefix_pop_count + (bit_width - common_prefix_length)
+        - u32::from(max.count_trailing_ones() < bit_width - common_prefix_length);
+    ConstantRange::new(count(min_bits), count(max_bits + 1))
+        .unwrap_or_else(|_| ConstantRange::full(bit_width))
+}
+
+/// The eight bounds every saturating operation picks its endpoints from.
+///
+/// Named rather than passed as a tuple so the pairings in each operation read
+/// as what they are — `self_umin` with `other_umax` for a subtraction, for
+/// instance, because subtraction decreases in its right operand.
+struct SaturatingBounds {
+    self_umin: ApInt,
+    self_umax: ApInt,
+    self_smin: ApInt,
+    self_smax: ApInt,
+    other_umin: ApInt,
+    other_umax: ApInt,
+    other_smin: ApInt,
+    other_smax: ApInt,
+}
+
 /// Which of the four min/max operations `ConstantRange::min_max` is running.
 ///
 /// Upstream writes `smax`, `smin`, `umax` and `umin` as four near-identical
@@ -2068,6 +2148,295 @@ impl ConstantRange {
             (negative_min, positive_max)
         };
         Self::non_empty(min, max).unwrap_or_else(|_| Self::full(bit_width))
+    }
+
+    /// Saturating unsigned addition of every pairing. Mirrors
+    /// `ConstantRange::uadd_sat`.
+    pub fn uadd_sat(&self, other: &Self) -> Self {
+        self.saturating_pairwise(other, |bounds| {
+            (
+                bounds.self_umin.uadd_sat(&bounds.other_umin),
+                bounds.self_umax.uadd_sat(&bounds.other_umax),
+            )
+        })
+    }
+
+    /// Saturating signed addition of every pairing. Mirrors
+    /// `ConstantRange::sadd_sat`.
+    pub fn sadd_sat(&self, other: &Self) -> Self {
+        self.saturating_pairwise(other, |bounds| {
+            (
+                bounds.self_smin.sadd_sat(&bounds.other_smin),
+                bounds.self_smax.sadd_sat(&bounds.other_smax),
+            )
+        })
+    }
+
+    /// Saturating unsigned subtraction of every pairing. Mirrors
+    /// `ConstantRange::usub_sat`.
+    ///
+    /// Subtraction is *decreasing* in its right operand, so the smallest
+    /// result pairs this range's minimum with the other's maximum.
+    pub fn usub_sat(&self, other: &Self) -> Self {
+        self.saturating_pairwise(other, |bounds| {
+            (
+                bounds.self_umin.usub_sat(&bounds.other_umax),
+                bounds.self_umax.usub_sat(&bounds.other_umin),
+            )
+        })
+    }
+
+    /// Saturating signed subtraction of every pairing. Mirrors
+    /// `ConstantRange::ssub_sat`.
+    pub fn ssub_sat(&self, other: &Self) -> Self {
+        self.saturating_pairwise(other, |bounds| {
+            (
+                bounds.self_smin.ssub_sat(&bounds.other_smax),
+                bounds.self_smax.ssub_sat(&bounds.other_smin),
+            )
+        })
+    }
+
+    /// Saturating unsigned multiplication of every pairing. Mirrors
+    /// `ConstantRange::umul_sat`.
+    pub fn umul_sat(&self, other: &Self) -> Self {
+        self.saturating_pairwise(other, |bounds| {
+            (
+                bounds.self_umin.umul_sat(&bounds.other_umin),
+                bounds.self_umax.umul_sat(&bounds.other_umax),
+            )
+        })
+    }
+
+    /// Saturating signed multiplication of every pairing. Mirrors
+    /// `ConstantRange::smul_sat`.
+    ///
+    /// With negatives in play the extremes can come from a mixed corner —
+    /// upstream's example is `[-1,4) * [-2,3)`, whose lowest product is
+    /// `3 * -2` — so all four corners are considered, as in
+    /// [`Self::multiply`].
+    pub fn smul_sat(&self, other: &Self) -> Self {
+        self.saturating_pairwise(other, |bounds| {
+            let corners = [
+                bounds.self_smin.smul_sat(&bounds.other_smin),
+                bounds.self_smin.smul_sat(&bounds.other_smax),
+                bounds.self_smax.smul_sat(&bounds.other_smin),
+                bounds.self_smax.smul_sat(&bounds.other_smax),
+            ];
+            let mut lowest = corners[0].clone();
+            let mut highest = corners[0].clone();
+            for corner in &corners[1..] {
+                if corner.slt(&lowest) {
+                    lowest = corner.clone();
+                }
+                if highest.slt(corner) {
+                    highest = corner.clone();
+                }
+            }
+            (lowest, highest)
+        })
+    }
+
+    /// Saturating unsigned left shift of every pairing. Mirrors
+    /// `ConstantRange::ushl_sat`.
+    pub fn ushl_sat(&self, other: &Self) -> Self {
+        let bit_width = self.bit_width();
+        self.saturating_pairwise(other, move |bounds| {
+            let amount = |v: &ApInt| {
+                u32::try_from(v.limited_value(u64::from(bit_width))).unwrap_or(bit_width)
+            };
+            (
+                bounds.self_umin.ushl_sat(amount(&bounds.other_umin)),
+                bounds.self_umax.ushl_sat(amount(&bounds.other_umax)),
+            )
+        })
+    }
+
+    /// Saturating signed left shift of every pairing. Mirrors
+    /// `ConstantRange::sshl_sat`.
+    ///
+    /// The shift amount that produces each extreme depends on that endpoint's
+    /// sign: shifting a negative value left drives it *down*, so its minimum
+    /// comes from the largest shift, while a non-negative value's minimum
+    /// comes from the smallest.
+    pub fn sshl_sat(&self, other: &Self) -> Self {
+        let bit_width = self.bit_width();
+        self.saturating_pairwise(other, move |bounds| {
+            let amount = |v: &ApInt| {
+                u32::try_from(v.limited_value(u64::from(bit_width))).unwrap_or(bit_width)
+            };
+            let shift_min = amount(&bounds.other_umin);
+            let shift_max = amount(&bounds.other_umax);
+            (
+                bounds
+                    .self_smin
+                    .sshl_sat(if bounds.self_smin.is_non_negative() {
+                        shift_min
+                    } else {
+                        shift_max
+                    }),
+                bounds
+                    .self_smax
+                    .sshl_sat(if bounds.self_smax.is_negative() {
+                        shift_min
+                    } else {
+                        shift_max
+                    }),
+            )
+        })
+    }
+
+    /// The shared frame of the saturating operations: both empty checks, the
+    /// six bounds each of them reads, and the closing `[lower, upper + 1)`.
+    ///
+    /// Every upstream saturating function has exactly this shape — only the
+    /// choice of which bounds pair up differs — so writing the frame once
+    /// keeps the eight from drifting.
+    fn saturating_pairwise<F>(&self, other: &Self, bounds_to_endpoints: F) -> Self
+    where
+        F: FnOnce(SaturatingBounds) -> (ApInt, ApInt),
+    {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(bit_width);
+        }
+        let (lower, upper) = bounds_to_endpoints(SaturatingBounds {
+            self_umin: self.unsigned_min(),
+            self_umax: self.unsigned_max(),
+            self_smin: self.signed_min(),
+            self_smax: self.signed_max(),
+            other_umin: other.unsigned_min(),
+            other_umax: other.unsigned_max(),
+            other_smin: other.signed_min(),
+            other_smax: other.signed_max(),
+        });
+        Self::non_empty(lower, upper.wrapping_add(&one(bit_width)))
+            .unwrap_or_else(|_| Self::full(bit_width))
+    }
+
+    /// Count of leading zeros over every member. Mirrors
+    /// `ConstantRange::ctlz`.
+    ///
+    /// `zero_is_poison` reflects the `llvm.ctlz` flag: `ctlz(0)` is the full
+    /// width, which the intrinsic may declare poison instead, in which case
+    /// zero is excluded from the input before counting.
+    pub fn ctlz(&self, zero_is_poison: bool) -> Self {
+        if self.is_empty_set() {
+            return Self::empty(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        let zero = ApInt::zero(bit_width);
+        let one_v = one(bit_width);
+        let count = |v: u32| ApInt::from_words(bit_width, &[u64::from(v)]);
+        let range = |lower: ApInt, upper: ApInt| {
+            Self::new(lower, upper).unwrap_or_else(|_| Self::full(bit_width))
+        };
+
+        if zero_is_poison && self.contains(&zero) {
+            // Zero is in the range but must be excluded. It can enter three
+            // ways: as the lower endpoint, as the (wrapped) upper endpoint, or
+            // in the interior of a wrapped range.
+            let upper_minus_one = self.upper.wrapping_sub(&one_v);
+            if self.lower.is_zero() {
+                if upper_minus_one.is_zero() {
+                    // `[0, 1)` holds only zero, so excluding it leaves nothing.
+                    return Self::empty(bit_width);
+                }
+                return range(
+                    count(upper_minus_one.count_leading_zeros()),
+                    count(self.lower.wrapping_add(&one_v).count_leading_zeros() + 1),
+                );
+            }
+            if upper_minus_one.is_zero() {
+                return range(zero, count(self.lower.count_leading_zeros() + 1));
+            }
+            // Zero sits inside a wrapped range, so every count is possible.
+            return range(zero, count(bit_width));
+        }
+
+        // Zero is either absent or harmless. More leading zeros means a
+        // smaller value, so the extremes swap.
+        Self::non_empty(
+            count(self.unsigned_max().count_leading_zeros()),
+            count(self.unsigned_min().count_leading_zeros()).wrapping_add(&one_v),
+        )
+        .unwrap_or_else(|_| Self::full(bit_width))
+    }
+
+    /// Count of trailing zeros over every member. Mirrors
+    /// `ConstantRange::cttz`.
+    pub fn cttz(&self, zero_is_poison: bool) -> Self {
+        if self.is_empty_set() {
+            return Self::empty(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        let zero = ApInt::zero(bit_width);
+        let one_v = one(bit_width);
+        let count = |v: u32| ApInt::from_words(bit_width, &[u64::from(v)]);
+
+        if zero_is_poison && self.contains(&zero) {
+            if self.lower.is_zero() {
+                if self.upper.is_one() {
+                    return Self::empty(bit_width);
+                }
+                // Exclude zero by starting the sub-range at one.
+                return unsigned_count_trailing_zeros_range(&one_v, &self.upper);
+            }
+            if self.upper.is_one() {
+                return unsigned_count_trailing_zeros_range(&self.lower, &zero);
+            }
+            // Zero is interior to a wrapped range: handle the two halves.
+            return unsigned_count_trailing_zeros_range(&self.lower, &zero).union_with(
+                &unsigned_count_trailing_zeros_range(&one_v, &self.upper),
+                PreferredRangeType::Smallest,
+            );
+        }
+
+        if self.is_full_set() {
+            return Self::non_empty(zero, count(bit_width).wrapping_add(&one_v))
+                .unwrap_or_else(|_| Self::full(bit_width));
+        }
+        if !self.is_wrapped_set() {
+            return unsigned_count_trailing_zeros_range(&self.lower, &self.upper);
+        }
+        // Decompose the wrapped range into `[lower, 0)` and `[0, upper)`.
+        unsigned_count_trailing_zeros_range(&self.lower, &zero).union_with(
+            &unsigned_count_trailing_zeros_range(&zero, &self.upper),
+            PreferredRangeType::Smallest,
+        )
+    }
+
+    /// Population count over every member. Mirrors `ConstantRange::ctpop`.
+    pub fn ctpop(&self) -> Self {
+        if self.is_empty_set() {
+            return Self::empty(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        let zero = ApInt::zero(bit_width);
+        let one_v = one(bit_width);
+        let count = |v: u32| ApInt::from_words(bit_width, &[u64::from(v)]);
+
+        if self.is_full_set() {
+            return Self::non_empty(zero, count(bit_width).wrapping_add(&one_v))
+                .unwrap_or_else(|_| Self::full(bit_width));
+        }
+        if !self.is_wrapped_set() {
+            return unsigned_pop_count_range(&self.lower, &self.upper);
+        }
+        // `[lower, 0)` is `[lower, max]`, whose smallest population count is
+        // the run of leading ones the lower endpoint already has.
+        let upper_half = Self::new(
+            count(self.lower.count_leading_ones()),
+            count(bit_width).wrapping_add(&one_v),
+        )
+        .unwrap_or_else(|_| Self::full(bit_width));
+        upper_half.union_with(
+            &unsigned_pop_count_range(&zero, &self.upper),
+            PreferredRangeType::Smallest,
+        )
     }
 
     pub fn intersects_with(&self, rhs: &Self) -> bool {
