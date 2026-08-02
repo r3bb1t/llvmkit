@@ -1342,6 +1342,17 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_and_dce_pipeline_folds_and_erases` | `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl`; `llvm/lib/Transforms/Scalar/DCE.cpp::eliminateDeadCode`; `llvm/lib/Passes/PassRegistry.def` scalar pass names | llvmkit-specific |
 | `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_pass_keeps_load_from_interposable_constant_global` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldLoadFromConstPtr` `hasDefinitiveInitializer()` gate through `InstSimplifyPass.cpp::runImpl` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_terminates_on_ordered_atomic_load_from_constant` | `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl` (only `!I.use_empty()` instructions are simplified, so a folded-but-live side-effecting load is RAUW'd once and not re-queued) -- broad-review termination lock | llvmkit-specific |
+| `crates/llvmkit-ir/tests/ap_int.rs::ashr_at_or_beyond_the_width_fills_with_the_sign_bit` | `llvm/include/llvm/ADT/APInt.h::APInt::ashrInPlace` — the `ShiftAmt == BitWidth` sign-fill arm | port |
+| `crates/llvmkit-ir/tests/constant_range_bitwise.rs::binary_and_covers_every_result` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::binaryAnd` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitwise.rs::binary_or_covers_every_result` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::binaryOr` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitwise.rs::binary_xor_covers_every_result` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::binaryXor` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitwise.rs::binary_not_is_exact` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::binaryNot` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitwise.rs::xor_with_all_ones_is_complement` | the all-ones shortcut in `ConstantRange::binaryXor` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitwise.rs::shl_covers_every_defined_result` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::shl` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitwise.rs::lshr_covers_every_result` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::lshr` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitwise.rs::ashr_covers_every_result` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::ashr` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitwise.rs::an_empty_operand_yields_empty` | the empty-set early returns in each of the above | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitwise.rs::shl_by_the_full_width_is_empty` | the `RHS->uge(BW)` poison early return in `ConstantRange::shl` | mirror |
 | `crates/llvmkit-ir/tests/constant_range_divrem.rs::udiv_covers_every_defined_quotient` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::udiv` | mirror |
 | `crates/llvmkit-ir/tests/constant_range_divrem.rs::sdiv_covers_every_defined_quotient` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::sdiv`, excluding the `SignedMin / -1` IR-level UB upstream also excludes | mirror |
 | `crates/llvmkit-ir/tests/constant_range_divrem.rs::urem_covers_every_defined_remainder` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::urem` | mirror |

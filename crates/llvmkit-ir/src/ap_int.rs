@@ -433,9 +433,22 @@ impl ApInt {
             .unwrap_or_else(|| Self::zero(self.bit_width))
     }
 
+    /// Arithmetic right shift, saturating at the bit width.
+    ///
+    /// Shifting by at least the width leaves every bit equal to the original
+    /// sign bit: zero for a non-negative value, all-ones for a negative one.
+    /// Mirrors `APInt::ashrInPlace`, whose `ShiftAmt == BitWidth` arm is
+    /// spelled `SExtVAL >> (APINT_BITS_PER_WORD - 1)` — "fill with sign bit".
+    /// The `APInt` overload reaches that arm through
+    /// `getLimitedValue(BitWidth)`, so a larger amount saturates the same way.
     pub fn ashr(&self, amount: u32) -> ApInt {
-        self.checked_ashr(amount)
-            .unwrap_or_else(|| Self::zero(self.bit_width))
+        self.checked_ashr(amount).unwrap_or_else(|| {
+            if self.is_negative() {
+                Self::all_ones(self.bit_width)
+            } else {
+                Self::zero(self.bit_width)
+            }
+        })
     }
 
     pub fn splat(new_len: u32, value: &ApInt) -> Self {

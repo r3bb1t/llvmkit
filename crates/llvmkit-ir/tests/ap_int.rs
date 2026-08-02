@@ -152,3 +152,41 @@ fn byte_swap_and_reverse_bits_match_knownbits_unary_tests() {
     let negative = ApInt::from_words(8, &[0b1001_0000]);
     assert_eq!(negative.ashr(3), ApInt::from_words(8, &[0b1111_0010]));
 }
+
+/// Shifting arithmetically by at least the bit width fills with the sign bit,
+/// not with zero.
+///
+/// Mirrors `llvm/include/llvm/ADT/APInt.h::APInt::ashrInPlace`, whose
+/// `ShiftAmt == BitWidth` arm is `SExtVAL >> (APINT_BITS_PER_WORD - 1)` —
+/// "Fill with sign bit". The `APInt` overload reaches that arm through
+/// `getLimitedValue(BitWidth)`, so any larger amount saturates identically.
+///
+/// This is a regression test: `ApInt::ashr` previously returned zero for every
+/// out-of-range amount, which is right for a non-negative value and wrong for
+/// a negative one. `ConstantRange::ashr` surfaced it — the range for
+/// `-8 ashr 4` at four bits dropped `-1`.
+#[test]
+fn ashr_at_or_beyond_the_width_fills_with_the_sign_bit() {
+    let negative = ApInt::from_words(4, &[0b1000]); // -8
+    let positive = ApInt::from_words(4, &[0b0111]); //  7
+
+    for amount in [4_u32, 5, 64, 1000] {
+        assert_eq!(
+            negative.ashr(amount),
+            ApInt::all_ones(4),
+            "a negative value saturates to -1 at shift {amount}"
+        );
+        assert_eq!(
+            positive.ashr(amount),
+            ApInt::zero(4),
+            "a non-negative value saturates to 0 at shift {amount}"
+        );
+    }
+
+    // One below the width still shifts normally: -8 >> 3 == -1, 7 >> 3 == 0.
+    assert_eq!(negative.ashr(3), ApInt::all_ones(4));
+    assert_eq!(positive.ashr(3), ApInt::zero(4));
+
+    // `checked_ashr` keeps its stricter contract and declines out of range.
+    assert!(negative.checked_ashr(4).is_none());
+}

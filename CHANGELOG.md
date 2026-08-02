@@ -7,6 +7,32 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### `ConstantRange` bitwise operations and shifts (tranche 3, slice 3d-iii)
+
+#### Added
+
+- `binary_and`, `binary_or`, `binary_xor`, `binary_not`.
+- `shl`, `lshr`, `ashr`.
+
+`binary_and` and `binary_or` each intersect two independent approximations —
+what the known bits say, and an interval derived from the ranges' extremes —
+because neither subsumes the other. `binary_or` reuses the AND's lower-bound
+estimator on complemented operands, which is De Morgan applied to the bound
+rather than to the operation.
+
+#### Fixed
+
+- **`ApInt::ashr` filled with zero instead of the sign bit** when the shift
+  amount reached or exceeded the bit width. Upstream's `APInt::ashrInPlace`
+  spells that arm `SExtVAL >> (APINT_BITS_PER_WORD - 1)` — "fill with sign
+  bit" — so a negative value must saturate to all-ones, not zero. The `APInt`
+  overload reaches it via `getLimitedValue(BitWidth)`, so larger amounts
+  saturate the same way.
+
+  `ConstantRange::ashr` surfaced it: the range for `-8 ashr 4` at four bits
+  dropped `-1`. `checked_ashr` keeps its stricter contract and still declines
+  out of range; only the saturating wrapper changed.
+
 ### `ConstantRange` division and remainder (tranche 3, slice 3d-ii)
 
 #### Added
