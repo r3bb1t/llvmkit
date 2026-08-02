@@ -120,6 +120,23 @@ fn estimate_bit_masked_and_lower_bound(lhs: &ConstantRange, rhs: &ConstantRange)
     if by_lhs.ugt(&by_rhs) { by_lhs } else { by_rhs }
 }
 
+/// Whether an operation over two ranges overflows.
+///
+/// Mirrors `ConstantRange::OverflowResult`, which `ValueTracking.h` re-declares
+/// verbatim as `llvm::OverflowResult`; llvmkit has the one type and both
+/// layers use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OverflowResult {
+    /// Always overflows, toward the signed or unsigned *minimum*.
+    AlwaysOverflowsLow,
+    /// Always overflows, toward the signed or unsigned *maximum*.
+    AlwaysOverflowsHigh,
+    /// May or may not overflow.
+    MayOverflow,
+    /// Never overflows.
+    NeverOverflows,
+}
+
 /// The no-wrap promises an overflowing binary operator can carry.
 ///
 /// Mirrors the `NoWrapKind` bitmask upstream passes as an `unsigned` built
@@ -2763,6 +2780,147 @@ impl ConstantRange {
             RangeIntrinsic::Cttz { zero_is_poison } => first.cttz(zero_is_poison),
             RangeIntrinsic::Ctpop => first.ctpop(),
         })
+    }
+
+    /// Whether unsigned addition of every pairing overflows. Mirrors
+    /// `ConstantRange::unsignedAddMayOverflow`.
+    pub fn unsigned_add_may_overflow(&self, other: &Self) -> OverflowResult {
+        if self.bit_width() != other.bit_width() || self.is_empty_set() || other.is_empty_set() {
+            return OverflowResult::MayOverflow;
+        }
+        let min = self.unsigned_min();
+        let max = self.unsigned_max();
+        let other_min = other.unsigned_min();
+        let other_max = other.unsigned_max();
+
+        // `a u+ b` overflows high exactly when `a u> ~b`.
+        if min.ugt(&other_min.not()) {
+            return OverflowResult::AlwaysOverflowsHigh;
+        }
+        if max.ugt(&other_max.not()) {
+            return OverflowResult::MayOverflow;
+        }
+        OverflowResult::NeverOverflows
+    }
+
+    /// Whether signed addition of every pairing overflows. Mirrors
+    /// `ConstantRange::signedAddMayOverflow`.
+    pub fn signed_add_may_overflow(&self, other: &Self) -> OverflowResult {
+        if self.bit_width() != other.bit_width() || self.is_empty_set() || other.is_empty_set() {
+            return OverflowResult::MayOverflow;
+        }
+        let bit_width = self.bit_width();
+        let min = self.signed_min();
+        let max = self.signed_max();
+        let other_min = other.signed_min();
+        let other_max = other.signed_max();
+        let signed_min = ApInt::signed_min_value(bit_width);
+        let signed_max = ApInt::signed_max_value(bit_width);
+
+        // `a s+ b` overflows high when both are non-negative and
+        // `a s> smax - b`; low when both are negative and `a s< smin - b`.
+        // Checking the *extremes* that way proves it always overflows;
+        // checking the opposite extremes proves it might.
+        if min.is_non_negative()
+            && other_min.is_non_negative()
+            && min.sgt(&signed_max.wrapping_sub(&other_min))
+        {
+            return OverflowResult::AlwaysOverflowsHigh;
+        }
+        if max.is_negative()
+            && other_max.is_negative()
+            && max.slt(&signed_min.wrapping_sub(&other_max))
+        {
+            return OverflowResult::AlwaysOverflowsLow;
+        }
+        if max.is_non_negative()
+            && other_max.is_non_negative()
+            && max.sgt(&signed_max.wrapping_sub(&other_max))
+        {
+            return OverflowResult::MayOverflow;
+        }
+        if min.is_negative()
+            && other_min.is_negative()
+            && min.slt(&signed_min.wrapping_sub(&other_min))
+        {
+            return OverflowResult::MayOverflow;
+        }
+        OverflowResult::NeverOverflows
+    }
+
+    /// Whether unsigned subtraction of every pairing overflows. Mirrors
+    /// `ConstantRange::unsignedSubMayOverflow`.
+    pub fn unsigned_sub_may_overflow(&self, other: &Self) -> OverflowResult {
+        if self.bit_width() != other.bit_width() || self.is_empty_set() || other.is_empty_set() {
+            return OverflowResult::MayOverflow;
+        }
+        // `a u- b` borrows exactly when `a u< b`.
+        if self.unsigned_max().ult(&other.unsigned_min()) {
+            return OverflowResult::AlwaysOverflowsLow;
+        }
+        if self.unsigned_min().ult(&other.unsigned_max()) {
+            return OverflowResult::MayOverflow;
+        }
+        OverflowResult::NeverOverflows
+    }
+
+    /// Whether signed subtraction of every pairing overflows. Mirrors
+    /// `ConstantRange::signedSubMayOverflow`.
+    pub fn signed_sub_may_overflow(&self, other: &Self) -> OverflowResult {
+        if self.bit_width() != other.bit_width() || self.is_empty_set() || other.is_empty_set() {
+            return OverflowResult::MayOverflow;
+        }
+        let bit_width = self.bit_width();
+        let min = self.signed_min();
+        let max = self.signed_max();
+        let other_min = other.signed_min();
+        let other_max = other.signed_max();
+        let signed_min = ApInt::signed_min_value(bit_width);
+        let signed_max = ApInt::signed_max_value(bit_width);
+
+        // `a s- b` overflows high when `a` is non-negative, `b` negative and
+        // `a s> smax + b`; low with the signs swapped.
+        if min.is_non_negative()
+            && other_max.is_negative()
+            && min.sgt(&signed_max.wrapping_add(&other_max))
+        {
+            return OverflowResult::AlwaysOverflowsHigh;
+        }
+        if max.is_negative()
+            && other_min.is_non_negative()
+            && max.slt(&signed_min.wrapping_add(&other_min))
+        {
+            return OverflowResult::AlwaysOverflowsLow;
+        }
+        if max.is_non_negative()
+            && other_min.is_negative()
+            && max.sgt(&signed_max.wrapping_add(&other_min))
+        {
+            return OverflowResult::MayOverflow;
+        }
+        if min.is_negative()
+            && other_max.is_non_negative()
+            && min.slt(&signed_min.wrapping_add(&other_max))
+        {
+            return OverflowResult::MayOverflow;
+        }
+        OverflowResult::NeverOverflows
+    }
+
+    /// Whether unsigned multiplication of every pairing overflows. Mirrors
+    /// `ConstantRange::unsignedMulMayOverflow`.
+    pub fn unsigned_mul_may_overflow(&self, other: &Self) -> OverflowResult {
+        if self.bit_width() != other.bit_width() || self.is_empty_set() || other.is_empty_set() {
+            return OverflowResult::MayOverflow;
+        }
+        // If even the smallest pairing overflows, every pairing does.
+        if self.unsigned_min().umul_ov(&other.unsigned_min()).1 {
+            return OverflowResult::AlwaysOverflowsHigh;
+        }
+        if self.unsigned_max().umul_ov(&other.unsigned_max()).1 {
+            return OverflowResult::MayOverflow;
+        }
+        OverflowResult::NeverOverflows
     }
 
     pub fn intersects_with(&self, rhs: &Self) -> bool {

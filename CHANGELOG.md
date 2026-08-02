@@ -7,6 +7,40 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ValueTracking: constant ranges and overflow prediction (slice 3e) — tranche 3 complete
+
+The consumers `ConstantRange` was ported for.
+
+#### Added
+
+- `compute_constant_range` and `compute_constant_range_including_known_bits`.
+  The two sources are independent — known bits pin bits a range cannot
+  express, a range bounds values the bits cannot — so upstream intersects
+  them, and so does this.
+- All six overflow predicates: `compute_overflow_for_{signed,unsigned}_{add,sub,mul}`.
+  The signed multiply reaches its answer by sign-bit counting rather than
+  ranges (upstream credits *Hacker's Delight*), which is why slice 1's
+  `compute_num_sign_bits` was a prerequisite.
+- Five `ConstantRange` overflow predicates the earlier survey missed:
+  `unsigned_add_may_overflow`, `signed_add_may_overflow`,
+  `unsigned_sub_may_overflow`, `signed_sub_may_overflow`,
+  `unsigned_mul_may_overflow`, plus the shared `OverflowResult`.
+
+  **A correction:** `ConstantRange`'s public surface is **83** methods, not
+  the 78 reported when tranche 3 was planned. These five span two lines in the
+  header, and the extraction used to count them was single-line.
+
+Not ported, each because llvmkit lacks the *input* rather than the reasoning:
+`computeConstantRange`'s `@llvm.assume` refinement (no `AssumptionCache`), its
+select-pattern clamp (no `SelectPatternResult` — tranche 4), and
+`getVScaleRange`, which reads `vscale_range`'s packed `(min, max)` pair while
+llvmkit's attribute payload is a single `u64` and `attribute_td_drift.rs`
+already lists the attribute as not-yet-modeled. Each omission only widens an
+answer.
+
+**Tranche 3 is complete.** `ConstantRange` went from a 223-line seed with 13
+mapped methods to 90 public methods across five slices.
+
 ### `ConstantRange` dispatchers and no-wrap variants (slice 3d-vi) — slice 3d complete
 
 #### Added
