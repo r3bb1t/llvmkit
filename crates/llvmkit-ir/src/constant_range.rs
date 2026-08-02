@@ -11,6 +11,55 @@ use crate::module::ModuleCore;
 use crate::r#type::{TypeData, TypeSlot};
 use crate::value::{ValueKindData, ValueSlot};
 
+/// Which over-approximation to prefer when a set operation's exact answer
+/// needs two disjoint runs and only one `[lower, upper)` can be returned.
+///
+/// Mirrors `ConstantRange::PreferredRangeType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PreferredRangeType {
+    /// Whichever candidate holds fewer values.
+    Smallest,
+    /// Prefer a candidate that does not wrap in the unsigned domain, falling
+    /// back to the smaller one when both or neither wrap.
+    Unsigned,
+    /// Prefer a candidate that does not wrap in the signed domain, falling
+    /// back to the smaller one when both or neither wrap.
+    Signed,
+}
+
+/// Ports the file-local `getPreferredRange` helper in `ConstantRange.cpp`.
+fn preferred_range(
+    first: &ConstantRange,
+    second: &ConstantRange,
+    preferred: PreferredRangeType,
+) -> ConstantRange {
+    match preferred {
+        PreferredRangeType::Unsigned => {
+            if !first.is_wrapped_set() && second.is_wrapped_set() {
+                return first.clone();
+            }
+            if first.is_wrapped_set() && !second.is_wrapped_set() {
+                return second.clone();
+            }
+        }
+        PreferredRangeType::Signed => {
+            if !first.is_sign_wrapped_set() && second.is_sign_wrapped_set() {
+                return first.clone();
+            }
+            if first.is_sign_wrapped_set() && !second.is_sign_wrapped_set() {
+                return second.clone();
+            }
+        }
+        PreferredRangeType::Smallest => {}
+    }
+
+    if first.is_size_strictly_smaller_than(second) {
+        first.clone()
+    } else {
+        second.clone()
+    }
+}
+
 /// Half-open range `[lower, upper)` over a fixed-width integer domain.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConstantRange {
@@ -346,6 +395,507 @@ impl ConstantRange {
             // KnownBits of this width and only had bits cleared.
             KnownBits::unknown(self.bit_width())
         })
+    }
+
+    /// The complement of this range. Mirrors `ConstantRange::inverse`.
+    pub fn inverse(&self) -> Self {
+        if self.is_full_set() {
+            return Self::empty(self.bit_width());
+        }
+        if self.is_empty_set() {
+            return Self::full(self.bit_width());
+        }
+        // Swapping the endpoints of a non-degenerate range is exactly its
+        // complement, and cannot itself be degenerate.
+        Self {
+            lower: self.upper.clone(),
+            upper: self.lower.clone(),
+        }
+    }
+
+    /// This range shifted down by `value`. Mirrors `ConstantRange::subtract`.
+    ///
+    /// Empty and full are left alone: their endpoints are an encoding rather
+    /// than a position, so translating them would change which set they name.
+    pub fn subtract(&self, value: &ApInt) -> Self {
+        if value.bit_width() != self.bit_width() || self.lower.eq_ap_int(&self.upper) {
+            return self.clone();
+        }
+        Self {
+            lower: self.lower.wrapping_sub(value),
+            upper: self.upper.wrapping_sub(value),
+        }
+    }
+
+    /// The part of this range not in `other`. Mirrors
+    /// `ConstantRange::difference`.
+    pub fn difference(&self, other: &Self) -> Self {
+        self.intersect_with(&other.inverse(), PreferredRangeType::Smallest)
+    }
+
+    /// This range split into its strictly-positive and negative halves.
+    /// Mirrors `ConstantRange::splitPosNeg`.
+    ///
+    /// There are no positive 1-bit values — the lone 1 reads as -1 — so the
+    /// positive half is empty at that width, exactly as upstream notes.
+    pub fn split_pos_neg(&self) -> (Self, Self) {
+        let bit_width = self.bit_width();
+        let zero = ApInt::zero(bit_width);
+        let signed_min = ApInt::signed_min_value(bit_width);
+        let positive_filter = if bit_width == 1 {
+            Self::empty(bit_width)
+        } else {
+            Self::new(one(bit_width), signed_min.clone()).unwrap_or_else(|_| Self::full(bit_width))
+        };
+        let negative_filter = Self::new(signed_min, zero).unwrap_or_else(|_| Self::full(bit_width));
+        (
+            self.intersect_with(&positive_filter, PreferredRangeType::Smallest),
+            self.intersect_with(&negative_filter, PreferredRangeType::Smallest),
+        )
+    }
+
+    /// The intersection of two ranges.
+    ///
+    /// Mirrors `ConstantRange::intersectWith`. When the true intersection is
+    /// disjoint — two runs that cannot both be named by one `[lower, upper)` —
+    /// `preferred` picks which over-approximation to return. Answers the empty
+    /// set on a width mismatch, where upstream asserts.
+    pub fn intersect_with(&self, other: &Self, preferred: PreferredRangeType) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::empty(self.bit_width());
+        }
+
+        // Common cases.
+        if self.is_empty_set() || other.is_full_set() {
+            return self.clone();
+        }
+        if other.is_empty_set() || self.is_full_set() {
+            return other.clone();
+        }
+
+        // Normalise so that a wrapped range is never on the right alone.
+        if !self.is_upper_wrapped() && other.is_upper_wrapped() {
+            return other.intersect_with(self, preferred);
+        }
+
+        let bit_width = self.bit_width();
+        let range = |lower: ApInt, upper: ApInt| {
+            Self::new(lower, upper).unwrap_or_else(|_| Self::full(bit_width))
+        };
+
+        if !self.is_upper_wrapped() && !other.is_upper_wrapped() {
+            if self.lower.ult(&other.lower) {
+                // L---U       : self
+                //       L---U : other
+                if self.upper.ule(&other.lower) {
+                    return Self::empty(bit_width);
+                }
+                // L---U       : self
+                //   L---U     : other
+                if self.upper.ult(&other.upper) {
+                    return range(other.lower.clone(), self.upper.clone());
+                }
+                // L-------U   : self
+                //   L---U     : other
+                return other.clone();
+            }
+            //   L---U     : self
+            // L-------U   : other
+            if self.upper.ult(&other.upper) {
+                return self.clone();
+            }
+            //   L-----U   : self
+            // L-----U     : other
+            if self.lower.ult(&other.upper) {
+                return range(self.lower.clone(), other.upper.clone());
+            }
+            //       L---U : self
+            // L---U       : other
+            return Self::empty(bit_width);
+        }
+
+        if self.is_upper_wrapped() && !other.is_upper_wrapped() {
+            if other.lower.ult(&self.upper) {
+                // ------U   L--- : self
+                //  L--U          : other
+                if other.upper.ult(&self.upper) {
+                    return other.clone();
+                }
+                // ------U   L--- : self
+                //  L------U      : other
+                if other.upper.ule(&self.lower) {
+                    return range(other.lower.clone(), self.upper.clone());
+                }
+                // ------U   L--- : self
+                //  L----------U  : other
+                return preferred_range(self, other, preferred);
+            }
+            if other.lower.ult(&self.lower) {
+                // --U      L---- : self
+                //     L--U       : other
+                if other.upper.ule(&self.lower) {
+                    return Self::empty(bit_width);
+                }
+                // --U      L---- : self
+                //     L------U   : other
+                return range(self.lower.clone(), other.upper.clone());
+            }
+            // --U  L------ : self
+            //        L--U  : other
+            return other.clone();
+        }
+
+        // Both wrapped.
+        if other.upper.ult(&self.upper) {
+            // ------U L-- : self
+            // --U L------ : other
+            if other.lower.ult(&self.upper) {
+                return preferred_range(self, other, preferred);
+            }
+            // ----U   L-- : self
+            // --U   L---- : other
+            if other.lower.ult(&self.lower) {
+                return range(self.lower.clone(), other.upper.clone());
+            }
+            // ----U L---- : self
+            // --U     L-- : other
+            return other.clone();
+        }
+        if other.upper.ule(&self.lower) {
+            // --U     L-- : self
+            // ----U L---- : other
+            if other.lower.ult(&self.lower) {
+                return self.clone();
+            }
+            // --U   L---- : self
+            // ----U   L-- : other
+            return range(other.lower.clone(), self.upper.clone());
+        }
+        // --U L------ : self
+        // ------U L-- : other
+        preferred_range(self, other, preferred)
+    }
+
+    /// The smallest range containing both. Mirrors `ConstantRange::unionWith`.
+    ///
+    /// Answers the full set on a width mismatch, where upstream asserts —
+    /// a union can only ever grow, so full is the sound answer.
+    pub fn union_with(&self, other: &Self, preferred: PreferredRangeType) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+
+        if self.is_full_set() || other.is_empty_set() {
+            return self.clone();
+        }
+        if other.is_full_set() || self.is_empty_set() {
+            return other.clone();
+        }
+
+        if !self.is_upper_wrapped() && other.is_upper_wrapped() {
+            return other.union_with(self, preferred);
+        }
+
+        let bit_width = self.bit_width();
+        let one_v = one(bit_width);
+        let range = |lower: ApInt, upper: ApInt| {
+            Self::new(lower, upper).unwrap_or_else(|_| Self::full(bit_width))
+        };
+
+        if !self.is_upper_wrapped() && !other.is_upper_wrapped() {
+            //        L---U  and  L---U        : self
+            //  L---U                   L---U  : other
+            if other.upper.ult(&self.lower) || self.upper.ult(&other.lower) {
+                return preferred_range(
+                    &range(self.lower.clone(), other.upper.clone()),
+                    &range(other.lower.clone(), self.upper.clone()),
+                    preferred,
+                );
+            }
+
+            let lower = if other.lower.ult(&self.lower) {
+                other.lower.clone()
+            } else {
+                self.lower.clone()
+            };
+            let upper = if other
+                .upper
+                .wrapping_sub(&one_v)
+                .ugt(&self.upper.wrapping_sub(&one_v))
+            {
+                other.upper.clone()
+            } else {
+                self.upper.clone()
+            };
+
+            // Both endpoints landing on zero means the union wrapped all the
+            // way round, which is the full set rather than the empty one.
+            if lower.is_zero() && upper.is_zero() {
+                return Self::full(bit_width);
+            }
+            return range(lower, upper);
+        }
+
+        if !other.is_upper_wrapped() {
+            // ------U   L-----  and  ------U   L----- : self
+            //   L--U                            L--U  : other
+            if other.upper.ule(&self.upper) || other.lower.uge(&self.lower) {
+                return self.clone();
+            }
+            // ------U   L----- : self
+            //    L---------U   : other
+            if other.lower.ule(&self.upper) && self.lower.ule(&other.upper) {
+                return Self::full(bit_width);
+            }
+            // ----U       L---- : self
+            //       L---U       : other
+            if self.upper.ult(&other.lower) && other.upper.ult(&self.lower) {
+                return preferred_range(
+                    &range(self.lower.clone(), other.upper.clone()),
+                    &range(other.lower.clone(), self.upper.clone()),
+                    preferred,
+                );
+            }
+            // ----U     L----- : self
+            //        L----U    : other
+            if self.upper.ult(&other.lower) && self.lower.ule(&other.upper) {
+                return range(other.lower.clone(), self.upper.clone());
+            }
+            // ------U    L---- : self
+            //    L-----U       : other
+            //
+            // Upstream asserts `other.lower <= self.upper && other.upper <
+            // self.lower` here — the only case left once the four above are
+            // ruled out.
+            return range(self.lower.clone(), other.upper.clone());
+        }
+
+        // Both wrapped.
+        // ------U    L----  and  ------U    L---- : self
+        // -U  L-----------  and  ------------U  L : other
+        if other.lower.ule(&self.upper) || self.lower.ule(&other.upper) {
+            return Self::full(bit_width);
+        }
+
+        let lower = if other.lower.ult(&self.lower) {
+            other.lower.clone()
+        } else {
+            self.lower.clone()
+        };
+        let upper = if other.upper.ugt(&self.upper) {
+            other.upper.clone()
+        } else {
+            self.upper.clone()
+        };
+        range(lower, upper)
+    }
+
+    /// Zero-extend every member to `dst_bit_width`. Mirrors
+    /// `ConstantRange::zeroExtend`.
+    ///
+    /// Narrowing is rejected rather than asserted: upstream's
+    /// `assert(SrcTySize < DstTySize)` has no run-time counterpart here, and
+    /// silently truncating would be worse than declining.
+    pub fn zero_extend(&self, dst_bit_width: u32) -> IrResult<Self> {
+        let src_bit_width = self.bit_width();
+        if self.is_empty_set() {
+            return Ok(Self::empty(dst_bit_width));
+        }
+        if dst_bit_width == src_bit_width {
+            return Ok(self.clone());
+        }
+        if dst_bit_width < src_bit_width {
+            return Err(IrError::OperandWidthMismatch {
+                lhs: dst_bit_width,
+                rhs: src_bit_width,
+            });
+        }
+
+        if self.is_full_set() || self.is_upper_wrapped() {
+            // Becomes [0, 1 << src_bit_width), except that `[X, 0)` is not
+            // really wrapping and keeps its lower endpoint.
+            let lower = if self.upper.is_zero() {
+                self.lower
+                    .zext(dst_bit_width)
+                    .unwrap_or_else(|| ApInt::zero(dst_bit_width))
+            } else {
+                ApInt::zero(dst_bit_width)
+            };
+            return Self::new(lower, ApInt::one_bit_set(dst_bit_width, src_bit_width));
+        }
+
+        Self::new(
+            self.lower
+                .zext(dst_bit_width)
+                .unwrap_or_else(|| ApInt::zero(dst_bit_width)),
+            self.upper
+                .zext(dst_bit_width)
+                .unwrap_or_else(|| ApInt::zero(dst_bit_width)),
+        )
+    }
+
+    /// Sign-extend every member to `dst_bit_width`. Mirrors
+    /// `ConstantRange::signExtend`.
+    pub fn sign_extend(&self, dst_bit_width: u32) -> IrResult<Self> {
+        let src_bit_width = self.bit_width();
+        if self.is_empty_set() {
+            return Ok(Self::empty(dst_bit_width));
+        }
+        if dst_bit_width == src_bit_width {
+            return Ok(self.clone());
+        }
+        if dst_bit_width < src_bit_width {
+            return Err(IrError::OperandWidthMismatch {
+                lhs: dst_bit_width,
+                rhs: src_bit_width,
+            });
+        }
+        let widen_s = |v: &ApInt| {
+            v.sext(dst_bit_width)
+                .unwrap_or_else(|| ApInt::zero(dst_bit_width))
+        };
+        let widen_z = |v: &ApInt| {
+            v.zext(dst_bit_width)
+                .unwrap_or_else(|| ApInt::zero(dst_bit_width))
+        };
+
+        // `[X, INT_MIN)` is not really wrapping around.
+        if self.upper.is_min_signed_value() {
+            return Self::new(widen_s(&self.lower), widen_z(&self.upper));
+        }
+
+        if self.is_full_set() || self.is_sign_wrapped_set() {
+            return Self::new(
+                ApInt::high_bits_set(dst_bit_width, dst_bit_width - src_bit_width + 1),
+                ApInt::low_bits_set(dst_bit_width, src_bit_width - 1)
+                    .wrapping_add(&one(dst_bit_width)),
+            );
+        }
+
+        Self::new(widen_s(&self.lower), widen_s(&self.upper))
+    }
+
+    /// Truncate every member to `dst_bit_width`. Mirrors
+    /// `ConstantRange::truncate`.
+    ///
+    /// `no_unsigned_wrap` is upstream's `NoWrapKind & TruncInst::NoUnsignedWrap`
+    /// — the `trunc nuw` promise that no member's high bits are set. llvmkit
+    /// spells the single flag as a bool because that is the only kind
+    /// `truncate` reads.
+    pub fn truncate(&self, dst_bit_width: u32, no_unsigned_wrap: bool) -> IrResult<Self> {
+        let src_bit_width = self.bit_width();
+        if dst_bit_width == src_bit_width {
+            return Ok(self.clone());
+        }
+        if dst_bit_width > src_bit_width {
+            return Err(IrError::OperandWidthMismatch {
+                lhs: dst_bit_width,
+                rhs: src_bit_width,
+            });
+        }
+        if self.is_empty_set() {
+            return Ok(Self::empty(dst_bit_width));
+        }
+        if self.is_full_set() {
+            return Ok(Self::full(dst_bit_width));
+        }
+
+        let narrow = |v: &ApInt| {
+            v.trunc(dst_bit_width)
+                .unwrap_or_else(|| ApInt::zero(dst_bit_width))
+        };
+        let mut lower_div = self.lower.clone();
+        let mut upper_div = self.upper.clone();
+        let mut union = Self::empty(dst_bit_width);
+
+        // A wrapped set is analysed as its two parts: [0, upper) and
+        // [lower, max]. The non-wrapped path handles the second, then the
+        // first is unioned back in.
+        if self.is_upper_wrapped() {
+            // An upper past the destination's range covers everything.
+            if self.upper.active_bits() > dst_bit_width {
+                return Ok(Self::full(dst_bit_width));
+            }
+
+            if no_unsigned_wrap {
+                union = Self::new(ApInt::zero(dst_bit_width), narrow(&self.upper))
+                    .unwrap_or_else(|_| Self::full(dst_bit_width));
+                upper_div = ApInt::one_bit_set(src_bit_width, dst_bit_width);
+            } else {
+                // An upper exactly at the destination's maximum likewise
+                // covers everything.
+                if self.upper.count_trailing_ones() == dst_bit_width {
+                    return Ok(Self::full(dst_bit_width));
+                }
+                union = Self::new(ApInt::max_value(dst_bit_width), narrow(&self.upper))
+                    .unwrap_or_else(|_| Self::full(dst_bit_width));
+                upper_div = ApInt::max_value(src_bit_width);
+                // The union already covers the maximum, so if nothing else is
+                // left there is nothing to add.
+                if lower_div.eq_ap_int(&upper_div) {
+                    return Ok(union);
+                }
+            }
+        }
+
+        // Chop the bits above the destination width off both endpoints.
+        if lower_div.active_bits() > dst_bit_width {
+            // Under `nuw` a lower above the destination's maximum puts the
+            // whole range outside it.
+            if no_unsigned_wrap {
+                return Ok(union);
+            }
+            let adjust = lower_div.bitand(&ApInt::bits_set_from(src_bit_width, dst_bit_width));
+            lower_div = lower_div.wrapping_sub(&adjust);
+            upper_div = upper_div.wrapping_sub(&adjust);
+        }
+
+        let upper_div_width = upper_div.active_bits();
+        if upper_div_width <= dst_bit_width {
+            return Ok(Self::new(narrow(&lower_div), narrow(&upper_div))
+                .unwrap_or_else(|_| Self::full(dst_bit_width))
+                .union_with(&union, PreferredRangeType::Smallest));
+        }
+
+        if !lower_div.is_zero() && no_unsigned_wrap {
+            return Ok(Self::new(narrow(&lower_div), ApInt::zero(dst_bit_width))
+                .unwrap_or_else(|_| Self::full(dst_bit_width))
+                .union_with(&union, PreferredRangeType::Smallest));
+        }
+
+        // The truncated value wraps. One more chance to beat the full set:
+        // clearing the bit just above the destination width may bring the
+        // upper endpoint below the lower one, which is a legal wrapped range.
+        if upper_div_width == dst_bit_width + 1 {
+            upper_div.clear_bit(dst_bit_width);
+            if upper_div.ult(&lower_div) {
+                return Ok(Self::new(narrow(&lower_div), narrow(&upper_div))
+                    .unwrap_or_else(|_| Self::full(dst_bit_width))
+                    .union_with(&union, PreferredRangeType::Smallest));
+            }
+        }
+
+        Ok(Self::full(dst_bit_width))
+    }
+
+    /// Zero-extend or truncate to `dst_bit_width`, whichever the widths call
+    /// for. Mirrors `ConstantRange::zextOrTrunc`.
+    pub fn zext_or_trunc(&self, dst_bit_width: u32) -> IrResult<Self> {
+        match dst_bit_width.cmp(&self.bit_width()) {
+            Ordering::Less => self.truncate(dst_bit_width, false),
+            Ordering::Greater => self.zero_extend(dst_bit_width),
+            Ordering::Equal => Ok(self.clone()),
+        }
+    }
+
+    /// Sign-extend or truncate to `dst_bit_width`. Mirrors
+    /// `ConstantRange::sextOrTrunc`.
+    pub fn sext_or_trunc(&self, dst_bit_width: u32) -> IrResult<Self> {
+        match dst_bit_width.cmp(&self.bit_width()) {
+            Ordering::Less => self.truncate(dst_bit_width, false),
+            Ordering::Greater => self.sign_extend(dst_bit_width),
+            Ordering::Equal => Ok(self.clone()),
+        }
     }
 
     pub fn intersects_with(&self, rhs: &Self) -> bool {

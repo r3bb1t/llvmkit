@@ -7,6 +7,30 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### `ConstantRange` set operations (tranche 3, slice 3b)
+
+#### Added
+
+- `intersect_with` / `union_with`, ports of `ConstantRange::intersectWith` and
+  `unionWith` including their full wrapped/non-wrapped case analysis, plus
+  `PreferredRangeType` (`Smallest` / `Unsigned` / `Signed`) — upstream's
+  tie-breaker for when the exact answer needs two disjoint runs and only one
+  `[lower, upper)` can be returned.
+- `inverse`, `difference`, `subtract`, `split_pos_neg`.
+- The width-changing family: `zero_extend`, `sign_extend`, `truncate`,
+  `zext_or_trunc`, `sext_or_trunc`.
+
+Upstream asserts on a width change in the wrong direction
+(`assert(SrcTySize < DstTySize && "Not a value extension")`). llvmkit has no
+runtime asserts in production paths, so `zero_extend`, `sign_extend` and
+`truncate` return `IrError::OperandWidthMismatch` instead; `zext_or_trunc` and
+`sext_or_trunc` are the spellings that accept either direction.
+
+`truncate`'s `NoWrapKind` parameter is spelled as a plain `no_unsigned_wrap:
+bool`, because `TruncInst::NoUnsignedWrap` is the only kind the function reads.
+
+`castOp` is deliberately not ported — see `docs/future-work.md`.
+
 ### `ConstantRange` bounds and predicates (tranche 3, slice 3a)
 
 Tranche 3 of the `ValueTracking.h` port is `ConstantRange` itself, which
