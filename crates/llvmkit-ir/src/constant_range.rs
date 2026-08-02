@@ -3,6 +3,7 @@
 use core::cmp::Ordering;
 
 use crate::ApInt;
+use crate::cmp_predicate::IntPredicate;
 use crate::constant::ConstantData;
 use crate::error::{IrError, IrResult};
 use crate::known_bits::KnownBits;
@@ -58,6 +59,23 @@ fn preferred_range(
     } else {
         second.clone()
     }
+}
+
+/// The `icmp` a [`ConstantRange`] is equivalent to, as returned by
+/// [`ConstantRange::equivalent_icmp_with_offset`].
+///
+/// Upstream's `getEquivalentICmp` fills three out-parameters; a Rust caller
+/// wants all three together, so they are returned as one value.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EquivalentICmp {
+    /// The comparison predicate.
+    pub predicate: IntPredicate,
+    /// The value to compare against.
+    pub rhs: ApInt,
+    /// Added to the compared value before the comparison. Zero for every range
+    /// whose shape maps onto a predicate directly; non-zero only when the
+    /// range had to be shifted down to start at zero.
+    pub offset: ApInt,
 }
 
 /// Half-open range `[lower, upper)` over a fixed-width integer domain.
@@ -895,6 +913,262 @@ impl ConstantRange {
             Ordering::Less => self.truncate(dst_bit_width, false),
             Ordering::Greater => self.sign_extend(dst_bit_width),
             Ordering::Equal => Ok(self.clone()),
+        }
+    }
+
+    /// The one-element range `[value, value + 1)`. Mirrors
+    /// `ConstantRange::ConstantRange(APInt V)`.
+    pub fn single(value: ApInt) -> Self {
+        let upper = value.wrapping_add(&one(value.bit_width()));
+        Self {
+            lower: value,
+            upper,
+        }
+    }
+
+    /// True when every member of `other` is a member of this range. Mirrors
+    /// the `ConstantRange` overload of `ConstantRange::contains`.
+    pub fn contains_range(&self, other: &Self) -> bool {
+        if self.bit_width() != other.bit_width() {
+            return false;
+        }
+        if self.is_full_set() || other.is_empty_set() {
+            return true;
+        }
+        if self.is_empty_set() || other.is_full_set() {
+            return false;
+        }
+
+        if !self.is_upper_wrapped() {
+            if other.is_upper_wrapped() {
+                return false;
+            }
+            return self.lower.ule(&other.lower) && other.upper.ule(&self.upper);
+        }
+
+        if !other.is_upper_wrapped() {
+            return other.upper.ule(&self.upper) || self.lower.ule(&other.lower);
+        }
+
+        other.upper.ule(&self.upper) && self.lower.ule(&other.lower)
+    }
+
+    /// The largest range of values that *may* satisfy `predicate` against some
+    /// member of `other`. Mirrors `ConstantRange::makeAllowedICmpRegion`.
+    ///
+    /// "Allowed" is the weaker of the two questions: a value in the result
+    /// compares true against *at least one* member of `other`. Compare
+    /// [`Self::make_satisfying_icmp_region`], which demands *every* member.
+    pub fn make_allowed_icmp_region(predicate: IntPredicate, other: &Self) -> Self {
+        if other.is_empty_set() {
+            return other.clone();
+        }
+        let width = other.bit_width();
+        let one_v = one(width);
+        let range = |lower: ApInt, upper: ApInt| {
+            Self::new(lower, upper).unwrap_or_else(|_| Self::full(width))
+        };
+        let non_empty = |lower: ApInt, upper: ApInt| {
+            Self::non_empty(lower, upper).unwrap_or_else(|_| Self::full(width))
+        };
+
+        match predicate {
+            IntPredicate::Eq => other.clone(),
+            IntPredicate::Ne => {
+                if other.is_single_element() {
+                    return range(other.upper.clone(), other.lower.clone());
+                }
+                Self::full(width)
+            }
+            IntPredicate::Ult => {
+                let unsigned_max = other.unsigned_max();
+                if unsigned_max.is_min_value() {
+                    return Self::empty(width);
+                }
+                range(ApInt::min_value(width), unsigned_max)
+            }
+            IntPredicate::Slt => {
+                let signed_max = other.signed_max();
+                if signed_max.is_min_signed_value() {
+                    return Self::empty(width);
+                }
+                range(ApInt::signed_min_value(width), signed_max)
+            }
+            IntPredicate::Ule => non_empty(
+                ApInt::min_value(width),
+                other.unsigned_max().wrapping_add(&one_v),
+            ),
+            IntPredicate::Sle => non_empty(
+                ApInt::signed_min_value(width),
+                other.signed_max().wrapping_add(&one_v),
+            ),
+            IntPredicate::Ugt => {
+                let unsigned_min = other.unsigned_min();
+                if unsigned_min.is_max_value() {
+                    return Self::empty(width);
+                }
+                range(unsigned_min.wrapping_add(&one_v), ApInt::zero(width))
+            }
+            IntPredicate::Sgt => {
+                let signed_min = other.signed_min();
+                if signed_min.is_max_signed_value() {
+                    return Self::empty(width);
+                }
+                range(
+                    signed_min.wrapping_add(&one_v),
+                    ApInt::signed_min_value(width),
+                )
+            }
+            IntPredicate::Uge => non_empty(other.unsigned_min(), ApInt::zero(width)),
+            IntPredicate::Sge => non_empty(other.signed_min(), ApInt::signed_min_value(width)),
+        }
+    }
+
+    /// The largest range of values that satisfy `predicate` against *every*
+    /// member of `other`. Mirrors `ConstantRange::makeSatisfyingICmpRegion`.
+    ///
+    /// Upstream derives it from the allowed region by De Morgan:
+    /// `~(~A ∪ ~B) == A ∩ B`, which here is the inverse of the allowed region
+    /// for the inverse predicate.
+    pub fn make_satisfying_icmp_region(predicate: IntPredicate, other: &Self) -> Self {
+        Self::make_allowed_icmp_region(predicate.inverse(), other).inverse()
+    }
+
+    /// The exact range of values satisfying `predicate` against the single
+    /// value `value`. Mirrors `ConstantRange::makeExactICmpRegion`.
+    ///
+    /// Allowed and satisfying coincide when the right-hand side is a single
+    /// value; they diverge only for a multi-element range — upstream's example
+    /// is `ult [2,5)`, where allowed is `[0,4)` but satisfying is `[0,2)`.
+    pub fn make_exact_icmp_region(predicate: IntPredicate, value: &ApInt) -> Self {
+        Self::make_allowed_icmp_region(predicate, &Self::single(value.clone()))
+    }
+
+    /// The range of values `v` for which `(v & mask) != c` is satisfiable.
+    /// Mirrors `ConstantRange::makeMaskNotEqualRange`.
+    pub fn make_mask_not_equal_range(mask: &ApInt, c: &ApInt) -> Self {
+        let bit_width = mask.bit_width();
+        if !mask.bitand(c).eq_ap_int(c) {
+            // `c` has a bit set outside the mask, so the equality can never
+            // hold and every value satisfies the inequality.
+            return Self::full(bit_width);
+        }
+        if mask.is_zero() {
+            // `v & 0` is always 0, which by the check above equals `c`, so
+            // nothing satisfies the inequality.
+            return Self::empty(bit_width);
+        }
+        // Otherwise the value must exceed the mask's lowest set bit, offset
+        // by `c`.
+        Self::non_empty(
+            ApInt::one_bit_set(bit_width, mask.count_trailing_zeros()).wrapping_add(c),
+            c.clone(),
+        )
+        .unwrap_or_else(|_| Self::full(bit_width))
+    }
+
+    /// The `icmp` that describes this range, together with the offset that has
+    /// to be added to the compared value first. Mirrors the three-argument
+    /// `ConstantRange::getEquivalentICmp`.
+    ///
+    /// Upstream fills three out-parameters; llvmkit returns them, since a
+    /// caller always wants all three together.
+    pub fn equivalent_icmp_with_offset(&self) -> EquivalentICmp {
+        let bit_width = self.bit_width();
+        let zero = ApInt::zero(bit_width);
+
+        if self.is_full_set() || self.is_empty_set() {
+            return EquivalentICmp {
+                predicate: if self.is_empty_set() {
+                    // Nothing is unsigned-less-than zero.
+                    IntPredicate::Ult
+                } else {
+                    // Everything is unsigned-greater-or-equal to zero.
+                    IntPredicate::Uge
+                },
+                rhs: zero.clone(),
+                offset: zero,
+            };
+        }
+        if let Some(only) = self.single_element() {
+            return EquivalentICmp {
+                predicate: IntPredicate::Eq,
+                rhs: only.clone(),
+                offset: zero,
+            };
+        }
+        if let Some(missing) = self.single_missing_element() {
+            return EquivalentICmp {
+                predicate: IntPredicate::Ne,
+                rhs: missing.clone(),
+                offset: zero,
+            };
+        }
+        if self.lower.is_min_signed_value() || self.lower.is_min_value() {
+            return EquivalentICmp {
+                predicate: if self.lower.is_min_signed_value() {
+                    IntPredicate::Slt
+                } else {
+                    IntPredicate::Ult
+                },
+                rhs: self.upper.clone(),
+                offset: zero,
+            };
+        }
+        if self.upper.is_min_signed_value() || self.upper.is_min_value() {
+            return EquivalentICmp {
+                predicate: if self.upper.is_min_signed_value() {
+                    IntPredicate::Sge
+                } else {
+                    IntPredicate::Uge
+                },
+                rhs: self.lower.clone(),
+                offset: zero,
+            };
+        }
+        // A range with neither endpoint at a domain edge becomes an unsigned
+        // compare against its width, once the value is shifted down to zero.
+        EquivalentICmp {
+            predicate: IntPredicate::Ult,
+            rhs: self.upper.wrapping_sub(&self.lower),
+            offset: zero.wrapping_sub(&self.lower),
+        }
+    }
+
+    /// The `icmp` that describes this range exactly, when no offset is needed.
+    /// Mirrors the two-argument `ConstantRange::getEquivalentICmp`, whose
+    /// `bool` return says whether the offset came back zero.
+    pub fn equivalent_icmp(&self) -> Option<(IntPredicate, ApInt)> {
+        let equivalent = self.equivalent_icmp_with_offset();
+        equivalent
+            .offset
+            .is_zero()
+            .then_some((equivalent.predicate, equivalent.rhs))
+    }
+
+    /// True when `predicate` holds for *every* pairing of a member of this
+    /// range with a member of `other`. Mirrors `ConstantRange::icmp`.
+    ///
+    /// Vacuously true when either range is empty, since there is no pairing to
+    /// falsify it.
+    pub fn icmp(&self, predicate: IntPredicate, other: &Self) -> bool {
+        if self.is_empty_set() || other.is_empty_set() {
+            return true;
+        }
+        match predicate {
+            IntPredicate::Eq => match (self.single_element(), other.single_element()) {
+                (Some(lhs), Some(rhs)) => lhs.eq_ap_int(rhs),
+                _ => false,
+            },
+            IntPredicate::Ne => self.inverse().contains_range(other),
+            IntPredicate::Ult => self.unsigned_max().ult(&other.unsigned_min()),
+            IntPredicate::Ule => self.unsigned_max().ule(&other.unsigned_min()),
+            IntPredicate::Ugt => self.unsigned_min().ugt(&other.unsigned_max()),
+            IntPredicate::Uge => self.unsigned_min().uge(&other.unsigned_max()),
+            IntPredicate::Slt => self.signed_max().slt(&other.signed_min()),
+            IntPredicate::Sle => self.signed_max().sle(&other.signed_min()),
+            IntPredicate::Sgt => self.signed_min().sgt(&other.signed_max()),
+            IntPredicate::Sge => self.signed_min().sge(&other.signed_max()),
         }
     }
 

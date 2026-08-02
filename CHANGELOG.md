@@ -7,6 +7,30 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### `ConstantRange` ICmp regions (tranche 3, slice 3c)
+
+#### Added
+
+- `make_allowed_icmp_region` — values that compare true against **some**
+  member of a range (an over-approximation).
+- `make_satisfying_icmp_region` — values that compare true against **every**
+  member (an under-approximation). Derived from the allowed region by
+  De Morgan, as upstream does.
+- `make_exact_icmp_region` — exact, because a single right-hand value makes
+  the two questions above coincide.
+- `make_mask_not_equal_range` — the values satisfying `(v & mask) != c`.
+- `icmp` — true when every pairing across two ranges compares true.
+- `equivalent_icmp_with_offset` / `equivalent_icmp`, porting the two
+  `getEquivalentICmp` overloads. Upstream fills out-parameters and returns a
+  `bool` for "the offset was zero"; llvmkit returns an `EquivalentICmp` struct
+  and an `Option` respectively.
+- `single` and `contains_range`, the one-element constructor and the
+  range-in-range query these needed.
+
+The signedness-flipping helpers are not ported — they exist upstream for
+InstCombine's predicate canonicalization, which llvmkit does not have. Noted
+in `docs/future-work.md`.
+
 ### `ConstantRange` set operations (tranche 3, slice 3b)
 
 #### Added
