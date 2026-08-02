@@ -10,7 +10,9 @@ use crate::analysis::{
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::cmp_predicate::IntPredicate;
 use crate::constant::{ConstantData, ConstantExprData, ConstantExprOpcode};
-use crate::constant_range::{ConstantRange, constant_ranges_from_metadata};
+use crate::constant_range::{
+    ConstantRange, OverflowResult, PreferredRangeType, constant_ranges_from_metadata,
+};
 use crate::data_layout::DataLayout;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::instr_types::{
@@ -2305,6 +2307,218 @@ pub fn is_known_not_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ) -> IrResult<bool> {
     let mut stack = HashSet::new();
     is_guaranteed_not_to_be_poison(value, query, 0, &mut stack)
+}
+
+// --------------------------------------------------------------------------
+// Constant ranges and overflow prediction
+// --------------------------------------------------------------------------
+
+/// The range of values `value` can take. Ports `llvm::computeConstantRange`.
+///
+/// `for_signed` selects the domain the range must not wrap in, which changes
+/// which of two equally-correct answers is returned for a value whose sign is
+/// unknown.
+///
+/// Three of upstream's sources are not consulted, each because llvmkit does
+/// not model the input rather than because the reasoning was skipped: the
+/// `@llvm.assume`-driven refinement (no `AssumptionCache`), the select-pattern
+/// clamp (no `SelectPatternResult` — tranche 4), and `!range` metadata on
+/// `call` returns. Each omission only widens the answer.
+pub fn compute_constant_range<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    for_signed: bool,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<ConstantRange> {
+    compute_constant_range_inner(value, for_signed, query, 0)
+}
+
+fn compute_constant_range_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    for_signed: bool,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> IrResult<ConstantRange> {
+    let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
+    if depth >= query.max_depth() {
+        return Ok(ConstantRange::full(width));
+    }
+
+    // A constant is its own one-element range.
+    if let Some(constant) = argument_constant(Some(value)) {
+        return Ok(ConstantRange::single(constant));
+    }
+
+    let mut range = ConstantRange::full(width);
+
+    if let ValueKindData::Instruction(inst) = &value.data().kind {
+        match &inst.kind {
+            // A select is the union of its arms. Upstream additionally
+            // intersects with `getRangeForSelectPattern`, which needs the
+            // select-pattern matcher of tranche 4.
+            InstructionKindData::Select(data) => {
+                let true_range = compute_constant_range_inner(
+                    value_from_id(value, data.true_val.get()),
+                    for_signed,
+                    query,
+                    depth + 1,
+                )?;
+                let false_range = compute_constant_range_inner(
+                    value_from_id(value, data.false_val.get()),
+                    for_signed,
+                    query,
+                    depth + 1,
+                )?;
+                range = true_range.union_with(&false_range, preferred_for(for_signed));
+            }
+            _ => {
+                // Everything else is reached through its known bits below,
+                // which is where upstream's `setLimitsForBinOp` reasoning
+                // lands for llvmkit.
+            }
+        }
+    }
+
+    // Upstream intersects `!range` metadata here. llvmkit already reads that
+    // metadata inside `compute_known_bits`, so
+    // [`compute_constant_range_including_known_bits`] — the form every caller
+    // in this module uses — picks it up through the known-bits half rather
+    // than twice.
+    Ok(range)
+}
+
+/// The range of `value`, refined by its known bits. Ports
+/// `llvm::computeConstantRangeIncludingKnownBits`.
+///
+/// The two sources are independent — known bits can pin bits a range cannot
+/// express, and a range can bound values the bits cannot — so upstream
+/// intersects them, and so does this.
+pub fn compute_constant_range_including_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    for_signed: bool,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<ConstantRange> {
+    let from_bits = ConstantRange::from_known_bits(&compute_known_bits(value, query)?, for_signed);
+    let from_range = compute_constant_range(value, for_signed, query)?;
+    Ok(from_bits.intersect_with(&from_range, preferred_for(for_signed)))
+}
+
+/// Which over-approximation a signed or unsigned query prefers.
+fn preferred_for(for_signed: bool) -> PreferredRangeType {
+    if for_signed {
+        PreferredRangeType::Signed
+    } else {
+        PreferredRangeType::Unsigned
+    }
+}
+
+/// Whether `lhs + rhs` overflows unsigned. Ports
+/// `llvm::computeOverflowForUnsignedAdd`.
+pub fn compute_overflow_for_unsigned_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<OverflowResult> {
+    let lhs_range = compute_constant_range_including_known_bits(lhs, false, query)?;
+    let rhs_range = compute_constant_range_including_known_bits(rhs, false, query)?;
+    Ok(lhs_range.unsigned_add_may_overflow(&rhs_range))
+}
+
+/// Whether `lhs + rhs` overflows signed. Ports
+/// `llvm::computeOverflowForSignedAdd`.
+///
+/// Upstream has a second overload taking the `add` instruction itself, which
+/// consults `computeKnownBitsFromContext` — assumption-driven refinement
+/// llvmkit does not model. Only the value-pair form is ported; the extra
+/// refinement can only turn `MayOverflow` into `NeverOverflows`, so its
+/// absence is conservative.
+pub fn compute_overflow_for_signed_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<OverflowResult> {
+    let lhs_range = compute_constant_range_including_known_bits(lhs, true, query)?;
+    let rhs_range = compute_constant_range_including_known_bits(rhs, true, query)?;
+    Ok(lhs_range.signed_add_may_overflow(&rhs_range))
+}
+
+/// Whether `lhs - rhs` overflows unsigned. Ports
+/// `llvm::computeOverflowForUnsignedSub`.
+pub fn compute_overflow_for_unsigned_sub<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<OverflowResult> {
+    let lhs_range = compute_constant_range_including_known_bits(lhs, false, query)?;
+    let rhs_range = compute_constant_range_including_known_bits(rhs, false, query)?;
+    Ok(lhs_range.unsigned_sub_may_overflow(&rhs_range))
+}
+
+/// Whether `lhs - rhs` overflows signed. Ports
+/// `llvm::computeOverflowForSignedSub`.
+pub fn compute_overflow_for_signed_sub<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<OverflowResult> {
+    let lhs_range = compute_constant_range_including_known_bits(lhs, true, query)?;
+    let rhs_range = compute_constant_range_including_known_bits(rhs, true, query)?;
+    Ok(lhs_range.signed_sub_may_overflow(&rhs_range))
+}
+
+/// Whether `lhs * rhs` overflows unsigned. Ports
+/// `llvm::computeOverflowForUnsignedMul`.
+///
+/// `is_nsw` carries the `mul nsw` promise: a signed-non-wrapping product of
+/// two non-negative values cannot wrap unsigned either.
+pub fn compute_overflow_for_unsigned_mul<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
+    is_nsw: bool,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<OverflowResult> {
+    let lhs_range = compute_constant_range_including_known_bits(lhs, false, query)?;
+    let rhs_range = compute_constant_range_including_known_bits(rhs, false, query)?;
+    if is_nsw && lhs_range.is_all_non_negative() && rhs_range.is_all_non_negative() {
+        return Ok(OverflowResult::NeverOverflows);
+    }
+    Ok(lhs_range.unsigned_mul_may_overflow(&rhs_range))
+}
+
+/// Whether `lhs * rhs` overflows signed. Ports
+/// `llvm::computeOverflowForSignedMul`.
+///
+/// The reasoning is sign-bit counting rather than ranges: multiplying values
+/// with `n` and `m` significant bits needs `n + m`, so enough leading sign
+/// bits guarantees the product fits. Upstream credits *Hacker's Delight*.
+pub fn compute_overflow_for_signed_mul<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<OverflowResult> {
+    let bit_width = value_bit_width(lhs, query.data_layout()).unwrap_or(0);
+    // Under-estimating the sign-bit count only makes the answer more
+    // conservative, which is why this is sound with llvmkit's partial
+    // `compute_num_sign_bits`.
+    let sign_bits =
+        compute_num_sign_bits(lhs, query)?.saturating_add(compute_num_sign_bits(rhs, query)?);
+
+    if sign_bits > bit_width.saturating_add(1) {
+        return Ok(OverflowResult::NeverOverflows);
+    }
+
+    // Two counts leave no overflow possible: `bit_width + 1` and `bit_width`.
+    // The second is hard to check, so upstream handles only the first.
+    if sign_bits == bit_width.saturating_add(1) {
+        // At this count the product overflows only when both operands are
+        // negative and the true product is exactly the signed minimum, so one
+        // non-negative operand rules it out.
+        if compute_known_bits(lhs, query)?.is_non_negative()
+            || compute_known_bits(rhs, query)?.is_non_negative()
+        {
+            return Ok(OverflowResult::NeverOverflows);
+        }
+    }
+    Ok(OverflowResult::MayOverflow)
 }
 
 fn alloca_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(

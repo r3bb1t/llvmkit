@@ -183,8 +183,37 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("MaskedValueIsZero", "is_known_zero"),
     ("canCreatePoison", "can_create_poison"),
     ("canCreateUndefOrPoison", "can_create_undef_or_poison"),
+    ("computeConstantRange", "compute_constant_range"),
+    (
+        "computeConstantRangeIncludingKnownBits",
+        "compute_constant_range_including_known_bits",
+    ),
     ("computeKnownBits", "compute_known_bits"),
     ("computeKnownBitsFromOperator", "known_bits_from_operator"),
+    (
+        "computeOverflowForSignedAdd",
+        "compute_overflow_for_signed_add",
+    ),
+    (
+        "computeOverflowForSignedMul",
+        "compute_overflow_for_signed_mul",
+    ),
+    (
+        "computeOverflowForSignedSub",
+        "compute_overflow_for_signed_sub",
+    ),
+    (
+        "computeOverflowForUnsignedAdd",
+        "compute_overflow_for_unsigned_add",
+    ),
+    (
+        "computeOverflowForUnsignedMul",
+        "compute_overflow_for_unsigned_mul",
+    ),
+    (
+        "computeOverflowForUnsignedSub",
+        "compute_overflow_for_unsigned_sub",
+    ),
     ("impliesPoison", "implies_poison"),
     ("isGuaranteedNotToBePoison", "is_known_not_poison"),
     ("isKnownNonZero", "is_known_non_zero"),
@@ -203,20 +232,17 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
         "computeKnownBitsFromContext — no @llvm.assume-driven refinement",
     ),
     (
-        "constant ranges",
-        "computeConstantRange, computeConstantRangeIncludingKnownBits, \
-         getVScaleRange — same missing ConstantRange dependency",
+        "vscale",
+        "getVScaleRange — blocked on the `vscale_range` attribute itself, which \
+         `attribute_td_drift.rs` already lists as NOT_YET_MODELED. Upstream reads \
+         a packed (min, max) pair; llvmkit's attribute payload is a single u64, so \
+         porting it would mean inventing the second half",
     ),
     (
         "floating-point classification",
         "computeKnownFPClass, isKnownNeverNaN, isKnownNeverInfinity, \
          cannotBeNegativeZero, canIgnoreSignBitOfNaN — llvmkit has ApFloat but no \
          FP known-class lattice",
-    ),
-    (
-        "overflow prediction",
-        "computeOverflowForSignedAdd / Sub / Mul and the unsigned trio — needs \
-         ConstantRange, which llvmkit does not model",
     ),
     (
         "pointer and object analysis",
@@ -397,9 +423,13 @@ fn exercises_every_modeled_known_bits_operation() {
 #[test]
 fn exercises_every_modeled_value_tracking_entry_point() {
     use llvmkit_ir::{
-        DynBrand, can_create_poison, can_create_undef_or_poison, compute_known_bits,
-        compute_max_significant_bits, compute_num_sign_bits, implies_poison, is_known_non_zero,
-        is_known_not_poison, is_known_one, is_known_zero, propagates_poison,
+        DynBrand, can_create_poison, can_create_undef_or_poison, compute_constant_range,
+        compute_constant_range_including_known_bits, compute_known_bits,
+        compute_max_significant_bits, compute_num_sign_bits, compute_overflow_for_signed_add,
+        compute_overflow_for_signed_mul, compute_overflow_for_signed_sub,
+        compute_overflow_for_unsigned_add, compute_overflow_for_unsigned_mul,
+        compute_overflow_for_unsigned_sub, implies_poison, is_known_non_zero, is_known_not_poison,
+        is_known_one, is_known_zero, propagates_poison,
     };
 
     let _compute_known_bits = compute_known_bits::<DynBrand>;
@@ -410,6 +440,15 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _implies_poison = implies_poison::<DynBrand>;
     let _is_known_not_poison = is_known_not_poison::<DynBrand>;
     let _propagates_poison = propagates_poison::<DynBrand>;
+    let _compute_constant_range = compute_constant_range::<DynBrand>;
+    let _compute_constant_range_including_known_bits =
+        compute_constant_range_including_known_bits::<DynBrand>;
+    let _compute_overflow_for_signed_add = compute_overflow_for_signed_add::<DynBrand>;
+    let _compute_overflow_for_signed_mul = compute_overflow_for_signed_mul::<DynBrand>;
+    let _compute_overflow_for_signed_sub = compute_overflow_for_signed_sub::<DynBrand>;
+    let _compute_overflow_for_unsigned_add = compute_overflow_for_unsigned_add::<DynBrand>;
+    let _compute_overflow_for_unsigned_mul = compute_overflow_for_unsigned_mul::<DynBrand>;
+    let _compute_overflow_for_unsigned_sub = compute_overflow_for_unsigned_sub::<DynBrand>;
     let _is_known_non_zero = is_known_non_zero::<DynBrand>;
     let _is_known_zero = is_known_zero::<DynBrand>;
     // Not in the table — an llvmkit-specific dual with no upstream entry point.

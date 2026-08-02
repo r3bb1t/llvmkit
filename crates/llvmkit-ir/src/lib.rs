@@ -198,7 +198,7 @@ pub use constant_folding::{
     lossless_unsigned_trunc,
 };
 pub use constant_range::{
-    ConstantRange, EquivalentICmp, NoWrapKind, PreferredRangeType, RangeIntrinsic,
+    ConstantRange, EquivalentICmp, NoWrapKind, OverflowResult, PreferredRangeType, RangeIntrinsic,
 };
 pub use constants::{
     ConstantAggregate, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
@@ -366,9 +366,13 @@ pub use int_width::{
 };
 pub use value_tracking::{
     KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery,
-    can_create_poison, can_create_undef_or_poison, compute_known_bits,
-    compute_max_significant_bits, compute_num_sign_bits, implies_poison, is_known_non_zero,
-    is_known_not_poison, is_known_one, is_known_zero, known_bits_from_operator, propagates_poison,
+    can_create_poison, can_create_undef_or_poison, compute_constant_range,
+    compute_constant_range_including_known_bits, compute_known_bits, compute_max_significant_bits,
+    compute_num_sign_bits, compute_overflow_for_signed_add, compute_overflow_for_signed_mul,
+    compute_overflow_for_signed_sub, compute_overflow_for_unsigned_add,
+    compute_overflow_for_unsigned_mul, compute_overflow_for_unsigned_sub, implies_poison,
+    is_known_non_zero, is_known_not_poison, is_known_one, is_known_zero, known_bits_from_operator,
+    propagates_poison,
 };
 pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.

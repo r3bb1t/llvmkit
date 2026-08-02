@@ -103,8 +103,10 @@ sequenced:
    `mustTriggerUB`, `isGuaranteedNotToBeUndef`. llvmkit already has
    `is_guaranteed_not_to_be_poison` internally, so this extends an existing
    seed. Still no new types.
-3. **`ConstantRange` to completion**, then the families it gates —
-   `computeConstantRange`, the six `computeOverflowFor*`, `getVScaleRange`.
+3. ~~**`ConstantRange` to completion**, then the families it gates.~~
+   **DONE 2026-08-02** — all five slices. `ConstantRange` went from 13 of 83
+   public methods to 90 llvmkit methods covering all but `castOp`,
+   `shlWithNoWrap` and the signedness-flipping helpers, each recorded below.
    Cut into five sub-slices, each mergeable on its own (2026-08-01). llvmkit
    maps 13 of the 78 public methods today; the count below is what each slice
    adds.
@@ -121,7 +123,7 @@ sequenced:
    | 3d-iv ✅ | 8 | **done 2026-08-02**: the saturating family. Six share one frame (`saturating_pairwise`); `smul_sat` needs all four corners and `sshl_sat` picks its shift by endpoint sign. |
    | 3d-v ✅ | 3 | **done 2026-08-02**: `ctlz`, `cttz`, `ctpop` (`abs` landed in 3d-ii). |
    | 3d-vi ✅ | 8 | **done 2026-08-02**: `binary_op`, `overflowing_binary_op`, `intrinsic`, `is_intrinsic_supported`, `add_with_no_wrap`, `sub_with_no_wrap`, `multiply_with_no_wrap`, `smul_fast`. **`shlWithNoWrap` is not ported** — it is three helper functions (`computeShlNUW`, `computeShlNSWWithNNegLHS`, `computeShlNSWWithNegLHS`) plus a dispatcher, and no llvmkit caller needs it yet; `overflowing_binary_op` sends `shl` to the plain `shl`, which is sound and only weaker. |
-   | **3e** | — | The ValueTracking consumers `ConstantRange` was needed for: `computeConstantRange`, `computeOverflowForSigned`/`UnsignedAdd`/`Sub`/`Mul`, `getVScaleRange`. |
+   | ~~**3e**~~ ✅ | 8 | **done 2026-08-02**: `compute_constant_range`, `compute_constant_range_including_known_bits`, and all six `compute_overflow_for_*`. Also added the five `ConstantRange` overflow predicates (`unsigned_add_may_overflow` and siblings) that an earlier count missed — the real public surface is **83**, not 78; those five span two lines in the header and the extraction grep skipped them. **`getVScaleRange` is not ported**: it reads `vscale_range`'s packed `(min, max)` pair, and that attribute is already on `attribute_td_drift.rs`'s `NOT_YET_MODELED` list with a single-`u64` payload here. Porting it would mean inventing the second half. |
 
    `ConstantRangeTest.cpp` (~2800 lines) is the test source throughout; its
    exhaustive-over-4-bit-ranges harness ports directly and is the right
