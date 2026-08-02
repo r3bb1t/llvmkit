@@ -1342,6 +1342,13 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_and_dce_pipeline_folds_and_erases` | `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl`; `llvm/lib/Transforms/Scalar/DCE.cpp::eliminateDeadCode`; `llvm/lib/Passes/PassRegistry.def` scalar pass names | llvmkit-specific |
 | `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_pass_keeps_load_from_interposable_constant_global` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldLoadFromConstPtr` `hasDefinitiveInitializer()` gate through `InstSimplifyPass.cpp::runImpl` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_terminates_on_ordered_atomic_load_from_constant` | `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl` (only `!I.use_empty()` instructions are simplified, so a folded-but-live side-effecting load is RAUW'd once and not re-queued) -- broad-review termination lock | llvmkit-specific |
+| `crates/llvmkit-ir/tests/constant_range_arith.rs::add_covers_every_sum` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::add` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_arith.rs::sub_covers_every_difference` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::sub` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_arith.rs::multiply_covers_every_product` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::multiply` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_arith.rs::multiply_by_one_and_minus_one_is_exact` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::multiply` single-element shortcuts | mirror |
+| `crates/llvmkit-ir/tests/constant_range_arith.rs::min_max_quartet_covers_every_result` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::smax` / `smin` / `umax` / `umin` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_arith.rs::an_empty_operand_yields_empty` | the empty-set early returns in each of the above | mirror |
+| `crates/llvmkit-ir/tests/constant_range_arith.rs::add_then_sub_of_a_single_value_round_trips` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::add` / `sub` composed | llvmkit-specific |
 | `crates/llvmkit-ir/tests/constant_range_icmp.rs::allowed_region_contains_every_value_that_can_compare_true` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::makeAllowedICmpRegion` | mirror |
 | `crates/llvmkit-ir/tests/constant_range_icmp.rs::satisfying_region_admits_only_values_that_always_compare_true` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::makeSatisfyingICmpRegion` | mirror |
 | `crates/llvmkit-ir/tests/constant_range_icmp.rs::exact_region_is_exact_for_a_single_value` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::makeExactICmpRegion` | mirror |
