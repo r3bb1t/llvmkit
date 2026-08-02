@@ -1,6 +1,7 @@
 //! Half-open integer ranges. Mirrors `llvm/include/llvm/IR/ConstantRange.h`.
 
 use core::cmp::Ordering;
+use core::ops::Not;
 
 use crate::ApInt;
 use crate::cmp_predicate::IntPredicate;
@@ -76,6 +77,46 @@ pub struct EquivalentICmp {
     /// whose shape maps onto a predicate directly; non-zero only when the
     /// range had to be shifted down to start at zero.
     pub offset: ApInt,
+}
+
+/// Estimate a lower bound for the bit-masked AND of two ranges.
+///
+/// Ports the file-local `estimateBitMaskedAndLowerBound` in
+/// `ConstantRange.cpp`. The idea is that the high bits both ranges hold
+/// constant across all their members survive the AND, so a prefix of the
+/// smaller endpoint is a sound floor.
+fn estimate_bit_masked_and_lower_bound(lhs: &ConstantRange, rhs: &ConstantRange) -> ApInt {
+    let bit_width = lhs.bit_width();
+    // A full or unsigned-wrapped range contains zero, and `x & 0` is zero, so
+    // nothing above zero can be guaranteed.
+    if lhs.is_full_set() || rhs.is_full_set() || lhs.is_wrapped_set() || rhs.is_wrapped_set() {
+        return ApInt::zero(bit_width);
+    }
+
+    let one_v = one(bit_width);
+    let lhs_lo = lhs.lower().clone();
+    let lhs_hi = lhs.upper().wrapping_sub(&one_v);
+    let rhs_lo = rhs.lower().clone();
+    let rhs_hi = rhs.upper().wrapping_sub(&one_v);
+
+    // Bits that are equal within each range *and* equal across the two.
+    let mut mask = lhs_lo
+        .bitxor(&lhs_hi)
+        .bitor(&rhs_lo.bitxor(&rhs_hi))
+        .bitor(&lhs_lo.bitxor(&rhs_lo))
+        .not();
+    let leading_ones = mask.count_leading_ones();
+    mask.clear_low_bits(bit_width - leading_ones);
+
+    let estimate_bound = |mut a_lo: ApInt, b_lo: &ApInt, b_hi: &ApInt| -> ApInt {
+        let leading_ones = b_lo.bitand(b_hi).bitor(&mask).count_leading_ones();
+        a_lo.clear_low_bits(bit_width - leading_ones);
+        a_lo
+    };
+
+    let by_lhs = estimate_bound(lhs_lo.clone(), &rhs_lo, &rhs_hi);
+    let by_rhs = estimate_bound(rhs_lo, &lhs_lo, &lhs_hi);
+    if by_lhs.ugt(&by_rhs) { by_lhs } else { by_rhs }
 }
 
 /// Which of the four min/max operations `ConstantRange::min_max` is running.
@@ -1785,6 +1826,248 @@ impl ConstantRange {
         let lower = umax(min_lhs, max_absolute_rhs.negate().wrapping_add(&one_v));
         let upper = umin(max_lhs, max_absolute_rhs.wrapping_sub(&one_v)).wrapping_add(&one_v);
         range(lower, upper)
+    }
+
+    /// Bitwise complement of every member. Mirrors `ConstantRange::binaryNot`.
+    ///
+    /// `~x` is `-1 - x`, so this is a subtraction from the all-ones range.
+    pub fn binary_not(&self) -> Self {
+        Self::single(ApInt::all_ones(self.bit_width())).sub(self)
+    }
+
+    /// Bitwise AND of every pairing. Mirrors `ConstantRange::binaryAnd`.
+    ///
+    /// Two independent approximations are intersected: what the known bits
+    /// say, and the `[estimated lower bound, min(umax) + 1)` interval. Neither
+    /// subsumes the other.
+    pub fn binary_and(&self, other: &Self) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(bit_width);
+        }
+        let one_v = one(bit_width);
+
+        let known_bits_range = Self::from_known_bits(
+            &KnownBits::bitand(&self.to_known_bits(), &other.to_known_bits()),
+            false,
+        );
+        let lower_bound = estimate_bit_masked_and_lower_bound(self, other);
+        let self_max = self.unsigned_max();
+        let other_max = other.unsigned_max();
+        let upper = if other_max.ult(&self_max) {
+            other_max
+        } else {
+            self_max
+        }
+        .wrapping_add(&one_v);
+        let umin_umax_range =
+            Self::non_empty(lower_bound, upper).unwrap_or_else(|_| Self::full(bit_width));
+        known_bits_range.intersect_with(&umin_umax_range, PreferredRangeType::Smallest)
+    }
+
+    /// Bitwise OR of every pairing. Mirrors `ConstantRange::binaryOr`.
+    pub fn binary_or(&self, other: &Self) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(bit_width);
+        }
+
+        let known_bits_range = Self::from_known_bits(
+            &KnownBits::bitor(&self.to_known_bits(), &other.to_known_bits()),
+            false,
+        );
+
+        // De Morgan turns the OR's upper bound into the AND's lower bound:
+        //   ~a & ~b >= x  <=>  a | b < -x
+        // so the estimator can be reused on the complemented operands.
+        let upper_bound =
+            estimate_bit_masked_and_lower_bound(&self.binary_not(), &other.binary_not()).negate();
+        let self_min = self.unsigned_min();
+        let other_min = other.unsigned_min();
+        let lower = if self_min.ugt(&other_min) {
+            self_min
+        } else {
+            other_min
+        };
+        let umax_umin_range =
+            Self::non_empty(lower, upper_bound).unwrap_or_else(|_| Self::full(bit_width));
+        known_bits_range.intersect_with(&umax_umin_range, PreferredRangeType::Smallest)
+    }
+
+    /// Bitwise XOR of every pairing. Mirrors `ConstantRange::binaryXor`.
+    pub fn binary_xor(&self, other: &Self) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(bit_width);
+        }
+
+        // Two single values XOR exactly.
+        if let (Some(lhs), Some(rhs)) = (self.single_element(), other.single_element()) {
+            return Self::single(lhs.bitxor(rhs));
+        }
+        // XOR with all-ones is complement, which is exact.
+        if other.single_element().is_some_and(ApInt::is_all_ones) {
+            return self.binary_not();
+        }
+        if self.single_element().is_some_and(ApInt::is_all_ones) {
+            return other.binary_not();
+        }
+
+        let lhs_known = self.to_known_bits();
+        let rhs_known = other.to_known_bits();
+        let mut result = Self::from_known_bits(&KnownBits::bitxor(&lhs_known, &rhs_known), false);
+        // At one bit the refinement below does not improve on the known bits.
+        if bit_width == 1 {
+            return result;
+        }
+
+        // When one side's possible-one bits are a subset of the other's
+        // known-one bits, the XOR is a borrow-free subtraction, which is a
+        // tighter answer than the known bits alone.
+        if lhs_known
+            .zero_mask()
+            .not()
+            .is_subset_of(rhs_known.one_mask())
+        {
+            result = result.intersect_with(&other.sub(self), PreferredRangeType::Unsigned);
+        } else if rhs_known
+            .zero_mask()
+            .not()
+            .is_subset_of(lhs_known.one_mask())
+        {
+            result = result.intersect_with(&self.sub(other), PreferredRangeType::Unsigned);
+        }
+        result
+    }
+
+    /// Left shift of every pairing. Mirrors `ConstantRange::shl`.
+    pub fn shl(&self, other: &Self) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(bit_width);
+        }
+        let one_v = one(bit_width);
+        let mut min = self.unsigned_min();
+        let mut max = self.unsigned_max();
+        let limit = u64::from(bit_width);
+
+        if let Some(amount) = other.single_element() {
+            // Shifting by at least the width is poison.
+            if amount.limited_value(limit) >= limit {
+                return Self::empty(bit_width);
+            }
+            let shift = u32::try_from(amount.limited_value(limit)).unwrap_or(bit_width);
+            let equal_leading_bits = min.bitxor(&max).count_leading_zeros();
+            if shift <= equal_leading_bits {
+                // No member's significant bits fall off the top, so the
+                // endpoints shift cleanly.
+                return Self::non_empty(min.shl(shift), max.shl(shift).wrapping_add(&one_v))
+                    .unwrap_or_else(|_| Self::full(bit_width));
+            }
+            return Self::non_empty(
+                ApInt::zero(bit_width),
+                ApInt::bits_set_from(bit_width, shift).wrapping_add(&one_v),
+            )
+            .unwrap_or_else(|_| Self::full(bit_width));
+        }
+
+        let other_max = other.unsigned_max();
+        let other_max_amount = u32::try_from(other_max.limited_value(limit)).unwrap_or(bit_width);
+        let other_min_amount =
+            u32::try_from(other.unsigned_min().limited_value(limit)).unwrap_or(bit_width);
+
+        if self.is_all_negative() && other_max_amount <= min.count_leading_ones() {
+            // All-negative and no signed overflow: a bigger shift makes the
+            // value smaller, so the roles of min and max swap.
+            max = max.shl(other_min_amount);
+            min = min.shl(other_max_amount);
+            return Self::non_empty(min, max.wrapping_add(&one_v))
+                .unwrap_or_else(|_| Self::full(bit_width));
+        }
+
+        // Overflow is possible, and upstream does not narrow further here.
+        if other_max_amount > max.count_leading_zeros() {
+            return Self::full(bit_width);
+        }
+
+        min = min.shl(other_min_amount);
+        max = max.shl(other_max_amount);
+        Self::non_empty(min, max.wrapping_add(&one_v)).unwrap_or_else(|_| Self::full(bit_width))
+    }
+
+    /// Logical right shift of every pairing. Mirrors `ConstantRange::lshr`.
+    pub fn lshr(&self, other: &Self) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(bit_width);
+        }
+        let one_v = one(bit_width);
+        let limit = u64::from(bit_width);
+        let amount = |v: &ApInt| u32::try_from(v.limited_value(limit)).unwrap_or(bit_width);
+
+        // Shifting right shrinks, so the largest result comes from the
+        // smallest shift and vice versa.
+        let max = self
+            .unsigned_max()
+            .lshr(amount(&other.unsigned_min()))
+            .wrapping_add(&one_v);
+        let min = self.unsigned_min().lshr(amount(&other.unsigned_max()));
+        Self::non_empty(min, max).unwrap_or_else(|_| Self::full(bit_width))
+    }
+
+    /// Arithmetic right shift of every pairing. Mirrors `ConstantRange::ashr`.
+    ///
+    /// A negative value grows toward -1 as it is shifted while a non-negative
+    /// one shrinks toward 0, so which shift amount produces the extreme
+    /// depends on the sign — hence the three cases.
+    pub fn ashr(&self, other: &Self) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(bit_width);
+        }
+        let one_v = one(bit_width);
+        let limit = u64::from(bit_width);
+        let amount = |v: &ApInt| u32::try_from(v.limited_value(limit)).unwrap_or(bit_width);
+        let other_min = amount(&other.unsigned_min());
+        let other_max = amount(&other.unsigned_max());
+
+        let signed_min = self.signed_min();
+        let signed_max = self.signed_max();
+
+        // Bounds assuming a non-negative operand: shifting shrinks it.
+        let positive_max = signed_max.ashr(other_min).wrapping_add(&one_v);
+        let positive_min = signed_min.ashr(other_max);
+        // Bounds assuming a negative operand: shifting grows it toward -1.
+        let negative_max = signed_max.ashr(other_max).wrapping_add(&one_v);
+        let negative_min = signed_min.ashr(other_min);
+
+        let (min, max) = if signed_min.is_non_negative() {
+            (positive_min, positive_max)
+        } else if signed_max.is_negative() {
+            (negative_min, negative_max)
+        } else {
+            // Straddles zero, so take the outer bound from each side.
+            (negative_min, positive_max)
+        };
+        Self::non_empty(min, max).unwrap_or_else(|_| Self::full(bit_width))
     }
 
     pub fn intersects_with(&self, rhs: &Self) -> bool {
