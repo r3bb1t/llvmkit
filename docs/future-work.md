@@ -116,10 +116,10 @@ sequenced:
    | ~~**3c**~~ | ~9 | ~~ICmp regions~~ **done 2026-08-02**: `make_allowed_icmp_region`, `make_satisfying_icmp_region`, `make_exact_icmp_region`, `make_mask_not_equal_range`, `equivalent_icmp` / `equivalent_icmp_with_offset`, `icmp`, plus the `single` and `contains_range` constructors/queries they needed. The signedness-flipping helpers (`areInsensitiveToSignednessOfICmpPredicate`, `getEquivalentPredWithFlippedSignedness`) are **not** ported — nothing in llvmkit calls them, and they exist upstream for InstCombine's predicate canonicalization, which llvmkit does not have. |
    | **3d** | ~30 | Arithmetic — the bulk. Big enough to need its own sub-slices, cut the same way tranche 3 was: |
    | 3d-i ✅ | 7 | **done 2026-08-02**: `add`, `sub`, `multiply`, `smax`/`smin`/`umax`/`umin`. These are exactly what `computeOverflowFor*` in 3e needs, which is why they went first. |
-   | 3d-ii | 4 | Division and remainder: `udiv`, `sdiv`, `urem`, `srem`. |
+   | 3d-ii ✅ | 5 | **done 2026-08-02**: `udiv`, `sdiv`, `urem`, `srem`, plus `abs` pulled forward from 3d-v because `srem` needs it. |
    | 3d-iii | 7 | Bitwise and shifts: `binaryAnd`, `binaryOr`, `binaryXor`, `binaryNot`, `shl`, `lshr`, `ashr`. |
    | 3d-iv | 8 | The saturating family: `uadd_sat`, `sadd_sat`, `usub_sat`, `ssub_sat`, `umul_sat`, `smul_sat`, `ushl_sat`, `sshl_sat`. |
-   | 3d-v | 4 | Bit counting: `abs`, `ctlz`, `cttz`, `ctpop`. |
+   | 3d-v | 3 | Bit counting: `ctlz`, `cttz`, `ctpop` (`abs` landed in 3d-ii). |
    | 3d-vi | ~6 | The dispatchers and no-wrap variants: `binaryOp`, `overflowingBinaryOp`, `intrinsic`, `isIntrinsicSupported`, `addWithNoWrap`, `subWithNoWrap`, `multiplyWithNoWrap`, `smul_fast`. |
    | **3e** | — | The ValueTracking consumers `ConstantRange` was needed for: `computeConstantRange`, `computeOverflowForSigned`/`UnsignedAdd`/`Sub`/`Mul`, `getVScaleRange`. |
 

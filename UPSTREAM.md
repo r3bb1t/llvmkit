@@ -1342,6 +1342,15 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_and_dce_pipeline_folds_and_erases` | `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl`; `llvm/lib/Transforms/Scalar/DCE.cpp::eliminateDeadCode`; `llvm/lib/Passes/PassRegistry.def` scalar pass names | llvmkit-specific |
 | `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_pass_keeps_load_from_interposable_constant_global` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldLoadFromConstPtr` `hasDefinitiveInitializer()` gate through `InstSimplifyPass.cpp::runImpl` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_terminates_on_ordered_atomic_load_from_constant` | `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl` (only `!I.use_empty()` instructions are simplified, so a folded-but-live side-effecting load is RAUW'd once and not re-queued) -- broad-review termination lock | llvmkit-specific |
+| `crates/llvmkit-ir/tests/constant_range_divrem.rs::udiv_covers_every_defined_quotient` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::udiv` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_divrem.rs::sdiv_covers_every_defined_quotient` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::sdiv`, excluding the `SignedMin / -1` IR-level UB upstream also excludes | mirror |
+| `crates/llvmkit-ir/tests/constant_range_divrem.rs::urem_covers_every_defined_remainder` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::urem` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_divrem.rs::srem_covers_every_defined_remainder` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::srem` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_divrem.rs::a_divisor_that_is_only_zero_yields_empty` | the `getUnsignedMax().isZero()` early returns in `udiv` / `urem` / `srem` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_divrem.rs::an_empty_operand_yields_empty` | the empty-set early returns in each of the above | mirror |
+| `crates/llvmkit-ir/tests/constant_range_divrem.rs::single_element_div_rem_is_exact` | the `getSingleElement()` shortcuts in `urem` / `srem` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_divrem.rs::abs_covers_every_absolute_value` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::abs` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_divrem.rs::abs_of_only_signed_min_is_empty_when_poison` | `ConstantRange::abs`'s explicit empty return when SignedMin is poison and is the only member | mirror |
 | `crates/llvmkit-ir/tests/constant_range_arith.rs::add_covers_every_sum` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::add` | mirror |
 | `crates/llvmkit-ir/tests/constant_range_arith.rs::sub_covers_every_difference` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::sub` | mirror |
 | `crates/llvmkit-ir/tests/constant_range_arith.rs::multiply_covers_every_product` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::multiply` | mirror |
