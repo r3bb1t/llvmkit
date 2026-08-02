@@ -7,6 +7,31 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### `ConstantRange` dispatchers and no-wrap variants (slice 3d-vi) — slice 3d complete
+
+#### Added
+
+- `binary_op` and `overflowing_binary_op`, the opcode dispatchers.
+- `intrinsic` and `is_intrinsic_supported`, plus the `RangeIntrinsic` enum.
+- `add_with_no_wrap`, `sub_with_no_wrap`, `multiply_with_no_wrap`, taking a
+  `NoWrapKind` with named `signed` / `unsigned` flags rather than upstream's
+  bitmask, so neither promise can be mistaken for the other at a call site.
+- `smul_fast` — the give-up-rather-than-approximate multiply.
+
+Two places where naming a type removed a run-time check. Upstream's
+`intrinsic` asserts that the id is supported *and* that the flag operands are
+known one-bit constants; `RangeIntrinsic` carries each intrinsic's flag in the
+variant, so both assertions become unrepresentable states and
+`is_intrinsic_supported` is total. Arity is still checked, but answers `None`
+instead of asserting.
+
+`shlWithNoWrap` is **not** ported — it is three sizeable helpers plus a
+dispatcher, no llvmkit caller needs it, and `overflowing_binary_op` sends
+`shl` to the plain `shl`, which is sound and only weaker. Recorded in
+`docs/future-work.md`.
+
+With this, **slice 3d is complete** — all six sub-slices, ~37 methods.
+
 ### `ConstantRange` saturating operations and bit counting (slices 3d-iv, 3d-v)
 
 #### Added

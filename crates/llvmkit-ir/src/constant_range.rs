@@ -7,6 +7,7 @@ use crate::ApInt;
 use crate::cmp_predicate::IntPredicate;
 use crate::constant::ConstantData;
 use crate::error::{IrError, IrResult};
+use crate::instr_types::BinaryOpcode;
 use crate::known_bits::KnownBits;
 use crate::metadata::{MetadataKind, MetadataSlot, MetadataStore};
 use crate::module::ModuleCore;
@@ -117,6 +118,86 @@ fn estimate_bit_masked_and_lower_bound(lhs: &ConstantRange, rhs: &ConstantRange)
     let by_lhs = estimate_bound(lhs_lo.clone(), &rhs_lo, &rhs_hi);
     let by_rhs = estimate_bound(rhs_lo, &lhs_lo, &lhs_hi);
     if by_lhs.ugt(&by_rhs) { by_lhs } else { by_rhs }
+}
+
+/// The no-wrap promises an overflowing binary operator can carry.
+///
+/// Mirrors the `NoWrapKind` bitmask upstream passes as an `unsigned` built
+/// from `OverflowingBinaryOperator::NoSignedWrap` / `NoUnsignedWrap`. Spelled
+/// as two named flags so neither can be confused for the other at a call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct NoWrapKind {
+    /// The `nsw` promise: no signed overflow.
+    pub signed: bool,
+    /// The `nuw` promise: no unsigned overflow.
+    pub unsigned: bool,
+}
+
+impl NoWrapKind {
+    /// Neither promise — the operation may wrap either way.
+    pub const NONE: Self = Self {
+        signed: false,
+        unsigned: false,
+    };
+    /// `nsw` only.
+    pub const SIGNED: Self = Self {
+        signed: true,
+        unsigned: false,
+    };
+    /// `nuw` only.
+    pub const UNSIGNED: Self = Self {
+        signed: false,
+        unsigned: true,
+    };
+    /// Both promises.
+    pub const BOTH: Self = Self {
+        signed: true,
+        unsigned: true,
+    };
+}
+
+/// The intrinsics [`ConstantRange::intrinsic`] models.
+///
+/// Upstream takes an `Intrinsic::ID` and asserts, at run time, both that the
+/// id is one it supports and that the flag operands are known constants of
+/// width one. Naming the supported set as a type turns both assertions into
+/// states that cannot be constructed, which is why
+/// [`ConstantRange::is_intrinsic_supported`] can answer `true` unconditionally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RangeIntrinsic {
+    /// `llvm.uadd.sat`
+    UAddSat,
+    /// `llvm.usub.sat`
+    USubSat,
+    /// `llvm.sadd.sat`
+    SAddSat,
+    /// `llvm.ssub.sat`
+    SSubSat,
+    /// `llvm.umin`
+    UMin,
+    /// `llvm.umax`
+    UMax,
+    /// `llvm.smin`
+    SMin,
+    /// `llvm.smax`
+    SMax,
+    /// `llvm.abs`, carrying its `immarg` poison flag.
+    Abs {
+        /// Whether the signed minimum is poison rather than wrapping to itself.
+        int_min_is_poison: bool,
+    },
+    /// `llvm.ctlz`, carrying its `immarg` poison flag.
+    Ctlz {
+        /// Whether counting on zero is poison rather than the full width.
+        zero_is_poison: bool,
+    },
+    /// `llvm.cttz`, carrying its `immarg` poison flag.
+    Cttz {
+        /// Whether counting on zero is poison rather than the full width.
+        zero_is_poison: bool,
+    },
+    /// `llvm.ctpop`
+    Ctpop,
 }
 
 /// Trailing-zero counts over a non-wrapped, non-empty `[lower, upper)`.
@@ -2437,6 +2518,251 @@ impl ConstantRange {
             &unsigned_pop_count_range(&zero, &self.upper),
             PreferredRangeType::Smallest,
         )
+    }
+
+    /// Signed multiplication that gives up rather than approximating. Mirrors
+    /// `ConstantRange::smul_fast`.
+    ///
+    /// Where [`Self::multiply`] widens to double precision and truncates back,
+    /// this computes the four corners at the operand width and answers the
+    /// full set if any of them overflowed. Cheaper, and no worse whenever the
+    /// product fits.
+    pub fn smul_fast(&self, other: &Self) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(bit_width);
+        }
+        let one_v = one(bit_width);
+
+        let min = self.signed_min();
+        let max = self.signed_max();
+        let other_min = other.signed_min();
+        let other_max = other.signed_max();
+
+        let corners = [
+            min.smul_ov(&other_min),
+            min.smul_ov(&other_max),
+            max.smul_ov(&other_min),
+            max.smul_ov(&other_max),
+        ];
+        if corners.iter().any(|(_, overflow)| *overflow) {
+            return Self::full(bit_width);
+        }
+
+        let mut lowest = corners[0].0.clone();
+        let mut highest = corners[0].0.clone();
+        for (product, _) in &corners[1..] {
+            if product.slt(&lowest) {
+                lowest = product.clone();
+            }
+            if highest.slt(product) {
+                highest = product.clone();
+            }
+        }
+        Self::non_empty(lowest, highest.wrapping_add(&one_v))
+            .unwrap_or_else(|_| Self::full(bit_width))
+    }
+
+    /// Addition constrained to pairings that do not wrap. Mirrors
+    /// `ConstantRange::addWithNoWrap`.
+    ///
+    /// Intersecting the wrapping sum with the *saturating* one is what
+    /// enforces the promise: a pairing that would have wrapped lands on a
+    /// saturation boundary the wrapping result cannot reach, so it drops out.
+    /// When every pairing overflows, the intersection is empty — which is the
+    /// right answer, since the operation is poison throughout.
+    pub fn add_with_no_wrap(
+        &self,
+        other: &Self,
+        no_wrap: NoWrapKind,
+        preferred: PreferredRangeType,
+    ) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(self.bit_width());
+        }
+        if self.is_full_set() && other.is_full_set() {
+            return Self::full(self.bit_width());
+        }
+
+        let mut result = self.add(other);
+        if no_wrap.signed {
+            result = result.intersect_with(&self.sadd_sat(other), preferred);
+        }
+        if no_wrap.unsigned {
+            result = result.intersect_with(&self.uadd_sat(other), preferred);
+        }
+        result
+    }
+
+    /// Subtraction constrained to pairings that do not wrap. Mirrors
+    /// `ConstantRange::subWithNoWrap`.
+    ///
+    /// The unsigned case needs an explicit always-overflows check that the
+    /// signed case gets for free: upstream notes that intersecting with
+    /// `ssub_sat` happens to empty out on its own, while `usub_sat` does not.
+    pub fn sub_with_no_wrap(
+        &self,
+        other: &Self,
+        no_wrap: NoWrapKind,
+        preferred: PreferredRangeType,
+    ) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(bit_width);
+        }
+        if self.is_full_set() && other.is_full_set() {
+            return Self::full(bit_width);
+        }
+
+        let mut result = self.sub(other);
+        if no_wrap.signed {
+            result = result.intersect_with(&self.ssub_sat(other), preferred);
+        }
+        if no_wrap.unsigned {
+            if self.unsigned_max().ult(&other.unsigned_min()) {
+                // Every pairing borrows, so the operation is poison throughout.
+                return Self::empty(bit_width);
+            }
+            result = result.intersect_with(&self.usub_sat(other), preferred);
+        }
+        result
+    }
+
+    /// Multiplication constrained to pairings that do not wrap. Mirrors
+    /// `ConstantRange::multiplyWithNoWrap`.
+    pub fn multiply_with_no_wrap(
+        &self,
+        other: &Self,
+        no_wrap: NoWrapKind,
+        preferred: PreferredRangeType,
+    ) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(bit_width);
+        }
+        if self.is_full_set() && other.is_full_set() {
+            return Self::full(bit_width);
+        }
+
+        let mut result = self.multiply(other);
+        if no_wrap.signed {
+            result = result.intersect_with(&self.smul_sat(other), preferred);
+        }
+        if no_wrap.unsigned {
+            result = result.intersect_with(&self.umul_sat(other), preferred);
+        }
+
+        // With both promises, a factor strictly above 1 forces a non-negative
+        // product: it cannot have wrapped past the signed maximum without
+        // breaking one of the two.
+        if no_wrap.signed
+            && no_wrap.unsigned
+            && !result.is_all_non_negative()
+            && (self.signed_min().sgt(&one(bit_width)) || other.signed_min().sgt(&one(bit_width)))
+        {
+            let non_negative =
+                Self::non_empty(ApInt::zero(bit_width), ApInt::signed_min_value(bit_width))
+                    .unwrap_or_else(|_| Self::full(bit_width));
+            result = result.intersect_with(&non_negative, preferred);
+        }
+        result
+    }
+
+    /// Apply a binary opcode to two ranges. Mirrors
+    /// `ConstantRange::binaryOp`.
+    ///
+    /// The float opcodes forward to their integer counterparts, as upstream
+    /// does — a range over floats is "an ideal integer operation with a lossy
+    /// representation", in its words. Anything else answers the full set.
+    pub fn binary_op(&self, opcode: BinaryOpcode, other: &Self) -> Self {
+        match opcode {
+            BinaryOpcode::Add | BinaryOpcode::FAdd => self.add(other),
+            BinaryOpcode::Sub | BinaryOpcode::FSub => self.sub(other),
+            BinaryOpcode::Mul | BinaryOpcode::FMul => self.multiply(other),
+            BinaryOpcode::UDiv => self.udiv(other),
+            BinaryOpcode::SDiv => self.sdiv(other),
+            BinaryOpcode::URem => self.urem(other),
+            BinaryOpcode::SRem => self.srem(other),
+            BinaryOpcode::Shl => self.shl(other),
+            BinaryOpcode::LShr => self.lshr(other),
+            BinaryOpcode::AShr => self.ashr(other),
+            BinaryOpcode::And => self.binary_and(other),
+            BinaryOpcode::Or => self.binary_or(other),
+            BinaryOpcode::Xor => self.binary_xor(other),
+            // `fdiv` and `frem` have no integer counterpart to borrow.
+            BinaryOpcode::FDiv | BinaryOpcode::FRem => Self::full(self.bit_width()),
+        }
+    }
+
+    /// Apply a binary opcode under no-wrap promises. Mirrors
+    /// `ConstantRange::overflowingBinaryOp`.
+    ///
+    /// Only `add`, `sub` and `mul` carry wrap flags; every other opcode falls
+    /// back to [`Self::binary_op`], as upstream's `default` does. `shl` also
+    /// carries them upstream, but `shlWithNoWrap` is not ported — see
+    /// `docs/future-work.md`.
+    pub fn overflowing_binary_op(
+        &self,
+        opcode: BinaryOpcode,
+        other: &Self,
+        no_wrap: NoWrapKind,
+        preferred: PreferredRangeType,
+    ) -> Self {
+        match opcode {
+            BinaryOpcode::Add => self.add_with_no_wrap(other, no_wrap, preferred),
+            BinaryOpcode::Sub => self.sub_with_no_wrap(other, no_wrap, preferred),
+            BinaryOpcode::Mul => self.multiply_with_no_wrap(other, no_wrap, preferred),
+            other_opcode => self.binary_op(other_opcode, other),
+        }
+    }
+
+    /// Whether [`Self::intrinsic`] models this intrinsic. Mirrors
+    /// `ConstantRange::isIntrinsicSupported`.
+    pub fn is_intrinsic_supported(intrinsic: RangeIntrinsic) -> bool {
+        // Every variant of the enum is supported by construction — the enum
+        // *is* the supported set, which is upstream's list turned into a type.
+        // The function exists so callers written against upstream's shape
+        // still have something to ask.
+        let _ = intrinsic;
+        true
+    }
+
+    /// Apply a range-supported intrinsic. Mirrors `ConstantRange::intrinsic`.
+    ///
+    /// Upstream takes an `Intrinsic::ID` plus a slice of operand ranges and
+    /// asserts both the arity and that the flag operands are known constants.
+    /// llvmkit spells the supported set as [`RangeIntrinsic`], which carries
+    /// each intrinsic's operands in the shape it actually needs, so the
+    /// assertions become unrepresentable states instead.
+    pub fn intrinsic(intrinsic: RangeIntrinsic, operands: &[Self]) -> Option<Self> {
+        let first = operands.first()?;
+        let second = operands.get(1);
+        Some(match intrinsic {
+            RangeIntrinsic::UAddSat => first.uadd_sat(second?),
+            RangeIntrinsic::USubSat => first.usub_sat(second?),
+            RangeIntrinsic::SAddSat => first.sadd_sat(second?),
+            RangeIntrinsic::SSubSat => first.ssub_sat(second?),
+            RangeIntrinsic::UMin => first.umin(second?),
+            RangeIntrinsic::UMax => first.umax(second?),
+            RangeIntrinsic::SMin => first.smin(second?),
+            RangeIntrinsic::SMax => first.smax(second?),
+            RangeIntrinsic::Abs { int_min_is_poison } => first.abs(int_min_is_poison),
+            RangeIntrinsic::Ctlz { zero_is_poison } => first.ctlz(zero_is_poison),
+            RangeIntrinsic::Cttz { zero_is_poison } => first.cttz(zero_is_poison),
+            RangeIntrinsic::Ctpop => first.ctpop(),
+        })
     }
 
     pub fn intersects_with(&self, rhs: &Self) -> bool {
