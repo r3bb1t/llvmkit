@@ -114,7 +114,13 @@ sequenced:
    | **3a** | ~16 | Bounds and predicates: `getSignedMax`/`Min`, `isSignWrappedSet`, `isUpperSignWrapped`, `isSingleElement`, `isAllNegative`/`isAllNonNegative`/`isAllPositive`, `isSizeLargerThan`, `isSizeStrictlySmallerThan`, `getActiveBits`, `getMinSignedBits`, `getNonEmpty`, `toKnownBits`, `fromKnownBits`. No arithmetic; exhaustively testable at 4 bits. |
    | ~~**3b**~~ | ~12 | ~~Set operations~~ **done 2026-08-02**: `intersect_with`, `union_with`, `difference`, `subtract`, `inverse`, `split_pos_neg`, `zero_extend`, `sign_extend`, `truncate`, `zext_or_trunc`, `sext_or_trunc`. `castOp` is **not** ported — it dispatches on `Instruction::CastOps` over the ten cast opcodes, but eight of them are no-ops or bail to full; the two that matter (`zext`, `sext`, `trunc`) are the methods above, and a caller with a `CastOpcode` in hand can match on it directly. Revisit if a consumer wants the dispatcher itself. |
    | ~~**3c**~~ | ~9 | ~~ICmp regions~~ **done 2026-08-02**: `make_allowed_icmp_region`, `make_satisfying_icmp_region`, `make_exact_icmp_region`, `make_mask_not_equal_range`, `equivalent_icmp` / `equivalent_icmp_with_offset`, `icmp`, plus the `single` and `contains_range` constructors/queries they needed. The signedness-flipping helpers (`areInsensitiveToSignednessOfICmpPredicate`, `getEquivalentPredWithFlippedSignedness`) are **not** ported — nothing in llvmkit calls them, and they exist upstream for InstCombine's predicate canonicalization, which llvmkit does not have. |
-   | **3d** | ~30 | Arithmetic — the bulk: `add`, `sub`, `multiply`, the min/max quartet, the div/rem quartet, `binaryAnd`/`Or`/`Xor`/`Not`, the shift trio, `abs`, `ctlz`/`cttz`/`ctpop`, the saturating family, `binaryOp`, `overflowingBinaryOp`, `intrinsic`. |
+   | **3d** | ~30 | Arithmetic — the bulk. Big enough to need its own sub-slices, cut the same way tranche 3 was: |
+   | 3d-i ✅ | 7 | **done 2026-08-02**: `add`, `sub`, `multiply`, `smax`/`smin`/`umax`/`umin`. These are exactly what `computeOverflowFor*` in 3e needs, which is why they went first. |
+   | 3d-ii | 4 | Division and remainder: `udiv`, `sdiv`, `urem`, `srem`. |
+   | 3d-iii | 7 | Bitwise and shifts: `binaryAnd`, `binaryOr`, `binaryXor`, `binaryNot`, `shl`, `lshr`, `ashr`. |
+   | 3d-iv | 8 | The saturating family: `uadd_sat`, `sadd_sat`, `usub_sat`, `ssub_sat`, `umul_sat`, `smul_sat`, `ushl_sat`, `sshl_sat`. |
+   | 3d-v | 4 | Bit counting: `abs`, `ctlz`, `cttz`, `ctpop`. |
+   | 3d-vi | ~6 | The dispatchers and no-wrap variants: `binaryOp`, `overflowingBinaryOp`, `intrinsic`, `isIntrinsicSupported`, `addWithNoWrap`, `subWithNoWrap`, `multiplyWithNoWrap`, `smul_fast`. |
    | **3e** | — | The ValueTracking consumers `ConstantRange` was needed for: `computeConstantRange`, `computeOverflowForSigned`/`UnsignedAdd`/`Sub`/`Mul`, `getVScaleRange`. |
 
    `ConstantRangeTest.cpp` (~2800 lines) is the test source throughout; its

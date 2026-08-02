@@ -7,6 +7,25 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### `ConstantRange` arithmetic, first group (tranche 3, slice 3d-i)
+
+Slice 3d is ~30 methods across six unrelated families, so it is cut into
+sub-slices the same way tranche 3 was (see `docs/future-work.md`). This is the
+first: the operations `computeOverflowFor*` needs in 3e.
+
+#### Added
+
+- `add`, `sub` — endpoint arithmetic with upstream's wrap detection: a result
+  smaller than either input can only mean the true answer covers everything.
+- `multiply` — computed at double width under both an unsigned and a signed
+  reading, returning the smaller. Multiplication is signedness-independent but
+  the resulting *range* is not, and neither reading dominates.
+- `smax`, `smin`, `umax`, `umin`.
+
+The four min/max functions are near-identical upstream. llvmkit writes the
+body once over a private `MinMaxKind` naming the two axes they differ on
+(signed vs unsigned, min vs max), so they cannot drift apart.
+
 ### `ConstantRange` ICmp regions (tranche 3, slice 3c)
 
 #### Added

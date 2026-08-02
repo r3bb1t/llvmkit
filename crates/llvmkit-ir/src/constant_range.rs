@@ -78,6 +78,19 @@ pub struct EquivalentICmp {
     pub offset: ApInt,
 }
 
+/// Which of the four min/max operations `ConstantRange::min_max` is running.
+///
+/// Upstream writes `smax`, `smin`, `umax` and `umin` as four near-identical
+/// functions; this names the two axes they differ on so the body can be
+/// written once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MinMaxKind {
+    SignedMax,
+    SignedMin,
+    UnsignedMax,
+    UnsignedMin,
+}
+
 /// Half-open range `[lower, upper)` over a fixed-width integer domain.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConstantRange {
@@ -1170,6 +1183,246 @@ impl ConstantRange {
             IntPredicate::Sgt => self.signed_min().sgt(&other.signed_max()),
             IntPredicate::Sge => self.signed_min().sge(&other.signed_max()),
         }
+    }
+
+    /// Sum of every pairing. Mirrors `ConstantRange::add`.
+    ///
+    /// Endpoints add, then the result is checked for having wrapped past a
+    /// full domain: a sum smaller than either input can only mean the true
+    /// answer covers everything.
+    pub fn add(&self, other: &Self) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(self.bit_width());
+        }
+        if self.is_full_set() || other.is_full_set() {
+            return Self::full(self.bit_width());
+        }
+
+        let bit_width = self.bit_width();
+        let one_v = one(bit_width);
+        let new_lower = self.lower.wrapping_add(&other.lower);
+        let new_upper = self.upper.wrapping_add(&other.upper).wrapping_sub(&one_v);
+        if new_lower.eq_ap_int(&new_upper) {
+            return Self::full(bit_width);
+        }
+        let candidate = Self::new(new_lower, new_upper).unwrap_or_else(|_| Self::full(bit_width));
+        if candidate.is_size_strictly_smaller_than(self)
+            || candidate.is_size_strictly_smaller_than(other)
+        {
+            // Shrinking means we wrapped, so nothing narrower than full is
+            // sound.
+            return Self::full(bit_width);
+        }
+        candidate
+    }
+
+    /// Difference of every pairing. Mirrors `ConstantRange::sub`.
+    pub fn sub(&self, other: &Self) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(self.bit_width());
+        }
+        if self.is_full_set() || other.is_full_set() {
+            return Self::full(self.bit_width());
+        }
+
+        let bit_width = self.bit_width();
+        let one_v = one(bit_width);
+        let new_lower = self.lower.wrapping_sub(&other.upper).wrapping_add(&one_v);
+        let new_upper = self.upper.wrapping_sub(&other.lower);
+        if new_lower.eq_ap_int(&new_upper) {
+            return Self::full(bit_width);
+        }
+        let candidate = Self::new(new_lower, new_upper).unwrap_or_else(|_| Self::full(bit_width));
+        if candidate.is_size_strictly_smaller_than(self)
+            || candidate.is_size_strictly_smaller_than(other)
+        {
+            return Self::full(bit_width);
+        }
+        candidate
+    }
+
+    /// Product of every pairing. Mirrors `ConstantRange::multiply`.
+    ///
+    /// Multiplication is signedness-independent, but the *range* you get is
+    /// not: reading the inputs as unsigned and as signed gives two different,
+    /// both-correct answers. Upstream computes both at double width and
+    /// returns the smaller; so does this.
+    pub fn multiply(&self, other: &Self) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(self.bit_width());
+        }
+
+        let bit_width = self.bit_width();
+        let zero_range = Self::single(ApInt::zero(bit_width));
+
+        // Multiplying by a single 1 or -1 is exact, so take it before the
+        // double-width work.
+        if let Some(c) = self.single_element() {
+            if c.is_one() {
+                return other.clone();
+            }
+            if c.is_all_ones() {
+                return zero_range.sub(other);
+            }
+        }
+        if let Some(c) = other.single_element() {
+            if c.is_one() {
+                return self.clone();
+            }
+            if c.is_all_ones() {
+                return zero_range.sub(self);
+            }
+        }
+
+        let Some(wide) = bit_width.checked_mul(2) else {
+            return Self::full(bit_width);
+        };
+        let one_wide = one(wide);
+        let widen_z = |v: ApInt| v.zext(wide).unwrap_or_else(|| ApInt::zero(wide));
+        let widen_s = |v: ApInt| v.sext(wide).unwrap_or_else(|| ApInt::zero(wide));
+
+        // Unsigned reading first.
+        let unsigned = Self::new(
+            widen_z(self.unsigned_min()).wrapping_mul(&widen_z(other.unsigned_min())),
+            widen_z(self.unsigned_max())
+                .wrapping_mul(&widen_z(other.unsigned_max()))
+                .wrapping_add(&one_wide),
+        )
+        .unwrap_or_else(|_| Self::full(wide))
+        .truncate(bit_width, false)
+        .unwrap_or_else(|_| Self::full(bit_width));
+
+        // A non-wrapping, non-negative unsigned answer is already as tight as
+        // this can get, so skip the signed work.
+        if !unsigned.is_upper_wrapped()
+            && (unsigned.upper.is_non_negative() || unsigned.upper.is_min_signed_value())
+        {
+            return unsigned;
+        }
+
+        // Signed reading. With negatives in play the extremes are the min and
+        // max over all four corner products, not just min×min and max×max —
+        // upstream's example is [-1,4) * [-2,3), whose lowest product is
+        // 3 * -2 = -6.
+        let this_min = widen_s(self.signed_min());
+        let this_max = widen_s(self.signed_max());
+        let other_min = widen_s(other.signed_min());
+        let other_max = widen_s(other.signed_max());
+        let corners = [
+            this_min.wrapping_mul(&other_min),
+            this_min.wrapping_mul(&other_max),
+            this_max.wrapping_mul(&other_min),
+            this_max.wrapping_mul(&other_max),
+        ];
+        let mut lowest = corners[0].clone();
+        let mut highest = corners[0].clone();
+        for corner in &corners[1..] {
+            if corner.slt(&lowest) {
+                lowest = corner.clone();
+            }
+            if highest.slt(corner) {
+                highest = corner.clone();
+            }
+        }
+        let signed = Self::new(lowest, highest.wrapping_add(&one_wide))
+            .unwrap_or_else(|_| Self::full(wide))
+            .truncate(bit_width, false)
+            .unwrap_or_else(|_| Self::full(bit_width));
+
+        if unsigned.is_size_strictly_smaller_than(&signed) {
+            unsigned
+        } else {
+            signed
+        }
+    }
+
+    /// Signed maximum of every pairing. Mirrors `ConstantRange::smax`.
+    pub fn smax(&self, other: &Self) -> Self {
+        self.min_max(other, MinMaxKind::SignedMax)
+    }
+
+    /// Signed minimum of every pairing. Mirrors `ConstantRange::smin`.
+    pub fn smin(&self, other: &Self) -> Self {
+        self.min_max(other, MinMaxKind::SignedMin)
+    }
+
+    /// Unsigned maximum of every pairing. Mirrors `ConstantRange::umax`.
+    pub fn umax(&self, other: &Self) -> Self {
+        self.min_max(other, MinMaxKind::UnsignedMax)
+    }
+
+    /// Unsigned minimum of every pairing. Mirrors `ConstantRange::umin`.
+    pub fn umin(&self, other: &Self) -> Self {
+        self.min_max(other, MinMaxKind::UnsignedMin)
+    }
+
+    /// The shared body of `smax` / `smin` / `umax` / `umin`.
+    ///
+    /// All four upstream functions have the same shape — take the operation
+    /// pointwise on the two bounds, then, if either input wraps in the
+    /// relevant domain, intersect with the union to stay sound. Writing it
+    /// once keeps the four from drifting apart.
+    fn min_max(&self, other: &Self, kind: MinMaxKind) -> Self {
+        if self.bit_width() != other.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        if self.is_empty_set() || other.is_empty_set() {
+            return Self::empty(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        let one_v = one(bit_width);
+        let signed = matches!(kind, MinMaxKind::SignedMax | MinMaxKind::SignedMin);
+        let take_max = matches!(kind, MinMaxKind::SignedMax | MinMaxKind::UnsignedMax);
+
+        let (self_min, self_max, other_min, other_max) = if signed {
+            (
+                self.signed_min(),
+                self.signed_max(),
+                other.signed_min(),
+                other.signed_max(),
+            )
+        } else {
+            (
+                self.unsigned_min(),
+                self.unsigned_max(),
+                other.unsigned_min(),
+                other.unsigned_max(),
+            )
+        };
+        let pick = |lhs: ApInt, rhs: ApInt| -> ApInt {
+            let lhs_first = if signed { lhs.slt(&rhs) } else { lhs.ult(&rhs) };
+            // `lhs_first` is true when lhs is the smaller of the two.
+            if lhs_first == take_max { rhs } else { lhs }
+        };
+
+        let new_lower = pick(self_min, other_min);
+        let new_upper = pick(self_max, other_max).wrapping_add(&one_v);
+        let result =
+            Self::non_empty(new_lower, new_upper).unwrap_or_else(|_| Self::full(bit_width));
+
+        let wraps = if signed {
+            self.is_sign_wrapped_set() || other.is_sign_wrapped_set()
+        } else {
+            self.is_wrapped_set() || other.is_wrapped_set()
+        };
+        if wraps {
+            let preferred = if signed {
+                PreferredRangeType::Signed
+            } else {
+                PreferredRangeType::Unsigned
+            };
+            return result.intersect_with(&self.union_with(other, preferred), preferred);
+        }
+        result
     }
 
     pub fn intersects_with(&self, rhs: &Self) -> bool {
