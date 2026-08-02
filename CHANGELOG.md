@@ -7,6 +7,31 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### `ConstantRange` division and remainder (tranche 3, slice 3d-ii)
+
+#### Added
+
+- `udiv`, `sdiv`, `urem`, `srem`.
+- `abs`, pulled forward from slice 3d-v because `srem` reasons about the
+  divisor's magnitude.
+
+Two undefined-behaviour cases shape these. Division and remainder by zero is
+UB, so a divisor range that can *only* be zero yields the empty set, and one
+that merely contains zero has the zero skipped when picking the smallest
+divisor. `SignedMin / -1` is UB at the IR level even though `APInt` defines it
+— upstream's `neg / neg` arm computes its bound twice, once dropping `-1` from
+the divisor and once dropping `SignedMin` from the dividend, and llvmkit
+carries that over.
+
+`sdiv` splits both operands by sign and computes the four sign combinations
+separately, since the quotient's sign follows from the operands' and mixing
+them loses precision. The zero that the split drops from the dividend is
+unioned back at the end.
+
+The tests skip exactly the undefined pairings and no others — a range analysis
+is only obliged to cover defined behaviour, but skipping more than that would
+let a wrong answer through.
+
 ### `ConstantRange` arithmetic, first group (tranche 3, slice 3d-i)
 
 Slice 3d is ~30 methods across six unrelated families, so it is cut into

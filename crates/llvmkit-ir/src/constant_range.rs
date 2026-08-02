@@ -1425,6 +1425,368 @@ impl ConstantRange {
         result
     }
 
+    /// Absolute value of every member. Mirrors `ConstantRange::abs`.
+    ///
+    /// `int_min_is_poison` reflects the `llvm.abs` intrinsic's flag: the
+    /// signed minimum has no positive counterpart, so the caller says whether
+    /// it is poison (excluded) or wraps to itself (included).
+    ///
+    /// Pulled forward from the bit-counting group because [`Self::srem`] needs
+    /// it.
+    pub fn abs(&self, int_min_is_poison: bool) -> Self {
+        if self.is_empty_set() {
+            return Self::empty(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        let one_v = one(bit_width);
+        let signed_min_value = ApInt::signed_min_value(bit_width);
+        let range = |lower: ApInt, upper: ApInt| {
+            Self::new(lower, upper).unwrap_or_else(|_| Self::full(bit_width))
+        };
+        let umin = |lhs: ApInt, rhs: ApInt| if lhs.ult(&rhs) { lhs } else { rhs };
+        let umax = |lhs: ApInt, rhs: ApInt| if lhs.ugt(&rhs) { lhs } else { rhs };
+
+        if self.is_sign_wrapped_set() {
+            let lo = if self.upper.is_strictly_positive() || !self.lower.is_strictly_positive() {
+                // The range crosses zero, so zero is attainable.
+                ApInt::zero(bit_width)
+            } else {
+                umin(self.lower.clone(), self.upper.negate().wrapping_add(&one_v))
+            };
+            return if int_min_is_poison {
+                range(lo, signed_min_value)
+            } else {
+                range(lo, signed_min_value.wrapping_add(&one_v))
+            };
+        }
+
+        let mut signed_min = self.signed_min();
+        let signed_max = self.signed_max();
+
+        if int_min_is_poison && signed_min.is_min_signed_value() {
+            // Dropping the signed minimum can empty the range, if that was
+            // all it held.
+            if signed_max.is_min_signed_value() {
+                return Self::empty(bit_width);
+            }
+            signed_min = signed_min.wrapping_add(&one_v);
+        }
+
+        if signed_min.is_non_negative() {
+            return range(signed_min, signed_max.wrapping_add(&one_v));
+        }
+        if signed_max.is_negative() {
+            return range(
+                signed_max.negate(),
+                signed_min.negate().wrapping_add(&one_v),
+            );
+        }
+        // Crosses zero: the largest magnitude is on whichever side reaches
+        // further from it.
+        Self::non_empty(
+            ApInt::zero(bit_width),
+            umax(signed_min.negate(), signed_max).wrapping_add(&one_v),
+        )
+        .unwrap_or_else(|_| Self::full(bit_width))
+    }
+
+    /// Unsigned quotient of every pairing. Mirrors `ConstantRange::udiv`.
+    ///
+    /// Division by zero is undefined behaviour, so a divisor range that can
+    /// *only* be zero yields the empty set, and a divisor range that merely
+    /// contains zero has the zero skipped when picking the smallest divisor.
+    pub fn udiv(&self, rhs: &Self) -> Self {
+        if self.bit_width() != rhs.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        if self.is_empty_set() || rhs.is_empty_set() || rhs.unsigned_max().is_zero() {
+            return Self::empty(bit_width);
+        }
+        let one_v = one(bit_width);
+
+        let lower = self
+            .unsigned_min()
+            .checked_udiv(&rhs.unsigned_max())
+            .unwrap_or_else(|| ApInt::zero(bit_width));
+
+        // The smallest *non-zero* divisor. Normally 1, except for a range of
+        // the form `[X, 1)`, where the only member is X.
+        let mut rhs_umin = rhs.unsigned_min();
+        if rhs_umin.is_zero() {
+            rhs_umin = if rhs.upper.is_one() {
+                rhs.lower.clone()
+            } else {
+                one_v.clone()
+            };
+        }
+
+        let upper = self
+            .unsigned_max()
+            .checked_udiv(&rhs_umin)
+            .unwrap_or_else(|| ApInt::max_value(bit_width))
+            .wrapping_add(&one_v);
+        Self::non_empty(lower, upper).unwrap_or_else(|_| Self::full(bit_width))
+    }
+
+    /// Signed quotient of every pairing. Mirrors `ConstantRange::sdiv`.
+    ///
+    /// Both sides are split by sign and the four sign combinations are
+    /// computed separately, because the quotient's sign is determined by the
+    /// operands' and mixing them loses precision.
+    pub fn sdiv(&self, rhs: &Self) -> Self {
+        if self.bit_width() != rhs.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        let zero = ApInt::zero(bit_width);
+        let one_v = one(bit_width);
+        let signed_min_value = ApInt::signed_min_value(bit_width);
+        let range = |lower: ApInt, upper: ApInt| {
+            Self::new(lower, upper).unwrap_or_else(|_| Self::full(bit_width))
+        };
+        let sdiv = |lhs: &ApInt, r: &ApInt| {
+            lhs.checked_sdiv(r)
+                .unwrap_or_else(|| ApInt::zero(bit_width))
+        };
+
+        let (positive_lhs, negative_lhs) = self.split_pos_neg();
+        let (positive_rhs, negative_rhs) = rhs.split_pos_neg();
+
+        let mut positive_result = Self::empty(bit_width);
+        if !positive_lhs.is_empty_set() && !positive_rhs.is_empty_set() {
+            // pos / pos = pos.
+            positive_result = range(
+                sdiv(
+                    &positive_lhs.lower,
+                    &positive_rhs.upper.wrapping_sub(&one_v),
+                ),
+                sdiv(
+                    &positive_lhs.upper.wrapping_sub(&one_v),
+                    &positive_rhs.lower,
+                )
+                .wrapping_add(&one_v),
+            );
+        }
+
+        if !negative_lhs.is_empty_set() && !negative_rhs.is_empty_set() {
+            // neg / neg = pos, with one trap: `SignedMin / -1` is UB at the IR
+            // level even though `ApInt` defines it (yielding SignedMin). When
+            // both are attainable, upstream computes the bound twice — once
+            // with -1 dropped from the divisor, once with SignedMin dropped
+            // from the dividend — and unions the two.
+            let lo = sdiv(
+                &negative_lhs.upper.wrapping_sub(&one_v),
+                &negative_rhs.lower,
+            );
+            if negative_lhs.lower.is_min_signed_value() && negative_rhs.upper.is_zero() {
+                // Drop -1 from the divisor, unless that would empty it.
+                if !negative_rhs.lower.is_all_ones() {
+                    let adjusted_upper = if rhs.lower.is_all_ones() {
+                        // The negative part of `[-1, X]` without -1 is
+                        // `[SignedMin, X]`.
+                        rhs.upper.clone()
+                    } else {
+                        // `[X, -1]` without -1 is `[X, -2]`.
+                        negative_rhs.upper.wrapping_sub(&one_v)
+                    };
+                    positive_result = positive_result.union_with(
+                        &range(
+                            lo.clone(),
+                            sdiv(&negative_lhs.lower, &adjusted_upper.wrapping_sub(&one_v))
+                                .wrapping_add(&one_v),
+                        ),
+                        PreferredRangeType::Smallest,
+                    );
+                }
+
+                // Drop SignedMin from the dividend, unless that would empty it.
+                if !negative_lhs
+                    .upper
+                    .eq_ap_int(&signed_min_value.wrapping_add(&one_v))
+                {
+                    let adjusted_lower =
+                        if self.upper.eq_ap_int(&signed_min_value.wrapping_add(&one_v)) {
+                            // The negative part of `[X, SignedMin]` without
+                            // SignedMin is `[X, -1]`.
+                            self.lower.clone()
+                        } else {
+                            // `[SignedMin, X]` without SignedMin is
+                            // `[SignedMin + 1, X]`.
+                            negative_lhs.lower.wrapping_add(&one_v)
+                        };
+                    positive_result = positive_result.union_with(
+                        &range(
+                            lo,
+                            sdiv(&adjusted_lower, &negative_rhs.upper.wrapping_sub(&one_v))
+                                .wrapping_add(&one_v),
+                        ),
+                        PreferredRangeType::Smallest,
+                    );
+                }
+            } else {
+                positive_result = positive_result.union_with(
+                    &range(
+                        lo,
+                        sdiv(
+                            &negative_lhs.lower,
+                            &negative_rhs.upper.wrapping_sub(&one_v),
+                        )
+                        .wrapping_add(&one_v),
+                    ),
+                    PreferredRangeType::Smallest,
+                );
+            }
+        }
+
+        let mut negative_result = Self::empty(bit_width);
+        if !positive_lhs.is_empty_set() && !negative_rhs.is_empty_set() {
+            // pos / neg = neg.
+            negative_result = range(
+                sdiv(
+                    &positive_lhs.upper.wrapping_sub(&one_v),
+                    &negative_rhs.upper.wrapping_sub(&one_v),
+                ),
+                sdiv(&positive_lhs.lower, &negative_rhs.lower).wrapping_add(&one_v),
+            );
+        }
+        if !negative_lhs.is_empty_set() && !positive_rhs.is_empty_set() {
+            // neg / pos = neg.
+            negative_result = negative_result.union_with(
+                &range(
+                    sdiv(&negative_lhs.lower, &positive_rhs.lower),
+                    sdiv(
+                        &negative_lhs.upper.wrapping_sub(&one_v),
+                        &positive_rhs.upper.wrapping_sub(&one_v),
+                    )
+                    .wrapping_add(&one_v),
+                ),
+                PreferredRangeType::Smallest,
+            );
+        }
+
+        // A non-wrapping signed range reads better here than a smaller
+        // wrapping one.
+        let mut result = negative_result.union_with(&positive_result, PreferredRangeType::Signed);
+
+        // Splitting the dividend by sign dropped zero; put it back if it was
+        // there and any divisor remains.
+        if self.contains(&zero) && (!positive_rhs.is_empty_set() || !negative_rhs.is_empty_set()) {
+            result = result.union_with(&Self::single(zero), PreferredRangeType::Smallest);
+        }
+        result
+    }
+
+    /// Unsigned remainder of every pairing. Mirrors `ConstantRange::urem`.
+    pub fn urem(&self, rhs: &Self) -> Self {
+        if self.bit_width() != rhs.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        if self.is_empty_set() || rhs.is_empty_set() || rhs.unsigned_max().is_zero() {
+            return Self::empty(bit_width);
+        }
+        let one_v = one(bit_width);
+
+        if let Some(divisor) = rhs.single_element() {
+            // Remainder by zero is UB.
+            if divisor.is_zero() {
+                return Self::empty(bit_width);
+            }
+            if let Some(dividend) = self.single_element()
+                && let Some(exact) = dividend.checked_urem(divisor)
+            {
+                return Self::single(exact);
+            }
+        }
+
+        // `L % R` is `L` when `L < R`.
+        if self.unsigned_max().ult(&rhs.unsigned_min()) {
+            return self.clone();
+        }
+
+        // Otherwise the result is at most `L` and strictly below `R`.
+        let self_max = self.unsigned_max();
+        let rhs_bound = rhs.unsigned_max().wrapping_sub(&one_v);
+        let upper = if self_max.ult(&rhs_bound) {
+            self_max
+        } else {
+            rhs_bound
+        }
+        .wrapping_add(&one_v);
+        Self::non_empty(ApInt::zero(bit_width), upper).unwrap_or_else(|_| Self::full(bit_width))
+    }
+
+    /// Signed remainder of every pairing. Mirrors `ConstantRange::srem`.
+    ///
+    /// In LLVM the remainder takes the *dividend's* sign, so the three cases
+    /// below are all-non-negative, all-negative, and crossing zero.
+    pub fn srem(&self, rhs: &Self) -> Self {
+        if self.bit_width() != rhs.bit_width() {
+            return Self::full(self.bit_width());
+        }
+        let bit_width = self.bit_width();
+        if self.is_empty_set() || rhs.is_empty_set() {
+            return Self::empty(bit_width);
+        }
+        let one_v = one(bit_width);
+        let range = |lower: ApInt, upper: ApInt| {
+            Self::new(lower, upper).unwrap_or_else(|_| Self::full(bit_width))
+        };
+        let umin = |lhs: ApInt, rhs: ApInt| if lhs.ult(&rhs) { lhs } else { rhs };
+        let umax = |lhs: ApInt, rhs: ApInt| if lhs.ugt(&rhs) { lhs } else { rhs };
+
+        if let Some(divisor) = rhs.single_element() {
+            // Remainder by zero is UB.
+            if divisor.is_zero() {
+                return Self::empty(bit_width);
+            }
+            if let Some(dividend) = self.single_element()
+                && let Some(exact) = dividend.checked_srem(divisor)
+            {
+                return Self::single(exact);
+            }
+        }
+
+        // Only the divisor's magnitude matters.
+        let absolute_rhs = rhs.abs(false);
+        let mut min_absolute_rhs = absolute_rhs.unsigned_min();
+        let max_absolute_rhs = absolute_rhs.unsigned_max();
+
+        if max_absolute_rhs.is_zero() {
+            return Self::empty(bit_width);
+        }
+        if min_absolute_rhs.is_zero() {
+            min_absolute_rhs = one_v.clone();
+        }
+
+        let min_lhs = self.signed_min();
+        let max_lhs = self.signed_max();
+
+        if min_lhs.is_non_negative() {
+            // `L % R` is `L` when `L < R`.
+            if max_lhs.ult(&min_absolute_rhs) {
+                return self.clone();
+            }
+            let upper = umin(max_lhs, max_absolute_rhs.wrapping_sub(&one_v)).wrapping_add(&one_v);
+            return range(ApInt::zero(bit_width), upper);
+        }
+
+        if max_lhs.is_negative() {
+            // The same reasoning, with a negative result.
+            if min_lhs.ugt(&min_absolute_rhs.negate()) {
+                return self.clone();
+            }
+            let lower = umax(min_lhs, max_absolute_rhs.negate().wrapping_add(&one_v));
+            return range(lower, one_v);
+        }
+
+        // The dividend crosses zero, so the remainder can take either sign.
+        let lower = umax(min_lhs, max_absolute_rhs.negate().wrapping_add(&one_v));
+        let upper = umin(max_lhs, max_absolute_rhs.wrapping_sub(&one_v)).wrapping_add(&one_v);
+        range(lower, upper)
+    }
+
     pub fn intersects_with(&self, rhs: &Self) -> bool {
         if self.bit_width() != rhs.bit_width() {
             return false;
