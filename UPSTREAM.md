@@ -1342,6 +1342,16 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_and_dce_pipeline_folds_and_erases` | `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl`; `llvm/lib/Transforms/Scalar/DCE.cpp::eliminateDeadCode`; `llvm/lib/Passes/PassRegistry.def` scalar pass names | llvmkit-specific |
 | `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_pass_keeps_load_from_interposable_constant_global` | `llvm/lib/Analysis/ConstantFolding.cpp::ConstantFoldLoadFromConstPtr` `hasDefinitiveInitializer()` gate through `InstSimplifyPass.cpp::runImpl` | llvmkit-specific |
 | `crates/llvmkit-ir/tests/scalar_cleanup_passes.rs::instsimplify_terminates_on_ordered_atomic_load_from_constant` | `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl` (only `!I.use_empty()` instructions are simplified, so a folded-but-live side-effecting load is RAUW'd once and not re-queued) -- broad-review termination lock | llvmkit-specific |
+| `crates/llvmkit-ir/tests/constant_range_saturating.rs::saturating_family_covers_every_result` | `llvm/lib/IR/ConstantRange.cpp` `uadd_sat` / `sadd_sat` / `usub_sat` / `ssub_sat` / `umul_sat` / `smul_sat` / `ushl_sat` / `sshl_sat` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_saturating.rs::an_empty_operand_yields_empty` | the empty-set early returns shared by all eight | mirror |
+| `crates/llvmkit-ir/tests/constant_range_saturating.rs::saturating_results_stay_inside_the_domain` | the saturating contract distinguishing these from the wrapping forms | llvmkit-specific |
+| `crates/llvmkit-ir/tests/constant_range_saturating.rs::saturating_add_of_zero_is_exact` | identity case of `ConstantRange::uadd_sat` / `sadd_sat` | llvmkit-specific |
+| `crates/llvmkit-ir/tests/constant_range_bitcount.rs::ctlz_covers_every_count` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::ctlz` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitcount.rs::cttz_covers_every_count` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::cttz` and its `getUnsignedCountTrailingZerosRange` helper | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitcount.rs::ctpop_covers_every_count` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::ctpop` and its `getUnsignedPopCountRange` helper | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitcount.rs::only_zero_is_empty_when_zero_is_poison` | the `[0, 1)` early returns in `ctlz` / `cttz` | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitcount.rs::an_empty_range_yields_empty` | the empty-set early returns in all three | mirror |
+| `crates/llvmkit-ir/tests/constant_range_bitcount.rs::every_count_fits_the_width` | width invariant of the three counting operations | llvmkit-specific |
 | `crates/llvmkit-ir/tests/ap_int.rs::ashr_at_or_beyond_the_width_fills_with_the_sign_bit` | `llvm/include/llvm/ADT/APInt.h::APInt::ashrInPlace` — the `ShiftAmt == BitWidth` sign-fill arm | port |
 | `crates/llvmkit-ir/tests/constant_range_bitwise.rs::binary_and_covers_every_result` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::binaryAnd` | mirror |
 | `crates/llvmkit-ir/tests/constant_range_bitwise.rs::binary_or_covers_every_result` | `llvm/lib/IR/ConstantRange.cpp::ConstantRange::binaryOr` | mirror |

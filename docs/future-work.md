@@ -118,8 +118,8 @@ sequenced:
    | 3d-i ✅ | 7 | **done 2026-08-02**: `add`, `sub`, `multiply`, `smax`/`smin`/`umax`/`umin`. These are exactly what `computeOverflowFor*` in 3e needs, which is why they went first. |
    | 3d-ii ✅ | 5 | **done 2026-08-02**: `udiv`, `sdiv`, `urem`, `srem`, plus `abs` pulled forward from 3d-v because `srem` needs it. |
    | 3d-iii ✅ | 7 | **done 2026-08-02**: `binary_and`, `binary_or`, `binary_xor`, `binary_not`, `shl`, `lshr`, `ashr`. Found and fixed a real `ApInt::ashr` bug on the way — see the CHANGELOG. |
-   | 3d-iv | 8 | The saturating family: `uadd_sat`, `sadd_sat`, `usub_sat`, `ssub_sat`, `umul_sat`, `smul_sat`, `ushl_sat`, `sshl_sat`. |
-   | 3d-v | 3 | Bit counting: `ctlz`, `cttz`, `ctpop` (`abs` landed in 3d-ii). |
+   | 3d-iv ✅ | 8 | **done 2026-08-02**: the saturating family. Six share one frame (`saturating_pairwise`); `smul_sat` needs all four corners and `sshl_sat` picks its shift by endpoint sign. |
+   | 3d-v ✅ | 3 | **done 2026-08-02**: `ctlz`, `cttz`, `ctpop` (`abs` landed in 3d-ii). |
    | 3d-vi | ~6 | The dispatchers and no-wrap variants: `binaryOp`, `overflowingBinaryOp`, `intrinsic`, `isIntrinsicSupported`, `addWithNoWrap`, `subWithNoWrap`, `multiplyWithNoWrap`, `smul_fast`. |
    | **3e** | — | The ValueTracking consumers `ConstantRange` was needed for: `computeConstantRange`, `computeOverflowForSigned`/`UnsignedAdd`/`Sub`/`Mul`, `getVScaleRange`. |
 

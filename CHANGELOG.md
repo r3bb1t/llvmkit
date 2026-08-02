@@ -7,6 +7,26 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### `ConstantRange` saturating operations and bit counting (slices 3d-iv, 3d-v)
+
+#### Added
+
+- The saturating family: `uadd_sat`, `sadd_sat`, `usub_sat`, `ssub_sat`,
+  `umul_sat`, `smul_sat`, `ushl_sat`, `sshl_sat`. Six of the eight are the
+  same shape — monotone, so the extremes pair up — and share one private
+  frame rather than being written out separately. `smul_sat` needs all four
+  corner products for the same reason `multiply` does, and `sshl_sat` picks
+  each endpoint's shift amount by that endpoint's sign, because shifting a
+  negative value left drives it down.
+- Bit counting: `ctlz`, `cttz`, `ctpop`, with the `zero_is_poison` flag the
+  `llvm.ctlz` / `llvm.cttz` intrinsics carry.
+
+A note for anyone writing tests against the saturating shifts: upstream's
+`ushl_ov` / `sshl_ov` open with `Overflow = ShAmt >= getBitWidth()` *before*
+looking at the value, so `0 ushl_sat 4` at four bits saturates to the maximum
+rather than staying zero. The naive `0 << 4 == 0` reading is wrong, and the
+test oracle says so explicitly.
+
 ### `ConstantRange` bitwise operations and shifts (tranche 3, slice 3d-iii)
 
 #### Added
