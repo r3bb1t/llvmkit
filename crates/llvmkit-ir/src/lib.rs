@@ -197,7 +197,7 @@ pub use constant_folding::{
     is_constant_offset_from_global, lossless_inv_cast, lossless_signed_trunc,
     lossless_unsigned_trunc,
 };
-pub use constant_range::{ConstantRange, PreferredRangeType};
+pub use constant_range::{ConstantRange, EquivalentICmp, PreferredRangeType};
 pub use constants::{
     ConstantAggregate, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
     ConstantPointerNull, PoisonValue, UndefValue,
