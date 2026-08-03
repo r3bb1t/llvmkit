@@ -259,6 +259,9 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("ComputeNumSignBits", "compute_num_sign_bits"),
     ("MaskedValueIsZero", "masked_value_is_zero"),
     ("OverflowResult", "OverflowResult"),
+    ("SelectPatternFlavor", "SelectPatternFlavor"),
+    ("SelectPatternNaNBehavior", "SelectPatternNaNBehavior"),
+    ("SelectPatternResult", "SelectPatternResult"),
     ("canCreatePoison", "can_create_poison"),
     ("canCreateUndefOrPoison", "can_create_undef_or_poison"),
     ("computeConstantRange", "compute_constant_range"),
@@ -291,6 +294,17 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "computeOverflowForUnsignedSub",
         "compute_overflow_for_unsigned_sub",
     ),
+    (
+        "getInverseMinMaxFlavor",
+        "SelectPatternFlavor::inverse_min_max",
+    ),
+    (
+        "getMinMaxIntrinsic",
+        "SelectPatternFlavor::min_max_intrinsic",
+    ),
+    ("getMinMaxLimit", "SelectPatternFlavor::min_max_limit"),
+    ("getMinMaxPred", "SelectPatternFlavor::min_max_predicate"),
+    ("getSelectPattern", "get_select_pattern"),
     ("haveNoCommonBitsSet", "have_no_common_bits_set"),
     ("impliesPoison", "implies_poison"),
     ("isGuaranteedNotToBePoison", "is_known_not_poison"),
@@ -350,18 +364,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "GetStringLength",
         "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
-        "SelectPatternFlavor",
-        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
-    ),
-    (
-        "SelectPatternNaNBehavior",
-        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
-    ),
-    (
-        "SelectPatternResult",
-        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
     ),
     (
         "adjustKnownBitsForSelectArm",
@@ -448,28 +450,8 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
         "residue: maps a libcall to an intrinsic via TargetLibraryInfo",
     ),
     (
-        "getInverseMinMaxFlavor",
-        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
-    ),
-    (
         "getInverseMinMaxIntrinsic",
-        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
-    ),
-    (
-        "getMinMaxIntrinsic",
-        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
-    ),
-    (
-        "getMinMaxLimit",
-        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
-    ),
-    (
-        "getMinMaxPred",
-        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
-    ),
-    (
-        "getSelectPattern",
-        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
+        "partially modeled: the four integer arms are MinMaxIntrinsic::inverse; upstream also inverts maximum/minimum, maxnum/minnum and maximumnum/minimumnum, and llvmkit models no floating-point min/max intrinsic for those to map to",
     ),
     (
         "getUnderlyingObject",

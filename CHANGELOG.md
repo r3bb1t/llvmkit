@@ -7,6 +7,34 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ValueTracking: the select-pattern vocabulary (tranche 4a)
+
+#### Added
+
+- `select_pattern.rs`: `SelectPatternFlavor`, `SelectPatternNaNBehavior`,
+  `SelectPatternResult`, `get_select_pattern`, and the flavour accessors
+  `min_max_predicate`, `min_max_intrinsic`, `inverse_min_max` and
+  `min_max_limit`.
+- `MinMaxIntrinsic` — the four integer min/max intrinsics as a public enum,
+  because llvmkit's intrinsic semantic is crate-internal and cannot appear in
+  a public signature. It is also exactly the range of upstream's
+  `getMinMaxIntrinsic`, which makes `MinMaxIntrinsic::inverse` **total** where
+  upstream's `getInverseMinMaxIntrinsic` needs an `llvm_unreachable`.
+
+Upstream ends four of these in `llvm_unreachable` on a precondition the caller
+must uphold ("caller must ensure `SPF` is an integer min or max pattern").
+Each returns `Option` here, so the precondition is the `None` and a caller
+cannot read an answer that was never defined.
+
+Matching an actual `select` against these flavours — `matchSelectPattern`,
+`matchDecomposedSelectPattern` and the `matchClamp` / `matchMinMax` /
+`matchMinMaxOfMinMax` machinery behind them — is tranche 4b and stays in the
+gap table. `getInverseMinMaxIntrinsic` is partially modeled: its four integer
+arms are `MinMaxIntrinsic::inverse`, while the six floating-point intrinsics it
+also inverts (`maximum`/`minimum`, `maxnum`/`minnum`, `maximumnum`/`minimumnum`)
+have no counterpart in llvmkit's intrinsic model to map to.
+
+
 ### KnownBits: the operators
 
 An audit of `KnownBits.h`'s public surface against llvmkit — 99 named members

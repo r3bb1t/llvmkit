@@ -123,6 +123,7 @@ pub mod pass_pipeline;
 pub(crate) mod phi_check;
 #[cfg(test)]
 mod phi_raw_tests;
+pub mod select_pattern;
 pub mod ssa_builder;
 pub mod struct_body_state;
 pub mod struct_schema;
@@ -364,6 +365,10 @@ pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
 pub use element::{ElemDyn, StaticVecElem, VecElem, WrapWitness};
 pub use int_width::{
     IntDyn, IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth, WiderThan, Width,
+};
+pub use select_pattern::{
+    MinMaxIntrinsic, SelectPatternFlavor, SelectPatternNaNBehavior, SelectPatternResult,
+    get_select_pattern,
 };
 pub use value_tracking::{
     KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery,
