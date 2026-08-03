@@ -70,6 +70,39 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 | `SolveQuadraticEquationWrap` | SCEV-specific; belongs with a SCEV port, not with `ApInt`. |
 | `GetMostSignificantDifferentBitExaustive` | The non-exhaustive fixture is ported; the exhaustive variant re-derives the same property over an 8-bit sweep. |
 
+## ValueTracking.h — remaining tranches, and the order to take them
+
+**Status after tranche 4a (2026-08-03):** 40 of 101 entry points modeled, 61
+gaps, all symbol-keyed in `crates/llvmkit-ir/tests/value_tracking_parity.rs`
+and asserted to sum to the audited surface.
+
+| Tranche | Left | Note |
+|---|---|---|
+| 4b select matching | 3 | `matchSelectPattern`, `matchDecomposedSelectPattern`, `canConvertToMinOrMaxIntrinsic` — the vocabulary (4a) is done |
+| 5 pointer/object | 16 | needs pointer-cast stripping and constant-data-array reads |
+| 6 speculation/UB | 13 | needs the CFG walk behind `isGuaranteedToTransferExecutionToSuccessor` |
+| 7 FP class | 11 | the only tranche needing a new *lattice* rather than a new consumer |
+| 8 assumptions | 4 | needs `@llvm.assume` modeled first |
+| implied conditions | 2 | builds on 6 and 8 |
+| residue | 7 | small, independent |
+| expose-only | 2 | `matchSimpleRecurrence` and `computeKnownBitsFromRangeMetadata` already exist as crate-private helpers |
+| partial | 1 | `getInverseMinMaxIntrinsic` — integer arms done, 6 FP intrinsics unrepresentable |
+| blocked | 1 | `getVScaleRange`, see above |
+
+**Take 6 and 8 before 5 and 7.** They are unblockers rather than additions:
+`is_known_not_undef_or_poison` has three arms deferred on them today (two on
+tranche 6's CFG reachability, one on tranche 8's assumption cache), and
+`is_known_to_be_a_power_of_two` and `is_known_non_equal` each skip an
+assumption-driven refinement. Landing those two sharpens already-shipped
+analyses without editing them. Tranche 7 is the largest and gains nothing from
+going early.
+
+The full working spec — upstream anchors, settled design decisions, the
+surface-audit recipe, and the traps already hit — is at
+`docs/superpowers/specs/2026-08-03-valuetracking-remaining-tranches.md`. That
+directory is gitignored, so the file is local to the working tree; the
+decisions that outlive it are recorded here.
+
 ## ValueTracking.h — surface audit (2026-08-03)
 
 Re-measured through the compiler rather than by grep, the same way
