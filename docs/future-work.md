@@ -70,6 +70,39 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 | `SolveQuadraticEquationWrap` | SCEV-specific; belongs with a SCEV port, not with `ApInt`. |
 | `GetMostSignificantDifferentBitExaustive` | The non-exhaustive fixture is ported; the exhaustive variant re-derives the same property over an 8-bit sweep. |
 
+## ValueTracking.h — surface audit (2026-08-03)
+
+Re-measured through the compiler rather than by grep, the same way
+`KnownBits.h` was: preprocess with `g++ -E` against the configured
+`build/llvm/include`, attribute the output back to its originating header via
+the `# <line> "<file>"` markers, then parse at namespace depth 1. The recipe
+is recorded on `VALUE_TRACKING_SURFACE_AUDITED` in
+`crates/llvmkit-ir/tests/value_tracking_parity.rs`.
+
+**101 entry points** — 96 namespace-scope functions plus 5 types defined in the
+header (`ConstantDataArraySlice`, `OverflowResult`, `SelectPatternFlavor`,
+`SelectPatternNaNBehavior`, `SelectPatternResult`). Of those, **32 are
+modeled** and **69 are not**.
+
+The audit's real finding was about the ledger, not the port. The gap table was
+keyed by *family* — seven prose rows, on the reasoning that "enumerating ~76
+individually would be noise". The result: **47 of the 101 entry points appeared
+in neither the modeled table nor any gap reason.** Not recorded as missing;
+invisible. The ledger read as though the gap were seven families wide rather
+than sixty-nine symbols, and nothing could detect the difference.
+
+Two smaller corrections fell out of the same pass:
+
+- `computeKnownBitsFromOperator` sat in the *modeled* table, which tracks
+  `ValueTracking.h`. It is `static` in `ValueTracking.cpp` and appears in no
+  header. It moved to a `VALUE_TRACKING_PRIVATE_UPSTREAM` list, the same
+  treatment `KnownBits.h`'s `flipSignBit` / `remGetLowBits` already had.
+- `OverflowResult` is public in llvmkit and had simply never been listed.
+
+The gap table is now symbol-keyed, and `value_tracking_surface_is_accounted_for`
+asserts modeled + gaps equals the audited 101 — so a symbol can no longer be
+neither. Verified red-green: dropping one gap row fails it.
+
 ## ValueTracking.h — the road to 100% (measured 2026-08-01)
 
 `KnownBits.h` is fully modeled. `ValueTracking.h` is not, and the honest

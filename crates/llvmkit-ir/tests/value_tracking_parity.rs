@@ -258,6 +258,7 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("ComputeMaxSignificantBits", "compute_max_significant_bits"),
     ("ComputeNumSignBits", "compute_num_sign_bits"),
     ("MaskedValueIsZero", "masked_value_is_zero"),
+    ("OverflowResult", "OverflowResult"),
     ("canCreatePoison", "can_create_poison"),
     ("canCreateUndefOrPoison", "can_create_undef_or_poison"),
     ("computeConstantRange", "compute_constant_range"),
@@ -266,7 +267,6 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "compute_constant_range_including_known_bits",
     ),
     ("computeKnownBits", "compute_known_bits"),
-    ("computeKnownBitsFromOperator", "known_bits_from_operator"),
     (
         "computeOverflowForSignedAdd",
         "compute_overflow_for_signed_add",
@@ -319,57 +319,329 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("propagatesPoison", "propagates_poison"),
 ];
 
-/// The `ValueTracking.h` families llvmkit does not model at all, so the ledger
-/// reads as coverage rather than silence.
+/// The `ValueTracking.h` entry points llvmkit does not model, one row per
+/// symbol, each naming the family and what blocks it.
 ///
-/// Derived at LLVM [`DERIVED_FROM_LLVM`], listed by family rather than by
-/// symbol: enumerating ~76 individually would be noise, and every family here
-/// is absent wholesale.
+/// Derived at LLVM [`DERIVED_FROM_LLVM`]. **This table used to be keyed by
+/// family** — seven prose rows on the theory that "enumerating ~76
+/// individually would be noise". The 2026-08-03 audit
+/// ([`VALUE_TRACKING_SURFACE_AUDITED`]) showed what that cost: of 101 entry
+/// points the header declares, 47 appeared in neither the modeled table nor
+/// any gap reason. They were not recorded as missing; they were simply
+/// invisible, and the ledger read as though the gap were seven families wide
+/// rather than sixty-nine symbols.
+///
+/// Symbol-keyed costs more lines and buys the property that matters: modeled
+/// plus gaps has to add up to the audited surface, which
+/// `value_tracking_surface_is_accounted_for` asserts.
 const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
-        "assumption cache",
-        "computeKnownBitsFromContext — no @llvm.assume-driven refinement",
+        "ConstantDataArraySlice",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
     ),
     (
-        "vscale",
-        "getVScaleRange — blocked on the `vscale_range` attribute itself, which \
-         `attribute_td_drift.rs` already lists as NOT_YET_MODELED. Upstream reads \
-         a packed (min, max) pair; llvmkit's attribute payload is a single u64, so \
-         porting it would mean inventing the second half",
+        "FindInsertedValue",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
     ),
     (
-        "floating-point classification",
-        "computeKnownFPClass, isKnownNeverNaN, isKnownNeverInfinity, \
-         cannotBeNegativeZero, canIgnoreSignBitOfNaN — llvmkit has ApFloat but no \
-         FP known-class lattice",
+        "GetPointerBaseWithConstantOffset",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
     ),
     (
-        "pointer and object analysis",
-        "getUnderlyingObjects, getConstantStringInfo, GetStringLength, \
-         getConstantDataArrayInfo, onlyUsedByLifetimeMarkers",
+        "GetStringLength",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
     ),
     (
-        "UB-reachability reasoning",
-        "programUndefinedIfPoison, programUndefinedIfUndefOrPoison, mustTriggerUB, \
-         mustExecuteUBIfPoisonOnPathTo — the value-level poison and undef \
-         predicates ARE modeled (see canCreatePoison / impliesPoison / \
-         propagatesPoison / isGuaranteedNotToBeUndef above); what is missing is \
-         the CFG walk that decides whether poison actually reaches undefined \
-         behaviour, which needs isGuaranteedToTransferExecutionToSuccessor. \
-         isGuaranteedNotToBeUndefOrPoison consults it as one of its arms, so \
-         that entry point answers false in cases upstream proves true",
+        "SelectPatternFlavor",
+        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
     ),
     (
-        "select-pattern matching",
-        "getSelectPattern, matchDecomposedSelectPattern, getMinMaxIntrinsic, \
-         getInverseMinMaxIntrinsic",
+        "SelectPatternNaNBehavior",
+        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
     ),
     (
-        "speculation safety",
-        "isSafeToSpeculativelyExecute and friends, \
-         isGuaranteedToTransferExecutionToSuccessor, isValidAssumeForContext",
+        "SelectPatternResult",
+        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
+    ),
+    (
+        "adjustKnownBitsForSelectArm",
+        "residue: needs the select-arm condition refinement",
+    ),
+    (
+        "adjustKnownFPClassForSelectArm",
+        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
+    ),
+    (
+        "analyzeKnownBitsFromAndXorOr",
+        "residue: an InstCombine helper with no llvmkit caller",
+    ),
+    (
+        "analyzeKnownFPClassFromSelect",
+        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
+    ),
+    (
+        "canConvertToMinOrMaxIntrinsic",
+        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
+    ),
+    (
+        "canIgnoreSignBitOfNaN",
+        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
+    ),
+    (
+        "canIgnoreSignBitOfZero",
+        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
+    ),
+    (
+        "cannotBeNegativeZero",
+        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
+    ),
+    (
+        "cannotBeOrderedLessThanZero",
+        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
+    ),
+    (
+        "collectPossibleValues",
+        "residue: enumerates a value set; no llvmkit caller yet",
+    ),
+    (
+        "computeKnownBitsFromContext",
+        "assumption cache (tranche 8): needs @llvm.assume modeled first",
+    ),
+    (
+        "computeKnownBitsFromRangeMetadata",
+        "modeled as the crate-private range_metadata_known_bits; public upstream, not public here",
+    ),
+    (
+        "computeKnownFPClass",
+        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
+    ),
+    (
+        "computeKnownFPSignBit",
+        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
+    ),
+    (
+        "findAllocaForValue",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
+    ),
+    (
+        "findValuesAffectedByCondition",
+        "assumption cache (tranche 8): needs @llvm.assume modeled first",
+    ),
+    (
+        "getArgumentAliasingToReturnedPointer",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
+    ),
+    (
+        "getConstantDataArrayInfo",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
+    ),
+    (
+        "getConstantStringInfo",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
+    ),
+    (
+        "getFlippedStrictnessPredicateAndConstant",
+        "residue: InstCombine predicate canonicalisation, which llvmkit does not have",
+    ),
+    (
+        "getIntrinsicForCallSite",
+        "residue: maps a libcall to an intrinsic via TargetLibraryInfo",
+    ),
+    (
+        "getInverseMinMaxFlavor",
+        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
+    ),
+    (
+        "getInverseMinMaxIntrinsic",
+        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
+    ),
+    (
+        "getMinMaxIntrinsic",
+        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
+    ),
+    (
+        "getMinMaxLimit",
+        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
+    ),
+    (
+        "getMinMaxPred",
+        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
+    ),
+    (
+        "getSelectPattern",
+        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
+    ),
+    (
+        "getUnderlyingObject",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
+    ),
+    (
+        "getUnderlyingObjectAggressive",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
+    ),
+    (
+        "getUnderlyingObjects",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
+    ),
+    (
+        "getUnderlyingObjectsForCodeGen",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
+    ),
+    (
+        "getVScaleRange",
+        "blocked on the `vscale_range` attribute itself, which attribute_td_drift.rs lists as NOT_YET_MODELED: upstream reads a packed (min, max) pair and llvmkit's payload is a single u64, so porting it would mean inventing the second half",
+    ),
+    (
+        "intrinsicPropagatesPoison",
+        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
+    ),
+    (
+        "isAssumeLikeIntrinsic",
+        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
+    ),
+    (
+        "isBytewiseValue",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
+    ),
+    (
+        "isGuaranteedToExecuteForEveryIteration",
+        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
+    ),
+    (
+        "isGuaranteedToTransferExecutionToSuccessor",
+        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
+    ),
+    (
+        "isImpliedByDomCondition",
+        "implied conditions: builds on the assumption and dominating-condition machinery of tranches 6 and 8",
+    ),
+    (
+        "isImpliedCondition",
+        "implied conditions: builds on the assumption and dominating-condition machinery of tranches 6 and 8",
+    ),
+    (
+        "isIntrinsicReturningPointerAliasingArgumentWithoutCapturing",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
+    ),
+    (
+        "isKnownNeverInfOrNaN",
+        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
+    ),
+    (
+        "isKnownNeverInfinity",
+        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
+    ),
+    (
+        "isKnownNeverNaN",
+        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
+    ),
+    (
+        "isNotCrossLaneOperation",
+        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
+    ),
+    (
+        "isOverflowIntrinsicNoWrap",
+        "residue: reads the with-overflow intrinsics llvmkit models as plain calls",
+    ),
+    (
+        "isSafeToSpeculativelyExecute",
+        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
+    ),
+    (
+        "isSafeToSpeculativelyExecuteWithOpcode",
+        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
+    ),
+    (
+        "isSafeToSpeculativelyExecuteWithVariableReplaced",
+        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
+    ),
+    (
+        "isValidAssumeForContext",
+        "assumption cache (tranche 8): needs @llvm.assume modeled first",
+    ),
+    (
+        "matchDecomposedSelectPattern",
+        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
+    ),
+    (
+        "matchSelectPattern",
+        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
+    ),
+    (
+        "matchSimpleBinaryIntrinsicRecurrence",
+        "the min/max/intrinsic sibling of matchSimpleRecurrence; needs the intrinsic recurrence forms llvmkit does not match yet",
+    ),
+    (
+        "matchSimpleRecurrence",
+        "implemented as the crate-private match_simple_recurrence, which the phi arm of computeKnownBits uses; public upstream, not public here",
+    ),
+    (
+        "mayHaveNonDefUseDependency",
+        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
+    ),
+    (
+        "mustExecuteUBIfPoisonOnPathTo",
+        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
+    ),
+    (
+        "mustTriggerUB",
+        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
+    ),
+    (
+        "onlyUsedByLifetimeMarkers",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
+    ),
+    (
+        "onlyUsedByLifetimeMarkersOrDroppableInsts",
+        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
+    ),
+    (
+        "programUndefinedIfPoison",
+        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
+    ),
+    (
+        "programUndefinedIfUndefOrPoison",
+        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
+    ),
+    (
+        "stripNullTest",
+        "residue: peels a null-check pattern; no llvmkit caller yet",
+    ),
+    (
+        "willNotFreeBetween",
+        "assumption cache (tranche 8): needs @llvm.assume modeled first",
     ),
 ];
+
+/// When the `ValueTracking.h` surface was last enumerated and diffed against
+/// llvmkit, and how many entry points it declared.
+///
+/// 101 = 96 namespace-scope functions + 5 types defined in the header
+/// (`ConstantDataArraySlice`, `OverflowResult`, `SelectPatternFlavor`,
+/// `SelectPatternNaNBehavior`, `SelectPatternResult`). Overloads collapse to
+/// one row per name, which is the granularity a parity ledger needs.
+///
+/// # Reproducing the audit
+///
+/// Same method as [`KNOWN_BITS_SURFACE_AUDITED`], with one addition: the
+/// declarations here sit at namespace scope rather than inside one struct, so
+/// the preprocessed output has to be attributed back to its originating header
+/// using the `# <line> "<file>"` markers before parsing. Keep only the regions
+/// whose file is `Analysis/ValueTracking.h`, then split at namespace depth 1.
+const VALUE_TRACKING_SURFACE_AUDITED: (&str, usize) = ("2026-08-03", 101);
+
+/// `ValueTracking` entry points that are **internal to `ValueTracking.cpp`**
+/// and so are not part of the header's surface.
+///
+/// `computeKnownBitsFromOperator` is `static` in the `.cpp`. llvmkit models it
+/// anyway, as `known_bits_from_operator`, because the known-bits walk needs
+/// it — but an earlier revision listed it in the *modeled* table, which claims
+/// to track `ValueTracking.h`. It is the same category as `KnownBits.h`'s
+/// `flipSignBit` / `remGetLowBits`, and gets the same treatment.
+const VALUE_TRACKING_PRIVATE_UPSTREAM: &[(&str, &str)] = &[(
+    "computeKnownBitsFromOperator",
+    "static in ValueTracking.cpp; modeled here as known_bits_from_operator",
+)];
 
 /// Two representative 8-bit values to drive every modeled operation with.
 fn operands() -> (KnownBits, KnownBits) {
@@ -593,6 +865,9 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _is_only_used_in_zero_equality_comparison =
         is_only_used_in_zero_equality_comparison::<DynBrand>;
     let _is_sign_bit_check = is_sign_bit_check;
+    // A type rather than a function: `OverflowResult` is what the six
+    // `compute_overflow_for_*` entry points return.
+    let _overflow_result = llvmkit_ir::OverflowResult::MayOverflow;
     // Not in the table — llvmkit-specific conveniences with no upstream entry
     // point of their own.
     let _is_known_zero = is_known_zero::<DynBrand>;
@@ -661,6 +936,52 @@ fn ledger_tables_are_consistent() {
         assert!(
             !llvmkit.trim().is_empty(),
             "`{private}` records no llvmkit location"
+        );
+    }
+}
+
+/// Every `ValueTracking.h` entry point is either modeled or recorded as a gap.
+///
+/// The `KnownBits` half asserts its gap list is *empty*; this one cannot,
+/// because most of `ValueTracking.h` is genuinely unported. What it asserts
+/// instead is that nothing is **unaccounted for** — modeled plus gaps has to
+/// equal the audited surface size, so a symbol cannot be neither.
+///
+/// Before 2026-08-03 that property did not hold and nothing noticed: the gap
+/// table was seven prose rows keyed by family, and 47 of the header's 101
+/// entry points appeared in neither table. See [`VALUE_TRACKING_GAPS`].
+///
+/// No upstream counterpart; see the module docs.
+#[test]
+fn value_tracking_surface_is_accounted_for() {
+    let (_, audited) = VALUE_TRACKING_SURFACE_AUDITED;
+    assert_eq!(
+        MODELED_VALUE_TRACKING.len() + VALUE_TRACKING_GAPS.len(),
+        audited,
+        "modeled ({}) + gaps ({}) no longer covers the {audited} entry points \
+         ValueTracking.h declares; re-run the enumeration recorded on \
+         VALUE_TRACKING_SURFACE_AUDITED and reconcile",
+        MODELED_VALUE_TRACKING.len(),
+        VALUE_TRACKING_GAPS.len(),
+    );
+
+    // A symbol must not be both claimed and disclaimed.
+    let modeled: BTreeSet<&str> = MODELED_VALUE_TRACKING.iter().map(|(u, _)| *u).collect();
+    let private: BTreeSet<&str> = VALUE_TRACKING_PRIVATE_UPSTREAM
+        .iter()
+        .map(|(u, _)| *u)
+        .collect();
+    for (upstream, _) in VALUE_TRACKING_GAPS {
+        assert!(
+            !modeled.contains(upstream),
+            "{upstream} is listed as both modeled and a gap"
+        );
+    }
+    for name in &private {
+        assert!(
+            !modeled.contains(name),
+            "{name} is internal to ValueTracking.cpp and must not sit in the \
+             modeled table, which tracks the header"
         );
     }
 }
