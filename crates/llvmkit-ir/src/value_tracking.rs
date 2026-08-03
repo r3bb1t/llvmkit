@@ -638,7 +638,13 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Phi(data) => phi_known_bits(value, data, query, depth, stack),
         InstructionKindData::Freeze(data) => {
             let src = value_from_id(value, data.src.get());
-            if is_guaranteed_not_to_be_poison(src, query, depth + 1, stack)? {
+            if is_guaranteed_not_to_be_undef_or_poison(
+                src,
+                query,
+                depth + 1,
+                stack,
+                UndefPoisonKind::PoisonOnly,
+            )? {
                 compute_known_bits_inner(src, query, depth + 1, stack)
             } else {
                 Ok(KnownBits::unknown(width))
@@ -1320,6 +1326,12 @@ struct SimpleRecurrence {
     phi_is_left_operand: bool,
     /// `nsw` on the binary operator, already gated on `UseInstrInfo`.
     no_signed_wrap: bool,
+    /// `nuw` on the binary operator, already gated on `UseInstrInfo`.
+    no_unsigned_wrap: bool,
+    /// `exact` on the binary operator, already gated on `UseInstrInfo`.
+    is_exact: bool,
+    /// The binary operator itself — upstream's `BinaryOperator *&BO` out-parameter.
+    increment: ValueSlot,
 }
 
 /// The binary operator's opcode and operands, for any binary opcode.
@@ -1388,6 +1400,9 @@ fn match_simple_recurrence<'ctx, B: ModuleBrand + 'ctx>(
             step: if phi_is_left_operand { rhs } else { lhs },
             phi_is_left_operand,
             no_signed_wrap: uses_instruction_info && operands.no_signed_wrap,
+            no_unsigned_wrap: uses_instruction_info && operands.no_unsigned_wrap,
+            is_exact: uses_instruction_info && operands.is_exact,
+            increment: incoming[index].0.get(),
         });
     }
     None
@@ -1964,22 +1979,1250 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 // --------------------------------------------------------------------------
+// Value-level sign, power-of-two and equality predicates
+// --------------------------------------------------------------------------
+
+/// The instruction payload behind `value`, or `None` when it is not one.
+///
+/// Upstream reaches the same values through `dyn_cast<Operator>`, which also
+/// admits constant expressions. llvmkit stores those in a separate arm of
+/// `ValueKindData`, so a caller that wants both has to ask twice; every arm
+/// ported below inspects instructions only, matching what upstream's switches
+/// actually reach for the opcodes they name.
+fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<&'ctx InstructionKindData> {
+    match &value.data().kind {
+        ValueKindData::Instruction(inst) => Some(&inst.kind),
+        _ => None,
+    }
+}
+
+/// Return true when the sign bit of `value` is known zero.
+///
+/// Ports `llvm::isKnownNonNegative` (`ValueTracking.cpp`).
+pub fn is_known_non_negative<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    Ok(compute_known_bits(value, query)?.is_non_negative())
+}
+
+/// Return true when the sign bit of `value` is known one.
+///
+/// Ports `llvm::isKnownNegative` (`ValueTracking.cpp`).
+pub fn is_known_negative<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    Ok(compute_known_bits(value, query)?.is_negative())
+}
+
+/// Return true when `value` is known strictly greater than zero.
+///
+/// Ports `llvm::isKnownPositive` (`ValueTracking.cpp`).
+///
+/// The right disjunct calls `is_known_non_zero`, which llvmkit answers from
+/// known bits alone — the same source as the left disjunct. Upstream's
+/// `isKnownNonZero` is a separate operator walk, so there the two differ. The
+/// call is kept in the shape upstream wrote it rather than folded away: when
+/// `is_known_non_zero` grows its own walk this becomes load-bearing with no
+/// second edit here.
+pub fn is_known_positive<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    if let Some(constant) = argument_constant(Some(value)) {
+        return Ok(constant.is_strictly_positive());
+    }
+    let known = compute_known_bits(value, query)?;
+    Ok(known.is_non_negative() && (known.is_non_zero() || is_known_non_zero(value, query)?))
+}
+
+/// Return true when every bit set in `mask` is known zero in `value`.
+///
+/// Ports `llvm::MaskedValueIsZero` (`ValueTracking.cpp`).
+pub fn masked_value_is_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    mask: &ApInt,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    let known = compute_known_bits(value, query)?;
+    Ok(mask.is_subset_of(known.zero_mask()))
+}
+
+/// Classify `icmp <predicate> %x, <rhs>` as a test of `%x`'s sign bit.
+///
+/// Ports `llvm::isSignBitCheck` (`ValueTracking.cpp`). Upstream returns a
+/// `bool` and writes the polarity through a `bool &TrueIfSigned`
+/// out-parameter; llvmkit returns `Some(true_if_signed)` for a sign-bit check
+/// and `None` otherwise, so the polarity is unreadable when the
+/// classification failed rather than left at whatever the caller initialised.
+pub fn is_sign_bit_check(predicate: IntPredicate, rhs: &ApInt) -> Option<bool> {
+    match predicate {
+        // True if LHS s< 0.
+        IntPredicate::Slt => rhs.is_zero().then_some(true),
+        // True if LHS s<= -1.
+        IntPredicate::Sle => rhs.is_all_ones().then_some(true),
+        // True if LHS s> -1.
+        IntPredicate::Sgt => rhs.is_all_ones().then_some(false),
+        // True if LHS s>= 0.
+        IntPredicate::Sge => rhs.is_zero().then_some(false),
+        // True if LHS u> RHS and RHS == sign-bit-mask - 1.
+        IntPredicate::Ugt => rhs.is_max_signed_value().then_some(true),
+        // True if LHS u>= RHS and RHS == sign-bit-mask (2^7, 2^15, 2^31, ...).
+        IntPredicate::Uge => rhs.is_min_signed_value().then_some(true),
+        // True if LHS u< RHS and RHS == sign-bit-mask.
+        IntPredicate::Ult => rhs.is_min_signed_value().then_some(false),
+        // True if LHS u<= RHS and RHS == sign-bit-mask - 1.
+        IntPredicate::Ule => rhs.is_max_signed_value().then_some(false),
+        IntPredicate::Eq | IntPredicate::Ne => None,
+    }
+}
+
+/// Whether `value` satisfies upstream's `m_ZeroInt()`, and if so whether it is
+/// a literal null rather than a lane pattern containing poison.
+///
+/// Ports the `cst_pred_ty<is_zero_int>` matcher together with the
+/// `Constant::isNullValue` test its two callers pair it with. `Some(true)`
+/// means matched *and* null; `Some(false)` means matched with at least one
+/// poison lane standing in for a zero; `None` means no match.
+fn zero_int_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<bool> {
+    match &value.data().kind {
+        ValueKindData::Constant(ConstantData::Int(_)) => {
+            argument_constant(Some(value))?.is_zero().then_some(true)
+        }
+        // A vector constant matches when every lane is a zero or a poison
+        // standing in for one; it is a null value only if no lane is poison.
+        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
+            let mut all_null = true;
+            for element in elements.iter() {
+                match zero_int_constant(value_from_id(value, *element)) {
+                    Some(true) => {}
+                    Some(false) => all_null = false,
+                    None => return None,
+                }
+            }
+            Some(all_null)
+        }
+        ValueKindData::Constant(ConstantData::Poison) => Some(false),
+        _ => None,
+    }
+}
+
+/// Return true when `x` and `y` are provably negations of one another.
+///
+/// Ports `llvm::isKnownNegation` (`ValueTracking.cpp`). `need_nsw` requires
+/// the negating `sub` to carry `nsw`; `allow_poison` admits a subtrahend whose
+/// zero is a poison lane rather than a literal zero, which is exactly what
+/// upstream's `m_Neg` accepts and its `Zero->isNullValue()` check then filters.
+pub fn is_known_negation<'ctx, B: ModuleBrand + 'ctx>(
+    x: Value<'ctx, B>,
+    y: Value<'ctx, B>,
+    need_nsw: bool,
+    allow_poison: bool,
+) -> bool {
+    let is_negation_of = |x: Value<'ctx, B>, y: Value<'ctx, B>| -> bool {
+        // `m_Neg(m_Specific(Y))` is `m_Sub(m_ZeroInt(), Y)`.
+        let Some(InstructionKindData::Sub(data)) = instruction_kind(x) else {
+            return false;
+        };
+        if data.rhs.get() != y.slot() {
+            return false;
+        }
+        let Some(zero_is_null) = zero_int_constant(value_from_id(x, data.lhs.get())) else {
+            return false;
+        };
+        if need_nsw && !data.no_signed_wrap {
+            return false;
+        }
+        allow_poison || zero_is_null
+    };
+
+    // X = -Y or Y = -X.
+    if is_negation_of(x, y) || is_negation_of(y, x) {
+        return true;
+    }
+
+    // X = sub (A, B), Y = sub (B, A), with `nsw` on both when required.
+    let (Some(InstructionKindData::Sub(x_sub)), Some(InstructionKindData::Sub(y_sub))) =
+        (instruction_kind(x), instruction_kind(y))
+    else {
+        return false;
+    };
+    if need_nsw && !(x_sub.no_signed_wrap && y_sub.no_signed_wrap) {
+        return false;
+    }
+    x_sub.lhs.get() == y_sub.rhs.get() && x_sub.rhs.get() == y_sub.lhs.get()
+}
+
+/// Return true when `x` and `y` are provably inverse boolean conditions.
+///
+/// Ports `llvm::isKnownInversion` (`ValueTracking.cpp`).
+pub fn is_known_inversion<'ctx, B: ModuleBrand + 'ctx>(
+    x: Value<'ctx, B>,
+    y: Value<'ctx, B>,
+) -> bool {
+    // X = icmp pred1 A, B and Y = icmp pred2 A, C — the second commutatively,
+    // which swaps its predicate when A is on the right.
+    let Some(InstructionKindData::ICmp(x_cmp)) = instruction_kind(x) else {
+        return false;
+    };
+    let Some(InstructionKindData::ICmp(y_cmp)) = instruction_kind(y) else {
+        return false;
+    };
+    let a = x_cmp.lhs.get();
+    let b = x_cmp.rhs.get();
+    let predicate1 = x_cmp.predicate;
+    let (predicate2, c) = if y_cmp.lhs.get() == a {
+        (y_cmp.predicate, y_cmp.rhs.get())
+    } else if y_cmp.rhs.get() == a {
+        (y_cmp.predicate.swapped(), y_cmp.lhs.get())
+    } else {
+        return false;
+    };
+
+    // They must both carry `samesign` or neither.
+    if x_cmp.samesign != y_cmp.samesign {
+        return false;
+    }
+
+    if b == c {
+        return predicate1 == predicate2.inverse();
+    }
+
+    // Otherwise infer the relationship from the two constant right-hand sides.
+    let (Some(rhs1), Some(rhs2)) = (
+        argument_constant(Some(value_from_id(x, b))),
+        argument_constant(Some(value_from_id(y, c))),
+    ) else {
+        return false;
+    };
+
+    // Sign bits of the two constants must match under `samesign`.
+    if x_cmp.samesign && rhs1.is_negative() != rhs2.is_negative() {
+        return false;
+    }
+
+    let range1 = ConstantRange::make_exact_icmp_region(predicate1, &rhs1);
+    let range2 = ConstantRange::make_exact_icmp_region(predicate2, &rhs2);
+    range1.inverse() == range2
+}
+
+/// Return true when every user of `instruction` compares it against zero.
+///
+/// Ports `llvm::isOnlyUsedInZeroComparison` (`ValueTracking.cpp`).
+pub fn is_only_used_in_zero_comparison<'ctx, B: ModuleBrand + 'ctx>(
+    instruction: Value<'ctx, B>,
+) -> bool {
+    zero_comparison_users(instruction, |_| true)
+}
+
+/// Return true when every user of `instruction` compares it against zero with
+/// an equality predicate.
+///
+/// Ports `llvm::isOnlyUsedInZeroEqualityComparison` (`ValueTracking.cpp`).
+pub fn is_only_used_in_zero_equality_comparison<'ctx, B: ModuleBrand + 'ctx>(
+    instruction: Value<'ctx, B>,
+) -> bool {
+    zero_comparison_users(instruction, |predicate| {
+        matches!(predicate, IntPredicate::Eq | IntPredicate::Ne)
+    })
+}
+
+/// Shared body of the two zero-comparison predicates: a non-empty user list
+/// whose every member is an `icmp` against zero accepted by `predicate_ok`.
+fn zero_comparison_users<'ctx, B: ModuleBrand + 'ctx, F>(
+    instruction: Value<'ctx, B>,
+    predicate_ok: F,
+) -> bool
+where
+    F: Fn(IntPredicate) -> bool,
+{
+    let mut users = instruction.users().peekable();
+    if users.peek().is_none() {
+        return false;
+    }
+    users.all(|user| {
+        let user = user.to_erased();
+        let Some(InstructionKindData::ICmp(cmp)) = instruction_kind(user) else {
+            return false;
+        };
+        if !predicate_ok(cmp.predicate) {
+            return false;
+        }
+        // `m_ICmp(m_Value(), m_Zero())` puts the zero on the right.
+        argument_constant(Some(value_from_id(user, cmp.rhs.get())))
+            .is_some_and(|constant| constant.is_zero())
+    })
+}
+
+/// Return true when `value` is known to be a power of two.
+///
+/// Ports `llvm::isKnownToBeAPowerOfTwo` (`ValueTracking.cpp`). `or_zero`
+/// widens the claim to "a power of two, or zero".
+///
+/// Three of upstream's sources are not consulted, each because llvmkit does
+/// not model the input rather than because the reasoning was skipped, and each
+/// omission only makes the answer weaker: the `@llvm.assume` refinement (no
+/// `AssumptionCache`), the dominating-condition refinement (no `DomConditionCache`),
+/// and the `vscale` arm (`vscale_range` is on `attribute_td_drift.rs`'s
+/// `NOT_YET_MODELED` list, so the attribute it reads does not exist here).
+pub fn is_known_to_be_a_power_of_two<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    or_zero: bool,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    is_known_to_be_a_power_of_two_inner(value, or_zero, query, 0)
+}
+
+fn is_known_to_be_a_power_of_two_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    or_zero: bool,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> IrResult<bool> {
+    if let ValueKindData::Constant(_) = &value.data().kind {
+        let Some(constant) = argument_constant(Some(value)) else {
+            return Ok(false);
+        };
+        return Ok(if or_zero {
+            constant.is_zero() || constant.is_power_of_2()
+        } else {
+            constant.is_power_of_2()
+        });
+    }
+
+    // i1 is by definition a power of two or zero.
+    if or_zero && value_bit_width(value, query.data_layout()) == Some(1) {
+        return Ok(true);
+    }
+
+    let Some(kind) = instruction_kind(value) else {
+        return Ok(false);
+    };
+
+    // `1 << X` is a power of two unless the one is shifted off the end, in
+    // which case the result is poison rather than wrong.
+    if let InstructionKindData::Shl(data) = kind
+        && argument_is_const_one(Some(value_from_id(value, data.lhs.get())))
+    {
+        return Ok(true);
+    }
+    // `(signmask) >>l X` likewise.
+    if let InstructionKindData::LShr(data) = kind
+        && argument_constant(Some(value_from_id(value, data.lhs.get())))
+            .is_some_and(|constant| constant.is_sign_mask())
+    {
+        return Ok(true);
+    }
+
+    // The remaining tests all recurse.
+    if depth >= query.max_depth() {
+        return Ok(false);
+    }
+    let depth = depth + 1;
+    let operand = |slot: &Cell<ValueSlot>| value_from_id(value, slot.get());
+    let recurse = |operand: Value<'ctx, B>, or_zero: bool| {
+        is_known_to_be_a_power_of_two_inner(operand, or_zero, query, depth)
+    };
+
+    match kind {
+        InstructionKindData::Cast(data) => match data.kind {
+            CastOpcode::ZExt => recurse(value_from_id(value, data.src.get()), or_zero),
+            CastOpcode::Trunc => {
+                Ok(or_zero && recurse(value_from_id(value, data.src.get()), or_zero)?)
+            }
+            _ => Ok(false),
+        },
+        InstructionKindData::Shl(data) => {
+            if or_zero
+                || (query.uses_instruction_info() && (data.no_unsigned_wrap || data.no_signed_wrap))
+            {
+                recurse(operand(&data.lhs), or_zero)
+            } else {
+                Ok(false)
+            }
+        }
+        InstructionKindData::LShr(data) => {
+            if or_zero || (query.uses_instruction_info() && data.is_exact) {
+                recurse(operand(&data.lhs), or_zero)
+            } else {
+                Ok(false)
+            }
+        }
+        InstructionKindData::UDiv(data) => {
+            if query.uses_instruction_info() && data.is_exact {
+                recurse(operand(&data.lhs), or_zero)
+            } else {
+                Ok(false)
+            }
+        }
+        InstructionKindData::Mul(data) => Ok(recurse(operand(&data.rhs), or_zero)?
+            && recurse(operand(&data.lhs), or_zero)?
+            && (or_zero || is_known_non_zero(value, query)?)),
+        InstructionKindData::And(data) => {
+            // A power of two and'd with anything is a power of two or zero.
+            if or_zero && (recurse(operand(&data.rhs), true)? || recurse(operand(&data.lhs), true)?)
+            {
+                return Ok(true);
+            }
+            // `X & (-X)` is always a power of two or zero.
+            let lhs = operand(&data.lhs);
+            let rhs = operand(&data.rhs);
+            if is_negation_of_operand(lhs, rhs) || is_negation_of_operand(rhs, lhs) {
+                return Ok(or_zero || is_known_non_zero(lhs, query)?);
+            }
+            Ok(false)
+        }
+        InstructionKindData::Add(data) => power_of_two_add(value, data, or_zero, query, depth),
+        InstructionKindData::Select(data) => Ok(recurse(operand(&data.true_val), or_zero)?
+            && recurse(operand(&data.false_val), or_zero)?),
+        InstructionKindData::Phi(data) => power_of_two_phi(value, data, or_zero, query, depth),
+        InstructionKindData::Call(_) | InstructionKindData::Invoke(_) => {
+            power_of_two_intrinsic(value, or_zero, query, depth)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// `m_Neg(m_Specific(other))` restricted to what the `and` arm of
+/// `isKnownToBeAPowerOfTwo` asks: is `candidate` the negation of `other`?
+fn is_negation_of_operand<'ctx, B: ModuleBrand + 'ctx>(
+    candidate: Value<'ctx, B>,
+    other: Value<'ctx, B>,
+) -> bool {
+    let Some(InstructionKindData::Sub(data)) = instruction_kind(candidate) else {
+        return false;
+    };
+    data.rhs.get() == other.slot()
+        && zero_int_constant(value_from_id(candidate, data.lhs.get())).is_some()
+}
+
+/// The `Instruction::Add` arm of `isKnownToBeAPowerOfTwo`.
+fn power_of_two_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    data: &BinaryOpData,
+    or_zero: bool,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> IrResult<bool> {
+    let lhs = value_from_id(value, data.lhs.get());
+    let rhs = value_from_id(value, data.rhs.get());
+
+    let no_wrap = query.uses_instruction_info() && (data.no_unsigned_wrap || data.no_signed_wrap);
+
+    // Adding a power-of-two or zero to the same power-of-two or zero yields
+    // the original power-of-two, a larger power-of-two, or zero.
+    if or_zero || no_wrap {
+        if is_and_with_operand(lhs, rhs)
+            && is_known_to_be_a_power_of_two_inner(rhs, or_zero, query, depth)?
+        {
+            return Ok(true);
+        }
+        if is_and_with_operand(rhs, lhs)
+            && is_known_to_be_a_power_of_two_inner(lhs, or_zero, query, depth)?
+        {
+            return Ok(true);
+        }
+
+        let lhs_bits = compute_known_bits(lhs, query)?;
+        let rhs_bits = compute_known_bits(rhs, query)?;
+        // If i8 V is a power of two or zero:
+        //   ZeroBits: 1 1 1 0 1 1 1 1
+        //  ~ZeroBits: 0 0 0 1 0 0 0 0
+        if lhs_bits
+            .zero_mask()
+            .bitand(rhs_bits.zero_mask())
+            .not()
+            .is_power_of_2()
+        {
+            // Without `or_zero` the result must not be zero, so one side has
+            // to have a known one bit.
+            if or_zero || !rhs_bits.one_mask().is_zero() || !lhs_bits.one_mask().is_zero() {
+                return Ok(true);
+            }
+        }
+    }
+
+    // `lshr(UINT_MAX, Y) + 1` is a power of two (when the add is `nuw`) or zero.
+    if or_zero || (query.uses_instruction_info() && data.no_unsigned_wrap) {
+        let is_all_ones_lshr = |candidate: Value<'ctx, B>| {
+            matches!(instruction_kind(candidate), Some(InstructionKindData::LShr(shift))
+                if argument_constant(Some(value_from_id(candidate, shift.lhs.get())))
+                    .is_some_and(|constant| constant.is_all_ones()))
+        };
+        if is_all_ones_lshr(lhs) && argument_is_const_one(Some(rhs)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// `m_c_And(m_Specific(other), m_Value())` — is `candidate` an `and` with
+/// `other` as one of its operands?
+fn is_and_with_operand<'ctx, B: ModuleBrand + 'ctx>(
+    candidate: Value<'ctx, B>,
+    other: Value<'ctx, B>,
+) -> bool {
+    matches!(instruction_kind(candidate), Some(InstructionKindData::And(data))
+        if data.lhs.get() == other.slot() || data.rhs.get() == other.slot())
+}
+
+/// The `Instruction::PHI` arm of `isKnownToBeAPowerOfTwo`.
+///
+/// Upstream re-points the query's context instruction at each incoming block's
+/// terminator before recursing; llvmkit does not model a per-edge context, so
+/// that refinement is skipped exactly as the known-bits phi arm skips it. It
+/// can only leave an answer weaker.
+fn power_of_two_phi<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    data: &PhiData,
+    or_zero: bool,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> IrResult<bool> {
+    if is_power_of_two_recurrence(value, data, or_zero, query, depth)? {
+        return Ok(true);
+    }
+
+    // Recursion is limited to two levels so the search stays quadratic in the
+    // operand count.
+    let new_depth = depth.max(query.max_depth().saturating_sub(1));
+    let incoming = data.incoming.borrow();
+    for (operand, _) in incoming.iter() {
+        // A value coming from the phi itself is a power of two by induction.
+        if operand.get() == value.slot() {
+            continue;
+        }
+        if !is_known_to_be_a_power_of_two_inner(
+            value_from_id(value, operand.get()),
+            or_zero,
+            query,
+            new_depth,
+        )? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Ports `isPowerOfTwoRecurrence` (`ValueTracking.cpp`).
+fn is_power_of_two_recurrence<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    data: &PhiData,
+    or_zero: bool,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> IrResult<bool> {
+    let Some(recurrence) = match_simple_recurrence(value, data, query.uses_instruction_info())
+    else {
+        return Ok(false);
+    };
+    let start = value_from_id(value, recurrence.start);
+    let step = value_from_id(value, recurrence.step);
+
+    // The initial value must be a power of two.
+    if !is_known_to_be_a_power_of_two_inner(start, or_zero, query, depth)? {
+        return Ok(false);
+    }
+
+    // Except for `mul`, the induction variable must be the left operand,
+    // otherwise the step's value can be arbitrary.
+    if recurrence.opcode != BinaryOpcode::Mul && !recurrence.phi_is_left_operand {
+        return Ok(false);
+    }
+
+    let no_wrap = recurrence.no_unsigned_wrap || recurrence.no_signed_wrap;
+    let start_is_power_of_two_constant = argument_constant(Some(start))
+        .is_some_and(|constant| constant.is_power_of_2() && !constant.is_sign_mask());
+
+    match recurrence.opcode {
+        // Power of two is closed under multiplication.
+        BinaryOpcode::Mul => Ok((or_zero || no_wrap)
+            && is_known_to_be_a_power_of_two_inner(step, or_zero, query, depth)?),
+        // A signed division's start must not be the sign mask, so being a
+        // power of two is not enough — it has to be a constant one.
+        BinaryOpcode::SDiv if !start_is_power_of_two_constant => Ok(false),
+        // The divisor must be a power of two. Without `or_zero` the induction
+        // variable is only guaranteed non-zero when the division is exact.
+        BinaryOpcode::SDiv | BinaryOpcode::UDiv => Ok((or_zero || recurrence.is_exact)
+            && is_known_to_be_a_power_of_two_inner(step, false, query, depth)?),
+        BinaryOpcode::Shl => Ok(or_zero || no_wrap),
+        BinaryOpcode::AShr if !start_is_power_of_two_constant => Ok(false),
+        BinaryOpcode::AShr | BinaryOpcode::LShr => Ok(or_zero || recurrence.is_exact),
+        _ => Ok(false),
+    }
+}
+
+/// The `Instruction::Call` / `Instruction::Invoke` arm of
+/// `isKnownToBeAPowerOfTwo`.
+fn power_of_two_intrinsic<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    or_zero: bool,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> IrResult<bool> {
+    let (callee, arguments) = match instruction_kind(value) {
+        Some(InstructionKindData::Call(data)) => (data.callee.get(), &data.args),
+        Some(InstructionKindData::Invoke(data)) => (data.callee.get(), &data.args),
+        _ => return Ok(false),
+    };
+    let Some(semantic) = intrinsic_semantic_for_callee(value, callee) else {
+        return Ok(false);
+    };
+    let argument = |index: usize| {
+        arguments
+            .get(index)
+            .map(|slot| value_from_id(value, slot.get()))
+    };
+
+    match semantic {
+        IntrinsicSemantic::UMax
+        | IntrinsicSemantic::SMax
+        | IntrinsicSemantic::UMin
+        | IntrinsicSemantic::SMin => {
+            let (Some(first), Some(second)) = (argument(0), argument(1)) else {
+                return Ok(false);
+            };
+            Ok(
+                is_known_to_be_a_power_of_two_inner(second, or_zero, query, depth)?
+                    && is_known_to_be_a_power_of_two_inner(first, or_zero, query, depth)?,
+            )
+        }
+        // bswap/bitreverse move bits around without changing how many are set.
+        IntrinsicSemantic::BSwap | IntrinsicSemantic::BitReverse => {
+            let Some(first) = argument(0) else {
+                return Ok(false);
+            };
+            is_known_to_be_a_power_of_two_inner(first, or_zero, query, depth)
+        }
+        // When both inputs are the same value this is a rotate, and
+        // `is_pow2(rotate(x, y)) == is_pow2(x)`.
+        IntrinsicSemantic::FShl | IntrinsicSemantic::FShr => {
+            let (Some(first), Some(second)) = (argument(0), argument(1)) else {
+                return Ok(false);
+            };
+            if first.slot() != second.slot() {
+                return Ok(false);
+            }
+            is_known_to_be_a_power_of_two_inner(first, or_zero, query, depth)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// The operand pair of a binary instruction with the given opcode.
+fn binary_operands_of<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    opcode: BinaryOpcode,
+) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+    let (found, data) = instruction_kind(value).and_then(binary_operator_parts)?;
+    (found == opcode).then(|| {
+        (
+            value_from_id(value, data.lhs.get()),
+            value_from_id(value, data.rhs.get()),
+        )
+    })
+}
+
+/// Whether `value` matches upstream's `m_AllOnes()`.
+///
+/// Ports `cst_pred_ty<is_all_ones>`, which accepts a scalar `-1` *and* a
+/// vector constant whose every lane is one — the form a vector `not` takes.
+fn is_all_ones_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+    match &value.data().kind {
+        ValueKindData::Constant(ConstantData::Int(_)) => {
+            argument_constant(Some(value)).is_some_and(|constant| constant.is_all_ones())
+        }
+        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
+            !elements.is_empty()
+                && elements
+                    .iter()
+                    .all(|element| is_all_ones_constant(value_from_id(value, *element)))
+        }
+        _ => false,
+    }
+}
+
+/// `m_Not(V)`: `xor V, -1`, matched commutatively.
+fn not_operand<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+    let (lhs, rhs) = binary_operands_of(value, BinaryOpcode::Xor)?;
+    if is_all_ones_constant(rhs) {
+        Some(lhs)
+    } else if is_all_ones_constant(lhs) {
+        Some(rhs)
+    } else {
+        None
+    }
+}
+
+/// The source of a `zext` or `sext`, matching upstream's `m_ZExtOrSExt`.
+fn zext_or_sext_source<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<Value<'ctx, B>> {
+    match instruction_kind(value)? {
+        InstructionKindData::Cast(data)
+            if matches!(data.kind, CastOpcode::ZExt | CastOpcode::SExt) =>
+        {
+            Some(value_from_id(value, data.src.get()))
+        }
+        _ => None,
+    }
+}
+
+/// Return true when `lhs` and `rhs` provably have no bit set in common.
+///
+/// Ports `llvm::haveNoCommonBitsSet` (`ValueTracking.cpp`), including the
+/// `haveNoCommonBitsSetSpecialCases` patterns tried in both operand orders.
+///
+/// The special cases are each gated on the operand being known not-undef.
+/// llvmkit's `is_known_not_undef` does not yet consult UB reachability or
+/// assumptions, so it proves less than upstream's; the effect here is that a
+/// pattern upstream accepts may fall through to the plain known-bits test.
+/// That answers `false` where upstream answers `true` — a missed fact, never a
+/// wrong one.
+pub fn have_no_common_bits_set<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    if have_no_common_bits_set_special_cases(lhs, rhs, query)?
+        || have_no_common_bits_set_special_cases(rhs, lhs, query)?
+    {
+        return Ok(true);
+    }
+    let lhs_bits = compute_known_bits(lhs, query)?;
+    let rhs_bits = compute_known_bits(rhs, query)?;
+    Ok(KnownBits::have_no_common_bits_set(&lhs_bits, &rhs_bits))
+}
+
+/// Ports `haveNoCommonBitsSetSpecialCases`. Called once per operand order.
+fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    let and_pair = |value: Value<'ctx, B>| binary_operands_of(value, BinaryOpcode::And);
+
+    // Look for an inverted mask: (X & ~M) op (Y & M).
+    if let Some((left_a, left_b)) = and_pair(lhs) {
+        for masked in [left_a, left_b] {
+            let Some(mask) = not_operand(masked) else {
+                continue;
+            };
+            let Some((right_a, right_b)) = and_pair(rhs) else {
+                continue;
+            };
+            if (right_a.slot() == mask.slot() || right_b.slot() == mask.slot())
+                && is_known_not_undef(mask, query)?
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    // X op (Y & ~X).
+    if let Some((right_a, right_b)) = and_pair(rhs) {
+        for side in [right_a, right_b] {
+            if not_operand(side).is_some_and(|inner| inner.slot() == lhs.slot())
+                && is_known_not_undef(lhs, query)?
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    // X op ((X & Y) ^ Y) — the canonical form of the previous pattern for a
+    // constant Y.
+    if let Some((xor_a, xor_b)) = binary_operands_of(rhs, BinaryOpcode::Xor) {
+        for (anded, deferred) in [(xor_a, xor_b), (xor_b, xor_a)] {
+            let Some((and_a, and_b)) = and_pair(anded) else {
+                continue;
+            };
+            let matches_shape = (and_a.slot() == lhs.slot() && and_b.slot() == deferred.slot())
+                || (and_b.slot() == lhs.slot() && and_a.slot() == deferred.slot());
+            if matches_shape
+                && is_known_not_undef(lhs, query)?
+                && is_known_not_undef(deferred, query)?
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    // Peek through extends to find a `not` of the other side: (ext Y) op ext(~Y).
+    if let Some(extended) = zext_or_sext_source(lhs)
+        && let Some(right_source) = zext_or_sext_source(rhs)
+        && not_operand(right_source).is_some_and(|inner| inner.slot() == extended.slot())
+        && is_known_not_undef(extended, query)?
+    {
+        return Ok(true);
+    }
+
+    // Look for: (A & B) op ~(A | B).
+    if let Some((a, b)) = and_pair(lhs)
+        && let Some(negated) = not_operand(rhs)
+        && let Some((or_a, or_b)) = binary_operands_of(negated, BinaryOpcode::Or)
+        && ((or_a.slot() == a.slot() && or_b.slot() == b.slot())
+            || (or_b.slot() == a.slot() && or_a.slot() == b.slot()))
+        && is_known_not_undef(a, query)?
+        && is_known_not_undef(b, query)?
+    {
+        return Ok(true);
+    }
+
+    // Look for: (X << V) op (Y >> (BitWidth - V)), or the same with the two
+    // shift directions exchanged.
+    Ok(
+        complementary_shift_pair(lhs, rhs, BinaryOpcode::LShr, BinaryOpcode::Shl, query)
+            || complementary_shift_pair(lhs, rhs, BinaryOpcode::Shl, BinaryOpcode::LShr, query),
+    )
+}
+
+/// One half of the shift pattern above: `lhs` shifts by `V` in `lhs_opcode`'s
+/// direction while `rhs` shifts by `R - V` in the other, with `R` at least the
+/// scalar bit width.
+fn complementary_shift_pair<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
+    lhs_opcode: BinaryOpcode,
+    rhs_opcode: BinaryOpcode,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> bool {
+    let Some((_, rhs_amount)) = binary_operands_of(rhs, rhs_opcode) else {
+        return false;
+    };
+    let Some((total, shift)) = binary_operands_of(rhs_amount, BinaryOpcode::Sub) else {
+        return false;
+    };
+    let Some(total) = argument_constant(Some(total)) else {
+        return false;
+    };
+    let Some((_, lhs_amount)) = binary_operands_of(lhs, lhs_opcode) else {
+        return false;
+    };
+    if lhs_amount.slot() != shift.slot() {
+        return false;
+    }
+    let Some(width) = value_bit_width(lhs, query.data_layout()) else {
+        return false;
+    };
+    total.uge(&ApInt::from_words(total.bit_width(), &[u64::from(width)]))
+}
+
+/// Return true when `v1` and `v2` are provably different values.
+///
+/// Ports `llvm::isKnownNonEqual` (`ValueTracking.cpp`).
+///
+/// Two of upstream's arms are **not** ported, each because it reads something
+/// llvmkit does not model, and each omission only makes the answer weaker:
+/// `isNonEqualPointersWithRecursiveGEP` (needs
+/// `stripAndAccumulateInBoundsConstantOffsets`) and `isKnownNonEqualFromContext`
+/// (needs an `AssumptionCache`).
+pub fn is_known_non_equal<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    v1: Value<'ctx, B>,
+    v2: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    is_known_non_equal_inner(v1, v2, query, 0)
+}
+
+fn is_known_non_equal_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    v1: Value<'ctx, B>,
+    v2: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> IrResult<bool> {
+    if v1.slot() == v2.slot() {
+        return Ok(false);
+    }
+    // Casts are not looked through.
+    if v1.ty().id() != v2.ty().id() {
+        return Ok(false);
+    }
+    if depth >= query.max_depth() {
+        return Ok(false);
+    }
+
+    // Recurse through exactly one operand when the operation is invertible —
+    // 1-to-1, mapping every input to exactly one output — because then the two
+    // results are equal exactly when that operand pair is.
+    if let Some((first, second)) = invertible_operands(v1, v2) {
+        return is_known_non_equal_inner(first, second, query, depth + 1);
+    }
+    if let (Some(InstructionKindData::Phi(p1)), Some(InstructionKindData::Phi(p2))) =
+        (instruction_kind(v1), instruction_kind(v2))
+        && non_equal_phis(v1, p1, v2, p2, query, depth)?
+    {
+        return Ok(true);
+    }
+
+    if modifying_binop_of_non_zero(v1, v2, query)? || modifying_binop_of_non_zero(v2, v1, query)? {
+        return Ok(true);
+    }
+    if non_equal_scaled(v1, v2, BinaryOpcode::Mul, query)?
+        || non_equal_scaled(v2, v1, BinaryOpcode::Mul, query)?
+    {
+        return Ok(true);
+    }
+    if non_equal_scaled(v1, v2, BinaryOpcode::Shl, query)?
+        || non_equal_scaled(v2, v1, BinaryOpcode::Shl, query)?
+    {
+        return Ok(true);
+    }
+
+    // Are any known bits in V1 contradictory to known bits in V2? If V1 has a
+    // known zero where V2 has a known one, they cannot be equal.
+    if matches!(
+        v1.ty().kind(),
+        TypeKind::Integer { .. } | TypeKind::FixedVector | TypeKind::ScalableVector
+    ) {
+        let known1 = compute_known_bits(v1, query)?;
+        if !known1.is_unknown() {
+            let known2 = compute_known_bits(v2, query)?;
+            if known1.zero_mask().intersects(known2.one_mask())
+                || known2.zero_mask().intersects(known1.one_mask())
+            {
+                return Ok(true);
+            }
+        }
+    }
+
+    if non_equal_select(v1, v2, query, depth)? || non_equal_select(v2, v1, query, depth)? {
+        return Ok(true);
+    }
+
+    // `ptrtoint`s are non-equal when their pointers are, provided the integer
+    // is exactly pointer-sized (upstream's `m_PtrToIntSameSize`).
+    if let (Some(p1), Some(p2)) = (
+        ptr_to_int_same_size(v1, query),
+        ptr_to_int_same_size(v2, query),
+    ) {
+        return is_known_non_equal_inner(p1, p2, query, depth + 1);
+    }
+
+    Ok(false)
+}
+
+/// Ports `getInvertibleOperands`: when `v1` and `v2` are the same invertible
+/// function, the operand pair whose equality decides theirs.
+fn invertible_operands<'ctx, B: ModuleBrand + 'ctx>(
+    v1: Value<'ctx, B>,
+    v2: Value<'ctx, B>,
+) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+    let kind1 = instruction_kind(v1)?;
+    let kind2 = instruction_kind(v2)?;
+    let operand = |value: Value<'ctx, B>, slot: ValueSlot| value_from_id(value, slot);
+
+    match (kind1, kind2) {
+        // `or disjoint` behaves as `add`; a plain `or` is not invertible.
+        (InstructionKindData::Or(a), InstructionKindData::Or(b)) if a.disjoint && b.disjoint => {
+            invertible_commutative(v1, a, v2, b)
+        }
+        (InstructionKindData::Xor(a), InstructionKindData::Xor(b))
+        | (InstructionKindData::Add(a), InstructionKindData::Add(b)) => {
+            invertible_commutative(v1, a, v2, b)
+        }
+        (InstructionKindData::Sub(a), InstructionKindData::Sub(b)) => {
+            if a.lhs.get() == b.lhs.get() {
+                Some((operand(v1, a.rhs.get()), operand(v2, b.rhs.get())))
+            } else if a.rhs.get() == b.rhs.get() {
+                Some((operand(v1, a.lhs.get()), operand(v2, b.lhs.get())))
+            } else {
+                None
+            }
+        }
+        // `A * B == (A * B) mod 2^N`, so a multiply is invertible when both
+        // sides are no-wrap and the shared multiplier is a non-zero constant.
+        (InstructionKindData::Mul(a), InstructionKindData::Mul(b)) => {
+            if !no_wrap_pair(a, b) {
+                return None;
+            }
+            let shared = a.rhs.get() == b.rhs.get();
+            let non_zero_constant = argument_constant(Some(operand(v1, a.rhs.get())))
+                .is_some_and(|constant| !constant.is_zero());
+            (shared && non_zero_constant)
+                .then(|| (operand(v1, a.lhs.get()), operand(v2, b.lhs.get())))
+        }
+        // As multiplies, minus the non-zero check: a shift always scales by a
+        // non-zero factor.
+        (InstructionKindData::Shl(a), InstructionKindData::Shl(b)) => {
+            if !no_wrap_pair(a, b) {
+                return None;
+            }
+            (a.rhs.get() == b.rhs.get())
+                .then(|| (operand(v1, a.lhs.get()), operand(v2, b.lhs.get())))
+        }
+        (InstructionKindData::AShr(a), InstructionKindData::AShr(b))
+        | (InstructionKindData::LShr(a), InstructionKindData::LShr(b)) => {
+            if !(a.is_exact && b.is_exact) {
+                return None;
+            }
+            (a.rhs.get() == b.rhs.get())
+                .then(|| (operand(v1, a.lhs.get()), operand(v2, b.lhs.get())))
+        }
+        (InstructionKindData::Cast(a), InstructionKindData::Cast(b))
+            if a.kind == b.kind && matches!(a.kind, CastOpcode::SExt | CastOpcode::ZExt) =>
+        {
+            let source1 = operand(v1, a.src.get());
+            let source2 = operand(v2, b.src.get());
+            (source1.ty().id() == source2.ty().id()).then_some((source1, source2))
+        }
+        (InstructionKindData::Phi(p1), InstructionKindData::Phi(p2)) => {
+            invertible_recurrences(v1, p1, v2, p2)
+        }
+        _ => None,
+    }
+}
+
+/// The commutative arm of `getInvertibleOperands` (`or disjoint` / `xor` /
+/// `add`): whichever operand of `v2` matches one of `v1`'s pins the other pair.
+fn invertible_commutative<'ctx, B: ModuleBrand + 'ctx>(
+    v1: Value<'ctx, B>,
+    a: &BinaryOpData,
+    v2: Value<'ctx, B>,
+    b: &BinaryOpData,
+) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+    for (pinned, other) in [(a.lhs.get(), a.rhs.get()), (a.rhs.get(), a.lhs.get())] {
+        if b.lhs.get() == pinned {
+            return Some((value_from_id(v1, other), value_from_id(v2, b.rhs.get())));
+        }
+        if b.rhs.get() == pinned {
+            return Some((value_from_id(v1, other), value_from_id(v2, b.lhs.get())));
+        }
+    }
+    None
+}
+
+/// Both operators carry `nuw`, or both carry `nsw`.
+fn no_wrap_pair(a: &BinaryOpData, b: &BinaryOpData) -> bool {
+    (a.no_unsigned_wrap && b.no_unsigned_wrap) || (a.no_signed_wrap && b.no_signed_wrap)
+}
+
+/// The `Instruction::PHI` arm of `getInvertibleOperands`: two recurrences in
+/// the same block whose increments are a single invertible function of the
+/// start values.
+fn invertible_recurrences<'ctx, B: ModuleBrand + 'ctx>(
+    v1: Value<'ctx, B>,
+    p1: &PhiData,
+    v2: Value<'ctx, B>,
+    p2: &PhiData,
+) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+    if parent_block(v1)? != parent_block(v2)? {
+        return None;
+    }
+    let recurrence1 = match_simple_recurrence(v1, p1, true)?;
+    let recurrence2 = match_simple_recurrence(v2, p2, true)?;
+    let (first, second) = invertible_operands(
+        value_from_id(v1, recurrence1.increment),
+        value_from_id(v2, recurrence2.increment),
+    )?;
+
+    // Mutually defined recurrences are not reasoned about: the pair the
+    // increments reduce to has to be the two phis themselves.
+    if first.slot() != v1.slot() || second.slot() != v2.slot() {
+        return None;
+    }
+    Some((
+        value_from_id(v1, recurrence1.start),
+        value_from_id(v2, recurrence2.start),
+    ))
+}
+
+/// The block an instruction belongs to.
+fn parent_block<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ValueSlot> {
+    match &value.data().kind {
+        ValueKindData::Instruction(inst) => Some(inst.parent.get()),
+        _ => None,
+    }
+}
+
+/// Ports `isNonEqualPHIs`.
+fn non_equal_phis<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    v1: Value<'ctx, B>,
+    p1: &PhiData,
+    v2: Value<'ctx, B>,
+    p2: &PhiData,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> IrResult<bool> {
+    if parent_block(v1) != parent_block(v2) {
+        return Ok(false);
+    }
+    let incoming1 = p1.incoming.borrow();
+    let incoming2 = p2.incoming.borrow();
+    let mut visited: HashSet<ValueSlot> = HashSet::new();
+    let mut used_full_recursion = false;
+    for (operand1, block) in incoming1.iter() {
+        // Blocks already dealt with are not reprocessed.
+        if !visited.insert(*block) {
+            continue;
+        }
+        let Some((operand2, _)) = incoming2.iter().find(|(_, other)| other == block) else {
+            return Ok(false);
+        };
+        let value1 = value_from_id(v1, operand1.get());
+        let value2 = value_from_id(v2, operand2.get());
+        if let (Some(c1), Some(c2)) = (
+            argument_constant(Some(value1)),
+            argument_constant(Some(value2)),
+        ) && !c1.eq_ap_int(&c2)
+        {
+            continue;
+        }
+
+        // Only one pair of phi operands is allowed to recurse fully.
+        if used_full_recursion {
+            return Ok(false);
+        }
+        if !is_known_non_equal_inner(value1, value2, query, depth + 1)? {
+            return Ok(false);
+        }
+        used_full_recursion = true;
+    }
+    Ok(true)
+}
+
+/// Ports `isModifyingBinopOfNonZero`: `v1 == (binop v2, X)` with `X` non-zero,
+/// for the binops where that implies `v1 != v2`.
+///
+/// Upstream recurses into `isKnownNonZero` at `Depth + 1`. llvmkit's
+/// `is_known_non_zero` answers from known bits and carries no depth of its own,
+/// so there is nothing to thread; the recursion it would bound happens inside
+/// `compute_known_bits`, which has its own limit.
+fn modifying_binop_of_non_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    v1: Value<'ctx, B>,
+    v2: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    let Some(kind) = instruction_kind(v1) else {
+        return Ok(false);
+    };
+    let data = match kind {
+        InstructionKindData::Or(data) if data.disjoint => data,
+        InstructionKindData::Xor(data) | InstructionKindData::Add(data) => data,
+        _ => return Ok(false),
+    };
+    let other = if v2.slot() == data.lhs.get() {
+        data.rhs.get()
+    } else if v2.slot() == data.rhs.get() {
+        data.lhs.get()
+    } else {
+        return Ok(false);
+    };
+    is_known_non_zero(value_from_id(v1, other), query)
+}
+
+/// Ports `isNonEqualMul` and `isNonEqualShl`, which differ only in opcode and
+/// in whether the constant may be one: `v2 == v1 * C` (or `v1 << C`) with `v1`
+/// non-zero, `C` non-trivial, and the operation no-wrap.
+///
+/// The depth note on `modifying_binop_of_non_zero` applies here too.
+fn non_equal_scaled<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    v1: Value<'ctx, B>,
+    v2: Value<'ctx, B>,
+    opcode: BinaryOpcode,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    let Some((found, data)) = instruction_kind(v2).and_then(binary_operator_parts) else {
+        return Ok(false);
+    };
+    if found != opcode || data.lhs.get() != v1.slot() {
+        return Ok(false);
+    }
+    if !(data.no_unsigned_wrap || data.no_signed_wrap) {
+        return Ok(false);
+    }
+    let Some(constant) = argument_constant(Some(value_from_id(v2, data.rhs.get()))) else {
+        return Ok(false);
+    };
+    // A shift by zero is the identity, and so is a multiply by one.
+    if constant.is_zero() || (opcode == BinaryOpcode::Mul && constant.is_one()) {
+        return Ok(false);
+    }
+    is_known_non_zero(v1, query)
+}
+
+/// Ports `isNonEqualSelect`.
+fn non_equal_select<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    v1: Value<'ctx, B>,
+    v2: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> IrResult<bool> {
+    let Some(InstructionKindData::Select(s1)) = instruction_kind(v1) else {
+        return Ok(false);
+    };
+    let true1 = value_from_id(v1, s1.true_val.get());
+    let false1 = value_from_id(v1, s1.false_val.get());
+
+    if let Some(InstructionKindData::Select(s2)) = instruction_kind(v2)
+        && s1.cond.get() == s2.cond.get()
+    {
+        return Ok(is_known_non_equal_inner(
+            true1,
+            value_from_id(v2, s2.true_val.get()),
+            query,
+            depth + 1,
+        )? && is_known_non_equal_inner(
+            false1,
+            value_from_id(v2, s2.false_val.get()),
+            query,
+            depth + 1,
+        )?);
+    }
+    Ok(is_known_non_equal_inner(true1, v2, query, depth + 1)?
+        && is_known_non_equal_inner(false1, v2, query, depth + 1)?)
+}
+
+/// Ports `m_PtrToIntSameSize`: a `ptrtoint` whose result width equals the
+/// pointer's index width, returning the pointer operand.
+fn ptr_to_int_same_size<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> Option<Value<'ctx, B>> {
+    let InstructionKindData::Cast(data) = instruction_kind(value)? else {
+        return None;
+    };
+    if data.kind != CastOpcode::PtrToInt {
+        return None;
+    }
+    let pointer = value_from_id(value, data.src.get());
+    let address_space = pointer_addr_space(pointer.ty())?;
+    let result_width = value_bit_width(value, query.data_layout())?;
+    (result_width == query.data_layout().pointer_size_in_bits(address_space)).then_some(pointer)
+}
+
+// --------------------------------------------------------------------------
 // Undef / poison reasoning
 // --------------------------------------------------------------------------
 
 /// Which of undef and poison a query is asking about. Ports upstream's
 /// `UndefPoisonKind` (`ValueTracking.cpp`).
+///
+/// Upstream spells this as a bitmask (`PoisonOnly = 1 << 0`,
+/// `UndefOnly = 1 << 1`, `UndefOrPoison = PoisonOnly | UndefOnly`) and reads it
+/// back through `includesPoison` / `includesUndef`. Only three of the four bit
+/// patterns are ever constructed, so llvmkit spells the same thing as a
+/// three-variant enum and the two readers as methods — the empty mask is
+/// unrepresentable rather than merely unused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum UndefPoisonKind {
     PoisonOnly,
+    UndefOnly,
     UndefOrPoison,
 }
 
 impl UndefPoisonKind {
-    /// Ports `includesPoison`. Both kinds include poison; the enum exists to
-    /// let the undef-only questions opt out of the poison-specific arms.
+    /// Ports `includesPoison`.
     fn includes_poison(self) -> bool {
         matches!(self, Self::PoisonOnly | Self::UndefOrPoison)
+    }
+
+    /// Ports `includesUndef`.
+    fn includes_undef(self) -> bool {
+        matches!(self, Self::UndefOnly | Self::UndefOrPoison)
     }
 }
 
@@ -2231,7 +3474,13 @@ fn implies_poison_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     const MAX_DEPTH: u32 = 2;
 
     let mut stack = HashSet::new();
-    if is_guaranteed_not_to_be_poison(value_assumed_poison, query, 0, &mut stack)? {
+    if is_guaranteed_not_to_be_undef_or_poison(
+        value_assumed_poison,
+        query,
+        0,
+        &mut stack,
+        UndefPoisonKind::PoisonOnly,
+    )? {
         return Ok(true);
     }
     if directly_implies_poison(value_assumed_poison, value, 0) {
@@ -2306,7 +3555,39 @@ pub fn is_known_not_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
     let mut stack = HashSet::new();
-    is_guaranteed_not_to_be_poison(value, query, 0, &mut stack)
+    is_guaranteed_not_to_be_undef_or_poison(
+        value,
+        query,
+        0,
+        &mut stack,
+        UndefPoisonKind::PoisonOnly,
+    )
+}
+
+/// Return true when `value` is guaranteed not to be undef.
+/// Ports `llvm::isGuaranteedNotToBeUndef`.
+pub fn is_known_not_undef<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    let mut stack = HashSet::new();
+    is_guaranteed_not_to_be_undef_or_poison(value, query, 0, &mut stack, UndefPoisonKind::UndefOnly)
+}
+
+/// Return true when `value` is guaranteed to be neither undef nor poison.
+/// Ports `llvm::isGuaranteedNotToBeUndefOrPoison`.
+pub fn is_known_not_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<bool> {
+    let mut stack = HashSet::new();
+    is_guaranteed_not_to_be_undef_or_poison(
+        value,
+        query,
+        0,
+        &mut stack,
+        UndefPoisonKind::UndefOrPoison,
+    )
 }
 
 // --------------------------------------------------------------------------
@@ -3011,50 +4292,221 @@ fn value_bit_width<'ctx, B: ModuleBrand + 'ctx>(
     type_bit_width(value.ty(), dl)
 }
 
-fn is_guaranteed_not_to_be_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
+/// Ports the static `isGuaranteedNotToBeUndefOrPoison(V, AC, CtxI, DT, Depth,
+/// Kind)` (`ValueTracking.cpp`).
+///
+/// Three of upstream's arms are **not** ported. Each can only make the answer
+/// weaker — a `false` where upstream proves `true` — so no caller is misled:
+///
+/// - `programUndefinedIfUndefOrPoison`, and with it the dominating
+///   branch-condition walk that follows it. Both are CFG reachability
+///   questions built on `isGuaranteedToTransferExecutionToSuccessor`, which
+///   llvmkit does not model yet.
+/// - The `@llvm.assume` arm (`getKnowledgeValidInContext`), which needs an
+///   `AssumptionCache`.
+/// - `stripPointerCastsSameRepresentation` before the allocated-object test:
+///   llvmkit checks the unstripped value, so a bitcast or zero-offset
+///   `inbounds` GEP of an alloca is not recognised as one.
+///
+/// One arm is an llvmkit **refinement**, marked at its site: a shift whose
+/// amount is proven in range by known bits is not poison, where upstream's
+/// `shiftAmountKnownInRange` demands a literal constant. It answers `true`
+/// strictly more often, and only where the shift provably cannot be poison.
+fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
+    kind: UndefPoisonKind,
 ) -> IrResult<bool> {
-    if depth > query.max_depth() {
+    if depth >= query.max_depth() {
         return Ok(false);
     }
+
     match &value.data().kind {
-        ValueKindData::Constant(ConstantData::Poison) => Ok(false),
-        ValueKindData::Constant(_) => Ok(true),
-        ValueKindData::Instruction(inst) => match &inst.kind {
-            InstructionKindData::Shl(data)
-            | InstructionKindData::LShr(data)
-            | InstructionKindData::AShr(data) => {
-                if query.uses_instruction_info()
-                    && (data.no_unsigned_wrap || data.no_signed_wrap || data.is_exact)
-                {
-                    return Ok(false);
-                }
-                let lhs = value_from_id(value, data.lhs.get());
-                let rhs = value_from_id(value, data.rhs.get());
-                if !is_guaranteed_not_to_be_poison(lhs, query, depth + 1, stack)?
-                    || !is_guaranteed_not_to_be_poison(rhs, query, depth + 1, stack)?
-                {
-                    return Ok(false);
-                }
-                let Some(width) = value_bit_width(lhs, query.data_layout()) else {
-                    return Ok(false);
-                };
-                let rhs_bits = compute_known_bits_inner(rhs, query, depth + 1, stack)?;
-                Ok(rhs_bits.max_value().limited_value(u64::from(width)) < u64::from(width))
+        ValueKindData::MetadataAsValue(_) => return Ok(false),
+        ValueKindData::Argument { parent_fn, slot } => {
+            if argument_is_well_defined(value, *parent_fn, *slot) {
+                return Ok(true);
             }
-            _ => Ok(false),
-        },
-        ValueKindData::Argument { .. }
-        | ValueKindData::BasicBlock(_)
-        | ValueKindData::Function(_)
-        | ValueKindData::GlobalAlias(_)
-        | ValueKindData::GlobalIFunc(_)
-        | ValueKindData::GlobalVariable(_)
-        | ValueKindData::MetadataAsValue(_)
-        | ValueKindData::InlineAsm(_) => Ok(false),
+        }
+        ValueKindData::Constant(constant) => {
+            if let Some(answer) = constant_is_well_defined(value, constant, kind) {
+                return Ok(answer);
+            }
+        }
+        _ => {}
+    }
+
+    // An allocated object or a null pointer is always well defined.
+    if matches!(
+        &value.data().kind,
+        ValueKindData::GlobalVariable(_)
+            | ValueKindData::Function(_)
+            | ValueKindData::Constant(ConstantData::PointerNull)
+    ) || matches!(
+        instruction_kind(value),
+        Some(InstructionKindData::Alloca(_))
+    ) {
+        return Ok(true);
+    }
+
+    let Some(operator) = instruction_kind(value) else {
+        return Ok(false);
+    };
+
+    // A freeze can never be undef or poison.
+    if matches!(operator, InstructionKindData::Freeze(_)) {
+        return Ok(true);
+    }
+    // Nor can a call whose return is annotated `noundef`.
+    if call_returns_noundef(operator) {
+        return Ok(true);
+    }
+
+    if !can_create_undef_or_poison_kind(value, kind, true) {
+        if let InstructionKindData::Phi(data) = operator {
+            // Upstream evaluates each incoming value at its edge's terminator;
+            // llvmkit has no per-edge context, so the incoming value is
+            // evaluated where it stands. That can only weaken the answer.
+            let incoming = data.incoming.borrow();
+            let mut well_defined = true;
+            for (operand, _) in incoming.iter() {
+                if operand.get() == value.slot() {
+                    continue;
+                }
+                if !is_guaranteed_not_to_be_undef_or_poison(
+                    value_from_id(value, operand.get()),
+                    query,
+                    depth + 1,
+                    stack,
+                    kind,
+                )? {
+                    well_defined = false;
+                    break;
+                }
+            }
+            if well_defined {
+                return Ok(true);
+            }
+        } else {
+            let mut well_defined = true;
+            for operand in operands_of(value) {
+                if !is_guaranteed_not_to_be_undef_or_poison(operand, query, depth + 1, stack, kind)?
+                {
+                    well_defined = false;
+                    break;
+                }
+            }
+            if well_defined {
+                return Ok(true);
+            }
+        }
+    }
+
+    // llvmkit refinement (no upstream counterpart): `shiftAmountKnownInRange`
+    // is syntactic, so a shift by a non-constant amount reaches
+    // `can_create_undef_or_poison_kind` as "can create poison" and the operand
+    // walk above is skipped. Known bits can still prove the amount in range,
+    // and a shift whose amount is in range and whose operands are well defined
+    // provably is not poison.
+    if kind.includes_poison()
+        && let InstructionKindData::Shl(data)
+        | InstructionKindData::LShr(data)
+        | InstructionKindData::AShr(data) = operator
+    {
+        if query.uses_instruction_info()
+            && (data.no_unsigned_wrap || data.no_signed_wrap || data.is_exact)
+        {
+            return Ok(false);
+        }
+        let lhs = value_from_id(value, data.lhs.get());
+        let rhs = value_from_id(value, data.rhs.get());
+        if !is_guaranteed_not_to_be_undef_or_poison(lhs, query, depth + 1, stack, kind)?
+            || !is_guaranteed_not_to_be_undef_or_poison(rhs, query, depth + 1, stack, kind)?
+        {
+            return Ok(false);
+        }
+        let Some(width) = value_bit_width(lhs, query.data_layout()) else {
+            return Ok(false);
+        };
+        let rhs_bits = compute_known_bits_inner(rhs, query, depth + 1, stack)?;
+        return Ok(rhs_bits.max_value().limited_value(u64::from(width)) < u64::from(width));
+    }
+
+    Ok(false)
+}
+
+/// The `dyn_cast<Argument>` arm: `noundef`, `dereferenceable` and
+/// `dereferenceable_or_null` each imply a well-defined parameter.
+fn argument_is_well_defined<'ctx, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    parent_fn: ValueSlot,
+    slot: u32,
+) -> bool {
+    let function = value_from_id(anchor, parent_fn);
+    let ValueKindData::Function(data) = &function.data().kind else {
+        return false;
+    };
+    let attributes = data.attributes.borrow();
+    attributes
+        .get(AttrIndex::Param(slot))
+        .is_some_and(|stored| stored.iter().any(is_well_defined_attribute))
+}
+
+/// The three attributes upstream reads as "this operand is well defined".
+fn is_well_defined_attribute(attribute: &AttributeStored) -> bool {
+    matches!(
+        attribute,
+        AttributeStored::Enum(AttrKind::NoUndef)
+            | AttributeStored::Int(AttrKind::Dereferenceable, _)
+            | AttributeStored::Int(AttrKind::DereferenceableOrNull, _)
+    )
+}
+
+/// The `dyn_cast<Constant>` arm. `None` means the constant fell through to the
+/// operator tests, exactly as upstream's `ConstantExpr` case does.
+fn constant_is_well_defined<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    constant: &ConstantData,
+    kind: UndefPoisonKind,
+) -> Option<bool> {
+    match constant {
+        ConstantData::Poison => Some(!kind.includes_poison()),
+        ConstantData::Undef => Some(!kind.includes_undef()),
+        ConstantData::Int(_)
+        | ConstantData::Float(_)
+        | ConstantData::PointerNull
+        | ConstantData::GlobalValueRef { .. } => Some(true),
+        // Upstream's vector arm: an element that is undef or poison of the
+        // asked-about kind disqualifies the whole vector, and a constant
+        // expression inside one is not analysed.
+        ConstantData::Aggregate(elements)
+            if matches!(
+                value.ty().kind(),
+                TypeKind::FixedVector | TypeKind::ScalableVector
+            ) =>
+        {
+            for element in elements.iter() {
+                let element = value_from_id(value, *element);
+                match &element.data().kind {
+                    ValueKindData::Constant(ConstantData::Undef) if kind.includes_undef() => {
+                        return Some(false);
+                    }
+                    ValueKindData::Constant(ConstantData::Poison) if kind.includes_poison() => {
+                        return Some(false);
+                    }
+                    ValueKindData::Constant(ConstantData::Expr(_)) => return Some(false),
+                    _ => {}
+                }
+            }
+            Some(true)
+        }
+        // A constant expression falls through to the operator tests upstream;
+        // llvmkit models those in a separate arm that the operator walk below
+        // does not reach, so the honest answer is "not proven".
+        ConstantData::Expr(_) => Some(false),
+        _ => None,
     }
 }
 

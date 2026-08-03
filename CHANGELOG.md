@@ -7,6 +7,97 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### Parser: vector integer arithmetic and comparison
+
+`and <2 x i32> %a, %b` now parses. It did not before: the parser converted both
+operands to `IntValue`, whose `IntWidth` marker describes a scalar width, so
+every integer binop and `icmp` rejected vector operands. `clang -O2` output was
+unparseable as soon as the vectorizer fired.
+
+#### Added
+
+- `IRBuilder::build_int_binop_erased` — an integer binop on erased operands
+  with a *runtime* opcode, for callers like the `.ll` parser that do not know
+  the opcode statically. Returns an erased `ValueId<B>`, since the result may
+  be a vector.
+- `IRBuilder::build_int_cmp_erased` — `icmp` on erased operands, yielding `i1`
+  or `<N x i1>` to match. `build_int_cmp_with_flags_dyn` cannot serve: its
+  `_dyn` means dynamic *width*, it routes through the scalar-only
+  `IntoIntValue`, and its `IntValueId<bool, B>` result cannot describe a vector.
+- `IntBinOpFlags`, carrying all four integer-binop flags at once, plus
+  `BinaryOpcode::accepted_flags` to drop the ones an opcode cannot express.
+- `build_int_udiv_dyn`, `build_int_sdiv_dyn`, `build_int_urem_dyn`,
+  `build_int_srem_dyn` — the erased family had stopped at the shifts.
+
+#### Changed
+
+- The erased integer-binop path now **validates** operand types instead of
+  leaving it to `verify()`. A caller reaching it has a runtime type in hand and
+  no conversion to bounce off, so `and` on two floats used to build silently.
+- The erased builders now carry flags. They previously built
+  `BinaryOpData::new(..)` with every flag false, so routing the parser through
+  them as-written would have made `add nuw <2 x i32>` print as a plain `add`.
+- `haveNoCommonBitsSet` recognises a vector `not`: `m_AllOnes` matching was
+  scalar-only, so `xor %v, splat (i32 -1)` was not seen as a `not` and the
+  `(A & B) op ~(A | B)` case failed on vectors.
+
+The scalar path is untouched — vectors are routed around the typed handles,
+not through a relaxed version of them.
+
+### ValueTracking: value-level predicates — tranche 1 complete
+
+The predicates that sit directly on known bits. No new types; the tranche was
+listed first in the plan and is now closed.
+
+#### Added
+
+- Sign predicates: `is_known_non_negative`, `is_known_negative`,
+  `is_known_positive`.
+- `masked_value_is_zero`, which takes the mask upstream's `MaskedValueIsZero`
+  takes. The parity ledger previously mapped that name to `is_known_zero`,
+  which takes none; `is_known_zero` and `is_known_one` are now recorded as
+  llvmkit conveniences with no upstream entry point of their own.
+- `is_sign_bit_check`, returning `Option<bool>`. Upstream returns `bool` and
+  writes the polarity through a `bool &TrueIfSigned` out-parameter, so the
+  polarity can be read after a failed classification; here it cannot be.
+- `is_known_to_be_a_power_of_two`, including `isPowerOfTwoRecurrence`.
+- `is_known_non_equal`, with `getInvertibleOperands` and its five helpers.
+- `is_known_negation`, `is_known_inversion`.
+- `is_only_used_in_zero_comparison` and `is_only_used_in_zero_equality_comparison`.
+- `have_no_common_bits_set`, with all six `haveNoCommonBitsSetSpecialCases`
+  patterns, each tried in both operand orders.
+- `is_known_not_undef` and `is_known_not_undef_or_poison`.
+
+#### Changed
+
+- **`is_known_not_poison` is substantially stronger.** It was a placeholder
+  that handled constants and shift operators and answered `false` for
+  everything else; it is now the real `isGuaranteedNotToBeUndefOrPoison` walk —
+  `noundef`/`dereferenceable` parameters, allocated objects, `freeze`, calls
+  with a `noundef` return, and the operand walk under
+  `canCreateUndefOrPoison`. Anything built on it (`implies_poison`, the
+  `freeze` arm of `compute_known_bits`) gets the improvement for free.
+
+Three of the walk's arms are deferred, each only weakening the answer:
+`programUndefinedIfUndefOrPoison` and the dominating branch-condition walk
+that follows it (CFG reachability, tranche 6), the `@llvm.assume` arm
+(tranche 8), and `stripPointerCastsSameRepresentation` before the
+allocated-object test (tranche 5). One arm is a deliberate llvmkit refinement,
+marked at its site: a shift whose amount known bits prove in range is not
+poison, where upstream's `shiftAmountKnownInRange` demands a literal constant.
+
+#### Found
+
+- **The parser cannot read vector integer binops the builder can write.**
+  `and <2 x i32> %a, %b` does not parse: `parse_int_binop` converts both
+  operands to the scalar-only `IntValue` before calling a builder. The
+  type-erased `build_int_*_dyn` family handles vectors fine, so this is a
+  parser routing gap, not a missing capability. It surfaced while porting the
+  third block of upstream's `HaveNoCommonBitsSet` test, which is therefore not
+  ported. Not fixed here — closing it also needs four `_dyn` builders that do
+  not exist yet (`udiv`, `sdiv`, `urem`, `srem`). Recorded in
+  `docs/future-work.md`.
+
 ### ValueTracking: constant ranges and overflow prediction (slice 3e) — tranche 3 complete
 
 The consumers `ConstantRange` was ported for.

@@ -75,9 +75,9 @@ use super::instr_types::{
     CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
     CleanupReturnInstData, CmpInstData, ExtractElementInstData, ExtractValueInstData, FCmpInstData,
     FenceInstData, FreezeInstData, GepInstData, ICmpFlags, IndirectBrInstData,
-    InsertElementInstData, InsertValueInstData, InvokeInstData, LShrFlags, LandingPadInstData,
-    MulFlags, OrFlags, PhiData, ResumeInstData, SDivFlags, SelectInstData, ShlFlags,
-    ShuffleVectorInstData, SubFlags, SwitchInstData, TailCallKind, TruncFlags, UDivFlags,
+    InsertElementInstData, InsertValueInstData, IntBinOpFlags, InvokeInstData, LShrFlags,
+    LandingPadInstData, MulFlags, OrFlags, PhiData, ResumeInstData, SDivFlags, SelectInstData,
+    ShlFlags, ShuffleVectorInstData, SubFlags, SwitchInstData, TailCallKind, TruncFlags, UDivFlags,
     UIToFpFlags, UnreachableInstData, VAArgInstData, WriteBinopFlags, ZExtFlags,
 };
 use super::instr_types::{
@@ -1851,12 +1851,158 @@ where
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
         N: AsRef<str>,
     {
+        self.build_int_binop_dyn_with_flags(opcode, lhs, rhs, IntBinOpFlags::new(), name, kind_ctor)
+    }
+
+    /// As `build_int_binop_dyn`, with the flags the opcode accepts.
+    ///
+    /// Operand types are checked here rather than left to the verifier: a
+    /// caller reaching the erased path has a runtime type in hand and no
+    /// `IntoIntValue` conversion to bounce off, so without this an `and` on
+    /// two floats would build silently and fail only at `verify()`.
+    fn build_int_binop_dyn_with_flags<F2, N>(
+        &self,
+        opcode: BinaryOpcode,
+        lhs: Value<'ctx, B>,
+        rhs: Value<'ctx, B>,
+        flags: IntBinOpFlags,
+        name: N,
+        kind_ctor: F2,
+    ) -> IrResult<Value<'ctx, B>>
+    where
+        F2: FnOnce(BinaryOpData) -> InstructionKindData,
+        N: AsRef<str>,
+    {
+        if lhs.ty().id() != rhs.ty().id() {
+            return Err(IrError::InvalidOperation {
+                message: "integer binop operands must have the same type",
+            });
+        }
+        if !self.is_int_or_int_vector(lhs.ty()) {
+            return Err(IrError::InvalidOperation {
+                message: "integer binop operand is neither an integer nor an integer vector",
+            });
+        }
         if let Some(folded) = self.folder.fold_bin_op_dyn(opcode, lhs, rhs)? {
             return self.checked_folded_value(folded, lhs.ty);
         }
-        let payload = BinaryOpData::new(lhs.id, rhs.id);
+        let mut payload = BinaryOpData::new(lhs.id, rhs.id);
+        opcode.accepted_flags(flags).apply(&mut payload);
         let inst = self.append_instruction(lhs.ty().id(), kind_ctor(payload), name);
         Ok(inst.to_erased())
+    }
+
+    /// `true` for `iN` and for `<N x iM>` / `<vscale x N x iM>`.
+    ///
+    /// Mirrors the verifier's `is_int_or_int_vector`, which is the rule the
+    /// built instruction is checked against.
+    fn is_int_or_int_vector(&self, ty: Type<'ctx, B>) -> bool {
+        let scalar = match ty.data() {
+            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
+                self.module.context().type_data(*elem)
+            }
+            other => other,
+        };
+        matches!(scalar, TypeData::Integer { .. })
+    }
+
+    /// `<N x i1>` when `operand_ty` is a vector, `i1` when it is a scalar —
+    /// the result type of a comparison over `operand_ty`.
+    fn cmp_result_type(&self, operand_ty: Type<'ctx, B>) -> Type<'ctx, B> {
+        let i1 = ModuleView::<B>::new(self.module).bool_type().as_type();
+        let id = match operand_ty.data() {
+            TypeData::FixedVector { n, .. } => self.module.context().fixed_vector_type(i1.id(), *n),
+            TypeData::ScalableVector { min, .. } => {
+                self.module.context().scalable_vector_type(i1.id(), *min)
+            }
+            _ => return i1,
+        };
+        Type::new(id, ModuleRef::<B>::new(self.module))
+    }
+
+    /// `opcode lhs, rhs` on erased operands (scalar `iN` or integer vector),
+    /// with the flags `opcode` accepts.
+    ///
+    /// The entry point for callers holding a *runtime* opcode — the `.ll`
+    /// parser above all. Callers with a statically-known opcode should prefer
+    /// the typed `build_int_*` family, which pins the operand width in the
+    /// type system, or the per-opcode `build_int_*_dyn` wrappers when the
+    /// operands are vectors.
+    ///
+    /// Returns the erased [`ValueId`] rather than a typed id because the
+    /// result may be a vector, which no `IntWidth` marker describes.
+    pub fn build_int_binop_erased<Lhs, Rhs, Name>(
+        &self,
+        opcode: BinaryOpcode,
+        lhs: Lhs,
+        rhs: Rhs,
+        flags: IntBinOpFlags,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
+    {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
+        let kind_ctor = int_binop_kind_ctor(opcode).ok_or(IrError::InvalidOperation {
+            message: "opcode is not an integer binary operator",
+        })?;
+        self.build_int_binop_dyn_with_flags(opcode, lhs, rhs, flags, name, kind_ctor)
+            .map(|v| v.id())
+    }
+
+    /// `icmp pred lhs, rhs` on erased operands (scalar `iN` / `ptr`, or a
+    /// vector of either), yielding `i1` or `<N x i1>` to match.
+    ///
+    /// The erased counterpart of [`Self::build_int_cmp_with_flags_dyn`], whose
+    /// `_dyn` means *dynamic width* (`IntDyn`) rather than *erased value*: it
+    /// routes operands through the scalar-only `IntoIntValue` and mints an
+    /// `IntValueId<bool, B>`, neither of which a vector compare can use.
+    pub fn build_int_cmp_erased<Lhs, Rhs, Name>(
+        &self,
+        pred: IntPredicate,
+        lhs: Lhs,
+        rhs: Rhs,
+        flags: ICmpFlags,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
+    {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
+        if lhs.ty().id() != rhs.ty().id() {
+            return Err(IrError::InvalidOperation {
+                message: "icmp operands must have the same type",
+            });
+        }
+        if !self.is_int_or_int_vector(lhs.ty()) && !self.is_pointer_or_pointer_vector(lhs.ty()) {
+            return Err(IrError::InvalidOperation {
+                message: "icmp operand is neither an integer nor a pointer",
+            });
+        }
+        let result_ty = self.cmp_result_type(lhs.ty());
+        let mut payload = CmpInstData::new(pred, lhs.id, rhs.id);
+        payload.samesign = flags.samesign;
+        let inst =
+            self.append_instruction(result_ty.id(), InstructionKindData::ICmp(payload), name);
+        Ok(inst.to_erased().id())
+    }
+
+    /// `true` for `ptr` and for a vector of `ptr`. Mirrors the verifier's
+    /// `is_pointer_or_pointer_vector`.
+    fn is_pointer_or_pointer_vector(&self, ty: Type<'ctx, B>) -> bool {
+        let scalar = match ty.data() {
+            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
+                self.module.context().type_data(*elem)
+            }
+            other => other,
+        };
+        matches!(scalar, TypeData::Pointer { .. })
     }
 
     /// `add lhs, rhs` on erased operands (scalar or integer vector).
@@ -2038,6 +2184,106 @@ where
             rhs,
             name,
             InstructionKindData::AShr,
+        )
+        .map(|v| v.id())
+    }
+
+    /// `udiv lhs, rhs` on erased operands (scalar or integer vector).
+    /// Uses the shared erased integer-binop validation path.
+    pub fn build_int_udiv_dyn<Lhs, Rhs, Name>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
+    {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
+        self.build_int_binop_dyn(
+            BinaryOpcode::UDiv,
+            lhs,
+            rhs,
+            name,
+            InstructionKindData::UDiv,
+        )
+        .map(|v| v.id())
+    }
+
+    /// `sdiv lhs, rhs` on erased operands (scalar or integer vector).
+    /// Uses the shared erased integer-binop validation path.
+    pub fn build_int_sdiv_dyn<Lhs, Rhs, Name>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
+    {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
+        self.build_int_binop_dyn(
+            BinaryOpcode::SDiv,
+            lhs,
+            rhs,
+            name,
+            InstructionKindData::SDiv,
+        )
+        .map(|v| v.id())
+    }
+
+    /// `urem lhs, rhs` on erased operands (scalar or integer vector).
+    /// Uses the shared erased integer-binop validation path.
+    pub fn build_int_urem_dyn<Lhs, Rhs, Name>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
+    {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
+        self.build_int_binop_dyn(
+            BinaryOpcode::URem,
+            lhs,
+            rhs,
+            name,
+            InstructionKindData::URem,
+        )
+        .map(|v| v.id())
+    }
+
+    /// `srem lhs, rhs` on erased operands (scalar or integer vector).
+    /// Uses the shared erased integer-binop validation path.
+    pub fn build_int_srem_dyn<Lhs, Rhs, Name>(
+        &self,
+        lhs: Lhs,
+        rhs: Rhs,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
+    {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
+        self.build_int_binop_dyn(
+            BinaryOpcode::SRem,
+            lhs,
+            rhs,
+            name,
+            InstructionKindData::SRem,
         )
         .map(|v| v.id())
     }
@@ -9395,6 +9641,35 @@ where
         let inst = self.append_instruction(true_ty, InstructionKindData::Select(payload), name);
         Ok(A::from_select_value(inst.to_erased(), &SelectNarrow::new()))
     }
+}
+
+/// The `InstructionKindData` constructor for an integer binary opcode, or
+/// `None` when the opcode is a floating-point one.
+///
+/// `BinaryOpcode` spans both domains — it is the union LLVM spells as
+/// `BinaryOperator`'s opcode range — so a dispatcher over integer binops has
+/// to reject the FP half rather than assume it away.
+fn int_binop_kind_ctor(opcode: BinaryOpcode) -> Option<fn(BinaryOpData) -> InstructionKindData> {
+    Some(match opcode {
+        BinaryOpcode::Add => InstructionKindData::Add,
+        BinaryOpcode::Sub => InstructionKindData::Sub,
+        BinaryOpcode::Mul => InstructionKindData::Mul,
+        BinaryOpcode::UDiv => InstructionKindData::UDiv,
+        BinaryOpcode::SDiv => InstructionKindData::SDiv,
+        BinaryOpcode::URem => InstructionKindData::URem,
+        BinaryOpcode::SRem => InstructionKindData::SRem,
+        BinaryOpcode::Shl => InstructionKindData::Shl,
+        BinaryOpcode::LShr => InstructionKindData::LShr,
+        BinaryOpcode::AShr => InstructionKindData::AShr,
+        BinaryOpcode::And => InstructionKindData::And,
+        BinaryOpcode::Or => InstructionKindData::Or,
+        BinaryOpcode::Xor => InstructionKindData::Xor,
+        BinaryOpcode::FAdd
+        | BinaryOpcode::FSub
+        | BinaryOpcode::FMul
+        | BinaryOpcode::FDiv
+        | BinaryOpcode::FRem => return None,
+    })
 }
 
 // --------------------------------------------------------------------------

@@ -6358,6 +6358,22 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let lhs_v = self.parse_value(state, ty)?;
         self.expect_punct(PunctKind::Comma, "',' between binop operands")?;
         let rhs_v = self.parse_value_no_type(state, ty)?;
+
+        // Vector operands take the erased builder. The typed `build_int_*`
+        // family routes both operands through `IntoIntValue<W>`, whose
+        // `IntWidth` marker describes a *scalar* width, so `<N x iM>` cannot
+        // convert. Upstream has one path for both (`LLParser::parseArithmetic`
+        // hands the operands straight to `BinaryOperator::Create`); the split
+        // here is llvmkit's typed-handle layer, not a grammar difference.
+        if is_vector_type(ty) {
+            let name = result_name.as_str();
+            let flags = int_binop_flags(nuw, nsw, exact, disjoint_or);
+            let v = b
+                .build_int_binop_erased(op.opcode(), lhs_v, rhs_v, flags, name)
+                .map_err(|e| self.builder_err(op.mnemonic(), e))?;
+            return Ok(b.view(v));
+        }
+
         let lhs: IntValue<'ctx, IntDyn, B> = lhs_v
             .try_into()
             .map_err(|_| self.expected("integer-typed lhs"))?;
@@ -6493,6 +6509,22 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let lhs_v = self.parse_value(state, ty)?;
         self.expect_punct(PunctKind::Comma, "',' between icmp operands")?;
         let rhs_v = self.parse_value_no_type(state, ty)?;
+
+        // Vector operands take the erased builder, as in `parse_int_binop`.
+        // The result is `<N x i1>`, which no `IntValueId<bool, B>` describes.
+        if is_vector_type(ty) {
+            let name = result_name.as_str();
+            let flags = if samesign {
+                llvmkit_ir::instr_types::ICmpFlags::new().samesign()
+            } else {
+                llvmkit_ir::instr_types::ICmpFlags::new()
+            };
+            let r = b
+                .build_int_cmp_erased(pred, lhs_v, rhs_v, flags, name)
+                .map_err(|e| self.builder_err("icmp", e))?;
+            return Ok(b.view(r));
+        }
+
         let lhs: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = lhs_v
             .try_into()
             .map_err(|_| self.expected("integer-typed lhs"))?;
@@ -9520,6 +9552,77 @@ enum IntBinOp {
     And,
     Or,
     Xor,
+}
+
+impl IntBinOp {
+    /// The IR opcode this keyword names.
+    fn opcode(&self) -> llvmkit_ir::BinaryOpcode {
+        use llvmkit_ir::BinaryOpcode as Op;
+        match self {
+            Self::Add => Op::Add,
+            Self::Sub => Op::Sub,
+            Self::Mul => Op::Mul,
+            Self::UDiv => Op::UDiv,
+            Self::SDiv => Op::SDiv,
+            Self::URem => Op::URem,
+            Self::SRem => Op::SRem,
+            Self::Shl => Op::Shl,
+            Self::LShr => Op::LShr,
+            Self::AShr => Op::AShr,
+            Self::And => Op::And,
+            Self::Or => Op::Or,
+            Self::Xor => Op::Xor,
+        }
+    }
+
+    /// The `.ll` mnemonic, for builder-error reporting.
+    fn mnemonic(&self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Sub => "sub",
+            Self::Mul => "mul",
+            Self::UDiv => "udiv",
+            Self::SDiv => "sdiv",
+            Self::URem => "urem",
+            Self::SRem => "srem",
+            Self::Shl => "shl",
+            Self::LShr => "lshr",
+            Self::AShr => "ashr",
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Xor => "xor",
+        }
+    }
+}
+
+/// `true` for `<N x T>` and `<vscale x N x T>`.
+///
+/// The parser splits on this because llvmkit's typed integer handles carry a
+/// scalar width; upstream's `LLParser` has one path for both shapes.
+fn is_vector_type<B: llvmkit_ir::ModuleBrand>(ty: llvmkit_ir::Type<'_, B>) -> bool {
+    matches!(
+        ty.kind(),
+        llvmkit_ir::TypeKind::FixedVector | llvmkit_ir::TypeKind::ScalableVector
+    )
+}
+
+/// Collect the parsed flag keywords into the combined form the erased builder
+/// takes. The opcode decides which of them survive.
+fn int_binop_flags(nuw: bool, nsw: bool, exact: bool, disjoint: bool) -> llvmkit_ir::IntBinOpFlags {
+    let mut flags = llvmkit_ir::IntBinOpFlags::new();
+    if nuw {
+        flags = flags.nuw();
+    }
+    if nsw {
+        flags = flags.nsw();
+    }
+    if exact {
+        flags = flags.exact();
+    }
+    if disjoint {
+        flags = flags.disjoint();
+    }
+    flags
 }
 
 enum IntCast {

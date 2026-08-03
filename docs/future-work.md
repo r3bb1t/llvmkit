@@ -93,11 +93,43 @@ the whole ApFloat/ApInt sweep, which was its own multi-cycle program.
 the most callers, so it should go first regardless of how the rest is
 sequenced:
 
-1. **No new types** — `ComputeNumSignBits`, `ComputeMaxSignificantBits`,
-   `isKnownNegative` / `isKnownPositive` / `isKnownNonNegative`,
-   `isKnownToBeAPowerOfTwo`, `isKnownNonEqual`, `isKnownInversion`,
-   `isKnownNegation`, the Value-level `haveNoCommonBitsSet`. Pure KnownBits
-   consumers plus recursion.
+1. ~~**No new types**~~ ✅ **done 2026-08-03** — `ComputeNumSignBits` and
+   `ComputeMaxSignificantBits` landed with the sign-bits arm (2026-08-02); the
+   rest followed: `isKnownNegative` / `isKnownPositive` / `isKnownNonNegative`,
+   `MaskedValueIsZero` (with a real mask — the ledger previously mapped it to
+   `is_known_zero`, which takes none), `isSignBitCheck` (an `Option<bool>`
+   rather than upstream's `bool` return plus `bool &TrueIfSigned`
+   out-parameter), `isKnownToBeAPowerOfTwo` including `isPowerOfTwoRecurrence`,
+   `isKnownNonEqual` with `getInvertibleOperands` and its five helpers,
+   `isKnownInversion`, `isKnownNegation`, `isOnlyUsedInZeroComparison` and its
+   equality sibling, and the Value-level `haveNoCommonBitsSet` with all six
+   `haveNoCommonBitsSetSpecialCases` patterns.
+
+   The same slice replaced `isGuaranteedNotToBePoison`'s placeholder — which
+   handled constants and shifts and answered `false` for everything else — with
+   the real `isGuaranteedNotToBeUndefOrPoison` walk, and added
+   `isGuaranteedNotToBeUndef` / `isGuaranteedNotToBeUndefOrPoison` as public
+   entry points. Three of its arms are deferred, each only weakening the
+   answer: `programUndefinedIfUndefOrPoison` and the dominating branch-condition
+   walk that follows it (both CFG reachability, tranche 6), the `@llvm.assume`
+   arm (tranche 8), and `stripPointerCastsSameRepresentation` before the
+   allocated-object test (tranche 5). One arm is a deliberate llvmkit
+   refinement, marked at its site: a shift whose amount known bits prove in
+   range is not poison, where upstream's `shiftAmountKnownInRange` demands a
+   literal constant.
+
+   Two upstream fixtures do **not** port, and each gap is recorded rather than
+   papered over:
+
+   - The `<2 x i32>` third of `TEST_F(ValueTrackingTest, HaveNoCommonBitsSet)`.
+     llvmkit cannot express it — see the vector-binop entry below.
+   - `known-power-of-two.ll`'s positive cases (`@shl_is_pow2`,
+     `@trunc_is_pow2_or_zero`, and their siblings). Their `shl` carries no
+     `nuw`/`nsw` in the source; upstream reaches `true` only because
+     `instcombine` infers the flags first, which the printed `CHECK` line shows
+     (`shl nuw nsw`). That is a missing transform, not a missing analysis.
+     `crates/llvmkit-asmparser/tests/value_tracking_predicates.rs` asserts them
+     **false** so closing the gap trips the test rather than passing silently.
 2. **Poison / UB family** — `canCreatePoison`, `canCreateUndefOrPoison`,
    `impliesPoison`, `propagatesPoison`, `programUndefinedIfPoison`,
    `mustTriggerUB`, `isGuaranteedNotToBeUndef`. llvmkit already has
@@ -144,6 +176,46 @@ The ledger in `crates/llvmkit-ir/tests/value_tracking_parity.rs` tracks
 progress: each tranche moves rows from `VALUE_TRACKING_GAPS` into
 `MODELED_VALUE_TRACKING`, and the modeled column is held to the crate by
 calling every entry.
+
+## ~~The parser cannot read vector integer binops~~ — closed (2026-08-03)
+
+`and <2 x i32> %a, %b` did not parse, even though llvmkit could *build* it:
+`ll_parser.rs::parse_int_binop` converted both operands to
+`IntValue<'ctx, IntDyn, B>` first, and that marker describes a **scalar**
+width. `icmp` took the same route.
+
+Closed by routing vector operands to the erased builder family, which already
+emitted element-wise vector IR. The scalar path is untouched, so the
+one-literal-one-width story still holds where it can.
+
+What it took, beyond the routing itself:
+
+- Four missing erased builders — `build_int_udiv_dyn`, `build_int_sdiv_dyn`,
+  `build_int_urem_dyn`, `build_int_srem_dyn`. The family had stopped at the
+  shifts.
+- **Flag plumbing.** The erased builders built `BinaryOpData::new(..)` and left
+  every flag false, so routing the parser through them as-written would have
+  made `add nuw <2 x i32>` parse and print as a plain `add`. `IntBinOpFlags`
+  carries all four flags for a caller holding a runtime opcode, and
+  `BinaryOpcode::accepted_flags` drops the ones the opcode cannot express.
+- **A vector-capable `icmp`.** `build_int_cmp_with_flags_dyn` is *not* part of
+  the erased family — its `_dyn` means dynamic *width*, it routes through the
+  scalar-only `IntoIntValue`, and it mints an `IntValueId<bool, B>` that cannot
+  describe `<N x i1>`. `build_int_cmp_erased` computes the lane-matched result
+  type and returns an erased id.
+- **Operand-type validation** in the erased path, which previously left it to
+  the verifier. A caller reaching it has a runtime type in hand and no
+  conversion to bounce off, so an `and` on two floats would have built silently.
+
+One follow-on fidelity fix in `value_tracking.rs`: `m_AllOnes` matching was
+scalar-only, so `xor %v, splat (i32 -1)` was not recognised as a `not` and the
+`(A & B) op ~(A | B)` case of `haveNoCommonBitsSet` failed on vectors.
+
+Note the `_dyn` suffix now carries two meanings in `ir_builder.rs` — *erased
+value* (`build_int_add_dyn`) and *dynamic width* (`build_int_cmp_with_flags_dyn`).
+The repo's naming law reserves `_dyn` for the erased half of a typed/erased
+pair, so the compare family is the misnamed one. Renaming it is a breaking
+change and was left out of this fix.
 
 ## ~~KnownBits — operations not modeled~~ — closed (2026-08-01)
 

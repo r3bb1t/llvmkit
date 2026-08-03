@@ -170,17 +170,18 @@ const KNOWN_BITS_PRIVATE_UPSTREAM: &[(&str, &str)] = &[
 
 /// ValueTracking entry points llvmkit models, as `(upstream, llvmkit)`.
 ///
-/// A deliberately small surface: llvmkit ports the known-bits core and the
-/// predicates built directly on it, and nothing else from the ~80 entry points
-/// `ValueTracking.h` declares.
+/// llvmkit ports the known-bits core, the value-level predicates built directly
+/// on it, the poison/undef reasoning, and the constant-range and overflow
+/// families. The families still absent are listed in [`VALUE_TRACKING_GAPS`].
 ///
-/// `is_known_one` is exercised alongside these but is absent from the table on
-/// purpose — it is an llvmkit-specific dual of `is_known_zero` with no upstream
-/// entry point of its own.
+/// `is_known_one` and `is_known_zero` are exercised alongside these but are
+/// absent from the table on purpose — they are llvmkit-specific conveniences
+/// with no upstream entry point of their own. Upstream's `MaskedValueIsZero`,
+/// which does take a mask, maps to `masked_value_is_zero`.
 const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("ComputeMaxSignificantBits", "compute_max_significant_bits"),
     ("ComputeNumSignBits", "compute_num_sign_bits"),
-    ("MaskedValueIsZero", "is_known_zero"),
+    ("MaskedValueIsZero", "masked_value_is_zero"),
     ("canCreatePoison", "can_create_poison"),
     ("canCreateUndefOrPoison", "can_create_undef_or_poison"),
     ("computeConstantRange", "compute_constant_range"),
@@ -214,9 +215,31 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "computeOverflowForUnsignedSub",
         "compute_overflow_for_unsigned_sub",
     ),
+    ("haveNoCommonBitsSet", "have_no_common_bits_set"),
     ("impliesPoison", "implies_poison"),
     ("isGuaranteedNotToBePoison", "is_known_not_poison"),
+    ("isGuaranteedNotToBeUndef", "is_known_not_undef"),
+    (
+        "isGuaranteedNotToBeUndefOrPoison",
+        "is_known_not_undef_or_poison",
+    ),
+    ("isKnownInversion", "is_known_inversion"),
+    ("isKnownNegation", "is_known_negation"),
+    ("isKnownNegative", "is_known_negative"),
+    ("isKnownNonEqual", "is_known_non_equal"),
+    ("isKnownNonNegative", "is_known_non_negative"),
     ("isKnownNonZero", "is_known_non_zero"),
+    ("isKnownPositive", "is_known_positive"),
+    ("isKnownToBeAPowerOfTwo", "is_known_to_be_a_power_of_two"),
+    (
+        "isOnlyUsedInZeroComparison",
+        "is_only_used_in_zero_comparison",
+    ),
+    (
+        "isOnlyUsedInZeroEqualityComparison",
+        "is_only_used_in_zero_equality_comparison",
+    ),
+    ("isSignBitCheck", "is_sign_bit_check"),
     ("propagatesPoison", "propagates_poison"),
 ];
 
@@ -252,11 +275,13 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "UB-reachability reasoning",
         "programUndefinedIfPoison, programUndefinedIfUndefOrPoison, mustTriggerUB, \
-         mustExecuteUBIfPoisonOnPathTo, isGuaranteedNotToBeUndef — the value-level \
-         poison predicates ARE modeled (see canCreatePoison / impliesPoison / \
-         propagatesPoison above); what is missing is the CFG walk that decides \
-         whether poison actually reaches undefined behaviour, which needs \
-         isGuaranteedToTransferExecutionToSuccessor",
+         mustExecuteUBIfPoisonOnPathTo — the value-level poison and undef \
+         predicates ARE modeled (see canCreatePoison / impliesPoison / \
+         propagatesPoison / isGuaranteedNotToBeUndef above); what is missing is \
+         the CFG walk that decides whether poison actually reaches undefined \
+         behaviour, which needs isGuaranteedToTransferExecutionToSuccessor. \
+         isGuaranteedNotToBeUndefOrPoison consults it as one of its arms, so \
+         that entry point answers false in cases upstream proves true",
     ),
     (
         "select-pattern matching",
@@ -428,8 +453,13 @@ fn exercises_every_modeled_value_tracking_entry_point() {
         compute_max_significant_bits, compute_num_sign_bits, compute_overflow_for_signed_add,
         compute_overflow_for_signed_mul, compute_overflow_for_signed_sub,
         compute_overflow_for_unsigned_add, compute_overflow_for_unsigned_mul,
-        compute_overflow_for_unsigned_sub, implies_poison, is_known_non_zero, is_known_not_poison,
-        is_known_one, is_known_zero, propagates_poison,
+        compute_overflow_for_unsigned_sub, have_no_common_bits_set, implies_poison,
+        is_known_inversion, is_known_negation, is_known_negative, is_known_non_equal,
+        is_known_non_negative, is_known_non_zero, is_known_not_poison, is_known_not_undef,
+        is_known_not_undef_or_poison, is_known_one, is_known_positive,
+        is_known_to_be_a_power_of_two, is_known_zero, is_only_used_in_zero_comparison,
+        is_only_used_in_zero_equality_comparison, is_sign_bit_check, masked_value_is_zero,
+        propagates_poison,
     };
 
     let _compute_known_bits = compute_known_bits::<DynBrand>;
@@ -450,8 +480,24 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _compute_overflow_for_unsigned_mul = compute_overflow_for_unsigned_mul::<DynBrand>;
     let _compute_overflow_for_unsigned_sub = compute_overflow_for_unsigned_sub::<DynBrand>;
     let _is_known_non_zero = is_known_non_zero::<DynBrand>;
+    let _masked_value_is_zero = masked_value_is_zero::<DynBrand>;
+    let _have_no_common_bits_set = have_no_common_bits_set::<DynBrand>;
+    let _is_known_not_undef = is_known_not_undef::<DynBrand>;
+    let _is_known_not_undef_or_poison = is_known_not_undef_or_poison::<DynBrand>;
+    let _is_known_inversion = is_known_inversion::<DynBrand>;
+    let _is_known_negation = is_known_negation::<DynBrand>;
+    let _is_known_negative = is_known_negative::<DynBrand>;
+    let _is_known_non_equal = is_known_non_equal::<DynBrand>;
+    let _is_known_non_negative = is_known_non_negative::<DynBrand>;
+    let _is_known_positive = is_known_positive::<DynBrand>;
+    let _is_known_to_be_a_power_of_two = is_known_to_be_a_power_of_two::<DynBrand>;
+    let _is_only_used_in_zero_comparison = is_only_used_in_zero_comparison::<DynBrand>;
+    let _is_only_used_in_zero_equality_comparison =
+        is_only_used_in_zero_equality_comparison::<DynBrand>;
+    let _is_sign_bit_check = is_sign_bit_check;
+    // Not in the table — llvmkit-specific conveniences with no upstream entry
+    // point of their own.
     let _is_known_zero = is_known_zero::<DynBrand>;
-    // Not in the table — an llvmkit-specific dual with no upstream entry point.
     let _is_known_one = is_known_one::<DynBrand>;
 }
 
