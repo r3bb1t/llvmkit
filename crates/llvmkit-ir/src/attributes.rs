@@ -184,6 +184,35 @@ impl MemoryEffects {
         }
         ModRefInfo::from_bits(bits)
     }
+
+    /// Whether no memory of any class is read or written.
+    ///
+    /// Ports `MemoryEffectsBase::doesNotAccessMemory` (`ModRef.h`).
+    pub fn does_not_access_memory(self) -> bool {
+        self.aggregate_mod_ref() == ModRefInfo::NoModRef
+    }
+
+    /// Whether memory may be read but is never written.
+    ///
+    /// Ports `MemoryEffectsBase::onlyReadsMemory`. Note the upstream sense:
+    /// "reads at most", so an operation that touches nothing answers true.
+    pub fn only_reads_memory(self) -> bool {
+        !matches!(
+            self.aggregate_mod_ref(),
+            ModRefInfo::Mod | ModRefInfo::ModRef
+        )
+    }
+
+    /// Whether memory may be written but is never read.
+    ///
+    /// Ports `MemoryEffectsBase::onlyWritesMemory`, with the same "at most"
+    /// sense as [`Self::only_reads_memory`].
+    pub fn only_writes_memory(self) -> bool {
+        !matches!(
+            self.aggregate_mod_ref(),
+            ModRefInfo::Ref | ModRefInfo::ModRef
+        )
+    }
 }
 
 impl fmt::Display for MemoryEffects {

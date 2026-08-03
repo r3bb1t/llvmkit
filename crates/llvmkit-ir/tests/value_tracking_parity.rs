@@ -307,11 +307,21 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("getSelectPattern", "get_select_pattern"),
     ("haveNoCommonBitsSet", "have_no_common_bits_set"),
     ("impliesPoison", "implies_poison"),
+    ("intrinsicPropagatesPoison", "intrinsic_propagates_poison"),
+    ("isAssumeLikeIntrinsic", "is_assume_like_intrinsic"),
     ("isGuaranteedNotToBePoison", "is_known_not_poison"),
     ("isGuaranteedNotToBeUndef", "is_known_not_undef"),
     (
         "isGuaranteedNotToBeUndefOrPoison",
         "is_known_not_undef_or_poison",
+    ),
+    (
+        "isGuaranteedToExecuteForEveryIteration",
+        "is_guaranteed_to_execute_for_every_iteration",
+    ),
+    (
+        "isGuaranteedToTransferExecutionToSuccessor",
+        "is_guaranteed_to_transfer_execution_to_successor / block_transfers_execution_to_successor / instructions_transfer_execution_to_successor",
     ),
     ("isKnownInversion", "is_known_inversion"),
     ("isKnownNegation", "is_known_negation"),
@@ -321,6 +331,7 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("isKnownNonZero", "is_known_non_zero"),
     ("isKnownPositive", "is_known_positive"),
     ("isKnownToBeAPowerOfTwo", "is_known_to_be_a_power_of_two"),
+    ("isNotCrossLaneOperation", "is_not_cross_lane_operation"),
     (
         "isOnlyUsedInZeroComparison",
         "is_only_used_in_zero_comparison",
@@ -329,7 +340,33 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "isOnlyUsedInZeroEqualityComparison",
         "is_only_used_in_zero_equality_comparison",
     ),
+    (
+        "isSafeToSpeculativelyExecute",
+        "is_safe_to_speculatively_execute",
+    ),
+    (
+        "isSafeToSpeculativelyExecuteWithOpcode",
+        "is_safe_to_speculatively_execute_with_opcode",
+    ),
+    (
+        "isSafeToSpeculativelyExecuteWithVariableReplaced",
+        "is_safe_to_speculatively_execute_with_variable_replaced",
+    ),
     ("isSignBitCheck", "is_sign_bit_check"),
+    (
+        "mayHaveNonDefUseDependency",
+        "may_have_non_def_use_dependency",
+    ),
+    (
+        "mustExecuteUBIfPoisonOnPathTo",
+        "must_execute_ub_if_poison_on_path_to",
+    ),
+    ("mustTriggerUB", "must_trigger_ub"),
+    ("programUndefinedIfPoison", "program_undefined_if_poison"),
+    (
+        "programUndefinedIfUndefOrPoison",
+        "program_undefined_if_undef_or_poison",
+    ),
     ("propagatesPoison", "propagates_poison"),
 ];
 
@@ -474,24 +511,8 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
         "blocked on the `vscale_range` attribute itself, which attribute_td_drift.rs lists as NOT_YET_MODELED: upstream reads a packed (min, max) pair and llvmkit's payload is a single u64, so porting it would mean inventing the second half",
     ),
     (
-        "intrinsicPropagatesPoison",
-        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
-    ),
-    (
-        "isAssumeLikeIntrinsic",
-        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
-    ),
-    (
         "isBytewiseValue",
         "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
-        "isGuaranteedToExecuteForEveryIteration",
-        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
-    ),
-    (
-        "isGuaranteedToTransferExecutionToSuccessor",
-        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
     ),
     (
         "isImpliedByDomCondition",
@@ -518,24 +539,8 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
         "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
     ),
     (
-        "isNotCrossLaneOperation",
-        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
-    ),
-    (
         "isOverflowIntrinsicNoWrap",
         "residue: reads the with-overflow intrinsics llvmkit models as plain calls",
-    ),
-    (
-        "isSafeToSpeculativelyExecute",
-        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
-    ),
-    (
-        "isSafeToSpeculativelyExecuteWithOpcode",
-        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
-    ),
-    (
-        "isSafeToSpeculativelyExecuteWithVariableReplaced",
-        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
     ),
     (
         "isValidAssumeForContext",
@@ -558,32 +563,12 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
         "implemented as the crate-private match_simple_recurrence, which the phi arm of computeKnownBits uses; public upstream, not public here",
     ),
     (
-        "mayHaveNonDefUseDependency",
-        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
-    ),
-    (
-        "mustExecuteUBIfPoisonOnPathTo",
-        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
-    ),
-    (
-        "mustTriggerUB",
-        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
-    ),
-    (
         "onlyUsedByLifetimeMarkers",
         "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
     ),
     (
         "onlyUsedByLifetimeMarkersOrDroppableInsts",
         "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
-        "programUndefinedIfPoison",
-        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
-    ),
-    (
-        "programUndefinedIfUndefOrPoison",
-        "speculation safety and UB reachability (tranche 6): needs the CFG walk behind isGuaranteedToTransferExecutionToSuccessor",
     ),
     (
         "stripNullTest",
@@ -800,7 +785,17 @@ fn exercises_every_modeled_known_bits_operation() {
 #[test]
 fn exercises_every_modeled_value_tracking_entry_point() {
     use llvmkit_ir::{
-        DynBrand, can_create_poison, can_create_undef_or_poison, compute_constant_range,
+        DynBrand, SpeculationOptions, block_transfers_execution_to_successor, can_create_poison,
+        instructions_transfer_execution_to_successor, intrinsic_propagates_poison,
+        is_assume_like_intrinsic, is_guaranteed_to_execute_for_every_iteration,
+        is_guaranteed_to_transfer_execution_to_successor, is_not_cross_lane_operation,
+        is_safe_to_speculatively_execute, is_safe_to_speculatively_execute_with_opcode,
+        is_safe_to_speculatively_execute_with_variable_replaced, may_have_non_def_use_dependency,
+        must_execute_ub_if_poison_on_path_to, must_trigger_ub, program_undefined_if_poison,
+        program_undefined_if_undef_or_poison,
+    };
+    use llvmkit_ir::{
+        can_create_undef_or_poison, compute_constant_range,
         compute_constant_range_including_known_bits, compute_known_bits,
         compute_max_significant_bits, compute_num_sign_bits, compute_overflow_for_signed_add,
         compute_overflow_for_signed_mul, compute_overflow_for_signed_sub,
@@ -850,6 +845,41 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     // A type rather than a function: `OverflowResult` is what the six
     // `compute_overflow_for_*` entry points return.
     let _overflow_result = llvmkit_ir::OverflowResult::MayOverflow;
+
+    // Speculation safety and UB reachability (tranche 6). Upstream declares
+    // `isGuaranteedToTransferExecutionToSuccessor` four times over — for an
+    // instruction, a block, and two spellings of an instruction range — which
+    // is one ledger row and three functions here.
+    let _is_safe_to_speculatively_execute = is_safe_to_speculatively_execute::<DynBrand>;
+    let _is_safe_to_speculatively_execute_with_opcode =
+        is_safe_to_speculatively_execute_with_opcode::<DynBrand>;
+    let _is_safe_to_speculatively_execute_with_variable_replaced =
+        is_safe_to_speculatively_execute_with_variable_replaced::<DynBrand>;
+    let _is_guaranteed_to_transfer_execution_to_successor =
+        is_guaranteed_to_transfer_execution_to_successor::<DynBrand>;
+    let _block_transfers_execution_to_successor =
+        block_transfers_execution_to_successor::<DynBrand>;
+    let _instructions_transfer_execution_to_successor =
+        instructions_transfer_execution_to_successor::<
+            DynBrand,
+            Vec<llvmkit_ir::InstructionView<'static, DynBrand>>,
+        >;
+    let _is_guaranteed_to_execute_for_every_iteration =
+        is_guaranteed_to_execute_for_every_iteration::<DynBrand>;
+    let _may_have_non_def_use_dependency = may_have_non_def_use_dependency::<DynBrand>;
+    let _must_trigger_ub = must_trigger_ub::<DynBrand>;
+    let _must_execute_ub_if_poison_on_path_to = must_execute_ub_if_poison_on_path_to::<DynBrand>;
+    let _program_undefined_if_poison = program_undefined_if_poison::<DynBrand>;
+    let _program_undefined_if_undef_or_poison = program_undefined_if_undef_or_poison::<DynBrand>;
+    let _is_assume_like_intrinsic = is_assume_like_intrinsic::<DynBrand>;
+    let _is_not_cross_lane_operation = is_not_cross_lane_operation::<DynBrand>;
+    let _intrinsic_propagates_poison = intrinsic_propagates_poison;
+    // The options record `isSafeToSpeculativelyExecute`'s two defaulted `bool`
+    // parameters; `Default` is upstream's no-argument call.
+    let _speculation_options = SpeculationOptions::new()
+        .with_variable_info(false)
+        .ignoring_ub_implying_attrs(false);
+    let _default_transfer_scan_limit = llvmkit_ir::DEFAULT_TRANSFER_SCAN_LIMIT;
     // Not in the table — llvmkit-specific conveniences with no upstream entry
     // point of their own.
     let _is_known_zero = is_known_zero::<DynBrand>;

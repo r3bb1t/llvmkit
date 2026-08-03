@@ -409,6 +409,34 @@ impl DominatorTree {
         start_edge_seen
     }
 
+    /// Every block that *strictly* dominates `block`.
+    ///
+    /// Upstream reaches the same set one step at a time, walking
+    /// `DomTreeNode::getIDom` from `block` to the root — see the dominating-
+    /// condition loop in `isGuaranteedNotToBeUndefOrPoison`
+    /// (`ValueTracking.cpp`). llvmkit stores the dominator *sets* rather than
+    /// an idom tree, so the walk is spelled as the set it enumerates.
+    ///
+    /// Order is therefore unspecified where upstream's is nearest-first. Every
+    /// caller so far is a pure existential over the set — "does any dominating
+    /// terminator branch on this value?" — for which the two agree; a caller
+    /// that wants the *nearest* such block must not use this.
+    ///
+    /// Empty when `block` is unreachable, which is upstream's `if (!DNode)`.
+    pub(crate) fn strictly_dominating_blocks(
+        &self,
+        block: ValueSlot,
+    ) -> impl Iterator<Item = ValueSlot> + '_ {
+        let reachable = self.reachable.contains(&block);
+        self.dominators
+            .get(&block)
+            .filter(|_| reachable)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(move |dominator| *dominator != block)
+    }
+
     fn dominates_block_ids(&self, a_id: ValueSlot, b_id: ValueSlot) -> bool {
         if a_id == b_id {
             return true;

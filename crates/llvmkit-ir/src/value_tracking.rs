@@ -16,7 +16,7 @@ use crate::constant_range::{
 use crate::data_layout::DataLayout;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::instr_types::{
-    AllocaInstData, BinaryOpData, BinaryOpcode, CastOpData, CastOpcode, CmpInstData,
+    AllocaInstData, BinaryOpData, BinaryOpcode, BranchKind, CastOpData, CastOpcode, CmpInstData,
     ExtractElementInstData, GepInstData, InsertElementInstData, POISON_MASK_ELEM, PhiData,
     ShuffleVectorInstData,
 };
@@ -25,6 +25,7 @@ use crate::intrinsics::{IntrinsicSemantic, semantic_for_callee};
 use crate::metadata::MetadataAttachmentKind;
 use crate::module::{DynBrand, ModuleBrand, ModuleCore, ModuleRef};
 use crate::pass_context::FunctionView;
+use crate::speculation::program_undefined_for_value;
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
 use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::{ApInt, IrResult, KnownBits};
@@ -3398,20 +3399,33 @@ fn lane_index_known_in_range<'ctx, B: ModuleBrand + 'ctx>(
 
 /// True when the call/invoke/callbr's return carries `noundef`.
 fn call_returns_noundef(kind: &InstructionKindData) -> bool {
+    call_return_attrs(kind).is_some_and(|stored| {
+        stored
+            .iter()
+            .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::NoUndef)))
+    })
+}
+
+/// True when the call/invoke/callbr's return carries `noundef`,
+/// `dereferenceable` or `dereferenceable_or_null`.
+///
+/// Ports the `dyn_cast<CallBase>` arm of `isGuaranteedNotToBeUndefOrPoison`,
+/// which accepts all three because the two dereferenceability attributes imply
+/// `noundef`. [`call_returns_noundef`] is the narrower `canCreateUndefOrPoison`
+/// test, which reads only the first.
+fn call_return_is_well_defined(kind: &InstructionKindData) -> bool {
+    call_return_attrs(kind).is_some_and(|stored| stored.iter().any(is_well_defined_attribute))
+}
+
+/// The return-position attributes of a call/invoke/callbr.
+fn call_return_attrs(kind: &InstructionKindData) -> Option<&[AttributeStored]> {
     let attrs = match kind {
         InstructionKindData::Call(data) => &data.attrs,
         InstructionKindData::Invoke(data) => &data.attrs,
         InstructionKindData::CallBr(data) => &data.attrs,
-        _ => return false,
+        _ => return None,
     };
-    attrs
-        .return_attrs()
-        .get(AttrIndex::Return)
-        .is_some_and(|stored| {
-            stored
-                .iter()
-                .any(|attr| matches!(attr, AttributeStored::Enum(AttrKind::NoUndef)))
-        })
+    attrs.return_attrs().get(AttrIndex::Return)
 }
 
 /// Ports `llvm::propagatesPoison(const Use &)`: does poison in the
@@ -4295,13 +4309,9 @@ fn value_bit_width<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports the static `isGuaranteedNotToBeUndefOrPoison(V, AC, CtxI, DT, Depth,
 /// Kind)` (`ValueTracking.cpp`).
 ///
-/// Three of upstream's arms are **not** ported. Each can only make the answer
+/// Two of upstream's arms are **not** ported. Each can only make the answer
 /// weaker — a `false` where upstream proves `true` — so no caller is misled:
 ///
-/// - `programUndefinedIfUndefOrPoison`, and with it the dominating
-///   branch-condition walk that follows it. Both are CFG reachability
-///   questions built on `isGuaranteedToTransferExecutionToSuccessor`, which
-///   llvmkit does not model yet.
 /// - The `@llvm.assume` arm (`getKnowledgeValidInContext`), which needs an
 ///   `AssumptionCache`.
 /// - `stripPointerCastsSameRepresentation` before the allocated-object test:
@@ -4359,8 +4369,9 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
     if matches!(operator, InstructionKindData::Freeze(_)) {
         return Ok(true);
     }
-    // Nor can a call whose return is annotated `noundef`.
-    if call_returns_noundef(operator) {
+    // Nor can a call whose return is annotated `noundef`, `dereferenceable` or
+    // `dereferenceable_or_null` — the latter two imply the first.
+    if call_return_is_well_defined(operator) {
         return Ok(true);
     }
 
@@ -4389,6 +4400,11 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
             if well_defined {
                 return Ok(true);
             }
+        } else if let Some(splat) = shuffle_splat_source(value, operator) {
+            // For a splat, only the value being splatted has to be checked.
+            if is_guaranteed_not_to_be_undef_or_poison(splat, query, depth + 1, stack, kind)? {
+                return Ok(true);
+            }
         } else {
             let mut well_defined = true;
             for operand in operands_of(value) {
@@ -4402,6 +4418,21 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 return Ok(true);
             }
         }
+    }
+
+    // A load carrying `!noundef`, `!dereferenceable` or
+    // `!dereferenceable_or_null` is well defined by declaration.
+    if matches!(operator, InstructionKindData::Load(_)) && load_metadata_asserts_well_defined(value)
+    {
+        return Ok(true);
+    }
+
+    if program_undefined_for_value(value, !kind.includes_undef()) {
+        return Ok(true);
+    }
+
+    if dominating_condition_proves_well_defined(value, query, kind) {
+        return Ok(true);
     }
 
     // llvmkit refinement (no upstream counterpart): `shiftAmountKnownInRange`
@@ -4435,6 +4466,174 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 
     Ok(false)
+}
+
+/// The value a `shufflevector` splats, when it is one.
+///
+/// Ports the `isa<ShuffleVectorInst>(Opr) ? getSplatValue(Opr) : nullptr` arm
+/// of `isGuaranteedNotToBeUndefOrPoison`, via the shuffle half of
+/// `llvm::getSplatValue` (`llvm/lib/Analysis/VectorUtils.cpp`):
+///
+/// ```text
+/// shuf (inselt ?, Splat, 0), ?, <0, poison, 0, ...>
+/// ```
+///
+/// The result is `Splat` — the value the `insertelement` put in lane 0 — not
+/// the `insertelement` itself. That distinction is the whole point of the arm:
+/// the `insertelement`'s own vector operand is typically `poison`, so walking
+/// its operands would answer false where the splat is provably well defined.
+///
+/// `getSplatValue`'s other half, a constant vector whose lanes are all equal,
+/// is not reached from here: this arm runs only for a `ShuffleVectorInst`.
+fn shuffle_splat_source<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    operator: &InstructionKindData,
+) -> Option<Value<'ctx, B>> {
+    let InstructionKindData::ShuffleVector(shuffle) = operator else {
+        return None;
+    };
+    // `m_ZeroMask`: every element zero, or poison standing in for one.
+    if !shuffle
+        .mask
+        .iter()
+        .all(|element| *element == 0 || *element == POISON_MASK_ELEM)
+    {
+        return None;
+    }
+    // `m_InsertElt(m_Value(), m_Value(Splat), m_ZeroInt())` on operand 0. The
+    // shuffle's second operand is `m_Value()` — anything at all.
+    let inserted = value_from_id(value, shuffle.lhs.get());
+    let InstructionKindData::InsertElement(insert) = instruction_kind(inserted)? else {
+        return None;
+    };
+    let index = value_from_id(inserted, insert.index.get());
+    argument_constant(Some(index))
+        .is_some_and(|index| index.is_zero())
+        .then(|| value_from_id(inserted, insert.value.get()))
+}
+
+/// Whether a `load` carries `!noundef`, `!dereferenceable` or
+/// `!dereferenceable_or_null`.
+///
+/// Ports the `dyn_cast<LoadInst>` arm's `hasMetadata` triple. The two
+/// dereferenceability kinds imply `noundef`, which is why upstream accepts any
+/// of the three.
+fn load_metadata_asserts_well_defined<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+    let ValueKindData::Instruction(instruction) = &value.data().kind else {
+        return false;
+    };
+    let metadata = instruction.metadata.borrow();
+    [
+        MetadataAttachmentKind::NoUndef,
+        MetadataAttachmentKind::Dereferenceable,
+        MetadataAttachmentKind::DereferenceableOrNull,
+    ]
+    .iter()
+    .any(|kind| metadata.get(kind).is_some())
+}
+
+/// Whether a branch or switch condition on a block dominating the query's
+/// context instruction proves `value` well defined.
+///
+/// Ports the `Dominator = DNode->getIDom()` loop of
+/// `isGuaranteedNotToBeUndefOrPoison`: if `value` is used as a branch condition
+/// before control reaches the context instruction, then reaching that point at
+/// all means `value` was neither undef nor poison.
+///
+/// ```text
+///   br i1 %v, label %then, label %else
+/// then:
+///   ; %v cannot be undef or poison here
+/// ```
+///
+/// Upstream walks the idom chain; llvmkit enumerates the same set through
+/// [`DominatorTree::strictly_dominating_blocks`], which is order-independent
+/// and gives the same answer because the loop is a pure existential. Upstream's
+/// two early `return false`s — no context instruction or dominator tree, and an
+/// unreachable context block — are `false` here rather than early returns,
+/// because llvmkit has one more arm after this point.
+fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    kind: UndefPoisonKind,
+) -> bool {
+    let Some(context) = query.context_instruction() else {
+        return false;
+    };
+    let Some(dominator_tree) = query.dominator_tree() else {
+        return false;
+    };
+    let Some(context_block) = parent_block(context) else {
+        return false;
+    };
+
+    // Purely a compile-time guard upstream: the walk can be skipped when the
+    // question includes undef and the value is not an integer.
+    if kind.includes_undef() && !matches!(value.ty().kind(), TypeKind::Integer { .. }) {
+        return false;
+    }
+
+    for block in dominator_tree.strictly_dominating_blocks(context_block) {
+        let Some(terminator) = block_terminator(value, block) else {
+            continue;
+        };
+        let Some(condition) = branch_or_switch_condition(terminator) else {
+            continue;
+        };
+        if condition == value.slot() {
+            return true;
+        }
+        // For poison — but not undef, which does not propagate eagerly — a
+        // condition *built from* the value is enough, provided the operand
+        // position propagates poison.
+        if kind.includes_undef() {
+            continue;
+        }
+        let condition = value_from_id(value, condition);
+        let Some(condition_kind) = instruction_kind(condition) else {
+            continue;
+        };
+        let propagates = condition_kind
+            .operand_ids()
+            .iter()
+            .enumerate()
+            .any(|(index, operand)| {
+                *operand == value.slot() && propagates_poison(condition, index)
+            });
+        if propagates {
+            return true;
+        }
+    }
+    false
+}
+
+/// The terminator of `block`, as a value.
+fn block_terminator<'ctx, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    block: ValueSlot,
+) -> Option<Value<'ctx, B>> {
+    let module = module_ref(anchor);
+    let ValueKindData::BasicBlock(data) = &module.value_data(block).kind else {
+        return None;
+    };
+    let terminator = *data.instructions.borrow().last()?;
+    Some(value_from_id(anchor, terminator))
+}
+
+/// The condition of a conditional `br` or a `switch`. Ports the
+/// `dyn_cast_or_null<BranchInst>` / `dyn_cast_or_null<SwitchInst>` pair of the
+/// dominating-condition walk.
+fn branch_or_switch_condition<'ctx, B: ModuleBrand + 'ctx>(
+    terminator: Value<'ctx, B>,
+) -> Option<ValueSlot> {
+    match instruction_kind(terminator)? {
+        InstructionKindData::Br(data) => match &*data.kind.borrow() {
+            BranchKind::Unconditional(_) => None,
+            BranchKind::Conditional { cond, .. } => Some(cond.get()),
+        },
+        InstructionKindData::Switch(data) => Some(data.cond.get()),
+        _ => None,
+    }
 }
 
 /// The `dyn_cast<Argument>` arm: `noundef`, `dereferenceable` and

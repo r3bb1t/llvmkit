@@ -124,6 +124,7 @@ pub(crate) mod phi_check;
 #[cfg(test)]
 mod phi_raw_tests;
 pub mod select_pattern;
+pub mod speculation;
 pub mod ssa_builder;
 pub mod struct_body_state;
 pub mod struct_schema;
@@ -369,6 +370,16 @@ pub use int_width::{
 pub use select_pattern::{
     MinMaxIntrinsic, SelectPatternFlavor, SelectPatternNaNBehavior, SelectPatternResult,
     get_select_pattern,
+};
+pub use speculation::{
+    DEFAULT_TRANSFER_SCAN_LIMIT, SpeculationOptions, block_transfers_execution_to_successor,
+    instructions_transfer_execution_to_successor, intrinsic_propagates_poison,
+    is_assume_like_intrinsic, is_guaranteed_to_execute_for_every_iteration,
+    is_guaranteed_to_transfer_execution_to_successor, is_not_cross_lane_operation,
+    is_safe_to_speculatively_execute, is_safe_to_speculatively_execute_with_opcode,
+    is_safe_to_speculatively_execute_with_variable_replaced, may_have_non_def_use_dependency,
+    must_execute_ub_if_poison_on_path_to, must_trigger_ub, program_undefined_if_poison,
+    program_undefined_if_undef_or_poison,
 };
 pub use value_tracking::{
     KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery,

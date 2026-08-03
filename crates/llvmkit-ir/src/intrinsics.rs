@@ -379,6 +379,31 @@ impl IntrinsicId {
         !self.record().fn_attrs.no_unwind
     }
 
+    /// Whether the declaration carries `speculatable`.
+    ///
+    /// Ports the `IntrSpeculatable` property, which TableGen lowers to the
+    /// `speculatable` function attribute; `isSpeculatable` on the callee is
+    /// what `isSafeToSpeculativelyExecute`'s `Call` arm tests.
+    pub fn is_speculatable(self) -> bool {
+        self.record().fn_attrs.speculatable
+    }
+
+    /// Whether the declaration carries `willreturn`.
+    ///
+    /// Ports the `IntrWillReturn` property. `Instruction::willReturn` reads the
+    /// same attribute off a call site, which is the second half of
+    /// `isGuaranteedToTransferExecutionToSuccessor`.
+    pub fn will_return(self) -> bool {
+        self.record().fn_attrs.will_return
+    }
+
+    /// Whether the declaration carries `nofree`.
+    ///
+    /// Ports the `IntrNoFree` property.
+    pub fn no_free(self) -> bool {
+        self.record().fn_attrs.no_free
+    }
+
     pub fn memory_effects(self) -> MemoryEffects {
         self.record().memory_effects
     }

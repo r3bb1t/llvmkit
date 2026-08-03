@@ -222,6 +222,7 @@ pub enum MetadataAttachmentKind {
     PcSections,
     DIAssignID,
     CoroOutsideFrame,
+    NoUndef,
     Custom(String),
 }
 
@@ -257,6 +258,7 @@ impl MetadataAttachmentKind {
             "pcsections" => Self::PcSections,
             "DIAssignID" => Self::DIAssignID,
             "coro.outside.frame" => Self::CoroOutsideFrame,
+            "noundef" => Self::NoUndef,
             other => Self::Custom(other.to_owned()),
         }
     }
@@ -292,6 +294,7 @@ impl MetadataAttachmentKind {
             Self::PcSections => "pcsections",
             Self::DIAssignID => "DIAssignID",
             Self::CoroOutsideFrame => "coro.outside.frame",
+            Self::NoUndef => "noundef",
             Self::Custom(s) => s.as_str(),
         }
     }
