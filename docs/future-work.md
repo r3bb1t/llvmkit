@@ -99,6 +99,30 @@ same shape: `is_known_to_be_a_power_of_two` and `is_known_non_equal` each skip
 an assumption-driven refinement today. Tranche 7 is the largest and gains
 nothing from going early.
 
+
+### Found while porting tranche 6: the `and` / `xor` known-bits arm is narrow
+
+`bitwise_known` in `value_tracking.rs` ports only part of upstream's
+`getKnownBitsFromAndXorOr` (`ValueTracking.cpp`). It has the general
+"add/sub of an odd operand sets or clears bit 0" refinement, but not the two
+idiom arms above it:
+
+- `and(x, -x)` clears everything above the lowest set bit — upstream answers
+  `KnownLHS.blsi()` or `KnownRHS.blsi()`, whichever operand has the smaller
+  `countMaxTrailingZeros`.
+- `xor(x, x - 1)` likewise, answering `XBits.blsmsk()`.
+
+`KnownBits::blsi` and `blsmsk` are both already modeled here, and
+`is_negation_of_operand` already exists for the `m_Neg(m_Deferred(X))` half, so
+this is a small, self-contained improvement rather than a new subsystem. It is
+also the prerequisite for `analyzeKnownBitsFromAndXorOr`, which is exactly
+`getKnownBitsFromAndXorOr` with the operand known-bits passed in and is
+currently in the residue gap list.
+
+Nothing is *wrong* today — a missing refinement only leaves the answer weaker —
+which is why no test caught it. It was found by reading the C++ beside the
+Rust, not by running anything.
+
 Two things tranche 6 turned up that are worth carrying forward:
 
 - **Upstream's own unit tests for the dominating-condition arm do not cover
