@@ -7,6 +7,42 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### KnownBits: the operators
+
+An audit of `KnownBits.h`'s public surface against llvmkit — 99 named members
+plus 7 operators, enumerated by hand — found two genuinely unmodeled:
+`operator<<=` and `operator>>=`.
+
+#### Added
+
+- All seven operators, each as the std trait that spells the same thing:
+  `Shl<u32>` / `ShlAssign<u32>`, `Shr<u32>` / `ShrAssign<u32>`, and
+  `BitAnd`/`BitOr`/`BitXor` with their `*Assign` forms over the existing
+  `bitand`/`bitor`/`bitxor`. `operator==`/`!=` were already covered by the
+  derived `PartialEq`/`Eq`.
+
+  The two shifts are **not** aliases for `KnownBits::shl` / `lshr`. Those are
+  the transfer functions for the shift *instructions* and know the vacated
+  bits are zero; the operators move the masks only, so a shifted-in bit is
+  clear in both masks — the encoding of "unknown". LLVM keeps the same pair
+  and its callers depend on the difference: `RISCVISelLowering.cpp` follows
+  `Known <<= ShAmt` with `Known.Zero.setLowBits(ShAmt)` and the comment "the
+  `<<=` operator left these bits unknown".
+
+#### Fixed
+
+- The parity ledger was missing a row for `getConstant` (modeled all along as
+  `constant`), and listed no operators at all — the grep that built it looked
+  for an identifier before a `(`, which `operator<<=(` does not have. That is
+  how the two missing shifts went unnoticed while
+  `known_bits_public_surface_is_complete` reported the surface closed.
+
+  That test's doc comment now says what it can and cannot prove: it compares
+  two hand-maintained tables and cannot read `KnownBits.h`, which is gitignored
+  and absent in CI, so it detects a *recorded* gap and never an unrecorded one.
+  Closing the surface is a periodic manual enumeration;
+  `KNOWN_BITS_SURFACE_AUDITED` records when it last ran and against what count.
+
 ### Parser: vector integer arithmetic and comparison
 
 `and <2 x i32> %a, %b` now parses. It did not before: the parser converted both

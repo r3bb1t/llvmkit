@@ -46,6 +46,13 @@ const DERIVED_FROM_LLVM: &str = "22.1.4";
 ///
 /// Sorted by upstream name. Where llvmkit splits one upstream overload set in
 /// two (`udiv` / `udiv_with_exact`), both spellings are recorded together.
+///
+/// **The seven operators are listed too.** An earlier revision of this table
+/// covered only the named member functions, because the grep that built it
+/// looked for an identifier before a `(` and `operator<<=(` does not have one.
+/// That is how `operator<<=` and `operator>>=` sat unmodeled while
+/// `known_bits_public_surface_is_complete` reported the surface closed — see
+/// that test's docs for what it can and cannot prove.
 const MODELED_KNOWN_BITS: &[(&str, &str)] = &[
     ("abds", "abds"),
     ("abdu", "abdu"),
@@ -78,9 +85,13 @@ const MODELED_KNOWN_BITS: &[(&str, &str)] = &[
     ("countMinSignBits", "count_min_sign_bits"),
     ("countMinTrailingOnes", "count_min_trailing_ones"),
     ("countMinTrailingZeros", "count_min_trailing_zeros"),
+    // Debug printing. Upstream's `print` takes a raw_ostream; `dump` is the
+    // `#if !defined(NDEBUG)` debugger convenience that calls it.
+    ("dump", "derived Debug"),
     ("eq", "eq"),
     ("extractBits", "extract_bits"),
     ("getBitWidth", "bit_width"),
+    ("getConstant", "constant"),
     ("getMaxValue", "max_value"),
     ("getMinValue", "min_value"),
     ("getSignedMaxValue", "signed_max_value"),
@@ -108,6 +119,16 @@ const MODELED_KNOWN_BITS: &[(&str, &str)] = &[
     ("mulhs", "mulhs"),
     ("mulhu", "mulhu"),
     ("ne", "ne"),
+    // The operators. Rust spells each as the std trait that means the same
+    // thing, so these are trait impls rather than inherent methods.
+    ("operator!=", "derived PartialEq"),
+    ("operator&=", "BitAndAssign / BitAnd, over bitand"),
+    ("operator<<=", "ShlAssign<u32> / Shl<u32>"),
+    ("operator==", "derived PartialEq / Eq"),
+    ("operator>>=", "ShrAssign<u32> / Shr<u32>"),
+    ("operator^=", "BitXorAssign / BitXor, over bitxor"),
+    ("operator|=", "BitOrAssign / BitOr, over bitor"),
+    ("print", "Display"),
     ("reduceAdd", "reduce_add"),
     ("resetAll", "unknown"),
     ("reverseBits", "reverse_bits"),
@@ -147,12 +168,21 @@ const MODELED_KNOWN_BITS: &[(&str, &str)] = &[
 
 /// `KnownBits` operations llvmkit does **not** model.
 ///
-/// **Empty, and asserted to stay empty.** Every operation `KnownBits.h`
-/// declares public is modeled; see [`KNOWN_BITS_PRIVATE_UPSTREAM`] for the two
-/// that look missing but are upstream internals. Adding an entry here trips
-/// `known_bits_public_surface_is_complete`, which is the point — a regression
-/// or a newly-synced upstream method has to be acknowledged, not absorbed.
+/// **Empty**, as of the audit dated in [`KNOWN_BITS_SURFACE_AUDITED`]. Every
+/// operation `KnownBits.h` declares public is modeled; see
+/// [`KNOWN_BITS_PRIVATE_UPSTREAM`] for the two that look missing but are
+/// upstream internals.
+///
+/// Being empty is a *recorded finding*, not a proof — read
+/// `known_bits_public_surface_is_complete` before trusting it.
 const KNOWN_BITS_GAPS: &[(&str, &str)] = &[];
+
+/// When the `KnownBits.h` public surface was last enumerated by hand and
+/// diffed against llvmkit, and what the count was.
+///
+/// The 2026-08-03 pass is the one that found `operator<<=` / `operator>>=`
+/// missing; the count is 99 named members plus 7 operators.
+const KNOWN_BITS_SURFACE_AUDITED: (&str, usize) = ("2026-08-03", 106);
 
 /// `KnownBits` members that are **private** in `KnownBits.h` and so are not
 /// part of the surface at all.
@@ -334,6 +364,9 @@ fn exercises_every_modeled_known_bits_operation() {
     let _ = a.is_unknown();
     let _ = a.is_sign_unknown();
     let _ = a.is_constant();
+    // `getConstant` upstream, which asserts `isConstant()`; llvmkit returns
+    // `Option` instead of asserting.
+    let _ = a.constant();
     let _ = a.is_known_zero(0);
     let _ = a.is_known_one(1);
     let _ = a.is_zero();
@@ -438,6 +471,25 @@ fn exercises_every_modeled_known_bits_operation() {
     let _ = a.reverse_bits();
     let _ = a.blsi();
     let _ = a.blsmsk();
+
+    // The operators, each through the std trait that spells it.
+    let _ = &a & &b;
+    let _ = &a | &b;
+    let _ = &a ^ &b;
+    let _ = &a << 2;
+    let _ = &a >> 2;
+    let _ = a == b;
+    let _ = a != b;
+    let mut assigning = a.clone();
+    assigning &= &b;
+    assigning |= &b;
+    assigning ^= &b;
+    assigning <<= 1;
+    assigning >>= 1;
+
+    // Debug printing: `print` is Display, `dump` is the derived Debug.
+    let _ = format!("{a}");
+    let _ = format!("{a:?}");
 }
 
 /// Every entry in [`MODELED_VALUE_TRACKING`] resolves to a real public item.
@@ -569,10 +621,20 @@ fn ledger_tables_are_consistent() {
 
 /// Every operation `KnownBits.h` declares public is modeled.
 ///
-/// The assertion is the tripwire: adding a `KNOWN_BITS_GAPS` entry — because a
-/// method regressed, or because an LLVM sync introduced one — fails here and
-/// forces the gap to be acknowledged rather than quietly absorbed into a list
-/// nobody reads. No upstream counterpart; see the module docs.
+/// **What this test can and cannot prove.** It compares two hand-maintained
+/// tables against each other. It cannot read `KnownBits.h` — `orig_cpp/` is
+/// gitignored, so it does not exist in CI — which means it detects a
+/// *recorded* gap, never an *unrecorded* one. Adding a `KNOWN_BITS_GAPS`
+/// entry fails here and forces the gap to be acknowledged; upstream growing a
+/// method that nobody notices does not.
+///
+/// That is not hypothetical. The tables were built by grepping the header for
+/// an identifier followed by `(`, which silently skipped all seven operators,
+/// and `operator<<=` / `operator>>=` were unmodeled for as long as this test
+/// reported the surface closed. Closing the surface is a periodic manual
+/// enumeration — [`KNOWN_BITS_SURFACE_AUDITED`] records when it last ran.
+///
+/// No upstream counterpart; see the module docs.
 #[test]
 fn known_bits_public_surface_is_complete() {
     assert!(
@@ -582,5 +644,17 @@ fn known_bits_public_surface_is_complete() {
             .iter()
             .map(|(name, _)| *name)
             .collect::<Vec<_>>()
+    );
+
+    // The tables must at least agree with each other and with the audit that
+    // produced them. This does not make the assertion above self-checking —
+    // see the docs — but it does catch a row being added to one table and
+    // forgotten in the count.
+    let (_, audited) = KNOWN_BITS_SURFACE_AUDITED;
+    assert_eq!(
+        MODELED_KNOWN_BITS.len() + KNOWN_BITS_GAPS.len(),
+        audited,
+        "the modeled + gap tables no longer add up to the audited surface size; \
+         re-run the enumeration and update KNOWN_BITS_SURFACE_AUDITED"
     );
 }
