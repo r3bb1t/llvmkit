@@ -93,11 +93,43 @@ the whole ApFloat/ApInt sweep, which was its own multi-cycle program.
 the most callers, so it should go first regardless of how the rest is
 sequenced:
 
-1. **No new types** — `ComputeNumSignBits`, `ComputeMaxSignificantBits`,
-   `isKnownNegative` / `isKnownPositive` / `isKnownNonNegative`,
-   `isKnownToBeAPowerOfTwo`, `isKnownNonEqual`, `isKnownInversion`,
-   `isKnownNegation`, the Value-level `haveNoCommonBitsSet`. Pure KnownBits
-   consumers plus recursion.
+1. ~~**No new types**~~ ✅ **done 2026-08-03** — `ComputeNumSignBits` and
+   `ComputeMaxSignificantBits` landed with the sign-bits arm (2026-08-02); the
+   rest followed: `isKnownNegative` / `isKnownPositive` / `isKnownNonNegative`,
+   `MaskedValueIsZero` (with a real mask — the ledger previously mapped it to
+   `is_known_zero`, which takes none), `isSignBitCheck` (an `Option<bool>`
+   rather than upstream's `bool` return plus `bool &TrueIfSigned`
+   out-parameter), `isKnownToBeAPowerOfTwo` including `isPowerOfTwoRecurrence`,
+   `isKnownNonEqual` with `getInvertibleOperands` and its five helpers,
+   `isKnownInversion`, `isKnownNegation`, `isOnlyUsedInZeroComparison` and its
+   equality sibling, and the Value-level `haveNoCommonBitsSet` with all six
+   `haveNoCommonBitsSetSpecialCases` patterns.
+
+   The same slice replaced `isGuaranteedNotToBePoison`'s placeholder — which
+   handled constants and shifts and answered `false` for everything else — with
+   the real `isGuaranteedNotToBeUndefOrPoison` walk, and added
+   `isGuaranteedNotToBeUndef` / `isGuaranteedNotToBeUndefOrPoison` as public
+   entry points. Three of its arms are deferred, each only weakening the
+   answer: `programUndefinedIfUndefOrPoison` and the dominating branch-condition
+   walk that follows it (both CFG reachability, tranche 6), the `@llvm.assume`
+   arm (tranche 8), and `stripPointerCastsSameRepresentation` before the
+   allocated-object test (tranche 5). One arm is a deliberate llvmkit
+   refinement, marked at its site: a shift whose amount known bits prove in
+   range is not poison, where upstream's `shiftAmountKnownInRange` demands a
+   literal constant.
+
+   Two upstream fixtures do **not** port, and each gap is recorded rather than
+   papered over:
+
+   - The `<2 x i32>` third of `TEST_F(ValueTrackingTest, HaveNoCommonBitsSet)`.
+     llvmkit cannot express it — see the vector-binop entry below.
+   - `known-power-of-two.ll`'s positive cases (`@shl_is_pow2`,
+     `@trunc_is_pow2_or_zero`, and their siblings). Their `shl` carries no
+     `nuw`/`nsw` in the source; upstream reaches `true` only because
+     `instcombine` infers the flags first, which the printed `CHECK` line shows
+     (`shl nuw nsw`). That is a missing transform, not a missing analysis.
+     `crates/llvmkit-asmparser/tests/value_tracking_predicates.rs` asserts them
+     **false** so closing the gap trips the test rather than passing silently.
 2. **Poison / UB family** — `canCreatePoison`, `canCreateUndefOrPoison`,
    `impliesPoison`, `propagatesPoison`, `programUndefinedIfPoison`,
    `mustTriggerUB`, `isGuaranteedNotToBeUndef`. llvmkit already has
@@ -144,6 +176,41 @@ The ledger in `crates/llvmkit-ir/tests/value_tracking_parity.rs` tracks
 progress: each tranche moves rows from `VALUE_TRACKING_GAPS` into
 `MODELED_VALUE_TRACKING`, and the modeled column is held to the crate by
 calling every entry.
+
+## The parser cannot read vector integer binops the builder can write (found 2026-08-03)
+
+`and <2 x i32> %a, %b` does not parse, even though llvmkit can *build* it.
+
+`ll_parser.rs::parse_int_binop` converts both operands to
+`IntValue<'ctx, IntDyn, B>` before calling a builder. That marker describes a
+**scalar** width, so a vector-of-integer value does not convert and the parse
+fails with `Expected { expected: "integer-typed lhs" }`. `icmp` takes the same
+route with the same result.
+
+The builder has no such limitation: the type-erased family
+(`build_int_add_dyn`, `build_int_sub_dyn`, `build_int_mul_dyn`,
+`build_int_xor_dyn`, `build_int_and_dyn`, `build_int_or_dyn`,
+`build_int_shl_dyn`, `build_int_lshr_dyn`, `build_int_ashr_dyn`,
+`build_int_cmp_with_flags_dyn`) accepts erased operands and emits element-wise
+vector IR — `crates/llvmkit-ir/tests/builder_vector_binop_dyn.rs` is the
+existing coverage. So this is a **parser routing gap**, not a missing
+capability, and it is narrower than a first look suggested.
+
+Closing it needs three things:
+
+1. Four missing `_dyn` builders — `udiv`, `sdiv`, `urem`, `srem` — since the
+   erased family stops at the shifts.
+2. Parser routing: when the parsed type is a vector of integers, take the
+   `_dyn` path instead of converting to `IntValue`. The typed path stays for
+   scalars so the scalar type-safety story is untouched.
+3. Round-trip coverage, since printing vector binops is already exercised but
+   parse-then-print is not.
+
+Cost of leaving it: `clang -O2` emits vector binops as soon as the vectoriser
+fires, so the parser rejects ordinary optimised output. It also blocks the
+vector half of several upstream `ValueTracking` and `InstSimplify` fixtures —
+`TEST_F(ValueTrackingTest, HaveNoCommonBitsSet)`'s third block is the first one
+a port actually hit.
 
 ## ~~KnownBits — operations not modeled~~ — closed (2026-08-01)
 

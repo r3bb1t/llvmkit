@@ -7,6 +7,60 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ValueTracking: value-level predicates — tranche 1 complete
+
+The predicates that sit directly on known bits. No new types; the tranche was
+listed first in the plan and is now closed.
+
+#### Added
+
+- Sign predicates: `is_known_non_negative`, `is_known_negative`,
+  `is_known_positive`.
+- `masked_value_is_zero`, which takes the mask upstream's `MaskedValueIsZero`
+  takes. The parity ledger previously mapped that name to `is_known_zero`,
+  which takes none; `is_known_zero` and `is_known_one` are now recorded as
+  llvmkit conveniences with no upstream entry point of their own.
+- `is_sign_bit_check`, returning `Option<bool>`. Upstream returns `bool` and
+  writes the polarity through a `bool &TrueIfSigned` out-parameter, so the
+  polarity can be read after a failed classification; here it cannot be.
+- `is_known_to_be_a_power_of_two`, including `isPowerOfTwoRecurrence`.
+- `is_known_non_equal`, with `getInvertibleOperands` and its five helpers.
+- `is_known_negation`, `is_known_inversion`.
+- `is_only_used_in_zero_comparison` and `is_only_used_in_zero_equality_comparison`.
+- `have_no_common_bits_set`, with all six `haveNoCommonBitsSetSpecialCases`
+  patterns, each tried in both operand orders.
+- `is_known_not_undef` and `is_known_not_undef_or_poison`.
+
+#### Changed
+
+- **`is_known_not_poison` is substantially stronger.** It was a placeholder
+  that handled constants and shift operators and answered `false` for
+  everything else; it is now the real `isGuaranteedNotToBeUndefOrPoison` walk —
+  `noundef`/`dereferenceable` parameters, allocated objects, `freeze`, calls
+  with a `noundef` return, and the operand walk under
+  `canCreateUndefOrPoison`. Anything built on it (`implies_poison`, the
+  `freeze` arm of `compute_known_bits`) gets the improvement for free.
+
+Three of the walk's arms are deferred, each only weakening the answer:
+`programUndefinedIfUndefOrPoison` and the dominating branch-condition walk
+that follows it (CFG reachability, tranche 6), the `@llvm.assume` arm
+(tranche 8), and `stripPointerCastsSameRepresentation` before the
+allocated-object test (tranche 5). One arm is a deliberate llvmkit refinement,
+marked at its site: a shift whose amount known bits prove in range is not
+poison, where upstream's `shiftAmountKnownInRange` demands a literal constant.
+
+#### Found
+
+- **The parser cannot read vector integer binops the builder can write.**
+  `and <2 x i32> %a, %b` does not parse: `parse_int_binop` converts both
+  operands to the scalar-only `IntValue` before calling a builder. The
+  type-erased `build_int_*_dyn` family handles vectors fine, so this is a
+  parser routing gap, not a missing capability. It surfaced while porting the
+  third block of upstream's `HaveNoCommonBitsSet` test, which is therefore not
+  ported. Not fixed here — closing it also needs four `_dyn` builders that do
+  not exist yet (`udiv`, `sdiv`, `urem`, `srem`). Recorded in
+  `docs/future-work.md`.
+
 ### ValueTracking: constant ranges and overflow prediction (slice 3e) — tranche 3 complete
 
 The consumers `ConstantRange` was ported for.
