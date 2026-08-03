@@ -22,7 +22,11 @@
 //!   compiling, so the "modeled" column cannot silently become a lie.
 //! - **Enforced at run time.** The tables are checked for the properties a
 //!   ledger needs to stay readable: sorted, duplicate-free, and disjoint from
-//!   the gap list, with a recorded reason on every gap.
+//!   the gap list, with a recorded reason on every gap. For `KnownBits`,
+//!   `every_modeled_known_bits_row_is_exercised` additionally reads this
+//!   file's own source and proves the exercise fn reaches *every* row — the
+//!   two used to be linked by nothing but the fn's name, so a row could be
+//!   added with no call to match it and still look enforced.
 //! - **Maintained by hand.** The *gap* lists are a human record. Nothing here
 //!   can notice that upstream grew a new method — that is the LLVM sync's job,
 //!   which should re-derive the tables from the headers and reconcile. Both
@@ -207,6 +211,24 @@ const KNOWN_BITS_GAPS: &[(&str, &str)] = &[];
 /// `abi-breaking.h`; without a configured build the header cannot be
 /// preprocessed at all, which is the other reason this cannot run in CI.
 const KNOWN_BITS_SURFACE_AUDITED: (&str, usize) = ("2026-08-03", 106);
+
+/// How to reach the rows whose llvmkit column names a trait impl rather than a
+/// method, as `(column text, syntax that exercises it)`.
+///
+/// `every_modeled_known_bits_row_is_exercised` looks for a `.name(` call for
+/// an ordinary row; a trait impl has no such call site, so those rows say here
+/// what to look for instead.
+const KNOWN_BITS_TRAIT_PROBES: &[(&str, &[&str])] = &[
+    ("derived PartialEq", &["==", "!="]),
+    ("derived PartialEq / Eq", &["==", "!="]),
+    ("derived Debug", &["{a:?}"]),
+    ("Display", &["{a}"]),
+    ("BitAndAssign / BitAnd, over bitand", &["&a & &b", "&= &b"]),
+    ("BitOrAssign / BitOr, over bitor", &["&a | &b", "|= &b"]),
+    ("BitXorAssign / BitXor, over bitxor", &["&a ^ &b", "^= &b"]),
+    ("ShlAssign<u32> / Shl<u32>", &["<< 2", "<<= 1"]),
+    ("ShrAssign<u32> / Shr<u32>", &[">> 2", ">>= 1"]),
+];
 
 /// `KnownBits` members that are **private** in `KnownBits.h` and so are not
 /// part of the surface at all.
@@ -643,6 +665,99 @@ fn ledger_tables_are_consistent() {
     }
 }
 
+/// Every row of [`MODELED_KNOWN_BITS`] is actually reached by
+/// `exercises_every_modeled_known_bits_operation`.
+///
+/// That test's name is a claim about the table, but nothing linked the two:
+/// the table is data and the exercise fn is code, so a row could be added with
+/// no call to match and the "modeled" column would still look enforced. This
+/// reads the file's own source and checks each row against the body.
+///
+/// Rows whose llvmkit column names a trait impl have no `.name(` call site;
+/// [`KNOWN_BITS_TRAIT_PROBES`] says what syntax to look for instead.
+///
+/// No upstream counterpart; see the module docs.
+#[test]
+fn every_modeled_known_bits_row_is_exercised() {
+    // Reading our own source is the only way to tie the two together: the
+    // table is data, the exercise fn is code, and nothing else connects them.
+    const SELF: &str = include_str!("value_tracking_parity.rs");
+
+    let body = function_body(SELF, "fn exercises_every_modeled_known_bits_operation");
+    let body = strip_line_comments(&body);
+
+    let mut unexercised: Vec<String> = Vec::new();
+    for (upstream, llvmkit) in MODELED_KNOWN_BITS {
+        if let Some((_, probes)) = KNOWN_BITS_TRAIT_PROBES
+            .iter()
+            .find(|(column, _)| column == llvmkit)
+        {
+            for probe in *probes {
+                if !body.contains(probe) {
+                    unexercised.push(format!("{upstream} ({llvmkit}): no `{probe}`"));
+                }
+            }
+            continue;
+        }
+        for name in llvmkit.split('/').map(str::trim) {
+            assert!(
+                name.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "{upstream}: llvmkit column {llvmkit:?} is neither a method name nor a \
+                 KNOWN_BITS_TRAIT_PROBES entry"
+            );
+            if !body.contains(&format!(".{name}(")) && !body.contains(&format!("::{name}(")) {
+                unexercised.push(format!("{upstream} ({llvmkit}): no call to `{name}(`"));
+            }
+        }
+    }
+
+    assert!(
+        unexercised.is_empty(),
+        "exercises_every_modeled_known_bits_operation does not reach {} of {} rows:\n  {}",
+        unexercised.len(),
+        MODELED_KNOWN_BITS.len(),
+        unexercised.join("\n  ")
+    );
+}
+
+/// The `{ .. }` body of the item whose declaration starts with `header`.
+fn function_body(source: &str, header: &str) -> String {
+    let start = source
+        .find(header)
+        .unwrap_or_else(|| panic!("{header} not found in source"));
+    let mut depth = 0usize;
+    let mut seen_open = false;
+    for (offset, ch) in source[start..].char_indices() {
+        match ch {
+            '{' => {
+                depth += 1;
+                seen_open = true;
+            }
+            '}' => {
+                depth -= 1;
+                if seen_open && depth == 0 {
+                    return source[start..start + offset + 1].to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unbalanced braces after {header}");
+}
+
+/// Drop `//` comments so a name mentioned in prose does not count as a call.
+fn strip_line_comments(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| match line.find("//") {
+            Some(at) => &line[..at],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Every operation `KnownBits.h` declares public is modeled.
 ///
 /// **What this test can and cannot prove.** It compares two hand-maintained
@@ -656,7 +771,12 @@ fn ledger_tables_are_consistent() {
 /// an identifier followed by `(`, which silently skipped all seven operators,
 /// and `operator<<=` / `operator>>=` were unmodeled for as long as this test
 /// reported the surface closed. Closing the surface is a periodic manual
-/// enumeration — [`KNOWN_BITS_SURFACE_AUDITED`] records when it last ran.
+/// enumeration — [`KNOWN_BITS_SURFACE_AUDITED`] records when it last ran and
+/// how to reproduce it.
+///
+/// What *is* enforced here: the tables sum to the audited size, and
+/// `every_modeled_known_bits_row_is_exercised` proves each row reaches real
+/// code.
 ///
 /// No upstream counterpart; see the module docs.
 #[test]
