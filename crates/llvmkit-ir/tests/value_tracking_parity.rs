@@ -177,11 +177,35 @@ const MODELED_KNOWN_BITS: &[(&str, &str)] = &[
 /// `known_bits_public_surface_is_complete` before trusting it.
 const KNOWN_BITS_GAPS: &[(&str, &str)] = &[];
 
-/// When the `KnownBits.h` public surface was last enumerated by hand and
-/// diffed against llvmkit, and what the count was.
+/// When the `KnownBits.h` public surface was last enumerated and diffed
+/// against llvmkit, and how many public members it had.
 ///
 /// The 2026-08-03 pass is the one that found `operator<<=` / `operator>>=`
-/// missing; the count is 99 named members plus 7 operators.
+/// missing. 106 = 99 named members + 7 operators.
+///
+/// # Reproducing the audit
+///
+/// Do not grep the raw header — that is what missed the operators, since
+/// `operator<<=(` has no identifier before the paren, and it also trips over
+/// `LLVM_DUMP_METHOD` expanding to attributes in front of `dump`. Preprocess
+/// instead, so macros and `#if` are already resolved:
+///
+/// ```text
+/// g++ -std=c++17 -fno-exceptions -fno-rtti -E -x c++ \
+///   -I build/llvm/include \
+///   -I orig_cpp/llvm-project-llvmorg-22.1.4/llvm/include \
+///   -I orig_cpp/llvm-project-llvmorg-22.1.4/third-party/siphash/include \
+///   orig_cpp/llvm-project-llvmorg-22.1.4/llvm/include/llvm/Support/KnownBits.h
+/// ```
+///
+/// Then brace-match `struct KnownBits`, track the access specifier, strip
+/// `__attribute__((...))`, and take the identifier (or `operator<op>`) before
+/// each declaration's paren. That run reproduces both this count and
+/// [`KNOWN_BITS_PRIVATE_UPSTREAM`] exactly.
+///
+/// `build/llvm/include` holds the CMake-generated `llvm-config.h` /
+/// `abi-breaking.h`; without a configured build the header cannot be
+/// preprocessed at all, which is the other reason this cannot run in CI.
 const KNOWN_BITS_SURFACE_AUDITED: (&str, usize) = ("2026-08-03", 106);
 
 /// `KnownBits` members that are **private** in `KnownBits.h` and so are not
