@@ -72,7 +72,7 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 
 ## ValueTracking.h — remaining tranches, and the order to take them
 
-**Status after tranche 4a (2026-08-03):** 40 of 101 entry points modeled, 61
+**Status after tranche 6 (2026-08-03):** 53 of 101 entry points modeled, 48
 gaps, all symbol-keyed in `crates/llvmkit-ir/tests/value_tracking_parity.rs`
 and asserted to sum to the audited surface.
 
@@ -80,7 +80,7 @@ and asserted to sum to the audited surface.
 |---|---|---|
 | 4b select matching | 3 | `matchSelectPattern`, `matchDecomposedSelectPattern`, `canConvertToMinOrMaxIntrinsic` — the vocabulary (4a) is done |
 | 5 pointer/object | 16 | needs pointer-cast stripping and constant-data-array reads |
-| 6 speculation/UB | 13 | needs the CFG walk behind `isGuaranteedToTransferExecutionToSuccessor` |
+| ~~6 speculation/UB~~ | 0 | **done** — `crates/llvmkit-ir/src/speculation.rs` |
 | 7 FP class | 11 | the only tranche needing a new *lattice* rather than a new consumer |
 | 8 assumptions | 4 | needs `@llvm.assume` modeled first |
 | implied conditions | 2 | builds on 6 and 8 |
@@ -89,13 +89,29 @@ and asserted to sum to the audited surface.
 | partial | 1 | `getInverseMinMaxIntrinsic` — integer arms done, 6 FP intrinsics unrepresentable |
 | blocked | 1 | `getVScaleRange`, see above |
 
-**Take 6 and 8 before 5 and 7.** They are unblockers rather than additions:
-`is_known_not_undef_or_poison` has three arms deferred on them today (two on
-tranche 6's CFG reachability, one on tranche 8's assumption cache), and
-`is_known_to_be_a_power_of_two` and `is_known_non_equal` each skip an
-assumption-driven refinement. Landing those two sharpens already-shipped
-analyses without editing them. Tranche 7 is the largest and gains nothing from
-going early.
+**Take 6 and 8 before 5 and 7.** They are unblockers rather than additions.
+Tranche 6 is now done, and it paid out exactly as predicted: landing it closed
+three deferred arms of `is_known_not_undef_or_poison` — the
+`programUndefinedIfUndefOrPoison` walk, the dominating-branch-condition walk,
+and (found along the way) the `shufflevector` splat arm — plus the `!noundef`
+load-metadata arm, without editing that function's own logic. Tranche 8 is the
+same shape: `is_known_to_be_a_power_of_two` and `is_known_non_equal` each skip
+an assumption-driven refinement today. Tranche 7 is the largest and gains
+nothing from going early.
+
+Two things tranche 6 turned up that are worth carrying forward:
+
+- **Upstream's own unit tests for the dominating-condition arm do not cover
+  it.** `isGuaranteedNotToBePoison_exploitBranchCond` and
+  `isGuaranteedNotToBePoison_phi` are both satisfied by the *earlier*
+  `programUndefinedIfUndefOrPoison` arm, in LLVM as much as here, because their
+  branch sits in the same block as the value. Deleting the idom walk leaves
+  both green. Porting a test is not the same as covering the code it names —
+  red-green each arm separately.
+- **`isGuaranteedToExecuteForEveryIteration` did not need `LoopInfo`.** It
+  takes a `const Loop *` and reads exactly one thing out of it,
+  `L->getHeader()`, so llvmkit takes the header block directly. Check what a
+  blocked-looking signature actually *reads* before recording it as blocked.
 
 The full working spec — upstream anchors, settled design decisions, the
 surface-audit recipe, and the traps already hit — is at

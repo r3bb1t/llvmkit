@@ -7,6 +7,57 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ValueTracking: speculation safety and UB reachability (tranche 6)
+
+#### Added
+
+- `speculation.rs` — a new module for the `isSafeToSpeculativelyExecute` /
+  `isGuaranteedToTransferExecutionToSuccessor` / `programUndefinedIfPoison`
+  slice of `ValueTracking.cpp`. Thirteen entry points:
+  `is_safe_to_speculatively_execute`,
+  `is_safe_to_speculatively_execute_with_opcode`,
+  `is_safe_to_speculatively_execute_with_variable_replaced`,
+  `is_guaranteed_to_transfer_execution_to_successor` (plus the block and
+  instruction-range forms `block_transfers_execution_to_successor` and
+  `instructions_transfer_execution_to_successor`),
+  `is_guaranteed_to_execute_for_every_iteration`,
+  `may_have_non_def_use_dependency`, `must_trigger_ub`,
+  `must_execute_ub_if_poison_on_path_to`, `program_undefined_if_poison`,
+  `program_undefined_if_undef_or_poison`, `is_assume_like_intrinsic`,
+  `is_not_cross_lane_operation` and `intrinsic_propagates_poison`.
+- `SpeculationOptions` — upstream's two defaulted `bool` parameters
+  (`UseVariableInfo`, `IgnoreUBImplyingAttrs`) as a named record, so a call
+  site says which is which. `Default` reproduces upstream's defaults.
+- `Opcode` and `OpcodeGroup` (`instr_types`), plus `InstructionView::opcode()`.
+  Ports `Instruction::getOpcode` and the `HANDLE_*_INST` families of
+  `Instruction.def` as one closed enum. Without it
+  `isSafeToSpeculativelyExecuteWithOpcode`, whose whole purpose is to run the
+  switch for an opcode other than the instruction's own, could not be ported at
+  all. `UserOp1` / `UserOp2` are absent: `Instruction.def` reserves them for
+  out-of-tree passes and llvmkit has no storage variant that could hold one.
+- `MemoryEffects::does_not_access_memory`, `only_reads_memory` and
+  `only_writes_memory`, porting the `MemoryEffectsBase` predicates of
+  `ModRef.h`.
+- `IntrinsicId::is_speculatable`, `will_return` and `no_free` — the TableGen
+  properties LLVM materialises as function attributes on every intrinsic
+  declaration.
+- `MetadataAttachmentKind::NoUndef`, the `!noundef` attachment
+  (`FixedMetadataKinds.def`'s `MD_noundef`). It previously fell through to
+  `Custom("noundef")`, which is round-trip-correct but invisible to the
+  analysis that reads it.
+
+#### Changed
+
+- `is_known_not_poison` / `is_known_not_undef` / `is_known_not_undef_or_poison`
+  gained four of upstream's arms that were previously recorded as deferred:
+  the `programUndefinedIfUndefOrPoison` walk, the dominating-branch-condition
+  walk, the `shufflevector` splat arm, and `!noundef` / `!dereferenceable` /
+  `!dereferenceable_or_null` on a `load`. The call-return arm also widened from
+  `noundef` alone to the three attributes upstream accepts. Each only adds
+  `true` answers where upstream proves `true`; none can turn a `true` into a
+  `false`. Only the `@llvm.assume` arm and the pointer-cast strip remain, and
+  both are recorded in the parity ledger.
+
 ### ValueTracking: the select-pattern vocabulary (tranche 4a)
 
 #### Added

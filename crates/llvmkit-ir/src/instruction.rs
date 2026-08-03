@@ -37,7 +37,7 @@ use super::instr_types::{
 };
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
-    FCmpInstData, PhiData, ReturnOpData, UnreachableInstData,
+    FCmpInstData, Opcode, PhiData, ReturnOpData, UnreachableInstData,
 };
 use super::instructions::{
     AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
@@ -272,6 +272,65 @@ impl InstructionKindData {
                 | Self::CatchReturn(_)
                 | Self::CatchSwitch(_)
         )
+    }
+
+    /// The opcode this payload carries. Mirrors `Instruction::getOpcode`.
+    pub(super) fn opcode(&self) -> Opcode {
+        match self {
+            Self::Add(_) => Opcode::Add,
+            Self::Sub(_) => Opcode::Sub,
+            Self::Mul(_) => Opcode::Mul,
+            Self::UDiv(_) => Opcode::UDiv,
+            Self::SDiv(_) => Opcode::SDiv,
+            Self::URem(_) => Opcode::URem,
+            Self::SRem(_) => Opcode::SRem,
+            Self::Shl(_) => Opcode::Shl,
+            Self::LShr(_) => Opcode::LShr,
+            Self::AShr(_) => Opcode::AShr,
+            Self::And(_) => Opcode::And,
+            Self::Or(_) => Opcode::Or,
+            Self::Xor(_) => Opcode::Xor,
+            Self::FAdd(_) => Opcode::FAdd,
+            Self::FSub(_) => Opcode::FSub,
+            Self::FMul(_) => Opcode::FMul,
+            Self::FDiv(_) => Opcode::FDiv,
+            Self::FRem(_) => Opcode::FRem,
+            Self::FCmp(_) => Opcode::FCmp,
+            Self::Alloca(_) => Opcode::Alloca,
+            Self::Load(_) => Opcode::Load,
+            Self::Store(_) => Opcode::Store,
+            Self::Gep(_) => Opcode::GetElementPtr,
+            Self::Call(_) => Opcode::Call,
+            Self::Select(_) => Opcode::Select,
+            Self::Cast(data) => Opcode::from(data.kind),
+            Self::ICmp(_) => Opcode::ICmp,
+            Self::Phi(_) => Opcode::Phi,
+            Self::FNeg(_) => Opcode::FNeg,
+            Self::Freeze(_) => Opcode::Freeze,
+            Self::VAArg(_) => Opcode::VAArg,
+            Self::ExtractValue(_) => Opcode::ExtractValue,
+            Self::InsertValue(_) => Opcode::InsertValue,
+            Self::ExtractElement(_) => Opcode::ExtractElement,
+            Self::InsertElement(_) => Opcode::InsertElement,
+            Self::ShuffleVector(_) => Opcode::ShuffleVector,
+            Self::Fence(_) => Opcode::Fence,
+            Self::AtomicCmpXchg(_) => Opcode::AtomicCmpXchg,
+            Self::AtomicRMW(_) => Opcode::AtomicRMW,
+            Self::Switch(_) => Opcode::Switch,
+            Self::IndirectBr(_) => Opcode::IndirectBr,
+            Self::Invoke(_) => Opcode::Invoke,
+            Self::CallBr(_) => Opcode::CallBr,
+            Self::LandingPad(_) => Opcode::LandingPad,
+            Self::Resume(_) => Opcode::Resume,
+            Self::CleanupPad(_) => Opcode::CleanupPad,
+            Self::CatchPad(_) => Opcode::CatchPad,
+            Self::CatchReturn(_) => Opcode::CatchReturn,
+            Self::CleanupReturn(_) => Opcode::CleanupReturn,
+            Self::CatchSwitch(_) => Opcode::CatchSwitch,
+            Self::Ret(_) => Opcode::Ret,
+            Self::Br(_) => Opcode::Br,
+            Self::Unreachable(_) => Opcode::Unreachable,
+        }
     }
 }
 
@@ -655,6 +714,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     pub fn parent(&self) -> BlockId<Dyn, B> {
         let parent = self.data().parent.get();
         BlockId::<Dyn, B>::from_raw(self.module.id(), parent)
+    }
+
+    /// This instruction's opcode. Ports `Instruction::getOpcode`.
+    ///
+    /// Total, and independent of [`Self::kind`] / [`Self::terminator_kind`]:
+    /// those two hand back typed handles and split at the terminator boundary,
+    /// which is the right shape for *acting* on an instruction but forces a
+    /// caller who only wants to name the opcode through a two-step match.
+    #[inline]
+    pub fn opcode(&self) -> Opcode {
+        self.data().kind.opcode()
     }
 
     /// Read-only opcode discriminator for non-terminator opcodes.

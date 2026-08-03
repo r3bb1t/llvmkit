@@ -103,6 +103,454 @@ pub enum UnaryOpcode {
     FNeg,
 }
 
+/// Every instruction opcode, as one closed enum.
+///
+/// Mirrors the enumerator set `llvm/IR/Instruction.def` generates into
+/// `Instruction::TermOps` / `UnaryOps` / `BinaryOps` / `MemoryOps` / `CastOps`
+/// / `FuncletPadOps` / `OtherOps`, which upstream reads back through
+/// `Instruction::getOpcode` as a bare `unsigned`.
+///
+/// llvmkit spells it as one enum rather than an integer for the usual reason —
+/// a `match` on it is total and an out-of-range opcode is unrepresentable — and
+/// as *one* enum rather than seven because upstream's own switches
+/// (`isSafeToSpeculativelyExecuteWithOpcode`, `Instruction::mayThrow`) span the
+/// groups. [`Self::group`] recovers the group when a caller wants it.
+///
+/// `UserOp1` and `UserOp2` are **absent**. `Instruction.def` reserves them for
+/// out-of-tree passes to use internally; llvmkit has no storage variant that
+/// could hold one, so listing them would name opcodes no instruction here can
+/// have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Opcode {
+    // Terminators, in `Instruction.def` order.
+    /// `ret`
+    Ret,
+    /// `br`
+    Br,
+    /// `switch`
+    Switch,
+    /// `indirectbr`
+    IndirectBr,
+    /// `invoke`
+    Invoke,
+    /// `resume`
+    Resume,
+    /// `unreachable`
+    Unreachable,
+    /// `cleanupret`
+    CleanupReturn,
+    /// `catchret`
+    CatchReturn,
+    /// `catchswitch`
+    CatchSwitch,
+    /// `callbr`
+    CallBr,
+    // Unary operators.
+    /// `fneg`
+    FNeg,
+    // Binary operators.
+    /// `add`
+    Add,
+    /// `fadd`
+    FAdd,
+    /// `sub`
+    Sub,
+    /// `fsub`
+    FSub,
+    /// `mul`
+    Mul,
+    /// `fmul`
+    FMul,
+    /// `udiv`
+    UDiv,
+    /// `sdiv`
+    SDiv,
+    /// `fdiv`
+    FDiv,
+    /// `urem`
+    URem,
+    /// `srem`
+    SRem,
+    /// `frem`
+    FRem,
+    /// `shl`
+    Shl,
+    /// `lshr`
+    LShr,
+    /// `ashr`
+    AShr,
+    /// `and`
+    And,
+    /// `or`
+    Or,
+    /// `xor`
+    Xor,
+    // Memory operators.
+    /// `alloca`
+    Alloca,
+    /// `load`
+    Load,
+    /// `store`
+    Store,
+    /// `getelementptr`
+    GetElementPtr,
+    /// `fence`
+    Fence,
+    /// `cmpxchg`
+    AtomicCmpXchg,
+    /// `atomicrmw`
+    AtomicRMW,
+    // Cast operators.
+    /// `trunc`
+    Trunc,
+    /// `zext`
+    ZExt,
+    /// `sext`
+    SExt,
+    /// `fptoui`
+    FpToUI,
+    /// `fptosi`
+    FpToSI,
+    /// `uitofp`
+    UIToFp,
+    /// `sitofp`
+    SIToFp,
+    /// `fptrunc`
+    FpTrunc,
+    /// `fpext`
+    FpExt,
+    /// `ptrtoint`
+    PtrToInt,
+    /// `ptrtoaddr`
+    PtrToAddr,
+    /// `inttoptr`
+    IntToPtr,
+    /// `bitcast`
+    BitCast,
+    /// `addrspacecast`
+    AddrSpaceCast,
+    // Funclet pad operators.
+    /// `cleanuppad`
+    CleanupPad,
+    /// `catchpad`
+    CatchPad,
+    // Other operators.
+    /// `icmp`
+    ICmp,
+    /// `fcmp`
+    FCmp,
+    /// `phi`
+    Phi,
+    /// `call`
+    Call,
+    /// `select`
+    Select,
+    /// `va_arg`
+    VAArg,
+    /// `extractelement`
+    ExtractElement,
+    /// `insertelement`
+    InsertElement,
+    /// `shufflevector`
+    ShuffleVector,
+    /// `extractvalue`
+    ExtractValue,
+    /// `insertvalue`
+    InsertValue,
+    /// `landingpad`
+    LandingPad,
+    /// `freeze`
+    Freeze,
+}
+
+/// Which `Instruction.def` group an [`Opcode`] belongs to.
+///
+/// Mirrors the `HANDLE_*_INST` families and the `FIRST_*` / `LAST_*` range
+/// tests upstream derives from them (`Instruction::isTerminator`,
+/// `isBinaryOp`, `isCast`, ...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OpcodeGroup {
+    /// `HANDLE_TERM_INST`
+    Terminator,
+    /// `HANDLE_UNARY_INST`
+    Unary,
+    /// `HANDLE_BINARY_INST`
+    Binary,
+    /// `HANDLE_MEMORY_INST`
+    Memory,
+    /// `HANDLE_CAST_INST`
+    Cast,
+    /// `HANDLE_FUNCLETPAD_INST`
+    FuncletPad,
+    /// `HANDLE_OTHER_INST`
+    Other,
+}
+
+impl Opcode {
+    /// `.ll` keyword for this opcode. Mirrors `Instruction::getOpcodeName`.
+    pub const fn keyword(self) -> &'static str {
+        match self {
+            Self::Ret => "ret",
+            Self::Br => "br",
+            Self::Switch => "switch",
+            Self::IndirectBr => "indirectbr",
+            Self::Invoke => "invoke",
+            Self::Resume => "resume",
+            Self::Unreachable => "unreachable",
+            Self::CleanupReturn => "cleanupret",
+            Self::CatchReturn => "catchret",
+            Self::CatchSwitch => "catchswitch",
+            Self::CallBr => "callbr",
+            Self::FNeg => "fneg",
+            Self::Add => "add",
+            Self::FAdd => "fadd",
+            Self::Sub => "sub",
+            Self::FSub => "fsub",
+            Self::Mul => "mul",
+            Self::FMul => "fmul",
+            Self::UDiv => "udiv",
+            Self::SDiv => "sdiv",
+            Self::FDiv => "fdiv",
+            Self::URem => "urem",
+            Self::SRem => "srem",
+            Self::FRem => "frem",
+            Self::Shl => "shl",
+            Self::LShr => "lshr",
+            Self::AShr => "ashr",
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Xor => "xor",
+            Self::Alloca => "alloca",
+            Self::Load => "load",
+            Self::Store => "store",
+            Self::GetElementPtr => "getelementptr",
+            Self::Fence => "fence",
+            Self::AtomicCmpXchg => "cmpxchg",
+            Self::AtomicRMW => "atomicrmw",
+            Self::Trunc => "trunc",
+            Self::ZExt => "zext",
+            Self::SExt => "sext",
+            Self::FpToUI => "fptoui",
+            Self::FpToSI => "fptosi",
+            Self::UIToFp => "uitofp",
+            Self::SIToFp => "sitofp",
+            Self::FpTrunc => "fptrunc",
+            Self::FpExt => "fpext",
+            Self::PtrToInt => "ptrtoint",
+            Self::PtrToAddr => "ptrtoaddr",
+            Self::IntToPtr => "inttoptr",
+            Self::BitCast => "bitcast",
+            Self::AddrSpaceCast => "addrspacecast",
+            Self::CleanupPad => "cleanuppad",
+            Self::CatchPad => "catchpad",
+            Self::ICmp => "icmp",
+            Self::FCmp => "fcmp",
+            Self::Phi => "phi",
+            Self::Call => "call",
+            Self::Select => "select",
+            Self::VAArg => "va_arg",
+            Self::ExtractElement => "extractelement",
+            Self::InsertElement => "insertelement",
+            Self::ShuffleVector => "shufflevector",
+            Self::ExtractValue => "extractvalue",
+            Self::InsertValue => "insertvalue",
+            Self::LandingPad => "landingpad",
+            Self::Freeze => "freeze",
+        }
+    }
+
+    /// Which `Instruction.def` family declares this opcode.
+    pub const fn group(self) -> OpcodeGroup {
+        match self {
+            Self::Ret
+            | Self::Br
+            | Self::Switch
+            | Self::IndirectBr
+            | Self::Invoke
+            | Self::Resume
+            | Self::Unreachable
+            | Self::CleanupReturn
+            | Self::CatchReturn
+            | Self::CatchSwitch
+            | Self::CallBr => OpcodeGroup::Terminator,
+            Self::FNeg => OpcodeGroup::Unary,
+            Self::Add
+            | Self::FAdd
+            | Self::Sub
+            | Self::FSub
+            | Self::Mul
+            | Self::FMul
+            | Self::UDiv
+            | Self::SDiv
+            | Self::FDiv
+            | Self::URem
+            | Self::SRem
+            | Self::FRem
+            | Self::Shl
+            | Self::LShr
+            | Self::AShr
+            | Self::And
+            | Self::Or
+            | Self::Xor => OpcodeGroup::Binary,
+            Self::Alloca
+            | Self::Load
+            | Self::Store
+            | Self::GetElementPtr
+            | Self::Fence
+            | Self::AtomicCmpXchg
+            | Self::AtomicRMW => OpcodeGroup::Memory,
+            Self::Trunc
+            | Self::ZExt
+            | Self::SExt
+            | Self::FpToUI
+            | Self::FpToSI
+            | Self::UIToFp
+            | Self::SIToFp
+            | Self::FpTrunc
+            | Self::FpExt
+            | Self::PtrToInt
+            | Self::PtrToAddr
+            | Self::IntToPtr
+            | Self::BitCast
+            | Self::AddrSpaceCast => OpcodeGroup::Cast,
+            Self::CleanupPad | Self::CatchPad => OpcodeGroup::FuncletPad,
+            Self::ICmp
+            | Self::FCmp
+            | Self::Phi
+            | Self::Call
+            | Self::Select
+            | Self::VAArg
+            | Self::ExtractElement
+            | Self::InsertElement
+            | Self::ShuffleVector
+            | Self::ExtractValue
+            | Self::InsertValue
+            | Self::LandingPad
+            | Self::Freeze => OpcodeGroup::Other,
+        }
+    }
+
+    /// Ports `Instruction::isTerminator`.
+    pub const fn is_terminator(self) -> bool {
+        matches!(self.group(), OpcodeGroup::Terminator)
+    }
+
+    /// Ports `Instruction::isUnaryOp`.
+    pub const fn is_unary_op(self) -> bool {
+        matches!(self.group(), OpcodeGroup::Unary)
+    }
+
+    /// Ports `Instruction::isBinaryOp`.
+    pub const fn is_binary_op(self) -> bool {
+        matches!(self.group(), OpcodeGroup::Binary)
+    }
+
+    /// Ports `Instruction::isCast`.
+    pub const fn is_cast(self) -> bool {
+        matches!(self.group(), OpcodeGroup::Cast)
+    }
+
+    /// The binary-operator opcode this is, when it is one.
+    pub const fn as_binary_opcode(self) -> Option<BinaryOpcode> {
+        Some(match self {
+            Self::Add => BinaryOpcode::Add,
+            Self::Sub => BinaryOpcode::Sub,
+            Self::Mul => BinaryOpcode::Mul,
+            Self::UDiv => BinaryOpcode::UDiv,
+            Self::SDiv => BinaryOpcode::SDiv,
+            Self::URem => BinaryOpcode::URem,
+            Self::SRem => BinaryOpcode::SRem,
+            Self::Shl => BinaryOpcode::Shl,
+            Self::LShr => BinaryOpcode::LShr,
+            Self::AShr => BinaryOpcode::AShr,
+            Self::And => BinaryOpcode::And,
+            Self::Or => BinaryOpcode::Or,
+            Self::Xor => BinaryOpcode::Xor,
+            Self::FAdd => BinaryOpcode::FAdd,
+            Self::FSub => BinaryOpcode::FSub,
+            Self::FMul => BinaryOpcode::FMul,
+            Self::FDiv => BinaryOpcode::FDiv,
+            Self::FRem => BinaryOpcode::FRem,
+            _ => return None,
+        })
+    }
+
+    /// The cast opcode this is, when it is one.
+    pub const fn as_cast_opcode(self) -> Option<CastOpcode> {
+        Some(match self {
+            Self::Trunc => CastOpcode::Trunc,
+            Self::ZExt => CastOpcode::ZExt,
+            Self::SExt => CastOpcode::SExt,
+            Self::FpToUI => CastOpcode::FpToUI,
+            Self::FpToSI => CastOpcode::FpToSI,
+            Self::UIToFp => CastOpcode::UIToFp,
+            Self::SIToFp => CastOpcode::SIToFp,
+            Self::FpTrunc => CastOpcode::FpTrunc,
+            Self::FpExt => CastOpcode::FpExt,
+            Self::PtrToInt => CastOpcode::PtrToInt,
+            Self::PtrToAddr => CastOpcode::PtrToAddr,
+            Self::IntToPtr => CastOpcode::IntToPtr,
+            Self::BitCast => CastOpcode::BitCast,
+            Self::AddrSpaceCast => CastOpcode::AddrSpaceCast,
+            _ => return None,
+        })
+    }
+}
+
+impl From<BinaryOpcode> for Opcode {
+    fn from(opcode: BinaryOpcode) -> Self {
+        match opcode {
+            BinaryOpcode::Add => Self::Add,
+            BinaryOpcode::Sub => Self::Sub,
+            BinaryOpcode::Mul => Self::Mul,
+            BinaryOpcode::UDiv => Self::UDiv,
+            BinaryOpcode::SDiv => Self::SDiv,
+            BinaryOpcode::URem => Self::URem,
+            BinaryOpcode::SRem => Self::SRem,
+            BinaryOpcode::Shl => Self::Shl,
+            BinaryOpcode::LShr => Self::LShr,
+            BinaryOpcode::AShr => Self::AShr,
+            BinaryOpcode::And => Self::And,
+            BinaryOpcode::Or => Self::Or,
+            BinaryOpcode::Xor => Self::Xor,
+            BinaryOpcode::FAdd => Self::FAdd,
+            BinaryOpcode::FSub => Self::FSub,
+            BinaryOpcode::FMul => Self::FMul,
+            BinaryOpcode::FDiv => Self::FDiv,
+            BinaryOpcode::FRem => Self::FRem,
+        }
+    }
+}
+
+impl From<UnaryOpcode> for Opcode {
+    fn from(opcode: UnaryOpcode) -> Self {
+        match opcode {
+            UnaryOpcode::FNeg => Self::FNeg,
+        }
+    }
+}
+
+impl From<CastOpcode> for Opcode {
+    fn from(opcode: CastOpcode) -> Self {
+        match opcode {
+            CastOpcode::Trunc => Self::Trunc,
+            CastOpcode::ZExt => Self::ZExt,
+            CastOpcode::SExt => Self::SExt,
+            CastOpcode::FpTrunc => Self::FpTrunc,
+            CastOpcode::FpExt => Self::FpExt,
+            CastOpcode::FpToUI => Self::FpToUI,
+            CastOpcode::FpToSI => Self::FpToSI,
+            CastOpcode::UIToFp => Self::UIToFp,
+            CastOpcode::SIToFp => Self::SIToFp,
+            CastOpcode::PtrToAddr => Self::PtrToAddr,
+            CastOpcode::PtrToInt => Self::PtrToInt,
+            CastOpcode::IntToPtr => Self::IntToPtr,
+            CastOpcode::BitCast => Self::BitCast,
+            CastOpcode::AddrSpaceCast => Self::AddrSpaceCast,
+        }
+    }
+}
+
 /// Storage payload for the binary-operator opcodes (`add`, `sub`,
 /// `mul`, ...). Mirrors the operand/flag layout of `BinaryOperator`
 /// (`InstrTypes.h`).
