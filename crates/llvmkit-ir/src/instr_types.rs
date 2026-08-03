@@ -965,6 +965,119 @@ impl WriteBinopFlags for OrFlags {
     }
 }
 
+/// Every integer-binop flag in one value, for callers holding a *runtime*
+/// [`BinaryOpcode`] rather than a statically-known one.
+///
+/// The per-opcode structs above ([`AddFlags`], [`ShlFlags`], [`UDivFlags`],
+/// [`OrFlags`], …) are the right shape when the opcode is known at the call
+/// site: each admits exactly the flags its opcode accepts, so `exact` on an
+/// `add` is unspellable. A dispatcher cannot use them — it does not know which
+/// one to name until it inspects the opcode — so it takes this instead and the
+/// *opcode* decides which flags survive.
+///
+/// Flags that do not apply to the opcode are dropped rather than rejected,
+/// mirroring how LLVM's `BinaryOperator` simply has no slot for them. The
+/// parser, this type's reason for existing, has already rejected the
+/// ill-formed spellings at the keyword level.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct IntBinOpFlags {
+    pub(crate) no_unsigned_wrap: bool,
+    pub(crate) no_signed_wrap: bool,
+    pub(crate) is_exact: bool,
+    pub(crate) disjoint: bool,
+}
+
+impl IntBinOpFlags {
+    /// No flags set.
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            no_unsigned_wrap: false,
+            no_signed_wrap: false,
+            is_exact: false,
+            disjoint: false,
+        }
+    }
+
+    /// Set `nuw`. Applies to `add` / `sub` / `mul` / `shl`.
+    #[inline]
+    #[must_use]
+    pub const fn nuw(mut self) -> Self {
+        self.no_unsigned_wrap = true;
+        self
+    }
+
+    /// Set `nsw`. Applies to `add` / `sub` / `mul` / `shl`.
+    #[inline]
+    #[must_use]
+    pub const fn nsw(mut self) -> Self {
+        self.no_signed_wrap = true;
+        self
+    }
+
+    /// Set `exact`. Applies to `udiv` / `sdiv` / `lshr` / `ashr`.
+    #[inline]
+    #[must_use]
+    pub const fn exact(mut self) -> Self {
+        self.is_exact = true;
+        self
+    }
+
+    /// Set `disjoint`. Applies to `or`.
+    #[inline]
+    #[must_use]
+    pub const fn disjoint(mut self) -> Self {
+        self.disjoint = true;
+        self
+    }
+}
+
+impl WriteBinopFlags for IntBinOpFlags {
+    /// Writes only the flags `opcode` accepts — see the type docs. The opcode
+    /// filtering happens in the builder, which knows it; this writes what it
+    /// is handed.
+    #[inline]
+    fn apply(self, payload: &mut BinaryOpData) {
+        payload.no_unsigned_wrap = self.no_unsigned_wrap;
+        payload.no_signed_wrap = self.no_signed_wrap;
+        payload.is_exact = self.is_exact;
+        payload.disjoint = self.disjoint;
+    }
+}
+
+impl BinaryOpcode {
+    /// Restrict `flags` to the ones this opcode actually carries, so a
+    /// dispatcher cannot attach `exact` to an `add`.
+    ///
+    /// Mirrors which LLVM operator subclass each opcode belongs to:
+    /// `OverflowingBinaryOperator` (`nuw`/`nsw`), `PossiblyExactOperator`
+    /// (`exact`), `PossiblyDisjointInst` (`disjoint`).
+    #[inline]
+    pub(crate) const fn accepted_flags(self, flags: IntBinOpFlags) -> IntBinOpFlags {
+        match self {
+            Self::Add | Self::Sub | Self::Mul | Self::Shl => IntBinOpFlags {
+                no_unsigned_wrap: flags.no_unsigned_wrap,
+                no_signed_wrap: flags.no_signed_wrap,
+                is_exact: false,
+                disjoint: false,
+            },
+            Self::UDiv | Self::SDiv | Self::LShr | Self::AShr => IntBinOpFlags {
+                no_unsigned_wrap: false,
+                no_signed_wrap: false,
+                is_exact: flags.is_exact,
+                disjoint: false,
+            },
+            Self::Or => IntBinOpFlags {
+                no_unsigned_wrap: false,
+                no_signed_wrap: false,
+                is_exact: false,
+                disjoint: flags.disjoint,
+            },
+            _ => IntBinOpFlags::new(),
+        }
+    }
+}
+
 // --------------------------------------------------------------------------
 // Cast-instruction flag types
 // --------------------------------------------------------------------------

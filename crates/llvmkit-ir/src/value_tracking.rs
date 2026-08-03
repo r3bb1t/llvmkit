@@ -2626,14 +2626,31 @@ fn binary_operands_of<'ctx, B: ModuleBrand + 'ctx>(
     })
 }
 
+/// Whether `value` matches upstream's `m_AllOnes()`.
+///
+/// Ports `cst_pred_ty<is_all_ones>`, which accepts a scalar `-1` *and* a
+/// vector constant whose every lane is one — the form a vector `not` takes.
+fn is_all_ones_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+    match &value.data().kind {
+        ValueKindData::Constant(ConstantData::Int(_)) => {
+            argument_constant(Some(value)).is_some_and(|constant| constant.is_all_ones())
+        }
+        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
+            !elements.is_empty()
+                && elements
+                    .iter()
+                    .all(|element| is_all_ones_constant(value_from_id(value, *element)))
+        }
+        _ => false,
+    }
+}
+
 /// `m_Not(V)`: `xor V, -1`, matched commutatively.
 fn not_operand<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
     let (lhs, rhs) = binary_operands_of(value, BinaryOpcode::Xor)?;
-    let is_all_ones =
-        |side: Value<'ctx, B>| argument_constant(Some(side)).is_some_and(|c| c.is_all_ones());
-    if is_all_ones(rhs) {
+    if is_all_ones_constant(rhs) {
         Some(lhs)
-    } else if is_all_ones(lhs) {
+    } else if is_all_ones_constant(lhs) {
         Some(rhs)
     } else {
         None

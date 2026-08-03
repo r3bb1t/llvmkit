@@ -177,40 +177,45 @@ progress: each tranche moves rows from `VALUE_TRACKING_GAPS` into
 `MODELED_VALUE_TRACKING`, and the modeled column is held to the crate by
 calling every entry.
 
-## The parser cannot read vector integer binops the builder can write (found 2026-08-03)
+## ~~The parser cannot read vector integer binops~~ — closed (2026-08-03)
 
-`and <2 x i32> %a, %b` does not parse, even though llvmkit can *build* it.
+`and <2 x i32> %a, %b` did not parse, even though llvmkit could *build* it:
+`ll_parser.rs::parse_int_binop` converted both operands to
+`IntValue<'ctx, IntDyn, B>` first, and that marker describes a **scalar**
+width. `icmp` took the same route.
 
-`ll_parser.rs::parse_int_binop` converts both operands to
-`IntValue<'ctx, IntDyn, B>` before calling a builder. That marker describes a
-**scalar** width, so a vector-of-integer value does not convert and the parse
-fails with `Expected { expected: "integer-typed lhs" }`. `icmp` takes the same
-route with the same result.
+Closed by routing vector operands to the erased builder family, which already
+emitted element-wise vector IR. The scalar path is untouched, so the
+one-literal-one-width story still holds where it can.
 
-The builder has no such limitation: the type-erased family
-(`build_int_add_dyn`, `build_int_sub_dyn`, `build_int_mul_dyn`,
-`build_int_xor_dyn`, `build_int_and_dyn`, `build_int_or_dyn`,
-`build_int_shl_dyn`, `build_int_lshr_dyn`, `build_int_ashr_dyn`,
-`build_int_cmp_with_flags_dyn`) accepts erased operands and emits element-wise
-vector IR — `crates/llvmkit-ir/tests/builder_vector_binop_dyn.rs` is the
-existing coverage. So this is a **parser routing gap**, not a missing
-capability, and it is narrower than a first look suggested.
+What it took, beyond the routing itself:
 
-Closing it needs three things:
+- Four missing erased builders — `build_int_udiv_dyn`, `build_int_sdiv_dyn`,
+  `build_int_urem_dyn`, `build_int_srem_dyn`. The family had stopped at the
+  shifts.
+- **Flag plumbing.** The erased builders built `BinaryOpData::new(..)` and left
+  every flag false, so routing the parser through them as-written would have
+  made `add nuw <2 x i32>` parse and print as a plain `add`. `IntBinOpFlags`
+  carries all four flags for a caller holding a runtime opcode, and
+  `BinaryOpcode::accepted_flags` drops the ones the opcode cannot express.
+- **A vector-capable `icmp`.** `build_int_cmp_with_flags_dyn` is *not* part of
+  the erased family — its `_dyn` means dynamic *width*, it routes through the
+  scalar-only `IntoIntValue`, and it mints an `IntValueId<bool, B>` that cannot
+  describe `<N x i1>`. `build_int_cmp_erased` computes the lane-matched result
+  type and returns an erased id.
+- **Operand-type validation** in the erased path, which previously left it to
+  the verifier. A caller reaching it has a runtime type in hand and no
+  conversion to bounce off, so an `and` on two floats would have built silently.
 
-1. Four missing `_dyn` builders — `udiv`, `sdiv`, `urem`, `srem` — since the
-   erased family stops at the shifts.
-2. Parser routing: when the parsed type is a vector of integers, take the
-   `_dyn` path instead of converting to `IntValue`. The typed path stays for
-   scalars so the scalar type-safety story is untouched.
-3. Round-trip coverage, since printing vector binops is already exercised but
-   parse-then-print is not.
+One follow-on fidelity fix in `value_tracking.rs`: `m_AllOnes` matching was
+scalar-only, so `xor %v, splat (i32 -1)` was not recognised as a `not` and the
+`(A & B) op ~(A | B)` case of `haveNoCommonBitsSet` failed on vectors.
 
-Cost of leaving it: `clang -O2` emits vector binops as soon as the vectoriser
-fires, so the parser rejects ordinary optimised output. It also blocks the
-vector half of several upstream `ValueTracking` and `InstSimplify` fixtures —
-`TEST_F(ValueTrackingTest, HaveNoCommonBitsSet)`'s third block is the first one
-a port actually hit.
+Note the `_dyn` suffix now carries two meanings in `ir_builder.rs` — *erased
+value* (`build_int_add_dyn`) and *dynamic width* (`build_int_cmp_with_flags_dyn`).
+The repo's naming law reserves `_dyn` for the erased half of a typed/erased
+pair, so the compare family is the misnamed one. Renaming it is a breaking
+change and was left out of this fix.
 
 ## ~~KnownBits — operations not modeled~~ — closed (2026-08-01)
 

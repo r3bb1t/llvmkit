@@ -54,6 +54,11 @@ fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, 
 ///
 /// Upstream asserts both operand orders for every pair, which is what exercises
 /// `haveNoCommonBitsSetSpecialCases` being tried twice.
+///
+/// The vector block spells its all-ones constant as `splat (i32 -1)` rather
+/// than upstream's `<i32 -1, i32 -1>`: LLVM 22 prints splat constants in the
+/// shorthand, so that is what llvmkit's printer round-trips to. The constant
+/// is the same value.
 #[test]
 fn have_no_common_bits_set_fixtures() {
     /// One upstream block: a name, its IR, and the `%lhs` / `%rhs` pairs it
@@ -97,14 +102,24 @@ define void @test(i32 noundef %A, i32 noundef %B) {
 ",
             &[("LHS", "RHS"), ("LHS2", "RHS2")],
         ),
-        // Upstream's third block repeats the second over `<2 x i32>`. It is
-        // **not** ported, because the parser cannot read it: `parse_int_binop`
-        // converts both operands to the scalar-only `IntValue` first, so
-        // `and <2 x i32> %A, %B` fails with "integer-typed lhs". llvmkit can
-        // *build* vector binops through the type-erased `build_int_*_dyn`
-        // family, so this is a parser routing gap rather than a missing
-        // capability, and nothing to do with `haveNoCommonBitsSet`. Recorded in
-        // `docs/future-work.md`.
+        (
+            // Check for (A & B) and ~(A | B) in vector version.
+            "and versus nor, vector",
+            r"
+define void @test(<2 x i32> noundef %A, <2 x i32> noundef %B) {
+  %LHS = and <2 x i32> %A, %B
+  %or = or <2 x i32> %A, %B
+  %RHS = xor <2 x i32> %or, splat (i32 -1)
+
+  %LHS2 = and <2 x i32> %B, %A
+  %or2 = or <2 x i32> %A, %B
+  %RHS2 = xor <2 x i32> %or2, splat (i32 -1)
+
+  ret void
+}
+",
+            &[("LHS", "RHS"), ("LHS2", "RHS2")],
+        ),
     ];
 
     for (name, source, pairs) in cases {

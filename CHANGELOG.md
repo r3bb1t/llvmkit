@@ -7,6 +7,43 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### Parser: vector integer arithmetic and comparison
+
+`and <2 x i32> %a, %b` now parses. It did not before: the parser converted both
+operands to `IntValue`, whose `IntWidth` marker describes a scalar width, so
+every integer binop and `icmp` rejected vector operands. `clang -O2` output was
+unparseable as soon as the vectorizer fired.
+
+#### Added
+
+- `IRBuilder::build_int_binop_erased` — an integer binop on erased operands
+  with a *runtime* opcode, for callers like the `.ll` parser that do not know
+  the opcode statically. Returns an erased `ValueId<B>`, since the result may
+  be a vector.
+- `IRBuilder::build_int_cmp_erased` — `icmp` on erased operands, yielding `i1`
+  or `<N x i1>` to match. `build_int_cmp_with_flags_dyn` cannot serve: its
+  `_dyn` means dynamic *width*, it routes through the scalar-only
+  `IntoIntValue`, and its `IntValueId<bool, B>` result cannot describe a vector.
+- `IntBinOpFlags`, carrying all four integer-binop flags at once, plus
+  `BinaryOpcode::accepted_flags` to drop the ones an opcode cannot express.
+- `build_int_udiv_dyn`, `build_int_sdiv_dyn`, `build_int_urem_dyn`,
+  `build_int_srem_dyn` — the erased family had stopped at the shifts.
+
+#### Changed
+
+- The erased integer-binop path now **validates** operand types instead of
+  leaving it to `verify()`. A caller reaching it has a runtime type in hand and
+  no conversion to bounce off, so `and` on two floats used to build silently.
+- The erased builders now carry flags. They previously built
+  `BinaryOpData::new(..)` with every flag false, so routing the parser through
+  them as-written would have made `add nuw <2 x i32>` print as a plain `add`.
+- `haveNoCommonBitsSet` recognises a vector `not`: `m_AllOnes` matching was
+  scalar-only, so `xor %v, splat (i32 -1)` was not seen as a `not` and the
+  `(A & B) op ~(A | B)` case failed on vectors.
+
+The scalar path is untouched — vectors are routed around the typed handles,
+not through a relaxed version of them.
+
 ### ValueTracking: value-level predicates — tranche 1 complete
 
 The predicates that sit directly on known bits. No new types; the tranche was
