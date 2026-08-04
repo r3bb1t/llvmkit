@@ -1308,9 +1308,12 @@ emits, so they are documented here rather than left to surprise a diff:
 ## Proof in the repository
 
 The compile-fail suite locks these guarantees with `trybuild`. As of 0.0.4 it
-registers **83 fixtures — 82 `t.compile_fail` plus 1 `t.pass` — and the baseline
-is 0 failures**. All of them live in `crates/llvmkit-ir/tests/compile_fail/` and
-are registered in `crates/llvmkit-ir/tests/typestate_compile_fail.rs`.
+registers **85 fixtures — 84 `t.compile_fail` plus 1 `t.pass` — and the baseline
+is 0 failures** on the pinned toolchain (`cargo +1.96.0`; a newer rustc rewords
+diagnostics and produces `.stderr` mismatches that are not regressions). All of
+them live in `crates/llvmkit-ir/tests/compile_fail/` and are registered in
+`crates/llvmkit-ir/tests/typestate_compile_fail.rs`, which is the count's
+source of truth — `CLAUDE.md` tracks the same figure.
 
 The sketch below is **abridged and regrouped by section of this page** — it is
 not the file's registration order, and the grouping comments are this page's,

@@ -12,6 +12,14 @@ without linking against `libLLVM`; bitcode support is still ahead.
 
 Tracking **LLVM 22.1.4** (`llvmorg-22.1.4`, released 2026-04-21).
 
+> **The crates.io badge above shows 0.0.3, which is the last published
+> release. The list below describes 0.0.4, which is unreleased** — so
+> `cargo add llvmkit` today gets the older closure-scoped API
+> (`Module::with_new`), not the owned modules and storable ids described here.
+> Track `main` for the 0.0.4 surface. The project is pre-1.0 and, under
+> Cargo's pre-1.0 rules, every `0.0.x` is mutually incompatible; see
+> [ROADMAP.md](ROADMAP.md) for the release sequence.
+
 Shipped today:
 
 - **Owned modules and storable ids** — the 0.0.4 handle model. `Module<B, S>`
@@ -84,11 +92,27 @@ Shipped today:
   the bundled `Analyses` manager, `PreservedAnalyses`,
   `PassInstrumentationCallbacks`, and the `#[function_pass]` / `#[module_pass]`
   authoring macros. See [Built-in Analyses and Custom Passes](#built-in-analyses-and-custom-passes).
-- **KnownBits / ValueTracking subset** — shipped for represented integer,
-  pointer, fixed-vector, and intrinsic facts; full LLVM parity is not claimed.
-  The surface includes `KnownBits`, `compute_known_bits`,
-  `KnownBitsAnalysis`, `ValueTrackingQuery`, recursion budgeting,
-  dominator-tree hooks, and a reusable per-analysis cache.
+- **KnownBits — complete.** `KnownBits.h`'s public surface is fully modeled,
+  compiler-verified: the parity ledger
+  (`crates/llvmkit-ir/tests/value_tracking_parity.rs`) asserts an *empty* gap
+  list, so a regression or a newly-synced upstream method has to be
+  acknowledged rather than absorbed.
+- **ValueTracking — 90 of 101 entry points**, tracked symbol-by-symbol in the
+  same ledger, which asserts that modeled plus gaps equals the audited surface
+  so a symbol cannot be silently neither. Beyond `compute_known_bits` itself
+  (with `KnownBitsAnalysis`, `ValueTrackingQuery`, recursion budgeting,
+  dominator-tree hooks and a reusable per-analysis cache) this covers the
+  select-pattern vocabulary and matching (`select_pattern.rs`), pointer and
+  object analysis (`pointer_analysis.rs`), speculation safety and UB
+  reachability (`speculation.rs`), `@llvm.assume` with its dominating-condition
+  cache (`assumptions.rs`, `implied_conditions.rs`), and floating-point
+  classification — the `FPClassTest` / `KnownFPClass` lattice (`fp_class.rs`),
+  `computeKnownFPClass` and its predicates (`known_fp_class.rs`), and
+  `fcmpImpliesClass` (`fp_predicate.rs`). `computeKnownFPClass`'s opcode
+  dispatch is deliberately partial; its module header names every arm that is
+  not yet consulted, and an unconsulted arm only ever weakens an answer.
+  The remaining eleven gaps each carry a recorded reason —
+  see [`docs/future-work.md`](docs/future-work.md).
 - **Represented intrinsic signatures and facts** — shipped for the modeled
   `llvm.*` signature families listed in `ROADMAP.md`: `assume`; integer or
   fixed-vector overloads of `abs`, bit permutations, counts, funnel shifts,
@@ -123,9 +147,10 @@ Not shipped yet:
 - **Full metadata / attribute surface beyond the represented range,
   `absolute_symbol`, debug/use-list, and `returned` facts**
 - **Bitcode reader / writer**
-- **Full KnownBits / ValueTracking / DemandedBits / SimplifyDemandedBits
-  parity** — the parity ledger remains open for remaining `KnownBits.cpp`
-  formulas, `ValueTracking.cpp` operator arms, demanded-bit rules, and
+- **Full ValueTracking / DemandedBits / SimplifyDemandedBits parity** — the
+  ledger is closed for `KnownBits.h` and open for the eleven remaining
+  `ValueTracking.h` entry points, some `ValueTracking.cpp` operator arms
+  (notably `computeKnownFPClass`'s dispatch), demanded-bit rules, and
   `InstCombineSimplifyDemanded` transforms.
 - **Additional or currently unrepresented `llvm.*` intrinsic IDs, signatures,
   and facts** — new IDs and verifier signatures must land before analysis facts
@@ -487,7 +512,7 @@ and no runtime check to reach. Upstream accepts each of these as `Value *` and
 reports them from `Verifier.cpp`, later, if verification runs at all. The
 mapping from each upstream verifier message to the llvmkit type that forecloses
 it is tabulated in [Type Safety: llvmkit vs. LLVM C++](docs/type-safety-vs-llvm.md),
-and 82 compile-fail fixtures lock the guarantees.
+and 84 compile-fail fixtures lock the guarantees.
 
 **3. Verification is a typestate, not a function you must remember to call.**
 `Module::verify(self)` consumes `Module<B, Unverified>` and returns
