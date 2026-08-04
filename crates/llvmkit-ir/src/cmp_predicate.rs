@@ -189,6 +189,33 @@ impl FloatPredicate {
         }
     }
 
+    /// Whether the predicate is ordered — false whenever either operand is
+    /// NaN. Mirrors the FCMP arm of `CmpInst::isOrdered` (`Instructions.cpp`).
+    #[inline]
+    pub const fn is_ordered(self) -> bool {
+        matches!(
+            self,
+            Self::Oeq | Self::One | Self::Ogt | Self::Olt | Self::Oge | Self::Ole | Self::Ord
+        )
+    }
+
+    /// Whether the predicate is unordered — true whenever either operand is
+    /// NaN. Mirrors `CmpInst::isUnordered`.
+    #[inline]
+    pub const fn is_unordered(self) -> bool {
+        matches!(
+            self,
+            Self::Ueq | Self::Une | Self::Ugt | Self::Ult | Self::Uge | Self::Ule | Self::Uno
+        )
+    }
+
+    /// Whether the predicate tests equality in either direction. Mirrors the
+    /// FCMP arm of `CmpInst::isEquality`.
+    #[inline]
+    pub const fn is_equality(self) -> bool {
+        matches!(self, Self::Oeq | Self::One | Self::Ueq | Self::Une)
+    }
+
     /// Predicate yielded by swapping the comparison operands.
     /// Mirrors `CmpInst::getSwappedPredicate` (`Instructions.cpp`).
     #[inline]
@@ -325,6 +352,13 @@ impl IntPredicate {
     #[inline]
     pub const fn is_unsigned(self) -> bool {
         matches!(self, Self::Ugt | Self::Uge | Self::Ult | Self::Ule)
+    }
+
+    /// `true` iff this predicate tests equality. Mirrors the ICMP arm of
+    /// `CmpInst::isEquality`.
+    #[inline]
+    pub const fn is_equality(self) -> bool {
+        matches!(self, Self::Eq | Self::Ne)
     }
 
     /// Inverse predicate. Mirrors the ICMP arm of
