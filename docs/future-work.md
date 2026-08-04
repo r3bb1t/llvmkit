@@ -123,6 +123,23 @@ Nothing is *wrong* today — a missing refinement only leaves the answer weaker 
 which is why no test caught it. It was found by reading the C++ beside the
 Rust, not by running anything.
 
+**Take tranche 8 next, then 7.** Tranche 8 is the last unblocker: `@llvm.assume`
+is the one arm `is_known_not_undef_or_poison` still records as deferred, and
+`is_known_to_be_a_power_of_two` / `is_known_non_equal` each skip an
+assumption-driven refinement. `isImpliedCondition` builds on the same machinery,
+so tranche 8 and the implied-conditions pair are one slice. Tranche 7 needs a
+new `FPClassTest` / `KnownFPClass` lattice and nothing waits on it, so it is a
+clean standalone finish.
+
+**Run both doc gates per slice, not just fmt/clippy/tests.** Three tranches ran
+without them and a `private_intra_doc_links` error — a public doc linking the
+crate-private `ConstantData` — sat unnoticed until it was asked for:
+
+```
+RUSTDOCFLAGS="-D warnings" cargo +1.96.0 doc --workspace --no-deps --all-features
+cargo +1.96.0 test --workspace --doc --all-features
+```
+
 Two things tranche 6 turned up that are worth carrying forward:
 
 - **Upstream's own unit tests for the dominating-condition arm do not cover
@@ -174,7 +191,7 @@ Two things tranche 6 turned up that are worth carrying forward:
 
 The full working spec — upstream anchors, settled design decisions, the
 surface-audit recipe, and the traps already hit — is at
-`docs/superpowers/specs/2026-08-03-valuetracking-remaining-tranches.md`. That
+`docs/superpowers/specs/2026-08-04-valuetracking-remaining-tranches.md`. That
 directory is gitignored, so the file is local to the working tree; the
 decisions that outlive it are recorded here.
 
