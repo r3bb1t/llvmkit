@@ -83,7 +83,7 @@ and asserted to sum to the audited surface.
 | ~~6 speculation/UB~~ | 0 | **done** — `crates/llvmkit-ir/src/speculation.rs` |
 | ~~8 assumptions~~ | 0 | **done** — `crates/llvmkit-ir/src/assumptions.rs` |
 | ~~implied conditions~~ | 0 | **done** — `crates/llvmkit-ir/src/implied_conditions.rs` |
-| 7 FP class | 11 | the only tranche needing a new *lattice* rather than a new consumer |
+| 7 FP class | 11 | the lattice itself (`fp_class.rs`) landed 2026-08-04; the 11 `ValueTracking.h` entry points over it are next |
 | residue | 6 | small, independent |
 | expose-only | 2 | `matchSimpleRecurrence` and `computeKnownBitsFromRangeMetadata` already exist as crate-private helpers |
 | partial | 1 | `getInverseMinMaxIntrinsic` — integer arms done, 6 FP intrinsics unrepresentable |
@@ -263,7 +263,7 @@ not on missing effort. Measured against the vendored 22.1.4 tree:
 | Prerequisite | Upstream size | llvmkit today | Gap |
 |---|---|---|---|
 | `ConstantRange` | 632 (`.h`) + 2314 (`.cpp`) | `constant_range.rs`, 223 lines, **15 of 78** public methods | ~63 methods + `ConstantRangeTest.cpp` (~2800 lines) |
-| `KnownFPClass` / `FPClassTest` | `FloatingPointMode.h` 290, plus ~1500 lines of `computeKnownFPClass` | **absent** | a whole FP lattice |
+| `KnownFPClass` / `FPClassTest` | `FloatingPointMode.h` 290 + `KnownFPClass.h` 324, plus ~1500 lines of `computeKnownFPClass` | `fp_class.rs` — the lattice and every predicate over it | **lattice done 2026-08-04**; `computeKnownFPClass` and the `KnownFPClass.cpp` operations it uses remain |
 | `AssumptionCache` | 280 + 310 | `assumptions.rs`, with `DomConditionCache` alongside | **done 2026-08-04** (tranche 8) |
 | `SelectPatternResult` | declared in `ValueTracking.h` | `select_pattern.rs` | **done 2026-08-03** (tranches 4a/4b) |
 | `TargetLibraryInfo` | 664 | `target_library_info.rs`, 427 lines | partial; may already suffice |
