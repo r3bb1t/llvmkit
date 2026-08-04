@@ -72,9 +72,10 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 
 ## ValueTracking.h — remaining tranches, and the order to take them
 
-**Status after the FP select arm (2026-08-04):** 89 of 101 entry points modeled,
-12 gaps, all symbol-keyed in `crates/llvmkit-ir/tests/value_tracking_parity.rs`
-and asserted to sum to the audited surface.
+**Status after the and/xor/or idioms (2026-08-04):** 90 of 101 entry points
+modeled, 11 gaps, all symbol-keyed in
+`crates/llvmkit-ir/tests/value_tracking_parity.rs` and asserted to sum to the
+audited surface.
 
 `computeKnownFPClass` is modeled but its **dispatch is partial** — the entry
 point exists and every unported arm is named in `known_fp_class.rs`'s header.
@@ -94,7 +95,7 @@ is the honest record.
 | ~~7 FP class~~ | 0 | **done** — `fp_class.rs` (lattice + every `KnownFPClass.cpp` operation) and `known_fp_class.rs` (`computeKnownFPClass` + the nine predicates) |
 | ~~FP select arm~~ | 0 | **done** — `fp_predicate.rs` (`fcmpImpliesClass`) plus `adjust_known_fp_class_for_select_arm` and the `select` dispatch arm |
 | dead upstream declaration | 1 | `analyzeKnownFPClassFromSelect`, see below |
-| residue | 6 | small, independent |
+| residue | 5 | small, independent — `analyzeKnownBitsFromAndXorOr` is done |
 | expose-only | 2 | `matchSimpleRecurrence` and `computeKnownBitsFromRangeMetadata` already exist as crate-private helpers |
 | partial | 1 | `getInverseMinMaxIntrinsic` — integer arms done, 6 FP intrinsics unrepresentable |
 | sibling | 1 | `matchSimpleBinaryIntrinsicRecurrence` |
@@ -111,7 +112,7 @@ an assumption-driven refinement today. Tranche 7 is the largest and gains
 nothing from going early.
 
 
-### Found while porting tranche 6: the `and` / `xor` known-bits arm is narrow
+### Found while porting tranche 6: the `and` / `xor` known-bits arm is narrow — **closed 2026-08-04**
 
 `bitwise_known` in `value_tracking.rs` ports only part of upstream's
 `getKnownBitsFromAndXorOr` (`ValueTracking.cpp`). It has the general
@@ -130,9 +131,23 @@ also the prerequisite for `analyzeKnownBitsFromAndXorOr`, which is exactly
 `getKnownBitsFromAndXorOr` with the operand known-bits passed in and is
 currently in the residue gap list.
 
-Nothing is *wrong* today — a missing refinement only leaves the answer weaker —
+Nothing was *wrong* — a missing refinement only leaves the answer weaker —
 which is why no test caught it. It was found by reading the C++ beside the
 Rust, not by running anything.
+
+Both arms are now ported, and the prediction held: with `bitwise_known`
+complete, `analyzeKnownBitsFromAndXorOr` was a thin wrapper over it, so the
+public entry point fell out and the ledger row moved with it. The shared body
+is `and_xor_or_known` in `value_tracking.rs`, mirroring upstream's split
+between `getKnownBitsFromAndXorOr` and its public re-export.
+
+No upstream fixture isolates either arm — LLVM reaches them through
+InstCombine's demanded-bits path, and the nearest `.ll` files
+(`test/Transforms/InstCombine/ispow2.ll`) go through `isKnownToBeAPowerOfTwo`
+instead. The tests here are therefore llvmkit-specific, but their expected
+values are upstream's own formulas (`KnownLHS.blsi()`, `XBits.blsmsk()`)
+applied to the operand bits, so what they pin is that the *matcher* routes
+correctly rather than a mask derived by hand.
 
 ### Found while porting tranche 8: the integer min/max matcher was narrow *and* too permissive
 
@@ -199,11 +214,14 @@ coverage being subsumed by the real ports.
 `nofpclass` on a parameter or call return is still unmodeled, which is why two of
 `SqrtNszSignBit`'s four blocks are not ported.
 
-### Order for the remaining 12 (recorded 2026-08-04)
+### Order for the remaining 11 (recorded 2026-08-04)
 
-1. **Residue (6).** Independent. Start with `analyzeKnownBitsFromAndXorOr`,
-   because `bitwise_known` is a partial port of the same upstream function —
-   closing its two missing idiom arms makes the public entry point fall out.
+1. **Residue (5).** Independent, no shared blocker: `collectPossibleValues`,
+   `getFlippedStrictnessPredicateAndConstant`, `getIntrinsicForCallSite`,
+   `isOverflowIntrinsicNoWrap`, `stripNullTest`. Two carry known caveats —
+   `getFlippedStrictnessPredicateAndConstant` mints a constant, which is the
+   standing "not ported" ground, and `isOverflowIntrinsicNoWrap` needs
+   `BasicBlockEdge::isSingleEdge`, which does not exist yet.
 2. **Expose-only (2).** `computeKnownBitsFromRangeMetadata` is not a rename:
    upstream takes an `MDNode` where llvmkit's helper is value-shaped, so the
    public parameter is a real design decision.

@@ -7,6 +7,29 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ValueTracking: the and/xor/or known-bits idioms
+
+#### Added
+
+- `analyze_known_bits_from_and_xor_or`, porting
+  `llvm::analyzeKnownBitsFromAndXorOr`: the known bits of an `and` / `or` /
+  `xor` given both operands' bits, which upstream exposes so
+  `SimplifyDemandedUseBits` can reuse the reasoning with bits it has already
+  narrowed. `None` for a value that is not one of the three — upstream reaches
+  an `llvm_unreachable` there, which is a caller precondition.
+
+#### Fixed
+
+- The `and` / `or` / `xor` known-bits walk was missing two of upstream's
+  refinements, so it answered weaker than LLVM on both: `and(x, -x)` isolates
+  the lowest set bit (`KnownBits::blsi`, taken from whichever operand has the
+  fewer possible trailing zeros) and `xor(x, x - 1)` masks the low bits
+  (`KnownBits::blsmsk`). Both need a bit already known set, which is upstream's
+  own `HasKnownOne` gate. The odd-operand refinement that was already there is
+  unchanged.
+
+Ledger: **90 of 101 modeled, 11 gaps.**
+
 ### ValueTracking: the floating-point select arm and the context arm
 
 #### Added

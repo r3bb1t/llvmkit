@@ -14,7 +14,8 @@
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
-    DynBrand, Module, Unverified, Value, ValueTrackingQuery, have_no_common_bits_set,
+    DynBrand, KnownBits, Module, Unverified, Value, ValueTrackingQuery,
+    analyze_known_bits_from_and_xor_or, compute_known_bits, have_no_common_bits_set,
     is_known_non_equal, is_known_to_be_a_power_of_two,
 };
 
@@ -463,5 +464,127 @@ define void @test(i16 %x) {
         !is_known_to_be_a_power_of_two(named(&module, "shifted_three"), false, &query)
             .expect("query"),
         "%shifted_three is not a power of two"
+    );
+}
+
+// --------------------------------------------------------------------------
+// getKnownBitsFromAndXorOr — the two idiom arms, and the public entry point
+// --------------------------------------------------------------------------
+
+/// `and(x, -x)` isolates the lowest set bit, so the answer is `KnownBits::blsi`
+/// of whichever operand has the fewer possible trailing zeros.
+///
+/// No upstream test isolates this arm: LLVM reaches it through InstCombine's
+/// demanded-bits machinery, and the nearest fixtures
+/// (`test/Transforms/InstCombine/ispow2.ll`) go through
+/// `isKnownToBeAPowerOfTwo` instead. The expectation here is not derived by
+/// hand — it is upstream's own formula, `KnownLHS.blsi()`, applied to the
+/// operand bits `compute_known_bits` reports, so what the test pins is that the
+/// matcher routes to `blsi` at all.
+#[test]
+fn and_of_a_value_and_its_negation_isolates_the_lowest_set_bit() {
+    let module = parse(
+        r"
+define i8 @blsi(i8 %a) {
+  %x = or i8 %a, 4
+  %negated = sub i8 0, %x
+  %isolated = and i8 %x, %negated
+  ret i8 %isolated
+}
+",
+    );
+    let data_layout = module.data_layout();
+    let query: ValueTrackingQuery<'_, '_, DynBrand> = ValueTrackingQuery::new(&data_layout);
+
+    // `or %a, 4` puts a known one at bit 2, which is what both idiom arms need.
+    let source = compute_known_bits(named(&module, "x"), &query).expect("known bits");
+    assert!(source.is_known_one(2), "the or pins bit 2");
+
+    let isolated = compute_known_bits(named(&module, "isolated"), &query).expect("known bits");
+    assert_eq!(isolated, source.blsi());
+
+    // Without the arm the plain `and` of the two would say nothing about the
+    // bits above the lowest one; `blsi` clears them.
+    assert!(isolated.count_min_leading_zeros() > 0);
+}
+
+/// `xor(x, x - 1)` sets every bit up to and including the lowest set one, so
+/// the answer is `KnownBits::blsmsk` of `x`.
+///
+/// Same provenance note as the `blsi` case above: no upstream test isolates the
+/// arm, and the expectation is upstream's own `XBits.blsmsk()`.
+#[test]
+fn xor_of_a_value_and_its_predecessor_masks_the_low_bits() {
+    let module = parse(
+        r"
+define i8 @blsmsk(i8 %a) {
+  %x = or i8 %a, 4
+  %minus_one = add i8 %x, -1
+  %mask = xor i8 %x, %minus_one
+  ret i8 %mask
+}
+",
+    );
+    let data_layout = module.data_layout();
+    let query: ValueTrackingQuery<'_, '_, DynBrand> = ValueTrackingQuery::new(&data_layout);
+
+    let source = compute_known_bits(named(&module, "x"), &query).expect("known bits");
+    let mask = compute_known_bits(named(&module, "mask"), &query).expect("known bits");
+    assert_eq!(mask, source.blsmsk());
+    assert!(mask.count_min_leading_zeros() > 0);
+}
+
+/// The public entry point answers the same thing as the operator walk when it
+/// is handed the operand bits that walk would have computed, and declines a
+/// value that is not an `and` / `or` / `xor`.
+///
+/// Ports `llvm::analyzeKnownBitsFromAndXorOr`, which upstream exposes so
+/// `SimplifyDemandedUseBits` can reuse the reasoning with bits it has already
+/// narrowed. Upstream has no unit test for it; the agreement asserted here is
+/// the contract that makes the sharing sound.
+#[test]
+fn analyze_known_bits_from_and_xor_or_agrees_with_the_operator_walk() {
+    let module = parse(
+        r"
+define void @ops(i8 %a, i8 %b) {
+  %x = or i8 %a, 4
+  %negated = sub i8 0, %x
+  %isolated = and i8 %x, %negated
+  %plain = xor i8 %a, %b
+  %not_bitwise = add i8 %a, %b
+  ret void
+}
+",
+    );
+    let data_layout = module.data_layout();
+    let query: ValueTrackingQuery<'_, '_, DynBrand> = ValueTrackingQuery::new(&data_layout);
+
+    for (name, lhs, rhs) in [("isolated", "x", "negated"), ("plain", "a", "b")] {
+        let operation = named(&module, name);
+        let known_lhs = compute_known_bits(named(&module, lhs), &query).expect("known bits");
+        let known_rhs = compute_known_bits(named(&module, rhs), &query).expect("known bits");
+        let direct =
+            analyze_known_bits_from_and_xor_or(operation, &known_lhs, &known_rhs, &query, 0)
+                .expect("no error")
+                .expect("an and/or/xor");
+        assert_eq!(
+            direct,
+            compute_known_bits(operation, &query).expect("known bits"),
+            "%{name}"
+        );
+    }
+
+    // An `add` is not one of the three; upstream reaches an `llvm_unreachable`.
+    let unknown = KnownBits::unknown(8);
+    assert_eq!(
+        analyze_known_bits_from_and_xor_or(
+            named(&module, "not_bitwise"),
+            &unknown,
+            &unknown,
+            &query,
+            0,
+        )
+        .expect("no error"),
+        None
     );
 }

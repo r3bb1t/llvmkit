@@ -1108,6 +1108,54 @@ fn scalar_type_id(module: &ModuleCore, ty: TypeSlot) -> TypeSlot {
     }
 }
 
+/// The known bits of an `and` / `or` / `xor` given both operands' known bits.
+///
+/// Ports `llvm::analyzeKnownBitsFromAndXorOr`, which upstream exposes so
+/// `SimplifyDemandedUseBits` can reuse the reasoning with operand bits it has
+/// already narrowed rather than recomputing them.
+///
+/// `None` when `operation` is not one of the three — upstream reaches an
+/// `llvm_unreachable` there, which is a caller precondition rather than a
+/// reachable state.
+///
+/// Upstream's wrapper pins demanded elements to all lanes rather than
+/// inheriting the caller's, and that is reproduced: only the odd-operand
+/// refinement reads them, and it recurses on an operand of the whole
+/// operation, not on a lane of it.
+pub fn analyze_known_bits_from_and_xor_or<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    operation: Value<'ctx, B>,
+    known_lhs: &KnownBits,
+    known_rhs: &KnownBits,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> IrResult<Option<KnownBits>> {
+    let (data, opcode) = match instruction_kind(operation) {
+        Some(InstructionKindData::And(data)) => (data, BinaryOpcode::And),
+        Some(InstructionKindData::Or(data)) => (data, BinaryOpcode::Or),
+        Some(InstructionKindData::Xor(data)) => (data, BinaryOpcode::Xor),
+        _ => return Ok(None),
+    };
+
+    let lanes = vector_shape(operation).filter(|(_, scalable)| !scalable);
+    let demanded = ApInt::all_ones(lanes.map_or(1, |(lanes, _)| lanes));
+    let query = query.with_temporary_demanded_elements(&demanded);
+
+    let mut stack = HashSet::new();
+    and_xor_or_known(
+        operation,
+        data,
+        opcode,
+        OperandKnownBits {
+            lhs: known_lhs,
+            rhs: known_rhs,
+        },
+        &query,
+        depth,
+        &mut stack,
+    )
+    .map(Some)
+}
+
 fn binary_operand_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     data: &BinaryOpData,
@@ -1189,12 +1237,82 @@ fn bitwise_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let (lhs, rhs) = binary_operand_known_bits(anchor, data, query, depth, stack)?;
+    and_xor_or_known(
+        anchor,
+        data,
+        opcode,
+        OperandKnownBits {
+            lhs: &lhs,
+            rhs: &rhs,
+        },
+        query,
+        depth,
+        stack,
+    )
+}
+
+/// The two operands' known bits, as `getKnownBitsFromAndXorOr` takes them.
+struct OperandKnownBits<'k> {
+    lhs: &'k KnownBits,
+    rhs: &'k KnownBits,
+}
+
+/// Ports `getKnownBitsFromAndXorOr`: the `and` / `or` / `xor` answer given both
+/// operands' known bits, plus the two idiom arms and the odd-operand
+/// refinement that sharpen it.
+fn and_xor_or_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    data: &BinaryOpData,
+    opcode: BinaryOpcode,
+    operands: OperandKnownBits<'_>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+    stack: &mut HashSet<ValueSlot>,
+) -> IrResult<KnownBits> {
+    let OperandKnownBits { lhs, rhs } = operands;
+    // Both idiom arms below need a bit already known set somewhere, since what
+    // they do is clear everything *above* the lowest one.
+    let has_known_one = !lhs.one_mask().is_zero() || !rhs.one_mask().is_zero();
+
     let mut known = match opcode {
-        BinaryOpcode::And => KnownBits::bitand(&lhs, &rhs),
-        BinaryOpcode::Or => KnownBits::bitor(&lhs, &rhs),
-        BinaryOpcode::Xor => KnownBits::bitxor(&lhs, &rhs),
+        BinaryOpcode::And => {
+            let mut known = KnownBits::bitand(lhs, rhs);
+            // `and(x, -x)` clears all but the lowest set bit. Upstream's
+            // comment: `-(-x) == x`, so take whichever side gives the better
+            // answer. Its `TODO` about InstCombine reassociating the `and` and
+            // hiding the pattern is inherited.
+            if has_known_one && is_negation_pair(anchor, data) {
+                known = if lhs.count_max_trailing_zeros() <= rhs.count_max_trailing_zeros() {
+                    lhs.blsi()
+                } else {
+                    rhs.blsi()
+                };
+            }
+            known
+        }
+        BinaryOpcode::Or => KnownBits::bitor(lhs, rhs),
+        BinaryOpcode::Xor => {
+            let mut known = KnownBits::bitxor(lhs, rhs);
+            // `xor(x, x - 1)` likewise. Upstream's `TODO` — that `xor(x, x - C)`
+            // agrees with it on the demanded bits for any `C` — is inherited.
+            if has_known_one && let Some(base) = xor_with_self_minus_one(anchor, data) {
+                // The answer is about `x`, so pick the side that *is* `x`.
+                known = if data.lhs.get() == base {
+                    lhs.blsmsk()
+                } else {
+                    rhs.blsmsk()
+                };
+            }
+            known
+        }
+        // Upstream's `llvm_unreachable("Invalid Op used in
+        // 'analyzeKnownBitsFromAndXorOr'")`. Callers inside this module dispatch
+        // on the opcode first; the public entry point rejects the others.
         _ => KnownBits::unknown(lhs.bit_width()),
     };
+
+    // `and(x, add(x, -1))` always clears the low bit and `xor`/`or` always set
+    // it; upstream generalises to `add(x, y)` for any odd `y`.
     if !known.is_known_zero(0)
         && !known.is_known_one(0)
         && let Some(odd) = bitwise_self_plus_odd_operand(anchor, data)
@@ -1209,6 +1327,49 @@ fn bitwise_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
         }
     }
     Ok(known)
+}
+
+/// Whether the two operands are `x` and `-x` in either order. Ports
+/// `m_c_And(m_Value(X), m_Neg(m_Deferred(X)))`.
+fn is_negation_pair<'ctx, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    data: &BinaryOpData,
+) -> bool {
+    let lhs = value_from_id(anchor, data.lhs.get());
+    let rhs = value_from_id(anchor, data.rhs.get());
+    is_negation_of_operand(rhs, lhs) || is_negation_of_operand(lhs, rhs)
+}
+
+/// The `x` of `xor(x, add(x, -1))`, matched in either order. Ports
+/// `m_c_Xor(m_Value(X), m_Add(m_Deferred(X), m_AllOnes()))`.
+fn xor_with_self_minus_one<'ctx, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    data: &BinaryOpData,
+) -> Option<ValueSlot> {
+    let lhs = data.lhs.get();
+    let rhs = data.rhs.get();
+    if is_add_of_all_ones(anchor, rhs, lhs) {
+        return Some(lhs);
+    }
+    if is_add_of_all_ones(anchor, lhs, rhs) {
+        return Some(rhs);
+    }
+    None
+}
+
+/// Whether `candidate` is `add base, -1`, with the `add` matched commutatively.
+fn is_add_of_all_ones<'ctx, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    candidate: ValueSlot,
+    base: ValueSlot,
+) -> bool {
+    let candidate = value_from_id(anchor, candidate);
+    let Some(InstructionKindData::Add(data)) = instruction_kind(candidate) else {
+        return false;
+    };
+    let (lhs, rhs) = (data.lhs.get(), data.rhs.get());
+    (lhs == base && is_all_ones_constant(value_from_id(candidate, rhs)))
+        || (rhs == base && is_all_ones_constant(value_from_id(candidate, lhs)))
 }
 
 fn bitwise_self_plus_odd_operand<'ctx, B: ModuleBrand + 'ctx>(
