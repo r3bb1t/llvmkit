@@ -72,13 +72,13 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 
 ## ValueTracking.h — remaining tranches, and the order to take them
 
-**Status after tranche 5 (2026-08-03):** 69 of 101 entry points modeled, 32
+**Status after tranche 4b (2026-08-03):** 72 of 101 entry points modeled, 29
 gaps, all symbol-keyed in `crates/llvmkit-ir/tests/value_tracking_parity.rs`
 and asserted to sum to the audited surface.
 
 | Tranche | Left | Note |
 |---|---|---|
-| 4b select matching | 3 | `matchSelectPattern`, `matchDecomposedSelectPattern`, `canConvertToMinOrMaxIntrinsic` — the vocabulary (4a) is done |
+| ~~4b select matching~~ | 0 | **done** — the matching half of `crates/llvmkit-ir/src/select_pattern.rs` |
 | ~~5 pointer/object~~ | 0 | **done** — `crates/llvmkit-ir/src/pointer_analysis.rs` |
 | ~~6 speculation/UB~~ | 0 | **done** — `crates/llvmkit-ir/src/speculation.rs` |
 | 7 FP class | 11 | the only tranche needing a new *lattice* rather than a new consumer |
@@ -139,6 +139,21 @@ Two things tranche 6 turned up that are worth carrying forward:
   Tranche 5 repeated the lesson: `getUnderlyingObjects` takes a `LoopInfo` for
   one refinement and behaves fine without it, because `LI == nullptr` is
   upstream's own default.
+
+### Found while porting tranche 4b
+
+- **`m_SMin` and friends match the `select` form, not the intrinsic.**
+  `MaxMin_match<ICmpInst, ..>` looks for `select(icmp PRED L, R, L, R)`
+  structurally; it does *not* match a call to `llvm.smin`. A first draft of
+  `matchClamp` matched the intrinsic, which would have accepted programs
+  upstream's own `matchClamp` never sees. When porting a `PatternMatch`
+  combinator, read the combinator, not its name.
+- **Two arms are deliberately narrower, both because they would need to mint a
+  constant.** `getNotValue` folds `~C` for a constant operand, and
+  `lookThroughCastConst` builds a casted constant and checks it round-trips.
+  Creating a constant is a module mutation, which an analysis has no business
+  performing; both are recorded at their sites. Each forgoes a match rather
+  than inventing one.
 
 ### Found while porting tranche 5
 

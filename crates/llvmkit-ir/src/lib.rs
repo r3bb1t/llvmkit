@@ -379,8 +379,9 @@ pub use pointer_analysis::{
     pointer_base_with_constant_offset,
 };
 pub use select_pattern::{
-    MinMaxIntrinsic, SelectPatternFlavor, SelectPatternNaNBehavior, SelectPatternResult,
-    get_select_pattern,
+    MinMaxIntrinsic, SelectPatternFlavor, SelectPatternMatch, SelectPatternNaNBehavior,
+    SelectPatternResult, can_convert_to_min_or_max_intrinsic, get_select_pattern,
+    match_decomposed_select_pattern, match_select_pattern,
 };
 pub use speculation::{
     DEFAULT_TRANSFER_SCAN_LIMIT, SpeculationOptions, block_transfers_execution_to_successor,

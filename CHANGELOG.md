@@ -7,6 +7,32 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ValueTracking: select-pattern matching (tranche 4b)
+
+#### Added
+
+- `match_select_pattern`, `match_decomposed_select_pattern` and
+  `can_convert_to_min_or_max_intrinsic`, completing the `SelectPatternResult`
+  family whose vocabulary landed as tranche 4a. With them the whole static
+  machinery: `matchClamp`, `matchMinMax`, `matchMinMaxOfMinMax`,
+  `matchFastFloatClamp`, `getNotValue`, `lookThroughCast` and `isKnownNonNaN`.
+- `SelectPatternMatch` — what upstream returns through its `Value *&LHS` /
+  `Value *&RHS` / `Instruction::CastOps *CastOp` out-parameters. Upstream's own
+  comment on those, "Assume success. If there's no match, callers should not
+  use these anyway", is why the record sits behind an `Option`: a caller that
+  did not match cannot read operands that were never meaningfully set.
+- `FloatPredicate::{is_ordered, is_unordered, is_equality}` and
+  `IntPredicate::is_equality`, porting the `CmpInst` predicates of the same
+  names.
+
+Three arms are narrower than upstream, each recorded at its site: fast-math
+flags written on the `select` are not read (llvmkit's `select` carries no flag
+word — flags on the `fcmp` are read, which is where they normally sit), and
+`getNotValue` and `lookThroughCastConst` decline the cases that would need a
+*new* constant to be minted, which is a module mutation. `can_convert_to_min_or_max_intrinsic`
+answers `None` for the two floating-point flavours, the same gap already
+recorded against `getInverseMinMaxIntrinsic`.
+
 ### ValueTracking: pointer and object analysis (tranche 5)
 
 #### Added

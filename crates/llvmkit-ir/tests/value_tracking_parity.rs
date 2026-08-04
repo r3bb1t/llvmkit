@@ -269,6 +269,10 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("SelectPatternFlavor", "SelectPatternFlavor"),
     ("SelectPatternNaNBehavior", "SelectPatternNaNBehavior"),
     ("SelectPatternResult", "SelectPatternResult"),
+    (
+        "canConvertToMinOrMaxIntrinsic",
+        "can_convert_to_min_or_max_intrinsic",
+    ),
     ("canCreatePoison", "can_create_poison"),
     ("canCreateUndefOrPoison", "can_create_undef_or_poison"),
     ("computeConstantRange", "compute_constant_range"),
@@ -383,6 +387,11 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ),
     ("isSignBitCheck", "is_sign_bit_check"),
     (
+        "matchDecomposedSelectPattern",
+        "match_decomposed_select_pattern",
+    ),
+    ("matchSelectPattern", "match_select_pattern"),
+    (
         "mayHaveNonDefUseDependency",
         "may_have_non_def_use_dependency",
     ),
@@ -435,10 +444,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "analyzeKnownFPClassFromSelect",
         "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
-    ),
-    (
-        "canConvertToMinOrMaxIntrinsic",
-        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
     ),
     (
         "canIgnoreSignBitOfNaN",
@@ -523,14 +528,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "isValidAssumeForContext",
         "assumption cache (tranche 8): needs @llvm.assume modeled first",
-    ),
-    (
-        "matchDecomposedSelectPattern",
-        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
-    ),
-    (
-        "matchSelectPattern",
-        "select-pattern matching (tranche 4): needs SelectPatternResult, which llvmkit has no counterpart for",
     ),
     (
         "matchSimpleBinaryIntrinsicRecurrence",
@@ -755,14 +752,15 @@ fn exercises_every_modeled_known_bits_operation() {
 #[test]
 fn exercises_every_modeled_value_tracking_entry_point() {
     use llvmkit_ir::{
-        BytewiseValue, ConstantDataArraySlice, argument_aliasing_to_returned_pointer,
+        BytewiseValue, ConstantDataArraySlice, SelectPatternMatch,
+        argument_aliasing_to_returned_pointer, can_convert_to_min_or_max_intrinsic,
         find_alloca_for_value, find_inserted_value, get_constant_data_array_info,
         get_constant_string_info, get_string_length, get_underlying_object,
         get_underlying_object_aggressive, get_underlying_objects,
         get_underlying_objects_for_code_gen, is_bytewise_value,
         is_intrinsic_returning_pointer_aliasing_argument_without_capturing,
-        only_used_by_lifetime_markers, only_used_by_lifetime_markers_or_droppable_instructions,
-        pointer_base_with_constant_offset,
+        match_decomposed_select_pattern, match_select_pattern, only_used_by_lifetime_markers,
+        only_used_by_lifetime_markers_or_droppable_instructions, pointer_base_with_constant_offset,
     };
     use llvmkit_ir::{
         DynBrand, SpeculationOptions, block_transfers_execution_to_successor, can_create_poison,
@@ -893,6 +891,15 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     // Not in the table — the answer shape of `isBytewiseValue`, which upstream
     // spells as a `Value *` because it can mint the constant.
     let _bytewise_value = BytewiseValue::<DynBrand>::AnyByte;
+
+    // Select-pattern matching (tranche 4b).
+    let _match_select_pattern = match_select_pattern::<DynBrand>;
+    let _match_decomposed_select_pattern = match_decomposed_select_pattern::<DynBrand>;
+    let _can_convert_to_min_or_max_intrinsic =
+        can_convert_to_min_or_max_intrinsic::<DynBrand, Vec<llvmkit_ir::Value<'static, DynBrand>>>;
+    // Not in the table — the record `matchSelectPattern` fills in through its
+    // `LHS` / `RHS` / `CastOp` out-parameters.
+    let _select_pattern_match = |m: SelectPatternMatch<'static, DynBrand>| m.result;
     // Not in the table — llvmkit-specific conveniences with no upstream entry
     // point of their own.
     let _is_known_zero = is_known_zero::<DynBrand>;
