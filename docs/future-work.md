@@ -83,7 +83,7 @@ and asserted to sum to the audited surface.
 | ~~6 speculation/UB~~ | 0 | **done** — `crates/llvmkit-ir/src/speculation.rs` |
 | ~~8 assumptions~~ | 0 | **done** — `crates/llvmkit-ir/src/assumptions.rs` |
 | ~~implied conditions~~ | 0 | **done** — `crates/llvmkit-ir/src/implied_conditions.rs` |
-| 7 FP class | 11 | the lattice itself (`fp_class.rs`) landed 2026-08-04; the 11 `ValueTracking.h` entry points over it are next |
+| 7 FP class | 11 | `fp_class.rs` is **complete** as of 2026-08-04 — the lattice, its predicates and every `KnownFPClass.cpp` operation. What remains is `computeKnownFPClass` (~1100 lines of dispatch) and the nine one-line predicates over it; all 11 rows move together when those land |
 | residue | 6 | small, independent |
 | expose-only | 2 | `matchSimpleRecurrence` and `computeKnownBitsFromRangeMetadata` already exist as crate-private helpers |
 | partial | 1 | `getInverseMinMaxIntrinsic` — integer arms done, 6 FP intrinsics unrepresentable |
