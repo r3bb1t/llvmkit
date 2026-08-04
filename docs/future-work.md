@@ -149,14 +149,38 @@ The commutativity papered over the binding-order slip, which is why nothing
 failed. Found by reading `MaxMin_match` while porting `isTruePredicate`, which
 needs the genuinely commutative `m_c_SMax` family.
 
-**Take tranche 7 next; it is the last substantial one.** Tranches 6 and 8 were
-the unblockers and both have landed. Tranche 8 paid out as predicted: it closed
-the `@llvm.assume` arm `is_known_not_undef_or_poison` had recorded as deferred,
-and `compute_known_bits` now runs `computeKnownBitsFromContext` where upstream
-does, so every existing known-bits caller gets assumption- and
-branch-driven facts by attaching a cache to the query. Tranche 7 needs a new
-`FPClassTest` / `KnownFPClass` lattice and nothing waits on it, so it is a clean
-standalone finish; the residue sweep can follow in any order.
+### Order for the remaining 13 (recorded 2026-08-04)
+
+1. **The FP select arm (2).** `adjustKnownFPClassForSelectArm` and
+   `analyzeKnownFPClassFromSelect` are one arm counted twice, and closing it
+   also fills `computeKnownFPClass`'s `select` case. `adjustKnownBitsForSelectArm`
+   is already ported and is the shape to copy.
+2. **Residue (6).** Independent. Start with `analyzeKnownBitsFromAndXorOr`,
+   because `bitwise_known` is a partial port of the same upstream function —
+   closing its two missing idiom arms makes the public entry point fall out.
+3. **Expose-only (2).** `computeKnownBitsFromRangeMetadata` is not a rename:
+   upstream takes an `MDNode` where llvmkit's helper is value-shaped, so the
+   public parameter is a real design decision.
+4. **Partial, sibling, blocked (3).** `getVScaleRange` stays recorded — porting
+   it would mean inventing half of a packed attribute payload llvmkit does not
+   model.
+
+Separately, and moving no ledger row: **fill in `computeKnownFPClass`'s
+dispatch.** The entry point already counts as modeled; the arms are where the
+analysis earns its answers. `known_fp_class.rs`'s module header is the
+authoritative list of what is missing. Biggest wins are the arithmetic arms and
+the assumption arm, whose caches tranche 8 already built.
+
+### Historical note on ordering
+
+**Tranches 6 and 8 were the unblockers, and both have landed.** Tranche 8 paid
+out as predicted: it closed the `@llvm.assume` arm
+`is_known_not_undef_or_poison` had recorded as deferred, and
+`compute_known_bits` now runs `computeKnownBitsFromContext` where upstream does,
+so every existing known-bits caller gets assumption- and branch-driven facts by
+attaching a cache to the query. Tranche 7 followed as the standalone finish it
+was predicted to be — a new lattice rather than a new consumer, with nothing
+waiting on it.
 
 Two arms of tranche 8 stay narrower than upstream, each recorded at its site:
 `computeKnownBitsFromContext`'s operand-bundle alignment refinement needs
