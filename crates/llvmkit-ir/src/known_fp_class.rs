@@ -13,29 +13,35 @@
 //! conservative direction, so no caller is misled. They are listed rather than
 //! silently missing so the gap is legible:
 //!
-//! - **The arithmetic arms** — `fadd`, `fsub`, `fmul`, `fdiv`, `frem`, and the
-//!   `fma`/`fmuladd` pair.
+//! - **`fma` / `fmuladd`** — the rest of the arithmetic family landed; these
+//!   two did not.
 //! - **The vector arms** — `extractelement`, `insertelement`, `shufflevector`,
 //!   `extractvalue`, `bitcast`, `phi`, and the `vector_reduce_f*` family.
 //! - **The remaining intrinsics** — `sin`, `cos`, `powi`, `ldexp`, `frexp`,
 //!   `arithmetic_fence`, `vector_reverse`, `fptrunc_round`, and every
 //!   `experimental_constrained_*` / target-specific (`amdgcn_*`) variant.
-//! - **`nofpclass`** on a call return or a parameter. llvmkit's attribute model
-//!   has no `nofpclass` payload, so `getRetNoFPClass` / `getNoFPClass` have
-//!   nothing to read.
 //!
 //! What *is* here: the constant and poison leaves, the fast-math-flag
-//! refinement, the context arm (assumptions, dominating branches and an
-//! injected condition, through [`fp_predicate`](crate::fp_predicate)), `select`,
-//! `fneg`, the `fabs`/`copysign`/`canonicalize`/`sqrt` intrinsics, the six
-//! min/max intrinsics, the seven rounding intrinsics, the `exp` and `log`
-//! families, `fpext`, `fptrunc`, `sitofp` and `uitofp`.
+//! refinement, `nofpclass` on a call return or a parameter, the context arm
+//! (assumptions, dominating branches and an injected condition, through
+//! [`fp_predicate`](crate::fp_predicate)), `select`, `fneg`, the arithmetic
+//! arms `fadd` / `fsub` / `fmul` / `fdiv` / `frem`, the
+//! `fabs`/`copysign`/`canonicalize`/`sqrt` intrinsics, the six min/max
+//! intrinsics, the seven rounding intrinsics, the `exp` and `log` families,
+//! `fpext`, `fptrunc`, `sitofp` and `uitofp`.
+//!
+//! **`fdiv` and `frem` have no upstream unit test.**
+//! `ComputeKnownFPClassTest` covers `FAdd`, `FSub`, `FMul` and `FMulNoZero`
+//! and stops there, so those two arms are ported from the implementation with
+//! no fixture of their own to check them against — worth knowing before
+//! trusting a subtle answer from either.
 
-use crate::ap_float::ApFloatSemantics;
+use crate::ap_float::{ApFloatSemantics, BinaryExponent};
 use crate::assumptions::{AssumptionSource, is_valid_assume_for_context};
+use crate::attributes::AttrIndex;
 use crate::cmp_predicate::{FloatPredicate, IntPredicate};
 use crate::constant::ConstantData;
-use crate::denormal_mode::DenormalMode;
+use crate::denormal_mode::{DenormalMode, DenormalModeKind};
 use crate::fmf::FastMathFlags;
 use crate::fp_class::{FpClassTest, KnownFpClass, MinMaxKind};
 use crate::fp_predicate::{denormal_mode_of, enclosing_function_of, fcmp_implies_class};
@@ -47,8 +53,8 @@ use crate::r#type::{Type, TypeKind};
 use crate::r#use::Use;
 use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::value_tracking::{
-    MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, assume_argument, is_sign_bit_check,
-    logical_op_parts, not_operand, parent_block,
+    MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, assume_argument, is_known_not_undef,
+    is_sign_bit_check, logical_op_parts, not_operand, parent_block,
 };
 use crate::{ApFloat, ApInt};
 
@@ -127,7 +133,10 @@ fn known_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // Flags on the operator itself rule classes out regardless of the arm, and
     // upstream applies them on the way *out* — through a `scope_exit` — so an
     // arm that learns nothing still benefits.
-    let mut ruled_out = FpClassTest::NONE;
+    // Upstream's `KnownNotFromFlags` opens with the attribute, before the
+    // flags: a call's return `nofpclass` or an argument's parameter one. The
+    // mask *is* what is ruled out, so it joins directly.
+    let mut ruled_out = no_fp_class_of(value);
     if let Some(flags) = kind.and_then(fast_math_flags) {
         if flags.contains(FastMathFlags::NO_NANS) {
             ruled_out |= FpClassTest::NAN;
@@ -210,11 +219,423 @@ fn dispatch<'a, 'ctx, B: ModuleBrand + 'ctx>(
             // Only known if known in both the true and the false arm.
             for_arm(data.true_val.get(), false).intersect_with(for_arm(data.false_val.get(), true))
         }
+        InstructionKindData::FAdd(data) => add_or_subtract_fp_class(
+            value,
+            data.lhs.get(),
+            data.rhs.get(),
+            true,
+            interested_classes,
+            query,
+            depth,
+        ),
+        InstructionKindData::FSub(data) => add_or_subtract_fp_class(
+            value,
+            data.lhs.get(),
+            data.rhs.get(),
+            false,
+            interested_classes,
+            query,
+            depth,
+        ),
+        InstructionKindData::FMul(data) => {
+            multiply_fp_class(value, data.lhs.get(), data.rhs.get(), query, depth)
+        }
+        InstructionKindData::FDiv(data) => divide_or_remainder_fp_class(
+            value,
+            data.lhs.get(),
+            data.rhs.get(),
+            true,
+            interested_classes,
+            query,
+            depth,
+        ),
+        InstructionKindData::FRem(data) => divide_or_remainder_fp_class(
+            value,
+            data.lhs.get(),
+            data.rhs.get(),
+            false,
+            interested_classes,
+            query,
+            depth,
+        ),
         InstructionKindData::Call(_) => {
             intrinsic_fp_class(value, kind, interested_classes, query, depth)
         }
         _ => KnownFpClass::unknown(),
     }
+}
+
+/// The classes a `nofpclass` attribute rules out for `value`.
+///
+/// Ports the two reads that open `computeKnownFPClass`'s `KnownNotFromFlags`:
+/// `CallBase::getRetNoFPClass` for a call, and `Argument::getNoFPClass` for a
+/// parameter. Anything else carries no such attribute, which is
+/// [`FpClassTest::NONE`] — nothing ruled out.
+fn no_fp_class_of<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> FpClassTest {
+    let mask = match &value.data().kind {
+        ValueKindData::Argument { parent_fn, slot } => {
+            function_no_fp_class(value, *parent_fn, AttrIndex::Param(*slot))
+        }
+        ValueKindData::Instruction(instruction) => match &instruction.kind {
+            InstructionKindData::Call(call) => {
+                // Only a direct call names a function whose return attributes
+                // can be read; upstream's `getRetNoFPClass` answers the empty
+                // mask for an indirect one too.
+                function_no_fp_class(value, call.callee.get(), AttrIndex::Return)
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    mask.unwrap_or(FpClassTest::NONE)
+}
+
+/// The `nofpclass` mask at `index` on the function in `function_slot`, if that
+/// slot really holds a function and the attribute is present.
+fn function_no_fp_class<'ctx, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    function_slot: ValueSlot,
+    index: AttrIndex,
+) -> Option<FpClassTest> {
+    let function = value_from_slot(anchor, function_slot);
+    let ValueKindData::Function(data) = &function.data().kind else {
+        return None;
+    };
+    data.attributes.borrow().no_fp_class(index)
+}
+
+/// Whether `value` is provably not `undef`.
+///
+/// Ports the `isGuaranteedNotToBeUndef` guard the arithmetic arms put on their
+/// "both operands are the same value" special cases — without it, `fadd x, x`
+/// on an `undef` `x` is not `2 * x`, because each use may read a different
+/// value.
+///
+/// `is_known_not_undef` is fallible where `computeKnownFPClass` is not, so an
+/// error answers `false`: the special case is skipped and the arm falls back to
+/// the general operand-by-operand reasoning, which is the weaker answer and
+/// never the wrong one.
+fn is_definitely_not_undef<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> bool {
+    is_known_not_undef(value, query).unwrap_or(false)
+}
+
+/// The `FAdd` and `FSub` arms.
+///
+/// Ports the shared `case Instruction::FAdd: case Instruction::FSub:` block of
+/// `computeKnownFPClassFromOperator`.
+fn add_or_subtract_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    lhs_slot: ValueSlot,
+    rhs_slot: ValueSlot,
+    is_add: bool,
+    interested_classes: FpClassTest,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> KnownFpClass {
+    let mut known = KnownFpClass::unknown();
+    let want_negative =
+        is_add && interested_classes.intersects(KnownFpClass::ORDERED_LESS_THAN_ZERO);
+    let want_nan = interested_classes.intersects(FpClassTest::NAN);
+    let want_negative_zero = interested_classes.intersects(FpClassTest::NEGATIVE_ZERO);
+
+    if !want_nan && !want_negative && !want_negative_zero {
+        return known;
+    }
+
+    let mut interested_sources = interested_classes;
+    if want_negative {
+        interested_sources |= KnownFpClass::ORDERED_LESS_THAN_ZERO;
+    }
+    if interested_classes.intersects(FpClassTest::NAN) {
+        interested_sources |= FpClassTest::INFINITY;
+    }
+
+    let lhs = value_from_slot(value, lhs_slot);
+    let rhs = value_from_slot(value, rhs_slot);
+    let known_rhs = known_fp_class(rhs, interested_sources, query, depth + 1);
+
+    // `fadd x, x` is the canonical form of `fmul x, 2`.
+    let self_add = lhs_slot == rhs_slot && is_definitely_not_undef(lhs, query);
+    let mut known_lhs = if self_add {
+        known_rhs
+    } else {
+        KnownFpClass::unknown()
+    };
+
+    if !((want_nan && known_rhs.is_known_never_nan())
+        || (want_negative && known_rhs.cannot_be_ordered_less_than_zero())
+        || want_negative_zero
+        || !is_add)
+    {
+        return known;
+    }
+
+    if !self_add {
+        // The right-hand side is canonically cheaper to compute, so the
+        // left-hand side is only inspected once there is a point.
+        known_lhs = known_fp_class(lhs, interested_sources, query, depth + 1);
+    }
+
+    // Adding positive and negative infinity produces NaN.
+    if known_lhs.is_known_never_nan()
+        && known_rhs.is_known_never_nan()
+        && (known_lhs.is_known_never_infinity() || known_rhs.is_known_never_infinity())
+    {
+        known.known_not(FpClassTest::NAN);
+    }
+
+    if is_add {
+        if known_lhs.cannot_be_ordered_less_than_zero()
+            && known_rhs.cannot_be_ordered_less_than_zero()
+        {
+            known.known_not(KnownFpClass::ORDERED_LESS_THAN_ZERO);
+        }
+        if known_lhs.cannot_be_ordered_greater_than_zero()
+            && known_rhs.cannot_be_ordered_greater_than_zero()
+        {
+            known.known_not(KnownFpClass::ORDERED_GREATER_THAN_ZERO);
+        }
+    }
+
+    let Some(mode) = scalar_denormal_mode(value) else {
+        return known;
+    };
+
+    if is_add {
+        // Doubling zero gives the same zero.
+        if self_add
+            && known_rhs.is_known_never_logical_positive_zero(mode)
+            && match mode.output() {
+                DenormalModeKind::Ieee => true,
+                DenormalModeKind::PreserveSign => known_rhs.is_known_never_positive_subnormal(),
+                DenormalModeKind::PositiveZero => known_rhs.is_known_never_subnormal(),
+                DenormalModeKind::Dynamic => false,
+            }
+        {
+            known.known_not(FpClassTest::POSITIVE_ZERO);
+        }
+
+        // `fadd x, 0.0` returns `+0.0`, never `-0.0`.
+        if (known_lhs.is_known_never_logical_negative_zero(mode)
+            || known_rhs.is_known_never_logical_negative_zero(mode))
+            // A negative denormal output must not be able to flush to `-0`.
+            && matches!(
+                mode.output(),
+                DenormalModeKind::Ieee | DenormalModeKind::PositiveZero
+            )
+        {
+            known.known_not(FpClassTest::NEGATIVE_ZERO);
+        }
+    } else if (known_lhs.is_known_never_logical_negative_zero(mode)
+        || known_rhs.is_known_never_logical_positive_zero(mode))
+        && matches!(
+            mode.output(),
+            DenormalModeKind::Ieee | DenormalModeKind::PositiveZero
+        )
+    {
+        // Only `fsub -0, +0` can return `-0`.
+        known.known_not(FpClassTest::NEGATIVE_ZERO);
+    }
+
+    known
+}
+
+/// The `FMul` arm.
+///
+/// Ports `case Instruction::FMul:`, which does its work in
+/// `KnownFPClass::fmul` and `KnownFPClass::square` — both already ported — and
+/// adds the denormal-scaling refinement on a constant right-hand side.
+fn multiply_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    lhs_slot: ValueSlot,
+    rhs_slot: ValueSlot,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> KnownFpClass {
+    let mode = scalar_denormal_mode(value).unwrap_or_else(DenormalMode::dynamic);
+    let lhs = value_from_slot(value, lhs_slot);
+    let rhs = value_from_slot(value, rhs_slot);
+
+    // `x * x` is non-negative or NaN. Upstream carries a FIXME that this
+    // should check `isGuaranteedNotToBeUndef`; it does not, and neither does
+    // this, because squaring an `undef` is still non-negative-or-NaN whichever
+    // values the two uses read.
+    if lhs_slot == rhs_slot {
+        let known_source = known_fp_class(lhs, FpClassTest::ALL, query, depth + 1);
+        return KnownFpClass::square(known_source, mode);
+    }
+
+    // A constant right-hand side whose exponent is at least the mantissa width
+    // scales away any subnormal. Upstream's own note: this mirrors `ldexp`, and
+    // a general `ConstantFPRange` analysis would subsume it.
+    let mut cannot_be_subnormal = false;
+    let known_rhs = match (constant_ap_float(rhs), scalar_semantics(value.ty())) {
+        (Some(constant), Some(semantics)) => {
+            let mantissa_bits = i32::try_from(semantics.precision().saturating_sub(1)).unwrap_or(0);
+            // Upstream compares `ilogb`'s `int`, whose out-of-band answers are
+            // sentinels at the extremes: `IEK_Inf` is `INT_MAX` and clears any
+            // threshold, while `IEK_Zero` and `IEK_NaN` sit at the `INT_MIN`
+            // end and clear none. [`BinaryExponent`] spells those as variants,
+            // so the comparison has to name them.
+            cannot_be_subnormal = match constant.ilogb() {
+                BinaryExponent::Finite(exponent) => exponent >= mantissa_bits,
+                // `x * inf` is an infinity or a NaN, never a subnormal.
+                BinaryExponent::Infinity => true,
+                BinaryExponent::Zero | BinaryExponent::Nan => false,
+            };
+            KnownFpClass::of(&constant)
+        }
+        _ => known_fp_class(rhs, FpClassTest::ALL, query, depth + 1),
+    };
+    let known_lhs = known_fp_class(lhs, FpClassTest::ALL, query, depth + 1);
+
+    let mut known = KnownFpClass::fmul(known_lhs, known_rhs, mode);
+    if cannot_be_subnormal {
+        known.known_not(FpClassTest::SUBNORMAL);
+    }
+    known
+}
+
+/// The `FDiv` and `FRem` arms.
+///
+/// Ports the shared `case Instruction::FDiv: case Instruction::FRem:` block of
+/// `computeKnownFPClassFromOperator`.
+fn divide_or_remainder_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    lhs_slot: ValueSlot,
+    rhs_slot: ValueSlot,
+    is_divide: bool,
+    interested_classes: FpClassTest,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> KnownFpClass {
+    let mut known = KnownFpClass::unknown();
+    let want_nan = interested_classes.intersects(FpClassTest::NAN);
+    let lhs = value_from_slot(value, lhs_slot);
+    let rhs = value_from_slot(value, rhs_slot);
+
+    if lhs_slot == rhs_slot && is_definitely_not_undef(lhs, query) {
+        // `x / x` is exactly `1.0` or NaN; `x % x` is exactly `±0.0` or NaN.
+        known = KnownFpClass::from_classes(if is_divide {
+            FpClassTest::NAN | FpClassTest::POSITIVE_NORMAL
+        } else {
+            FpClassTest::NAN | FpClassTest::ZERO
+        });
+        if !want_nan {
+            return known;
+        }
+
+        let known_source = known_fp_class(
+            lhs,
+            FpClassTest::NAN | FpClassTest::INFINITY | FpClassTest::ZERO | FpClassTest::SUBNORMAL,
+            query,
+            depth + 1,
+        );
+        let mode = scalar_denormal_mode(value).unwrap_or_else(DenormalMode::dynamic);
+        if known_source.is_known_never_infinity_or_nan()
+            && known_source.is_known_never_logical_zero(mode)
+        {
+            known.known_not(FpClassTest::NAN);
+        } else if known_source.is_known_never(FpClassTest::SIGNALING_NAN) {
+            known.known_not(FpClassTest::SIGNALING_NAN);
+        }
+        return known;
+    }
+
+    let want_negative = interested_classes.intersects(FpClassTest::NEGATIVE);
+    let want_positive = !is_divide && interested_classes.intersects(FpClassTest::POSITIVE);
+    if !want_nan && !want_negative && !want_positive {
+        return known;
+    }
+
+    let known_rhs = known_fp_class(
+        rhs,
+        FpClassTest::NAN | FpClassTest::INFINITY | FpClassTest::ZERO | FpClassTest::NEGATIVE,
+        query,
+        depth + 1,
+    );
+    let knows_something_useful = known_rhs.is_known_never_nan()
+        || known_rhs.is_known_never(FpClassTest::NEGATIVE)
+        || known_rhs.is_known_never(FpClassTest::POSITIVE);
+
+    let known_lhs = if knows_something_useful || want_positive {
+        known_fp_class(lhs, FpClassTest::ALL, query, depth + 1)
+    } else {
+        KnownFpClass::unknown()
+    };
+
+    // Upstream reads the denormal mode through a possibly-null `Function`, and
+    // every use below is guarded by that null check; `None` here is the same
+    // guard.
+    let mode = scalar_denormal_mode(value);
+
+    if is_divide {
+        // Only `0/0` and `Inf/Inf` produce NaN.
+        if known_lhs.is_known_never_nan()
+            && known_rhs.is_known_never_nan()
+            && (known_lhs.is_known_never_infinity() || known_rhs.is_known_never_infinity())
+            && mode.is_some_and(|mode| {
+                known_lhs.is_known_never_logical_zero(mode)
+                    || known_rhs.is_known_never_logical_zero(mode)
+            })
+        {
+            known.known_not(FpClassTest::NAN);
+        }
+
+        // The sign is the exclusive-or of the operand signs: `X / -0.0` is
+        // `-Inf` (or NaN), and `+X / +X` is `+X`.
+        if (known_lhs.is_known_never(FpClassTest::NEGATIVE)
+            && known_rhs.is_known_never(FpClassTest::NEGATIVE))
+            || (known_lhs.is_known_never(FpClassTest::POSITIVE)
+                && known_rhs.is_known_never(FpClassTest::POSITIVE))
+        {
+            known.known_not(FpClassTest::NEGATIVE);
+        }
+        if (known_lhs.is_known_never(FpClassTest::POSITIVE)
+            && known_rhs.is_known_never(FpClassTest::NEGATIVE))
+            || (known_lhs.is_known_never(FpClassTest::NEGATIVE)
+                && known_rhs.is_known_never(FpClassTest::POSITIVE))
+        {
+            known.known_not(FpClassTest::POSITIVE);
+        }
+
+        // `0 / x` is zero or NaN.
+        if known_lhs.is_known_always(FpClassTest::ZERO) {
+            known.known_not(FpClassTest::SUBNORMAL | FpClassTest::NORMAL | FpClassTest::INFINITY);
+        }
+        // `x / 0` is NaN or infinity.
+        if known_rhs.is_known_always(FpClassTest::ZERO) {
+            known.known_not(FpClassTest::FINITE);
+        }
+    } else {
+        // `Inf % x` and `x % 0` produce NaN.
+        if known_lhs.is_known_never_nan()
+            && known_rhs.is_known_never_nan()
+            && known_lhs.is_known_never_infinity()
+            && mode.is_some_and(|mode| known_rhs.is_known_never_logical_zero(mode))
+        {
+            known.known_not(FpClassTest::NAN);
+        }
+
+        // `frem` takes its sign from the first operand.
+        if known_lhs.cannot_be_ordered_less_than_zero() {
+            known.known_not(KnownFpClass::ORDERED_LESS_THAN_ZERO);
+        }
+        if known_lhs.cannot_be_ordered_greater_than_zero() {
+            known.known_not(KnownFpClass::ORDERED_GREATER_THAN_ZERO);
+        }
+        if known_lhs.is_known_never(FpClassTest::NEGATIVE) {
+            known.known_not(FpClassTest::NEGATIVE);
+        }
+        if known_lhs.is_known_never(FpClassTest::POSITIVE) {
+            known.known_not(FpClassTest::POSITIVE);
+        }
+    }
+
+    known
 }
 
 /// The `FPExt` / `FPTrunc` / `SIToFP` / `UIToFP` arms.
@@ -948,17 +1369,43 @@ fn min_max_kind(name: &str) -> Option<MinMaxKind> {
 
 /// The constant and poison leaves of `computeKnownFPClass`, each of which
 /// answers exactly.
+/// The floating-point constant `value` is, if it is one.
+///
+/// Ports `m_APFloat`'s scalar case: the constant behind an operand, which the
+/// `fmul` arm reads for its denormal-scaling refinement.
+fn constant_ap_float<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ApFloat> {
+    let ValueKindData::Constant(ConstantData::Float(bits)) = &value.data().kind else {
+        return None;
+    };
+    let semantics = scalar_semantics(value.ty())?;
+    // The same decode `ConstantFloatValue::ap_float` performs: the stored
+    // `u128` is the raw bit pattern, low word first.
+    let low = u64::try_from(*bits & 0xffff_ffff_ffff_ffff).ok()?;
+    let high = u64::try_from(*bits >> 64).ok()?;
+    let pattern = ApInt::from_words(semantics.bit_width(), &[low, high]);
+    ApFloat::from_bits(semantics, &pattern).ok()
+}
+
+/// The denormal mode for `value`'s scalar type, or `None` when it has no
+/// enclosing function.
+///
+/// Upstream's arithmetic arms read `cast<Instruction>(Op)->getFunction()` and
+/// guard every use of the mode on it being non-null; `None` is that guard.
+/// Deliberately not [`denormal_mode_of`], which answers `dynamic()` for a value
+/// with no function — sound, but able to prove things upstream declines to,
+/// which would be a divergence rather than a port.
+fn scalar_denormal_mode<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<DenormalMode> {
+    let function = enclosing_function_of(value)?;
+    let semantics = scalar_semantics(value.ty())?;
+    Some(function.denormal_mode(semantics))
+}
+
 fn constant_fp_class<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<KnownFpClass> {
     match &value.data().kind {
-        ValueKindData::Constant(ConstantData::Float(bits)) => {
-            let semantics = scalar_semantics(value.ty())?;
-            // The same decode `ConstantFloatValue::ap_float` performs: the
-            // stored `u128` is the raw bit pattern, low word first.
-            let low = u64::try_from(*bits & 0xffff_ffff_ffff_ffff).ok()?;
-            let high = u64::try_from(*bits >> 64).ok()?;
-            let pattern = ApInt::from_words(semantics.bit_width(), &[low, high]);
-            let float = ApFloat::from_bits(semantics, &pattern).ok()?;
-            Some(KnownFpClass::of(&float))
+        ValueKindData::Constant(ConstantData::Float(_)) => {
+            constant_ap_float(value).map(|float| KnownFpClass::of(&float))
         }
         // Poison belongs to no class at all — upstream sets `fcNone`.
         ValueKindData::Constant(ConstantData::Poison) => {

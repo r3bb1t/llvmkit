@@ -14,6 +14,29 @@ cut, entries accumulate under **Unreleased**.
 > past the 0.0.4 freeze, not two pending releases; they collapse into one entry
 > when the tag is cut.
 
+### ValueTracking: `computeKnownFPClass`'s arithmetic arms, and `nofpclass`
+
+#### Added
+
+- `nofpclass(nan inf)` parses, prints and round-trips on parameters and
+  returns, and is off `attribute_td_drift.rs`'s not-yet-modeled list. The
+  payload is the `FpClassTest` it means rather than upstream's raw integer,
+  following `Attribute::Memory(MemoryEffects)`.
+- `computeKnownFPClass` reads it: a call's return `nofpclass` and an argument's
+  parameter `nofpclass` now open the ruled-out set, as
+  `CallBase::getRetNoFPClass` and `Argument::getNoFPClass` do upstream.
+- The arithmetic arms — `fadd`, `fsub`, `fmul`, `fdiv` and `frem`. Previously
+  every one answered `fcAllFlags`. This includes the special cases upstream
+  carries: `fadd x, x` as the canonical `fmul x, 2`, `x * x` through
+  `KnownFPClass::square`, the denormal-mode zero refinements, `x / x` as
+  exactly `1.0` or NaN, and `x % x` as exactly `±0.0` or NaN.
+
+Tests are `ComputeKnownFPClassTest`'s `FAdd`, `FSub`, `FMul` and `FMulNoZero`,
+ported verbatim — which is only possible because `nofpclass` is modeled, since
+upstream builds every operand in them out of it. **`fdiv` and `frem` have no
+upstream unit test**; that is recorded in `known_fp_class.rs`'s header rather
+than papered over with an invented fixture.
+
 ### Parser / IR: integer casts over vectors
 
 #### Added

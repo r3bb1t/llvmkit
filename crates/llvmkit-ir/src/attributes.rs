@@ -988,6 +988,24 @@ impl AttributeStorage {
     }
 
     /// `true` if every stored attribute here is also present in `other`.
+    /// The `nofpclass` mask recorded at `index`, if one is.
+    ///
+    /// Ports `AttributeList::getRetNoFPClass` and
+    /// `AttributeList::getParamNoFPClass`, which are the two spellings
+    /// `computeKnownFPClass` reads. Answers the mask itself rather than the
+    /// stored attribute, so the crate-private storage type stays private.
+    pub fn no_fp_class(&self, index: AttrIndex) -> Option<FpClassTest> {
+        self.entries
+            .iter()
+            .find(|(stored_index, _)| *stored_index == index)?
+            .1
+            .iter()
+            .find_map(|attr| match attr {
+                AttributeStored::NoFpClass(mask) => Some(*mask),
+                _ => None,
+            })
+    }
+
     pub fn is_subset_of(&self, other: &Self) -> bool {
         self.entries.iter().all(|(index, attrs)| {
             other
