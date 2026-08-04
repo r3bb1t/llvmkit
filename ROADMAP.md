@@ -64,9 +64,12 @@ Hard gaps for replacing more LLVM/Inkwell workflows:
   still partial: DataLayout / TLI / libcall / load-through-bitcast folds are
   represented only where the analysis APIs implement them, and InstSimplify-
   style nonconstant folds are still future transform work.
-- KnownBits / ValueTracking is still a represented integer, pointer,
-  fixed-vector, and intrinsic-fact subset; LLVM ValueTracking parity remains
-  incomplete.
+- `KnownBits.h` is **complete** (the ledger asserts an empty gap list);
+  `ValueTracking.h` is at **90 of 101 entry points** with eleven recorded gaps.
+  The transfer functions underneath remain a represented integer, pointer,
+  fixed-vector, and intrinsic-fact subset — entry-point coverage is not arm
+  coverage, and `computeKnownFPClass` is the clearest case: it counts as one
+  modeled entry point while its opcode dispatch is deliberately partial.
 - No pass-builder or pipeline *execution* engine yet: the named recipes and a
   text parser ship (`pass_pipeline.rs`), but running a parsed pipeline still
   needs a NAME→pass-constructor registry.
@@ -399,21 +402,31 @@ The current baseline already includes:
 
 ### Remaining parity work
 
-1. **KnownBits formula parity follow-up**
-   - Replace the remaining conservative/enumerated fallbacks with direct
-     `KnownBits.cpp` ports for facts not listed in the shipped baseline, where
-     representation dependencies now exist and expanded ValueTracking users need
-     additional facts.
-   - Keep LLVM conflict-state behavior (`zero & one` may be non-zero internally)
-     because upstream uses it for intersections and diagnostics.
+> **The ledger is the authority for items 1–2, not this list.**
+> `crates/llvmkit-ir/tests/value_tracking_parity.rs` is symbol-keyed and
+> asserts `modeled + gaps` equals the audited surface, with a recorded reason
+> per gap. This section is prose and drifts; the ledger cannot.
 
-2. **ValueTracking operator parity**
-   - Port remaining `computeKnownBitsFromOperator` arms in upstream order for
-     represented opcodes: and/or/xor refinements, additional call/callee
-     attribute facts beyond the shipped range and `returned` cases, pointer
-     alignment/GEP/cast facts, select edge facts, PHI recurrences,
-     fixed-vector demanded-element facts, freeze poison checks, and additional
-     intrinsic facts not listed in the shipped baseline above.
+1. ~~**KnownBits formula parity follow-up**~~ — **closed 2026-08-01.**
+   `KnownBits.h`'s public surface is fully modeled and `KNOWN_BITS_GAPS` is an
+   empty slice, so a regression or a newly-synced upstream method has to be
+   acknowledged rather than absorbed. LLVM's conflict-state behaviour
+   (`zero & one` may be non-zero internally) is kept, as upstream relies on it
+   for intersections and diagnostics.
+
+2. **ValueTracking operator parity** — **90 of 101 entry points** as of
+   2026-08-04; eleven gaps, each with a reason in the ledger. Landed since this
+   list was written: the and/or/xor refinements (including the `and(x, -x)` and
+   `xor(x, x - 1)` idiom arms), select edge facts on both the integer and
+   floating-point sides, PHI recurrences with `matchSimpleRecurrence`, the
+   assumption and dominating-condition arms, pointer/object analysis,
+   speculation safety, and the whole floating-point classification subsystem.
+   Still open: additional call/callee attribute facts beyond the shipped range
+   and `returned` cases, pointer alignment/GEP/cast facts, fixed-vector
+   demanded-element facts, freeze poison checks, additional intrinsic facts, and
+   `computeKnownFPClass`'s remaining dispatch arms — which move no ledger row,
+   since the entry point already counts, and are enumerated in
+   `known_fp_class.rs`'s module header.
 
 3. **Attribute and intrinsic dependencies**
    - Remaining intrinsic work means additional or currently unrepresented
