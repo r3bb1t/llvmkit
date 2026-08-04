@@ -75,10 +75,11 @@ use super::instr_types::{
     CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
     CleanupReturnInstData, CmpInstData, ExtractElementInstData, ExtractValueInstData, FCmpInstData,
     FenceInstData, FreezeInstData, GepInstData, ICmpFlags, IndirectBrInstData,
-    InsertElementInstData, InsertValueInstData, IntBinOpFlags, InvokeInstData, LShrFlags,
-    LandingPadInstData, MulFlags, OrFlags, PhiData, ResumeInstData, SDivFlags, SelectInstData,
-    ShlFlags, ShuffleVectorInstData, SubFlags, SwitchInstData, TailCallKind, TruncFlags, UDivFlags,
-    UIToFpFlags, UnreachableInstData, VAArgInstData, WriteBinopFlags, ZExtFlags,
+    InsertElementInstData, InsertValueInstData, IntBinOpFlags, IntCastFlags, InvokeInstData,
+    LShrFlags, LandingPadInstData, MulFlags, OrFlags, PhiData, ResumeInstData, SDivFlags,
+    SelectInstData, ShlFlags, ShuffleVectorInstData, SubFlags, SwitchInstData, TailCallKind,
+    TruncFlags, UDivFlags, UIToFpFlags, UnreachableInstData, VAArgInstData, WriteBinopFlags,
+    ZExtFlags,
 };
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, CallAttributeData, CastOpData, CastOpcode, LoadInstData,
@@ -1951,6 +1952,112 @@ where
         })?;
         self.build_int_binop_dyn_with_flags(opcode, lhs, rhs, flags, name, kind_ctor)
             .map(|v| v.id())
+    }
+
+    /// The number of bits in `ty`'s scalar type — `ty` itself when it is a
+    /// scalar, its element when it is a vector.
+    ///
+    /// Mirrors `Type::getScalarSizeInBits`, which is what
+    /// `CastInst::castIsValid` compares for the integer casts.
+    fn integer_scalar_bit_width(&self, ty: Type<'ctx, B>) -> Option<u32> {
+        let scalar = match ty.data() {
+            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
+                self.module.context().type_data(*elem)
+            }
+            other => other,
+        };
+        match scalar {
+            TypeData::Integer { bits } => Some(*bits),
+            _ => None,
+        }
+    }
+
+    /// The element count and scalability of `ty`, or `None` when it is a
+    /// scalar. Two types agree in shape when this answers equal for both.
+    fn vector_shape(&self, ty: Type<'ctx, B>) -> Option<(u32, bool)> {
+        match ty.data() {
+            TypeData::FixedVector { n, .. } => Some((*n, false)),
+            TypeData::ScalableVector { min, .. } => Some((*min, true)),
+            _ => None,
+        }
+    }
+
+    /// `trunc` / `zext` / `sext` on an erased operand — a scalar `iN` or an
+    /// integer vector — producing `dst_ty`.
+    ///
+    /// The erased counterpart of the `build_trunc_dyn` / `build_zext_dyn` /
+    /// `build_sext_dyn` family, whose `_dyn` means *dynamic width* (`IntDyn`)
+    /// rather than *erased value*: those route the source through the
+    /// scalar-only `IntoIntValue` and take an `IntType` destination, and a
+    /// `<N x iM>` is neither. This is the same split
+    /// [`Self::build_int_binop_erased`] and [`Self::build_int_cmp_erased`]
+    /// already make; upstream needs no such split because
+    /// `LLParser::parseCast` hands the operand straight to
+    /// `CastInst::Create`.
+    ///
+    /// Validated against `CastInst::castIsValid`'s integer arm: source and
+    /// destination must both be integers or both integer vectors of the same
+    /// element count and scalability, and the *scalar* widths must narrow for
+    /// `trunc` and widen for `zext` / `sext`.
+    ///
+    /// Returns the erased [`ValueId`] rather than a typed id because the
+    /// result may be a vector, which no `IntWidth` marker describes.
+    pub fn build_int_cast_erased<Src, Name>(
+        &self,
+        opcode: CastOpcode,
+        src: Src,
+        dst_ty: Type<'ctx, B>,
+        flags: IntCastFlags,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        Src: IntoErasedValue<'ctx, B>,
+    {
+        if !matches!(
+            opcode,
+            CastOpcode::Trunc | CastOpcode::ZExt | CastOpcode::SExt
+        ) {
+            return Err(IrError::InvalidOperation {
+                message: "opcode is not trunc, zext or sext",
+            });
+        }
+        let src = src.into_erased_value(ModuleRef::new(self.module))?;
+        let src_ty = src.ty();
+
+        let (Some(src_bits), Some(dst_bits)) = (
+            self.integer_scalar_bit_width(src_ty),
+            self.integer_scalar_bit_width(dst_ty),
+        ) else {
+            return Err(IrError::InvalidOperation {
+                message: "trunc/zext/sext operand is neither an integer nor an integer vector",
+            });
+        };
+        if self.vector_shape(src_ty) != self.vector_shape(dst_ty) {
+            return Err(IrError::InvalidOperation {
+                message: "trunc/zext/sext changes the vector element count",
+            });
+        }
+        // `castIsValid` requires a strict change in width for all three; equal
+        // widths would be a no-op cast, which upstream spells as no cast.
+        let widens = matches!(opcode, CastOpcode::ZExt | CastOpcode::SExt);
+        if (widens && dst_bits <= src_bits) || (!widens && dst_bits >= src_bits) {
+            return Err(IrError::OperandWidthMismatch {
+                lhs: src_bits,
+                rhs: dst_bits,
+            });
+        }
+
+        if let Some(folded) = self.folder.fold_cast_dyn(opcode, src, dst_ty)? {
+            let folded = self.checked_folded_value(folded, dst_ty.id())?;
+            return Ok(folded.id());
+        }
+        let payload = CastOpData::new(opcode, src.slot());
+        payload.nneg.set(flags.nneg);
+        payload.nuw.set(flags.nuw);
+        payload.nsw.set(flags.nsw);
+        let inst = self.append_instruction(dst_ty.id(), InstructionKindData::Cast(payload), name);
+        Ok(inst.to_erased().id())
     }
 
     /// `icmp pred lhs, rhs` on erased operands (scalar `iN` / `ptr`, or a

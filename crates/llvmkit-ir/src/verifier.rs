@@ -1606,8 +1606,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let dst_ty = inst.ty().id;
         match c.kind {
             CastOpcode::Trunc | CastOpcode::ZExt | CastOpcode::SExt => {
-                let src_w = self.int_width_or_err(f, bb, src_ty, "source")?;
-                let dst_w = self.int_width_or_err(f, bb, dst_ty, "destination")?;
+                // `CastInst::castIsValid` compares `getScalarSizeInBits`, so a
+                // vector is checked on its element and separately on its
+                // shape: both sides vectors of equal element count, or both
+                // scalars.
+                let src_w = self.scalar_int_width_or_err(f, bb, src_ty, "source")?;
+                let dst_w = self.scalar_int_width_or_err(f, bb, dst_ty, "destination")?;
+                let src_shape = vector_shape(self.module, src_ty);
+                let dst_shape = vector_shape(self.module, dst_ty);
+                if src_shape != dst_shape {
+                    return Err(self.fail(
+                        f,
+                        bb,
+                        VerifierRule::CastTypeMismatch,
+                        format!(
+                            "{} from {} to {} changes the vector shape",
+                            c.kind.keyword(),
+                            self.type_label(src_ty),
+                            self.type_label(dst_ty)
+                        ),
+                    ));
+                }
                 let ok = match c.kind {
                     CastOpcode::Trunc => dst_w < src_w,
                     CastOpcode::ZExt | CastOpcode::SExt => dst_w > src_w,
@@ -1618,7 +1637,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                         f,
                         bb,
                         VerifierRule::CastWidthMismatch,
-                        format!("{} from i{src_w} to i{dst_w}", c.kind.keyword()),
+                        format!(
+                            "{} from {} to {}",
+                            c.kind.keyword(),
+                            self.type_label(src_ty),
+                            self.type_label(dst_ty)
+                        ),
                     ));
                 }
             }
@@ -2895,17 +2919,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         format!("{}", Type::<B>::new(id, self.module))
     }
 
-    /// Read the integer width of `ty`, erroring with the given role
-    /// label (`"source"` / `"destination"`) if it is not an integer.
-    fn int_width_or_err(
+    /// Read the width of `ty`'s scalar integer type — `ty` itself when it is a
+    /// scalar, its element when it is a vector — erroring with the given role
+    /// label (`"source"` / `"destination"`) if neither is an integer.
+    ///
+    /// Mirrors `Type::getScalarSizeInBits`, which is what
+    /// `CastInst::castIsValid` compares for the integer casts. The caller must
+    /// check the vector shapes separately; this deliberately says nothing
+    /// about element counts.
+    fn scalar_int_width_or_err(
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         ty: TypeSlot,
         role: &str,
     ) -> IrResult<u32> {
-        match self.module.context().type_data(ty).as_integer() {
-            Some(b) => Ok(b),
+        let data = self.module.context().type_data(ty);
+        let scalar = match data.as_vector() {
+            Some((elem, _, _)) => self.module.context().type_data(elem),
+            None => data,
+        };
+        match scalar.as_integer() {
+            Some(bits) => Ok(bits),
             None => Err(self.fail(
                 f,
                 bb,
@@ -2962,6 +2997,18 @@ fn scalar_type_id(m: &ModuleCore, ty: TypeSlot) -> TypeSlot {
         TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => *elem,
         _ => ty,
     }
+}
+
+/// The element count and scalability of `ty`, or `None` when it is a scalar.
+///
+/// Two types agree in shape when this answers equal for both, which is how
+/// `CastInst::castIsValid` phrases its vector rule: both operands vectors of
+/// the same element count, or neither a vector.
+fn vector_shape(m: &ModuleCore, ty: TypeSlot) -> Option<(u32, bool)> {
+    m.context()
+        .type_data(ty)
+        .as_vector()
+        .map(|(_, count, scalable)| (count, scalable))
 }
 
 fn is_int_or_int_vector(m: &ModuleCore, ty: TypeSlot) -> bool {

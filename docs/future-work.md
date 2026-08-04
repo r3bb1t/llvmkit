@@ -131,27 +131,32 @@ its narrowing.
 claim to verify, not to inherit. Three of them were false in the 2026-08-04
 sweep, and two caused real defects rather than merely stale prose.
 
-### Found while porting `stripNullTest`: the parser cannot express a vector cast
+### Found while porting `stripNullTest`: the parser could not express a vector cast — **closed 2026-08-04**
 
 `llvm/test/Transforms/InstCombine/ceil-shift.ll` is the upstream test file for
 `stripNullTest`, and two of its cases — `ceil_shift4_v4i32` and
-`ceil_shift4_v8i16` — are the vector spellings of the idiom. They are **not**
-in llvmkit's port of that file, and this is why.
+`ceil_shift4_v8i16` — are the vector spellings of the idiom. They could not be
+ported: llvmkit parsed vector `lshr`, `and` and `icmp` and `splat` constants,
+but not a vector `zext`, which every form of the idiom needs.
 
-llvmkit parses vector `lshr`, `and` and `icmp` (that landed with the vector
-binop work), and `splat (i32 16)` constants. It does **not** parse a vector
-`zext`: `ll_parser.rs`'s int-cast arm converts the source to
-`IntValue<IntDyn>` and requires `AnyTypeEnum::Int` for the destination, so
-`zext <4 x i1> %c to <4 x i32>` fails with "integer-typed cast source". Every
-form of the idiom needs that `zext`, so neither vector case can be built.
+The fix completed a pattern the vector binop work had started rather than
+inventing one. `TryFrom<Value> for IntValue<IntDyn>` requires
+`TypeData::Integer`, so a vector converts to no typed integer handle at all;
+binops and compares had already grown erased builders for exactly that reason
+(`build_int_binop_erased`, `build_int_cmp_erased`), and the casts had not.
+`build_int_cast_erased` is the third, with `IntCastFlags` as the runtime-opcode
+counterpart of `IntBinOpFlags`, and the parser branches on
+`is_vector_type` the way `parse_int_binop` already did.
 
-`strip_null_test` itself **is** splat-aware — its constant matching follows
-upstream's `m_APInt`, which reaches a vector through
-`getSplatValue(AllowPoison=true)` — so the analysis has no divergence here and
-the arm will be exercised as soon as the parser can build the fixture. The
-missing piece is `trunc`/`zext`/`sext` over `<N x iM>` in the parser and the
-typed builder underneath it, which is the same shape of work the vector binops
-needed and is not a local change.
+**The verifier had the same scalar assumption and it was the harder half.**
+Its integer-cast arm read widths through an integer-only accessor, so vector
+casts parsed and then failed verification. It now compares
+`getScalarSizeInBits` and checks the vector shapes separately — which is what
+`CastInst::castIsValid` actually says — and the old scalar-only helper is gone
+rather than left behind.
+
+Two upstream cases returned to the `stripNullTest` port as a result; nothing in
+the analysis changed, because `strip_null_test` was already splat-aware.
 
 ### Found while closing that row: the ledger did not check its own ValueTracking column — **closed 2026-08-04**
 

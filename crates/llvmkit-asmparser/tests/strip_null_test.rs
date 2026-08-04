@@ -13,14 +13,9 @@
 //! own match, with upstream's `CHECK` lines as the cross-check where the two
 //! do coincide.
 //!
-//! **Two upstream cases are absent, and this says which.** `ceil_shift4_v4i32`
-//! and `ceil_shift4_v8i16` are the vector spellings; llvmkit's parser accepts
-//! vector `lshr` / `and` / `icmp` but not a vector `zext`, which every form of
-//! the idiom needs — `parse_int_cast` requires a scalar integer source and
-//! destination. `strip_null_test` itself is splat-aware, matching upstream's
-//! `m_APInt`, so the arm is ported and will be exercised the moment the parser
-//! can build the fixture. The gap is recorded in `docs/future-work.md`; it is
-//! not a divergence in the analysis.
+//! Every case in that file is covered, the two vector spellings included.
+//! They were absent when this file landed, because the parser could not build
+//! a vector `zext`; that gap is closed and they are back.
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
@@ -207,6 +202,40 @@ define i1 @ceil_shift4_used_add_nuw_nsw(i32 %arg0) {
     ];
     for (source, name) in cases {
         strips_to_the_parameter(source, name);
+    }
+}
+
+/// Ports `ceil_shift4_v4i32` and `ceil_shift4_v8i16`: upstream's `m_APInt`
+/// reaches a vector through `getSplatValue`, so a splat constant matches the
+/// same way a scalar does.
+#[test]
+fn the_idiom_matches_splat_vector_constants() {
+    let cases: &[&str] = &[
+        r"
+define <4 x i1> @ceil_shift4_v4i32(<4 x i32> %arg0) {
+  %quot = lshr <4 x i32> %arg0, splat (i32 16)
+  %rem = and <4 x i32> %arg0, splat (i32 65535)
+  %has_rem = icmp ne <4 x i32> %rem, zeroinitializer
+  %zext_has_rem = zext <4 x i1> %has_rem to <4 x i32>
+  %quot_or_rem = or <4 x i32> %quot, %zext_has_rem
+  %res = icmp eq <4 x i32> %quot_or_rem, zeroinitializer
+  ret <4 x i1> %res
+}
+",
+        r"
+define <8 x i1> @ceil_shift4_v8i16(<8 x i16> %arg0) {
+  %quot = lshr <8 x i16> %arg0, splat (i16 4)
+  %rem = and <8 x i16> %arg0, splat (i16 15)
+  %has_rem = icmp ne <8 x i16> %rem, zeroinitializer
+  %zext_has_rem = zext <8 x i1> %has_rem to <8 x i16>
+  %quot_or_rem = or <8 x i16> %quot, %zext_has_rem
+  %res = icmp eq <8 x i16> %quot_or_rem, zeroinitializer
+  ret <8 x i1> %res
+}
+",
+    ];
+    for source in cases {
+        strips_to_the_parameter(source, "quot_or_rem");
     }
 }
 

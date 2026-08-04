@@ -245,7 +245,7 @@ pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
     AShrFlags, AddFlags, AllocaFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig,
     AtomicRMWFlags, AtomicStoreConfig, BinaryOpcode, CallAttributeData, CmpXchgFlags, ICmpFlags,
-    IntBinOpFlags, LShrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags,
+    IntBinOpFlags, IntCastFlags, LShrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags,
     OverflowFlags, SDivFlags, ShlFlags, SubFlags, TailCallKind, TruncFlags, UDivFlags, UIToFpFlags,
     UnaryOpcode, ZExtFlags,
 };

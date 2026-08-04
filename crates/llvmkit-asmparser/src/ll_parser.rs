@@ -43,12 +43,12 @@ use llvmkit_ir::{
     AtomicLoadConfig, AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, CallingConv, Constant,
     ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
     DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FloatValue,
-    GepNoWrapFlags, IRBuilder, IntDyn, IntType, IntValue, IntrinsicNameResolution, IrError,
-    IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue, Positioned,
-    RoundingMode, SelectionKind, StructType, SyncScope, ThreadLocalMode, Type, TypeKind,
-    UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord, Visibility,
-    constant_fold_select_instruction, derived_types::PointerType, resolve_intrinsic_name,
-    shufflevector_mask_from_constant,
+    GepNoWrapFlags, IRBuilder, IntCastFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution,
+    IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
+    Positioned, RoundingMode, SelectionKind, StructType, SyncScope, ThreadLocalMode, Type,
+    TypeKind, UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord,
+    Visibility, constant_fold_select_instruction, derived_types::PointerType,
+    resolve_intrinsic_name, shufflevector_mask_from_constant,
 };
 use llvmkit_macros::Branded;
 use llvmkit_support::{Span, Spanned};
@@ -6578,6 +6578,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             "'to' between cast operand and destination type",
         )?;
         let dst_ty = self.parse_type(false)?;
+
+        // Vector operands take the erased builder, as in `parse_int_binop`.
+        // The typed `build_*_dyn` cast family routes the source through
+        // `IntoIntValue<IntDyn>` and takes an `IntType` destination, both of
+        // which describe a *scalar* width, so `<N x iM>` converts to neither.
+        // Upstream has one path for both — `LLParser::parseCast` hands the
+        // operand straight to `CastInst::Create`.
+        if is_vector_type(src_ty) || is_vector_type(dst_ty) {
+            let flags = IntCastFlags::new();
+            let flags = if trunc_nuw { flags.nuw() } else { flags };
+            let flags = if trunc_nsw { flags.nsw() } else { flags };
+            let flags = if zext_nneg { flags.nneg() } else { flags };
+            let v = b
+                .build_int_cast_erased(op.cast_opcode(), src_v, dst_ty, flags, result_name.as_str())
+                .map_err(|e| self.builder_err(op.mnemonic(), e))?;
+            return Ok(b.view(v));
+        }
+
         let src_int: IntValue<'ctx, IntDyn, B> = src_v
             .try_into()
             .map_err(|_| self.expected("integer-typed cast source"))?;
@@ -9651,6 +9669,27 @@ enum IntCast {
     Trunc,
     ZExt,
     SExt,
+}
+
+impl IntCast {
+    /// The IR opcode this spelling builds.
+    fn cast_opcode(&self) -> llvmkit_ir::instr_types::CastOpcode {
+        use llvmkit_ir::instr_types::CastOpcode;
+        match self {
+            Self::Trunc => CastOpcode::Trunc,
+            Self::ZExt => CastOpcode::ZExt,
+            Self::SExt => CastOpcode::SExt,
+        }
+    }
+
+    /// The keyword, for a builder error that names the instruction.
+    fn mnemonic(&self) -> &'static str {
+        match self {
+            Self::Trunc => "trunc",
+            Self::ZExt => "zext",
+            Self::SExt => "sext",
+        }
+    }
 }
 
 enum FpBinOp {

@@ -14,6 +14,32 @@ cut, entries accumulate under **Unreleased**.
 > past the 0.0.4 freeze, not two pending releases; they collapse into one entry
 > when the tag is cut.
 
+### Parser / IR: integer casts over vectors
+
+#### Added
+
+- `trunc` / `zext` / `sext` over fixed and scalable integer vectors now parse,
+  verify, and print. Previously only the scalar spellings worked:
+  `zext <4 x i1> %c to <4 x i32>` failed with "integer-typed cast source".
+- `IRBuilder::build_int_cast_erased`, the third member of the erased builder
+  family alongside `build_int_binop_erased` and `build_int_cmp_erased`. llvmkit's
+  typed integer handles carry a *scalar* width, so `<N x iM>` converts to none of
+  them; the erased path is how the other vector instructions were already built.
+- `IntCastFlags`, the runtime-opcode counterpart of `IntBinOpFlags`: a caller
+  holding a `CastOpcode` it does not know statically cannot choose between
+  `TruncFlags` and `ZExtFlags`, so it supplies all three flags and the builder
+  writes through whichever the opcode reads.
+
+#### Fixed
+
+- The verifier rejected every vector integer cast. Its `trunc`/`zext`/`sext`
+  arm read operand widths through an integer-only accessor, so a vector cast
+  failed with "source type `<4 x i1>` is not integer" even once it parsed. It
+  now compares `Type::getScalarSizeInBits` and checks the vector shapes
+  separately, which is what `CastInst::castIsValid` specifies: both sides
+  vectors of equal element count and scalability, or both scalars, with a
+  strict width change in the opcode's direction.
+
 ### ValueTracking: two of the residue — `stripNullTest` and `collectPossibleValues`
 
 #### Added

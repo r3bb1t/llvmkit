@@ -1530,6 +1530,59 @@ impl BinaryOpcode {
 // Cast-instruction flag types
 // --------------------------------------------------------------------------
 
+/// Every flag the three integer casts accept, in one record.
+///
+/// The counterpart of [`IntBinOpFlags`] for the erased cast path: a caller
+/// holding a *runtime* `CastOpcode` cannot pick between [`TruncFlags`] and
+/// [`ZExtFlags`] statically, so it supplies both and
+/// `IRBuilder::build_int_cast_erased` writes through whichever the opcode
+/// reads. `trunc` reads `nuw` / `nsw`, `zext` reads `nneg`, and `sext` reads
+/// none — a flag set for an opcode that does not accept it is dropped rather
+/// than rejected, matching the typed builders, which simply have no parameter
+/// for it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct IntCastFlags {
+    pub(crate) nuw: bool,
+    pub(crate) nsw: bool,
+    pub(crate) nneg: bool,
+}
+
+impl IntCastFlags {
+    /// No flags set.
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            nuw: false,
+            nsw: false,
+            nneg: false,
+        }
+    }
+
+    /// Set `nuw`, which only `trunc` reads.
+    #[inline]
+    #[must_use]
+    pub const fn nuw(mut self) -> Self {
+        self.nuw = true;
+        self
+    }
+
+    /// Set `nsw`, which only `trunc` reads.
+    #[inline]
+    #[must_use]
+    pub const fn nsw(mut self) -> Self {
+        self.nsw = true;
+        self
+    }
+
+    /// Set `nneg`, which only `zext` reads.
+    #[inline]
+    #[must_use]
+    pub const fn nneg(mut self) -> Self {
+        self.nneg = true;
+        self
+    }
+}
+
 /// Flags for `zext`. The `nneg` flag asserts the source value is non-negative.
 /// Mirrors `PossiblyNonNegInst` in `Operator.h`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
