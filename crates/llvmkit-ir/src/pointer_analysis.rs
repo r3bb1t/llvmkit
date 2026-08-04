@@ -506,7 +506,7 @@ fn intrinsic_returns_aliasing_argument<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports `llvm::ConstantDataArraySlice`. Upstream's `Array` field is a
 /// `ConstantDataArray *`, the compact representation LLVM uses for an array of
 /// primitive constants; llvmkit has no such specialisation — an array constant
-/// is [`ConstantData::Aggregate`] whichever way its elements were written — so
+/// is one aggregate constant whichever way its elements were written — so
 /// [`Self::array`] is the aggregate constant itself.
 ///
 /// A `None` array is upstream's null pointer: a zeroinitializer, which is a
