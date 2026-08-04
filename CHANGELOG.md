@@ -7,6 +7,37 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### The floating-point classification lattice (tranche 7a)
+
+#### Added
+
+- `fp_class.rs` — `FpClassTest`, porting `llvm::FPClassTest`
+  (`llvm/ADT/FloatingPointMode.h`): the ten-bit mask naming every class an IEEE
+  value can fall into, split by sign, with upstream's named unions, the three
+  transforms (`fneg`, `inverse_fabs`, `unknown_sign`), `APFloat::classify`, and
+  the `Display` that ports `operator<<`.
+- `KnownFpClass`, porting `llvm::KnownFPClass`
+  (`llvm/Support/KnownFPClass.h`): that mask paired with a separately tracked
+  sign bit, and every predicate over it —
+  `isKnownNever*`, `cannotBeOrdered*`, `knownNot`, `fneg`, `fabs`, `copysign`,
+  `propagateNaN`, `intersectWith`, `operator|=` and
+  `isKnownNeverLogical{,Neg,Pos}Zero`.
+
+This is the prerequisite for `computeKnownFPClass`, and stands to it as
+`KnownBits` does to `computeKnownBits`. The *operations* on the lattice that
+only `computeKnownFPClass` uses — `fmul`, `sqrt`, `log`, `exp`, `fpext`,
+`roundToIntegral`, `canonicalize`, `minMaxLike`, `propagateDenormal`,
+`propagateCanonicalizingSrc` — are deliberately not here yet: landing them
+without their consumer would be a surface with no caller and no way to test it
+against upstream. The module header records that.
+
+`FpClassTest` is a `u32` newtype, not an `enum`. Upstream's is an `enum` only
+because C++ has no other way to name a bitmask — `LLVM_DECLARE_ENUM_AS_BITMASK`
+is upstream saying so — and `complement` accordingly complements within
+`fcAllFlags` rather than within `u32`. `from_bits` is fallible where `bits` is
+not: a mask read out of `@llvm.is.fpclass` is caller-supplied, and upstream's
+verifier rejects an out-of-range one rather than truncating it.
+
 ### ValueTracking: assumptions and implied conditions (tranche 8)
 
 #### Added
