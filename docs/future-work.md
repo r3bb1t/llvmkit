@@ -72,7 +72,7 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 
 ## ValueTracking.h — remaining tranches, and the order to take them
 
-**Status after tranche 4b (2026-08-03):** 72 of 101 entry points modeled, 29
+**Status after tranche 8 (2026-08-04):** 79 of 101 entry points modeled, 22
 gaps, all symbol-keyed in `crates/llvmkit-ir/tests/value_tracking_parity.rs`
 and asserted to sum to the audited surface.
 
@@ -81,12 +81,13 @@ and asserted to sum to the audited surface.
 | ~~4b select matching~~ | 0 | **done** — the matching half of `crates/llvmkit-ir/src/select_pattern.rs` |
 | ~~5 pointer/object~~ | 0 | **done** — `crates/llvmkit-ir/src/pointer_analysis.rs` |
 | ~~6 speculation/UB~~ | 0 | **done** — `crates/llvmkit-ir/src/speculation.rs` |
+| ~~8 assumptions~~ | 0 | **done** — `crates/llvmkit-ir/src/assumptions.rs` |
+| ~~implied conditions~~ | 0 | **done** — `crates/llvmkit-ir/src/implied_conditions.rs` |
 | 7 FP class | 11 | the only tranche needing a new *lattice* rather than a new consumer |
-| 8 assumptions | 4 | needs `@llvm.assume` modeled first |
-| implied conditions | 2 | builds on 6 and 8 |
-| residue | 7 | small, independent |
+| residue | 6 | small, independent |
 | expose-only | 2 | `matchSimpleRecurrence` and `computeKnownBitsFromRangeMetadata` already exist as crate-private helpers |
 | partial | 1 | `getInverseMinMaxIntrinsic` — integer arms done, 6 FP intrinsics unrepresentable |
+| sibling | 1 | `matchSimpleBinaryIntrinsicRecurrence` |
 | blocked | 1 | `getVScaleRange`, see above |
 
 **Take 6 and 8 before 5 and 7.** They are unblockers rather than additions.
@@ -123,13 +124,38 @@ Nothing is *wrong* today — a missing refinement only leaves the answer weaker 
 which is why no test caught it. It was found by reading the C++ beside the
 Rust, not by running anything.
 
-**Take tranche 8 next, then 7.** Tranche 8 is the last unblocker: `@llvm.assume`
-is the one arm `is_known_not_undef_or_poison` still records as deferred, and
-`is_known_to_be_a_power_of_two` / `is_known_non_equal` each skip an
-assumption-driven refinement. `isImpliedCondition` builds on the same machinery,
-so tranche 8 and the implied-conditions pair are one slice. Tranche 7 needs a
-new `FPClassTest` / `KnownFPClass` lattice and nothing waits on it, so it is a
-clean standalone finish.
+### Found while porting tranche 8: the integer min/max matcher was narrow *and* too permissive
+
+`int_min_max_against_constant` (tranche 4b) ported `m_SMin` / `m_SMax` /
+`m_UMin` / `m_UMax` as the `select(icmp …)` shape only. Upstream's
+`MaxMin_match` (`PatternMatch.h`) matches **two** shapes — that select *and* a
+direct call to the matching `llvm.{s,u}{min,max}` intrinsic — so the port
+declined programs `matchClamp` accepts. In the other direction it accepted its
+two operands in either order, which is `m_c_SMin`; `matchClamp` writes the
+non-commutative `m_SMin`. Both are fixed, and the select arm now binds operands
+the way upstream does: `L` is the *compare's* first operand, with the predicate
+**inverted** — not swapped — when the true arm is the compare's right-hand side.
+
+The commutativity papered over the binding-order slip, which is why nothing
+failed. Found by reading `MaxMin_match` while porting `isTruePredicate`, which
+needs the genuinely commutative `m_c_SMax` family.
+
+**Take tranche 7 next; it is the last substantial one.** Tranches 6 and 8 were
+the unblockers and both have landed. Tranche 8 paid out as predicted: it closed
+the `@llvm.assume` arm `is_known_not_undef_or_poison` had recorded as deferred,
+and `compute_known_bits` now runs `computeKnownBitsFromContext` where upstream
+does, so every existing known-bits caller gets assumption- and
+branch-driven facts by attaching a cache to the query. Tranche 7 needs a new
+`FPClassTest` / `KnownFPClass` lattice and nothing waits on it, so it is a clean
+standalone finish; the residue sweep can follow in any order.
+
+Two arms of tranche 8 stay narrower than upstream, each recorded at its site:
+`computeKnownBitsFromContext`'s operand-bundle alignment refinement needs
+`getKnowledgeFromBundle` (`llvm/Analysis/AssumeBundleQueries.h`), and
+`isImpliedCondFCmps`'s constant-versus-constant conclusion needs
+`ConstantFPRange`. Neither header is ported; both omissions only weaken an
+answer. `AssumptionCache` still records the bundle indices, so the first can be
+filled in without re-scanning.
 
 **Run both doc gates per slice, not just fmt/clippy/tests.** Three tranches ran
 without them and a `private_intra_doc_links` error — a public doc linking the
@@ -238,8 +264,8 @@ not on missing effort. Measured against the vendored 22.1.4 tree:
 |---|---|---|---|
 | `ConstantRange` | 632 (`.h`) + 2314 (`.cpp`) | `constant_range.rs`, 223 lines, **15 of 78** public methods | ~63 methods + `ConstantRangeTest.cpp` (~2800 lines) |
 | `KnownFPClass` / `FPClassTest` | `FloatingPointMode.h` 290, plus ~1500 lines of `computeKnownFPClass` | **absent** | a whole FP lattice |
-| `AssumptionCache` | 280 + 310 | **absent** | also needs `@llvm.assume` modeling |
-| `SelectPatternResult` | declared in `ValueTracking.h` | **absent** | ~250 lines |
+| `AssumptionCache` | 280 + 310 | `assumptions.rs`, with `DomConditionCache` alongside | **done 2026-08-04** (tranche 8) |
+| `SelectPatternResult` | declared in `ValueTracking.h` | `select_pattern.rs` | **done 2026-08-03** (tranches 4a/4b) |
 | `TargetLibraryInfo` | 664 | `target_library_info.rs`, 427 lines | partial; may already suffice |
 | `ValueTracking.cpp` itself | 10535 | `value_tracking.rs`, 2259 | ~8300 lines |
 

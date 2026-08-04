@@ -498,6 +498,18 @@ impl KnownBits {
         self.one.set_bit(bit);
     }
 
+    /// Add every set bit of `bits` to the known-one mask. Spells upstream's
+    /// `Known.One |= X`.
+    pub(crate) fn add_known_one_bits(&mut self, bits: &ApInt) {
+        self.one = self.one.bitor(bits);
+    }
+
+    /// Add every set bit of `bits` to the known-zero mask. Spells upstream's
+    /// `Known.Zero |= X`.
+    pub(crate) fn add_known_zero_bits(&mut self, bits: &ApInt) {
+        self.zero = self.zero.bitor(bits);
+    }
+
     pub(crate) fn set_known_zero_bits_from(&mut self, bit: u32) {
         self.zero.set_bits_from(bit);
     }

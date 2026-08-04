@@ -270,6 +270,10 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("SelectPatternNaNBehavior", "SelectPatternNaNBehavior"),
     ("SelectPatternResult", "SelectPatternResult"),
     (
+        "adjustKnownBitsForSelectArm",
+        "adjust_known_bits_for_select_arm",
+    ),
+    (
         "canConvertToMinOrMaxIntrinsic",
         "can_convert_to_min_or_max_intrinsic",
     ),
@@ -281,6 +285,10 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "compute_constant_range_including_known_bits",
     ),
     ("computeKnownBits", "compute_known_bits"),
+    (
+        "computeKnownBitsFromContext",
+        "compute_known_bits_from_context",
+    ),
     (
         "computeOverflowForSignedAdd",
         "compute_overflow_for_signed_add",
@@ -306,6 +314,10 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "compute_overflow_for_unsigned_sub",
     ),
     ("findAllocaForValue", "find_alloca_for_value"),
+    (
+        "findValuesAffectedByCondition",
+        "find_values_affected_by_condition",
+    ),
     (
         "getArgumentAliasingToReturnedPointer",
         "argument_aliasing_to_returned_pointer",
@@ -352,6 +364,8 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "isGuaranteedToTransferExecutionToSuccessor",
         "is_guaranteed_to_transfer_execution_to_successor / block_transfers_execution_to_successor / instructions_transfer_execution_to_successor",
     ),
+    ("isImpliedByDomCondition", "is_implied_by_dom_condition"),
+    ("isImpliedCondition", "is_implied_condition"),
     (
         "isIntrinsicReturningPointerAliasingArgumentWithoutCapturing",
         "is_intrinsic_returning_pointer_aliasing_argument_without_capturing",
@@ -386,6 +400,7 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "is_safe_to_speculatively_execute_with_variable_replaced",
     ),
     ("isSignBitCheck", "is_sign_bit_check"),
+    ("isValidAssumeForContext", "is_valid_assume_for_context"),
     (
         "matchDecomposedSelectPattern",
         "match_decomposed_select_pattern",
@@ -411,6 +426,7 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "program_undefined_if_undef_or_poison",
     ),
     ("propagatesPoison", "propagates_poison"),
+    ("willNotFreeBetween", "will_not_free_between"),
 ];
 
 /// The `ValueTracking.h` entry points llvmkit does not model, one row per
@@ -429,10 +445,6 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
 /// plus gaps has to add up to the audited surface, which
 /// `value_tracking_surface_is_accounted_for` asserts.
 const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
-    (
-        "adjustKnownBitsForSelectArm",
-        "residue: needs the select-arm condition refinement",
-    ),
     (
         "adjustKnownFPClassForSelectArm",
         "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
@@ -466,10 +478,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
         "residue: enumerates a value set; no llvmkit caller yet",
     ),
     (
-        "computeKnownBitsFromContext",
-        "assumption cache (tranche 8): needs @llvm.assume modeled first",
-    ),
-    (
         "computeKnownBitsFromRangeMetadata",
         "modeled as the crate-private range_metadata_known_bits; public upstream, not public here",
     ),
@@ -480,10 +488,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "computeKnownFPSignBit",
         "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
-    ),
-    (
-        "findValuesAffectedByCondition",
-        "assumption cache (tranche 8): needs @llvm.assume modeled first",
     ),
     (
         "getFlippedStrictnessPredicateAndConstant",
@@ -502,14 +506,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
         "blocked on the `vscale_range` attribute itself, which attribute_td_drift.rs lists as NOT_YET_MODELED: upstream reads a packed (min, max) pair and llvmkit's payload is a single u64, so porting it would mean inventing the second half",
     ),
     (
-        "isImpliedByDomCondition",
-        "implied conditions: builds on the assumption and dominating-condition machinery of tranches 6 and 8",
-    ),
-    (
-        "isImpliedCondition",
-        "implied conditions: builds on the assumption and dominating-condition machinery of tranches 6 and 8",
-    ),
-    (
         "isKnownNeverInfOrNaN",
         "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
     ),
@@ -526,10 +522,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
         "residue: reads the with-overflow intrinsics llvmkit models as plain calls",
     ),
     (
-        "isValidAssumeForContext",
-        "assumption cache (tranche 8): needs @llvm.assume modeled first",
-    ),
-    (
         "matchSimpleBinaryIntrinsicRecurrence",
         "the min/max/intrinsic sibling of matchSimpleRecurrence; needs the intrinsic recurrence forms llvmkit does not match yet",
     ),
@@ -540,10 +532,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "stripNullTest",
         "residue: peels a null-check pattern; no llvmkit caller yet",
-    ),
-    (
-        "willNotFreeBetween",
-        "assumption cache (tranche 8): needs @llvm.assume modeled first",
     ),
 ];
 
@@ -888,6 +876,36 @@ fn exercises_every_modeled_value_tracking_entry_point() {
         ConstantDataArraySlice::<DynBrand>::element,
     );
     let _max_lookup_search_depth = llvmkit_ir::MAX_LOOKUP_SEARCH_DEPTH;
+
+    // Tranche 8 — assumptions and implied conditions.
+    let _compute_known_bits_from_context = llvmkit_ir::compute_known_bits_from_context::<DynBrand>;
+    let _adjust_known_bits_for_select_arm =
+        llvmkit_ir::adjust_known_bits_for_select_arm::<DynBrand>;
+    let _is_valid_assume_for_context = llvmkit_ir::is_valid_assume_for_context::<DynBrand>;
+    let _will_not_free_between = llvmkit_ir::will_not_free_between::<DynBrand>;
+    let _find_values_affected_by_condition =
+        llvmkit_ir::find_values_affected_by_condition::<DynBrand, fn(llvmkit_ir::Value<DynBrand>)>;
+    // Both overloads of each, as upstream declares them.
+    let _is_implied_condition = (
+        llvmkit_ir::is_implied_condition::<DynBrand>,
+        llvmkit_ir::is_implied_condition_decomposed::<DynBrand>,
+    );
+    let _is_implied_by_dom_condition = (
+        llvmkit_ir::is_implied_by_dom_condition::<DynBrand>,
+        llvmkit_ir::is_implied_by_dom_condition_decomposed::<DynBrand>,
+    );
+    // The condition-injection vehicle `computeKnownBitsFromContext` reads.
+    let _cond_context = (
+        llvmkit_ir::CondContext::<DynBrand>::new,
+        llvmkit_ir::CondContext::<DynBrand>::inverted,
+        llvmkit_ir::CondContext::<DynBrand>::affects,
+    );
+    let _assumption_caches = (
+        llvmkit_ir::AssumptionCache::new::<DynBrand>,
+        llvmkit_ir::AssumptionCache::assumptions_for::<DynBrand>,
+        llvmkit_ir::DomConditionCache::register_branch::<DynBrand>,
+        llvmkit_ir::DomConditionCache::conditions_for::<DynBrand>,
+    );
     // Not in the table — the answer shape of `isBytewiseValue`, which upstream
     // spells as a `Value *` because it can mint the constant.
     let _bytewise_value = BytewiseValue::<DynBrand>::AnyByte;
