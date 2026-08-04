@@ -90,6 +90,7 @@ pub mod element;
 pub mod error;
 pub mod float_kind;
 pub mod fmf;
+pub mod fp_class;
 pub mod function;
 pub mod function_signature;
 pub mod gep_no_wrap_flags;
@@ -364,6 +365,7 @@ pub use float_kind::{
     PpcFp128, StaticFloatKind, X86Fp80,
 };
 // `f32`/`f64` are std types — no re-export needed.
+pub use fp_class::{FpClassTest, KnownFpClass};
 
 pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
 pub use assumptions::{
