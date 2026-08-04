@@ -7,6 +7,39 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ValueTracking: floating-point classification (tranche 7b and 7c)
+
+#### Added
+
+- `known_fp_class.rs` — `compute_known_fp_class` over the `fp_class` lattice,
+  porting `llvm::computeKnownFPClass`, in the three overloads that differ in
+  what they take: an interested-classes mask, everything, and a use site's fast
+  math flags.
+- The nine convenience predicates over it: `is_known_never_nan`,
+  `is_known_never_infinity`, `is_known_never_infinity_or_nan`,
+  `cannot_be_negative_zero`, `cannot_be_ordered_less_than_zero`,
+  `compute_known_fp_sign_bit`, and the two `Use`-taking
+  `can_ignore_sign_bit_of_zero` / `can_ignore_sign_bit_of_nan`.
+
+**The dispatch is partial, and the module header names every arm that is
+missing.** Ported: the constant and poison leaves, the fast-math-flag
+refinement, `fneg`, `fpext`, `fptrunc`, `sitofp`, `uitofp`, and the
+`fabs` / `copysign` / `sqrt` / `canonicalize` intrinsics together with the six
+min/max, seven rounding, `exp` and `log` families. Not yet consulted: `select`
+(it needs `adjustKnownFPClassForSelectArm`, still a recorded gap), the
+assumption and dominating-branch arm, the arithmetic and vector arms, and the
+remaining intrinsics. An unported arm leaves `fcAllFlags` — "could be anything"
+— so it weakens an answer and never falsifies one.
+
+`nofpclass` on a call return or parameter has no counterpart: llvmkit's
+attribute model carries no such payload, so `getRetNoFPClass` and
+`getNoFPClass` have nothing to read.
+
+The parity ledger moves nine of the eleven tranche-7 rows, taking it to **88 of
+101 modeled, 13 gaps**. The two that stay are the select-arm pair, whose reason
+is rewritten: the lattice they needed now exists, only the dispatch arm is
+absent.
+
 ### The floating-point classification lattice (tranche 7a)
 
 #### Added

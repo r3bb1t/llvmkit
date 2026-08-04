@@ -72,9 +72,17 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 
 ## ValueTracking.h — remaining tranches, and the order to take them
 
-**Status after tranche 8 (2026-08-04):** 79 of 101 entry points modeled, 22
+**Status after tranche 7 (2026-08-04):** 88 of 101 entry points modeled, 13
 gaps, all symbol-keyed in `crates/llvmkit-ir/tests/value_tracking_parity.rs`
 and asserted to sum to the audited surface.
+
+`computeKnownFPClass` is modeled but its **dispatch is partial** — the entry
+point exists and every unported arm is named in `known_fp_class.rs`'s header.
+That is deliberate: an unported arm answers `fcAllFlags`, so it weakens a
+result rather than falsifying one, and the arms are independent enough to land
+one at a time. The ledger counts the entry point, not the arm coverage, so
+"modeled" here means less than it does for a total function; the module header
+is the honest record.
 
 | Tranche | Left | Note |
 |---|---|---|
@@ -83,7 +91,8 @@ and asserted to sum to the audited surface.
 | ~~6 speculation/UB~~ | 0 | **done** — `crates/llvmkit-ir/src/speculation.rs` |
 | ~~8 assumptions~~ | 0 | **done** — `crates/llvmkit-ir/src/assumptions.rs` |
 | ~~implied conditions~~ | 0 | **done** — `crates/llvmkit-ir/src/implied_conditions.rs` |
-| 7 FP class | 11 | `fp_class.rs` is **complete** as of 2026-08-04 — the lattice, its predicates and every `KnownFPClass.cpp` operation. What remains is `computeKnownFPClass` (~1100 lines of dispatch) and the nine one-line predicates over it; all 11 rows move together when those land |
+| ~~7 FP class~~ | 2 | **mostly done** — `fp_class.rs` (lattice + every `KnownFPClass.cpp` operation) and `known_fp_class.rs` (`computeKnownFPClass` + the nine predicates). Only the select-arm pair is left, and it is the same arm twice |
+| FP select arm | 2 | `adjustKnownFPClassForSelectArm` and `analyzeKnownFPClassFromSelect` — the select arm `known_fp_class.rs` records as not yet dispatched |
 | residue | 6 | small, independent |
 | expose-only | 2 | `matchSimpleRecurrence` and `computeKnownBitsFromRangeMetadata` already exist as crate-private helpers |
 | partial | 1 | `getInverseMinMaxIntrinsic` — integer arms done, 6 FP intrinsics unrepresentable |

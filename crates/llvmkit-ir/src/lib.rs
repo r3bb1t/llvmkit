@@ -110,6 +110,7 @@ pub mod intrinsics;
 pub mod ir_builder;
 pub mod iter;
 pub mod known_bits;
+pub mod known_fp_class;
 pub(crate) mod llvm_context;
 pub mod marker;
 pub mod matchers;
@@ -365,7 +366,13 @@ pub use float_kind::{
     PpcFp128, StaticFloatKind, X86Fp80,
 };
 // `f32`/`f64` are std types — no re-export needed.
-pub use fp_class::{FpClassTest, KnownFpClass};
+pub use fp_class::{FpClassTest, KnownFpClass, MinMaxKind};
+pub use known_fp_class::{
+    can_ignore_sign_bit_of_nan, can_ignore_sign_bit_of_zero, cannot_be_negative_zero,
+    cannot_be_ordered_less_than_zero, compute_known_fp_class, compute_known_fp_class_all,
+    compute_known_fp_class_with_flags, compute_known_fp_sign_bit, is_known_never_infinity,
+    is_known_never_infinity_or_nan, is_known_never_nan,
+};
 
 pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
 pub use assumptions::{

@@ -279,6 +279,13 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ),
     ("canCreatePoison", "can_create_poison"),
     ("canCreateUndefOrPoison", "can_create_undef_or_poison"),
+    ("canIgnoreSignBitOfNaN", "can_ignore_sign_bit_of_nan"),
+    ("canIgnoreSignBitOfZero", "can_ignore_sign_bit_of_zero"),
+    ("cannotBeNegativeZero", "cannot_be_negative_zero"),
+    (
+        "cannotBeOrderedLessThanZero",
+        "cannot_be_ordered_less_than_zero",
+    ),
     ("computeConstantRange", "compute_constant_range"),
     (
         "computeConstantRangeIncludingKnownBits",
@@ -289,6 +296,8 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "computeKnownBitsFromContext",
         "compute_known_bits_from_context",
     ),
+    ("computeKnownFPClass", "compute_known_fp_class"),
+    ("computeKnownFPSignBit", "compute_known_fp_sign_bit"),
     (
         "computeOverflowForSignedAdd",
         "compute_overflow_for_signed_add",
@@ -373,6 +382,9 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("isKnownInversion", "is_known_inversion"),
     ("isKnownNegation", "is_known_negation"),
     ("isKnownNegative", "is_known_negative"),
+    ("isKnownNeverInfOrNaN", "is_known_never_infinity_or_nan"),
+    ("isKnownNeverInfinity", "is_known_never_infinity"),
+    ("isKnownNeverNaN", "is_known_never_nan"),
     ("isKnownNonEqual", "is_known_non_equal"),
     ("isKnownNonNegative", "is_known_non_negative"),
     ("isKnownNonZero", "is_known_non_zero"),
@@ -447,7 +459,7 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
 const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "adjustKnownFPClassForSelectArm",
-        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
+        "the select arm of computeKnownFPClass, which known_fp_class.rs records as not yet dispatched; the KnownFPClass lattice it needs now exists",
     ),
     (
         "analyzeKnownBitsFromAndXorOr",
@@ -455,23 +467,7 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     ),
     (
         "analyzeKnownFPClassFromSelect",
-        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
-    ),
-    (
-        "canIgnoreSignBitOfNaN",
-        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
-    ),
-    (
-        "canIgnoreSignBitOfZero",
-        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
-    ),
-    (
-        "cannotBeNegativeZero",
-        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
-    ),
-    (
-        "cannotBeOrderedLessThanZero",
-        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
+        "the select arm of computeKnownFPClass, which known_fp_class.rs records as not yet dispatched; the KnownFPClass lattice it needs now exists",
     ),
     (
         "collectPossibleValues",
@@ -480,14 +476,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "computeKnownBitsFromRangeMetadata",
         "modeled as the crate-private range_metadata_known_bits; public upstream, not public here",
-    ),
-    (
-        "computeKnownFPClass",
-        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
-    ),
-    (
-        "computeKnownFPSignBit",
-        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
     ),
     (
         "getFlippedStrictnessPredicateAndConstant",
@@ -504,18 +492,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "getVScaleRange",
         "blocked on the `vscale_range` attribute itself, which attribute_td_drift.rs lists as NOT_YET_MODELED: upstream reads a packed (min, max) pair and llvmkit's payload is a single u64, so porting it would mean inventing the second half",
-    ),
-    (
-        "isKnownNeverInfOrNaN",
-        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
-    ),
-    (
-        "isKnownNeverInfinity",
-        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
-    ),
-    (
-        "isKnownNeverNaN",
-        "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
     ),
     (
         "isOverflowIntrinsicNoWrap",
@@ -876,6 +852,25 @@ fn exercises_every_modeled_value_tracking_entry_point() {
         ConstantDataArraySlice::<DynBrand>::element,
     );
     let _max_lookup_search_depth = llvmkit_ir::MAX_LOOKUP_SEARCH_DEPTH;
+
+    // Tranche 7 — floating-point classification.
+    let _compute_known_fp_class = (
+        llvmkit_ir::compute_known_fp_class::<DynBrand>,
+        llvmkit_ir::compute_known_fp_class_all::<DynBrand>,
+        llvmkit_ir::compute_known_fp_class_with_flags::<DynBrand>,
+    );
+    let _fp_predicates = (
+        llvmkit_ir::is_known_never_nan::<DynBrand>,
+        llvmkit_ir::is_known_never_infinity::<DynBrand>,
+        llvmkit_ir::is_known_never_infinity_or_nan::<DynBrand>,
+        llvmkit_ir::cannot_be_negative_zero::<DynBrand>,
+        llvmkit_ir::cannot_be_ordered_less_than_zero::<DynBrand>,
+        llvmkit_ir::compute_known_fp_sign_bit::<DynBrand>,
+    );
+    let _sign_bit_indifference = (
+        llvmkit_ir::can_ignore_sign_bit_of_zero::<DynBrand>,
+        llvmkit_ir::can_ignore_sign_bit_of_nan::<DynBrand>,
+    );
 
     // Tranche 8 — assumptions and implied conditions.
     let _compute_known_bits_from_context = llvmkit_ir::compute_known_bits_from_context::<DynBrand>;
