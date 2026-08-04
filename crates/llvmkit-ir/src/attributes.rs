@@ -24,6 +24,7 @@ use core::iter::FusedIterator;
 use std::fmt;
 
 use super::ApInt;
+use super::fp_class::FpClassTest;
 use super::module::ModuleBrand;
 use super::r#type::{Type, TypeKind, TypeSlot};
 
@@ -338,6 +339,7 @@ pub enum AttrKind {
     VScaleRange,
     Range,
     Memory,
+    NoFpClass,
 
     // ---- Type-valued attributes ----
     ByRef,
@@ -433,6 +435,7 @@ impl AttrKind {
             Self::VScaleRange => "vscale_range",
             Self::Range => "range",
             Self::Memory => "memory",
+            Self::NoFpClass => "nofpclass",
             // Type
             Self::ByRef => "byref",
             Self::ByVal => "byval",
@@ -482,6 +485,13 @@ impl AttrKind {
     pub const fn is_memory_kind(self) -> bool {
         matches!(self, Self::Memory)
     }
+
+    /// `true` for the floating-point class-mask payload attribute.
+    #[inline]
+    pub const fn is_fp_class_kind(self) -> bool {
+        matches!(self, Self::NoFpClass)
+    }
+
     /// `true` for plain enum / flag kinds (no payload).
     #[inline]
     pub const fn is_enum_kind(self) -> bool {
@@ -489,6 +499,7 @@ impl AttrKind {
             && !self.is_type_kind()
             && !self.is_range_kind()
             && !self.is_memory_kind()
+            && !self.is_fp_class_kind()
     }
 }
 
@@ -526,6 +537,14 @@ pub enum Attribute<'ctx, B: ModuleBrand> {
     },
     /// Exact function memory effects (`memory(read)`, `memory(argmem: read)`).
     Memory(MemoryEffects),
+    /// Floating-point classes the value is guaranteed not to be
+    /// (`nofpclass(nan inf)`). Mirrors `Attribute::getWithNoFPClass`.
+    ///
+    /// Upstream stores the mask as a plain integer payload and special-cases
+    /// its printing; here the payload is the [`FpClassTest`] it means, which
+    /// is the same shape [`Attribute::Memory`] already uses for
+    /// [`MemoryEffects`].
+    NoFpClass(FpClassTest),
     /// Free-form key=value string attribute. Used for target-dependent
     /// attributes (`"target-features"`, `"frame-pointer"`, ...).
     String { key: String, value: String },
@@ -608,6 +627,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
             Self::Enum(k) | Self::Int(k, _) | Self::Type(k, _) => Some(*k),
             Self::Range { .. } => Some(AttrKind::Range),
             Self::Memory(_) => Some(AttrKind::Memory),
+            Self::NoFpClass(_) => Some(AttrKind::NoFpClass),
             Self::String { .. } => None,
         }
     }
@@ -631,9 +651,76 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Attribute<'ctx, B> {
                 upper.to_string_radix(10, crate::ApIntSignedness::Signed)
             ),
             Self::Memory(effects) => write!(f, "{effects}"),
+            Self::NoFpClass(mask) => write!(f, "nofpclass({})", FpClassMaskNames(*mask)),
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
             Self::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
         }
+    }
+}
+
+/// The class names `nofpclass`'s mask prints as, in the order upstream
+/// consumes them.
+///
+/// Ports `NoFPClassName` (`llvm/lib/Support/FloatingPointMode.cpp`), whose own
+/// comment gives the rule: "Every bitfield has a unique name and one or more
+/// aliasing names that cover multiple bits. Names should be listed in order of
+/// preference, with higher popcounts listed first. Bits are consumed as
+/// printed."
+///
+/// **This is deliberately not the parser's keyword order.** `keywordToFPClassTest`
+/// lists `norm` before `sub` before `zero`; printing goes `zero`, `sub`, `norm`.
+/// Printing in parse order would emit a mask that re-parses to the same value
+/// but does not match `clang`'s bytes, which the round-trip tests would catch
+/// and a parse-only test would not.
+const NO_FP_CLASS_NAMES: &[(FpClassTest, &str)] = &[
+    (FpClassTest::ALL, "all"),
+    (FpClassTest::NAN, "nan"),
+    (FpClassTest::SIGNALING_NAN, "snan"),
+    (FpClassTest::QUIET_NAN, "qnan"),
+    (FpClassTest::INFINITY, "inf"),
+    (FpClassTest::NEGATIVE_INFINITY, "ninf"),
+    (FpClassTest::POSITIVE_INFINITY, "pinf"),
+    (FpClassTest::ZERO, "zero"),
+    (FpClassTest::NEGATIVE_ZERO, "nzero"),
+    (FpClassTest::POSITIVE_ZERO, "pzero"),
+    (FpClassTest::SUBNORMAL, "sub"),
+    (FpClassTest::NEGATIVE_SUBNORMAL, "nsub"),
+    (FpClassTest::POSITIVE_SUBNORMAL, "psub"),
+    (FpClassTest::NORMAL, "norm"),
+    (FpClassTest::NEGATIVE_NORMAL, "nnorm"),
+    (FpClassTest::POSITIVE_NORMAL, "pnorm"),
+];
+
+/// Renders a `nofpclass` mask as its space-separated class names.
+///
+/// Ports `operator<<(raw_ostream &, FPClassTest)`. An empty mask prints as
+/// `none`, which upstream also accepts back.
+struct FpClassMaskNames(FpClassTest);
+
+impl fmt::Display for FpClassMaskNames {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut remaining = self.0;
+        if remaining.is_none() {
+            return f.write_str("none");
+        }
+        let mut first = true;
+        for (bits, name) in NO_FP_CLASS_NAMES {
+            if !remaining.contains(*bits) {
+                continue;
+            }
+            if !first {
+                f.write_str(" ")?;
+            }
+            f.write_str(name)?;
+            first = false;
+            // Clear the bits so no aliasing name prints them again.
+            remaining = remaining.difference(*bits);
+        }
+        debug_assert!(
+            remaining.is_none(),
+            "every nofpclass bit has a name in NO_FP_CLASS_NAMES"
+        );
+        Ok(())
     }
 }
 
@@ -823,6 +910,7 @@ pub(super) enum AttributeStored {
         upper: ApInt,
     },
     Memory(MemoryEffects),
+    NoFpClass(FpClassTest),
     String {
         key: String,
         value: String,
@@ -842,6 +930,7 @@ impl AttributeStored {
                 upper,
             },
             Attribute::Memory(effects) => Self::Memory(effects),
+            Attribute::NoFpClass(mask) => Self::NoFpClass(mask),
             Attribute::String { key, value } => Self::String { key, value },
         }
     }
@@ -858,6 +947,7 @@ impl fmt::Display for AttributeStored {
                 unreachable!("typed attributes need a module context to print")
             }
             Self::Memory(effects) => write!(f, "{effects}"),
+            Self::NoFpClass(mask) => write!(f, "nofpclass({})", FpClassMaskNames(*mask)),
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
             Self::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
         }

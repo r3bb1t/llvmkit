@@ -54,6 +54,9 @@ impl AttributeMask {
                 Attribute::Memory(_) => {
                     self.enum_kinds.insert(AttrKind::Memory);
                 }
+                Attribute::NoFpClass(_) => {
+                    self.enum_kinds.insert(AttrKind::NoFpClass);
+                }
                 Attribute::String { key, .. } => {
                     self.target_dep_attrs.insert(key.clone());
                 }
@@ -80,6 +83,7 @@ impl AttributeMask {
             }
             Attribute::Range { .. } => self.contains_kind(AttrKind::Range),
             Attribute::Memory(_) => self.contains_kind(AttrKind::Memory),
+            Attribute::NoFpClass(_) => self.contains_kind(AttrKind::NoFpClass),
             Attribute::String { key, .. } => self.contains_string(key),
         }
     }

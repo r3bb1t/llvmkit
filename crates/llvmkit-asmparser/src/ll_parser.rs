@@ -43,10 +43,10 @@ use llvmkit_ir::{
     AtomicLoadConfig, AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, CallingConv, Constant,
     ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
     DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FloatValue,
-    GepNoWrapFlags, IRBuilder, IntCastFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution,
-    IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
-    Positioned, RoundingMode, SelectionKind, StructType, SyncScope, ThreadLocalMode, Type,
-    TypeKind, UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord,
+    FpClassTest, GepNoWrapFlags, IRBuilder, IntCastFlags, IntDyn, IntType, IntValue,
+    IntrinsicNameResolution, IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder,
+    PointerValue, Positioned, RoundingMode, SelectionKind, StructType, SyncScope, ThreadLocalMode,
+    Type, TypeKind, UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord,
     Visibility, constant_fold_select_instruction, derived_types::PointerType,
     resolve_intrinsic_name, shufflevector_mask_from_constant,
 };
@@ -5123,6 +5123,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let attr = self.parse_memory_attribute()?;
                     out.add(index, attr);
                 }
+                Token::Kw(Keyword::Nofpclass) => {
+                    let attr = self.parse_nofpclass_attribute()?;
+                    out.add(index, attr);
+                }
                 Token::Kw(keyword)
                     if index == AttrIndex::Function
                         && Self::legacy_memory_effects(*keyword).is_some() =>
@@ -5236,6 +5240,73 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             lower_parsed_apsint(&upper, bits),
         )
         .ok_or_else(|| self.expected("valid range attribute"))
+    }
+
+    /// The class mask a single `nofpclass` component keyword contributes.
+    ///
+    /// Ports `keywordToFPClassTest` (`LLParser.cpp`). Two spellings do not have
+    /// a dedicated token: `ninf` is also a fast-math flag, and `sub` is also
+    /// the instruction, so both arrive as the token they share.
+    fn nofpclass_component(&self) -> Option<FpClassTest> {
+        Some(match self.peek() {
+            Token::Kw(Keyword::All) => FpClassTest::ALL,
+            Token::Kw(Keyword::Nan) => FpClassTest::NAN,
+            Token::Kw(Keyword::Snan) => FpClassTest::SIGNALING_NAN,
+            Token::Kw(Keyword::Qnan) => FpClassTest::QUIET_NAN,
+            Token::Kw(Keyword::Inf) => FpClassTest::INFINITY,
+            Token::Kw(Keyword::Ninf) => FpClassTest::NEGATIVE_INFINITY,
+            Token::Kw(Keyword::Pinf) => FpClassTest::POSITIVE_INFINITY,
+            Token::Kw(Keyword::Norm) => FpClassTest::NORMAL,
+            Token::Kw(Keyword::Nnorm) => FpClassTest::NEGATIVE_NORMAL,
+            Token::Kw(Keyword::Pnorm) => FpClassTest::POSITIVE_NORMAL,
+            Token::Instruction(Opcode::Sub) => FpClassTest::SUBNORMAL,
+            Token::Kw(Keyword::Nsub) => FpClassTest::NEGATIVE_SUBNORMAL,
+            Token::Kw(Keyword::Psub) => FpClassTest::POSITIVE_SUBNORMAL,
+            Token::Kw(Keyword::Zero) => FpClassTest::ZERO,
+            Token::Kw(Keyword::Nzero) => FpClassTest::NEGATIVE_ZERO,
+            Token::Kw(Keyword::Pzero) => FpClassTest::POSITIVE_ZERO,
+            _ => return None,
+        })
+    }
+
+    /// `nofpclass(<class list>)` or `nofpclass(<mask>)`.
+    ///
+    /// Mirrors `LLParser::parseNoFPClassAttr`. Components may repeat and may
+    /// overlap — upstream carries a `TODO` to reject overlap and does not — and
+    /// the single-integer spelling is accepted only as the very first token,
+    /// must be non-zero, and must fit inside `fcAllFlags`.
+    fn parse_nofpclass_attribute(&mut self) -> ParseResult<Attribute<'ctx, B>> {
+        self.expect_keyword(Keyword::Nofpclass, "'nofpclass'")?;
+        self.expect_punct(PunctKind::LParen, "'(' in nofpclass attribute")?;
+
+        let mut mask = FpClassTest::NONE;
+        loop {
+            if let Some(component) = self.nofpclass_component() {
+                mask |= component;
+                self.bump()?;
+            } else if mask.is_none() {
+                // The integer spelling, which replaces the whole list.
+                let value = self.parse_uint64("nofpclass test mask")?;
+                let bits = u32::try_from(value)
+                    .ok()
+                    .filter(|bits| *bits != 0)
+                    .and_then(|bits| {
+                        FpClassTest::from_bits(bits)
+                            .filter(|_| bits & !FpClassTest::ALL.bits() == 0)
+                    });
+                let Some(bits) = bits else {
+                    return Err(self.expected("valid mask value for 'nofpclass'"));
+                };
+                self.expect_punct(PunctKind::RParen, "')' in nofpclass attribute")?;
+                return Ok(Attribute::NoFpClass(bits));
+            } else {
+                return Err(self.expected("nofpclass test mask"));
+            }
+
+            if self.eat_punct(PunctKind::RParen)? {
+                return Ok(Attribute::NoFpClass(mask));
+            }
+        }
     }
 
     fn parse_memory_attribute(&mut self) -> ParseResult<Attribute<'ctx, B>> {

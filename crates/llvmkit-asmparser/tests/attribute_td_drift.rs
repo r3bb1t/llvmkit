@@ -48,7 +48,6 @@ const NOT_YET_MODELED: &[&str] = &[
     "nocf_check",
     "nodivergencesource",
     "noext",
-    "nofpclass",
     "noimplicitfloat",
     "noprofile",
     "noredzone",

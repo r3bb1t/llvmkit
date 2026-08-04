@@ -2415,6 +2415,7 @@ fn fmt_attribute_stored<'ctx, B: ModuleBrand + 'ctx>(
             upper.to_string_radix(10, ApIntSignedness::Signed)
         ),
         AttributeStored::Memory(effects) => write!(f, "{effects}"),
+        AttributeStored::NoFpClass(_) => write!(f, "{attr}"),
         AttributeStored::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
         AttributeStored::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
     }
