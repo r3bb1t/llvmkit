@@ -7,6 +7,52 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ValueTracking: the floating-point select arm and the context arm
+
+#### Added
+
+- `fp_predicate.rs` — `fcmp_implies_class` and `fcmp_to_class_test`, porting
+  `llvm::FloatingPointPredicateUtils` and the generic implementation it
+  instantiates (`GenericFloatingPointPredicateUtils`). Given `fcmp <pred> lhs,
+  rhs`, they answer which classes `lhs` may belong to on each side of the
+  branch. Each comes in three forms, differing in how the right-hand side is
+  supplied: a value, an `ApFloat`, or a class mask. Upstream signals "nothing
+  proved" with a null tested value and both masks wide open; that sentinel is an
+  `Option` here, so a result in hand always carries a real answer.
+- `adjust_known_fp_class_for_select_arm`, porting
+  `llvm::adjustKnownFPClassForSelectArm`, and with it the `select` arm of
+  `compute_known_fp_class`.
+- The context arm of `compute_known_fp_class` — `computeKnownFPClassFromContext`
+  and `computeKnownFPClassFromCond` — reading the same three sources as its
+  known-bits sibling: an injected condition, the dominating branch conditions,
+  and the `@llvm.assume` calls. The caches were already there from tranche 8.
+- Fast-math flags on a `call` now parse and print (`call nsz float
+  @llvm.sqrt.f32(...)`), matching `LLParser::parseCall` and
+  `writeOptimizationInfo`, including upstream's rejection of flags on a call
+  whose return type is not a floating-point scalar or vector. The storage
+  already existed; nothing could reach it.
+
+#### Fixed
+
+- `compute_known_fp_class` took the dynamic denormal mode everywhere, on the
+  premise that llvmkit models no `denormal-fp-math` attribute. It does —
+  `FunctionValue::denormal_mode` — and upstream's own parse maps an *absent*
+  attribute to `ieee`, not to dynamic. Results that depend on the mode
+  (`sqrt`, `log`, `canonicalize`, the min/max family, and every comparison
+  against zero) were weaker than upstream's; they now match.
+- The `sqrt` arm read `nsz` directly. Upstream reads it through `Q.IIQ`, so a
+  query built with `without_instruction_info` must not see it.
+- `compute_known_fp_class` returned early for a value that is not an
+  instruction, before consulting the context. Upstream's `if (!Op) return`
+  comes *after*, so an argument constrained by an assumption or a dominating
+  branch now gets that refinement.
+
+The parity ledger moves `adjustKnownFPClassForSelectArm` to modeled — **89 of
+101, 12 gaps**. `analyzeKnownFPClassFromSelect` stays a gap with a corrected
+reason: it is declared in `ValueTracking.h` and defined nowhere in the LLVM
+tree. The name occurs exactly once across `llvm/`, its own declaration, with no
+definition and no caller, so there is no behaviour to port.
+
 ### ValueTracking: floating-point classification (tranche 7b and 7c)
 
 #### Added

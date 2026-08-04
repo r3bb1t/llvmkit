@@ -72,8 +72,8 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 
 ## ValueTracking.h — remaining tranches, and the order to take them
 
-**Status after tranche 7 (2026-08-04):** 88 of 101 entry points modeled, 13
-gaps, all symbol-keyed in `crates/llvmkit-ir/tests/value_tracking_parity.rs`
+**Status after the FP select arm (2026-08-04):** 89 of 101 entry points modeled,
+12 gaps, all symbol-keyed in `crates/llvmkit-ir/tests/value_tracking_parity.rs`
 and asserted to sum to the audited surface.
 
 `computeKnownFPClass` is modeled but its **dispatch is partial** — the entry
@@ -91,8 +91,9 @@ is the honest record.
 | ~~6 speculation/UB~~ | 0 | **done** — `crates/llvmkit-ir/src/speculation.rs` |
 | ~~8 assumptions~~ | 0 | **done** — `crates/llvmkit-ir/src/assumptions.rs` |
 | ~~implied conditions~~ | 0 | **done** — `crates/llvmkit-ir/src/implied_conditions.rs` |
-| ~~7 FP class~~ | 2 | **mostly done** — `fp_class.rs` (lattice + every `KnownFPClass.cpp` operation) and `known_fp_class.rs` (`computeKnownFPClass` + the nine predicates). Only the select-arm pair is left, and it is the same arm twice |
-| FP select arm | 2 | `adjustKnownFPClassForSelectArm` and `analyzeKnownFPClassFromSelect` — the select arm `known_fp_class.rs` records as not yet dispatched |
+| ~~7 FP class~~ | 0 | **done** — `fp_class.rs` (lattice + every `KnownFPClass.cpp` operation) and `known_fp_class.rs` (`computeKnownFPClass` + the nine predicates) |
+| ~~FP select arm~~ | 0 | **done** — `fp_predicate.rs` (`fcmpImpliesClass`) plus `adjust_known_fp_class_for_select_arm` and the `select` dispatch arm |
+| dead upstream declaration | 1 | `analyzeKnownFPClassFromSelect`, see below |
 | residue | 6 | small, independent |
 | expose-only | 2 | `matchSimpleRecurrence` and `computeKnownBitsFromRangeMetadata` already exist as crate-private helpers |
 | partial | 1 | `getInverseMinMaxIntrinsic` — integer arms done, 6 FP intrinsics unrepresentable |
@@ -149,21 +150,68 @@ The commutativity papered over the binding-order slip, which is why nothing
 failed. Found by reading `MaxMin_match` while porting `isTruePredicate`, which
 needs the genuinely commutative `m_c_SMax` family.
 
-### Order for the remaining 13 (recorded 2026-08-04)
+### Found while porting the FP select arm
 
-1. **The FP select arm (2).** `adjustKnownFPClassForSelectArm` and
-   `analyzeKnownFPClassFromSelect` are one arm counted twice, and closing it
-   also fills `computeKnownFPClass`'s `select` case. `adjustKnownBitsForSelectArm`
-   is already ported and is the shape to copy.
-2. **Residue (6).** Independent. Start with `analyzeKnownBitsFromAndXorOr`,
+Four things, each caught by a test that should have passed and did not.
+
+**`analyzeKnownFPClassFromSelect` has no definition anywhere in LLVM.** The name
+occurs exactly once across the whole `llvm/` tree — its own declaration in
+`ValueTracking.h` — with no body and no caller. There is nothing to port, and it
+stays a gap on that ground rather than as work not yet done. The arm it names is
+real and is now ported, as `adjustKnownFPClassForSelectArm` plus the `Select`
+case of `computeKnownFPClass`. Earlier notes here called the pair "one arm
+counted twice"; that was inferred from the name, not read from the source.
+
+**`computeKnownFPClass` was using the dynamic denormal mode everywhere.**
+Tranche 7b's comment said llvmkit models no `denormal-fp-math` attribute. It
+does — `FunctionValue::denormal_mode`, a faithful port of
+`Function::getDenormalMode` — and, more importantly, upstream's
+`parseDenormalFPAttribute` maps an *absent* attribute to `ieee` ("Assume ieee on
+unspecified attribute"), not to dynamic. Every arm keyed on the mode was
+therefore weaker than upstream, and the whole zero-comparison family of
+`fcmpImpliesClass` would have learned nothing at all, since it bails unless
+inputs are IEEE.
+
+The related trap: upstream's `queryDenormalMode(F, Val)` takes the *type* from
+the value but the *mode* from the function the caller passes — which for
+`computeKnownFPClassFromCond` is the function containing the **condition**, not
+the value. Deriving it from the value instead silently fails whenever the value
+is an argument, which is the common case.
+
+**Fast-math flags on a `call` were unrepresentable end to end.** `parse_call`
+did not accept them, the AsmWriter did not print them, and `IRBuilder`'s flags
+apply only to the FP binops — so `CallAttributeData::fmf` could never become
+non-empty, and the `nsz` arm of `computeKnownFPClass`'s `sqrt` case was dead
+code. Both halves are now ported (`LLParser::parseCall` eats the flags before
+the calling convention; `writeOptimizationInfo` prints them straight after the
+opcode), including upstream's rejection of flags on a call whose return type is
+not floating-point. This is what made
+`ComputeKnownFPClassTest.SqrtNszSignBit` portable.
+
+**The tranche-7 tests claimed upstream had none.** `ValueTrackingTest.cpp` has a
+whole `ComputeKnownFPClassTest` fixture — 40-odd cases with exact class masks and
+sign bits, plus four `FCmpToClassTest_*` and one `fcmpImpliesClass_fabs_zero`.
+The tranche-7 tests were written as llvmkit-specific inventions on the strength
+of a claim nobody checked. They are now ports; `UPSTREAM.md` records which case
+each one takes. Two hand-written tests were deleted rather than kept, their
+coverage being subsumed by the real ports.
+
+`nofpclass` on a parameter or call return is still unmodeled, which is why two of
+`SqrtNszSignBit`'s four blocks are not ported.
+
+### Order for the remaining 12 (recorded 2026-08-04)
+
+1. **Residue (6).** Independent. Start with `analyzeKnownBitsFromAndXorOr`,
    because `bitwise_known` is a partial port of the same upstream function —
    closing its two missing idiom arms makes the public entry point fall out.
-3. **Expose-only (2).** `computeKnownBitsFromRangeMetadata` is not a rename:
+2. **Expose-only (2).** `computeKnownBitsFromRangeMetadata` is not a rename:
    upstream takes an `MDNode` where llvmkit's helper is value-shaped, so the
    public parameter is a real design decision.
-4. **Partial, sibling, blocked (3).** `getVScaleRange` stays recorded — porting
+3. **Partial, sibling, blocked (3).** `getVScaleRange` stays recorded — porting
    it would mean inventing half of a packed attribute payload llvmkit does not
    model.
+4. **`analyzeKnownFPClassFromSelect` (1)** never closes: there is no upstream
+   definition to port. It is recorded, not scheduled.
 
 Separately, and moving no ledger row: **fill in `computeKnownFPClass`'s
 dispatch.** The entry point already counts as modeled; the arms are where the

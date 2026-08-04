@@ -521,6 +521,16 @@ fn is_int_or_int_vector_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> 
     }
 }
 
+/// Whether `ty` is what `isa<FPMathOperator>` accepts: a floating-point scalar
+/// or a vector of them.
+fn is_fp_or_fp_vector_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
+    match AnyTypeEnum::from(ty) {
+        AnyTypeEnum::Float(_) => true,
+        AnyTypeEnum::Vector(v) => v.element().is_floating_point(),
+        _ => false,
+    }
+}
+
 fn is_ptr_or_ptr_vector_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
     match AnyTypeEnum::from(ty) {
         AnyTypeEnum::Pointer(_) => true,
@@ -7721,6 +7731,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if matches!(self.peek(), Token::Instruction(Opcode::Call)) {
             self.bump()?;
         }
+        // `LLParser::parseCall` eats the flags here, before the calling
+        // convention, and rejects them below when the return type is not
+        // floating-point.
+        let fmf = self.parse_optional_fmf()?;
         let calling_conv = self.parse_optional_calling_conv()?;
         let return_attrs = self.parse_optional_return_attrs()?;
         let callee_ty = self.parse_type(true)?;
@@ -7778,11 +7792,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             function_attrs,
         )
         .function_attr_groups(function_attr_groups.into_boxed_slice())
-        .operand_bundles(operand_bundles);
+        .operand_bundles(operand_bundles)
+        .fast_math_flags(fmf);
         let parsed_fn_ty = match callee_ty.into_type_enum() {
             AnyTypeEnum::Function(fn_ty) => fn_ty,
             _ => self.module.fn_type(callee_ty, arg_tys, var_args),
         };
+        // `LLParser::parseCall`: "fast-math-flags specified for call without
+        // floating-point scalar or vector return type".
+        if !fmf.is_empty() && !is_fp_or_fp_vector_type(parsed_fn_ty.return_type()) {
+            return Err(self.expected(
+                "call with floating-point scalar or vector return type for fast-math flags",
+            ));
+        }
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty)?;
         let name = result_name.as_str();
         let v = match callee {

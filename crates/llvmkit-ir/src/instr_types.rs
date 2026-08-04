@@ -2091,6 +2091,9 @@ impl CallAttributeData {
         self
     }
 
+    /// The call's fast-math flags. Mirrors `CallInst::setFastMathFlags`, which
+    /// upstream permits only on a call returning a floating-point scalar or
+    /// vector — `LLParser::parseCall` rejects every other case outright.
     #[must_use]
     pub fn fast_math_flags(mut self, fmf: FastMathFlags) -> Self {
         self.fmf = fmf;

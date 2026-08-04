@@ -91,6 +91,7 @@ pub mod error;
 pub mod float_kind;
 pub mod fmf;
 pub mod fp_class;
+pub mod fp_predicate;
 pub mod function;
 pub mod function_signature;
 pub mod gep_no_wrap_flags;
@@ -367,11 +368,15 @@ pub use float_kind::{
 };
 // `f32`/`f64` are std types — no re-export needed.
 pub use fp_class::{FpClassTest, KnownFpClass, MinMaxKind};
+pub use fp_predicate::{
+    ImpliedFpClasses, fcmp_implies_class, fcmp_implies_class_of_class,
+    fcmp_implies_class_of_constant, fcmp_to_class_test, fcmp_to_class_test_of_constant,
+};
 pub use known_fp_class::{
-    can_ignore_sign_bit_of_nan, can_ignore_sign_bit_of_zero, cannot_be_negative_zero,
-    cannot_be_ordered_less_than_zero, compute_known_fp_class, compute_known_fp_class_all,
-    compute_known_fp_class_with_flags, compute_known_fp_sign_bit, is_known_never_infinity,
-    is_known_never_infinity_or_nan, is_known_never_nan,
+    adjust_known_fp_class_for_select_arm, can_ignore_sign_bit_of_nan, can_ignore_sign_bit_of_zero,
+    cannot_be_negative_zero, cannot_be_ordered_less_than_zero, compute_known_fp_class,
+    compute_known_fp_class_all, compute_known_fp_class_with_flags, compute_known_fp_sign_bit,
+    is_known_never_infinity, is_known_never_infinity_or_nan, is_known_never_nan,
 };
 
 pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
