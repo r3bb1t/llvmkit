@@ -7,6 +7,13 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+> **These entries will also ship as 0.0.4.** crates.io has 0.0.3, so nothing
+> below the `[0.0.4]` heading further down has shipped either — that section
+> covers the id-first redesign (cycles A–E) specifically, and this one covers
+> everything since. Two "unreleased" headings is an artifact of work continuing
+> past the 0.0.4 freeze, not two pending releases; they collapse into one entry
+> when the tag is cut.
+
 ### ValueTracking: the and/xor/or known-bits idioms
 
 #### Added
