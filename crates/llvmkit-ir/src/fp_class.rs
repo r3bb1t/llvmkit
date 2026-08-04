@@ -13,17 +13,13 @@
 //! bit is definitely set. Upstream's `knownNot` is the one place the two are
 //! reconciled, and only in the direction the mask can justify.
 //!
-//! # What is not modeled, and why
-//!
-//! The out-of-line *operations* on the lattice — `fmul`, `sqrt`, `log`, `exp`,
-//! `fpext`, `roundToIntegral`, `canonicalize`, `minMaxLike`,
-//! `propagateDenormal` and `propagateCanonicalizingSrc`
-//! (`llvm/lib/Support/KnownFPClass.cpp`) — are not here. They exist to serve
-//! `computeKnownFPClass`, which is not ported yet; landing them without their
-//! consumer would be a surface with no caller and no way to test it against
-//! upstream. The lattice itself and every predicate over it *is* complete.
+//! The module is complete against both upstream files: every predicate the
+//! header declares inline, and every operation `llvm/lib/Support/KnownFPClass.cpp`
+//! defines out of line — `fmul`, `square`, `sqrt`, `log`, `exp`, `fpext`,
+//! `roundToIntegral`, `canonicalize`, `minMaxLike`, `propagateDenormal` and
+//! `propagateCanonicalizingSrc`.
 
-use crate::ap_float::ApFloat;
+use crate::ap_float::{ApFloat, ApFloatSemantics};
 use crate::denormal_mode::{DenormalMode, DenormalModeKind};
 use core::fmt;
 
@@ -770,6 +766,495 @@ impl KnownFpClass {
     pub fn reset_all(&mut self) {
         *self = Self::unknown();
     }
+
+    // ----------------------------------------------------------------------
+    // Operations, ported from `llvm/lib/Support/KnownFPClass.cpp`
+    // ----------------------------------------------------------------------
+
+    /// Replace what is known with `source`'s, allowing for a denormal that the
+    /// mode may flush to zero.
+    ///
+    /// Ports `propagateDenormal`. Upstream's comment names the hazard: output
+    /// flushing is not guaranteed, so a known-never-zero source may still yield
+    /// a zero once denormals are flushed.
+    pub fn propagate_denormal(&mut self, source: Self, mode: DenormalMode) {
+        self.classes = source.classes;
+
+        // With a zero already possible there is nothing a flush could add.
+        if !source.is_known_never_positive_zero() && !source.is_known_never_negative_zero() {
+            return;
+        }
+        // With no denormals possible, nothing can be flushed to zero.
+        if source.is_known_never_subnormal() {
+            return;
+        }
+
+        let ieee = DenormalMode::ieee();
+        if !source.is_known_never_positive_subnormal() && mode != ieee {
+            self.classes |= FpClassTest::POSITIVE_ZERO;
+        }
+
+        if !source.is_known_never_negative_subnormal() && mode != ieee {
+            if mode != DenormalMode::positive_zero() {
+                self.classes |= FpClassTest::NEGATIVE_ZERO;
+            }
+            if matches!(
+                mode.input(),
+                DenormalModeKind::PositiveZero | DenormalModeKind::Dynamic
+            ) || matches!(
+                mode.output(),
+                DenormalModeKind::PositiveZero | DenormalModeKind::Dynamic
+            ) {
+                self.classes |= FpClassTest::POSITIVE_ZERO;
+            }
+        }
+    }
+
+    /// Replace what is known with `source`'s, as seen through a potentially
+    /// canonicalizing operation.
+    ///
+    /// Ports `propagateCanonicalizingSrc`: signaling NaNs will not be
+    /// introduced, but a denormal cannot be assumed flushed.
+    pub fn propagate_canonicalizing_source(&mut self, source: Self, mode: DenormalMode) {
+        self.propagate_denormal(source, mode);
+        self.propagate_nan(source, true);
+    }
+
+    /// What is known of `llvm.canonicalize` of a value.
+    ///
+    /// Ports `KnownFPClass::canonicalize`. Upstream's comment calls it "a
+    /// stronger form of `propagateCanonicalizingSrc`": canonicalize is the one
+    /// operation guaranteed to quieten a signaling NaN.
+    ///
+    /// Upstream's `FIXME: Missing check of IEEE like types` is inherited.
+    pub fn canonicalize(source: Self, mode: DenormalMode) -> Self {
+        let mut known = Self::unknown();
+
+        // Canonicalize may flush denormals to zero, so the denormal mode has to
+        // be consulted before any known-not-zero fact survives.
+        known.classes = source
+            .classes
+            .union(FpClassTest::ZERO)
+            .union(FpClassTest::QUIET_NAN);
+
+        if source.is_known_never_nan() {
+            known.known_not(FpClassTest::NAN);
+        } else {
+            known.known_not(FpClassTest::SIGNALING_NAN);
+        }
+
+        // With the parent function flushing denormals, the canonical output
+        // cannot be one.
+        if mode == DenormalMode::ieee() {
+            if source.is_known_never(FpClassTest::POSITIVE_ZERO) {
+                known.known_not(FpClassTest::POSITIVE_ZERO);
+            }
+            if source.is_known_never(FpClassTest::NEGATIVE_ZERO) {
+                known.known_not(FpClassTest::NEGATIVE_ZERO);
+            }
+            return known;
+        }
+
+        if mode.inputs_are_zero() || mode.outputs_are_zero() {
+            known.known_not(FpClassTest::SUBNORMAL);
+        }
+
+        if mode == DenormalMode::preserve_sign() {
+            if source
+                .is_known_never(FpClassTest::POSITIVE_ZERO.union(FpClassTest::POSITIVE_SUBNORMAL))
+            {
+                known.known_not(FpClassTest::POSITIVE_ZERO);
+            }
+            if source
+                .is_known_never(FpClassTest::NEGATIVE_ZERO.union(FpClassTest::NEGATIVE_SUBNORMAL))
+            {
+                known.known_not(FpClassTest::NEGATIVE_ZERO);
+            }
+            return known;
+        }
+
+        if mode.input() == DenormalModeKind::PositiveZero
+            || (mode.output() == DenormalModeKind::PositiveZero
+                && mode.input() == DenormalModeKind::Ieee)
+        {
+            known.known_not(FpClassTest::NEGATIVE_ZERO);
+        }
+
+        known
+    }
+
+    /// What is known of `fmul lhs, rhs`.
+    ///
+    /// Ports `KnownFPClass::fmul`.
+    pub fn fmul(lhs: Self, rhs: Self, mode: DenormalMode) -> Self {
+        let mut known = Self::unknown();
+
+        // The sign bit is the xor of the two.
+        if (lhs.is_known_never(FpClassTest::NEGATIVE) && rhs.is_known_never(FpClassTest::NEGATIVE))
+            || (lhs.is_known_never(FpClassTest::POSITIVE)
+                && rhs.is_known_never(FpClassTest::POSITIVE))
+        {
+            known.known_not(FpClassTest::NEGATIVE);
+        }
+        if (lhs.is_known_never(FpClassTest::POSITIVE) && rhs.is_known_never(FpClassTest::NEGATIVE))
+            || (lhs.is_known_never(FpClassTest::NEGATIVE)
+                && rhs.is_known_never(FpClassTest::POSITIVE))
+        {
+            known.known_not(FpClassTest::POSITIVE);
+        }
+
+        let infinity_or_nan = FpClassTest::INFINITY.union(FpClassTest::NAN);
+        let zero_or_nan = FpClassTest::ZERO.union(FpClassTest::NAN);
+
+        // inf * anything => inf or nan
+        if lhs.is_known_always(infinity_or_nan) || rhs.is_known_always(infinity_or_nan) {
+            known.known_not(
+                FpClassTest::NORMAL
+                    .union(FpClassTest::SUBNORMAL)
+                    .union(FpClassTest::ZERO),
+            );
+        }
+        // 0 * anything => 0 or nan
+        if rhs.is_known_always(zero_or_nan) || lhs.is_known_always(zero_or_nan) {
+            known.known_not(
+                FpClassTest::NORMAL
+                    .union(FpClassTest::SUBNORMAL)
+                    .union(FpClassTest::INFINITY),
+            );
+        }
+        // +/-0 * +/-inf = nan
+        if (lhs.is_known_always(zero_or_nan) && rhs.is_known_always(infinity_or_nan))
+            || (lhs.is_known_always(infinity_or_nan) && rhs.is_known_always(zero_or_nan))
+        {
+            known.known_not(FpClassTest::NAN.complement());
+        }
+
+        if !lhs.is_known_never_nan() || !rhs.is_known_never_nan() {
+            return known;
+        }
+
+        if let (Some(lhs_sign), Some(rhs_sign)) = (lhs.sign_bit, rhs.sign_bit) {
+            if lhs_sign == rhs_sign {
+                known.sign_bit_must_be_zero();
+            } else {
+                known.sign_bit_must_be_one();
+            }
+        }
+
+        // Only `0 * +/-inf` produces a NaN, and neither pairing can arise.
+        if (rhs.is_known_never_infinity() || lhs.is_known_never_logical_zero(mode))
+            && (lhs.is_known_never_infinity() || rhs.is_known_never_logical_zero(mode))
+        {
+            known.known_not(FpClassTest::NAN);
+        }
+
+        known
+    }
+
+    /// What is known of `fmul x, x`.
+    ///
+    /// Ports `KnownFPClass::square`, which is [`Self::fmul`] of a value with
+    /// itself plus the one extra fact that gives: a square is never negative.
+    pub fn square(source: Self, mode: DenormalMode) -> Self {
+        let mut known = Self::fmul(source, source, mode);
+        known.known_not(FpClassTest::NEGATIVE);
+        known
+    }
+
+    /// What is known of `exp`, `exp2` or `exp10` of a value.
+    ///
+    /// Ports `KnownFPClass::exp`.
+    pub fn exp(source: Self) -> Self {
+        let mut known = Self::unknown();
+        known.known_not(FpClassTest::NEGATIVE);
+        known.propagate_nan(source, false);
+
+        if source.cannot_be_ordered_less_than_zero() {
+            // A positive source cannot underflow, so no zero and no denormal.
+            known.known_not(FpClassTest::POSITIVE_ZERO);
+            known.known_not(FpClassTest::POSITIVE_SUBNORMAL);
+        }
+        // A negative source cannot overflow to infinity.
+        if source.cannot_be_ordered_greater_than_zero() {
+            known.known_not(FpClassTest::POSITIVE_INFINITY);
+        }
+        known
+    }
+
+    /// What is known of `log`, `log2` or `log10` of a value.
+    ///
+    /// Ports `KnownFPClass::log`.
+    pub fn log(source: Self, mode: DenormalMode) -> Self {
+        let mut known = Self::unknown();
+        known.known_not(FpClassTest::NEGATIVE_ZERO);
+
+        if source.is_known_never_positive_infinity() {
+            known.known_not(FpClassTest::POSITIVE_INFINITY);
+        }
+        if source.is_known_never_nan() && source.cannot_be_ordered_less_than_zero() {
+            known.known_not(FpClassTest::NAN);
+        }
+        if source.is_known_never_logical_zero(mode) {
+            known.known_not(FpClassTest::NEGATIVE_INFINITY);
+        }
+        known
+    }
+
+    /// What is known of `sqrt` of a value.
+    ///
+    /// Ports `KnownFPClass::sqrt`.
+    pub fn sqrt(source: Self, mode: DenormalMode) -> Self {
+        let mut known = Self::unknown();
+        known.known_not(FpClassTest::POSITIVE_SUBNORMAL);
+
+        if source.is_known_never_positive_infinity() {
+            known.known_not(FpClassTest::POSITIVE_INFINITY);
+        }
+        if source.is_known_never(FpClassTest::SIGNALING_NAN) {
+            known.known_not(FpClassTest::SIGNALING_NAN);
+        }
+        // Any negative value but `-0` gives a NaN.
+        if source.is_known_never_nan() && source.cannot_be_ordered_less_than_zero() {
+            known.known_not(FpClassTest::NAN);
+        }
+        // `-0` is the only negative value that can come back.
+        known.known_not(
+            FpClassTest::NEGATIVE_INFINITY
+                .union(FpClassTest::NEGATIVE_SUBNORMAL)
+                .union(FpClassTest::NEGATIVE_NORMAL),
+        );
+        // Under `PreserveSign` a negative subnormal input can produce `-0`.
+        if source.is_known_never_logical_negative_zero(mode) {
+            known.known_not(FpClassTest::NEGATIVE_ZERO);
+        }
+        known
+    }
+
+    /// What is known of an `fpext` from `source_semantics` to
+    /// `destination_semantics`.
+    ///
+    /// Ports `KnownFPClass::fpext`. Infinity, NaN and zero pass straight
+    /// through; a subnormal that the wider type can represent as a normal
+    /// becomes one.
+    pub fn fpext(
+        source: Self,
+        destination_semantics: ApFloatSemantics,
+        source_semantics: ApFloatSemantics,
+    ) -> Self {
+        let mut known = source;
+
+        if source_semantics.is_representable_as_normal_in(destination_semantics) {
+            if known.classes.intersects(FpClassTest::POSITIVE_SUBNORMAL) {
+                known.classes |= FpClassTest::POSITIVE_NORMAL;
+            }
+            if known.classes.intersects(FpClassTest::NEGATIVE_SUBNORMAL) {
+                known.classes |= FpClassTest::NEGATIVE_NORMAL;
+            }
+            known.known_not(FpClassTest::SUBNORMAL);
+        }
+
+        // The sign bit of a NaN is not guaranteed to survive.
+        if !known.is_known_never_nan() {
+            known.sign_bit = None;
+        }
+        known
+    }
+
+    /// What is known of a rounding intrinsic — `trunc`, `floor`, `ceil`,
+    /// `rint`, `nearbyint`, `round` or `roundeven`.
+    ///
+    /// Ports `KnownFPClass::roundToIntegral`. `is_trunc` selects `trunc`, and
+    /// `is_multi_unit_float_type` marks `ppc_fp128`, which upstream's comment
+    /// records as the special case where infinities do *not* pass through for
+    /// anything but `trunc`.
+    pub fn round_to_integral(source: Self, is_trunc: bool, is_multi_unit_float_type: bool) -> Self {
+        let mut known = Self::unknown();
+
+        // An integral result cannot be subnormal.
+        known.known_not(FpClassTest::SUBNORMAL);
+        known.propagate_nan(source, true);
+
+        if is_trunc || !is_multi_unit_float_type {
+            if source.is_known_never_positive_infinity() {
+                known.known_not(FpClassTest::POSITIVE_INFINITY);
+            }
+            if source.is_known_never_negative_infinity() {
+                known.known_not(FpClassTest::NEGATIVE_INFINITY);
+            }
+        }
+
+        // Rounding a negative value up to zero produces `-0`.
+        if source.is_known_never(FpClassTest::POSITIVE_FINITE) {
+            known.known_not(FpClassTest::POSITIVE_FINITE);
+        }
+        if source.is_known_never(FpClassTest::NEGATIVE_FINITE) {
+            known.known_not(FpClassTest::NEGATIVE_FINITE);
+        }
+        known
+    }
+
+    /// What is known of a min/max intrinsic applied to two values.
+    ///
+    /// Ports `KnownFPClass::minMaxLike`. Upstream's `llvm_unreachable("unhandled
+    /// intrinsic")` guards a closed enum, which [`MinMaxKind`] is here, so the
+    /// match is total and needs no counterpart.
+    pub fn min_max_like(lhs: Self, rhs: Self, kind: MinMaxKind, mode: DenormalMode) -> Self {
+        let mut known_lhs = lhs;
+        let mut known_rhs = rhs;
+
+        let never_nan = known_lhs.is_known_never_nan() || known_rhs.is_known_never_nan();
+        let mut known = known_lhs.union_with(known_rhs);
+
+        // The `*num` forms return the non-NaN operand, so one non-NaN operand
+        // is enough to rule NaN out.
+        if never_nan && kind.returns_the_non_nan_operand() {
+            known.known_not(FpClassTest::NAN);
+        }
+
+        match kind {
+            // One known-positive operand forces a positive maximum. The `*num`
+            // forms need that operand to be non-NaN as well, because a NaN
+            // operand is the one they discard.
+            MinMaxKind::MaxNum | MinMaxKind::MaximumNum => {
+                if (known_lhs.cannot_be_ordered_less_than_zero() && known_lhs.is_known_never_nan())
+                    || (known_rhs.cannot_be_ordered_less_than_zero()
+                        && known_rhs.is_known_never_nan())
+                {
+                    known.known_not(Self::ORDERED_LESS_THAN_ZERO);
+                }
+            }
+            MinMaxKind::Maximum => {
+                if known_lhs.cannot_be_ordered_less_than_zero()
+                    || known_rhs.cannot_be_ordered_less_than_zero()
+                {
+                    known.known_not(Self::ORDERED_LESS_THAN_ZERO);
+                }
+            }
+            MinMaxKind::MinNum | MinMaxKind::MinimumNum => {
+                if (known_lhs.cannot_be_ordered_greater_than_zero()
+                    && known_lhs.is_known_never_nan())
+                    || (known_rhs.cannot_be_ordered_greater_than_zero()
+                        && known_rhs.is_known_never_nan())
+                {
+                    known.known_not(Self::ORDERED_GREATER_THAN_ZERO);
+                }
+            }
+            MinMaxKind::Minimum => {
+                if known_lhs.cannot_be_ordered_greater_than_zero()
+                    || known_rhs.cannot_be_ordered_greater_than_zero()
+                {
+                    known.known_not(Self::ORDERED_GREATER_THAN_ZERO);
+                }
+            }
+        }
+
+        // Denormals could come back as a zero. Upstream's comment: there is no
+        // spec for denormal flushing, and on older AMDGPU subtargets min/max
+        // returned the original value rather than flushing it, so this stays
+        // conservative.
+        if known.classes.intersects(FpClassTest::ZERO)
+            && !known.is_known_never_subnormal()
+            && mode != DenormalMode::ieee()
+        {
+            known.classes |= FpClassTest::ZERO;
+        }
+
+        if known.is_known_never_nan() {
+            if let (Some(lhs_sign), Some(rhs_sign)) = (known_lhs.sign_bit, known_rhs.sign_bit)
+                && lhs_sign == rhs_sign
+            {
+                if lhs_sign {
+                    known.sign_bit_must_be_one();
+                } else {
+                    known.sign_bit_must_be_zero();
+                }
+                return known;
+            }
+
+            // Upstream's `FIXME: Should be using logical zero versions` on the
+            // second disjunct is inherited.
+            let zeros_cannot_disagree = (known_lhs.is_known_never_negative_zero()
+                || known_rhs.is_known_never_positive_zero())
+                && (known_lhs.is_known_never_positive_zero()
+                    || known_rhs.is_known_never_negative_zero());
+
+            if kind.is_ieee_754_2019_form() || zeros_cannot_disagree {
+                // A NaN operand's sign bit says nothing about the result's.
+                if !known_lhs.is_known_never_nan() {
+                    known_lhs.sign_bit = None;
+                }
+                if !known_rhs.is_known_never_nan() {
+                    known_rhs.sign_bit = None;
+                }
+                if kind.is_maximum()
+                    && (known_lhs.sign_bit == Some(false) || known_rhs.sign_bit == Some(false))
+                {
+                    known.sign_bit_must_be_zero();
+                } else if kind.is_minimum()
+                    && (known_lhs.sign_bit == Some(true) || known_rhs.sign_bit == Some(true))
+                {
+                    known.sign_bit_must_be_one();
+                }
+            }
+        }
+
+        known
+    }
+}
+
+/// Which min/max operation [`KnownFpClass::min_max_like`] is reasoning about.
+///
+/// Ports `KnownFPClass::MinMaxKind`, whose own comment gives the reason it
+/// exists rather than reusing the intrinsic ids: "Enum of min/max intrinsics to
+/// avoid dependency on IR."
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MinMaxKind {
+    /// `llvm.minimum` — IEEE-754-2019 `minimum`, which propagates NaN.
+    Minimum,
+    /// `llvm.maximum` — IEEE-754-2019 `maximum`, which propagates NaN.
+    Maximum,
+    /// `llvm.minimumnum` — IEEE-754-2019 `minimumNumber`.
+    MinimumNum,
+    /// `llvm.maximumnum` — IEEE-754-2019 `maximumNumber`.
+    MaximumNum,
+    /// `llvm.minnum` — IEEE-754-2008 `minNum`.
+    MinNum,
+    /// `llvm.maxnum` — IEEE-754-2008 `maxNum`.
+    MaxNum,
+}
+
+impl MinMaxKind {
+    /// Whether a NaN operand is discarded in favour of the other one, so that
+    /// one non-NaN operand rules NaN out of the result.
+    #[inline]
+    pub const fn returns_the_non_nan_operand(self) -> bool {
+        matches!(
+            self,
+            Self::MinNum | Self::MaxNum | Self::MinimumNum | Self::MaximumNum
+        )
+    }
+
+    /// Whether this is one of the four IEEE-754-2019 forms, which order `-0`
+    /// below `+0` and so give the result's sign bit without further reasoning.
+    #[inline]
+    pub const fn is_ieee_754_2019_form(self) -> bool {
+        matches!(
+            self,
+            Self::Maximum | Self::Minimum | Self::MaximumNum | Self::MinimumNum
+        )
+    }
+
+    /// Whether this takes the larger of its operands.
+    #[inline]
+    pub const fn is_maximum(self) -> bool {
+        matches!(self, Self::Maximum | Self::MaximumNum | Self::MaxNum)
+    }
+
+    /// Whether this takes the smaller of its operands.
+    #[inline]
+    pub const fn is_minimum(self) -> bool {
+        matches!(self, Self::Minimum | Self::MinimumNum | Self::MinNum)
+    }
 }
 
 /// Whether IEEE treatment of denormal inputs may be assumed.
@@ -1058,6 +1543,192 @@ mod tests {
         );
         assert!(!negative_subnormal.is_known_never_logical_positive_zero(positive_zero_mode));
         assert!(negative_subnormal.is_known_never_logical_negative_zero(positive_zero_mode));
+    }
+
+    /// `KnownFPClass::fmul` (`llvm/lib/Support/KnownFPClass.cpp`).
+    ///
+    /// No upstream unit test; the rows are its own branches — the sign xor, the
+    /// two absorbing cases, and the `0 * inf` NaN.
+    #[test]
+    fn fmul_xors_the_sign_and_finds_the_absorbing_cases() {
+        let ieee = DenormalMode::ieee();
+        let positive = KnownFpClass::from_classes(FpClassTest::POSITIVE);
+        let negative = KnownFpClass::from_classes(FpClassTest::NEGATIVE);
+
+        // Two positives, or two negatives, give a non-negative result.
+        assert!(KnownFpClass::fmul(positive, positive, ieee).is_known_never(FpClassTest::NEGATIVE));
+        assert!(KnownFpClass::fmul(negative, negative, ieee).is_known_never(FpClassTest::NEGATIVE));
+        // Mixed signs give a non-positive one.
+        assert!(KnownFpClass::fmul(positive, negative, ieee).is_known_never(FpClassTest::POSITIVE));
+
+        // `inf * anything` is an infinity or a NaN — never finite.
+        let infinity = KnownFpClass::from_classes(FpClassTest::INFINITY);
+        let anything = KnownFpClass::unknown();
+        let product = KnownFpClass::fmul(infinity, anything, ieee);
+        assert!(product.is_known_never(FpClassTest::NORMAL));
+        assert!(product.is_known_never(FpClassTest::SUBNORMAL));
+        assert!(product.is_known_never(FpClassTest::ZERO));
+
+        // `0 * inf` is exactly a NaN.
+        let zero = KnownFpClass::from_classes(FpClassTest::ZERO);
+        let nan_only = KnownFpClass::fmul(zero, infinity, ieee);
+        assert!(nan_only.is_known_always(FpClassTest::NAN));
+
+        // A finite non-zero pair cannot make a NaN.
+        let normal = KnownFpClass::from_classes(FpClassTest::NORMAL);
+        assert!(KnownFpClass::fmul(normal, normal, ieee).is_known_never_nan());
+    }
+
+    /// `KnownFPClass::square` — [`KnownFpClass::fmul`] of a value with itself,
+    /// plus the one extra fact that gives.
+    #[test]
+    fn a_square_is_never_negative() {
+        let known = KnownFpClass::square(KnownFpClass::unknown(), DenormalMode::ieee());
+        assert!(known.is_known_never(FpClassTest::NEGATIVE));
+    }
+
+    /// `KnownFPClass::sqrt`, `::log` and `::exp`.
+    ///
+    /// No upstream unit test; each row is a branch of the function named.
+    #[test]
+    fn sqrt_log_and_exp() {
+        let ieee = DenormalMode::ieee();
+
+        // `sqrt` returns no negative value but `-0`, and never a positive
+        // subnormal.
+        let root = KnownFpClass::sqrt(KnownFpClass::unknown(), ieee);
+        assert!(root.is_known_never(FpClassTest::NEGATIVE_NORMAL));
+        assert!(root.is_known_never(FpClassTest::NEGATIVE_INFINITY));
+        assert!(root.is_known_never(FpClassTest::POSITIVE_SUBNORMAL));
+        // A non-negative, non-NaN source cannot make a NaN.
+        let non_negative = KnownFpClass::from_classes(FpClassTest::POSITIVE);
+        assert!(KnownFpClass::sqrt(non_negative, ieee).is_known_never_nan());
+
+        // `log` never returns `-0`; a source that cannot be zero rules out
+        // `-inf`.
+        let logarithm = KnownFpClass::log(KnownFpClass::unknown(), ieee);
+        assert!(logarithm.is_known_never(FpClassTest::NEGATIVE_ZERO));
+        let non_zero = KnownFpClass::from_classes(FpClassTest::NORMAL);
+        assert!(KnownFpClass::log(non_zero, ieee).is_known_never(FpClassTest::NEGATIVE_INFINITY));
+
+        // `exp` is never negative; a non-negative source cannot underflow.
+        let exponential = KnownFpClass::exp(KnownFpClass::unknown());
+        assert!(exponential.is_known_never(FpClassTest::NEGATIVE));
+        let positive = KnownFpClass::from_classes(FpClassTest::POSITIVE);
+        let from_positive = KnownFpClass::exp(positive);
+        assert!(from_positive.is_known_never(FpClassTest::POSITIVE_ZERO));
+        assert!(from_positive.is_known_never(FpClassTest::POSITIVE_SUBNORMAL));
+    }
+
+    /// `KnownFPClass::fpext` over `APFloatBase::isRepresentableAsNormalIn`.
+    ///
+    /// `float` → `double` widens the exponent range strictly at both ends, so
+    /// every `float` subnormal is a `double` normal; `float` → `float` does
+    /// not, so nothing moves.
+    #[test]
+    fn fpext_normalises_subnormals_only_when_the_range_grows() {
+        let subnormal = KnownFpClass::from_classes(FpClassTest::POSITIVE_SUBNORMAL);
+
+        let widened = KnownFpClass::fpext(
+            subnormal,
+            ApFloatSemantics::IeeeDouble,
+            ApFloatSemantics::IeeeSingle,
+        );
+        assert!(widened.is_known_never(FpClassTest::SUBNORMAL));
+        assert!(widened.classes().intersects(FpClassTest::POSITIVE_NORMAL));
+
+        let unchanged = KnownFpClass::fpext(
+            subnormal,
+            ApFloatSemantics::IeeeSingle,
+            ApFloatSemantics::IeeeSingle,
+        );
+        assert_eq!(unchanged.classes(), FpClassTest::POSITIVE_SUBNORMAL);
+    }
+
+    /// `KnownFPClass::roundToIntegral`. The `ppc_fp128` row is upstream's
+    /// stated special case: infinities pass through only for `trunc`.
+    #[test]
+    fn round_to_integral_never_yields_a_subnormal() {
+        let finite = KnownFpClass::from_classes(FpClassTest::FINITE);
+
+        let rounded = KnownFpClass::round_to_integral(finite, false, false);
+        assert!(rounded.is_known_never(FpClassTest::SUBNORMAL));
+        assert!(rounded.is_known_never(FpClassTest::INFINITY));
+
+        // On a multi-unit type, a non-`trunc` rounding does not pass
+        // infinities through.
+        let multi_unit = KnownFpClass::round_to_integral(finite, false, true);
+        assert!(!multi_unit.is_known_never(FpClassTest::INFINITY));
+        // ... but `trunc` does.
+        let truncated = KnownFpClass::round_to_integral(finite, true, true);
+        assert!(truncated.is_known_never(FpClassTest::INFINITY));
+    }
+
+    /// `KnownFPClass::minMaxLike`. The `*num` forms discard a NaN operand, so
+    /// one non-NaN operand rules NaN out; the IEEE-754-2019 `minimum`/`maximum`
+    /// propagate it.
+    #[test]
+    fn min_max_like_discards_nan_only_for_the_num_forms() {
+        let ieee = DenormalMode::ieee();
+        let no_nan = KnownFpClass::from_classes(FpClassTest::FINITE);
+        let maybe_nan = KnownFpClass::unknown();
+
+        for kind in [
+            MinMaxKind::MinNum,
+            MinMaxKind::MaxNum,
+            MinMaxKind::MinimumNum,
+            MinMaxKind::MaximumNum,
+        ] {
+            assert!(
+                KnownFpClass::min_max_like(no_nan, maybe_nan, kind, ieee).is_known_never_nan(),
+                "{kind:?} discards a NaN operand"
+            );
+        }
+        for kind in [MinMaxKind::Minimum, MinMaxKind::Maximum] {
+            assert!(
+                !KnownFpClass::min_max_like(no_nan, maybe_nan, kind, ieee).is_known_never_nan(),
+                "{kind:?} propagates a NaN operand"
+            );
+        }
+
+        // One known-positive non-NaN operand forces a non-negative maximum.
+        let positive = KnownFpClass::from_classes(FpClassTest::POSITIVE_NORMAL);
+        let maximum = KnownFpClass::min_max_like(positive, no_nan, MinMaxKind::MaxNum, ieee);
+        assert!(maximum.is_known_never(KnownFpClass::ORDERED_LESS_THAN_ZERO));
+    }
+
+    /// `KnownFPClass::canonicalize` — the one operation guaranteed to quieten a
+    /// signaling NaN.
+    #[test]
+    fn canonicalize_quietens_signaling_nans() {
+        let signaling = KnownFpClass::from_classes(FpClassTest::SIGNALING_NAN);
+        let canonical = KnownFpClass::canonicalize(signaling, DenormalMode::ieee());
+        assert!(canonical.is_known_never(FpClassTest::SIGNALING_NAN));
+        assert!(!canonical.is_known_never_nan(), "a quiet NaN remains");
+
+        // A non-NaN source stays non-NaN.
+        let finite = KnownFpClass::from_classes(FpClassTest::FINITE);
+        assert!(KnownFpClass::canonicalize(finite, DenormalMode::ieee()).is_known_never_nan());
+
+        // A flushing mode rules out subnormals.
+        let flushing = KnownFpClass::canonicalize(finite, DenormalMode::preserve_sign());
+        assert!(flushing.is_known_never(FpClassTest::SUBNORMAL));
+    }
+
+    /// `KnownFPClass::propagateDenormal` — a source that could be a denormal
+    /// gains a zero once the mode flushes.
+    #[test]
+    fn propagate_denormal_admits_a_flushed_zero() {
+        // Never a literal zero, but subnormals are possible.
+        let source = KnownFpClass::from_classes(FpClassTest::SUBNORMAL);
+
+        let mut under_ieee = KnownFpClass::unknown();
+        under_ieee.propagate_denormal(source, DenormalMode::ieee());
+        assert!(under_ieee.is_known_never_zero(), "IEEE flushes nothing");
+
+        let mut flushing = KnownFpClass::unknown();
+        flushing.propagate_denormal(source, DenormalMode::preserve_sign());
+        assert!(!flushing.is_known_never_zero());
     }
 
     /// `KnownFPClass::KnownFPClass(const APFloat &C)` — a constant pins both

@@ -158,6 +158,52 @@ impl ApFloatSemantics {
             Self::PpcDoubleDouble => 106,
         }
     }
+
+    /// Largest exponent this format can represent. Mirrors the `maxExponent`
+    /// field of the `fltSemantics` table in `APFloat.cpp`.
+    ///
+    /// `PpcDoubleDouble` is upstream's `semPPCDoubleDouble = {-1, 0, 0, 128}`:
+    /// the head/tail pair carries no single exponent range, and upstream
+    /// records `-1`/`0` as placeholders rather than a real interval.
+    pub fn max_exponent(self) -> i32 {
+        match self {
+            Self::IeeeHalf => 15,
+            Self::BFloat | Self::IeeeSingle => 127,
+            Self::IeeeDouble => 1023,
+            Self::IeeeQuad | Self::X87DoubleExtended => 16383,
+            Self::PpcDoubleDouble => -1,
+        }
+    }
+
+    /// Smallest exponent this format can represent. Mirrors the `minExponent`
+    /// field of the same table; see [`Self::max_exponent`] on
+    /// `PpcDoubleDouble`.
+    pub fn min_exponent(self) -> i32 {
+        match self {
+            Self::IeeeHalf => -14,
+            Self::BFloat | Self::IeeeSingle => -126,
+            Self::IeeeDouble => -1022,
+            Self::IeeeQuad | Self::X87DoubleExtended => -16382,
+            Self::PpcDoubleDouble => 0,
+        }
+    }
+
+    /// Whether every subnormal of `self` is a normal in `destination`.
+    ///
+    /// Ports `APFloatBase::isRepresentableAsNormalIn` (`APFloat.cpp`),
+    /// including its `FIXME` on the precision test: "probably not accurate but
+    /// also shouldn't be a practical concern with existing types".
+    pub fn is_representable_as_normal_in(self, destination: Self) -> bool {
+        // The exponent range must be *strictly* larger on both ends.
+        if self.max_exponent() >= destination.max_exponent()
+            || self.min_exponent() <= destination.min_exponent()
+        {
+            return false;
+        }
+        // With a long enough significand the result could still be subnormal
+        // despite the wider exponent range.
+        destination.precision() >= self.precision()
+    }
 }
 
 impl ApFloat {
