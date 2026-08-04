@@ -40,6 +40,15 @@ precondition).
 `GetPointerBaseWithConstantOffset` returns the base and offset as a pair rather
 than writing the offset through a reference, so the two cannot drift apart.
 
+#### Changed
+
+- `is_known_not_undef_or_poison` and its siblings now strip pointer casts
+  before the allocated-object test, closing the second of the two arms that
+  were recorded as deferred. A zero-offset `inbounds getelementptr` of an
+  `alloca` is now recognised as the allocated object it points into — which is
+  what upstream's comment on the strip says the strip is *for*, since that GEP
+  would otherwise read as poison-capable. Only the `@llvm.assume` arm remains.
+
 ### ValueTracking: speculation safety and UB reachability (tranche 6)
 
 #### Added

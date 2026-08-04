@@ -1073,6 +1073,42 @@ fn strip_pointer_casts<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Va
     current
 }
 
+/// Ports `Value::stripPointerCastsSameRepresentation` (`llvm/lib/IR/Value.cpp`),
+/// the narrower sibling of [`strip_pointer_casts`] used by
+/// `isGuaranteedNotToBeUndefOrPoison` before its allocated-object test.
+///
+/// The difference from [`strip_pointer_casts`] is `addrspacecast`, which this
+/// does **not** peel. Upstream peels it only when the two address spaces have
+/// the same representation — a `DataLayout::isNonIntegralAddressSpace` question
+/// llvmkit does not model — so declining is the conservative reading. Not
+/// peeling only forgoes an answer; peeling wrongly would claim a pointer is an
+/// allocated object when the cast changed what it means.
+///
+/// Crate-visible rather than public: `Value.h` is not a surface the
+/// ValueTracking parity ledger tracks.
+pub(crate) fn strip_pointer_casts_same_representation<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Value<'ctx, B> {
+    let mut current = value;
+    for _ in 0..MAX_LOOKUP_SEARCH_DEPTH {
+        let next = match operator_opcode(current) {
+            Some(Opcode::BitCast) => operator_operand(current, 0),
+            Some(Opcode::GetElementPtr) => match instruction_kind(current) {
+                Some(InstructionKindData::Gep(data)) if gep_has_all_zero_indices(current, data) => {
+                    Some(value_from_slot(current, data.ptr.get()))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        match next.filter(|next| is_pointer(next.ty())) {
+            Some(next) => current = next,
+            None => return current,
+        }
+    }
+    current
+}
+
 /// Ports `llvm::isIdentifiedObject` (`llvm/lib/Analysis/AliasAnalysis.cpp`).
 ///
 /// Not public: it belongs to `AliasAnalysis.h`, a surface the ValueTracking

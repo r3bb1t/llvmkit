@@ -386,3 +386,35 @@ define <4 x i32> @test(i32 noundef %x) {
     let query = ValueTrackingQuery::<DynBrand>::new(&data_layout);
     assert!(is_known_not_undef_or_poison(a, &query).expect("query succeeds"));
 }
+
+/// The allocated-object arm sees through a zero-offset `inbounds`
+/// `getelementptr`, which is what `stripPointerCastsSameRepresentation` is
+/// there for.
+///
+/// **The IR has no upstream counterpart**; the oracle is the comment upstream
+/// puts on the strip: "the stripped pointer is checked as it has to be pointing
+/// into an allocated object or be `null` to ensure `inbounds` getelement
+/// pointers with a zero offset could not produce poison."
+///
+/// Without the strip the GEP is `inbounds`, so
+/// `can_create_undef_or_poison_kind` reports it poison-capable and the operand
+/// walk is skipped — `%zero` answers false where upstream answers true.
+#[test]
+fn is_known_not_undef_or_poison_strips_a_zero_offset_inbounds_gep() {
+    let module = parse(
+        r"
+define void @test() {
+  %a = alloca i32
+  %zero = getelementptr inbounds i32, ptr %a, i64 0
+  %past = getelementptr inbounds i32, ptr %a, i64 1
+  ret void
+}
+",
+    );
+    let data_layout = module.data_layout();
+    let query = ValueTrackingQuery::<DynBrand>::new(&data_layout);
+
+    assert!(is_known_not_undef_or_poison(named_value(&module, "zero"), &query).expect("succeeds"));
+    // A non-zero offset is not stripped, so it stays poison-capable.
+    assert!(!is_known_not_undef_or_poison(named_value(&module, "past"), &query).expect("succeeds"));
+}

@@ -25,6 +25,7 @@ use crate::intrinsics::{IntrinsicSemantic, semantic_for_callee};
 use crate::metadata::MetadataAttachmentKind;
 use crate::module::{DynBrand, ModuleBrand, ModuleCore, ModuleRef};
 use crate::pass_context::FunctionView;
+use crate::pointer_analysis::strip_pointer_casts_same_representation;
 use crate::speculation::program_undefined_for_value;
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
 use crate::value::{Value, ValueKindData, ValueSlot};
@@ -4309,14 +4310,10 @@ fn value_bit_width<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports the static `isGuaranteedNotToBeUndefOrPoison(V, AC, CtxI, DT, Depth,
 /// Kind)` (`ValueTracking.cpp`).
 ///
-/// Two of upstream's arms are **not** ported. Each can only make the answer
-/// weaker — a `false` where upstream proves `true` — so no caller is misled:
-///
-/// - The `@llvm.assume` arm (`getKnowledgeValidInContext`), which needs an
-///   `AssumptionCache`.
-/// - `stripPointerCastsSameRepresentation` before the allocated-object test:
-///   llvmkit checks the unstripped value, so a bitcast or zero-offset
-///   `inbounds` GEP of an alloca is not recognised as one.
+/// One of upstream's arms is **not** ported, and can only make the answer weaker
+/// — a `false` where upstream proves `true` — so no caller is misled: the
+/// `@llvm.assume` arm (`getKnowledgeValidInContext`), which needs an
+/// `AssumptionCache`.
 ///
 /// One arm is an llvmkit **refinement**, marked at its site: a shift whose
 /// amount is proven in range by known bits is not poison, where upstream's
@@ -4349,13 +4346,19 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 
     // An allocated object or a null pointer is always well defined.
+    //
+    // The strip is upstream's, and load-bearing: it peels a zero-offset
+    // `inbounds` getelementptr, which would otherwise be poison-capable, and
+    // the guarantee that it is not comes precisely from the stripped pointer
+    // being an allocated object or null.
+    let stripped = strip_pointer_casts_same_representation(value);
     if matches!(
-        &value.data().kind,
+        &stripped.data().kind,
         ValueKindData::GlobalVariable(_)
             | ValueKindData::Function(_)
             | ValueKindData::Constant(ConstantData::PointerNull)
     ) || matches!(
-        instruction_kind(value),
+        instruction_kind(stripped),
         Some(InstructionKindData::Alloca(_))
     ) {
         return Ok(true);
