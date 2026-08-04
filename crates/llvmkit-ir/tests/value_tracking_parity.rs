@@ -278,6 +278,10 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "adjust_known_fp_class_for_select_arm",
     ),
     (
+        "analyzeKnownBitsFromAndXorOr",
+        "analyze_known_bits_from_and_xor_or",
+    ),
+    (
         "canConvertToMinOrMaxIntrinsic",
         "can_convert_to_min_or_max_intrinsic",
     ),
@@ -461,10 +465,6 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
 /// plus gaps has to add up to the audited surface, which
 /// `value_tracking_surface_is_accounted_for` asserts.
 const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
-    (
-        "analyzeKnownBitsFromAndXorOr",
-        "residue: an InstCombine helper with no llvmkit caller",
-    ),
     (
         "analyzeKnownFPClassFromSelect",
         "declared in ValueTracking.h and defined nowhere in the LLVM tree - the name occurs exactly once across llvm/, its own declaration, with no definition and no caller. There is no behaviour to port. The select arm it names is real and is ported, as adjustKnownFPClassForSelectArm plus the Select case of computeKnownFPClass",
@@ -873,6 +873,8 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     );
     let _adjust_known_fp_class_for_select_arm =
         llvmkit_ir::adjust_known_fp_class_for_select_arm::<DynBrand>;
+    let _analyze_known_bits_from_and_xor_or =
+        llvmkit_ir::analyze_known_bits_from_and_xor_or::<DynBrand>;
 
     // Tranche 8 — assumptions and implied conditions.
     let _compute_known_bits_from_context = llvmkit_ir::compute_known_bits_from_context::<DynBrand>;

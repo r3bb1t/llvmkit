@@ -378,6 +378,7 @@ pub use known_fp_class::{
     compute_known_fp_class_all, compute_known_fp_class_with_flags, compute_known_fp_sign_bit,
     is_known_never_infinity, is_known_never_infinity_or_nan, is_known_never_nan,
 };
+pub use value_tracking::analyze_known_bits_from_and_xor_or;
 
 pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
 pub use assumptions::{
