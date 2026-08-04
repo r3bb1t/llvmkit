@@ -1631,7 +1631,15 @@ fn fmt_call(
     if let Some(kw) = c.tail_kind.keyword() {
         write!(f, "{} ", kw)?;
     }
-    f.write_str("call ")?;
+    f.write_str("call")?;
+    // `writeOptimizationInfo` runs straight after the opcode name, so the flags
+    // land between `call` and the calling convention — the same place
+    // `LLParser::parseCall` eats them.
+    let fmf = c.attrs.fast_math_flags_value();
+    if !fmf.is_empty() {
+        write!(f, " {fmf}")?;
+    }
+    f.write_str(" ")?;
     if c.calling_conv != crate::CallingConv::C {
         write!(f, "{} ", c.calling_conv)?;
     }

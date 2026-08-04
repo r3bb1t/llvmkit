@@ -13,13 +13,6 @@
 //! conservative direction, so no caller is misled. They are listed rather than
 //! silently missing so the gap is legible:
 //!
-//! - **`select`** — needs `adjustKnownFPClassForSelectArm`, which the parity
-//!   ledger tracks as its own entry point.
-//! - **The assumption and dominating-branch arm** —
-//!   `computeKnownFPClassFromContext` / `computeKnownFPClassFromCond`. The
-//!   caches it would read ([`AssumptionCache`](crate::AssumptionCache),
-//!   [`DomConditionCache`](crate::DomConditionCache)) already exist; only the
-//!   `is_fpclass`/`fcmp`-to-class decoding is missing.
 //! - **The arithmetic arms** — `fadd`, `fsub`, `fmul`, `fdiv`, `frem`, and the
 //!   `fma`/`fmuladd` pair.
 //! - **The vector arms** — `extractelement`, `insertelement`, `shufflevector`,
@@ -32,23 +25,31 @@
 //!   nothing to read.
 //!
 //! What *is* here: the constant and poison leaves, the fast-math-flag
-//! refinement, `fneg`, the `fabs`/`copysign`/`canonicalize`/`sqrt` intrinsics,
-//! the six min/max intrinsics, the seven rounding intrinsics, the `exp` and
-//! `log` families, `fpext`, `fptrunc`, `sitofp` and `uitofp`.
+//! refinement, the context arm (assumptions, dominating branches and an
+//! injected condition, through [`fp_predicate`](crate::fp_predicate)), `select`,
+//! `fneg`, the `fabs`/`copysign`/`canonicalize`/`sqrt` intrinsics, the six
+//! min/max intrinsics, the seven rounding intrinsics, the `exp` and `log`
+//! families, `fpext`, `fptrunc`, `sitofp` and `uitofp`.
 
 use crate::ap_float::ApFloatSemantics;
+use crate::assumptions::{AssumptionSource, is_valid_assume_for_context};
+use crate::cmp_predicate::{FloatPredicate, IntPredicate};
 use crate::constant::ConstantData;
 use crate::denormal_mode::DenormalMode;
 use crate::fmf::FastMathFlags;
 use crate::fp_class::{FpClassTest, KnownFpClass, MinMaxKind};
-use crate::instr_types::CastOpcode;
-use crate::instruction::InstructionKindData;
+use crate::fp_predicate::{denormal_mode_of, enclosing_function_of, fcmp_implies_class};
+use crate::instr_types::{BranchKind, CastOpcode};
+use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::descriptor_for_callee;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::{Type, TypeKind};
 use crate::r#use::Use;
 use crate::value::{Value, ValueKindData, ValueSlot};
-use crate::value_tracking::{MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery};
+use crate::value_tracking::{
+    MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, assume_argument, is_sign_bit_check,
+    logical_op_parts, not_operand, parent_block,
+};
 use crate::{ApFloat, ApInt};
 
 /// Which floating-point classes `value` may belong to.
@@ -121,15 +122,13 @@ fn known_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
         return known;
     }
 
-    let Some(kind) = instruction_kind(value) else {
-        return KnownFpClass::unknown();
-    };
+    let kind = instruction_kind(value);
 
     // Flags on the operator itself rule classes out regardless of the arm, and
     // upstream applies them on the way *out* — through a `scope_exit` — so an
     // arm that learns nothing still benefits.
     let mut ruled_out = FpClassTest::NONE;
-    if let Some(flags) = fast_math_flags(kind) {
+    if let Some(flags) = kind.and_then(fast_math_flags) {
         if flags.contains(FastMathFlags::NO_NANS) {
             ruled_out |= FpClassTest::NAN;
         }
@@ -137,19 +136,44 @@ fn known_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
             ruled_out |= FpClassTest::INFINITY;
         }
     }
+
+    // Context-dependent facts join the flags: whatever the context proves the
+    // value is *not* is ruled out on the same way out, and its sign bit fills in
+    // one the arms did not determine.
+    let assumed = known_fp_class_from_context(value, query);
+    ruled_out |= assumed.classes().complement();
+
     // Nothing need be learned from inputs that the flags already settle.
     let interested_classes = interested_classes.difference(ruled_out);
 
+    // Ports the `scope_exit` that upstream runs on every return path below.
+    let finish = |mut known: KnownFpClass| {
+        known.known_not(ruled_out);
+        if known.sign_bit().is_none()
+            && let Some(sign) = assumed.sign_bit()
+        {
+            if sign {
+                known.sign_bit_must_be_one();
+            } else {
+                known.sign_bit_must_be_zero();
+            }
+        }
+        known
+    };
+
+    // Upstream's `if (!Op) return;`, which sits *after* the context arm: a value
+    // that is no operator at all — an argument, say — has no arm to dispatch to,
+    // but the flags and the context still apply to it.
+    let Some(kind) = kind else {
+        return finish(KnownFpClass::unknown());
+    };
+
     // All recursive arms must come after this.
     if depth == MAX_ANALYSIS_RECURSION_DEPTH.min(query.max_depth()) {
-        let mut known = KnownFpClass::unknown();
-        known.known_not(ruled_out);
-        return known;
+        return finish(KnownFpClass::unknown());
     }
 
-    let mut known = dispatch(value, kind, interested_classes, query, depth);
-    known.known_not(ruled_out);
-    known
+    finish(dispatch(value, kind, interested_classes, query, depth))
 }
 
 /// The opcode switch. Arms not listed here leave the answer unknown; the module
@@ -176,6 +200,16 @@ fn dispatch<'a, 'ctx, B: ModuleBrand + 'ctx>(
             query,
             depth,
         ),
+        InstructionKindData::Select(data) => {
+            let condition = value_from_slot(value, data.cond.get());
+            let for_arm = |slot: ValueSlot, invert: bool| {
+                let arm = value_from_slot(value, slot);
+                let known = known_fp_class(arm, interested_classes, query, depth + 1);
+                adjust_known_fp_class_for_select_arm(known, condition, arm, invert, query, depth)
+            };
+            // Only known if known in both the true and the false arm.
+            for_arm(data.true_val.get(), false).intersect_with(for_arm(data.false_val.get(), true))
+        }
         InstructionKindData::Call(_) => {
             intrinsic_fp_class(value, kind, interested_classes, query, depth)
         }
@@ -293,10 +327,9 @@ fn intrinsic_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
             .get(index)
             .map(|arg| value_from_slot(value, arg.get()))
     };
-    // Upstream reads the enclosing function's `denormal-fp-math` for the
-    // result's element type; llvmkit models no such attribute, so every arm
-    // that needs one takes upstream's `F ? ... : getDynamic()` fallback.
-    let mode = DenormalMode::dynamic();
+    // The enclosing function's `denormal-fp-math` for the result's element
+    // type, and upstream's `getDynamic()` where there is no enclosing function.
+    let mode = denormal_mode_of(value);
 
     match name {
         "llvm.fabs" => {
@@ -331,11 +364,13 @@ fn intrinsic_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let known_source = known_fp_class(source, interested_sources, query, depth + 1);
 
             // Upstream consults `nsz` on the call to decide whether the
-            // denormal mode matters at all.
-            let has_no_signed_zeros = data
-                .attrs
-                .fast_math_flags_value()
-                .contains(FastMathFlags::NO_SIGNED_ZEROS);
+            // denormal mode matters at all. It reads it through `Q.IIQ`, so a
+            // query told to ignore instruction flags must not see it.
+            let has_no_signed_zeros = query.uses_instruction_info()
+                && data
+                    .attrs
+                    .fast_math_flags_value()
+                    .contains(FastMathFlags::NO_SIGNED_ZEROS);
             let mut known = KnownFpClass::sqrt(
                 known_source,
                 if has_no_signed_zeros {
@@ -407,6 +442,205 @@ fn intrinsic_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
             KnownFpClass::log(known_source, mode)
         }
         _ => KnownFpClass::unknown(),
+    }
+}
+
+// --------------------------------------------------------------------------
+// Context-dependent facts
+// --------------------------------------------------------------------------
+
+/// Adjust `known` for the select arm `arm` with what `condition` implies.
+///
+/// Ports `llvm::adjustKnownFPClassForSelectArm`. `invert` picks the false arm —
+/// the condition is then assumed false rather than true.
+///
+/// Its known-bits sibling
+/// [`adjust_known_bits_for_select_arm`](crate::adjust_known_bits_for_select_arm)
+/// checks that the arm is not `undef` before trusting the refinement; upstream
+/// leaves a `TODO` asking whether this one should too, and that question is
+/// inherited rather than answered.
+pub fn adjust_known_fp_class_for_select_arm<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    known: KnownFpClass,
+    condition: Value<'ctx, B>,
+    arm: Value<'ctx, B>,
+    invert: bool,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> KnownFpClass {
+    let mut known = known;
+    known_fp_class_from_cond(arm, condition, !invert, &mut known, query, depth + 1);
+    known
+}
+
+/// Ports `computeKnownFPClassFromContext`.
+///
+/// Three sources feed it, each attached to the query separately: an injected
+/// condition ([`ValueTrackingQuery::with_condition_context`]), the dominating
+/// branch conditions ([`ValueTrackingQuery::with_dominating_conditions`], which
+/// also needs a dominator tree), and the `@llvm.assume` calls
+/// ([`ValueTrackingQuery::with_assumptions`], which also needs a context
+/// instruction). A query carrying none of them proves nothing.
+fn known_fp_class_from_context<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> KnownFpClass {
+    let mut known = KnownFpClass::unknown();
+
+    // Handle the injected condition.
+    if let Some(context) = query.condition_context()
+        && context.affects(value)
+    {
+        known_fp_class_from_cond(
+            value,
+            context.condition(),
+            !context.is_inverted(),
+            &mut known,
+            query,
+            0,
+        );
+    }
+
+    let Some(context_instruction) = query.context_instruction() else {
+        return known;
+    };
+
+    // Handle dominating conditions.
+    if let (Some(cache), Some(dominator_tree), Some(context_block)) = (
+        query.dominating_conditions(),
+        query.dominator_tree(),
+        parent_block(context_instruction),
+    ) {
+        for branch in cache.conditions_for(value) {
+            let Some(InstructionKindData::Br(data)) = instruction_kind(branch) else {
+                continue;
+            };
+            let (condition, then_block, else_block) = match &*data.kind.borrow() {
+                BranchKind::Unconditional(_) => continue,
+                BranchKind::Conditional {
+                    cond,
+                    then_bb,
+                    else_bb,
+                } => (cond.get(), *then_bb, *else_bb),
+            };
+            let Some(branch_block) = parent_block(branch) else {
+                continue;
+            };
+            let condition = value_from_slot(branch, condition);
+            for (successor, condition_is_true) in [(then_block, true), (else_block, false)] {
+                if dominator_tree.dominates_edge_slots(branch_block, successor, context_block) {
+                    known_fp_class_from_cond(
+                        value,
+                        condition,
+                        condition_is_true,
+                        &mut known,
+                        query,
+                        0,
+                    );
+                }
+            }
+        }
+    }
+
+    let Some(cache) = query.assumptions() else {
+        return known;
+    };
+    let Ok(context_view) = InstructionView::try_from(context_instruction) else {
+        return known;
+    };
+
+    for assumption in cache.assumptions_for(value) {
+        // The operand-bundle half needs `getKnowledgeFromBundle`, which is not
+        // ported; see the [`assumptions`](crate::assumptions) module header.
+        if assumption.source() != AssumptionSource::Condition {
+            continue;
+        }
+        let Some(assume) = assumption.assume(module_ref(value)) else {
+            continue;
+        };
+        let Some(argument) = assume_argument(assume.to_erased()) else {
+            continue;
+        };
+        if !is_valid_assume_for_context(&assume, &context_view, query.dominator_tree(), false) {
+            continue;
+        }
+        known_fp_class_from_cond(value, argument, true, &mut known, query, 0);
+    }
+
+    known
+}
+
+/// Ports `computeKnownFPClassFromCond`.
+///
+/// Upstream also takes the context instruction, but never reads it; the
+/// parameter is not reproduced.
+fn known_fp_class_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    condition: Value<'ctx, B>,
+    condition_is_true: bool,
+    known: &mut KnownFpClass,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) {
+    // `and` splits a true condition into two true conditions, `or` a false one
+    // into two false ones; either way both halves hold.
+    if depth < query.max_depth()
+        && let Some((a, b, is_and)) = logical_op_parts(condition)
+        && is_and == condition_is_true
+    {
+        known_fp_class_from_cond(value, a, condition_is_true, known, query, depth + 1);
+        known_fp_class_from_cond(value, b, condition_is_true, known, query, depth + 1);
+        return;
+    }
+
+    if depth < query.max_depth()
+        && let Some(negated) = not_operand(condition)
+    {
+        known_fp_class_from_cond(value, negated, !condition_is_true, known, query, depth + 1);
+        return;
+    }
+
+    if let Some((predicate, lhs, rhs)) = float_compare_parts(condition) {
+        // Upstream passes `*cast<Instruction>(Cond)->getParent()->getParent()`:
+        // the function holding the *condition*, which is what supplies the
+        // denormal mode. A condition that is not an instruction would trip that
+        // cast, so it teaches nothing here.
+        let Some(function) = enclosing_function_of(condition) else {
+            return;
+        };
+        // `LookThroughSrc` is upstream's `LHS != V`: an `fabs` is only worth
+        // seeing through when the comparison's own operand is not already the
+        // value being asked about.
+        let Some(implied) = fcmp_implies_class(predicate, function, lhs, rhs, lhs != value) else {
+            return;
+        };
+        if implied.tested() == value {
+            known.known_not(implied.if_condition_is(condition_is_true).complement());
+        }
+        return;
+    }
+
+    if let Some((tested, mask)) = is_fpclass_call_parts(condition) {
+        if tested == value {
+            known.known_not(if condition_is_true {
+                mask.complement()
+            } else {
+                mask
+            });
+        }
+        return;
+    }
+
+    // An `icmp` against the value's own bit pattern can be a sign-bit test.
+    if let Some((predicate, lhs, rhs)) = int_compare_parts(condition)
+        && element_wise_bitcast_source(lhs) == Some(value)
+        && let Some(rhs) = constant_int(rhs)
+        && let Some(true_if_signed) = is_sign_bit_check(predicate, &rhs)
+    {
+        if true_if_signed == condition_is_true {
+            known.sign_bit_must_be_one();
+        } else {
+            known.sign_bit_must_be_zero();
+        }
     }
 }
 
@@ -589,7 +823,7 @@ fn sign_indifferent_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
         "llvm.copysign" => operand_index == 0,
         // `is.fpclass` is indifferent to a zero's sign only when its test mask
         // treats both zeros alike.
-        "llvm.is.fpclass" if sign_of == SignOf::Zero => is_fpclass_mask_zero_agnostic(user, kind),
+        "llvm.is.fpclass" if sign_of == SignOf::Zero => is_fpclass_mask_zero_agnostic(user),
         "llvm.is.fpclass" if sign_of == SignOf::Nan => true,
         // The rest are proper FP math, which ignores a NaN's sign but not a
         // zero's.
@@ -607,34 +841,95 @@ fn sign_indifferent_intrinsic<'ctx, B: ModuleBrand + 'ctx>(
 ///
 /// Ports the `Test == fcZero || Test == fcNone` check in
 /// `canIgnoreSignBitOfZero`.
-fn is_fpclass_mask_zero_agnostic<'ctx, B: ModuleBrand + 'ctx>(
-    user: Value<'ctx, B>,
-    kind: &'ctx InstructionKindData,
-) -> bool {
-    let InstructionKindData::Call(data) = kind else {
-        return false;
-    };
-    let Some(mask_operand) = data.args.get(1) else {
-        return false;
-    };
-    let mask_value = value_from_slot(user, mask_operand.get());
-    let ValueKindData::Constant(ConstantData::Int(words)) = &mask_value.data().kind else {
-        return false;
-    };
-    let TypeKind::Integer { bits } = scalar_kind(mask_value.ty()) else {
-        return false;
-    };
-    let Some(raw) = ApInt::from_words(bits, words).try_zext_u64() else {
-        return false;
-    };
-    let Ok(raw) = u32::try_from(raw) else {
-        return false;
-    };
-    let Some(mask) = FpClassTest::from_bits(raw) else {
+fn is_fpclass_mask_zero_agnostic<'ctx, B: ModuleBrand + 'ctx>(user: Value<'ctx, B>) -> bool {
+    let Some((_, mask)) = is_fpclass_call_parts(user) else {
         return false;
     };
     let zeros = mask.intersection(FpClassTest::ZERO);
     zeros == FpClassTest::ZERO || zeros.is_none()
+}
+
+/// The predicate and operands of an `fcmp`. Ports
+/// `m_FCmp(Pred, m_Value(LHS), m_Value(RHS))`.
+fn float_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<(FloatPredicate, Value<'ctx, B>, Value<'ctx, B>)> {
+    let InstructionKindData::FCmp(data) = instruction_kind(value)? else {
+        return None;
+    };
+    Some((
+        data.predicate,
+        value_from_slot(value, data.lhs.get()),
+        value_from_slot(value, data.rhs.get()),
+    ))
+}
+
+/// The predicate and operands of an `icmp`. Ports
+/// `m_ICmp(Pred, m_Value(LHS), m_Value(RHS))`.
+fn int_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<(IntPredicate, Value<'ctx, B>, Value<'ctx, B>)> {
+    let InstructionKindData::ICmp(data) = instruction_kind(value)? else {
+        return None;
+    };
+    Some((
+        data.predicate,
+        value_from_slot(value, data.lhs.get()),
+        value_from_slot(value, data.rhs.get()),
+    ))
+}
+
+/// The tested value and mask of an `@llvm.is.fpclass` call. Ports
+/// `m_Intrinsic<Intrinsic::is_fpclass>(m_Value(), m_ConstantInt(ClassVal))`.
+fn is_fpclass_call_parts<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<(Value<'ctx, B>, FpClassTest)> {
+    let InstructionKindData::Call(data) = instruction_kind(value)? else {
+        return None;
+    };
+    let callee = value_from_slot(value, data.callee.get());
+    if descriptor_for_callee(callee)?.id().base_name() != "llvm.is.fpclass" {
+        return None;
+    }
+    let tested = value_from_slot(value, data.args.first()?.get());
+    let mask = constant_int(value_from_slot(value, data.args.get(1)?.get()))?;
+    let raw = u32::try_from(mask.try_zext_u64()?).ok()?;
+    Some((tested, FpClassTest::from_bits(raw)?))
+}
+
+/// The source of a `bitcast` that changes neither scalar-vs-vector nor the
+/// element count. Ports `m_ElementWiseBitCast`.
+fn element_wise_bitcast_source<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<Value<'ctx, B>> {
+    let InstructionKindData::Cast(data) = instruction_kind(value)? else {
+        return None;
+    };
+    if data.kind != CastOpcode::BitCast {
+        return None;
+    }
+    let source = value_from_slot(value, data.src.get());
+    // A fixed and a scalable vector of the same count differ, which is the
+    // `getElementCount()` comparison upstream makes.
+    let shape = |value: Value<'ctx, B>| {
+        value
+            .ty()
+            .data()
+            .as_vector()
+            .map(|(_, lanes, scalable)| (lanes, scalable))
+    };
+    (shape(source) == shape(value)).then_some(source)
+}
+
+/// The integer constant `value` is, if it is one.
+fn constant_int<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ApInt> {
+    let TypeKind::Integer { bits } = value.ty().kind() else {
+        return None;
+    };
+    match &value.data().kind {
+        ValueKindData::Constant(ConstantData::Int(words)) => Some(ApInt::from_words(bits, words)),
+        _ => None,
+    }
 }
 
 /// Ports the static `getMinMaxKind`, keyed on the intrinsic's base name because
@@ -731,7 +1026,12 @@ fn value_from_slot<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     slot: ValueSlot,
 ) -> Value<'ctx, B> {
-    let module: ModuleRef<B> = ModuleRef::new(anchor.module().core_ref());
+    let module = module_ref(anchor);
     let data = module.value_data(slot);
     Value::from_parts(slot, module, data.ty)
+}
+
+/// The module `value` lives in.
+fn module_ref<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> ModuleRef<'ctx, B> {
+    ModuleRef::new(value.module().core_ref())
 }

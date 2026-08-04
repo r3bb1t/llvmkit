@@ -274,6 +274,10 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "adjust_known_bits_for_select_arm",
     ),
     (
+        "adjustKnownFPClassForSelectArm",
+        "adjust_known_fp_class_for_select_arm",
+    ),
+    (
         "canConvertToMinOrMaxIntrinsic",
         "can_convert_to_min_or_max_intrinsic",
     ),
@@ -458,16 +462,12 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
 /// `value_tracking_surface_is_accounted_for` asserts.
 const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
-        "adjustKnownFPClassForSelectArm",
-        "the select arm of computeKnownFPClass, which known_fp_class.rs records as not yet dispatched; the KnownFPClass lattice it needs now exists",
-    ),
-    (
         "analyzeKnownBitsFromAndXorOr",
         "residue: an InstCombine helper with no llvmkit caller",
     ),
     (
         "analyzeKnownFPClassFromSelect",
-        "the select arm of computeKnownFPClass, which known_fp_class.rs records as not yet dispatched; the KnownFPClass lattice it needs now exists",
+        "declared in ValueTracking.h and defined nowhere in the LLVM tree - the name occurs exactly once across llvm/, its own declaration, with no definition and no caller. There is no behaviour to port. The select arm it names is real and is ported, as adjustKnownFPClassForSelectArm plus the Select case of computeKnownFPClass",
     ),
     (
         "collectPossibleValues",
@@ -871,6 +871,8 @@ fn exercises_every_modeled_value_tracking_entry_point() {
         llvmkit_ir::can_ignore_sign_bit_of_zero::<DynBrand>,
         llvmkit_ir::can_ignore_sign_bit_of_nan::<DynBrand>,
     );
+    let _adjust_known_fp_class_for_select_arm =
+        llvmkit_ir::adjust_known_fp_class_for_select_arm::<DynBrand>;
 
     // Tranche 8 — assumptions and implied conditions.
     let _compute_known_bits_from_context = llvmkit_ir::compute_known_bits_from_context::<DynBrand>;

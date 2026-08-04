@@ -2712,7 +2712,9 @@ fn is_all_ones_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> b
 }
 
 /// `m_Not(V)`: `xor V, -1`, matched commutatively.
-fn not_operand<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+pub(crate) fn not_operand<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<Value<'ctx, B>> {
     let (lhs, rhs) = binary_operands_of(value, BinaryOpcode::Xor)?;
     if is_all_ones_constant(rhs) {
         Some(lhs)
@@ -3097,7 +3099,9 @@ fn invertible_recurrences<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The block an instruction belongs to.
-fn parent_block<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ValueSlot> {
+pub(crate) fn parent_block<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<ValueSlot> {
     match &value.data().kind {
         ValueKindData::Instruction(inst) => Some(inst.parent.get()),
         _ => None,
@@ -3879,7 +3883,7 @@ where
 ///
 /// Ports `m_LogicalOp`: the bitwise spelling on an `i1`, or the poison-blocking
 /// `select` spelling — `L ? R : false` for `and`, `L ? true : R` for `or`.
-fn logical_op_parts<'ctx, B: ModuleBrand + 'ctx>(
+pub(crate) fn logical_op_parts<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<(Value<'ctx, B>, Value<'ctx, B>, bool)> {
     if !matches!(scalar_type_kind(value), Some(TypeKind::Integer { bits: 1 })) {
@@ -3927,7 +3931,9 @@ fn trunc_source_and_no_unsigned_wrap<'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// The condition operand of an `@llvm.assume`.
-fn assume_argument<'ctx, B: ModuleBrand + 'ctx>(assume: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+pub(crate) fn assume_argument<'ctx, B: ModuleBrand + 'ctx>(
+    assume: Value<'ctx, B>,
+) -> Option<Value<'ctx, B>> {
     let InstructionKindData::Call(data) = instruction_kind(assume)? else {
         return None;
     };
