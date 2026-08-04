@@ -12,6 +12,7 @@
 
 use crate::ap_int::ApInt;
 use crate::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
+use crate::intrinsics::descriptor_for_callee;
 
 /// Which min/max/abs idiom a `select` implements.
 ///
@@ -1189,18 +1190,90 @@ fn is_compare_lhs_or_its_sext<'ctx, B: ModuleBrand + 'ctx>(
 /// `flavor(x, C)`.
 ///
 /// Ports the `m_SMin(m_Specific(CmpLHS), m_APInt(C2))` family
-/// [`match_clamp`] uses. Those are `MaxMin_match<ICmpInst, ..>`, which matches
-/// the **`select(icmp PRED L, R, L, R)` shape structurally** — not a call to
-/// `llvm.smin`. Matching the intrinsic instead would accept programs upstream's
-/// `matchClamp` does not see, so this mirrors the matcher rather than the
-/// concept.
+/// [`match_clamp`] uses — the **non**-commutative spelling, so `C` must be the
+/// second operand.
 fn int_min_max_against_constant<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     expected_operand: Value<'ctx, B>,
     flavor: SelectPatternFlavor,
 ) -> Option<ApInt> {
+    let (left, right) = int_min_max_operands(value, flavor)?;
+    (left == expected_operand).then(|| int_constant(right))?
+}
+
+/// Whether `value` is `flavor(expected, other)` in *either* operand order, and
+/// `other` if so.
+///
+/// Ports the `m_c_SMax(m_Specific(LHS), m_Value())` family — the commutative
+/// spelling of [`int_min_max_operands`]'s matcher, which is how every use site
+/// in `isTruePredicate` reads it.
+pub(crate) fn int_min_max_over<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    expected: Value<'ctx, B>,
+    flavor: SelectPatternFlavor,
+) -> Option<Value<'ctx, B>> {
+    let (left, right) = int_min_max_operands(value, flavor)?;
+    if left == expected {
+        return Some(right);
+    }
+    (right == expected).then_some(left)
+}
+
+/// The two operands of an integer min/max of the given `flavor`, in upstream's
+/// binding order.
+///
+/// Ports `MaxMin_match<ICmpInst, LHS, RHS, Pred_t>` (`PatternMatch.h`), what
+/// `m_SMin` / `m_SMax` / `m_UMin` / `m_UMax` expand to. It matches **two**
+/// shapes: a call to the matching `llvm.{s,u}{min,max}` intrinsic, and the
+/// structural `select(icmp PRED L, R, L, R)` — a select whose condition
+/// compares the very values the select returns.
+///
+/// For the select shape the operands come back in the *compare's* order, not
+/// the select's arms: upstream binds `L` to `Cmp->getOperand(0)` and inverts
+/// the predicate when the true arm is the compare's right-hand side.
+fn int_min_max_operands<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    flavor: SelectPatternFlavor,
+) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+    if let Some(operands) = min_max_intrinsic_operands(value, flavor) {
+        return Some(operands);
+    }
     let (left, right, predicate) = select_over_icmp_of_its_own_arms(value)?;
-    let wanted = matches!(
+    min_max_predicate_matches(flavor, predicate).then_some((left, right))
+}
+
+/// The `dyn_cast<IntrinsicInst>` arm of `MaxMin_match`: a direct call to
+/// `llvm.smin` / `llvm.smax` / `llvm.umin` / `llvm.umax`.
+fn min_max_intrinsic_operands<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    flavor: SelectPatternFlavor,
+) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
+    let Some(InstructionKindData::Call(call)) = instruction_kind(value) else {
+        return None;
+    };
+    let callee = value_from_slot(value, call.callee.get());
+    let descriptor = descriptor_for_callee(callee)?;
+    let wanted = match flavor {
+        SelectPatternFlavor::SMin => MinMaxIntrinsic::SMin,
+        SelectPatternFlavor::SMax => MinMaxIntrinsic::SMax,
+        SelectPatternFlavor::UMin => MinMaxIntrinsic::UMin,
+        SelectPatternFlavor::UMax => MinMaxIntrinsic::UMax,
+        _ => return None,
+    };
+    if descriptor.id().base_name() != wanted.name() {
+        return None;
+    }
+    let (first, second) = (call.args.first()?, call.args.get(1)?);
+    Some((
+        value_from_slot(value, first.get()),
+        value_from_slot(value, second.get()),
+    ))
+}
+
+/// Whether `predicate`, read in `MaxMin_match`'s normalised direction, selects
+/// `flavor`. Ports the four `Pred_t::match` specialisations.
+fn min_max_predicate_matches(flavor: SelectPatternFlavor, predicate: IntPredicate) -> bool {
+    matches!(
         (flavor, predicate),
         (
             SelectPatternFlavor::SMin,
@@ -1215,21 +1288,16 @@ fn int_min_max_against_constant<'ctx, B: ModuleBrand + 'ctx>(
             SelectPatternFlavor::UMax,
             IntPredicate::Ugt | IntPredicate::Uge
         )
-    );
-    if !wanted {
-        return None;
-    }
-    if left == expected_operand {
-        return int_constant(right);
-    }
-    (right == expected_operand).then(|| int_constant(left))?
+    )
 }
 
 /// The `select(icmp PRED L, R, L, R)` shape `MaxMin_match` looks for: a select
 /// whose condition compares the very values the select returns.
 ///
-/// Returns the operands in *select-arm* order together with the predicate as it
-/// reads in that order, so a caller need only check the predicate family.
+/// Returns the operands as upstream binds them — `L` is the *compare's* first
+/// operand — together with the predicate `MaxMin_match` tests, which is the
+/// compare's own when its left operand is the true arm and the **inverse**
+/// otherwise.
 fn select_over_icmp_of_its_own_arms<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<(Value<'ctx, B>, Value<'ctx, B>, IntPredicate)> {
@@ -1246,9 +1314,9 @@ fn select_over_icmp_of_its_own_arms<'ctx, B: ModuleBrand + 'ctx>(
     let false_value = value_from_slot(value, select.false_val.get());
 
     if compare_lhs == true_value && compare_rhs == false_value {
-        Some((true_value, false_value, compare.predicate))
+        Some((compare_lhs, compare_rhs, compare.predicate))
     } else if compare_lhs == false_value && compare_rhs == true_value {
-        Some((true_value, false_value, compare.predicate.swapped()))
+        Some((compare_lhs, compare_rhs, compare.predicate.inverse()))
     } else {
         None
     }

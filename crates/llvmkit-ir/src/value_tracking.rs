@@ -7,6 +7,10 @@ use crate::analysis::{
     AllAnalysesOnFunction, CFGAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator,
     FunctionAnalysisManager, FunctionAnalysisResult, PrefetchableAnalysis, PreservedAnalyses,
 };
+use crate::assumptions::{
+    AssumptionCache, AssumptionSource, DomConditionCache, find_values_affected_by_condition,
+    is_valid_assume_for_context,
+};
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::cmp_predicate::IntPredicate;
 use crate::constant::{ConstantData, ConstantExprData, ConstantExprOpcode};
@@ -216,6 +220,9 @@ pub struct ValueTrackingQuery<'a, 'ctx, B: ModuleBrand> {
     context_instruction: Option<Value<'ctx, B>>,
     demanded_elements: Option<&'a ApInt>,
     use_instr_info: bool,
+    assumptions: Option<&'a AssumptionCache>,
+    dominating_conditions: Option<&'a DomConditionCache>,
+    condition_context: Option<&'a CondContext<'ctx, B>>,
     cache: QueryCache<'a>,
     _brand: PhantomData<(&'ctx (), B)>,
 }
@@ -230,9 +237,40 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
             context_instruction: None,
             demanded_elements: None,
             use_instr_info: true,
+            assumptions: None,
+            dominating_conditions: None,
+            condition_context: None,
             cache: QueryCache::owned(),
             _brand: PhantomData,
         }
+    }
+
+    /// Let `@llvm.assume` calls refine the answers. Ports `SimplifyQuery::AC`.
+    ///
+    /// Only consulted together with a context instruction — an assumption is a
+    /// fact at a *place*, and without one there is nowhere to check validity.
+    #[inline]
+    pub fn with_assumptions(mut self, assumptions: &'a AssumptionCache) -> Self {
+        self.assumptions = Some(assumptions);
+        self
+    }
+
+    /// Let dominating branch conditions refine the answers. Ports
+    /// `SimplifyQuery::DC`.
+    ///
+    /// Only consulted together with a context instruction and a dominator tree.
+    #[inline]
+    pub fn with_dominating_conditions(mut self, conditions: &'a DomConditionCache) -> Self {
+        self.dominating_conditions = Some(conditions);
+        self
+    }
+
+    /// Assume `context`'s condition holds for the duration of the query. Ports
+    /// `SimplifyQuery::CC`.
+    #[inline]
+    pub fn with_condition_context(mut self, context: &'a CondContext<'ctx, B>) -> Self {
+        self.condition_context = Some(context);
+        self
     }
 
     #[inline]
@@ -289,6 +327,9 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
             context_instruction: self.context_instruction,
             demanded_elements: Some(demanded_elements),
             use_instr_info: self.use_instr_info,
+            assumptions: self.assumptions,
+            dominating_conditions: self.dominating_conditions,
+            condition_context: self.condition_context,
             cache: QueryCache::borrowed(self.cache()),
             _brand: PhantomData,
         }
@@ -322,6 +363,24 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
     #[inline]
     pub fn uses_instruction_info(&self) -> bool {
         self.use_instr_info
+    }
+
+    /// The assumption cache, if one was attached.
+    #[inline]
+    pub fn assumptions(&self) -> Option<&AssumptionCache> {
+        self.assumptions
+    }
+
+    /// The dominating-condition cache, if one was attached.
+    #[inline]
+    pub fn dominating_conditions(&self) -> Option<&DomConditionCache> {
+        self.dominating_conditions
+    }
+
+    /// The injected condition, if one was attached.
+    #[inline]
+    pub fn condition_context(&self) -> Option<&CondContext<'ctx, B>> {
+        self.condition_context
     }
 
     #[inline]
@@ -413,6 +472,11 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
         | ValueKindData::InlineAsm(_) => KnownBits::unknown(width),
     };
     stack.remove(&value.slot());
+
+    // `computeKnownBitsFromContext` strictly refines what the operator walk
+    // found, so upstream runs it after; the same order is kept here.
+    let known = known_bits_from_context(value, known, query, depth);
+
     query.cache().borrow_mut().insert(cache_key, known.clone());
     Ok(known)
 }
@@ -3194,6 +3258,697 @@ fn ptr_to_int_same_size<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let address_space = pointer_addr_space(pointer.ty())?;
     let result_width = value_bit_width(value, query.data_layout())?;
     (result_width == query.data_layout().pointer_size_in_bits(address_space)).then_some(pointer)
+}
+
+// --------------------------------------------------------------------------
+// Context-dependent known bits
+// --------------------------------------------------------------------------
+
+/// A condition a caller wants assumed while a query runs, together with the
+/// values it constrains.
+///
+/// Ports `llvm::CondContext` (`SimplifyQuery.h`). Upstream leaves
+/// `AffectedValues` for the caller to fill; [`Self::new`] fills it by running
+/// [`find_values_affected_by_condition`], which is what upstream's callers do
+/// immediately after constructing one.
+pub struct CondContext<'ctx, B: ModuleBrand> {
+    condition: Value<'ctx, B>,
+    invert: bool,
+    affected_values: HashSet<ValueSlot>,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> CondContext<'ctx, B> {
+    /// Assume `condition` holds, and index the values it constrains.
+    pub fn new(condition: Value<'ctx, B>) -> Self {
+        let mut affected_values = HashSet::new();
+        find_values_affected_by_condition(condition, false, |affected| {
+            affected_values.insert(affected.slot());
+        });
+        Self {
+            condition,
+            invert: false,
+            affected_values,
+        }
+    }
+
+    /// Assume the condition is *false* rather than true. Ports the `Invert`
+    /// field, which upstream sets after construction.
+    #[must_use]
+    pub fn inverted(mut self) -> Self {
+        self.invert = !self.invert;
+        self
+    }
+
+    /// The condition being assumed.
+    pub fn condition(&self) -> Value<'ctx, B> {
+        self.condition
+    }
+
+    /// Whether the condition is assumed false.
+    pub fn is_inverted(&self) -> bool {
+        self.invert
+    }
+
+    /// Whether `value` is one of the values the condition constrains.
+    pub fn affects(&self, value: Value<'ctx, B>) -> bool {
+        self.affected_values.contains(&value.slot())
+    }
+}
+
+/// Merge bits known from context-dependent facts into `known`.
+///
+/// Ports `llvm::computeKnownBitsFromContext`. Three sources feed it, each
+/// attached to the query separately: an injected condition
+/// ([`ValueTrackingQuery::with_condition_context`]), the dominating branch
+/// conditions ([`ValueTrackingQuery::with_dominating_conditions`], which also
+/// needs a dominator tree), and the `@llvm.assume` calls
+/// ([`ValueTrackingQuery::with_assumptions`], which also needs a context
+/// instruction). A query carrying none of them returns `known` unchanged.
+///
+/// Conflicting facts mean the path is unreachable; upstream resets to unknown
+/// rather than propagating a contradiction, and so does this.
+///
+/// One arm is not ported: the operand-bundle alignment refinement, which needs
+/// `getKnowledgeFromBundle` (`llvm/Analysis/AssumeBundleQueries.h`) — see the
+/// [`assumptions`](crate::assumptions) module header. Its absence only leaves
+/// bits unknown.
+pub fn compute_known_bits_from_context<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    known: KnownBits,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> KnownBits {
+    known_bits_from_context(value, known, query, 0)
+}
+
+/// Ports `computeKnownBitsFromContext` at an explicit recursion depth.
+fn known_bits_from_context<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    known: KnownBits,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> KnownBits {
+    let mut known = known;
+
+    // Handle the injected condition.
+    if let Some(context) = query.condition_context()
+        && context.affects(value)
+    {
+        known = known_bits_from_cond(
+            value,
+            context.condition(),
+            known,
+            query,
+            context.is_inverted(),
+            depth,
+        );
+    }
+
+    let Some(context_instruction) = query.context_instruction() else {
+        return known;
+    };
+
+    // Handle dominating conditions.
+    if let (Some(cache), Some(dominator_tree), Some(context_block)) = (
+        query.dominating_conditions(),
+        query.dominator_tree(),
+        parent_block(context_instruction),
+    ) {
+        for branch in cache.conditions_for(value) {
+            let Some(InstructionKindData::Br(data)) = instruction_kind(branch) else {
+                continue;
+            };
+            let (condition, then_block, else_block) = match &*data.kind.borrow() {
+                BranchKind::Unconditional(_) => continue,
+                BranchKind::Conditional {
+                    cond,
+                    then_bb,
+                    else_bb,
+                } => (cond.get(), *then_bb, *else_bb),
+            };
+            let Some(branch_block) = parent_block(branch) else {
+                continue;
+            };
+            let condition = value_from_id(branch, condition);
+            for (successor, invert) in [(then_block, false), (else_block, true)] {
+                if dominator_tree.dominates_edge_slots(branch_block, successor, context_block) {
+                    known = known_bits_from_cond(value, condition, known, query, invert, depth);
+                }
+            }
+        }
+
+        if known.has_conflict() {
+            known = KnownBits::unknown(known.bit_width());
+        }
+    }
+
+    let Some(cache) = query.assumptions() else {
+        return known;
+    };
+    let Ok(context_view) = InstructionView::try_from(context_instruction) else {
+        return known;
+    };
+    let bit_width = known.bit_width();
+    let valid_here = |assume: &InstructionView<'ctx, B>| {
+        is_valid_assume_for_context(assume, &context_view, query.dominator_tree(), false)
+    };
+
+    // Note: the patterns below must be kept in sync with
+    // `find_values_affected_by_condition`, which is what filled the cache.
+    for assumption in cache.assumptions_for(value) {
+        // The operand-bundle half needs `getKnowledgeFromBundle`, which is not
+        // ported; the index is still recorded, so the arm can be filled in
+        // without re-scanning.
+        if assumption.source() != AssumptionSource::Condition {
+            continue;
+        }
+        let Some(assume) = assumption.assume(module_ref(value)) else {
+            continue;
+        };
+        let Some(argument) = assume_argument(assume.to_erased()) else {
+            continue;
+        };
+
+        // Upstream asserts the operand is `i1` in the first three arms.
+        if argument == value && valid_here(&assume) {
+            known.set_all_ones();
+            return known;
+        }
+        if not_operand(argument) == Some(value) && valid_here(&assume) {
+            known.set_all_zero();
+            return known;
+        }
+        if let Some((source, no_unsigned_wrap)) = trunc_source_and_no_unsigned_wrap(argument)
+            && source == value
+            && valid_here(&assume)
+        {
+            if no_unsigned_wrap {
+                return KnownBits::make_constant(ApInt::one_bit_set(bit_width, 0));
+            }
+            known.set_known_one_bit(0);
+            return known;
+        }
+
+        // The remaining tests are all recursive, so bail out at the limit.
+        if depth == query.max_depth() {
+            continue;
+        }
+        if !matches!(
+            instruction_kind(argument),
+            Some(InstructionKindData::ICmp(_))
+        ) {
+            continue;
+        }
+        if !valid_here(&assume) {
+            continue;
+        }
+        known = known_bits_from_int_compare_cond(value, argument, known, query, false);
+    }
+
+    // A conflicting assumption means undefined behaviour on this path.
+    if known.has_conflict() {
+        known = KnownBits::unknown(known.bit_width());
+    }
+    known
+}
+
+/// Adjust `known` for the select arm `arm` with what `condition` implies.
+///
+/// Ports `llvm::adjustKnownBitsForSelectArm`. `invert` picks the false arm.
+///
+/// Upstream's comment on the conflict case is inherited: `(x | 64) < 32 ? (x |
+/// 64) : y` contradicts itself at bit 6, and the select is about to be
+/// simplified away, so the original `known` comes back rather than a
+/// contradiction.
+pub fn adjust_known_bits_for_select_arm<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    known: KnownBits,
+    condition: Value<'ctx, B>,
+    arm: Value<'ctx, B>,
+    invert: bool,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<KnownBits> {
+    // A constant arm is already as good as it gets.
+    if known.is_constant() {
+        return Ok(known);
+    }
+
+    // See what the condition implies about the bits of the arm.
+    let from_condition = known_bits_from_cond(
+        arm,
+        condition,
+        KnownBits::unknown(known.bit_width()),
+        query,
+        invert,
+        1,
+    );
+    if from_condition.is_unknown() {
+        return Ok(known);
+    }
+
+    let merged = from_condition.union_with(&known);
+    if merged.has_conflict() {
+        return Ok(known);
+    }
+
+    // Make sure what was found is valid. Relatively expensive, so left last.
+    if !is_known_not_undef(arm, query)? {
+        return Ok(known);
+    }
+    Ok(merged)
+}
+
+/// Ports `computeKnownBitsFromCond`.
+fn known_bits_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    condition: Value<'ctx, B>,
+    known: KnownBits,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    invert: bool,
+    depth: u32,
+) -> KnownBits {
+    let mut known = known;
+    let bit_width = known.bit_width();
+
+    if depth < query.max_depth()
+        && let Some((a, b, is_and)) = logical_op_parts(condition)
+    {
+        let from_a = known_bits_from_cond(
+            value,
+            a,
+            KnownBits::unknown(bit_width),
+            query,
+            invert,
+            depth + 1,
+        );
+        let from_b = known_bits_from_cond(
+            value,
+            b,
+            KnownBits::unknown(bit_width),
+            query,
+            invert,
+            depth + 1,
+        );
+        // An assumed `and`, or an inverted `or`, gives both legs; the other way
+        // round, only what the two legs agree on.
+        let combined = if invert == is_and {
+            from_a.intersect_with(&from_b)
+        } else {
+            from_a.union_with(&from_b)
+        };
+        return known.union_with(&combined);
+    }
+
+    if matches!(
+        instruction_kind(condition),
+        Some(InstructionKindData::ICmp(_))
+    ) {
+        return known_bits_from_int_compare_cond(value, condition, known, query, invert);
+    }
+
+    if let Some((source, no_unsigned_wrap)) = trunc_source_and_no_unsigned_wrap(condition)
+        && source == value
+    {
+        let mut destination = KnownBits::unknown(1);
+        if invert {
+            destination.set_all_zero();
+        } else {
+            destination.set_all_ones();
+        }
+        let extended = if no_unsigned_wrap {
+            destination.zext(bit_width)
+        } else {
+            destination.anyext(bit_width)
+        };
+        return known.union_with(&extended);
+    }
+
+    if depth < query.max_depth()
+        && let Some(inner) = not_operand(condition)
+    {
+        known = known_bits_from_cond(value, inner, known, query, !invert, depth + 1);
+    }
+    known
+}
+
+/// Ports `computeKnownBitsFromICmpCond`.
+fn known_bits_from_int_compare_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    compare: Value<'ctx, B>,
+    known: KnownBits,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    invert: bool,
+) -> KnownBits {
+    let Some(InstructionKindData::ICmp(data)) = instruction_kind(compare) else {
+        return known;
+    };
+    let predicate = if invert {
+        data.predicate.inverse()
+    } else {
+        data.predicate
+    };
+    let lhs = value_from_id(compare, data.lhs.get());
+    let rhs = value_from_id(compare, data.rhs.get());
+
+    // Handle `icmp pred (trunc V), C`.
+    if let Some((source, no_unsigned_wrap)) = trunc_source_and_no_unsigned_wrap(lhs)
+        && source == value
+    {
+        let destination_width = value_bit_width(lhs, query.data_layout()).unwrap_or(0);
+        let destination = known_bits_from_compare(
+            lhs,
+            predicate,
+            lhs,
+            rhs,
+            KnownBits::unknown(destination_width),
+            query,
+        );
+        let extended = if no_unsigned_wrap {
+            destination.zext(known.bit_width())
+        } else {
+            destination.anyext(known.bit_width())
+        };
+        return known.union_with(&extended);
+    }
+
+    known_bits_from_compare(value, predicate, lhs, rhs, known, query)
+}
+
+/// Ports `computeKnownBitsFromCmp`.
+fn known_bits_from_compare<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    predicate: IntPredicate,
+    lhs: Value<'ctx, B>,
+    rhs: Value<'ctx, B>,
+    known: KnownBits,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> KnownBits {
+    let mut known = known;
+
+    // A pointer compared against null is not covered by the integer logic
+    // below, so upstream gives it its own arm and returns.
+    if matches!(rhs.ty().kind(), TypeKind::Pointer { .. }) {
+        if lhs == value && is_null_pointer(rhs) {
+            match predicate {
+                IntPredicate::Eq => known.set_all_zero(),
+                IntPredicate::Sge | IntPredicate::Sgt => known.make_non_negative(),
+                IntPredicate::Slt => known.make_negative(),
+                _ => {}
+            }
+        }
+        return known;
+    }
+
+    let bit_width = known.bit_width();
+    // Upstream's `m_V` is `m_CombineOr(m_Specific(V), m_PtrToIntSameSize(DL, m_Specific(V)))`.
+    let is_v = |candidate: Value<'ctx, B>| -> bool {
+        candidate == value || ptr_to_int_same_size(candidate, query) == Some(value)
+    };
+    let Some(constant) = argument_constant(Some(rhs)) else {
+        return known;
+    };
+
+    match predicate {
+        IntPredicate::Eq => {
+            if is_v(lhs) {
+                // assume(V = C)
+                known = known.union_with(&KnownBits::make_constant(constant));
+            } else if let Some(other) = commutative_operand_beside(lhs, BitwiseOp::And, &is_v) {
+                // assume(V & Mask = C): one bits in Mask carry C's bits to V.
+                known.add_known_one_bits(&constant);
+                if let Some(mask) = argument_constant(Some(other)) {
+                    known.add_known_zero_bits(&(!constant).bitand(&mask));
+                }
+            } else if let Some(other) = commutative_operand_beside(lhs, BitwiseOp::Or, &is_v) {
+                // assume(V | Mask = C): zero bits in Mask carry C's bits to V.
+                known.add_known_zero_bits(&!constant.clone());
+                if let Some(mask) = argument_constant(Some(other)) {
+                    known.add_known_one_bits(&constant.bitand(&!mask));
+                }
+            } else if let Some(amount) = shift_of_by_constant(lhs, &is_v, ShiftDirection::Left)
+                && amount < bit_width
+            {
+                // assume(V << ShAmt = C): C's known bits move right by ShAmt.
+                let mut shifted = KnownBits::make_constant(constant);
+                shifted >>= amount;
+                known = known.union_with(&shifted);
+            } else if let Some(amount) = shift_of_by_constant(lhs, &is_v, ShiftDirection::Right)
+                && amount < bit_width
+            {
+                // assume(V >> ShAmt = C): C's known bits move left by ShAmt.
+                let mut shifted = KnownBits::make_constant(constant);
+                shifted <<= amount;
+                known = known.union_with(&shifted);
+            }
+        }
+        IntPredicate::Ne => {
+            // assume(V & B != 0) where B is a power of two. Upstream writes
+            // `m_And`, not `m_c_And`, so V must be the left operand.
+            if constant.is_zero()
+                && let Some(InstructionKindData::And(data)) = instruction_kind(lhs)
+                && is_v(value_from_id(lhs, data.lhs.get()))
+                && let Some(mask) = argument_constant(Some(value_from_id(lhs, data.rhs.get())))
+                && mask.is_power_of_2()
+            {
+                known.add_known_one_bits(&mask);
+            }
+        }
+        _ => {
+            let offset = add_like_offset_beside(lhs, &is_v);
+            if is_v(lhs) || offset.is_some() {
+                let mut range = ConstantRange::make_allowed_icmp_region(
+                    predicate,
+                    &ConstantRange::single(constant.clone()),
+                );
+                if let Some(offset) = &offset {
+                    range = range.sub(&ConstantRange::single(offset.clone()));
+                }
+                known = known.union_with(&range.to_known_bits());
+            }
+            if matches!(predicate, IntPredicate::Ugt | IntPredicate::Uge) {
+                // X & Y u> C -> X u> C && Y u> C; X nuw- Y u> C -> X u> C.
+                if commutative_operand_beside(lhs, BitwiseOp::And, &is_v).is_some()
+                    || no_wrap_sub_beside(lhs, &is_v, WrapKind::NoUnsignedWrap)
+                {
+                    let bumped = if predicate == IntPredicate::Ugt {
+                        constant.wrapping_add(&ApInt::one_bit_set(bit_width, 0))
+                    } else {
+                        constant.clone()
+                    };
+                    known.mark_high_bits_one(bumped.count_leading_ones());
+                }
+            }
+            if matches!(predicate, IntPredicate::Ult | IntPredicate::Ule) {
+                // X | Y u< C -> X u< C && Y u< C; X nuw+ Y u< C likewise.
+                if commutative_operand_beside(lhs, BitwiseOp::Or, &is_v).is_some()
+                    || no_wrap_add_beside(lhs, &is_v)
+                {
+                    let lowered = if predicate == IntPredicate::Ult {
+                        constant.wrapping_sub(&ApInt::one_bit_set(bit_width, 0))
+                    } else {
+                        constant.clone()
+                    };
+                    known.mark_high_bits_zero(lowered.count_leading_zeros());
+                }
+            }
+        }
+    }
+    known
+}
+
+/// Which bitwise operator [`commutative_operand_beside`] is looking for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BitwiseOp {
+    And,
+    Or,
+}
+
+/// Which direction [`shift_of_by_constant`] is looking for. `Right` covers both
+/// `lshr` and `ashr`, matching upstream's `m_Shr`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShiftDirection {
+    Left,
+    Right,
+}
+
+/// Which no-wrap flag a matcher requires.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WrapKind {
+    NoUnsignedWrap,
+}
+
+/// The other operand when `value` is `and`/`or` with one operand accepted by
+/// `is_wanted`. Ports `m_c_And(m_V, m_Value(Y))` and its `or` twin.
+fn commutative_operand_beside<'ctx, B, F>(
+    value: Value<'ctx, B>,
+    op: BitwiseOp,
+    is_wanted: &F,
+) -> Option<Value<'ctx, B>>
+where
+    B: ModuleBrand + 'ctx,
+    F: Fn(Value<'ctx, B>) -> bool,
+{
+    let data = match (instruction_kind(value)?, op) {
+        (InstructionKindData::And(data), BitwiseOp::And) => data,
+        (InstructionKindData::Or(data), BitwiseOp::Or) => data,
+        _ => return None,
+    };
+    let lhs = value_from_id(value, data.lhs.get());
+    let rhs = value_from_id(value, data.rhs.get());
+    if is_wanted(lhs) {
+        return Some(rhs);
+    }
+    is_wanted(rhs).then_some(lhs)
+}
+
+/// The shift amount when `value` shifts an operand accepted by `is_wanted` by a
+/// constant. Ports `m_Shl(m_V, m_ConstantInt(ShAmt))` and `m_Shr`.
+fn shift_of_by_constant<'ctx, B, F>(
+    value: Value<'ctx, B>,
+    is_wanted: &F,
+    direction: ShiftDirection,
+) -> Option<u32>
+where
+    B: ModuleBrand + 'ctx,
+    F: Fn(Value<'ctx, B>) -> bool,
+{
+    let data = match (instruction_kind(value)?, direction) {
+        (InstructionKindData::Shl(data), ShiftDirection::Left) => data,
+        (
+            InstructionKindData::LShr(data) | InstructionKindData::AShr(data),
+            ShiftDirection::Right,
+        ) => data,
+        _ => return None,
+    };
+    if !is_wanted(value_from_id(value, data.lhs.get())) {
+        return None;
+    }
+    let amount = argument_constant(Some(value_from_id(value, data.rhs.get())))?;
+    // Upstream's `m_ConstantInt(ShAmt)` binds a `uint64_t`; the callers compare
+    // it against the bit width, so saturating at `u32::MAX` cannot flip an arm.
+    u32::try_from(amount.limited_value(u64::from(u32::MAX))).ok()
+}
+
+/// The constant offset when `value` is `add`/`or disjoint` of an operand
+/// accepted by `is_wanted` and a constant. Ports
+/// `m_AddLike(m_V, m_APInt(Offset))`.
+fn add_like_offset_beside<'ctx, B, F>(value: Value<'ctx, B>, is_wanted: &F) -> Option<ApInt>
+where
+    B: ModuleBrand + 'ctx,
+    F: Fn(Value<'ctx, B>) -> bool,
+{
+    let data = match instruction_kind(value)? {
+        InstructionKindData::Add(data) => data,
+        InstructionKindData::Or(data) if data.disjoint => data,
+        _ => return None,
+    };
+    is_wanted(value_from_id(value, data.lhs.get()))
+        .then(|| argument_constant(Some(value_from_id(value, data.rhs.get()))))?
+}
+
+/// Whether `value` is `sub nuw` with an operand accepted by `is_wanted` on the
+/// left. Ports `m_NUWSub(m_V, m_Value())`.
+fn no_wrap_sub_beside<'ctx, B, F>(value: Value<'ctx, B>, is_wanted: &F, wrap: WrapKind) -> bool
+where
+    B: ModuleBrand + 'ctx,
+    F: Fn(Value<'ctx, B>) -> bool,
+{
+    let Some(InstructionKindData::Sub(data)) = instruction_kind(value) else {
+        return false;
+    };
+    let flagged = match wrap {
+        WrapKind::NoUnsignedWrap => data.no_unsigned_wrap,
+    };
+    flagged && is_wanted(value_from_id(value, data.lhs.get()))
+}
+
+/// Whether `value` is `add nuw` with an operand accepted by `is_wanted` on
+/// either side. Ports `m_c_NUWAdd(m_V, m_Value())`.
+fn no_wrap_add_beside<'ctx, B, F>(value: Value<'ctx, B>, is_wanted: &F) -> bool
+where
+    B: ModuleBrand + 'ctx,
+    F: Fn(Value<'ctx, B>) -> bool,
+{
+    let Some(InstructionKindData::Add(data)) = instruction_kind(value) else {
+        return false;
+    };
+    data.no_unsigned_wrap
+        && (is_wanted(value_from_id(value, data.lhs.get()))
+            || is_wanted(value_from_id(value, data.rhs.get())))
+}
+
+/// The two operands of a logical `and`/`or`, and which of the two it is.
+///
+/// Ports `m_LogicalOp`: the bitwise spelling on an `i1`, or the poison-blocking
+/// `select` spelling — `L ? R : false` for `and`, `L ? true : R` for `or`.
+fn logical_op_parts<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<(Value<'ctx, B>, Value<'ctx, B>, bool)> {
+    if !matches!(scalar_type_kind(value), Some(TypeKind::Integer { bits: 1 })) {
+        return None;
+    }
+    match instruction_kind(value)? {
+        InstructionKindData::And(data) => Some((
+            value_from_id(value, data.lhs.get()),
+            value_from_id(value, data.rhs.get()),
+            true,
+        )),
+        InstructionKindData::Or(data) => Some((
+            value_from_id(value, data.lhs.get()),
+            value_from_id(value, data.rhs.get()),
+            false,
+        )),
+        InstructionKindData::Select(data) => {
+            let condition = value_from_id(value, data.cond.get());
+            // Don't match a scalar select of bool vectors.
+            if condition.ty().id() != value.ty().id() {
+                return None;
+            }
+            let true_value = value_from_id(value, data.true_val.get());
+            let false_value = value_from_id(value, data.false_val.get());
+            if argument_constant(Some(false_value)).is_some_and(|c| c.is_zero()) {
+                return Some((condition, true_value, true));
+            }
+            argument_constant(Some(true_value))
+                .is_some_and(|c| c.is_all_ones())
+                .then_some((condition, false_value, false))
+        }
+        _ => None,
+    }
+}
+
+/// The source of a `trunc` and whether it carries `nuw`. Ports the
+/// `dyn_cast<TruncInst>` / `hasNoUnsignedWrap` pair.
+fn trunc_source_and_no_unsigned_wrap<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<(Value<'ctx, B>, bool)> {
+    let InstructionKindData::Cast(data) = instruction_kind(value)? else {
+        return None;
+    };
+    (data.kind == CastOpcode::Trunc).then(|| (value_from_id(value, data.src.get()), data.nuw.get()))
+}
+
+/// The condition operand of an `@llvm.assume`.
+fn assume_argument<'ctx, B: ModuleBrand + 'ctx>(assume: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+    let InstructionKindData::Call(data) = instruction_kind(assume)? else {
+        return None;
+    };
+    Some(value_from_id(assume, data.args.first()?.get()))
+}
+
+/// Whether `value` is the null pointer constant. Ports `m_Zero` at pointer type.
+fn is_null_pointer<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+    matches!(
+        value.data().kind,
+        ValueKindData::Constant(ConstantData::PointerNull)
+    )
+}
+
+/// The kind of the value's scalar type, peeling one vector layer.
+fn scalar_type_kind<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<TypeKind> {
+    let ty = value.ty();
+    Some(match ty.data().as_vector() {
+        Some((element, _, _)) => Type::new(element, ty.module()).kind(),
+        None => ty.kind(),
+    })
 }
 
 // --------------------------------------------------------------------------

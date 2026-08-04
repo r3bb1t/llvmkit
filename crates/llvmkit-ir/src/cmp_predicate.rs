@@ -43,6 +43,224 @@ impl From<FloatPredicate> for CmpPredicate {
     }
 }
 
+/// A comparison predicate together with the `samesign` flag of the `icmp` it
+/// came from.
+///
+/// Ports `llvm::CmpPredicate` (`CmpPredicate.h`), which is a `Predicate` plus
+/// one `bool`. llvmkit's [`CmpPredicate`] is the same int-or-float union
+/// *without* the flag; the two are separate types because `samesign` is
+/// meaningless on an `fcmp` and every operation that reads it — [`Self::matching`],
+/// [`Self::preferred_signed_predicate`], [`Self::drop_same_sign`] — is
+/// integer-only.
+///
+/// A predicate with the flag set claims both operands carry the same sign, so
+/// the signed and unsigned readings of the comparison agree. That is what lets
+/// [`Self::matching`] pair a signed predicate with its unsigned twin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PredicateWithSameSign {
+    predicate: CmpPredicate,
+    same_sign: bool,
+}
+
+impl PredicateWithSameSign {
+    /// An integer predicate with no `samesign` claim.
+    #[inline]
+    pub const fn int(predicate: IntPredicate) -> Self {
+        Self {
+            predicate: CmpPredicate::Int(predicate),
+            same_sign: false,
+        }
+    }
+
+    /// An integer predicate whose `icmp` carried `samesign`.
+    #[inline]
+    pub const fn int_same_sign(predicate: IntPredicate) -> Self {
+        Self {
+            predicate: CmpPredicate::Int(predicate),
+            same_sign: true,
+        }
+    }
+
+    /// A floating-point predicate. `samesign` never applies.
+    #[inline]
+    pub const fn float(predicate: FloatPredicate) -> Self {
+        Self {
+            predicate: CmpPredicate::Float(predicate),
+            same_sign: false,
+        }
+    }
+
+    /// The predicate, without the flag.
+    #[inline]
+    pub const fn predicate(self) -> CmpPredicate {
+        self.predicate
+    }
+
+    /// The integer predicate, or `None` for a floating-point one.
+    #[inline]
+    pub const fn as_int(self) -> Option<IntPredicate> {
+        match self.predicate {
+            CmpPredicate::Int(predicate) => Some(predicate),
+            CmpPredicate::Float(_) => None,
+        }
+    }
+
+    /// The floating-point predicate, or `None` for an integer one.
+    #[inline]
+    pub const fn as_float(self) -> Option<FloatPredicate> {
+        match self.predicate {
+            CmpPredicate::Float(predicate) => Some(predicate),
+            CmpPredicate::Int(_) => None,
+        }
+    }
+
+    /// Whether the originating `icmp` carried `samesign`.
+    ///
+    /// Ports `CmpPredicate::hasSameSign`.
+    #[inline]
+    pub const fn has_same_sign(self) -> bool {
+        self.same_sign
+    }
+
+    /// The bare predicate, discarding any `samesign` claim.
+    ///
+    /// Ports `CmpPredicate::dropSameSign`.
+    #[inline]
+    pub const fn drop_same_sign(self) -> CmpPredicate {
+        self.predicate
+    }
+
+    /// Under `samesign`, the signed reading of the predicate; otherwise the
+    /// predicate unchanged.
+    ///
+    /// Ports `CmpPredicate::getPreferredSignedPredicate`, whose body is
+    /// `HasSameSign ? ICmpInst::getSignedPredicate(Pred) : Pred`.
+    #[inline]
+    pub const fn preferred_signed_predicate(self) -> CmpPredicate {
+        match self.predicate {
+            CmpPredicate::Int(predicate) if self.same_sign => {
+                CmpPredicate::Int(predicate.signed_predicate())
+            }
+            other => other,
+        }
+    }
+
+    /// The predicate both `a` and `b` can be read as, if there is one.
+    ///
+    /// Ports `CmpPredicate::getMatching`. Equal predicates match, keeping the
+    /// flag only when both carry it; otherwise a `samesign` predicate matches
+    /// its opposite-signedness twin, which is exactly what the flag licenses.
+    /// Floating-point predicates only ever match themselves.
+    #[inline]
+    pub fn matching(a: Self, b: Self) -> Option<Self> {
+        if a.predicate == b.predicate {
+            return Some(if a.same_sign == b.same_sign {
+                a
+            } else {
+                Self {
+                    predicate: a.predicate,
+                    same_sign: false,
+                }
+            });
+        }
+        let (CmpPredicate::Int(a_int), CmpPredicate::Int(b_int)) = (a.predicate, b.predicate)
+        else {
+            return None;
+        };
+        if a.same_sign && a_int == b_int.flip_signedness() {
+            return Some(Self::int(b_int));
+        }
+        if b.same_sign && b_int == a_int.flip_signedness() {
+            return Some(Self::int(a_int));
+        }
+        None
+    }
+
+    /// Whether `first` being true forces `second` to be true, false, or neither,
+    /// for two comparisons over the *same* operands.
+    ///
+    /// Ports `ICmpInst::isImpliedByMatchingCmp` together with the two static
+    /// helpers it delegates to, `isImpliedTrueByMatchingCmp` and
+    /// `isImpliedFalseByMatchingCmp` (`Instructions.cpp`) — the latter is the
+    /// former against the inverse of `second`.
+    #[inline]
+    pub fn implied_by_matching_comparison(first: Self, second: Self) -> Option<bool> {
+        if Self::implied_true_by_matching(first, second) {
+            return Some(true);
+        }
+        if Self::implied_true_by_matching(first, second.inverse()) {
+            return Some(false);
+        }
+        None
+    }
+
+    /// The inverse predicate, keeping the `samesign` claim — inverting a
+    /// comparison does not change what its operands' signs are.
+    #[inline]
+    pub const fn inverse(self) -> Self {
+        let predicate = match self.predicate {
+            CmpPredicate::Int(predicate) => CmpPredicate::Int(predicate.inverse()),
+            CmpPredicate::Float(predicate) => CmpPredicate::Float(predicate.inverse()),
+        };
+        Self {
+            predicate,
+            same_sign: self.same_sign,
+        }
+    }
+
+    /// The predicate yielded by swapping the comparison's operands, keeping the
+    /// `samesign` claim.
+    #[inline]
+    pub const fn swapped(self) -> Self {
+        let predicate = match self.predicate {
+            CmpPredicate::Int(predicate) => CmpPredicate::Int(predicate.swapped()),
+            CmpPredicate::Float(predicate) => CmpPredicate::Float(predicate.swapped()),
+        };
+        Self {
+            predicate,
+            same_sign: self.same_sign,
+        }
+    }
+
+    /// Ports `isImpliedTrueByMatchingCmp`.
+    fn implied_true_by_matching(mut first: Self, mut second: Self) -> bool {
+        // Matching predicates: the first condition makes the second true.
+        if Self::matching(first, second).is_some() {
+            return true;
+        }
+
+        // Under `samesign`, read whichever side carries the flag in the other
+        // side's signedness so the table below can compare like with like.
+        if let (Some(first_int), Some(second_int)) = (first.as_int(), second.as_int()) {
+            if first.same_sign && second_int.is_signed() {
+                first = Self::int(first_int.flip_signedness());
+            } else if second.same_sign && first_int.is_signed() {
+                second = Self::int(second_int.flip_signedness());
+            }
+        }
+
+        let (Some(first), Some(second)) = (first.as_int(), second.as_int()) else {
+            return false;
+        };
+        match first {
+            // A == B implies A >=u B, A <=u B, A >=s B and A <=s B.
+            IntPredicate::Eq => matches!(
+                second,
+                IntPredicate::Uge | IntPredicate::Ule | IntPredicate::Sge | IntPredicate::Sle
+            ),
+            // A >u B implies A != B and A >=u B.
+            IntPredicate::Ugt => matches!(second, IntPredicate::Ne | IntPredicate::Uge),
+            // A <u B implies A != B and A <=u B.
+            IntPredicate::Ult => matches!(second, IntPredicate::Ne | IntPredicate::Ule),
+            // A >s B implies A != B and A >=s B.
+            IntPredicate::Sgt => matches!(second, IntPredicate::Ne | IntPredicate::Sge),
+            // A <s B implies A != B and A <=s B.
+            IntPredicate::Slt => matches!(second, IntPredicate::Ne | IntPredicate::Sle),
+            _ => false,
+        }
+    }
+}
+
 /// Floating-point comparison predicate.
 ///
 /// Discriminants (0..15) match LLVM's `FCMP_*` exactly; bit pattern is
@@ -393,6 +611,19 @@ impl IntPredicate {
             Self::Ult => Self::Ugt,
             Self::Uge => Self::Ule,
             Self::Ule => Self::Uge,
+        }
+    }
+
+    /// The signed reading of this predicate; `eq`/`ne` and the already-signed
+    /// predicates are returned unchanged. Mirrors `ICmpInst::getSignedPredicate`.
+    #[inline]
+    pub const fn signed_predicate(self) -> Self {
+        match self {
+            Self::Ugt => Self::Sgt,
+            Self::Ult => Self::Slt,
+            Self::Uge => Self::Sge,
+            Self::Ule => Self::Sle,
+            other => other,
         }
     }
 

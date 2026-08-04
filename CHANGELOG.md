@@ -7,6 +7,65 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ValueTracking: assumptions and implied conditions (tranche 8)
+
+#### Added
+
+- `assumptions.rs` — the `@llvm.assume` slice. `find_values_affected_by_condition`,
+  `is_valid_assume_for_context` and `will_not_free_between` port
+  `ValueTracking.h`'s three entry points; `AssumptionCache` and
+  `DomConditionCache` port `llvm/Analysis/AssumptionCache.h` and
+  `llvm/Analysis/DomConditionCache.h`, which exist only to answer "which
+  assumes / branches mention this value" and are built by calling the first.
+  `Assumption` and `AssumptionSource` are the `ResultElem` pair, with
+  upstream's `ExprResultIdx` sentinel spelled as a variant.
+- `implied_conditions.rs` — `is_implied_condition` and
+  `is_implied_by_dom_condition`, each in both the whole-condition and the
+  decomposed spelling upstream declares, over the full static machinery:
+  `isImpliedCondICmps`, `isImpliedCondFCmps`, `isImpliedCondAndOr`,
+  `isImpliedCondCommonOperandWithCR`, `isImpliedCondOperands`,
+  `isTruePredicate` and `getDomPredecessorCondition`.
+- `compute_known_bits_from_context` and `adjust_known_bits_for_select_arm`,
+  together with the `computeKnownBitsFromCond` / `computeKnownBitsFromICmpCond`
+  / `computeKnownBitsFromCmp` chain they rest on. `compute_known_bits` now runs
+  the context refinement where upstream does — after the operator walk — so
+  every existing known-bits caller gets assumption- and branch-driven facts by
+  attaching them to the query.
+- `ValueTrackingQuery::{with_assumptions, with_dominating_conditions,
+  with_condition_context}` and their accessors, porting `SimplifyQuery`'s `AC`,
+  `DC` and `CC` fields. `CondContext` is the injected-condition vehicle.
+- `PredicateWithSameSign` — upstream's `CmpPredicate` (`CmpPredicate.h`): a
+  predicate plus the `samesign` flag its `icmp` carried, with `matching`,
+  `preferred_signed_predicate`, `drop_same_sign` and
+  `implied_by_matching_comparison` (`ICmpInst::isImpliedByMatchingCmp`).
+  llvmkit's existing `CmpPredicate` stays the flag-less int-or-float union.
+- `IntPredicate::signed_predicate`, porting `ICmpInst::getSignedPredicate`.
+
+#### Fixed
+
+- The integer min/max matcher behind `matchClamp` (tranche 4b) matched only the
+  `select(icmp …)` spelling and accepted its operands in either order.
+  Upstream's `MaxMin_match` also matches a direct `llvm.smin`/`smax`/`umin`/`umax`
+  call, and `m_SMin` — as distinct from `m_c_SMin` — is not commutative. Both
+  are corrected, and the select arm now binds operands in upstream's order (the
+  *compare's*, with the predicate inverted rather than swapped when the true arm
+  is the compare's right-hand side).
+
+Two arms are narrower than upstream, each recorded at its site.
+`computeKnownBitsFromContext`'s operand-bundle alignment refinement needs
+`getKnowledgeFromBundle` (`llvm/Analysis/AssumeBundleQueries.h`), which is not
+ported — `AssumptionCache` still records the bundle indices, so the arm can be
+filled in without re-scanning. `isImpliedCondFCmps`'s constant-versus-constant
+conclusion needs `ConstantFPRange`, which llvmkit does not model. Both omissions
+only leave an answer weaker.
+
+Where upstream builds a `ConstantInt::get(V->getType(), 0)` to feed the two
+`m_NUWTrunc` arms of `isImpliedCondition`, llvmkit passes a bare `ApInt`
+alongside the values instead: minting a constant would mean an analysis editing
+the IR it was asked about. Operand equality follows LLVM's constant uniquing —
+a literal equals a constant value holding the same bits — rather than raw value
+identity.
+
 ### ValueTracking: select-pattern matching (tranche 4b)
 
 #### Added

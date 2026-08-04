@@ -61,6 +61,7 @@ pub mod ap_int;
 pub mod argument;
 pub mod array_len;
 pub mod asm_writer;
+pub mod assumptions;
 pub mod atomic_ordering;
 pub mod atomicrmw_binop;
 pub mod attribute_mask;
@@ -96,6 +97,7 @@ pub mod global_alias;
 pub mod global_ifunc;
 pub mod global_value;
 pub mod global_variable;
+pub mod implied_conditions;
 pub mod inline_asm;
 pub mod inst_simplify;
 pub mod instr_types;
@@ -174,7 +176,7 @@ pub use block_state::{BlockTerminationState, Terminated, Unterminated};
 pub use calling_conv::CallingConv;
 pub use cfg::{BasicBlockEdge, FunctionCfg};
 pub use cfg_update::{CfgEdge, CfgUpdate};
-pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
+pub use cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate, PredicateWithSameSign};
 pub use comdat::{ComdatRef, SelectionKind};
 pub use constant::{
     BlockAddressPlaceholder, Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode,
@@ -364,7 +366,15 @@ pub use float_kind::{
 // `f32`/`f64` are std types — no re-export needed.
 
 pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
+pub use assumptions::{
+    Assumption, AssumptionCache, AssumptionSource, DomConditionCache,
+    find_values_affected_by_condition, is_valid_assume_for_context, will_not_free_between,
+};
 pub use element::{ElemDyn, StaticVecElem, VecElem, WrapWitness};
+pub use implied_conditions::{
+    is_implied_by_dom_condition, is_implied_by_dom_condition_decomposed, is_implied_condition,
+    is_implied_condition_decomposed,
+};
 pub use int_width::{
     IntDyn, IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth, WiderThan, Width,
 };
@@ -394,10 +404,12 @@ pub use speculation::{
     program_undefined_if_undef_or_poison,
 };
 pub use value_tracking::{
-    KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery,
-    can_create_poison, can_create_undef_or_poison, compute_constant_range,
-    compute_constant_range_including_known_bits, compute_known_bits, compute_max_significant_bits,
-    compute_num_sign_bits, compute_overflow_for_signed_add, compute_overflow_for_signed_mul,
+    CondContext, KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH,
+    ValueTrackingQuery, adjust_known_bits_for_select_arm, can_create_poison,
+    can_create_undef_or_poison, compute_constant_range,
+    compute_constant_range_including_known_bits, compute_known_bits,
+    compute_known_bits_from_context, compute_max_significant_bits, compute_num_sign_bits,
+    compute_overflow_for_signed_add, compute_overflow_for_signed_mul,
     compute_overflow_for_signed_sub, compute_overflow_for_unsigned_add,
     compute_overflow_for_unsigned_mul, compute_overflow_for_unsigned_sub, have_no_common_bits_set,
     implies_poison, is_known_inversion, is_known_negation, is_known_negative, is_known_non_equal,

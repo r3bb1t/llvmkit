@@ -1073,6 +1073,43 @@ fn may_read_or_write_memory<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
+/// Ports `Instruction::mayWriteToMemory`.
+fn may_write_to_memory<'ctx, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    kind: &InstructionKindData,
+) -> bool {
+    match kind {
+        // Upstream's `FIXME: refine definition of mayWriteToMemory` sits on the
+        // `fence` arm; the conservative answer is inherited with it.
+        InstructionKindData::Fence(_)
+        | InstructionKindData::Store(_)
+        | InstructionKindData::VAArg(_)
+        | InstructionKindData::AtomicCmpXchg(_)
+        | InstructionKindData::AtomicRMW(_)
+        | InstructionKindData::CatchPad(_)
+        | InstructionKindData::CatchReturn(_) => true,
+        InstructionKindData::Call(_)
+        | InstructionKindData::Invoke(_)
+        | InstructionKindData::CallBr(_) => {
+            let Some(call) = call_parts(kind) else {
+                return true;
+            };
+            !call_site_memory_effects(anchor, call.callee.get(), call.attrs).only_reads_memory()
+        }
+        InstructionKindData::Load(data) => !is_unordered(data.ordering, data.volatile),
+        _ => false,
+    }
+}
+
+/// Ports `Instruction::mayHaveSideEffects`, which is `mayWriteToMemory() ||
+/// mayThrow() || !willReturn()`.
+pub(crate) fn instruction_may_have_side_effects<'ctx, B: ModuleBrand + 'ctx>(
+    anchor: Value<'ctx, B>,
+    kind: &InstructionKindData,
+) -> bool {
+    may_write_to_memory(anchor, kind) || may_throw(anchor, kind) || !will_return(anchor, kind)
+}
+
 // --------------------------------------------------------------------------
 // Small shared helpers
 // --------------------------------------------------------------------------

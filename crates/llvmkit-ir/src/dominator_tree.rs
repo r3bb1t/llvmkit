@@ -282,7 +282,7 @@ impl DominatorTree {
             return false;
         }
         if let Some(normal_dest) = self.normal_dest.get(&def_id).copied() {
-            return self.dominates_edge_ids(def_bb.slot(), normal_dest, use_bb_id);
+            return self.dominates_edge_slots(def_bb.slot(), normal_dest, use_bb_id);
         }
         self.dominates_block_ids(def_bb.slot(), use_bb_id)
     }
@@ -331,7 +331,7 @@ impl DominatorTree {
         EB: ModuleBrand + 'ctx,
         B: DominatorTreeBlock<'ctx>,
     {
-        self.dominates_edge_ids(
+        self.dominates_edge_slots(
             edge.start().slot(),
             edge.end().slot(),
             block.dominator_block_id(),
@@ -378,10 +378,12 @@ impl DominatorTree {
             return true;
         }
         let use_bb_id = self.use_block_id(user_id, use_index);
-        self.dominates_edge_ids(start_id, end_id, use_bb_id)
+        self.dominates_edge_slots(start_id, end_id, use_bb_id)
     }
 
-    fn dominates_edge_ids(
+    /// Edge dominance over raw slots. Ports the `BasicBlockEdge` overload of
+    /// `DominatorTree::dominates` once the edge is already in hand.
+    pub(crate) fn dominates_edge_slots(
         &self,
         start_id: ValueSlot,
         end_id: ValueSlot,
