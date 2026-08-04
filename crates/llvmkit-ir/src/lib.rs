@@ -123,6 +123,7 @@ pub mod pass_pipeline;
 pub(crate) mod phi_check;
 #[cfg(test)]
 mod phi_raw_tests;
+pub mod pointer_analysis;
 pub mod select_pattern;
 pub mod speculation;
 pub mod ssa_builder;
@@ -366,6 +367,16 @@ pub use array_len::{ArrLen, ArrLenDyn, ArrayLen, StaticArrayLen};
 pub use element::{ElemDyn, StaticVecElem, VecElem, WrapWitness};
 pub use int_width::{
     IntDyn, IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth, WiderThan, Width,
+};
+pub use pointer_analysis::{
+    BytewiseValue, ConstantDataArraySlice, MAX_LOOKUP_SEARCH_DEPTH,
+    argument_aliasing_to_returned_pointer, find_alloca_for_value, find_inserted_value,
+    get_constant_data_array_info, get_constant_string_info, get_string_length,
+    get_underlying_object, get_underlying_object_aggressive, get_underlying_objects,
+    get_underlying_objects_for_code_gen, is_bytewise_value,
+    is_intrinsic_returning_pointer_aliasing_argument_without_capturing,
+    only_used_by_lifetime_markers, only_used_by_lifetime_markers_or_droppable_instructions,
+    pointer_base_with_constant_offset,
 };
 pub use select_pattern::{
     MinMaxIntrinsic, SelectPatternFlavor, SelectPatternNaNBehavior, SelectPatternResult,

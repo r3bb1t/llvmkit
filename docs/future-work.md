@@ -72,14 +72,14 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 
 ## ValueTracking.h — remaining tranches, and the order to take them
 
-**Status after tranche 6 (2026-08-03):** 53 of 101 entry points modeled, 48
+**Status after tranche 5 (2026-08-03):** 69 of 101 entry points modeled, 32
 gaps, all symbol-keyed in `crates/llvmkit-ir/tests/value_tracking_parity.rs`
 and asserted to sum to the audited surface.
 
 | Tranche | Left | Note |
 |---|---|---|
 | 4b select matching | 3 | `matchSelectPattern`, `matchDecomposedSelectPattern`, `canConvertToMinOrMaxIntrinsic` — the vocabulary (4a) is done |
-| 5 pointer/object | 16 | needs pointer-cast stripping and constant-data-array reads |
+| ~~5 pointer/object~~ | 0 | **done** — `crates/llvmkit-ir/src/pointer_analysis.rs` |
 | ~~6 speculation/UB~~ | 0 | **done** — `crates/llvmkit-ir/src/speculation.rs` |
 | 7 FP class | 11 | the only tranche needing a new *lattice* rather than a new consumer |
 | 8 assumptions | 4 | needs `@llvm.assume` modeled first |
@@ -136,6 +136,26 @@ Two things tranche 6 turned up that are worth carrying forward:
   takes a `const Loop *` and reads exactly one thing out of it,
   `L->getHeader()`, so llvmkit takes the header block directly. Check what a
   blocked-looking signature actually *reads* before recording it as blocked.
+  Tranche 5 repeated the lesson: `getUnderlyingObjects` takes a `LoopInfo` for
+  one refinement and behaves fine without it, because `LI == nullptr` is
+  upstream's own default.
+
+### Found while porting tranche 5
+
+- **`CallBase::getReturnedArgOperand` reads the callee's parameter attributes,
+  not just the call site's.** `declare ptr @f(ptr returned)` puts `returned` on
+  the *declaration*; a call that does not repeat it still returns its argument.
+  `pointer_analysis.rs` ports both halves — an upstream fixture caught the
+  missing one — but `value_tracking.rs`'s own `returned_arg_operand` still
+  reads only what its caller hands it, which is the call site's `arg_attrs`.
+  Same shortfall, different function; closing it would sharpen the `returned`
+  arm of `call_known_bits`.
+- **Constant uniquing does work that upstream's pointer identity does for
+  free.** `isBytewiseValue` compares against a single `UndefValue::get(i8)`
+  sentinel by pointer, which works because LLVM uniques constants. llvmkit
+  names the sentinel up front instead (`ConstantData::Undef` before the `i8`
+  arm). Any port that leans on `==` between `Value *`s deserves the same
+  check.
 
 The full working spec — upstream anchors, settled design decisions, the
 surface-audit recipe, and the traps already hit — is at

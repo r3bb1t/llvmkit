@@ -7,6 +7,39 @@ cut, entries accumulate under **Unreleased**.
 
 ## [Unreleased]
 
+### ValueTracking: pointer and object analysis (tranche 5)
+
+#### Added
+
+- `pointer_analysis.rs` — a new module for the `getUnderlyingObject` /
+  `findAllocaForValue` / `getConstantDataArrayInfo` slice of
+  `ValueTracking.cpp`. Sixteen entry points: `get_underlying_object`,
+  `get_underlying_object_aggressive`, `get_underlying_objects`,
+  `get_underlying_objects_for_code_gen`, `pointer_base_with_constant_offset`,
+  `find_alloca_for_value`, `only_used_by_lifetime_markers`,
+  `only_used_by_lifetime_markers_or_droppable_instructions`,
+  `argument_aliasing_to_returned_pointer`,
+  `is_intrinsic_returning_pointer_aliasing_argument_without_capturing`,
+  `get_constant_data_array_info`, `get_constant_string_info`,
+  `get_string_length`, `is_bytewise_value`, `find_inserted_value`, and the
+  `ConstantDataArraySlice` those last few read through.
+- `BytewiseValue` — what `isBytewiseValue` found. Upstream returns a `Value *`
+  because it can mint an `i8` constant; minting is a module mutation, so this
+  returns the byte, the "any byte will do" answer, or the `i8` value upstream's
+  first arm hands straight back.
+
+Six of upstream's spellings become `Option` here, each because the `None`
+carries information a `bool` plus an out-parameter does not:
+`getUnderlyingObjectsForCodeGen` (which clears its out-parameter on failure),
+`getConstantDataArrayInfo`, `getConstantStringInfo`, `GetStringLength` (whose
+`0` means "cannot tell", not a length), `findAllocaForValue` (whose two failure
+modes both leave the caller without an alloca), and
+`ConstantDataArraySlice::move` (whose `assert(Delta < Length)` guards a caller
+precondition).
+
+`GetPointerBaseWithConstantOffset` returns the base and offset as a pair rather
+than writing the offset through a reference, so the two cannot drift apart.
+
 ### ValueTracking: speculation safety and UB reachability (tranche 6)
 
 #### Added

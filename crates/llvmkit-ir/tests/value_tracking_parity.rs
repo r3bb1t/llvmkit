@@ -257,6 +257,13 @@ const KNOWN_BITS_PRIVATE_UPSTREAM: &[(&str, &str)] = &[
 const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("ComputeMaxSignificantBits", "compute_max_significant_bits"),
     ("ComputeNumSignBits", "compute_num_sign_bits"),
+    ("ConstantDataArraySlice", "ConstantDataArraySlice"),
+    ("FindInsertedValue", "find_inserted_value"),
+    (
+        "GetPointerBaseWithConstantOffset",
+        "pointer_base_with_constant_offset",
+    ),
+    ("GetStringLength", "get_string_length"),
     ("MaskedValueIsZero", "masked_value_is_zero"),
     ("OverflowResult", "OverflowResult"),
     ("SelectPatternFlavor", "SelectPatternFlavor"),
@@ -294,6 +301,13 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "computeOverflowForUnsignedSub",
         "compute_overflow_for_unsigned_sub",
     ),
+    ("findAllocaForValue", "find_alloca_for_value"),
+    (
+        "getArgumentAliasingToReturnedPointer",
+        "argument_aliasing_to_returned_pointer",
+    ),
+    ("getConstantDataArrayInfo", "get_constant_data_array_info"),
+    ("getConstantStringInfo", "get_constant_string_info"),
     (
         "getInverseMinMaxFlavor",
         "SelectPatternFlavor::inverse_min_max",
@@ -305,10 +319,21 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("getMinMaxLimit", "SelectPatternFlavor::min_max_limit"),
     ("getMinMaxPred", "SelectPatternFlavor::min_max_predicate"),
     ("getSelectPattern", "get_select_pattern"),
+    ("getUnderlyingObject", "get_underlying_object"),
+    (
+        "getUnderlyingObjectAggressive",
+        "get_underlying_object_aggressive",
+    ),
+    ("getUnderlyingObjects", "get_underlying_objects"),
+    (
+        "getUnderlyingObjectsForCodeGen",
+        "get_underlying_objects_for_code_gen",
+    ),
     ("haveNoCommonBitsSet", "have_no_common_bits_set"),
     ("impliesPoison", "implies_poison"),
     ("intrinsicPropagatesPoison", "intrinsic_propagates_poison"),
     ("isAssumeLikeIntrinsic", "is_assume_like_intrinsic"),
+    ("isBytewiseValue", "is_bytewise_value"),
     ("isGuaranteedNotToBePoison", "is_known_not_poison"),
     ("isGuaranteedNotToBeUndef", "is_known_not_undef"),
     (
@@ -322,6 +347,10 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     (
         "isGuaranteedToTransferExecutionToSuccessor",
         "is_guaranteed_to_transfer_execution_to_successor / block_transfers_execution_to_successor / instructions_transfer_execution_to_successor",
+    ),
+    (
+        "isIntrinsicReturningPointerAliasingArgumentWithoutCapturing",
+        "is_intrinsic_returning_pointer_aliasing_argument_without_capturing",
     ),
     ("isKnownInversion", "is_known_inversion"),
     ("isKnownNegation", "is_known_negation"),
@@ -362,6 +391,11 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "must_execute_ub_if_poison_on_path_to",
     ),
     ("mustTriggerUB", "must_trigger_ub"),
+    ("onlyUsedByLifetimeMarkers", "only_used_by_lifetime_markers"),
+    (
+        "onlyUsedByLifetimeMarkersOrDroppableInsts",
+        "only_used_by_lifetime_markers_or_droppable_instructions",
+    ),
     ("programUndefinedIfPoison", "program_undefined_if_poison"),
     (
         "programUndefinedIfUndefOrPoison",
@@ -386,22 +420,6 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
 /// plus gaps has to add up to the audited surface, which
 /// `value_tracking_surface_is_accounted_for` asserts.
 const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
-    (
-        "ConstantDataArraySlice",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
-        "FindInsertedValue",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
-        "GetPointerBaseWithConstantOffset",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
-        "GetStringLength",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
     (
         "adjustKnownBitsForSelectArm",
         "residue: needs the select-arm condition refinement",
@@ -459,24 +477,8 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
         "floating-point classification (tranche 7): needs the KnownFPClass lattice and FPClassTest bitmask, neither of which exists here",
     ),
     (
-        "findAllocaForValue",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
         "findValuesAffectedByCondition",
         "assumption cache (tranche 8): needs @llvm.assume modeled first",
-    ),
-    (
-        "getArgumentAliasingToReturnedPointer",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
-        "getConstantDataArrayInfo",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
-        "getConstantStringInfo",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
     ),
     (
         "getFlippedStrictnessPredicateAndConstant",
@@ -491,28 +493,8 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
         "partially modeled: the four integer arms are MinMaxIntrinsic::inverse; upstream also inverts maximum/minimum, maxnum/minnum and maximumnum/minimumnum, and llvmkit models no floating-point min/max intrinsic for those to map to",
     ),
     (
-        "getUnderlyingObject",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
-        "getUnderlyingObjectAggressive",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
-        "getUnderlyingObjects",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
-        "getUnderlyingObjectsForCodeGen",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
         "getVScaleRange",
         "blocked on the `vscale_range` attribute itself, which attribute_td_drift.rs lists as NOT_YET_MODELED: upstream reads a packed (min, max) pair and llvmkit's payload is a single u64, so porting it would mean inventing the second half",
-    ),
-    (
-        "isBytewiseValue",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
     ),
     (
         "isImpliedByDomCondition",
@@ -521,10 +503,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "isImpliedCondition",
         "implied conditions: builds on the assumption and dominating-condition machinery of tranches 6 and 8",
-    ),
-    (
-        "isIntrinsicReturningPointerAliasingArgumentWithoutCapturing",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
     ),
     (
         "isKnownNeverInfOrNaN",
@@ -561,14 +539,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "matchSimpleRecurrence",
         "implemented as the crate-private match_simple_recurrence, which the phi arm of computeKnownBits uses; public upstream, not public here",
-    ),
-    (
-        "onlyUsedByLifetimeMarkers",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
-    ),
-    (
-        "onlyUsedByLifetimeMarkersOrDroppableInsts",
-        "pointer and object analysis (tranche 5): needs pointer-cast stripping and constant-data-array reads",
     ),
     (
         "stripNullTest",
@@ -785,6 +755,16 @@ fn exercises_every_modeled_known_bits_operation() {
 #[test]
 fn exercises_every_modeled_value_tracking_entry_point() {
     use llvmkit_ir::{
+        BytewiseValue, ConstantDataArraySlice, argument_aliasing_to_returned_pointer,
+        find_alloca_for_value, find_inserted_value, get_constant_data_array_info,
+        get_constant_string_info, get_string_length, get_underlying_object,
+        get_underlying_object_aggressive, get_underlying_objects,
+        get_underlying_objects_for_code_gen, is_bytewise_value,
+        is_intrinsic_returning_pointer_aliasing_argument_without_capturing,
+        only_used_by_lifetime_markers, only_used_by_lifetime_markers_or_droppable_instructions,
+        pointer_base_with_constant_offset,
+    };
+    use llvmkit_ir::{
         DynBrand, SpeculationOptions, block_transfers_execution_to_successor, can_create_poison,
         instructions_transfer_execution_to_successor, intrinsic_propagates_poison,
         is_assume_like_intrinsic, is_guaranteed_to_execute_for_every_iteration,
@@ -880,6 +860,39 @@ fn exercises_every_modeled_value_tracking_entry_point() {
         .with_variable_info(false)
         .ignoring_ub_implying_attrs(false);
     let _default_transfer_scan_limit = llvmkit_ir::DEFAULT_TRANSFER_SCAN_LIMIT;
+
+    // Pointer and object analysis (tranche 5).
+    let _get_underlying_object = get_underlying_object::<DynBrand>;
+    let _get_underlying_object_aggressive = get_underlying_object_aggressive::<DynBrand>;
+    let _get_underlying_objects = get_underlying_objects::<DynBrand>;
+    let _get_underlying_objects_for_code_gen = get_underlying_objects_for_code_gen::<DynBrand>;
+    let _pointer_base_with_constant_offset = pointer_base_with_constant_offset::<DynBrand>;
+    let _find_alloca_for_value = find_alloca_for_value::<DynBrand>;
+    let _only_used_by_lifetime_markers = only_used_by_lifetime_markers::<DynBrand>;
+    let _only_used_by_lifetime_markers_or_droppable_instructions =
+        only_used_by_lifetime_markers_or_droppable_instructions::<DynBrand>;
+    let _argument_aliasing_to_returned_pointer = argument_aliasing_to_returned_pointer::<DynBrand>;
+    let _is_intrinsic_returning_pointer_aliasing_argument_without_capturing =
+        is_intrinsic_returning_pointer_aliasing_argument_without_capturing::<DynBrand>;
+    let _get_constant_data_array_info = get_constant_data_array_info::<DynBrand>;
+    let _get_constant_string_info = get_constant_string_info::<DynBrand>;
+    let _get_string_length = get_string_length::<DynBrand>;
+    let _is_bytewise_value = is_bytewise_value::<DynBrand>;
+    let _find_inserted_value = find_inserted_value::<DynBrand>;
+    // A type rather than a function: what `get_constant_data_array_info`
+    // returns, and the window `get_string_length` reads through.
+    let _slice_accessors = (
+        ConstantDataArraySlice::<DynBrand>::array,
+        ConstantDataArraySlice::<DynBrand>::offset,
+        ConstantDataArraySlice::<DynBrand>::len,
+        ConstantDataArraySlice::<DynBrand>::is_empty,
+        ConstantDataArraySlice::<DynBrand>::moved,
+        ConstantDataArraySlice::<DynBrand>::element,
+    );
+    let _max_lookup_search_depth = llvmkit_ir::MAX_LOOKUP_SEARCH_DEPTH;
+    // Not in the table — the answer shape of `isBytewiseValue`, which upstream
+    // spells as a `Value *` because it can mint the constant.
+    let _bytewise_value = BytewiseValue::<DynBrand>::AnyByte;
     // Not in the table — llvmkit-specific conveniences with no upstream entry
     // point of their own.
     let _is_known_zero = is_known_zero::<DynBrand>;
