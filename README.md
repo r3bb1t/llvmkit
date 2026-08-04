@@ -97,7 +97,7 @@ Shipped today:
   (`crates/llvmkit-ir/tests/value_tracking_parity.rs`) asserts an *empty* gap
   list, so a regression or a newly-synced upstream method has to be
   acknowledged rather than absorbed.
-- **ValueTracking — 90 of 101 entry points**, tracked symbol-by-symbol in the
+- **ValueTracking — 91 of 101 entry points**, tracked symbol-by-symbol in the
   same ledger, which asserts that modeled plus gaps equals the audited surface
   so a symbol cannot be silently neither. Beyond `compute_known_bits` itself
   (with `KnownBitsAnalysis`, `ValueTrackingQuery`, recursion budgeting,

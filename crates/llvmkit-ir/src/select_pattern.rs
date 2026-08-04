@@ -12,6 +12,7 @@
 
 use crate::ap_int::ApInt;
 use crate::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
+use crate::fp_class::MinMaxKind;
 use crate::intrinsics::descriptor_for_callee;
 
 /// Which min/max/abs idiom a `select` implements.
@@ -153,11 +154,9 @@ pub enum MinMaxIntrinsic {
 impl MinMaxIntrinsic {
     /// The intrinsic computing the opposite extremum.
     ///
-    /// Ports the integer arms of `llvm::getInverseMinMaxIntrinsic`. Upstream
-    /// also inverts `maximum`/`minimum`, `maxnum`/`minnum` and
-    /// `maximumnum`/`minimumnum`; llvmkit models no floating-point min/max
-    /// intrinsic, so those six have nothing to map to and are recorded as a
-    /// gap rather than invented here.
+    /// Ports the integer arms of `llvm::getInverseMinMaxIntrinsic`. The six
+    /// floating-point arms it also covers are [`MinMaxKind::inverse`], and
+    /// [`MinMaxOperation::inverse`] is the whole function over both.
     #[inline]
     pub const fn inverse(self) -> Self {
         match self {
@@ -187,6 +186,56 @@ impl MinMaxIntrinsic {
             Self::SMax => "llvm.smax",
             Self::UMin => "llvm.umin",
             Self::UMax => "llvm.umax",
+        }
+    }
+}
+
+/// A min/max intrinsic, integer or floating-point.
+///
+/// Upstream spells this as an `Intrinsic::ID` — one flat type naming every
+/// intrinsic there is — and narrows it with a `switch` whose `default` is
+/// `llvm_unreachable`. llvmkit has no public intrinsic-id type, and the two
+/// halves of the min/max family are already closed enums that exist for their
+/// own reasons: [`MinMaxIntrinsic`] is exactly the range of
+/// `llvm::getMinMaxIntrinsic`, and [`MinMaxKind`] ports
+/// `KnownFPClass::MinMaxKind`, which is deliberately independent of the IR.
+///
+/// This is their sum, for the two upstream functions whose domain or range
+/// spans both: `getInverseMinMaxIntrinsic` and `canConvertToMinOrMaxIntrinsic`.
+/// The arms are disjoint — the four integer intrinsics and the six
+/// floating-point ones, ten in all, and no intrinsic is named by both. Because
+/// the domain *is* those ten, every mapping over it is total and there is no
+/// unreachable arm to write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MinMaxOperation {
+    /// `llvm.smin`, `llvm.smax`, `llvm.umin` or `llvm.umax`.
+    Integer(MinMaxIntrinsic),
+    /// One of the six floating-point forms — `llvm.minimum` and `llvm.maximum`,
+    /// `llvm.minimumnum` and `llvm.maximumnum`, `llvm.minnum` and `llvm.maxnum`.
+    Float(MinMaxKind),
+}
+
+impl MinMaxOperation {
+    /// The min/max computing the opposite extremum.
+    ///
+    /// Ports `llvm::getInverseMinMaxIntrinsic` over its whole domain, by
+    /// delegating to [`MinMaxIntrinsic::inverse`] and [`MinMaxKind::inverse`].
+    /// Inverting never crosses the integer/floating-point boundary, which is
+    /// why the sum can be taken apart and put back together unchanged.
+    #[inline]
+    pub const fn inverse(self) -> Self {
+        match self {
+            Self::Integer(intrinsic) => Self::Integer(intrinsic.inverse()),
+            Self::Float(kind) => Self::Float(kind.inverse()),
+        }
+    }
+
+    /// The intrinsic's base name, as it appears in `.ll` text.
+    #[inline]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Integer(intrinsic) => intrinsic.name(),
+            Self::Float(kind) => kind.name(),
         }
     }
 }
@@ -1053,16 +1102,14 @@ fn match_fast_float_clamp<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports `llvm::canConvertToMinOrMaxIntrinsic`. Upstream returns
 /// `{Intrinsic::not_intrinsic, false}` for "no", which is the `None` here.
 ///
-/// **The two floating-point flavours answer `None`.** Upstream maps
-/// `SPF_FMAXNUM` / `SPF_FMINNUM` to `Intrinsic::maxnum` / `minnum`; llvmkit
-/// models no floating-point min/max intrinsic, so there is nothing to name —
-/// the same gap already recorded against `getInverseMinMaxIntrinsic`. A caller
-/// is told "cannot convert" where upstream would say "convert to `maxnum`",
-/// which forgoes a rewrite rather than performing a wrong one.
+/// The answer spans both halves of the min/max family, so it is a
+/// [`MinMaxOperation`]: upstream's switch maps the four integer flavours to
+/// `smin`/`smax`/`umin`/`umax` and `SPF_FMAXNUM` / `SPF_FMINNUM` to
+/// `maxnum` / `minnum`.
 pub fn can_convert_to_min_or_max_intrinsic<'a, 'ctx, B, Values>(
     values: Values,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
-) -> IrResult<Option<(MinMaxIntrinsic, bool)>>
+) -> IrResult<Option<(MinMaxOperation, bool)>>
 where
     B: ModuleBrand + 'ctx,
     Values: IntoIterator<Item = Value<'ctx, B>>,
@@ -1085,8 +1132,30 @@ where
     }
 
     Ok(flavor
-        .and_then(SelectPatternFlavor::min_max_intrinsic)
-        .map(|intrinsic| (intrinsic, all_compares_single_use)))
+        .and_then(min_max_operation)
+        .map(|operation| (operation, all_compares_single_use)))
+}
+
+/// The min/max intrinsic `flavor` converts to, integer or floating-point.
+///
+/// Ports the six-arm `switch` inside `llvm::canConvertToMinOrMaxIntrinsic`,
+/// which reaches wider than `getMinMaxIntrinsic`: it also maps `SPF_FMAXNUM`
+/// and `SPF_FMINNUM`. Upstream's `default` is `llvm_unreachable`, guarded by
+/// the `isMinOrMax` check its caller has already made; the three flavours that
+/// check rejects are the `None` here, so the guard is carried by the return
+/// type rather than by the caller remembering to look.
+fn min_max_operation(flavor: SelectPatternFlavor) -> Option<MinMaxOperation> {
+    Some(match flavor {
+        SelectPatternFlavor::SMin => MinMaxOperation::Integer(MinMaxIntrinsic::SMin),
+        SelectPatternFlavor::SMax => MinMaxOperation::Integer(MinMaxIntrinsic::SMax),
+        SelectPatternFlavor::UMin => MinMaxOperation::Integer(MinMaxIntrinsic::UMin),
+        SelectPatternFlavor::UMax => MinMaxOperation::Integer(MinMaxIntrinsic::UMax),
+        SelectPatternFlavor::FMinNum => MinMaxOperation::Float(MinMaxKind::MinNum),
+        SelectPatternFlavor::FMaxNum => MinMaxOperation::Float(MinMaxKind::MaxNum),
+        SelectPatternFlavor::Unknown | SelectPatternFlavor::Abs | SelectPatternFlavor::NAbs => {
+            return None;
+        }
+    })
 }
 
 // --------------------------------------------------------------------------

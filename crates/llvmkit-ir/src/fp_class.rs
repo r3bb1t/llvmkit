@@ -1255,6 +1255,41 @@ impl MinMaxKind {
     pub const fn is_minimum(self) -> bool {
         matches!(self, Self::Minimum | Self::MinimumNum | Self::MinNum)
     }
+
+    /// The min/max computing the opposite extremum.
+    ///
+    /// Ports the six floating-point arms of `llvm::getInverseMinMaxIntrinsic`.
+    /// Upstream warns at those arms that — unlike the integer four — inverting
+    /// may produce the *same* result as the original even for distinct
+    /// operands, because NaN is handled specially. Inverting is therefore an
+    /// involution on the operation, not a statement about the value.
+    #[inline]
+    pub const fn inverse(self) -> Self {
+        match self {
+            Self::Minimum => Self::Maximum,
+            Self::Maximum => Self::Minimum,
+            Self::MinimumNum => Self::MaximumNum,
+            Self::MaximumNum => Self::MinimumNum,
+            Self::MinNum => Self::MaxNum,
+            Self::MaxNum => Self::MinNum,
+        }
+    }
+
+    /// The intrinsic's base name, as it appears in `.ll` text.
+    ///
+    /// The inverse of the mapping `computeKnownFPClass` reads its operand
+    /// through — upstream's static `getMinMaxKind`.
+    #[inline]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Minimum => "llvm.minimum",
+            Self::Maximum => "llvm.maximum",
+            Self::MinimumNum => "llvm.minimumnum",
+            Self::MaximumNum => "llvm.maximumnum",
+            Self::MinNum => "llvm.minnum",
+            Self::MaxNum => "llvm.maxnum",
+        }
+    }
 }
 
 /// Whether IEEE treatment of denormal inputs may be assumed.

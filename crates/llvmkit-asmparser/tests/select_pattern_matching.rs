@@ -11,8 +11,9 @@
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
-    DynBrand, Module, SelectPatternFlavor, SelectPatternNaNBehavior, Unverified, Value,
-    ValueTrackingQuery, match_select_pattern,
+    DynBrand, MinMaxIntrinsic, MinMaxKind, MinMaxOperation, Module, SelectPatternFlavor,
+    SelectPatternNaNBehavior, Unverified, Value, ValueTrackingQuery,
+    can_convert_to_min_or_max_intrinsic, match_select_pattern,
 };
 
 fn parse(source: &str) -> Module<DynBrand, Unverified> {
@@ -422,5 +423,105 @@ define i32 @test(i1 %c, i32 %x, i32 %y) {
         match_select_pattern(named(&module, "A"), true, &query, 0)
             .expect("query succeeds")
             .is_none()
+    );
+}
+
+/// Run `can_convert_to_min_or_max_intrinsic` over the named instructions.
+fn convert(source: &str, names: &[&str]) -> Option<(MinMaxOperation, bool)> {
+    let module = parse(source);
+    let data_layout = module.data_layout();
+    let query = ValueTrackingQuery::<DynBrand>::new(&data_layout);
+    let values: Vec<_> = names.iter().map(|name| named(&module, name)).collect();
+    can_convert_to_min_or_max_intrinsic(values, &query).expect("query succeeds")
+}
+
+/// `llvm::canConvertToMinOrMaxIntrinsic` names the intrinsic a set of `select`s
+/// could become. Its switch is wider than `getMinMaxIntrinsic`: besides the
+/// four integer flavours it maps `SPF_FMAXNUM` and `SPF_FMINNUM` to
+/// `Intrinsic::maxnum` and `Intrinsic::minnum`.
+///
+/// **Upstream has no unit test for this function.** Its only caller is
+/// `SLPVectorizer`, which reaches it through `.ll` regression tests of a pass
+/// llvmkit does not have. The inputs below are therefore upstream's own
+/// `MatchSelectPatternTest` IR — `SimpleFMax` and `SimpleFMin` verbatim from
+/// the fixtures above — and the expected answers are what the switch in
+/// `canConvertToMinOrMaxIntrinsic` returns for the flavour those fixtures pin.
+#[test]
+fn converting_a_select_names_the_intrinsic_including_the_two_float_flavors() {
+    // MatchSelectPatternTest::SimpleFMax -> SPF_FMAXNUM -> Intrinsic::maxnum.
+    assert_eq!(
+        convert(
+            r"
+define float @test(float %a) {
+  %1 = fcmp ogt float %a, 5.0
+  %A = select i1 %1, float %a, float 5.0
+  ret float %A
+}
+",
+            &["A"],
+        ),
+        Some((MinMaxOperation::Float(MinMaxKind::MaxNum), true)),
+    );
+
+    // MatchSelectPatternTest::SimpleFMin -> SPF_FMINNUM -> Intrinsic::minnum.
+    assert_eq!(
+        convert(
+            r"
+define float @test(float %a) {
+  %1 = fcmp ult float %a, 5.0
+  %A = select i1 %1, float %a, float 5.0
+  ret float %A
+}
+",
+            &["A"],
+        ),
+        Some((MinMaxOperation::Float(MinMaxKind::MinNum), true)),
+    );
+
+    // The integer half is unchanged: SPF_SMIN -> Intrinsic::smin.
+    assert_eq!(
+        convert(
+            r"
+define i32 @test(i32 %x, i32 %y) {
+  %cmp = icmp slt i32 %x, %y
+  %A = select i1 %cmp, i32 %x, i32 %y
+  ret i32 %A
+}
+",
+            &["A"],
+        ),
+        Some((MinMaxOperation::Integer(MinMaxIntrinsic::SMin), true)),
+    );
+
+    // Upstream bails as soon as two values disagree on the flavour, because one
+    // intrinsic has to serve them all.
+    assert_eq!(
+        convert(
+            r"
+define i32 @test(i32 %x, i32 %y) {
+  %c1 = icmp slt i32 %x, %y
+  %A = select i1 %c1, i32 %x, i32 %y
+  %c2 = icmp sgt i32 %x, %y
+  %B = select i1 %c2, i32 %x, i32 %y
+  ret i32 %A
+}
+",
+            &["A", "B"],
+        ),
+        None,
+    );
+
+    // And on anything that is not a min or a max at all.
+    assert_eq!(
+        convert(
+            r"
+define i32 @test(i1 %c, i32 %x, i32 %y) {
+  %A = select i1 %c, i32 %x, i32 %y
+  ret i32 %A
+}
+",
+            &["A"],
+        ),
+        None,
     );
 }

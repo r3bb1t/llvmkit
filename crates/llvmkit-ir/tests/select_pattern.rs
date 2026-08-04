@@ -8,9 +8,12 @@
 //! These are total functions over an enum, so the tests enumerate rather than
 //! sample: every flavour, every predicate.
 
+use std::collections::BTreeSet;
+
 use llvmkit_ir::{
-    ApInt, CmpPredicate, FloatPredicate, IntPredicate, MinMaxIntrinsic, SelectPatternFlavor,
-    SelectPatternNaNBehavior, SelectPatternResult, get_select_pattern,
+    ApInt, CmpPredicate, FloatPredicate, IntPredicate, MinMaxIntrinsic, MinMaxKind,
+    MinMaxOperation, SelectPatternFlavor, SelectPatternNaNBehavior, SelectPatternResult,
+    get_select_pattern,
 };
 
 const ALL_FLAVORS: [SelectPatternFlavor; 9] = [
@@ -30,6 +33,15 @@ const MIN_MAX_INTRINSICS: [MinMaxIntrinsic; 4] = [
     MinMaxIntrinsic::SMax,
     MinMaxIntrinsic::UMin,
     MinMaxIntrinsic::UMax,
+];
+
+const MIN_MAX_KINDS: [MinMaxKind; 6] = [
+    MinMaxKind::Minimum,
+    MinMaxKind::Maximum,
+    MinMaxKind::MinimumNum,
+    MinMaxKind::MaximumNum,
+    MinMaxKind::MinNum,
+    MinMaxKind::MaxNum,
 ];
 
 /// Ports `SelectPatternResult::isMinOrMax`, which upstream spells as
@@ -168,6 +180,75 @@ fn inverting_a_min_max_swaps_min_and_max_and_is_an_involution() {
                 .expect("integer flavour")
         );
     }
+}
+
+/// Ports the six floating-point arms of `llvm::getInverseMinMaxIntrinsic` —
+/// `minimum`/`maximum`, `minimumnum`/`maximumnum` and `minnum`/`maxnum` — and
+/// `MinMaxOperation::inverse` over the whole ten-element domain that function
+/// covers.
+///
+/// Upstream's `default` arm is `llvm_unreachable("Unexpected intrinsic")`,
+/// which is what a flat `Intrinsic::ID` domain costs. Here the domain is two
+/// closed enums, so there is no rejected case left to assert about; what the
+/// enumeration checks instead is that every arm maps where upstream maps it.
+#[test]
+fn inverting_a_floating_point_min_max_swaps_minimum_and_maximum() {
+    let pairs: &[(MinMaxKind, MinMaxKind)] = &[
+        (MinMaxKind::Minimum, MinMaxKind::Maximum),
+        (MinMaxKind::Maximum, MinMaxKind::Minimum),
+        (MinMaxKind::MinimumNum, MinMaxKind::MaximumNum),
+        (MinMaxKind::MaximumNum, MinMaxKind::MinimumNum),
+        (MinMaxKind::MinNum, MinMaxKind::MaxNum),
+        (MinMaxKind::MaxNum, MinMaxKind::MinNum),
+    ];
+    for (kind, inverse) in pairs {
+        assert_eq!(kind.inverse(), *inverse, "{kind:?}");
+    }
+
+    for kind in MIN_MAX_KINDS {
+        // Inverting twice is the identity, and no arm is its own inverse.
+        assert_eq!(kind.inverse().inverse(), kind, "{kind:?}");
+        assert_ne!(kind.inverse(), kind, "{kind:?}");
+        // A minimum inverts to a maximum.
+        assert_eq!(kind.inverse().is_maximum(), kind.is_minimum(), "{kind:?}");
+        // Inverting swaps the extremum, never the IEEE form or the NaN rule.
+        assert_eq!(
+            kind.inverse().is_ieee_754_2019_form(),
+            kind.is_ieee_754_2019_form(),
+            "{kind:?}"
+        );
+        assert_eq!(
+            kind.inverse().returns_the_non_nan_operand(),
+            kind.returns_the_non_nan_operand(),
+            "{kind:?}"
+        );
+    }
+
+    // The sum over both halves delegates, and inverting never crosses between
+    // the integer and floating-point arms.
+    for intrinsic in MIN_MAX_INTRINSICS {
+        assert_eq!(
+            MinMaxOperation::Integer(intrinsic).inverse(),
+            MinMaxOperation::Integer(intrinsic.inverse()),
+        );
+    }
+    for kind in MIN_MAX_KINDS {
+        assert_eq!(
+            MinMaxOperation::Float(kind).inverse(),
+            MinMaxOperation::Float(kind.inverse()),
+        );
+    }
+
+    // The two arms name ten distinct intrinsics -- the disjointness the sum
+    // type's documentation claims.
+    let names: Vec<&str> = MIN_MAX_INTRINSICS
+        .into_iter()
+        .map(MinMaxOperation::Integer)
+        .chain(MIN_MAX_KINDS.into_iter().map(MinMaxOperation::Float))
+        .map(MinMaxOperation::name)
+        .collect();
+    let distinct: BTreeSet<&str> = names.iter().copied().collect();
+    assert_eq!(distinct.len(), 10, "{names:?}");
 }
 
 /// Ports `llvm::getMinMaxLimit`: the extreme value each min/max can produce.

@@ -22,11 +22,13 @@
 //!   compiling, so the "modeled" column cannot silently become a lie.
 //! - **Enforced at run time.** The tables are checked for the properties a
 //!   ledger needs to stay readable: sorted, duplicate-free, and disjoint from
-//!   the gap list, with a recorded reason on every gap. For `KnownBits`,
-//!   `every_modeled_known_bits_row_is_exercised` additionally reads this
-//!   file's own source and proves the exercise fn reaches *every* row — the
-//!   two used to be linked by nothing but the fn's name, so a row could be
-//!   added with no call to match it and still look enforced.
+//!   the gap list, with a recorded reason on every gap. `every_modeled_*_row_is_exercised`
+//!   additionally reads this file's own source and proves the matching
+//!   exercise fn reaches *every* row — the two used to be linked by nothing
+//!   but the fn's name, so a row could be added with no call to match it and
+//!   still look enforced. That held for `KnownBits` from 2026-08-03 and for
+//!   `ValueTracking` only from 2026-08-04, and in between the `ValueTracking`
+//!   side had already drifted by four rows.
 //! - **Maintained by hand.** The *gap* lists are a human record. Nothing here
 //!   can notice that upstream grew a new method — that is the LLVM sync's job,
 //!   which should re-derive the tables from the headers and reconcile. Both
@@ -346,6 +348,10 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "SelectPatternFlavor::inverse_min_max",
     ),
     (
+        "getInverseMinMaxIntrinsic",
+        "MinMaxOperation::inverse / MinMaxIntrinsic::inverse / MinMaxKind::inverse",
+    ),
+    (
         "getMinMaxIntrinsic",
         "SelectPatternFlavor::min_max_intrinsic",
     ),
@@ -484,10 +490,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "getIntrinsicForCallSite",
         "residue: maps a libcall to an intrinsic via TargetLibraryInfo",
-    ),
-    (
-        "getInverseMinMaxIntrinsic",
-        "partially modeled: the four integer arms are MinMaxIntrinsic::inverse; upstream also inverts maximum/minimum, maxnum/minnum and maximumnum/minimumnum, and llvmkit models no floating-point min/max intrinsic for those to map to",
     ),
     (
         "getVScaleRange",
@@ -716,10 +718,11 @@ fn exercises_every_modeled_known_bits_operation() {
 #[test]
 fn exercises_every_modeled_value_tracking_entry_point() {
     use llvmkit_ir::{
-        BytewiseValue, ConstantDataArraySlice, SelectPatternMatch,
+        BytewiseValue, ConstantDataArraySlice, MinMaxIntrinsic, MinMaxKind, MinMaxOperation,
+        SelectPatternFlavor, SelectPatternMatch, SelectPatternNaNBehavior, SelectPatternResult,
         argument_aliasing_to_returned_pointer, can_convert_to_min_or_max_intrinsic,
         find_alloca_for_value, find_inserted_value, get_constant_data_array_info,
-        get_constant_string_info, get_string_length, get_underlying_object,
+        get_constant_string_info, get_select_pattern, get_string_length, get_underlying_object,
         get_underlying_object_aggressive, get_underlying_objects,
         get_underlying_objects_for_code_gen, is_bytewise_value,
         is_intrinsic_returning_pointer_aliasing_argument_without_capturing,
@@ -909,6 +912,23 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     // spells as a `Value *` because it can mint the constant.
     let _bytewise_value = BytewiseValue::<DynBrand>::AnyByte;
 
+    // The min/max vocabulary. `getInverseMinMaxIntrinsic` spans both halves of
+    // the family, so all three spellings of its ledger row are named here.
+    let _min_max_vocabulary = (
+        SelectPatternFlavor::inverse_min_max,
+        SelectPatternFlavor::min_max_intrinsic,
+        SelectPatternFlavor::min_max_limit,
+        SelectPatternFlavor::min_max_predicate,
+        MinMaxOperation::inverse,
+        MinMaxIntrinsic::inverse,
+        MinMaxKind::inverse,
+    );
+
+    // The flavour classification and the record it answers with (tranche 4a).
+    let _get_select_pattern: fn(_, SelectPatternNaNBehavior, bool) -> SelectPatternResult =
+        get_select_pattern;
+    let _select_pattern_result = SelectPatternResult::unknown;
+
     // Select-pattern matching (tranche 4b).
     let _match_select_pattern = match_select_pattern::<DynBrand>;
     let _match_decomposed_select_pattern = match_decomposed_select_pattern::<DynBrand>;
@@ -1091,6 +1111,61 @@ fn every_modeled_known_bits_row_is_exercised() {
     );
 }
 
+/// Every row of [`MODELED_VALUE_TRACKING`] is actually reached by
+/// `exercises_every_modeled_value_tracking_entry_point`.
+///
+/// The `KnownBits` half of this ledger has had
+/// [`every_modeled_known_bits_row_is_exercised`] since the 2026-08-03 audit;
+/// the `ValueTracking` half had nothing, while the module header claimed the
+/// guarantee for both tables. It had already drifted by the time this landed:
+/// `getInverseMinMaxFlavor`, `getMinMaxIntrinsic`, `getMinMaxLimit` and
+/// `getMinMaxPred` sat in the modeled table with the exercise fn naming none
+/// of them.
+///
+/// **The probe differs from the `KnownBits` one because the shapes differ.**
+/// A `KnownBits` row is a method, so `.name(` is the call site to look for. A
+/// `ValueTracking` row is mostly a free function or a type, and the exercise fn
+/// *names* those as values rather than calling them — a call would need a
+/// module, a brand and operands per row. So this looks for the identifier path
+/// at a word boundary, which is what stops `compute_known_bits` being satisfied
+/// by `compute_known_bits_from_context`, or `propagates_poison` by
+/// `intrinsic_propagates_poison`.
+///
+/// `use` declarations are stripped first: they sit inside the fn body, and
+/// importing a name is not exercising it. In practice `-D warnings` already
+/// makes an unused import a build failure, so this is belt-and-braces.
+///
+/// No upstream counterpart; see the module docs.
+#[test]
+fn every_modeled_value_tracking_row_is_exercised() {
+    // Reading our own source is the only way to tie the two together: the
+    // table is data, the exercise fn is code, and nothing else connects them.
+    const SELF: &str = include_str!("value_tracking_parity.rs");
+
+    let body = function_body(
+        SELF,
+        "fn exercises_every_modeled_value_tracking_entry_point",
+    );
+    let body = strip_use_declarations(&strip_line_comments(&body));
+
+    let mut unexercised: Vec<String> = Vec::new();
+    for (upstream, llvmkit) in MODELED_VALUE_TRACKING {
+        for path in llvmkit.split('/').map(str::trim) {
+            if !names_path(&body, path) {
+                unexercised.push(format!("{upstream} ({llvmkit}): `{path}` is never named"));
+            }
+        }
+    }
+
+    assert!(
+        unexercised.is_empty(),
+        "exercises_every_modeled_value_tracking_entry_point does not reach {} of {} rows:\n  {}",
+        unexercised.len(),
+        MODELED_VALUE_TRACKING.len(),
+        unexercised.join("\n  ")
+    );
+}
+
 /// The `{ .. }` body of the item whose declaration starts with `header`.
 fn function_body(source: &str, header: &str) -> String {
     let start = source
@@ -1126,6 +1201,47 @@ fn strip_line_comments(source: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Drop `use` items, so importing a name does not count as exercising it.
+///
+/// `exercises_every_modeled_value_tracking_entry_point` keeps its imports
+/// inside the fn, so they are part of the body this file reads back.
+fn strip_use_declarations(source: &str) -> String {
+    let mut kept = String::new();
+    let mut inside = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if inside || trimmed.starts_with("use ") {
+            inside = !trimmed.ends_with(';');
+            continue;
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    kept
+}
+
+/// Whether `body` names `path` as a whole identifier path rather than as a
+/// fragment of a longer one.
+///
+/// A leading `::` is fine — `llvmkit_ir::is_known_negation` names
+/// `is_known_negation` — but an identifier character on either side is not, so
+/// `intrinsic_propagates_poison` does not stand in for `propagates_poison`.
+fn names_path(body: &str, path: &str) -> bool {
+    let is_identifier_char = |c: char| c.is_alphanumeric() || c == '_';
+    let mut from = 0usize;
+    while let Some(offset) = body[from..].find(path) {
+        let start = from + offset;
+        let end = start + path.len();
+        let before = body[..start].chars().next_back();
+        let after = body[end..].chars().next();
+        if !before.is_some_and(is_identifier_char) && !after.is_some_and(is_identifier_char) {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
 }
 
 /// Every operation `KnownBits.h` declares public is modeled.

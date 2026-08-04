@@ -14,6 +14,55 @@ cut, entries accumulate under **Unreleased**.
 > past the 0.0.4 freeze, not two pending releases; they collapse into one entry
 > when the tag is cut.
 
+### ValueTracking: `getInverseMinMaxIntrinsic` across both halves of the family
+
+#### Added
+
+- `MinMaxOperation` — a min/max intrinsic, integer or floating-point. Upstream
+  spells this as an `Intrinsic::ID`, one flat type naming every intrinsic there
+  is, and narrows it with a `switch` whose `default` is `llvm_unreachable`.
+  Here it is the sum of two closed enums that already existed for their own
+  reasons: `MinMaxIntrinsic` (the four integer intrinsics, exactly the range of
+  `getMinMaxIntrinsic`) and `MinMaxKind` (the six floating-point ones, porting
+  `KnownFPClass::MinMaxKind`). The arms are disjoint and together are exactly
+  upstream's ten, so every mapping over the sum is total.
+- `MinMaxOperation::inverse`, porting `llvm::getInverseMinMaxIntrinsic` over
+  its whole domain, and `MinMaxKind::inverse` for the six floating-point arms
+  it delegates to. `MinMaxIntrinsic::inverse`, the integer half, already
+  existed. Also `MinMaxKind::name` and `MinMaxOperation::name`, matching the
+  `MinMaxIntrinsic::name` that was already there.
+
+#### Fixed
+
+- **Breaking:** `can_convert_to_min_or_max_intrinsic` returns
+  `Option<(MinMaxOperation, bool)>` rather than `Option<(MinMaxIntrinsic,
+  bool)>`. It used to answer `None` for the two floating-point flavours, where
+  upstream's switch answers `Intrinsic::maxnum` / `Intrinsic::minnum`; a caller
+  was told "cannot convert" about a `select` that converts fine. Both arms now
+  answer.
+
+  The narrowing, the ledger's gap reason, and `MinMaxIntrinsic::inverse`'s doc
+  comment all rested on one claim — "llvmkit models no floating-point min/max
+  intrinsic" — that was true when tranche 4b wrote it and false from tranche 7a
+  onward, once `MinMaxKind` landed with exactly the six variants upstream
+  inverts. All three are corrected.
+
+Ledger: **91 of 101 modeled, 10 gaps.**
+
+#### Internal
+
+- The parity ledger's `ValueTracking` half now proves what its module header
+  already claimed. `every_modeled_known_bits_row_is_exercised` has read the
+  test file's own source since 2026-08-03 to check that every modeled
+  `KnownBits` row is reached by real code; the `ValueTracking` table had no
+  such tie, and had drifted — `getInverseMinMaxFlavor`, `getMinMaxIntrinsic`,
+  `getMinMaxLimit` and `getMinMaxPred` sat in the modeled column with nothing
+  naming them, and `getSelectPattern`, `SelectPatternResult` and
+  `SelectPatternNaNBehavior` turned out the same way once the new
+  `every_modeled_value_tracking_row_is_exercised` went looking. All seven are
+  exercised now. No API change; this is the ledger holding itself to its own
+  claim.
+
 ### ValueTracking: the and/xor/or known-bits idioms
 
 #### Added
@@ -232,6 +281,10 @@ word — flags on the `fcmp` are read, which is where they normally sit), and
 answers `None` for the two floating-point flavours, the same gap already
 recorded against `getInverseMinMaxIntrinsic`.
 
+> Superseded on that last one: the gap was not real. `can_convert_to_min_or_max_intrinsic`
+> now answers for both flavours — see *`getInverseMinMaxIntrinsic` across both
+> halves of the family* at the top of this file.
+
 ### ValueTracking: pointer and object analysis (tranche 5)
 
 #### Added
@@ -351,6 +404,10 @@ gap table. `getInverseMinMaxIntrinsic` is partially modeled: its four integer
 arms are `MinMaxIntrinsic::inverse`, while the six floating-point intrinsics it
 also inverts (`maximum`/`minimum`, `maxnum`/`minnum`, `maximumnum`/`minimumnum`)
 have no counterpart in llvmkit's intrinsic model to map to.
+
+> Superseded: `MinMaxKind` (tranche 7a) turned out to name exactly those six,
+> and the row closed in full — see *`getInverseMinMaxIntrinsic` across both
+> halves of the family* at the top of this file.
 
 
 ### KnownBits: the operators

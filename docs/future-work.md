@@ -72,8 +72,8 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 
 ## ValueTracking.h — remaining tranches, and the order to take them
 
-**Status after the and/xor/or idioms (2026-08-04):** 90 of 101 entry points
-modeled, 11 gaps, all symbol-keyed in
+**Status after `getInverseMinMaxIntrinsic` (2026-08-04):** 91 of 101 entry
+points modeled, 10 gaps, all symbol-keyed in
 `crates/llvmkit-ir/tests/value_tracking_parity.rs` and asserted to sum to the
 audited surface.
 
@@ -97,21 +97,61 @@ is the honest record.
 | dead upstream declaration | 1 | `analyzeKnownFPClassFromSelect`, see below |
 | residue | 5 | small, independent — `analyzeKnownBitsFromAndXorOr` is done |
 | expose-only | 2 | `matchSimpleRecurrence` and `computeKnownBitsFromRangeMetadata` already exist as crate-private helpers |
-| partial | 1 | `getInverseMinMaxIntrinsic` — integer arms done; **the six FP pairs are now representable**, see below |
+| ~~`getInverseMinMaxIntrinsic`~~ | 0 | **done** — all ten arms, see below |
 | sibling | 1 | `matchSimpleBinaryIntrinsicRecurrence` |
 | blocked | 1 | `getVScaleRange`, see above |
 
-**`getInverseMinMaxIntrinsic` is no longer blocked (re-checked 2026-08-04).**
-Both the ledger reason and `MinMaxIntrinsic::inverse`'s doc comment say
-"llvmkit models no floating-point min/max intrinsic". That was true when
+### Found while porting tranche 4b: three sites inherited one false premise — **closed 2026-08-04**
+
+`getInverseMinMaxIntrinsic` was recorded as partially modeled on the grounds
+that "llvmkit models no floating-point min/max intrinsic". That was true when
 tranche 4b wrote it and **false since tranche 7a**: `MinMaxKind` in
 `fp_class.rs` has exactly the six variants upstream inverts — `Minimum`/
 `Maximum`, `MinimumNum`/`MaximumNum`, `MinNum`/`MaxNum` — and
-`known_fp_class.rs` already maps intrinsic names onto them. Closing it means
-adding `MinMaxKind::inverse()` and deciding how one public entry point spans
-two enums (integer `MinMaxIntrinsic`, floating-point `MinMaxKind`). That is a
-design question, not a blocker, so it belongs with the residue rather than in
-the blocked pile. **Fix both reason texts when it lands.**
+`known_fp_class.rs` already maps intrinsic names onto them. The claim had been
+copied to three places: the ledger reason, `MinMaxIntrinsic::inverse`'s doc
+comment, and `can_convert_to_min_or_max_intrinsic`, which *narrowed its own
+behaviour* on the strength of it and answered `None` where upstream answers
+`maxnum` / `minnum`.
+
+The open design question was how one public entry point spans two enums. The
+answer is [`MinMaxOperation`](../crates/llvmkit-ir/src/select_pattern.rs), a
+two-arm sum of `MinMaxIntrinsic` (the four integer intrinsics, exactly the
+range of `getMinMaxIntrinsic`) and `MinMaxKind` (the six floating-point ones,
+which port `KnownFPClass::MinMaxKind` and are deliberately IR-independent).
+The arms are disjoint and the union is exactly upstream's ten, so
+`MinMaxOperation::inverse` is total where upstream needs
+`llvm_unreachable("Unexpected intrinsic")` — the price `Intrinsic::ID` pays for
+being one flat type naming every intrinsic there is. `MinMaxKind::inverse` and
+`MinMaxIntrinsic::inverse` are each half of it, and
+`can_convert_to_min_or_max_intrinsic` now returns the sum, which also closes
+its narrowing.
+
+**The lesson generalises:** a comment claiming llvmkit lacks a feature is a
+claim to verify, not to inherit. Three of them were false in the 2026-08-04
+sweep, and two caused real defects rather than merely stale prose.
+
+### Found while closing that row: the ledger did not check its own ValueTracking column — **closed 2026-08-04**
+
+`value_tracking_parity.rs`'s module header claimed that
+`exercises_every_modeled_*` reaches every row of the modeled tables. That was
+enforced for `KnownBits` — `every_modeled_known_bits_row_is_exercised` reads
+the test file's own source and proves it — and enforced by nothing at all for
+`ValueTracking`, whose exercise fn was hand-maintained against a ~91-row table.
+
+It had drifted. `getInverseMinMaxFlavor`, `getMinMaxIntrinsic`, `getMinMaxLimit`
+and `getMinMaxPred` were listed as modeled with no code naming them; the new
+`every_modeled_value_tracking_row_is_exercised` then found three more —
+`getSelectPattern`, `SelectPatternResult` and `SelectPatternNaNBehavior`. All
+seven are exercised now, and the header says which table has been proven since
+when instead of implying both always were.
+
+The probe differs from the `KnownBits` twin because the shapes do: a
+`KnownBits` row is a method, so `.name(` is the call site to look for, while a
+`ValueTracking` row is mostly a free function or a type that the exercise fn
+*names as a value*. So it matches the identifier path at a word boundary, which
+is what keeps `compute_known_bits` from being satisfied by
+`compute_known_bits_from_context`.
 
 
 ### Found while porting tranche 6: the `and` / `xor` known-bits arm is narrow — **closed 2026-08-04**
@@ -226,9 +266,7 @@ coverage being subsumed by the real ports.
 2. **Expose-only (2).** `computeKnownBitsFromRangeMetadata` is not a rename:
    upstream takes an `MDNode` where llvmkit's helper is value-shaped, so the
    public parameter is a real design decision.
-3. **`getInverseMinMaxIntrinsic` (1).** Re-checked and *not* blocked — see the
-   note under the tranche table. Small, and it belongs with the residue.
-4. **Sibling and blocked (2).** `matchSimpleBinaryIntrinsicRecurrence` needs
+3. **Sibling and blocked (2).** `matchSimpleBinaryIntrinsicRecurrence` needs
    `match_simple_recurrence` generalised over the intrinsic-call form, so that
    its `II == I` identity check has something to bind. `getVScaleRange` stays
    recorded: upstream reads a packed `(min, max)` out of one attribute, and
@@ -236,7 +274,7 @@ coverage being subsumed by the real ports.
    single-`u64` payload — so the parser cannot even produce a function carrying
    one, and porting it would mean inventing the max half. It unblocks when the
    *attribute* is modeled, which is an attribute-layer task, not this one.
-5. **`analyzeKnownFPClassFromSelect` (1)** never closes: there is no upstream
+4. **`analyzeKnownFPClassFromSelect` (1)** never closes: there is no upstream
    definition to port. It is recorded, not scheduled.
 
 Separately, and moving no ledger row: **fill in `computeKnownFPClass`'s
@@ -392,7 +430,7 @@ what the sizing looked like going in, with each row re-measured 2026-08-04.
 | `AssumptionCache` | 280 + 310 | `assumptions.rs`, with `DomConditionCache` alongside | **done 2026-08-04** (tranche 8) |
 | `SelectPatternResult` | declared in `ValueTracking.h` | `select_pattern.rs` | **done 2026-08-03** (tranches 4a/4b) |
 | `TargetLibraryInfo` | 664 | `target_library_info.rs`, 427 lines | partial; check what it already answers before recording `getIntrinsicForCallSite` as blocked on it |
-| `ValueTracking.cpp` itself | 10535 | `value_tracking.rs`, 5761 | the remaining 11 gaps are listed above, not a line-count gap |
+| `ValueTracking.cpp` itself | 10535 | `value_tracking.rs`, 5761 | the remaining 10 gaps are listed above, not a line-count gap |
 
 The original estimate — roughly 12–14k lines of ported logic plus D11-compliant
 tests, comparable to the whole ApFloat/ApInt sweep — held. It was delivered as
@@ -473,8 +511,9 @@ sequenced:
    oracle for every slice.
 4. ~~**`SelectPatternResult`**~~ ✅ **done 2026-08-03** (tranches 4a/4b) —
    `getSelectPattern`, `matchDecomposedSelectPattern`, `getMinMaxIntrinsic` in
-   `select_pattern.rs`. `getInverseMinMaxIntrinsic` is the one row of this
-   tranche still open; see the note under the tranche table above.
+   `select_pattern.rs`. `getInverseMinMaxIntrinsic`, the one row of this tranche
+   left open, closed 2026-08-04 with `MinMaxOperation`; see the note under the
+   tranche table above.
 5. ~~**Pointer / object analysis**~~ ✅ **done 2026-08-03** (tranche 5) —
    `pointer_analysis.rs`.
 6. ~~**Speculation safety**~~ ✅ **done 2026-08-03** (tranche 6) —
