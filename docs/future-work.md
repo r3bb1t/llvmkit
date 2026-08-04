@@ -97,39 +97,40 @@ is the honest record.
 | dead upstream declaration | 1 | `analyzeKnownFPClassFromSelect`, see below |
 | residue | 5 | small, independent — `analyzeKnownBitsFromAndXorOr` is done |
 | expose-only | 2 | `matchSimpleRecurrence` and `computeKnownBitsFromRangeMetadata` already exist as crate-private helpers |
-| partial | 1 | `getInverseMinMaxIntrinsic` — integer arms done, 6 FP intrinsics unrepresentable |
+| partial | 1 | `getInverseMinMaxIntrinsic` — integer arms done; **the six FP pairs are now representable**, see below |
 | sibling | 1 | `matchSimpleBinaryIntrinsicRecurrence` |
 | blocked | 1 | `getVScaleRange`, see above |
 
-**Take 6 and 8 before 5 and 7.** They are unblockers rather than additions.
-Tranche 6 is now done, and it paid out exactly as predicted: landing it closed
-three deferred arms of `is_known_not_undef_or_poison` — the
-`programUndefinedIfUndefOrPoison` walk, the dominating-branch-condition walk,
-and (found along the way) the `shufflevector` splat arm — plus the `!noundef`
-load-metadata arm, without editing that function's own logic. Tranche 8 is the
-same shape: `is_known_to_be_a_power_of_two` and `is_known_non_equal` each skip
-an assumption-driven refinement today. Tranche 7 is the largest and gains
-nothing from going early.
+**`getInverseMinMaxIntrinsic` is no longer blocked (re-checked 2026-08-04).**
+Both the ledger reason and `MinMaxIntrinsic::inverse`'s doc comment say
+"llvmkit models no floating-point min/max intrinsic". That was true when
+tranche 4b wrote it and **false since tranche 7a**: `MinMaxKind` in
+`fp_class.rs` has exactly the six variants upstream inverts — `Minimum`/
+`Maximum`, `MinimumNum`/`MaximumNum`, `MinNum`/`MaxNum` — and
+`known_fp_class.rs` already maps intrinsic names onto them. Closing it means
+adding `MinMaxKind::inverse()` and deciding how one public entry point spans
+two enums (integer `MinMaxIntrinsic`, floating-point `MinMaxKind`). That is a
+design question, not a blocker, so it belongs with the residue rather than in
+the blocked pile. **Fix both reason texts when it lands.**
 
 
 ### Found while porting tranche 6: the `and` / `xor` known-bits arm is narrow — **closed 2026-08-04**
 
-`bitwise_known` in `value_tracking.rs` ports only part of upstream's
-`getKnownBitsFromAndXorOr` (`ValueTracking.cpp`). It has the general
-"add/sub of an odd operand sets or clears bit 0" refinement, but not the two
-idiom arms above it:
+`bitwise_known` in `value_tracking.rs` ported only part of upstream's
+`getKnownBitsFromAndXorOr` (`ValueTracking.cpp`). It had the general
+"add/sub of an odd operand sets or clears bit 0" refinement, but neither of the
+two idiom arms above it:
 
 - `and(x, -x)` clears everything above the lowest set bit — upstream answers
   `KnownLHS.blsi()` or `KnownRHS.blsi()`, whichever operand has the smaller
   `countMaxTrailingZeros`.
 - `xor(x, x - 1)` likewise, answering `XBits.blsmsk()`.
 
-`KnownBits::blsi` and `blsmsk` are both already modeled here, and
-`is_negation_of_operand` already exists for the `m_Neg(m_Deferred(X))` half, so
-this is a small, self-contained improvement rather than a new subsystem. It is
-also the prerequisite for `analyzeKnownBitsFromAndXorOr`, which is exactly
-`getKnownBitsFromAndXorOr` with the operand known-bits passed in and is
-currently in the residue gap list.
+`KnownBits::blsi` and `blsmsk` were both already modeled here, and
+`is_negation_of_operand` already existed for the `m_Neg(m_Deferred(X))` half, so
+this was a small, self-contained improvement rather than a new subsystem — and
+the prerequisite for `analyzeKnownBitsFromAndXorOr`, which is exactly
+`getKnownBitsFromAndXorOr` with the operand known-bits passed in.
 
 Nothing was *wrong* — a missing refinement only leaves the answer weaker —
 which is why no test caught it. It was found by reading the C++ beside the
@@ -225,10 +226,17 @@ coverage being subsumed by the real ports.
 2. **Expose-only (2).** `computeKnownBitsFromRangeMetadata` is not a rename:
    upstream takes an `MDNode` where llvmkit's helper is value-shaped, so the
    public parameter is a real design decision.
-3. **Partial, sibling, blocked (3).** `getVScaleRange` stays recorded — porting
-   it would mean inventing half of a packed attribute payload llvmkit does not
-   model.
-4. **`analyzeKnownFPClassFromSelect` (1)** never closes: there is no upstream
+3. **`getInverseMinMaxIntrinsic` (1).** Re-checked and *not* blocked — see the
+   note under the tranche table. Small, and it belongs with the residue.
+4. **Sibling and blocked (2).** `matchSimpleBinaryIntrinsicRecurrence` needs
+   `match_simple_recurrence` generalised over the intrinsic-call form, so that
+   its `II == I` identity check has something to bind. `getVScaleRange` stays
+   recorded: upstream reads a packed `(min, max)` out of one attribute, and
+   `vscale_range` is on `attribute_td_drift.rs`'s `NOT_YET_MODELED` list with a
+   single-`u64` payload — so the parser cannot even produce a function carrying
+   one, and porting it would mean inventing the max half. It unblocks when the
+   *attribute* is modeled, which is an attribute-layer task, not this one.
+5. **`analyzeKnownFPClassFromSelect` (1)** never closes: there is no upstream
    definition to port. It is recorded, not scheduled.
 
 Separately, and moving no ledger row: **fill in `computeKnownFPClass`'s
@@ -239,14 +247,27 @@ the assumption arm, whose caches tranche 8 already built.
 
 ### Historical note on ordering
 
-**Tranches 6 and 8 were the unblockers, and both have landed.** Tranche 8 paid
-out as predicted: it closed the `@llvm.assume` arm
-`is_known_not_undef_or_poison` had recorded as deferred, and
-`compute_known_bits` now runs `computeKnownBitsFromContext` where upstream does,
-so every existing known-bits caller gets assumption- and branch-driven facts by
-attaching a cache to the query. Tranche 7 followed as the standalone finish it
-was predicted to be — a new lattice rather than a new consumer, with nothing
-waiting on it.
+**Tranches 6 and 8 were the unblockers, and both have landed.** The advice at
+the time was "take 6 and 8 before 5 and 7, they are unblockers rather than
+additions", and both paid out as predicted.
+
+Tranche 6 closed three arms `is_known_not_undef_or_poison` had recorded as
+deferred — the `programUndefinedIfUndefOrPoison` walk, the
+dominating-branch-condition walk, and (found along the way) the
+`shufflevector` splat arm — plus the `!noundef` load-metadata arm, without
+editing that function's own logic.
+
+Tranche 8 closed its `@llvm.assume` arm, and `compute_known_bits` now runs
+`computeKnownBitsFromContext` where upstream does, so every existing known-bits
+caller gets assumption- and branch-driven facts by attaching a cache to the
+query. **Unverified follow-on:** the note that motivated the ordering also
+claimed `is_known_to_be_a_power_of_two` and `is_known_non_equal` each skip an
+assumption-driven refinement. Both reach assumptions through
+`compute_known_bits` now, so that may have closed itself — nobody has checked.
+Read the two upstream functions beside ours before recording it either way.
+
+Tranche 7 followed as the standalone finish it was predicted to be — a new
+lattice rather than a new consumer, with nothing waiting on it.
 
 Two arms of tranche 8 stay narrower than upstream, each recorded at its site:
 `computeKnownBitsFromContext`'s operand-bundle alignment refinement needs
@@ -258,7 +279,10 @@ filled in without re-scanning.
 
 **Run both doc gates per slice, not just fmt/clippy/tests.** Three tranches ran
 without them and a `private_intra_doc_links` error — a public doc linking the
-crate-private `ConstantData` — sat unnoticed until it was asked for:
+crate-private `ConstantData` — sat unnoticed until it was asked for. **It
+recurred on 2026-08-04** (`fp_predicate.rs`'s module header linking the
+crate-private `denormal_mode_of`), which is the argument for running the gate
+every slice rather than remembering to:
 
 ```
 RUSTDOCFLAGS="-D warnings" cargo +1.96.0 doc --workspace --no-deps --all-features
@@ -331,8 +355,9 @@ is recorded on `VALUE_TRACKING_SURFACE_AUDITED` in
 
 **101 entry points** — 96 namespace-scope functions plus 5 types defined in the
 header (`ConstantDataArraySlice`, `OverflowResult`, `SelectPatternFlavor`,
-`SelectPatternNaNBehavior`, `SelectPatternResult`). Of those, **32 are
-modeled** and **69 are not**.
+`SelectPatternNaNBehavior`, `SelectPatternResult`). **At the time of the audit**
+32 were modeled and 69 were not; the running count lives at the top of this
+section (90 / 11 as of 2026-08-04). The 101 is the part that does not move.
 
 The audit's real finding was about the ledger, not the port. The gap table was
 keyed by *family* — seven prose rows, on the reasoning that "enumerating ~76
@@ -353,24 +378,25 @@ The gap table is now symbol-keyed, and `value_tracking_surface_is_accounted_for`
 asserts modeled + gaps equals the audited 101 — so a symbol can no longer be
 neither. Verified red-green: dropping one gap row fails it.
 
-## ValueTracking.h — the road to 100% (measured 2026-08-01)
+## ValueTracking.h — the road to 100% (measured 2026-08-01, **prerequisites now all met**)
 
-`KnownBits.h` is fully modeled. `ValueTracking.h` is not, and the honest
-reason is that its unmodeled entry points are blocked on **missing types**,
-not on missing effort. Measured against the vendored 22.1.4 tree:
+This section's premise was that `ValueTracking.h`'s unmodeled entry points were
+blocked on **missing types**, not on missing effort. That premise has since been
+worked through: every prerequisite below is done. It is kept as the record of
+what the sizing looked like going in, with each row re-measured 2026-08-04.
 
-| Prerequisite | Upstream size | llvmkit today | Gap |
+| Prerequisite | Upstream size | llvmkit now | Status |
 |---|---|---|---|
-| `ConstantRange` | 632 (`.h`) + 2314 (`.cpp`) | `constant_range.rs`, 223 lines, **15 of 78** public methods | ~63 methods + `ConstantRangeTest.cpp` (~2800 lines) |
-| `KnownFPClass` / `FPClassTest` | `FloatingPointMode.h` 290 + `KnownFPClass.h` 324, plus ~1500 lines of `computeKnownFPClass` | `fp_class.rs` — the lattice and every predicate over it | **lattice done 2026-08-04**; `computeKnownFPClass` and the `KnownFPClass.cpp` operations it uses remain |
+| `ConstantRange` | 632 (`.h`) + 2314 (`.cpp`) | `constant_range.rs`, 3033 lines, 95 public methods | **done 2026-08-02** — all but `castOp`, `shlWithNoWrap` and the signedness-flipping helpers, each recorded in slice 3 below |
+| `KnownFPClass` / `FPClassTest` | `FloatingPointMode.h` 290 + `KnownFPClass.h` 324, plus ~1500 lines of `computeKnownFPClass` | `fp_class.rs` (lattice + every operation), `known_fp_class.rs` (`computeKnownFPClass` + predicates), `fp_predicate.rs` (`fcmpImpliesClass`) | **done 2026-08-04**; the dispatch is partial and its module header names each missing arm |
 | `AssumptionCache` | 280 + 310 | `assumptions.rs`, with `DomConditionCache` alongside | **done 2026-08-04** (tranche 8) |
 | `SelectPatternResult` | declared in `ValueTracking.h` | `select_pattern.rs` | **done 2026-08-03** (tranches 4a/4b) |
-| `TargetLibraryInfo` | 664 | `target_library_info.rs`, 427 lines | partial; may already suffice |
-| `ValueTracking.cpp` itself | 10535 | `value_tracking.rs`, 2259 | ~8300 lines |
+| `TargetLibraryInfo` | 664 | `target_library_info.rs`, 427 lines | partial; check what it already answers before recording `getIntrinsicForCallSite` as blocked on it |
+| `ValueTracking.cpp` itself | 10535 | `value_tracking.rs`, 5761 | the remaining 11 gaps are listed above, not a line-count gap |
 
-Roughly **12–14k lines of ported logic**, plus D11-compliant ported tests for
-each (upstream's `ValueTrackingTest.cpp` is ~5000 lines). Comparable in size to
-the whole ApFloat/ApInt sweep, which was its own multi-cycle program.
+The original estimate — roughly 12–14k lines of ported logic plus D11-compliant
+tests, comparable to the whole ApFloat/ApInt sweep — held. It was delivered as
+the tranche sequence recorded above rather than as one program.
 
 **Suggested tranche order.** Tranche 1 needs no new types at all and unblocks
 the most callers, so it should go first regardless of how the rest is
@@ -413,18 +439,20 @@ sequenced:
      (`shl nuw nsw`). That is a missing transform, not a missing analysis.
      `crates/llvmkit-asmparser/tests/value_tracking_predicates.rs` asserts them
      **false** so closing the gap trips the test rather than passing silently.
-2. **Poison / UB family** — `canCreatePoison`, `canCreateUndefOrPoison`,
-   `impliesPoison`, `propagatesPoison`, `programUndefinedIfPoison`,
-   `mustTriggerUB`, `isGuaranteedNotToBeUndef`. llvmkit already has
-   `is_guaranteed_not_to_be_poison` internally, so this extends an existing
-   seed. Still no new types.
+2. ~~**Poison / UB family**~~ ✅ **done 2026-08-03** (tranche 6) —
+   `canCreatePoison`, `canCreateUndefOrPoison`, `impliesPoison`,
+   `propagatesPoison`, `programUndefinedIfPoison`, `mustTriggerUB`,
+   `isGuaranteedNotToBeUndef`, in `speculation.rs`. It extended the existing
+   `is_guaranteed_not_to_be_poison` seed and needed no new types, as predicted.
 3. ~~**`ConstantRange` to completion**, then the families it gates.~~
    **DONE 2026-08-02** — all five slices. `ConstantRange` went from 13 of 83
    public methods to 90 llvmkit methods covering all but `castOp`,
    `shlWithNoWrap` and the signedness-flipping helpers, each recorded below.
-   Cut into five sub-slices, each mergeable on its own (2026-08-01). llvmkit
-   maps 13 of the 78 public methods today; the count below is what each slice
-   adds.
+   Cut into five sub-slices, each mergeable on its own (2026-08-01); the count
+   per row below is what that slice added. (An earlier revision of this
+   paragraph still said "llvmkit maps 13 of the 78 public methods today" *after*
+   the DONE line — the pre-slice figure, left in place and contradicting the
+   sentence above it.)
 
    | Slice | Adds | Content |
    |---|---|---|
@@ -443,17 +471,21 @@ sequenced:
    `ConstantRangeTest.cpp` (~2800 lines) is the test source throughout; its
    exhaustive-over-4-bit-ranges harness ports directly and is the right
    oracle for every slice.
-4. **`SelectPatternResult`** — `getSelectPattern`,
-   `matchDecomposedSelectPattern`, `getMinMaxIntrinsic`,
-   `getInverseMinMaxIntrinsic`.
-5. **Pointer / object analysis** — `getUnderlyingObjects`,
-   `getConstantStringInfo`, `GetStringLength`, `onlyUsedByLifetimeMarkers`.
-6. **Speculation safety** — `isSafeToSpeculativelyExecute*`,
-   `isGuaranteedToTransferExecutionToSuccessor`, `isValidAssumeForContext`.
-7. **`KnownFPClass`** — the largest single piece, and the only one that needs
-   a new lattice rather than a new container.
-8. **`AssumptionCache`** — needs `@llvm.assume` modeled first;
-   `computeKnownBitsFromContext` depends on it.
+4. ~~**`SelectPatternResult`**~~ ✅ **done 2026-08-03** (tranches 4a/4b) —
+   `getSelectPattern`, `matchDecomposedSelectPattern`, `getMinMaxIntrinsic` in
+   `select_pattern.rs`. `getInverseMinMaxIntrinsic` is the one row of this
+   tranche still open; see the note under the tranche table above.
+5. ~~**Pointer / object analysis**~~ ✅ **done 2026-08-03** (tranche 5) —
+   `pointer_analysis.rs`.
+6. ~~**Speculation safety**~~ ✅ **done 2026-08-03** (tranche 6) —
+   `speculation.rs`; `isValidAssumeForContext` landed with tranche 8 in
+   `assumptions.rs`.
+7. ~~**`KnownFPClass`**~~ ✅ **done 2026-08-04** (tranche 7a/7b/7c + the select
+   arm). It was the largest single piece and the only one needing a new lattice,
+   as predicted. `computeKnownFPClass`'s dispatch remains partial by design.
+8. ~~**`AssumptionCache`**~~ ✅ **done 2026-08-04** (tranche 8) —
+   `assumptions.rs`, and `compute_known_bits` now runs
+   `computeKnownBitsFromContext` where upstream does.
 
 The ledger in `crates/llvmkit-ir/tests/value_tracking_parity.rs` tracks
 progress: each tranche moves rows from `VALUE_TRACKING_GAPS` into
@@ -527,8 +559,8 @@ is checked in verbatim and driven by
 `crates/llvmkit-asmparser/tests/value_tracking_recurrence.rs`; twelve of its
 fifteen functions reproduce their CHECK line exactly.
 
-**Three do not, and both reasons are missing transforms rather than missing
-analysis.** They are asserted to stay *unfolded*, so closing either gap trips
+**Three do not, and in every case the reason is a missing transform rather than
+missing analysis.** They are asserted to stay *unfolded*, so closing either gap trips
 the test rather than passing silently.
 
 | Function | Upstream CHECK | Why it is out of reach |
@@ -1135,7 +1167,9 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   cycle cycle D/E)**. There were never two "environmental" drifts: gated on the
   pinned CI toolchain (`cargo +1.96.0`), `folder_typed_wrong_width` and
   `extract_value_empty_indices` both pass, and the whole suite's baseline is
-  **0 failures of 83 registered fixtures**. The mismatch only ever appeared
+  **0 failures** across the registered fixtures — `CLAUDE.md` carries the live
+  count, which this entry used to duplicate and had let drift to 83. The
+  mismatch only ever appeared
   when the suite was run on a *newer* rustc than the pin. Every `.stderr` in
   the tree is blessed on 1.96.0; re-bless there and nowhere else.
 
