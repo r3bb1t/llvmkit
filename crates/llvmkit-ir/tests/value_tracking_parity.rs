@@ -296,6 +296,7 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "cannotBeOrderedLessThanZero",
         "cannot_be_ordered_less_than_zero",
     ),
+    ("collectPossibleValues", "collect_possible_values"),
     ("computeConstantRange", "compute_constant_range"),
     (
         "computeConstantRangeIncludingKnownBits",
@@ -452,6 +453,7 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "program_undefined_if_undef_or_poison",
     ),
     ("propagatesPoison", "propagates_poison"),
+    ("stripNullTest", "strip_null_test"),
     ("willNotFreeBetween", "will_not_free_between"),
 ];
 
@@ -476,10 +478,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
         "declared in ValueTracking.h and defined nowhere in the LLVM tree - the name occurs exactly once across llvm/, its own declaration, with no definition and no caller. There is no behaviour to port. The select arm it names is real and is ported, as adjustKnownFPClassForSelectArm plus the Select case of computeKnownFPClass",
     ),
     (
-        "collectPossibleValues",
-        "residue: enumerates a value set; no llvmkit caller yet",
-    ),
-    (
         "computeKnownBitsFromRangeMetadata",
         "modeled as the crate-private range_metadata_known_bits; public upstream, not public here",
     ),
@@ -489,7 +487,7 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     ),
     (
         "getIntrinsicForCallSite",
-        "residue: maps a libcall to an intrinsic via TargetLibraryInfo",
+        "blocked on there being no public intrinsic-id type: the TargetLibraryInfo half exists (target_library_info.rs::LibFunc, lib_func_for_name), but the return type is Intrinsic::ID over the whole intrinsic space and llvmkit's IntrinsicSemantic is pub(crate), which -D warnings makes unspellable in a public signature. Unlike getInverseMinMaxIntrinsic's ten-symbol family, this range is open-ended, so a hand-written sum type is not the answer",
     ),
     (
         "getVScaleRange",
@@ -506,10 +504,6 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     (
         "matchSimpleRecurrence",
         "implemented as the crate-private match_simple_recurrence, which the phi arm of computeKnownBits uses; public upstream, not public here",
-    ),
-    (
-        "stripNullTest",
-        "residue: peels a null-check pattern; no llvmkit caller yet",
     ),
 ];
 
@@ -721,13 +715,14 @@ fn exercises_every_modeled_value_tracking_entry_point() {
         BytewiseValue, ConstantDataArraySlice, MinMaxIntrinsic, MinMaxKind, MinMaxOperation,
         SelectPatternFlavor, SelectPatternMatch, SelectPatternNaNBehavior, SelectPatternResult,
         argument_aliasing_to_returned_pointer, can_convert_to_min_or_max_intrinsic,
-        find_alloca_for_value, find_inserted_value, get_constant_data_array_info,
-        get_constant_string_info, get_select_pattern, get_string_length, get_underlying_object,
-        get_underlying_object_aggressive, get_underlying_objects,
-        get_underlying_objects_for_code_gen, is_bytewise_value,
+        collect_possible_values, find_alloca_for_value, find_inserted_value,
+        get_constant_data_array_info, get_constant_string_info, get_select_pattern,
+        get_string_length, get_underlying_object, get_underlying_object_aggressive,
+        get_underlying_objects, get_underlying_objects_for_code_gen, is_bytewise_value,
         is_intrinsic_returning_pointer_aliasing_argument_without_capturing,
         match_decomposed_select_pattern, match_select_pattern, only_used_by_lifetime_markers,
         only_used_by_lifetime_markers_or_droppable_instructions, pointer_base_with_constant_offset,
+        strip_null_test,
     };
     use llvmkit_ir::{
         DynBrand, SpeculationOptions, block_transfers_execution_to_successor, can_create_poison,
@@ -911,6 +906,10 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     // Not in the table — the answer shape of `isBytewiseValue`, which upstream
     // spells as a `Value *` because it can mint the constant.
     let _bytewise_value = BytewiseValue::<DynBrand>::AnyByte;
+
+    // Residue ported 2026-08-04.
+    let _collect_possible_values = collect_possible_values::<DynBrand>;
+    let _strip_null_test = strip_null_test::<DynBrand>;
 
     // The min/max vocabulary. `getInverseMinMaxIntrinsic` spans both halves of
     // the family, so all three spellings of its ledger row are named here.

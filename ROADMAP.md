@@ -65,7 +65,7 @@ Hard gaps for replacing more LLVM/Inkwell workflows:
   represented only where the analysis APIs implement them, and InstSimplify-
   style nonconstant folds are still future transform work.
 - `KnownBits.h` is **complete** (the ledger asserts an empty gap list);
-  `ValueTracking.h` is at **91 of 101 entry points** with ten recorded gaps.
+  `ValueTracking.h` is at **93 of 101 entry points** with eight recorded gaps.
   The transfer functions underneath remain a represented integer, pointer,
   fixed-vector, and intrinsic-fact subset — entry-point coverage is not arm
   coverage, and `computeKnownFPClass` is the clearest case: it counts as one
@@ -414,8 +414,8 @@ The current baseline already includes:
    (`zero & one` may be non-zero internally) is kept, as upstream relies on it
    for intersections and diagnostics.
 
-2. **ValueTracking operator parity** — **91 of 101 entry points** as of
-   2026-08-04; ten gaps, each with a reason in the ledger. Landed since this
+2. **ValueTracking operator parity** — **93 of 101 entry points** as of
+   2026-08-04; eight gaps, each with a reason in the ledger. Landed since this
    list was written: the and/or/xor refinements (including the `and(x, -x)` and
    `xor(x, x - 1)` idiom arms), select edge facts on both the integer and
    floating-point sides, PHI recurrences with `matchSimpleRecurrence`, the

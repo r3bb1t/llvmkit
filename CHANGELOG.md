@@ -14,6 +14,31 @@ cut, entries accumulate under **Unreleased**.
 > past the 0.0.4 freeze, not two pending releases; they collapse into one entry
 > when the tag is cut.
 
+### ValueTracking: two of the residue — `stripNullTest` and `collectPossibleValues`
+
+#### Added
+
+- `strip_null_test`, porting `llvm::stripNullTest`: given the ceiling-division
+  idiom `(X >> C) or/add zext(X & mask(C) != 0)`, it recovers `X`. The shift
+  carries every bit at or above `C` and the compare folds the bits below it
+  into one flag, so the whole expression is zero exactly when `X` is.
+- `collect_possible_values`, porting `llvm::collectPossibleValues`: the
+  constants a value can take, walking back through `select` and `phi`.
+  Upstream fills a caller-owned set and returns whether the enumeration is
+  complete; here the two are one `Option`, because an incomplete set is
+  precisely what a caller must not act on.
+
+#### Fixed
+
+- `is_known_non_zero` now retries through `strip_null_test`, which is the tail
+  of upstream's `isKnownNonZero`. It answers `true` on the ceiling-division
+  idiom whenever it can answer `true` on the operand — previously it fell
+  through to known bits, which prove nothing there. Its doc comment now also
+  says plainly that the rest of that function is a known-bits approximation of
+  upstream's dedicated walk, not a line-for-line port.
+
+Ledger: **93 of 101 modeled, 8 gaps.**
+
 ### ValueTracking: `getInverseMinMaxIntrinsic` across both halves of the family
 
 #### Added

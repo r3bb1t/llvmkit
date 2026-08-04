@@ -399,11 +399,27 @@ pub fn compute_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Return true when `value` is known non-zero.
+///
+/// Upstream's `llvm::isKnownNonZero` is a dedicated walk —
+/// `isKnownNonZeroFromOperator`, a dominating-condition check, then the
+/// `stripNullTest` tail. llvmkit answers the first two through
+/// [`compute_known_bits`], which proves less on the shapes that walk special-
+/// cases but never proves something false; only the last is spelled out here,
+/// because no amount of known-bits reasoning reaches it.
 pub fn is_known_non_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
-    Ok(compute_known_bits(value, query)?.is_non_zero())
+    if compute_known_bits(value, query)?.is_non_zero() {
+        return Ok(true);
+    }
+    // `f(X)` is zero exactly when `X` is, so the question transfers whole.
+    // Upstream recurses at the same depth, which terminates because
+    // `stripNullTest` only ever answers with an operand of an operand.
+    match strip_null_test(value) {
+        Some(stripped) => is_known_non_zero(stripped, query),
+        None => Ok(false),
+    }
 }
 
 /// Return true when `value` is known zero.
@@ -2883,6 +2899,260 @@ pub(crate) fn not_operand<'ctx, B: ModuleBrand + 'ctx>(
         Some(rhs)
     } else {
         None
+    }
+}
+
+/// Every immediate value `value` could take, or `None` if that set cannot be
+/// enumerated within `max_count`.
+///
+/// Ports `llvm::collectPossibleValues`, which walks back through `select` and
+/// `phi` collecting the constants at the leaves. Upstream fills a caller-owned
+/// set and returns whether the enumeration is *complete*; here the two are one
+/// answer, because an incomplete set is exactly what a caller must not act on.
+/// Its only in-tree caller (`SimplifyCFG`) passes a fresh set and reads the
+/// bool first, so nothing is lost by not exposing the partial result.
+///
+/// `max_count` bounds the answer: reaching it is "incomplete", not an error.
+/// Any leaf that is neither an immediate constant nor a `select`/`phi` — an
+/// argument, a load, an `add` — makes the set unenumerable, which is also
+/// `None`. When `allow_undef_or_poison` is false, a constant that is not
+/// provably neither also gives up.
+///
+/// Upstream's `m_ImmConstant` is "a constant that is not, and does not
+/// contain, a `ConstantExpr`". llvmkit keeps constant expressions in their own
+/// `ConstantData::Expr` arm, so the check is structural here rather than a
+/// predicate over one flat `Constant` class.
+pub fn collect_possible_values<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    max_count: usize,
+    allow_undef_or_poison: bool,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> IrResult<Option<Vec<Value<'ctx, B>>>> {
+    let mut state = PossibleValues {
+        constants: Vec::new(),
+        visited: HashSet::new(),
+        worklist: Vec::new(),
+        max_count,
+        allow_undef_or_poison,
+    };
+
+    if !state.push(value, query)? {
+        return Ok(None);
+    }
+    while let Some(current) = state.worklist.pop() {
+        match instruction_kind(current) {
+            Some(InstructionKindData::Select(data)) => {
+                let true_value = value_from_id(current, data.true_val.get());
+                let false_value = value_from_id(current, data.false_val.get());
+                if !state.push(true_value, query)? || !state.push(false_value, query)? {
+                    return Ok(None);
+                }
+            }
+            Some(InstructionKindData::Phi(data)) => {
+                // Read the operands out before pushing: `push` walks the
+                // module, and holding the `RefCell` borrow across it would
+                // outlast what this loop needs.
+                let incomings: Vec<ValueSlot> = data
+                    .incoming
+                    .borrow()
+                    .iter()
+                    .map(|(incoming, _)| incoming.get())
+                    .collect();
+                for incoming in incomings {
+                    let incoming = value_from_id(current, incoming);
+                    // Upstream's fast path for a recurrence phi: an operand
+                    // that is the phi itself adds nothing.
+                    if incoming == current {
+                        continue;
+                    }
+                    if !state.push(incoming, query)? {
+                        return Ok(None);
+                    }
+                }
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(state.constants))
+}
+
+/// The running state of [`collect_possible_values`] — upstream's `Constants`,
+/// `Visited` and `Worklist` locals, plus the two bounds its `Push` lambda
+/// closes over.
+struct PossibleValues<'ctx, B: ModuleBrand> {
+    constants: Vec<Value<'ctx, B>>,
+    visited: HashSet<ValueSlot>,
+    worklist: Vec<Value<'ctx, B>>,
+    max_count: usize,
+    allow_undef_or_poison: bool,
+}
+
+impl<'ctx, B: ModuleBrand + 'ctx> PossibleValues<'ctx, B> {
+    /// Ports the `Push` lambda. `false` is upstream's "give up".
+    fn push<'a>(
+        &mut self,
+        value: Value<'ctx, B>,
+        query: &ValueTrackingQuery<'a, 'ctx, B>,
+    ) -> IrResult<bool> {
+        if is_immediate_constant(value) {
+            if !self.allow_undef_or_poison && !is_known_not_undef_or_poison(value, query)? {
+                return Ok(false);
+            }
+            // Check membership first, so a repeat does not spend a slot.
+            if self.constants.contains(&value) {
+                return Ok(true);
+            }
+            if self.constants.len() == self.max_count {
+                return Ok(false);
+            }
+            self.constants.push(value);
+            return Ok(true);
+        }
+        if matches!(value.data().kind, ValueKindData::Instruction(_)) {
+            if self.visited.insert(value.slot()) {
+                self.worklist.push(value);
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+/// Whether `value` is an immediate constant — upstream's `m_ImmConstant`.
+///
+/// Upstream asks for a `Constant` that is not a `ConstantExpr` and does not
+/// contain one. llvmkit stores constant expressions in their own arm, so this
+/// rejects that arm and recurses through aggregates for the "contains" half.
+///
+/// Upstream carries one further escape hatch: a vector whose splat value is
+/// expression-free counts even when the vector itself is not. That exists for
+/// scalable splats held as a `ConstantExpr` and is marked with a `TODO` to
+/// delete; llvmkit stores aggregate elements as slots, so a splat with no
+/// expression in it already passes the recursive check.
+fn is_immediate_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
+    let ValueKindData::Constant(constant) = &value.data().kind else {
+        return false;
+    };
+    match constant {
+        ConstantData::Expr(_) => false,
+        ConstantData::Aggregate(elements) => elements
+            .iter()
+            .all(|element| is_immediate_constant(value_from_id(value, *element))),
+        _ => true,
+    }
+}
+
+/// The inner value `X` of an expression `f(X)` that is zero exactly when `X`
+/// is, or `None` if `value` is not of that form.
+///
+/// Ports `llvm::stripNullTest`, which recognises one shape:
+///
+/// ```text
+/// (X >> C1) or/add zext(X & mask(C2) != 0)
+/// ```
+///
+/// where `mask(C2)` is a low-bit mask whose population count is `C1`. The
+/// shift carries every bit at or above `C1`, and the compare folds the `C1`
+/// bits below it into a single "any of them set" flag, so between them the two
+/// operands are non-zero exactly when some bit of `X` is. The `or` and `add`
+/// spellings agree because the two operands share no set bit.
+///
+/// Upstream answers a null `Value *` for no match, which is the `None` here.
+pub fn strip_null_test<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<Value<'ctx, B>> {
+    // Upstream's `m_c_BinOp` is guarded by an opcode check for `add` or `or`.
+    let data = match instruction_kind(value)? {
+        InstructionKindData::Add(data) | InstructionKindData::Or(data) => data,
+        _ => return None,
+    };
+    let lhs = value_from_id(value, data.lhs.get());
+    let rhs = value_from_id(value, data.rhs.get());
+    // `m_c_BinOp` matches either operand order.
+    null_test_operands(lhs, rhs).or_else(|| null_test_operands(rhs, lhs))
+}
+
+/// One operand order of [`strip_null_test`]'s commutative match: `shifted` as
+/// `lshr X, C1` and `flag` as `zext(icmp ne (and X, mask(C2)), 0)`.
+fn null_test_operands<'ctx, B: ModuleBrand + 'ctx>(
+    shifted: Value<'ctx, B>,
+    flag: Value<'ctx, B>,
+) -> Option<Value<'ctx, B>> {
+    // m_LShr(m_Value(X), m_APInt(C1))
+    let (base, shift_amount) = binary_operands_of(shifted, BinaryOpcode::LShr)?;
+    let shift_amount = splat_or_scalar_constant(shift_amount)?;
+
+    // m_ZExt(m_SpecificICmp(ICMP_NE, .., m_Zero()))
+    let compare = zext_source(flag)?;
+    let InstructionKindData::ICmp(compare_data) = instruction_kind(compare)? else {
+        return None;
+    };
+    if compare_data.predicate != IntPredicate::Ne {
+        return None;
+    }
+    let masked = value_from_id(compare, compare_data.lhs.get());
+    let zero = value_from_id(compare, compare_data.rhs.get());
+    if !splat_or_scalar_constant(zero).is_some_and(|constant| constant.is_zero()) {
+        return None;
+    }
+
+    // m_And(m_Deferred(X), m_LowBitMask(C2))
+    let (masked_base, mask) = binary_operands_of(masked, BinaryOpcode::And)?;
+    if masked_base != base {
+        return None;
+    }
+    let mask = splat_or_scalar_constant(mask)?;
+    if !mask.is_mask() {
+        return None;
+    }
+
+    // `C2->popcount() == C1->getZExtValue()`. Upstream's `getZExtValue`
+    // asserts the shift fits in 64 bits; comparing at the shift's own width
+    // is the same test without the precondition, since a population count
+    // never exceeds a bit width.
+    let popcount = ApInt::from_words(shift_amount.bit_width(), &[u64::from(mask.popcount())]);
+    shift_amount.eq_ap_int(&popcount).then_some(base)
+}
+
+/// The constant `value` carries, matching upstream's `m_APInt`: a scalar
+/// integer constant, or a vector whose lanes all carry the same one.
+///
+/// Upstream reaches the vector case through `getSplatValue(AllowPoison=true)`,
+/// so a poison lane is skipped rather than treated as a disagreement — it can
+/// be read as whatever the other lanes hold.
+fn splat_or_scalar_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<ApInt> {
+    match &value.data().kind {
+        ValueKindData::Constant(ConstantData::Int(_)) => argument_constant(Some(value)),
+        ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
+            let mut splat: Option<ApInt> = None;
+            for element in elements.iter() {
+                let element = value_from_id(value, *element);
+                if matches!(
+                    element.data().kind,
+                    ValueKindData::Constant(ConstantData::Poison)
+                ) {
+                    continue;
+                }
+                let element = splat_or_scalar_constant(element)?;
+                match &splat {
+                    Some(seen) if !seen.eq_ap_int(&element) => return None,
+                    Some(_) => {}
+                    None => splat = Some(element),
+                }
+            }
+            splat
+        }
+        _ => None,
+    }
+}
+
+/// The source of a `zext`, matching upstream's `m_ZExt`.
+fn zext_source<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
+    match instruction_kind(value)? {
+        InstructionKindData::Cast(data) if data.kind == CastOpcode::ZExt => {
+            Some(value_from_id(value, data.src.get()))
+        }
+        _ => None,
     }
 }
 

@@ -161,7 +161,7 @@ Implemented today:
   / `TF32` are out of scope). `ConstantRange` covers all but `castOp`,
   `shlWithNoWrap` and the signedness-flipping helpers. **`KnownBits.h` is
   complete** — the ledger asserts an *empty* gap list. `ValueTracking.h` is at
-  **91 of 101 entry points**, spread over `value_tracking.rs`,
+  **93 of 101 entry points**, spread over `value_tracking.rs`,
   `select_pattern.rs`, `pointer_analysis.rs`, `speculation.rs`,
   `assumptions.rs`, `implied_conditions.rs`, and the floating-point trio
   `fp_class.rs` / `known_fp_class.rs` / `fp_predicate.rs`.

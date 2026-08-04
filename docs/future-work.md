@@ -72,8 +72,8 @@ What is deliberately **not** ported from `APIntTest.cpp`, and why:
 
 ## ValueTracking.h — remaining tranches, and the order to take them
 
-**Status after `getInverseMinMaxIntrinsic` (2026-08-04):** 91 of 101 entry
-points modeled, 10 gaps, all symbol-keyed in
+**Status after the residue port (2026-08-04):** 93 of 101 entry
+points modeled, 8 gaps, all symbol-keyed in
 `crates/llvmkit-ir/tests/value_tracking_parity.rs` and asserted to sum to the
 audited surface.
 
@@ -95,7 +95,7 @@ is the honest record.
 | ~~7 FP class~~ | 0 | **done** — `fp_class.rs` (lattice + every `KnownFPClass.cpp` operation) and `known_fp_class.rs` (`computeKnownFPClass` + the nine predicates) |
 | ~~FP select arm~~ | 0 | **done** — `fp_predicate.rs` (`fcmpImpliesClass`) plus `adjust_known_fp_class_for_select_arm` and the `select` dispatch arm |
 | dead upstream declaration | 1 | `analyzeKnownFPClassFromSelect`, see below |
-| residue | 5 | small, independent — `analyzeKnownBitsFromAndXorOr` is done |
+| residue | 3 | `analyzeKnownBitsFromAndXorOr`, `stripNullTest` and `collectPossibleValues` are done; see below for what the last three need |
 | expose-only | 2 | `matchSimpleRecurrence` and `computeKnownBitsFromRangeMetadata` already exist as crate-private helpers |
 | ~~`getInverseMinMaxIntrinsic`~~ | 0 | **done** — all ten arms, see below |
 | sibling | 1 | `matchSimpleBinaryIntrinsicRecurrence` |
@@ -130,6 +130,28 @@ its narrowing.
 **The lesson generalises:** a comment claiming llvmkit lacks a feature is a
 claim to verify, not to inherit. Three of them were false in the 2026-08-04
 sweep, and two caused real defects rather than merely stale prose.
+
+### Found while porting `stripNullTest`: the parser cannot express a vector cast
+
+`llvm/test/Transforms/InstCombine/ceil-shift.ll` is the upstream test file for
+`stripNullTest`, and two of its cases — `ceil_shift4_v4i32` and
+`ceil_shift4_v8i16` — are the vector spellings of the idiom. They are **not**
+in llvmkit's port of that file, and this is why.
+
+llvmkit parses vector `lshr`, `and` and `icmp` (that landed with the vector
+binop work), and `splat (i32 16)` constants. It does **not** parse a vector
+`zext`: `ll_parser.rs`'s int-cast arm converts the source to
+`IntValue<IntDyn>` and requires `AnyTypeEnum::Int` for the destination, so
+`zext <4 x i1> %c to <4 x i32>` fails with "integer-typed cast source". Every
+form of the idiom needs that `zext`, so neither vector case can be built.
+
+`strip_null_test` itself **is** splat-aware — its constant matching follows
+upstream's `m_APInt`, which reaches a vector through
+`getSplatValue(AllowPoison=true)` — so the analysis has no divergence here and
+the arm will be exercised as soon as the parser can build the fixture. The
+missing piece is `trunc`/`zext`/`sext` over `<N x iM>` in the parser and the
+typed builder underneath it, which is the same shape of work the vector binops
+needed and is not a local change.
 
 ### Found while closing that row: the ledger did not check its own ValueTracking column — **closed 2026-08-04**
 
@@ -257,12 +279,28 @@ coverage being subsumed by the real ports.
 
 ### Order for the remaining 11 (recorded 2026-08-04)
 
-1. **Residue (5).** Independent, no shared blocker: `collectPossibleValues`,
-   `getFlippedStrictnessPredicateAndConstant`, `getIntrinsicForCallSite`,
-   `isOverflowIntrinsicNoWrap`, `stripNullTest`. Two carry known caveats —
-   `getFlippedStrictnessPredicateAndConstant` mints a constant, which is the
-   standing "not ported" ground, and `isOverflowIntrinsicNoWrap` needs
-   `BasicBlockEdge::isSingleEdge`, which does not exist yet.
+1. **Residue (3 left of 5).** `stripNullTest` and `collectPossibleValues`
+   landed 2026-08-04 — both were pure pattern/worklist code with no missing
+   dependency, which is why they went first. What remains is not "small and
+   independent" the way that phrasing implied; each is blocked on something
+   structural, re-checked 2026-08-04:
+   - `getFlippedStrictnessPredicateAndConstant` **mints a constant**
+     (`(icmp sgt X, 0)` → `(icmp sle X, 1)` needs the `1`), which is the
+     standing "not ported" ground. Leaving it a recorded gap is more honest
+     than a port that returns the predicate and makes the caller build the
+     constant, which is a different function.
+   - `getIntrinsicForCallSite` returns an `Intrinsic::ID`, and **llvmkit has no
+     public intrinsic-id type** — `IntrinsicSemantic` is `pub(crate)`, and
+     `-D warnings` makes `private_interfaces` an error. The
+     `TargetLibraryInfo` half it needs *does* exist
+     (`target_library_info.rs::LibFunc`, `lib_func_for_name`), so that is not
+     the blocker. Unlike `getInverseMinMaxIntrinsic`, whose domain was ten
+     symbols and so could be a hand-written sum, this one ranges over the whole
+     intrinsic space; the answer is exposing the intrinsic vocabulary, which is
+     its own piece of work.
+   - `isOverflowIntrinsicNoWrap` needs `BasicBlockEdge::isSingleEdge` and
+     edge-dominance (`DT.dominates(edge, use)`), plus the with-overflow
+     intrinsics as a modeled family rather than plain calls.
 2. **Expose-only (2).** `computeKnownBitsFromRangeMetadata` is not a rename:
    upstream takes an `MDNode` where llvmkit's helper is value-shaped, so the
    public parameter is a real design decision.
@@ -430,7 +468,7 @@ what the sizing looked like going in, with each row re-measured 2026-08-04.
 | `AssumptionCache` | 280 + 310 | `assumptions.rs`, with `DomConditionCache` alongside | **done 2026-08-04** (tranche 8) |
 | `SelectPatternResult` | declared in `ValueTracking.h` | `select_pattern.rs` | **done 2026-08-03** (tranches 4a/4b) |
 | `TargetLibraryInfo` | 664 | `target_library_info.rs`, 427 lines | partial; check what it already answers before recording `getIntrinsicForCallSite` as blocked on it |
-| `ValueTracking.cpp` itself | 10535 | `value_tracking.rs`, 5761 | the remaining 10 gaps are listed above, not a line-count gap |
+| `ValueTracking.cpp` itself | 10535 | `value_tracking.rs`, 5761 | the remaining 8 gaps are listed above, not a line-count gap |
 
 The original estimate — roughly 12–14k lines of ported logic plus D11-compliant
 tests, comparable to the whole ApFloat/ApInt sweep — held. It was delivered as

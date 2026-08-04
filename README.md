@@ -97,7 +97,7 @@ Shipped today:
   (`crates/llvmkit-ir/tests/value_tracking_parity.rs`) asserts an *empty* gap
   list, so a regression or a newly-synced upstream method has to be
   acknowledged rather than absorbed.
-- **ValueTracking — 91 of 101 entry points**, tracked symbol-by-symbol in the
+- **ValueTracking — 93 of 101 entry points**, tracked symbol-by-symbol in the
   same ledger, which asserts that modeled plus gaps equals the audited surface
   so a symbol cannot be silently neither. Beyond `compute_known_bits` itself
   (with `KnownBitsAnalysis`, `ValueTrackingQuery`, recursion budgeting,
@@ -111,7 +111,7 @@ Shipped today:
   `fcmpImpliesClass` (`fp_predicate.rs`). `computeKnownFPClass`'s opcode
   dispatch is deliberately partial; its module header names every arm that is
   not yet consulted, and an unconsulted arm only ever weakens an answer.
-  The remaining eleven gaps each carry a recorded reason —
+  The remaining eight gaps each carry a recorded reason —
   see [`docs/future-work.md`](docs/future-work.md).
 - **Represented intrinsic signatures and facts** — shipped for the modeled
   `llvm.*` signature families listed in `ROADMAP.md`: `assume`; integer or

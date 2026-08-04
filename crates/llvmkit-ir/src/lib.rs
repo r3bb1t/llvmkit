@@ -421,7 +421,7 @@ pub use speculation::{
 pub use value_tracking::{
     CondContext, KnownBitsAnalysis, KnownBitsAnalysisResult, MAX_ANALYSIS_RECURSION_DEPTH,
     ValueTrackingQuery, adjust_known_bits_for_select_arm, can_create_poison,
-    can_create_undef_or_poison, compute_constant_range,
+    can_create_undef_or_poison, collect_possible_values, compute_constant_range,
     compute_constant_range_including_known_bits, compute_known_bits,
     compute_known_bits_from_context, compute_max_significant_bits, compute_num_sign_bits,
     compute_overflow_for_signed_add, compute_overflow_for_signed_mul,
@@ -432,6 +432,7 @@ pub use value_tracking::{
     is_known_not_undef_or_poison, is_known_one, is_known_positive, is_known_to_be_a_power_of_two,
     is_known_zero, is_only_used_in_zero_comparison, is_only_used_in_zero_equality_comparison,
     is_sign_bit_check, known_bits_from_operator, masked_value_is_zero, propagates_poison,
+    strip_null_test,
 };
 pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.
