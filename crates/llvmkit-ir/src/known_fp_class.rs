@@ -15,8 +15,15 @@
 //!
 //! - **`fma` / `fmuladd`** — the rest of the arithmetic family landed; these
 //!   two did not.
-//! - **The vector arms** — `extractelement`, `insertelement`, `shufflevector`,
-//!   `extractvalue`, `bitcast`, `phi`, and the `vector_reduce_f*` family.
+//! - **`shufflevector`** — the demanded-lane split it needs
+//!   (`getShuffleDemandedElts`) exists only inlined inside
+//!   `value_tracking.rs`'s `shuffle_vector_known_bits`. Doing this arm means
+//!   extracting that first, so the poison-lane handling is shared rather than
+//!   written twice.
+//! - **`bitcast`** — upstream's arm runs `computeKnownBits` on an
+//!   element-wise bitcast source and transfers the sign bit, so it needs the
+//!   integer analysis threaded in rather than more FP reasoning.
+//! - **The `vector_reduce_f*` family.**
 //! - **The remaining intrinsics** — `sin`, `cos`, `powi`, `ldexp`, `frexp`,
 //!   `arithmetic_fence`, `vector_reverse`, `fptrunc_round`, and every
 //!   `experimental_constrained_*` / target-specific (`amdgcn_*`) variant.
@@ -25,7 +32,8 @@
 //! refinement, `nofpclass` on a call return or a parameter, the context arm
 //! (assumptions, dominating branches and an injected condition, through
 //! [`fp_predicate`](crate::fp_predicate)), `select`, `fneg`, the arithmetic
-//! arms `fadd` / `fsub` / `fmul` / `fdiv` / `frem`, the
+//! arms `fadd` / `fsub` / `fmul` / `fdiv` / `frem`, the vector arms
+//! `extractelement` / `insertelement` / `extractvalue` / `phi`, the
 //! `fabs`/`copysign`/`canonicalize`/`sqrt` intrinsics, the six min/max
 //! intrinsics, the seven rounding intrinsics, the `exp` and `log` families,
 //! `fpext`, `fptrunc`, `sitofp` and `uitofp`.
@@ -45,7 +53,9 @@ use crate::denormal_mode::{DenormalMode, DenormalModeKind};
 use crate::fmf::FastMathFlags;
 use crate::fp_class::{FpClassTest, KnownFpClass, MinMaxKind};
 use crate::fp_predicate::{denormal_mode_of, enclosing_function_of, fcmp_implies_class};
-use crate::instr_types::{BranchKind, CastOpcode};
+use crate::instr_types::{
+    BranchKind, CastOpcode, ExtractElementInstData, InsertElementInstData, PhiData,
+};
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::descriptor_for_callee;
 use crate::module::{ModuleBrand, ModuleRef};
@@ -258,11 +268,206 @@ fn dispatch<'a, 'ctx, B: ModuleBrand + 'ctx>(
             query,
             depth,
         ),
+        InstructionKindData::ExtractElement(data) => {
+            extract_element_fp_class(value, data, interested_classes, query, depth)
+        }
+        InstructionKindData::InsertElement(data) => {
+            insert_element_fp_class(value, data, interested_classes, query, depth)
+        }
+        InstructionKindData::ExtractValue(data) => {
+            // Upstream first looks through a `frexp` result at index 0; that
+            // intrinsic is not modeled, so what remains is the fallthrough,
+            // which forwards to the aggregate operand.
+            known_fp_class(
+                value_from_slot(value, data.aggregate.get()),
+                interested_classes,
+                query,
+                depth + 1,
+            )
+        }
+        InstructionKindData::Phi(data) => {
+            phi_fp_class(value, data, interested_classes, query, depth)
+        }
         InstructionKindData::Call(_) => {
             intrinsic_fp_class(value, kind, interested_classes, query, depth)
         }
         _ => KnownFpClass::unknown(),
     }
+}
+
+/// The `ExtractElement` arm.
+///
+/// Ports `case Instruction::ExtractElement:`: a constant, in-range index
+/// demands only the lane it names; anything else demands them all.
+fn extract_element_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    data: &ExtractElementInstData,
+    interested_classes: FpClassTest,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> KnownFpClass {
+    let vector = value_from_slot(value, data.vector.get());
+    let Some((lanes, false)) = vector_lanes(vector) else {
+        // Upstream's `else` branch: a non-fixed-vector operand demands the one
+        // element it has.
+        return known_fp_class(vector, interested_classes, query, depth + 1);
+    };
+    let index = value_from_slot(value, data.index.get());
+    let demanded = constant_lane_index(index, lanes).map_or_else(
+        || ApInt::all_ones(lanes),
+        |index| ApInt::one_bit_set(lanes, index),
+    );
+    let subquery = query.with_temporary_demanded_elements(&demanded);
+    known_fp_class(vector, interested_classes, &subquery, depth + 1)
+}
+
+/// The `InsertElement` arm.
+///
+/// Ports `case Instruction::InsertElement:`: the answer is the union of the
+/// inserted element and whatever lanes of the source vector are still demanded
+/// after the inserted lane is cleared.
+fn insert_element_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    data: &InsertElementInstData,
+    interested_classes: FpClassTest,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> KnownFpClass {
+    // Upstream returns immediately for a scalable vector.
+    let Some((lanes, false)) = vector_lanes(value) else {
+        return KnownFpClass::unknown();
+    };
+    let demanded = demanded_lanes(query, lanes);
+    let mut demanded_vector = demanded.clone();
+    let mut needs_element = true;
+    if let Some(index) = constant_lane_index(value_from_slot(value, data.index.get()), lanes) {
+        demanded_vector.clear_bit(index);
+        needs_element = demanded.bit(index);
+    }
+
+    let mut known = if needs_element {
+        let element = known_fp_class(
+            value_from_slot(value, data.value.get()),
+            interested_classes,
+            query,
+            depth + 1,
+        );
+        // Upstream's early out: nothing more to learn once the element alone
+        // is unknown.
+        if element.is_unknown() {
+            return element;
+        }
+        element
+    } else {
+        KnownFpClass::from_classes(FpClassTest::NONE)
+    };
+
+    if !demanded_vector.is_zero() {
+        let subquery = query.with_temporary_demanded_elements(&demanded_vector);
+        known.union_in_place(known_fp_class(
+            value_from_slot(value, data.vector.get()),
+            interested_classes,
+            &subquery,
+            depth + 1,
+        ));
+    }
+    known
+}
+
+/// The `PHI` arm.
+///
+/// Ports `case Instruction::PHI:`: the union over the incoming values, with
+/// direct self references skipped and the recursion capped two levels below
+/// the general limit, because a loop would otherwise be walked repeatedly for
+/// no gain.
+fn phi_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    data: &PhiData,
+    interested_classes: FpClassTest,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> KnownFpClass {
+    // Unreachable blocks may have zero-operand phi nodes.
+    let incoming: Vec<ValueSlot> = data
+        .incoming
+        .borrow()
+        .iter()
+        .map(|(incoming, _)| incoming.get())
+        .collect();
+    if incoming.is_empty() {
+        return KnownFpClass::unknown();
+    }
+
+    let recursion_limit = MAX_ANALYSIS_RECURSION_DEPTH.saturating_sub(2);
+    if depth >= recursion_limit {
+        return KnownFpClass::unknown();
+    }
+
+    // `None` until the first non-self incoming is folded in. A phi whose every
+    // incoming is a self reference leaves it `None` and answers unknown, which
+    // is where upstream's `hasConstantValue()` undef guard lands too.
+    let mut result: Option<KnownFpClass> = None;
+    for slot in incoming {
+        // Skip direct self references.
+        if slot == value.slot() {
+            continue;
+        }
+        // Upstream recurses *at* the limit rather than at `depth + 1`, which
+        // is what caps the walk at two levels regardless of how deep the phi
+        // itself sits.
+        let source = known_fp_class(
+            value_from_slot(value, slot),
+            interested_classes,
+            query,
+            recursion_limit,
+        );
+        result = Some(match result {
+            Some(known) => known.union_with(source),
+            None => source,
+        });
+        if result.is_some_and(|known| known.classes() == FpClassTest::ALL) {
+            break;
+        }
+    }
+    result.unwrap_or_else(KnownFpClass::unknown)
+}
+
+/// The lane count and scalability of `value`'s type, or `None` for a scalar.
+fn vector_lanes<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<(u32, bool)> {
+    value
+        .ty()
+        .data()
+        .as_vector()
+        .map(|(_, lanes, scalable)| (lanes, scalable))
+}
+
+/// A constant, in-range lane index, if the operand is one.
+fn constant_lane_index<'ctx, B: ModuleBrand + 'ctx>(
+    index: Value<'ctx, B>,
+    lanes: u32,
+) -> Option<u32> {
+    let ValueKindData::Constant(ConstantData::Int(words)) = &index.data().kind else {
+        return None;
+    };
+    let TypeKind::Integer { bits } = index.ty().kind() else {
+        return None;
+    };
+    ApInt::from_words(bits, words)
+        .try_zext_u64()
+        .and_then(|index| u32::try_from(index).ok())
+        .filter(|index| *index < lanes)
+}
+
+/// The lanes this query demands at `lanes` wide, defaulting to all of them.
+fn demanded_lanes<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    lanes: u32,
+) -> ApInt {
+    query
+        .demanded_elements()
+        .filter(|demanded| demanded.bit_width() == lanes)
+        .cloned()
+        .unwrap_or_else(|| ApInt::all_ones(lanes))
 }
 
 /// The classes a `nofpclass` attribute rules out for `value`.

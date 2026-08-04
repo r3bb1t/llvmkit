@@ -1798,3 +1798,8 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_nofpclass.rs::nofpclass_round_trips_on_parameters_and_returns` | `ComputeKnownFPClassTest`'s `nofpclass(nan inf)` signature, as a parser round trip | port |
 | `crates/llvmkit-asmparser/tests/parser_nofpclass.rs::the_integer_mask_spelling_parses_and_prints_as_names` | `llvm/lib/AsmParser/LLParser.cpp::parseNoFPClassAttr` — the integer spelling and its two rejections (zero, and bits outside `fcAllFlags`) | port |
 | `crates/llvmkit-asmparser/tests/parser_nofpclass.rs::a_malformed_nofpclass_is_rejected` | the same function's error paths | port |
+| `crates/llvmkit-asmparser/tests/known_fp_class_phi.rs::phi` | `llvm/unittests/Analysis/ValueTrackingTest.cpp::TEST_F(ComputeKnownFPClassTest, Phi)` — IR, expected mask and expected sign bit unchanged | port |
+| `crates/llvmkit-asmparser/tests/known_fp_class_phi.rs::phi_known_sign_false` | the same suite's `PhiKnownSignFalse` | port |
+| `crates/llvmkit-asmparser/tests/known_fp_class_phi.rs::phi_known_sign_true` | the same suite's `PhiKnownSignTrue` | port |
+| `crates/llvmkit-asmparser/tests/known_fp_class_phi.rs::a_self_reference_contributes_nothing_from_either_position` | the same suite's `SelfPhiFirstArg` and `SelfPhiSecondArg` | port |
+| `crates/llvmkit-asmparser/tests/known_fp_class_phi.rs::a_phi_of_only_itself_answers_unknown` | the same suite's `SelfPhiOnly` | port |

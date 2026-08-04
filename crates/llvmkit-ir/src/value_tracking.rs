@@ -316,7 +316,7 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
     }
 
     #[inline]
-    fn with_temporary_demanded_elements<'b>(
+    pub(crate) fn with_temporary_demanded_elements<'b>(
         &'b self,
         demanded_elements: &'b ApInt,
     ) -> ValueTrackingQuery<'b, 'ctx, B> {
