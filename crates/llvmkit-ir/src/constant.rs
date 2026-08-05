@@ -476,14 +476,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// the match, so the parameter is deliberately explicit rather than
     /// defaulted.
     ///
-    /// **One arm is not ported.** Upstream also recognises the constant
-    /// *expression* form `ConstantVector::getSplat` builds for scalable
-    /// vectors — a `shufflevector` of an `insertelement` at lane 0 through an
-    /// all-zero mask. llvmkit stores that shape's mask in two places
-    /// (`ConstantExprData::mask` and the mask operand), which has to be
-    /// reconciled before the arm can be read reliably; until then a scalable
-    /// splat constant answers `None` here, which is the conservative
-    /// direction.
+    /// Two of upstream's arms are unreachable rather than missing: the
+    /// vector-typed `ConstantInt` and `ConstantFP` splat forms have no llvmkit
+    /// representation, because a vector constant is always an element list.
+    /// The constant-*expression* splat form is handled, in a private helper
+    /// below — though only a *scalable* vector ever reaches it, because the
+    /// folder materialises a fixed one into an element list at construction.
     pub fn splat_value(self, allow_poison: bool) -> Option<Constant<'ctx, B>> {
         let (element_ty, _, _) = self.ty().data().as_vector()?;
         let element_ty = Type::new(element_ty, self.into_erased().module());
@@ -496,6 +494,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
             // as an aggregate of zeros, so this arm catches only the
             // whole-vector null form.
             ValueKindData::Constant(ConstantData::Aggregate(_)) => {}
+            // The constant-expression splat `ConstantVector::getSplat` builds.
+            ValueKindData::Constant(ConstantData::Expr(_)) => {
+                return self.constant_expression_splat_value();
+            }
             _ => return None,
         }
 
@@ -537,6 +539,94 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
             }
         }
         splat
+    }
+
+    /// The scalar behind the constant-expression splat form
+    /// `ConstantVector::getSplat` builds — an `insertelement` at lane 0
+    /// broadcast through an all-zero `shufflevector` mask.
+    ///
+    /// Ports the closing `dyn_cast<ConstantExpr>` block of
+    /// `Constant::getSplatValue`:
+    ///
+    /// ```text
+    /// shufflevector (insertelement (undef, Splat, 0), undef, zeroinitializer)
+    /// ```
+    ///
+    /// **Which mask this reads is the subtle part.** `ConstantExprData` has a
+    /// `mask` field *and* a third operand, and only the operand is live:
+    /// `validate_constant_expr_data` rejects a `ShuffleVector` expression whose
+    /// `mask` field is non-empty, and every construction site passes an empty
+    /// one. So the mask is `operands[2]`, an ordinary constant vector, and it
+    /// is read as one here.
+    ///
+    /// `all_of(Mask, I == 0)` is upstream's test, and it is strict: an `undef`
+    /// mask lane reads back as `-1` through `getShuffleMask`, so it fails.
+    /// Every lane must be a defined zero.
+    fn constant_expression_splat_value(self) -> Option<Constant<'ctx, B>> {
+        let module = self.into_erased().module();
+        let at = |slot: ValueSlot| {
+            Constant::from_parts(Value::from_parts(
+                slot,
+                module,
+                module.context().value_data(slot).ty,
+            ))
+        };
+        let is_undefined = |constant: Constant<'ctx, B>| {
+            // `isa<UndefValue>`, which catches `poison` upstream.
+            matches!(
+                &constant.into_erased().data().kind,
+                ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison)
+            )
+        };
+
+        let ValueKindData::Constant(ConstantData::Expr(shuffle)) = &self.into_erased().data().kind
+        else {
+            return None;
+        };
+        if shuffle.opcode != ConstantExprOpcode::ShuffleVector {
+            return None;
+        }
+        let [shuffle_source, shuffle_other, shuffle_mask] = *shuffle.operands else {
+            return None;
+        };
+        if !is_undefined(at(shuffle_other)) {
+            return None;
+        }
+
+        let inserted = at(shuffle_source);
+        let ValueKindData::Constant(ConstantData::Expr(insert)) =
+            &inserted.into_erased().data().kind
+        else {
+            return None;
+        };
+        if insert.opcode != ConstantExprOpcode::InsertElement {
+            return None;
+        }
+        let [insert_into, splat, index] = *insert.operands else {
+            return None;
+        };
+        if !is_undefined(at(insert_into)) {
+            return None;
+        }
+
+        // `Index && Index->getValue() == 0`.
+        let ValueKindData::Constant(ConstantData::Int(words)) =
+            &at(index).into_erased().data().kind
+        else {
+            return None;
+        };
+        if !words.iter().all(|word| *word == 0) {
+            return None;
+        }
+
+        // `llvm::all_of(Mask, [](int I) { return I == 0; })`, which on
+        // llvmkit's representation is exactly "the mask constant is null".
+        // Both hold for a `zeroinitializer` and for a written-out vector of
+        // zeros, and both fail for an `undef` lane — `getShuffleMask` reads
+        // one back as `-1`, and `is_null_value` does not count `undef` as
+        // null. Asking it this way also reaches a *scalable* `zeroinitializer`
+        // mask, which has no element list to walk.
+        at(shuffle_mask).is_null_value().then(|| at(splat))
     }
 
     /// Whether this constant is the all-zero value of its type.

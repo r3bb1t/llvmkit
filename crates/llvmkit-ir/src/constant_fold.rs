@@ -1956,6 +1956,15 @@ fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, 
     }
 }
 
+/// The vector constant every lane of which is `scalar`.
+///
+/// **A scalable vector cannot be written as an element list.** Its lane count
+/// is a minimum, not a count, so LLVM spells a scalable constant only as
+/// `zeroinitializer`, `undef`, `poison`, or `splat (...)`. Writing
+/// `min_len` elements would both print IR LLVM rejects and quietly assert
+/// `vscale == 1`, so the scalable arm answers with the whole-vector form
+/// instead and declines anything that has none — llvmkit models no `splat`
+/// constant.
 fn vector_splat_constant<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
     scalar: Constant<'ctx, B>,
@@ -1965,6 +1974,20 @@ fn vector_splat_constant<'ctx, B: ModuleBrand + 'ctx>(
     };
     if vector_ty.element() != scalar.ty() {
         return Ok(None);
+    }
+    if vector_ty.is_scalable() {
+        if is_undef(scalar) {
+            return Ok(Some(ty.get_undef().as_constant()));
+        }
+        if is_poison(scalar) {
+            return Ok(Some(poison_for(ty)));
+        }
+        if !constant_is_null_value(scalar) {
+            return Ok(None);
+        }
+        // A null scalar falls through: llvmkit stores a zeroinitializer as an
+        // element list of nulls, and the printer collapses it back to
+        // `zeroinitializer`, so the spelling stays legal.
     }
     let Ok(lane_count) = usize::try_from(vector_ty.min_len()) else {
         return Ok(None);

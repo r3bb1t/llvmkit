@@ -141,14 +141,27 @@ across physical registers. llvmkit models no target.
   such a broadcast now match the scalar being broadcast instead of answering
   "nothing known".
 
-#### Known gaps
+#### Also fixed, in follow-up
 
-- `Constant::splat_value` does not implement upstream's constant-*expression*
-  arm — the `shufflevector`-of-`insertelement` shape `ConstantVector::getSplat`
-  builds for scalable vectors. llvmkit stores that shape's mask in two places
-  (`ConstantExprData::mask` as raw `i32`s, and the mask operand as a constant
-  vector), which needs reconciling first. A scalable splat constant answers
-  "not a splat", which is the conservative direction.
+- **`Constant::splat_value` gained upstream's constant-*expression* arm** — the
+  `shufflevector`-of-`insertelement` shape `ConstantVector::getSplat` builds.
+  It only ever fires for a *scalable* vector: llvmkit's folder materialises a
+  fixed one into an element list at construction, so the element-list arm
+  answers those first. The two mask representations turned out not to need
+  reconciling — `ConstantExprData`'s `mask` field is vestigial, since
+  `validate_constant_expr_data` rejects a non-empty one for `ShuffleVector` and
+  all 114 construction sites pass empty. The mask is the third operand, and
+  that is what the arm reads.
+- **The constant folder emitted invalid IR for scalable vectors.**
+  `vector_splat_constant` wrote `min_len` elements with no scalability guard,
+  so a scalable splat of `undef` became
+  `<vscale x 4 x ptr> <ptr undef, ptr undef, ptr undef, ptr undef>` — an
+  element list for a vector whose lane count is a *minimum*. LLVM has no such
+  constant form and would reject the printed IR; llvmkit was also quietly
+  asserting `vscale == 1`. The scalable arm now answers with the whole-vector
+  spelling (`undef` / `poison` / `zeroinitializer`) and declines anything else,
+  llvmkit having no `splat (...)` constant. Found by a fixture written for the
+  splat arm above.
 
 ### ValueTracking: `computeKnownFPClass`'s vector arms
 
