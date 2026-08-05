@@ -56,22 +56,26 @@ So the folder was not at fault and must not be "fixed": an attempt to guard
 the representation is deliberate. The fix belonged in the printer, and that is
 where it landed.
 
-## Parser — no vector floating-point binary operators (found 2026-08-05)
+## ~~Parser — no vector floating-point binary operators~~ (found 2026-08-05, fixed 2026-08-05)
 
-`fadd <vscale x 2 x double> %b, splat (double 1.5)` does not parse: the parser
-answers "float-typed lhs", because it narrows the operands through the
-scalar-only `IntoFloatValue` exactly as it used to for integers.
+**Fixed.** `fadd <vscale x 2 x double> %b, splat (double 1.5)` answered
+"float-typed lhs": the parser narrowed operands through the scalar-only
+`IntoFloatValue`, exactly as it used to for integers. Closed by three erased
+builders beside their integer siblings —
+`IRBuilder::build_fp_binop_erased`, `build_fp_cmp_erased` and
+`build_fp_neg_erased` — with `parse_fp_binop`, `parse_fcmp` and `parse_fneg`
+routed through them. Covered by
+`crates/llvmkit-asmparser/tests/parser_vector_fp_ops.rs` (parse → verify →
+print).
 
-This is the floating-point mirror of the gap closed for integers by
-`IRBuilder::build_int_binop_erased` (see the closed section on vector integer
-binops above) — llvmkit's typed float handles carry a *scalar* `FloatKind`, so
-`<N x double>` has no typed handle and needs an erased builder. The shape of
-the fix is already established: a `build_float_binop_erased` beside its integer
-sibling, validated against `BinaryOperator::Create`'s type rule, plus the
-parser routing FP binops through it.
+The scope was wider than the entry first said: `fcmp` and `fneg` narrowed the
+same way, so fixing only the binary operators would have left
+`fcmp oeq <4 x float> …` broken beside a working `fadd`. All three moved
+together.
 
-Found while writing `scalable_vector_splat_printing.rs`, which routes around it
-with a `ret` instead of an `fadd` and says so at the site.
+Found while writing `scalable_vector_splat_printing.rs`, which routed around it
+with a `ret` instead of an `fadd`; that workaround stands, since the case is
+about printing rather than parsing.
 
 ### The folders were audited and are clean (2026-08-05)
 

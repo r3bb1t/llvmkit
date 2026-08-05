@@ -2185,6 +2185,159 @@ where
         Ok(inst.to_erased().id())
     }
 
+    /// `true` for a float type and for a vector of one.
+    ///
+    /// Mirrors the verifier's `is_fp_or_fp_vector`, which is the rule the built
+    /// instruction is checked against.
+    fn is_float_or_float_vector(&self, ty: Type<'ctx, B>) -> bool {
+        let scalar = match ty.data() {
+            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
+                self.module.context().type_data(*elem)
+            }
+            other => other,
+        };
+        matches!(
+            scalar,
+            TypeData::Half
+                | TypeData::BFloat
+                | TypeData::Float
+                | TypeData::Double
+                | TypeData::X86Fp80
+                | TypeData::Fp128
+                | TypeData::PpcFp128
+        )
+    }
+
+    /// `opcode lhs, rhs` on erased floating-point operands — a scalar float or
+    /// a float vector — carrying `fmf`.
+    ///
+    /// The erased counterpart of the `build_fp_*` / `build_fp_*_fmf` families,
+    /// and the floating-point sibling of [`Self::build_int_binop_erased`]. Both
+    /// exist for the same reason: llvmkit's typed float handles carry a
+    /// *scalar* `FloatKind`, so `<N x double>` has no typed handle to route
+    /// through `IntoFloatValue`. Upstream needs no such split —
+    /// `LLParser::parseArithmetic` hands the operands to
+    /// `BinaryOperator::Create`.
+    ///
+    /// The entry point for a caller holding a *runtime* opcode, the `.ll`
+    /// parser above all. Callers with a statically-known opcode and scalar
+    /// operands should prefer the typed family, which pins the float kind in
+    /// the type system.
+    ///
+    /// Validated against `BinaryOperator::Create`'s assertion that both
+    /// operands share a type, plus the verifier's `FloatOpNonFloatOperand`
+    /// rule. Returns the erased [`ValueId`] rather than a typed id because the
+    /// result may be a vector, which no `FloatKind` marker describes.
+    pub fn build_fp_binop_erased<Lhs, Rhs, Name>(
+        &self,
+        opcode: BinaryOpcode,
+        lhs: Lhs,
+        rhs: Rhs,
+        fmf: FastMathFlags,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
+    {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
+        let kind_ctor = fp_binop_kind_ctor(opcode).ok_or(IrError::InvalidOperation {
+            message: "opcode is not a floating-point binary operator",
+        })?;
+        if lhs.ty().id() != rhs.ty().id() {
+            return Err(IrError::InvalidOperation {
+                message: "floating-point binop operands must have the same type",
+            });
+        }
+        if !self.is_float_or_float_vector(lhs.ty()) {
+            return Err(IrError::InvalidOperation {
+                message: "floating-point binop operand is neither a float nor a float vector",
+            });
+        }
+        if let Some(folded) = self.folder.fold_bin_op_fmf_dyn(opcode, lhs, rhs, fmf)? {
+            return Ok(self.checked_folded_value(folded, lhs.ty)?.id());
+        }
+        let mut payload = BinaryOpData::new(lhs.id, rhs.id);
+        payload.fmf = fmf;
+        let inst = self.append_instruction(lhs.ty().id(), kind_ctor(payload), name);
+        Ok(inst.to_erased().id())
+    }
+
+    /// `fcmp pred lhs, rhs` on erased floating-point operands, yielding `i1` or
+    /// `<N x i1>` to match.
+    ///
+    /// The erased counterpart of [`Self::build_fp_cmp`] and its `_fmf` sibling,
+    /// which route operands through the scalar-only `IntoFloatValue` and mint a
+    /// typed `bool` id — neither of which a vector compare can use. `fcmp` is an
+    /// `FPMathOperator` upstream, so it carries fast-math flags like the
+    /// arithmetic operators do.
+    pub fn build_fp_cmp_erased<Lhs, Rhs, Name>(
+        &self,
+        predicate: FloatPredicate,
+        lhs: Lhs,
+        rhs: Rhs,
+        fmf: FastMathFlags,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        Lhs: IntoErasedValue<'ctx, B>,
+        Rhs: IntoErasedValue<'ctx, B>,
+    {
+        let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
+        let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
+        if lhs.ty().id() != rhs.ty().id() {
+            return Err(IrError::InvalidOperation {
+                message: "fcmp operands must have the same type",
+            });
+        }
+        if !self.is_float_or_float_vector(lhs.ty()) {
+            return Err(IrError::InvalidOperation {
+                message: "fcmp operand is neither a float nor a float vector",
+            });
+        }
+        let result_ty = self.cmp_result_type(lhs.ty());
+        let mut payload = FCmpInstData::new(predicate, lhs.id, rhs.id);
+        payload.fmf = fmf;
+        let inst =
+            self.append_instruction(result_ty.id(), InstructionKindData::FCmp(payload), name);
+        Ok(inst.to_erased().id())
+    }
+
+    /// `fneg value` on an erased floating-point operand, carrying `fmf`.
+    ///
+    /// The erased counterpart of [`Self::build_float_neg_with_flags`], for the
+    /// same reason as its binary sibling: a float *vector* has no typed handle.
+    pub fn build_fp_neg_erased<Src, Name>(
+        &self,
+        value: Src,
+        fmf: FastMathFlags,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        Src: IntoErasedValue<'ctx, B>,
+    {
+        let value = value.into_erased_value(ModuleRef::new(self.module))?;
+        if !self.is_float_or_float_vector(value.ty()) {
+            return Err(IrError::InvalidOperation {
+                message: "fneg operand is neither a float nor a float vector",
+            });
+        }
+        if let Some(folded) = self
+            .folder
+            .fold_un_op_fmf_dyn(UnaryOpcode::FNeg, value, fmf)?
+        {
+            return Ok(self.checked_folded_value(folded, value.ty)?.id());
+        }
+        let payload = FNegInstData::new(value.slot(), fmf);
+        let inst =
+            self.append_instruction(value.ty().id(), InstructionKindData::FNeg(payload), name);
+        Ok(inst.to_erased().id())
+    }
+
     /// `true` for `ptr` and for a vector of `ptr`. Mirrors the verifier's
     /// `is_pointer_or_pointer_vector`.
     fn is_pointer_or_pointer_vector(&self, ty: Type<'ctx, B>) -> bool {
@@ -9842,6 +9995,23 @@ where
 /// `BinaryOpcode` spans both domains — it is the union LLVM spells as
 /// `BinaryOperator`'s opcode range — so a dispatcher over integer binops has
 /// to reject the FP half rather than assume it away.
+/// The `InstructionKindData` constructor for a floating-point binary opcode,
+/// or `None` when the opcode is an integer one.
+///
+/// The mirror of [`int_binop_kind_ctor`]: `BinaryOpcode` spans both domains, so
+/// a dispatcher over one half has to reject the other rather than assume it
+/// away.
+fn fp_binop_kind_ctor(opcode: BinaryOpcode) -> Option<fn(BinaryOpData) -> InstructionKindData> {
+    Some(match opcode {
+        BinaryOpcode::FAdd => InstructionKindData::FAdd,
+        BinaryOpcode::FSub => InstructionKindData::FSub,
+        BinaryOpcode::FMul => InstructionKindData::FMul,
+        BinaryOpcode::FDiv => InstructionKindData::FDiv,
+        BinaryOpcode::FRem => InstructionKindData::FRem,
+        _ => return None,
+    })
+}
+
 fn int_binop_kind_ctor(opcode: BinaryOpcode) -> Option<fn(BinaryOpData) -> InstructionKindData> {
     Some(match opcode {
         BinaryOpcode::Add => InstructionKindData::Add,

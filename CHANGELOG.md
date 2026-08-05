@@ -180,10 +180,26 @@ across physical registers. llvmkit models no target.
   constant as their *premise* to check the folder declines, so it is a
   representation-policy decision rather than a patch. See
   `docs/future-work.md`.
-- **The parser cannot read a vector floating-point binary operator** —
-  `fadd <2 x double> …` answers "float-typed lhs". This is the FP mirror of the
-  integer gap `build_int_binop_erased` closed; the fix has the same shape.
-  Found while writing the printing fixtures.
+### Vector floating-point operations
+
+#### Added
+
+- **`IRBuilder::build_fp_binop_erased`, `build_fp_cmp_erased` and
+  `build_fp_neg_erased`** — the floating-point half of the erased builder
+  family, beside the integer `build_int_binop_erased` / `build_int_cmp_erased`
+  and the `build_select_erased` added earlier this cycle. They exist for one
+  reason: llvmkit's typed float handles carry a *scalar* `FloatKind`, so
+  `<N x double>` has no typed handle to route through `IntoFloatValue`.
+  Upstream needs no split — `LLParser::parseArithmetic` and `parseCompare` hand
+  their operands to `BinaryOperator::Create` and `CmpInst::Create`.
+
+#### Fixed
+
+- **The parser could not read any vector floating-point operation.**
+  `fadd <4 x float> %a, %b` answered "float-typed lhs", and so did `fcmp` and
+  `fneg` — all three narrowed operands through the scalar-only path. Fast-math
+  flags are carried through unchanged; `fcmp` is an `FPMathOperator` upstream,
+  so it keeps its flags too. Scalar operators are unaffected.
 
 ### ValueTracking: `computeKnownFPClass`'s vector arms
 

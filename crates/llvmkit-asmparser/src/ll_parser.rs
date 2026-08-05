@@ -42,10 +42,10 @@ use llvmkit_ir::{
     Align, AllocaFlags, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, ApIntSignedness,
     AtomicLoadConfig, AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, CallingConv, Constant,
     ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
-    DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FloatValue,
-    FpClassTest, GepNoWrapFlags, IRBuilder, IntCastFlags, IntDyn, IntType, IntValue,
-    IntrinsicNameResolution, IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder,
-    PointerValue, Positioned, RoundingMode, SelectionKind, ShuffleMaskElem, StructType, SyncScope,
+    DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FpClassTest,
+    GepNoWrapFlags, IRBuilder, IntCastFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution,
+    IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
+    Positioned, RoundingMode, SelectionKind, ShuffleMaskElem, StructType, SyncScope,
     ThreadLocalMode, Type, TypeKind, UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord,
     UseListOrderRecord, Visibility, constant_fold_select_instruction, derived_types::PointerType,
     resolve_intrinsic_name, shufflevector_mask_from_constant,
@@ -6765,16 +6765,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let fmf = self.parse_optional_fmf()?;
         let ty = self.parse_type(false)?;
         let v = self.parse_value(state, ty)?;
-        let f: FloatValue<'ctx, FloatDyn, B> = v
-            .try_into()
-            .map_err(|_| self.expected("float-typed fneg operand"))?;
-        let r = if fmf.is_empty() {
-            b.build_float_neg::<FloatDyn, _, _>(f, result_name.as_str())
-        } else {
-            b.build_float_neg_with_flags::<FloatDyn, _, _>(f, fmf, result_name.as_str())
-        }
-        .map_err(|e| self.builder_err("fneg", e))?;
-        Ok(b.view(r).into_erased())
+        // Erased for the same reason as the binary operators below: a float
+        // *vector* has no typed handle, `FloatKind` being scalar.
+        let r = b
+            .build_fp_neg_erased(v, fmf, result_name.as_str())
+            .map_err(|e| self.builder_err("fneg", e))?;
+        Ok(b.view(r))
     }
 
     /// `OP [nnan ninf ...] TYPE LHS, RHS` for fadd/fsub/fmul/fdiv/frem.
@@ -6791,46 +6787,22 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let lhs_v = self.parse_value(state, ty)?;
         self.expect_punct(PunctKind::Comma, "',' between FP binop operands")?;
         let rhs_v = self.parse_value_no_type(state, ty)?;
-        let lhs: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn, B> = lhs_v
-            .try_into()
-            .map_err(|_| self.expected("float-typed lhs"))?;
-        let rhs: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn, B> = rhs_v
-            .try_into()
-            .map_err(|_| self.expected("float-typed rhs"))?;
-        let name = result_name.as_str();
-        let v = match op {
-            FpBinOp::Add => if fmf.is_empty() {
-                b.build_fp_add::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
-            } else {
-                b.build_fp_add_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
-            }
-            .map_err(|e| self.builder_err("fadd", e))?,
-            FpBinOp::Sub => if fmf.is_empty() {
-                b.build_fp_sub::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
-            } else {
-                b.build_fp_sub_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
-            }
-            .map_err(|e| self.builder_err("fsub", e))?,
-            FpBinOp::Mul => if fmf.is_empty() {
-                b.build_fp_mul::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
-            } else {
-                b.build_fp_mul_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
-            }
-            .map_err(|e| self.builder_err("fmul", e))?,
-            FpBinOp::Div => if fmf.is_empty() {
-                b.build_fp_div::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
-            } else {
-                b.build_fp_div_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
-            }
-            .map_err(|e| self.builder_err("fdiv", e))?,
-            FpBinOp::Rem => if fmf.is_empty() {
-                b.build_fp_rem::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, name)
-            } else {
-                b.build_fp_rem_fmf::<llvmkit_ir::FloatDyn, _, _, _>(lhs, rhs, fmf, name)
-            }
-            .map_err(|e| self.builder_err("frem", e))?,
+        // Erased because a float *vector* has no typed handle — llvmkit's
+        // `FloatKind` markers are scalar, so `<N x double>` cannot route
+        // through `IntoFloatValue`. Upstream needs no split:
+        // `LLParser::parseArithmetic` hands the operands to
+        // `BinaryOperator::Create`.
+        let (opcode, what) = match op {
+            FpBinOp::Add => (llvmkit_ir::BinaryOpcode::FAdd, "fadd"),
+            FpBinOp::Sub => (llvmkit_ir::BinaryOpcode::FSub, "fsub"),
+            FpBinOp::Mul => (llvmkit_ir::BinaryOpcode::FMul, "fmul"),
+            FpBinOp::Div => (llvmkit_ir::BinaryOpcode::FDiv, "fdiv"),
+            FpBinOp::Rem => (llvmkit_ir::BinaryOpcode::FRem, "frem"),
         };
-        Ok(b.view(v).into_erased())
+        let v = b
+            .build_fp_binop_erased(opcode, lhs_v, rhs_v, fmf, result_name.as_str())
+            .map_err(|e| self.builder_err(what, e))?;
+        Ok(b.view(v))
     }
 
     /// `fcmp [nnan ninf ...] PRED TYPE LHS, RHS`. Mirrors `LLParser::parseCompare` FP arm.
@@ -6866,21 +6838,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let lhs_v = self.parse_value(state, ty)?;
         self.expect_punct(PunctKind::Comma, "',' between fcmp operands")?;
         let rhs_v = self.parse_value_no_type(state, ty)?;
-        let lhs: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn, B> = lhs_v
-            .try_into()
-            .map_err(|_| self.expected("float-typed lhs"))?;
-        let rhs: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn, B> = rhs_v
-            .try_into()
-            .map_err(|_| self.expected("float-typed rhs"))?;
-        let name = result_name.as_str();
-        let r = if fmf.is_empty() {
-            b.build_fp_cmp::<llvmkit_ir::FloatDyn, _, _, _>(pred, lhs, rhs, name)
-                .map_err(|e| self.builder_err("fcmp", e))?
-        } else {
-            b.build_fp_cmp_fmf::<llvmkit_ir::FloatDyn, _, _, _>(pred, lhs, rhs, fmf, name)
-                .map_err(|e| self.builder_err("fcmp", e))?
-        };
-        Ok(b.view(r).into_erased())
+        // Erased: a vector compare has neither a typed float operand nor a
+        // typed `i1` result, so it can use neither half of the typed builder.
+        let r = b
+            .build_fp_cmp_erased(pred, lhs_v, rhs_v, fmf, result_name.as_str())
+            .map_err(|e| self.builder_err("fcmp", e))?;
+        Ok(b.view(r))
     }
 
     /// `alloca TYPE [, TYPE COUNT] [, align N]`.
