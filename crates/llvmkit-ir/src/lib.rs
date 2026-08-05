@@ -147,6 +147,7 @@ pub mod value_id;
 pub mod value_symbol_table;
 pub mod value_tracking;
 pub mod vec_len;
+pub mod vector_utils;
 pub mod verifier;
 pub mod worklist;
 

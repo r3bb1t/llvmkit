@@ -320,7 +320,7 @@ pub fn constant_fold_unary_instruction<'ctx, B: ModuleBrand + 'ctx>(
             }
             if let Some((element_ty, lanes, scalable)) = operand.ty().data().as_vector() {
                 let element_ty = Type::new(element_ty, operand.into_erased().module());
-                if let Some(splat) = constant_splat_value(operand) {
+                if let Some(splat) = operand.splat_value(false) {
                     let Some(folded) = constant_fold_unary_instruction(opcode, splat)? else {
                         return Ok(None);
                     };
@@ -449,9 +449,7 @@ fn fold_vector_binary<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(None);
     };
     let element_ty = Type::new(element_ty, lhs.into_erased().module());
-    if let (Some(lhs_splat), Some(rhs_splat)) =
-        (constant_splat_value(lhs), constant_splat_value(rhs))
-    {
+    if let (Some(lhs_splat), Some(rhs_splat)) = (lhs.splat_value(false), rhs.splat_value(false)) {
         let Some(folded) = build_binary_constant_or_expr(opcode, lhs_splat, rhs_splat)? else {
             return Ok(None);
         };
@@ -950,8 +948,7 @@ pub fn constant_fold_compare_instruction<'ctx, B: ModuleBrand + 'ctx>(
     }
 
     if lhs.ty().data().as_vector().is_some()
-        && let (Some(lhs_splat), Some(rhs_splat)) =
-            (constant_splat_value(lhs), constant_splat_value(rhs))
+        && let (Some(lhs_splat), Some(rhs_splat)) = (lhs.splat_value(false), rhs.splat_value(false))
         && let Some(folded) = constant_fold_compare_instruction(predicate, lhs_splat, rhs_splat)?
     {
         return vector_splat_constant(result_ty, folded);
@@ -2330,7 +2327,7 @@ fn fold_same_lane_vector_cast<'ctx, B: ModuleBrand + 'ctx>(
     }
     let src_element_ty = Type::new(src_element_ty, operand.into_erased().module());
     let dest_element_ty = Type::new(dest_element_ty, operand.into_erased().module());
-    if let Some(splat) = constant_splat_value(operand) {
+    if let Some(splat) = operand.splat_value(false) {
         let Some(folded) = fold_maybe_undesirable_cast(opcode, splat, dest_element_ty)? else {
             return Ok(None);
         };
@@ -2901,17 +2898,6 @@ fn is_not_poison_for_select<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx
         _ => false,
     }
 }
-fn constant_splat_value<'ctx, B: ModuleBrand + 'ctx>(
-    constant: Constant<'ctx, B>,
-) -> Option<Constant<'ctx, B>> {
-    let elements = aggregate_elements(constant)?;
-    let first = elements.first().copied()?;
-    elements
-        .iter()
-        .all(|element| *element == first)
-        .then_some(first)
-}
-
 fn constant_aggregate_from_elements<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
     elements: Vec<Constant<'ctx, B>>,

@@ -5342,54 +5342,40 @@ fn insert_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
-/// The lanes a `shufflevector` demands from each of its two source vectors.
+/// Resolve a `shufflevector`'s operands and hand its mask to
+/// [`shuffle_demanded_elements`], returning each source alongside the lanes it
+/// is asked for.
 ///
-/// Ports `llvm::getShuffleDemandedElts`. `None` is upstream's `false` return —
-/// a scalable or non-vector operand, a poison mask element among the demanded
-/// lanes, or a mask index outside both sources — and every caller answers
-/// "nothing known" for it.
-///
-/// Shared by [`shuffle_vector_known_bits`] and `known_fp_class.rs`'s
-/// `shufflevector` arm, because the poison-lane rule is subtle enough that
-/// two copies would eventually disagree.
-pub(crate) fn shuffle_demanded_elements<'a, 'ctx, B: ModuleBrand + 'ctx>(
+/// Upstream's `getShuffleDemandedElts` takes a width and a mask, not an
+/// instruction — its callers do this plumbing inline. Both of llvmkit's
+/// callers need the same three steps (reject scalable operands, read the
+/// demanded set, resolve the operand values), so they share them here rather
+/// than in `vector_utils`, which stays a faithful port of the upstream
+/// signature.
+pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     data: &ShuffleVectorInstData,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
+    allow_undefined_elements: bool,
 ) -> Option<(Value<'ctx, B>, ApInt, Value<'ctx, B>, ApInt)> {
     let result_lanes = u32::try_from(data.mask.len()).ok()?;
     let demanded =
         demanded_elements_for(value, query).unwrap_or_else(|| ApInt::all_ones(result_lanes));
     let lhs = value_from_id(value, data.lhs.get());
     let rhs = value_from_id(value, data.rhs.get());
-    let (lhs_lanes, false) = vector_shape(lhs)? else {
+    // Both operands share a type, so one width describes each of them.
+    let (source_width, false) = vector_shape(lhs)? else {
         return None;
     };
-    let (rhs_lanes, false) = vector_shape(rhs)? else {
+    let (_, false) = vector_shape(rhs)? else {
         return None;
     };
-
-    let mut lhs_demand = ApInt::zero(lhs_lanes);
-    let mut rhs_demand = ApInt::zero(rhs_lanes);
-    for (lane, mask) in data.mask.iter().enumerate() {
-        let lane = u32::try_from(lane).ok()?;
-        if !demanded.bit(lane) {
-            continue;
-        }
-        // A poison lane says nothing about the common state of the result.
-        let ShuffleMaskElem::Lane(mask) = *mask else {
-            return None;
-        };
-        if mask < lhs_lanes {
-            lhs_demand.set_bit(mask);
-        } else {
-            let rhs_lane = mask.saturating_sub(lhs_lanes);
-            if rhs_lane >= rhs_lanes {
-                return None;
-            }
-            rhs_demand.set_bit(rhs_lane);
-        }
-    }
+    let (lhs_demand, rhs_demand) = crate::vector_utils::shuffle_demanded_elements(
+        source_width,
+        &data.mask,
+        &demanded,
+        allow_undefined_elements,
+    )?;
     Some((lhs, lhs_demand, rhs, rhs_demand))
 }
 
@@ -5401,7 +5387,8 @@ fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
-    let Some((lhs, lhs_demand, rhs, rhs_demand)) = shuffle_demanded_elements(value, data, query)
+    let Some((lhs, lhs_demand, rhs, rhs_demand)) =
+        shuffle_source_demands(value, data, query, false)
     else {
         return Ok(KnownBits::unknown(width));
     };
@@ -5470,7 +5457,7 @@ fn compute_known_bits_for_demanded<'a, 'ctx, B: ModuleBrand + 'ctx>(
     compute_known_bits_inner(value, &subquery, depth, stack)
 }
 
-fn demanded_elements_for<'a, 'ctx, B: ModuleBrand + 'ctx>(
+pub(crate) fn demanded_elements_for<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> Option<ApInt> {
@@ -5487,7 +5474,9 @@ fn demanded_elements_for<'a, 'ctx, B: ModuleBrand + 'ctx>(
     )
 }
 
-fn vector_shape<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<(u32, bool)> {
+pub(crate) fn vector_shape<'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+) -> Option<(u32, bool)> {
     value
         .ty()
         .data()
@@ -5939,7 +5928,7 @@ fn type_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>, dl: &DataLayou
     }
 }
 
-fn value_from_id<'ctx, B: ModuleBrand + 'ctx>(
+pub(crate) fn value_from_id<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     id: ValueSlot,
 ) -> Value<'ctx, B> {

@@ -456,6 +456,77 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
         }
     }
 
+    /// The single value every lane of this vector constant holds, if there is
+    /// one.
+    ///
+    /// Ports `Constant::getSplatValue` together with the
+    /// `ConstantVector::getSplatValue` loop it delegates to. Upstream's two
+    /// short-circuits come first: an all-poison vector splats to poison of the
+    /// *element* type, and a zeroinitializer to that type's null value.
+    ///
+    /// `allow_poison` is upstream's flag, and it defaults to `false` there.
+    /// Every `ConstantFold.cpp` call site takes that default — a poison lane
+    /// is a mismatch and the answer is `None`. Only analyses that ask for it
+    /// pass `true`, where a poison lane agrees with any other because it can
+    /// be read as whatever the rest hold; `VectorUtils`' `getSplatValue` is
+    /// the caller that needs it. Passing `true` from a folding path would
+    /// silently loosen folding, so the parameter is deliberately explicit
+    /// rather than defaulted.
+    pub fn splat_value(self, allow_poison: bool) -> Option<Constant<'ctx, B>> {
+        let (element_ty, _, _) = self.ty().data().as_vector()?;
+        let element_ty = Type::new(element_ty, self.into_erased().module());
+
+        match &self.into_erased().data().kind {
+            ValueKindData::Constant(ConstantData::Poison) => {
+                return Some(element_ty.get_poison().as_constant());
+            }
+            // `isa<ConstantAggregateZero>`: llvmkit spells a zeroinitializer
+            // as an aggregate of zeros, so this arm catches only the
+            // whole-vector null form.
+            ValueKindData::Constant(ConstantData::Aggregate(_)) => {}
+            _ => return None,
+        }
+
+        let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
+            &self.into_erased().data().kind
+        else {
+            return None;
+        };
+        let module = self.into_erased().module();
+        let element_at = |slot: &ValueSlot| {
+            let data = module.context().value_data(*slot);
+            Constant::from_parts(Value::from_parts(*slot, module, data.ty))
+        };
+
+        let mut splat: Option<Constant<'ctx, B>> = None;
+        for slot in elements.iter() {
+            let element = element_at(slot);
+            let element_is_poison = matches!(
+                &element.into_erased().data().kind,
+                ValueKindData::Constant(ConstantData::Poison)
+            );
+            match splat {
+                Some(seen) if seen == element => {}
+                // Strict mode: any mismatch ends it.
+                Some(_) if !allow_poison => return None,
+                // Allow-poison mode: a poison lane carries no disagreement.
+                Some(_) if element_is_poison => {}
+                // A defined lane replaces a poison one already seen.
+                Some(seen)
+                    if matches!(
+                        &seen.into_erased().data().kind,
+                        ValueKindData::Constant(ConstantData::Poison)
+                    ) =>
+                {
+                    splat = Some(element);
+                }
+                Some(_) => return None,
+                None => splat = Some(element),
+            }
+        }
+        splat
+    }
+
     /// Widen to the erased [`Value`] handle.
     #[inline]
     pub fn into_erased(self) -> Value<'ctx, B> {

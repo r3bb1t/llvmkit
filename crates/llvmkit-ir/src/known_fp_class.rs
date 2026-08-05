@@ -78,7 +78,7 @@ use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::value_tracking::{
     MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, assume_argument, compute_known_bits,
     is_known_not_undef, is_sign_bit_check, logical_op_parts, not_operand, parent_block,
-    shuffle_demanded_elements,
+    shuffle_source_demands,
 };
 use crate::{ApFloat, ApInt};
 
@@ -535,7 +535,8 @@ fn shuffle_vector_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
 ) -> KnownFpClass {
-    let Some((lhs, lhs_demand, rhs, rhs_demand)) = shuffle_demanded_elements(value, data, query)
+    let Some((lhs, lhs_demand, rhs, rhs_demand)) =
+        shuffle_source_demands(value, data, query, false)
     else {
         return KnownFpClass::unknown();
     };
