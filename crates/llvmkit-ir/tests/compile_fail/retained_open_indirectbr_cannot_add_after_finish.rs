@@ -20,7 +20,7 @@ fn main() {
     // operand typing.
     let addr: PointerValue<'_, _> = m.view(f).param(0).unwrap().try_into().unwrap();
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, ibr) = b.build_indirectbr(addr, "").unwrap();
+    let (_sealed, ibr) = b.indirectbr(addr, "").unwrap();
 
     let _closed = ibr.finish();
     let _ = ibr.add_destination(dest_label);

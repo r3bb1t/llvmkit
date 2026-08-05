@@ -68,7 +68,7 @@ fn inspect_module_pass_stays_verified_and_runs() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    b.build_ret(i32_ty.const_int(1_u32))?;
+    b.ret(i32_ty.const_int(1_u32))?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -125,7 +125,7 @@ fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    b.build_ret(i32_ty.const_int(0_u32))?;
+    b.ret(i32_ty.const_int(0_u32))?;
 
     let verified = m.verify()?;
     assert_eq!(verified.globals().len(), 0);
@@ -192,7 +192,7 @@ fn inspect_function_pass_stays_verified_and_runs() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    b.build_ret(i32_ty.const_int(1_u32))?;
+    b.ret(i32_ty.const_int(1_u32))?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();

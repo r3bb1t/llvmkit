@@ -22,7 +22,7 @@ fn load_pointer_operand_is_typed() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let loaded = b.build_load(i32_ty, p, "v")?;
+    let loaded = b.load(i32_ty, p, "v")?;
 
     let view = InstructionView::try_from(b.view(loaded))?;
     let Some(InstructionKind::Load(load)) = view.kind() else {
@@ -46,7 +46,7 @@ fn direct_call_callee_is_direct() -> Result<(), IrError> {
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
-    let call = b.build_call_dyn(callee, [x.into_erased()], "r")?;
+    let call = b.call_dyn(callee, [x.into_erased()], "r")?;
 
     match b.view(call).classify_callee() {
         Callee::Direct(function) => {
@@ -69,8 +69,8 @@ fn classify_is_total() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let sum = b.build_int_add::<i32, _, _, _>(x, y, "s")?;
-    b.build_ret(sum)?;
+    let sum = b.int_add::<i32, _, _, _>(x, y, "s")?;
+    b.ret(sum)?;
 
     let sum_view = InstructionView::try_from(m.view(sum).into_erased())?;
     assert!(matches!(
@@ -107,8 +107,8 @@ fn binop_and_cmp_groupings() -> Result<(), IrError> {
     // Non-constant operands so the folder leaves real instructions.
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let sum = b.build_int_add::<i32, _, _, _>(x, y, "s")?;
-    let cmp = b.build_icmp_slt::<i32, _, _, _>(x, y, "c")?;
+    let sum = b.int_add::<i32, _, _, _>(x, y, "s")?;
+    let cmp = b.icmp_slt::<i32, _, _, _>(x, y, "c")?;
 
     let sum_view = InstructionView::try_from(b.view(sum).into_erased())?;
     let bop = sum_view
@@ -145,7 +145,7 @@ fn indirect_call_callee_is_indirect() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let fp: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
     let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
-    let call = b.build_indirect_call_dyn::<i32, _, Value<'_, _>, _, _>(
+    let call = b.indirect_call_dyn::<i32, _, Value<'_, _>, _, _>(
         callee_ty,
         fp,
         Vec::<Value<'_, _>>::new(),

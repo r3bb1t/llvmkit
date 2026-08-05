@@ -26,9 +26,9 @@ fn add_sub_allones_binds_operands() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let sub = b.build_int_sub::<i32, _, _, _>(x, y, "s")?;
+    let sub = b.int_sub::<i32, _, _, _>(x, y, "s")?;
     let neg_one = i32_ty.const_int(-1_i32);
-    let add = b.build_int_add::<i32, _, _, _>(sub, neg_one, "r")?;
+    let add = b.int_add::<i32, _, _, _>(sub, neg_one, "r")?;
 
     let view = view_of(b.view(add).into_erased());
     let (mx, my) = m_add(m_one_use(m_sub(m_value(), m_value())), m_all_ones())
@@ -51,11 +51,11 @@ fn one_use_gate_rejects_multi_use_subexpr() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let sub = b.build_int_sub::<i32, _, _, _>(x, y, "s")?;
+    let sub = b.int_sub::<i32, _, _, _>(x, y, "s")?;
     let neg_one = i32_ty.const_int(-1_i32);
-    let add = b.build_int_add::<i32, _, _, _>(sub, neg_one, "r")?;
+    let add = b.int_add::<i32, _, _, _>(sub, neg_one, "r")?;
     // Second user of `sub`, so it no longer has one use.
-    let _other = b.build_int_add::<i32, _, _, _>(sub, x, "o")?;
+    let _other = b.int_add::<i32, _, _, _>(sub, x, "o")?;
 
     let view = view_of(b.view(add).into_erased());
     assert!(
@@ -85,7 +85,7 @@ fn commutative_add_matches_swapped_operands() -> Result<(), IrError> {
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     // add %y, %x  (x is the second operand)
-    let add = b.build_int_add::<i32, _, _, _>(y, x, "r")?;
+    let add = b.int_add::<i32, _, _, _>(y, x, "r")?;
 
     let view = view_of(b.view(add).into_erased());
     // Non-commutative fails (x is not operand 0)...
@@ -112,8 +112,8 @@ fn not_and_neg_sugar() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let not = b.build_int_xor::<i32, _, _, _>(v, i32_ty.const_int(-1_i32), "n")?;
-    let neg = b.build_int_sub::<i32, _, _, _>(i32_ty.const_int(0_i32), v, "g")?;
+    let not = b.int_xor::<i32, _, _, _>(v, i32_ty.const_int(-1_i32), "n")?;
+    let neg = b.int_sub::<i32, _, _, _>(i32_ty.const_int(0_i32), v, "g")?;
 
     let (nv,) = m_not(m_value())
         .match_view(&view_of(b.view(not).into_erased()))
@@ -140,8 +140,8 @@ fn load_of_gep_binds_base() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let base: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let idx: IntValue<'_, IntDyn, _> = m.view(f).param(1)?.try_into()?;
-    let gep = b.build_gep(i32_ty, base, [idx], "p")?;
-    let load = b.build_load(i32_ty, gep, "v")?;
+    let gep = b.gep(i32_ty, base, [idx], "p")?;
+    let load = b.load(i32_ty, gep, "v")?;
 
     let (bound,): (Value<'_, _>,) = m_load(m_gep(m_value()))
         .match_view(&view_of(b.view(load)))
@@ -198,8 +198,8 @@ fn two_step_specific_reuse() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let or = b.build_int_or::<i32, _, _, _>(x, y, "o")?;
-    let and = b.build_int_and::<i32, _, _, _>(x, y, "a")?;
+    let or = b.int_or::<i32, _, _, _>(x, y, "o")?;
+    let and = b.int_and::<i32, _, _, _>(x, y, "a")?;
 
     // Step 1: bind (a, b) from the `or`.
     let (a, bb) = m_or(m_value(), m_value())
@@ -233,10 +233,10 @@ fn m_phi_binds_phi_kind() -> Result<(), IrError> {
 
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_br_with_args(join_label, &[i32_ty.const_int(1_i32).into_erased()])?;
+        .br_with_args(join_label, &[i32_ty.const_int(1_i32).into_erased()])?;
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(other)
-        .build_br_with_args(join_label, &[i32_ty.const_int(2_i32).into_erased()])?;
+        .br_with_args(join_label, &[i32_ty.const_int(2_i32).into_erased()])?;
 
     let view = view_of(params[0]);
     let (kind,) = m_phi().match_view(&view).expect("phi matches");
@@ -255,7 +255,7 @@ fn m_phi_rejects_non_phi() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let add = b.build_int_add::<i32, _, _, _>(x, y, "r")?;
+    let add = b.int_add::<i32, _, _, _>(x, y, "r")?;
 
     let view = view_of(b.view(add).into_erased());
     assert!(m_phi().match_view(&view).is_none());
@@ -281,16 +281,14 @@ fn m_phi_composes_with_m_one_use() -> Result<(), IrError> {
 
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_br_with_args(join_label, &[i32_ty.const_int(1_i32).into_erased()])?;
+        .br_with_args(join_label, &[i32_ty.const_int(1_i32).into_erased()])?;
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(other)
-        .build_br_with_args(join_label, &[i32_ty.const_int(2_i32).into_erased()])?;
+        .br_with_args(join_label, &[i32_ty.const_int(2_i32).into_erased()])?;
 
     // Exactly one use of the phi result: the return.
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
-    IrBuilder::new_for::<Dyn>(&m)
-        .position_at_end(join)
-        .build_ret(p)?;
+    IrBuilder::new_for::<Dyn>(&m).position_at_end(join).ret(p)?;
 
     let view = view_of(params[0]);
     assert!(m_one_use(m_phi()).match_view(&view).is_some());

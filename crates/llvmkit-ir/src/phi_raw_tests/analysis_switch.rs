@@ -4,8 +4,8 @@
 //! `redirect_successor`) build a `switch`-fed
 //! merge whose phi collects an incoming from a `switch` case edge — which the
 //! block-argument authoring surface (`append_block_with_params` +
-//! `build_*_with_args`) physically cannot express — so they keep the raw
-//! `build_int_phi`/`add_incoming` API and run from inside the crate. They are
+//! `*_with_args`) physically cannot express — so they keep the raw
+//! `int_phi`/`add_incoming` API and run from inside the crate. They are
 //! kept verbatim from their integration-test origin (only the `llvmkit_ir::`
 //! paths are rewritten to `crate::`).
 
@@ -123,8 +123,8 @@ fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
     // entry: %e = add %a, 7 ; switch %a, default %dflt [ 0 -> merge, 1 -> other ]
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let e = b.build_int_add(a, 7_i32, "e")?;
-    let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
+    let e = b.int_add(a, 7_i32, "e")?;
+    let (_sealed, sw) = b.switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), merge_lbl)?
         .add_case(i32_ty.const_int(1_u32), other_lbl)?
         .finish();
@@ -132,20 +132,20 @@ fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
     // dflt: %d = add %a, 9 ; br merge
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(dflt);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let d = b.build_int_add(a, 9_i32, "d")?;
-    b.build_br(merge_lbl)?;
+    let d = b.int_add(a, 9_i32, "d")?;
+    b.br(merge_lbl)?;
 
     // other: ret 0
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(other);
-    b.build_ret(i32_ty.const_int(0_u32))?;
+    b.ret(i32_ty.const_int(0_u32))?;
 
     // merge: %p = phi i32 [ %e, entry ], [ %d, dflt ] ; ret %p
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(merge);
     let p = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(e, entry_lbl)?
         .add_incoming(d, dflt_lbl)?;
-    b.build_ret(p.as_int_value())?;
+    b.ret(p.as_int_value())?;
 
     Ok((f, dflt_lbl, other_lbl, merge_lbl))
 }
@@ -302,8 +302,8 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
     // entry: %e = add %a, 7 ; switch %a, default %shared [ 0 -> shared, 1 -> mid ]
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let e = b.build_int_add(a, 7_i32, "e")?;
-    let (_sealed, sw) = b.build_switch_dyn(a, shared_lbl, "")?;
+    let e = b.int_add(a, 7_i32, "e")?;
+    let (_sealed, sw) = b.switch_dyn(a, shared_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), shared_lbl)?
         .add_case(i32_ty.const_int(1_u32), mid_lbl)?
         .finish();
@@ -311,21 +311,21 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
     // mid: %mv = add %a, 3 ; br shared
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(mid);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let mv = b.build_int_add(a, 3_i32, "mv")?;
-    b.build_br(shared_lbl)?;
+    let mv = b.int_add(a, 3_i32, "mv")?;
+    b.br(shared_lbl)?;
 
     // shared: %p = phi i32 [ %e, entry ] (default), [ %e, entry ] (case 0), [ %mv, mid ] ; ret %p
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(shared);
     let p = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(e, entry_lbl)?
         .add_incoming(e, entry_lbl)?
         .add_incoming(mv, mid_lbl)?;
-    b.build_ret(p.as_int_value())?;
+    b.ret(p.as_int_value())?;
 
     // new: ret 1  (no phi — a redirect onto it seeds an empty phi_values)
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(new);
-    b.build_ret(i32_ty.const_int(1_u32))?;
+    b.ret(i32_ty.const_int(1_u32))?;
 
     Ok((f, shared_lbl, new_lbl))
 }

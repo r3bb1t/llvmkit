@@ -332,7 +332,7 @@ impl<R: ReturnMarker, B: ModuleBrand> core::hash::Hash for SsaBlock<R, B> {
 impl<R: ReturnMarker, B: ModuleBrand> SsaBlock<R, B> {
     /// The underlying storable [`BlockId`], usable anywhere a
     /// [`crate::IntoBasicBlockLabel`] source is accepted (e.g. a plain
-    /// `IrBuilder::build_br` target).
+    /// `IrBuilder::br` target).
     #[inline]
     pub fn id(&self) -> BlockId<R, B> {
         self.id
@@ -960,7 +960,7 @@ where
     R: ReturnMarker,
 {
     /// The full existing typed instruction surface, cranelift-style:
-    /// `b.ins()?.build_int_mul(a, b, "x")?`.
+    /// `b.ins()?.int_mul(a, b, "x")?`.
     ///
     /// The `&`-return makes the plain
     /// [`IrBuilder`](super::ir_builder::IrBuilder)'s self-consuming
@@ -1159,7 +1159,7 @@ where
         }
         let src_id = self.current_block_id()?;
         let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
-        let (_terminated, _inst) = inner.build_br(dest.id)?;
+        let (_terminated, _inst) = inner.br(dest.id)?;
         self.state.preds.entry(dest_id).or_default().push(src_id);
         self.state.filled.insert(src_id);
         Ok(())
@@ -1195,7 +1195,7 @@ where
         }
         let src_id = self.current_block_id()?;
         let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
-        let (_terminated, _inst) = inner.build_cond_br(cond, then_dest.id, else_dest.id)?;
+        let (_terminated, _inst) = inner.cond_br(cond, then_dest.id, else_dest.id)?;
         self.state.preds.entry(then_id).or_default().push(src_id);
         self.state.preds.entry(else_id).or_default().push(src_id);
         self.state.filled.insert(src_id);
@@ -1269,7 +1269,7 @@ where
         }
         let src_id = self.current_block_id()?;
         let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
-        let (_terminated, open) = inner.build_switch_dyn(cond, default_dest.id, "")?;
+        let (_terminated, open) = inner.switch_dyn(cond, default_dest.id, "")?;
         let mut open = open;
         for (case_value, target) in cases {
             open = open.add_case(case_value, target.id).unwrap_or_else(|_| {
@@ -1295,18 +1295,18 @@ where
     {
         let src_id = self.current_block_id()?;
         let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
-        let (_terminated, _inst) = inner.build_ret(value)?;
+        let (_terminated, _inst) = inner.ret(value)?;
         self.state.filled.insert(src_id);
         Ok(())
     }
 
     /// Produce `unreachable`. Mirrors `IrBuilder::CreateUnreachable`.
-    /// Records no edges. The inner `build_unreachable` is infallible, so
+    /// Records no edges. The inner `unreachable` is infallible, so
     /// the only failure here is an empty cursor.
     pub fn unreachable(&mut self) -> IrResult<()> {
         let src_id = self.current_block_id()?;
         let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
-        let (_terminated, _inst) = inner.build_unreachable();
+        let (_terminated, _inst) = inner.unreachable();
         self.state.filled.insert(src_id);
         Ok(())
     }
@@ -1319,14 +1319,14 @@ where
 {
     /// Produce `ret void`. Mirrors `IrBuilder::CreateRetVoid`. Gated on
     /// the builder's return marker being statically `()`, matching the
-    /// inner builder's own `build_ret_void` split (a [`Dyn`]-marker
+    /// inner builder's own `ret_void` split (a [`Dyn`]-marker
     /// builder's `ret_void` would need a runtime parent-function check;
     /// no such builder shape is reachable here since `R = ()` is fixed
     /// by this impl block).
     pub fn ret_void(&mut self) -> IrResult<()> {
         let src_id = self.current_block_id()?;
         let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
-        let (_terminated, _inst) = inner.build_ret_void();
+        let (_terminated, _inst) = inner.ret_void();
         self.state.filled.insert(src_id);
         Ok(())
     }
@@ -1401,17 +1401,17 @@ where
     let id = match category {
         VarCategory::Int => {
             let int_ty = IntType::<super::int_width::IntDyn, B>::new(ty, module);
-            let phi = builder.build_int_phi_dyn(int_ty, name)?;
+            let phi = builder.int_phi_dyn(int_ty, name)?;
             builder.view(phi).slot()
         }
         VarCategory::Float => {
             let float_ty = FloatType::<super::float_kind::FloatDyn, B>::new(ty, module);
-            let phi = builder.build_fp_phi_dyn(float_ty, name)?;
+            let phi = builder.fp_phi_dyn(float_ty, name)?;
             builder.view(phi).slot()
         }
         VarCategory::Pointer => {
             let ptr_ty = PointerType::<B>::new(ty, module);
-            let phi = builder.build_pointer_phi_in_addrspace(ptr_ty, name)?;
+            let phi = builder.pointer_phi_in_addrspace(ptr_ty, name)?;
             builder.view(phi).slot()
         }
     };

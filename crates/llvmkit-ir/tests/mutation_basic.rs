@@ -48,15 +48,15 @@ fn use_test_sort_setup_registers_eight_users() -> Result<(), IrError> {
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     // Order matches the upstream string -- declaration order, not value index.
-    let v0 = b.build_int_add(x, 0_i32, "v0")?;
-    let v2 = b.build_int_add(x, 2_i32, "v2")?;
-    let v5 = b.build_int_add(x, 5_i32, "v5")?;
-    let v1 = b.build_int_add(x, 1_i32, "v1")?;
-    let v3 = b.build_int_add(x, 3_i32, "v3")?;
-    let v7 = b.build_int_add(x, 7_i32, "v7")?;
-    let v6 = b.build_int_add(x, 6_i32, "v6")?;
-    let v4 = b.build_int_add(x, 4_i32, "v4")?;
-    b.build_ret_void()?;
+    let v0 = b.int_add(x, 0_i32, "v0")?;
+    let v2 = b.int_add(x, 2_i32, "v2")?;
+    let v5 = b.int_add(x, 5_i32, "v5")?;
+    let v1 = b.int_add(x, 1_i32, "v1")?;
+    let v3 = b.int_add(x, 3_i32, "v3")?;
+    let v7 = b.int_add(x, 7_i32, "v7")?;
+    let v6 = b.int_add(x, 6_i32, "v6")?;
+    let v4 = b.int_add(x, 4_i32, "v4")?;
+    b.ret_void()?;
 
     // Upstream: `ASSERT_EQ(8u, I)` after iterating `X.users()`.
     assert_eq!(x.into_erased().num_uses(), 8);
@@ -93,9 +93,9 @@ fn erase_no_invalidation() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    let i1 = b.build_int_add(x, 0_i32, "i1")?;
-    let i2 = b.build_int_add(x, 0_i32, "i2")?;
-    let i3 = b.build_int_add(x, 0_i32, "i3")?;
+    let i1 = b.int_add(x, 0_i32, "i1")?;
+    let i2 = b.int_add(x, 0_i32, "i2")?;
+    let i3 = b.int_add(x, 0_i32, "i3")?;
     let bb = b.into_insert_block();
 
     // Pre-erase order before the terminator is emitted: I1, I2, I3.
@@ -112,7 +112,7 @@ fn erase_no_invalidation() -> Result<(), IrError> {
     let bb = cursor.into_block();
     i2_inst.erase_from_parent(&m);
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
-    let (bb, ret) = b.build_ret_void()?;
+    let (bb, ret) = b.ret_void()?;
 
     // Post-erase: I1, I3, Ret. Upstream asserts via comesBefore +
     // iterator-equality; we assert the iteration order directly.
@@ -139,7 +139,7 @@ fn erase_releases_local_name_for_reuse() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    let _dead = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "tmp")?;
+    let _dead = b.int_add::<i32, _, _, _>(arg, 1_i32, "tmp")?;
     let block = b.into_insert_block();
     let (dead_inst, cursor) = BlockCursor::at_start(block)
         .next()
@@ -147,8 +147,8 @@ fn erase_releases_local_name_for_reuse() -> Result<(), IrError> {
     dead_inst.erase_from_parent(&m);
     let block = cursor.into_block();
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(block);
-    let live = b.build_int_add::<i32, _, _, _>(arg, 2_i32, "tmp")?;
-    b.build_ret(live)?;
+    let live = b.int_add::<i32, _, _, _>(arg, 2_i32, "tmp")?;
+    b.ret(live)?;
 
     assert_eq!(m.view(live).name().as_deref(), Some("tmp"));
     let text = format!("{m}");
@@ -168,11 +168,8 @@ fn detached_append_reinserts_and_uniques_against_destination() -> Result<(), IrE
     let from = m.add_function_dyn("from", fn_ty, Linkage::External)?;
     let from_entry = m.view(from).append_basic_block(&m, "entry");
     let from_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(from_entry);
-    let _moved_value = from_b.build_int_add::<i32, _, _, _>(
-        i32_ty.const_int(1_i32),
-        i32_ty.const_int(2_i32),
-        "tmp",
-    )?;
+    let _moved_value =
+        from_b.int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "tmp")?;
     let from_block = from_b.into_insert_block();
     let (moved_inst, cursor) = BlockCursor::at_start(from_block)
         .next()
@@ -180,19 +177,16 @@ fn detached_append_reinserts_and_uniques_against_destination() -> Result<(), IrE
     let from_block = cursor.into_block();
     let moved = moved_inst.detach_from_parent(&m);
     let from_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(from_block);
-    from_b.build_ret(i32_ty.const_zero())?;
+    from_b.ret(i32_ty.const_zero())?;
 
     let to = m.add_function_dyn("to", fn_ty, Linkage::External)?;
     let to_entry = m.view(to).append_basic_block(&m, "entry");
     let to_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(to_entry);
-    let existing = to_b.build_int_add::<i32, _, _, _>(
-        i32_ty.const_int(3_i32),
-        i32_ty.const_int(4_i32),
-        "tmp",
-    )?;
+    let existing =
+        to_b.int_add::<i32, _, _, _>(i32_ty.const_int(3_i32), i32_ty.const_int(4_i32), "tmp")?;
     let appended = moved.append_to(&m, to_b.insert_block())?;
     let appended_value: IntValue<'_, i32, _> = appended.try_into()?;
-    to_b.build_ret(appended_value)?;
+    to_b.ret(appended_value)?;
 
     assert_eq!(m.view(existing).name().as_deref(), Some("tmp"));
     assert_eq!(appended_value.name().as_deref(), Some("tmp1"));
@@ -221,7 +215,7 @@ fn detached_set_name_updates_carried_name_without_old_parent_binding() -> Result
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
     let _original =
-        b.build_int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "tmp")?;
+        b.int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "tmp")?;
     let block = b.into_insert_block();
     let (detached_inst, cursor) = BlockCursor::at_start(block)
         .next()
@@ -231,11 +225,11 @@ fn detached_set_name_updates_carried_name_without_old_parent_binding() -> Result
     detached.to_erased().set_name(&m, "renamed");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(block);
     let live =
-        b.build_int_add::<i32, _, _, _>(i32_ty.const_int(3_i32), i32_ty.const_int(4_i32), "tmp")?;
+        b.int_add::<i32, _, _, _>(i32_ty.const_int(3_i32), i32_ty.const_int(4_i32), "tmp")?;
     let inserted = detached.append_to(&m, b.insert_block())?;
     let inserted_value: IntValue<'_, i32, _> = inserted.try_into()?;
-    let sum = b.build_int_add::<i32, _, _, _>(live, inserted_value, "sum")?;
-    b.build_ret(sum)?;
+    let sum = b.int_add::<i32, _, _, _>(live, inserted_value, "sum")?;
+    b.ret(sum)?;
 
     assert_eq!(m.view(live).name().as_deref(), Some("tmp"));
     assert_eq!(inserted_value.name().as_deref(), Some("renamed"));
@@ -263,9 +257,9 @@ fn erase_deregisters_from_operand_use_lists() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    let i1 = b.build_int_add(x, 0_i32, "i1")?;
-    let i2 = b.build_int_add(x, 0_i32, "i2")?;
-    let i3 = b.build_int_add(x, 0_i32, "i3")?;
+    let i1 = b.int_add(x, 0_i32, "i1")?;
+    let i2 = b.int_add(x, 0_i32, "i2")?;
+    let i3 = b.int_add(x, 0_i32, "i3")?;
     let bb = b.into_insert_block();
 
     // Pre-erase: x has 3 users (one per add).
@@ -277,7 +271,7 @@ fn erase_deregisters_from_operand_use_lists() -> Result<(), IrError> {
     let bb = cursor.into_block();
     i2_inst.erase_from_parent(&m);
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
-    let _ = b.build_ret_void();
+    let _ = b.ret_void();
 
     // Post-erase: x has 2 users (only the surviving adds).
     assert_eq!(x.into_erased().num_uses(), 2);
@@ -320,12 +314,9 @@ fn self_anchored_instruction_moves_are_no_ops() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let builder = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let a = builder.build_int_add::<i32, _, _, _>(
-        i32_ty.const_int(1_i32),
-        i32_ty.const_int(2_i32),
-        "a",
-    )?;
-    let b = builder.build_int_add::<i32, _, _, _>(a, i32_ty.const_int(3_i32), "b")?;
+    let a =
+        builder.int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "a")?;
+    let b = builder.int_add::<i32, _, _, _>(a, i32_ty.const_int(3_i32), "b")?;
 
     let block = builder.into_insert_block();
     let cursor = BlockCursor::at_start(block);
@@ -338,7 +329,7 @@ fn self_anchored_instruction_moves_are_no_ops() -> Result<(), IrError> {
 
     let block = cursor.into_block();
     let builder = IrBuilder::with_folder(&m, NoFolder).position_at_end(block);
-    builder.build_ret(b)?;
+    builder.ret(b)?;
     let text = format!("{m}");
     assert!(text.contains("%a = add i32 1, 2"), "{text}");
     assert!(text.contains("%b = add i32 %a, 3"), "{text}");
@@ -362,7 +353,7 @@ fn debug_record_value_operand_counts_as_structural_use_and_erases() -> Result<()
     assert_eq!(x.into_erased().num_uses(), 0);
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let _add =
-        b.build_int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "sum")?;
+        b.int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "sum")?;
     let block = b.into_insert_block();
     let (inst, cursor) = BlockCursor::at_start(block)
         .next()
@@ -383,7 +374,7 @@ fn debug_record_value_operand_counts_as_structural_use_and_erases() -> Result<()
     assert_eq!(x.into_erased().users().len(), 0);
     let block = cursor.into_block();
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(block);
-    let _ = b.build_ret_void();
+    let _ = b.ret_void();
 
     inst.erase_from_parent(&m);
     assert_eq!(x.into_erased().num_uses(), 0);
@@ -404,12 +395,9 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    let source = b.build_int_add::<i32, _, _, _>(x, i32_ty.const_int(1_i32), "source")?;
-    let _anchor = b.build_int_add::<i32, _, _, _>(
-        i32_ty.const_int(2_i32),
-        i32_ty.const_int(3_i32),
-        "anchor",
-    )?;
+    let source = b.int_add::<i32, _, _, _>(x, i32_ty.const_int(1_i32), "source")?;
+    let _anchor =
+        b.int_add::<i32, _, _, _>(i32_ty.const_int(2_i32), i32_ty.const_int(3_i32), "anchor")?;
     let block = b.into_insert_block();
     let cursor = BlockCursor::at_start(block);
     let (source_inst, cursor) = cursor.next().expect("source instruction");
@@ -444,6 +432,6 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
     );
     let block = cursor.into_block();
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(block);
-    let _ = b.build_ret_void();
+    let _ = b.ret_void();
     Ok(())
 }

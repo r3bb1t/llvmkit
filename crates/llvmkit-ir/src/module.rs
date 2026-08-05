@@ -2917,8 +2917,8 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     ///
     /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     /// let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    /// let sum = b.build_int_add(n, 1_i32, "sum")?;
-    /// b.build_ret(m.view(sum))?;
+    /// let sum = b.int_add(n, 1_i32, "sum")?;
+    /// b.ret(m.view(sum))?;
     /// assert_eq!(m.instruction_count(), 2);
     /// # Ok(()) }
     /// ```

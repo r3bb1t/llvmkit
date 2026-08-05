@@ -117,21 +117,21 @@ fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, to, other
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let x = b.build_int_add(a, 7_i32, "x")?;
-    let c = b.build_icmp_slt(a, 5_i32, "c")?;
-    b.build_cond_br(c, to_lbl, other_lbl)?;
+    let x = b.int_add(a, 7_i32, "x")?;
+    let c = b.icmp_slt(a, 5_i32, "c")?;
+    b.cond_br(c, to_lbl, other_lbl)?;
 
     // to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(to);
     let p = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_lbl)?;
-    let u = b.build_int_add(p.as_int_value(), 1_i32, "u")?;
-    b.build_ret(u)?;
+    let u = b.int_add(p.as_int_value(), 1_i32, "u")?;
+    b.ret(u)?;
 
     // other: ret 0
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(other);
-    b.build_ret(i32_ty.const_int(0_u32))?;
+    b.ret(i32_ty.const_int(0_u32))?;
 
     Ok((f, to_lbl))
 }
@@ -208,25 +208,25 @@ fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, old_to, other
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let x = b.build_int_add(a, 7_i32, "x")?;
-    let c = b.build_icmp_slt(a, 5_i32, "c")?;
-    b.build_cond_br(c, old_to_lbl, other_lbl)?;
+    let x = b.int_add(a, 7_i32, "x")?;
+    let c = b.icmp_slt(a, 5_i32, "c")?;
+    b.cond_br(c, old_to_lbl, other_lbl)?;
 
     // old_to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(old_to);
     let p = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_lbl)?;
-    let u = b.build_int_add(p.as_int_value(), 1_i32, "u")?;
-    b.build_ret(u)?;
+    let u = b.int_add(p.as_int_value(), 1_i32, "u")?;
+    b.ret(u)?;
 
     // other: ret 0
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(other);
-    b.build_ret(i32_ty.const_int(0_u32))?;
+    b.ret(i32_ty.const_int(0_u32))?;
 
     // new_to: ret 1  (no leading phi -> redirect's `phi_values` slice is empty)
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(new_to);
-    b.build_ret(i32_ty.const_int(1_u32))?;
+    b.ret(i32_ty.const_int(1_u32))?;
 
     Ok((f, old_to_lbl, new_to_lbl))
 }
@@ -306,12 +306,12 @@ fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
 
     // entry: br b   (so `b` is reachable from entry)
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    bld.build_br(b_label)?;
+    bld.br(b_label)?;
 
     // b: %p = phi i32   (no add_incoming) ; ret 0
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(b);
-    let _p = bld.view(bld.build_int_phi::<i32, _>("p")?);
-    bld.build_ret(i32_ty.const_int(0_u32))?;
+    let _p = bld.view(bld.int_phi::<i32, _>("p")?);
+    bld.ret(i32_ty.const_int(0_u32))?;
 
     let err = m
         .verify_borrowed()
@@ -347,12 +347,12 @@ fn zero_incoming_phi_in_unreachable_block_is_accepted() -> Result<(), IrError> {
 
     // entry: ret 0
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    bld.build_ret(i32_ty.const_int(0_u32))?;
+    bld.ret(i32_ty.const_int(0_u32))?;
 
     // u: %q = phi i32   (no add_incoming) ; ret 0
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(u);
-    let _q = bld.view(bld.build_int_phi::<i32, _>("q")?);
-    bld.build_ret(i32_ty.const_int(0_u32))?;
+    let _q = bld.view(bld.int_phi::<i32, _>("q")?);
+    bld.ret(i32_ty.const_int(0_u32))?;
 
     m.verify_borrowed()
         .expect("a zero-incoming phi in an unreachable block is not this rule's concern");

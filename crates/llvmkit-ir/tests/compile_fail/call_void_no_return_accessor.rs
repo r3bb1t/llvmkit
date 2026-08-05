@@ -21,7 +21,7 @@ fn main() {
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
     let inst = b
-        .build_call_dyn(callee, Vec::<llvmkit_ir::Value<_>>::new(), "")
+        .call_dyn(callee, Vec::<llvmkit_ir::Value<_>>::new(), "")
         .unwrap();
     // `return_int_value` is not in scope for `CallInst<'_, ()>`.
     let _ = b.view(inst).return_int_value();

@@ -10,8 +10,8 @@
 //!    at the builder (`IrError::PhiArgArityMismatch`), instead of silently
 //!    seeding nothing and leaving an incomplete phi for `Module::verify()`;
 //! 2. the **argument-carrying forms** for the two terminators that never had
-//!    one — `build_switch_with_args` / `build_switch_dyn_with_args` and
-//!    `build_invoke_with_args` / `build_invoke_dyn_with_args`.
+//!    one — `switch_with_args` / `switch_dyn_with_args` and
+//!    `invoke_with_args` / `invoke_dyn_with_args`.
 //!
 //! The guard keys on "was this block *created* with parameters", not on "does
 //! it contain phis" — so the `.ll` parser, the auto-SSA builder, and pass-side
@@ -28,9 +28,9 @@ use llvmkit_ir::{
 // The guard: a plain edge into a parameterised block is rejected
 // --------------------------------------------------------------------------
 
-/// A plain `build_br` into a parameterised block fails **at the branch**, with
+/// A plain `br` into a parameterised block fails **at the branch**, with
 /// the same `PhiArgArityMismatch` a wrong argument count gets from
-/// `build_br_with_args` — it used to build fine and leave the head-phi one
+/// `br_with_args` — it used to build fine and leave the head-phi one
 /// incoming short for a distant `Module::verify()` to report. Nothing is
 /// emitted: the check runs before the terminator is appended.
 #[test]
@@ -46,7 +46,7 @@ fn plain_br_into_param_block_errors() -> Result<(), IrError> {
     let hdr_label = hdr.id();
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let res = b.build_br(hdr_label);
+    let res = b.br(hdr_label);
     assert!(
         matches!(
             res,
@@ -88,8 +88,8 @@ fn plain_cond_br_into_param_block_errors_on_either_arm() -> Result<(), IrError> 
     // then-arm parameterised.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(then_entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
-    let res = b.build_cond_br(c, param_label, plain_label);
+    let c = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
+    let res = b.cond_br(c, param_label, plain_label);
     assert!(
         matches!(res, Err(IrError::PhiArgArityMismatch { expected: 1, .. })),
         "then-arm into a param block must be rejected, got: {res:?}"
@@ -98,8 +98,8 @@ fn plain_cond_br_into_param_block_errors_on_either_arm() -> Result<(), IrError> 
     // else-arm parameterised.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(else_entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c2")?;
-    let res = b.build_cond_br(c, plain_label, param_label);
+    let c = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c2")?;
+    let res = b.cond_br(c, plain_label, param_label);
     assert!(
         matches!(res, Err(IrError::PhiArgArityMismatch { expected: 1, .. })),
         "else-arm into a param block must be rejected, got: {res:?}"
@@ -108,7 +108,7 @@ fn plain_cond_br_into_param_block_errors_on_either_arm() -> Result<(), IrError> 
 }
 
 /// A `switch` reaches a parameterised block two ways — through its default
-/// edge and through a case edge — and both are guarded: `build_switch` rejects
+/// edge and through a case edge — and both are guarded: `switch` rejects
 /// the default, `SwitchInst::add_case` rejects the case.
 #[test]
 fn plain_switch_into_param_block_errors_on_default_and_case() -> Result<(), IrError> {
@@ -129,7 +129,7 @@ fn plain_switch_into_param_block_errors_on_default_and_case() -> Result<(), IrEr
     // Default edge.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(default_entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let res = b.build_switch::<i32, _, _, _>(a, param_label, "");
+    let res = b.switch::<i32, _, _, _>(a, param_label, "");
     assert!(
         matches!(
             res.map(|(_, _)| ()),
@@ -144,7 +144,7 @@ fn plain_switch_into_param_block_errors_on_default_and_case() -> Result<(), IrEr
     // Case edge.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(case_entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let (_sealed, open) = b.build_switch::<i32, _, _, _>(a, plain_label, "")?;
+    let (_sealed, open) = b.switch::<i32, _, _, _>(a, plain_label, "")?;
     let res = open.add_case(0_i32, param_label);
     assert!(
         matches!(
@@ -186,7 +186,7 @@ fn plain_invoke_into_param_block_errors_on_either_edge() -> Result<(), IrError> 
 
     // Parameterised normal destination.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(normal_entry);
-    let res = b.build_invoke_dyn::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _>(
+    let res = b.invoke_dyn::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _>(
         m.view(callee),
         Vec::new(),
         param_label,
@@ -206,7 +206,7 @@ fn plain_invoke_into_param_block_errors_on_either_edge() -> Result<(), IrError> 
 
     // Parameterised unwind destination.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(unwind_entry);
-    let res = b.build_invoke_dyn::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _>(
+    let res = b.invoke_dyn::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _>(
         m.view(callee),
         Vec::new(),
         plain_label,
@@ -247,7 +247,7 @@ fn indirectbr_destination_into_param_block_errors() -> Result<(), IrError> {
 
     let addr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
+    let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let res = ibr.add_destination(param_label);
     assert!(
         matches!(
@@ -293,7 +293,7 @@ fn plain_callbr_into_param_block_errors() -> Result<(), IrError> {
     let param_label = param_bb.id();
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(default_entry);
-    let res = b.build_callbr::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _, _, _>(
+    let res = b.callbr::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _, _, _>(
         m.view(callee),
         Vec::new(),
         param_label,
@@ -312,7 +312,7 @@ fn plain_callbr_into_param_block_errors() -> Result<(), IrError> {
     );
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(indirect_entry);
-    let res = b.build_callbr::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _, _, _>(
+    let res = b.callbr::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _, _, _>(
         m.view(callee),
         Vec::new(),
         plain_label,
@@ -360,10 +360,10 @@ fn plain_branch_into_auto_ssa_phi_block_still_builds() -> Result<(), IrError> {
     // the exact shape the naive "does the target start with a phi?" guard
     // would have rejected the back-edge below for.
     let current = b.use_int_var(counter)?;
-    let next = b.ins()?.build_int_sub(current, 1_i32, "next")?;
+    let next = b.ins()?.int_sub(current, 1_i32, "next")?;
     let done = b
         .ins()?
-        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, next, 0_i32, "done")?;
+        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, next, 0_i32, "done")?;
     b.def_int_var(counter, next)?;
     b.cond_br(done, exit, loop_bb)?;
     b.seal_block(loop_bb)?;
@@ -384,11 +384,11 @@ fn plain_branch_into_auto_ssa_phi_block_still_builds() -> Result<(), IrError> {
 }
 
 // --------------------------------------------------------------------------
-// `build_switch_with_args`
+// `switch_with_args`
 // --------------------------------------------------------------------------
 
 /// A SIL-style loop authored entirely through `switch` block arguments: the
-/// header's two parameters are seeded from `entry` by `build_br_with_args` and
+/// header's two parameters are seeded from `entry` by `br_with_args` and
 /// from the latch by the switch's **default** edge, while the switch's one
 /// **case** edge carries the accumulator out to a parameterised `exit`. Every
 /// phi is complete by construction and the module verifies clean.
@@ -413,7 +413,7 @@ fn switch_with_args_authors_a_sil_style_loop() -> Result<(), IrError> {
 
     // entry: br loop(0, 1)
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    b.build_br_with_args(
+    b.br_with_args(
         loop_label,
         &[
             i32_ty.const_int(0_i32).into_erased(),
@@ -427,9 +427,9 @@ fn switch_with_args_authors_a_sil_style_loop() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(loop_bb);
     let i: IntValue<'_, i32, _> = loop_params[0].try_into()?;
     let acc: IntValue<'_, i32, _> = loop_params[1].try_into()?;
-    let next_i = b.build_int_add(i, 1_i32, "next_i")?;
-    let next_acc = b.build_int_mul(acc, 2_i32, "next_acc")?;
-    b.build_switch_with_args(
+    let next_i = b.int_add(i, 1_i32, "next_i")?;
+    let next_acc = b.int_mul(acc, 2_i32, "next_acc")?;
+    b.switch_with_args(
         i,
         (
             loop_label,
@@ -442,7 +442,7 @@ fn switch_with_args_authors_a_sil_style_loop() -> Result<(), IrError> {
     // exit(%r): ret %r
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exit_bb);
     let r: IntValue<'_, i32, _> = exit_params[0].try_into()?;
-    b.build_ret(r)?;
+    b.ret(r)?;
 
     let text = format!("{m}");
     assert!(
@@ -482,7 +482,7 @@ fn switch_with_args_arity_mismatch_errors() -> Result<(), IrError> {
     // Default edge: one parameter, zero arguments.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(default_entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let res = b.build_switch_with_args(a, (param_label, &[]), [(0_i32, plain_label, &[][..])], "");
+    let res = b.switch_with_args(a, (param_label, &[]), [(0_i32, plain_label, &[][..])], "");
     assert!(
         matches!(
             res.map(|(_, _)| ()),
@@ -498,7 +498,7 @@ fn switch_with_args_arity_mismatch_errors() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(case_entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let two = [a.into_erased(), a.into_erased()];
-    let res = b.build_switch_with_args(a, (plain_label, &[]), [(0_i32, param_label, &two[..])], "");
+    let res = b.switch_with_args(a, (plain_label, &[]), [(0_i32, param_label, &two[..])], "");
     assert!(
         matches!(
             res.map(|(_, _)| ()),
@@ -513,7 +513,7 @@ fn switch_with_args_arity_mismatch_errors() -> Result<(), IrError> {
 }
 
 /// A block argument whose type differs from its target parameter is rejected
-/// at the call site, the same way `build_br_with_args` rejects it.
+/// at the call site, the same way `br_with_args` rejects it.
 #[test]
 fn switch_with_args_type_mismatch_errors() -> Result<(), IrError> {
     let m = module_new!("switch_block_args_type")?;
@@ -533,7 +533,7 @@ fn switch_with_args_type_mismatch_errors() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let wrong = [m.view(f).param(1)?.into_erased()]; // f64 into an i32 parameter
-    let res = b.build_switch_with_args(
+    let res = b.switch_with_args(
         a,
         (plain_label, &[]),
         [(0_i32, param_label, &wrong[..])],
@@ -568,7 +568,7 @@ fn switch_dyn_with_args_seeds_default_and_case() -> Result<(), IrError> {
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let dflt_arg = [a.into_erased()];
     let case_arg = [i32_ty.const_int(7_i32).into_erased()];
-    b.build_switch_dyn_with_args(
+    b.switch_dyn_with_args(
         a,
         (dflt_label, &dflt_arg),
         [(i32_ty.const_int(0_i32), case_label, &case_arg[..])],
@@ -577,10 +577,10 @@ fn switch_dyn_with_args_seeds_default_and_case() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(dflt);
     let dp: IntValue<'_, i32, _> = dflt_params[0].try_into()?;
-    b.build_ret(dp)?;
+    b.ret(dp)?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(case_bb);
     let cp: IntValue<'_, i32, _> = case_params[0].try_into()?;
-    b.build_ret(cp)?;
+    b.ret(cp)?;
 
     let text = format!("{m}");
     assert!(
@@ -596,7 +596,7 @@ fn switch_dyn_with_args_seeds_default_and_case() -> Result<(), IrError> {
 }
 
 // --------------------------------------------------------------------------
-// `build_invoke_with_args`
+// `invoke_with_args`
 // --------------------------------------------------------------------------
 
 /// Both `invoke` edges are mandatory, so both carry an argument list: the
@@ -621,9 +621,9 @@ fn invoke_with_args_seeds_both_edges() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let x = b.build_int_add(a, 1_i32, "x")?;
+    let x = b.int_add(a, 1_i32, "x")?;
     let carried = [m.view(x).into_erased()];
-    b.build_invoke_with_args(
+    b.invoke_with_args(
         m.view(callee),
         (),
         (normal_label, &carried),
@@ -633,10 +633,10 @@ fn invoke_with_args_seeds_both_edges() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(normal);
     let np: IntValue<'_, i32, _> = normal_params[0].try_into()?;
-    b.build_ret(np)?;
+    b.ret(np)?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
     let up: IntValue<'_, i32, _> = unwind_params[0].try_into()?;
-    b.build_ret(up)?;
+    b.ret(up)?;
 
     let text = format!("{m}");
     assert!(
@@ -681,7 +681,7 @@ fn invoke_dyn_with_args_seeds_edges_and_checks_arity() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let carried = [a.into_erased()];
-    b.build_invoke_dyn_with_args::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _>(
+    b.invoke_dyn_with_args::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _>(
         m.view(callee),
         Vec::new(),
         (normal_label, &carried),
@@ -691,7 +691,7 @@ fn invoke_dyn_with_args_seeds_edges_and_checks_arity() -> Result<(), IrError> {
 
     // Wrong arity on the normal edge.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bad_entry);
-    let res = b.build_invoke_dyn_with_args::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _>(
+    let res = b.invoke_dyn_with_args::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _>(
         m.view(callee),
         Vec::new(),
         (normal_label, &[]),
@@ -711,9 +711,9 @@ fn invoke_dyn_with_args_seeds_edges_and_checks_arity() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(normal);
     let np: IntValue<'_, i32, _> = normal_params[0].try_into()?;
-    b.build_ret(np)?;
+    b.ret(np)?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(plain);
-    b.build_ret(i32_ty.const_int(0_i32))?;
+    b.ret(i32_ty.const_int(0_i32))?;
 
     let text = format!("{m}");
     assert!(

@@ -1,6 +1,6 @@
 //! Phase-A2 coverage: builder positioning (SetInsertPoint(Instruction*) /
 //! SetInsertPointPastAllocas / save/restore), integer unary ops
-//! (`build_int_neg`, `build_int_neg_nsw`, `build_int_not`), and the
+//! (`int_neg`, `int_neg_nsw`, `int_not`), and the
 //! pointer-cast / is-null / is-not-null convenience methods.
 //!
 //! Each `#[test]` cites its upstream source (Doctrine D11). Tests whose
@@ -27,11 +27,11 @@ fn position_before_inserts_between_prev_and_anchor() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let a = b.build_int_add(n, 1_i32, "a")?;
-    let (sealed_block, ret_inst) = b.build_ret(a)?;
+    let a = b.int_add(n, 1_i32, "a")?;
+    let (sealed_block, ret_inst) = b.ret(a)?;
     let _ = sealed_block;
     let b2 = IrBuilder::new_for::<i32>(&m).position_before(&ret_inst.as_view());
-    let _ = b2.build_int_sub(a, 0_i32, "noop")?;
+    let _ = b2.int_sub(a, 0_i32, "noop")?;
     let text = format!("{m}");
     let pos_a = text.find("%a = add").expect("%a present");
     let pos_noop = text.find("%noop = sub").expect("%noop present");
@@ -57,12 +57,12 @@ fn position_past_allocas_anchors_after_alloca_prefix() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let slot = b.build_alloca(i32_ty, "slot")?;
+    let slot = b.alloca(i32_ty, "slot")?;
     let zero = i32_ty.const_int(0_i32);
-    b.build_store(zero, slot)?;
-    b.build_ret_void()?;
+    b.store(zero, slot)?;
+    b.ret_void()?;
     let b2 = IrBuilder::new_for::<Dyn>(&m).position_past_allocas(m.view(f));
-    let _hoisted = b2.build_alloca(i32_ty, "hoisted")?;
+    let _hoisted = b2.alloca(i32_ty, "hoisted")?;
     let text = format!("{m}");
     let pos_slot = text.find("%slot = alloca").expect("slot present");
     let pos_hoisted = text.find("%hoisted = alloca").expect("hoisted present");
@@ -87,17 +87,17 @@ fn save_and_restore_insert_point_before_terminator() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let saved = b.save_insert_point();
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let a = b.build_int_add(n, 1_i32, "a")?;
+    let a = b.int_add(n, 1_i32, "a")?;
     let b2 = IrBuilder::new_for::<Dyn>(&m).restore_insert_point(saved)?;
-    let extra = b2.build_int_add(n, 2_i32, "extra")?;
-    b2.build_ret(extra)?;
+    let extra = b2.int_add(n, 2_i32, "extra")?;
+    b2.ret(extra)?;
     let _ = a;
     Ok(())
 }
 
 /// Rust-side T2 regression for LLVM's `Verifier::visitBasicBlock`
 /// terminator invariant: a saved end-of-block insert point must not reopen
-/// a block after `IrBuilder::build_ret` sealed it.
+/// a block after `IrBuilder::ret` sealed it.
 #[test]
 fn restore_insert_point_rejects_terminated_block() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -108,8 +108,8 @@ fn restore_insert_point_rejects_terminated_block() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let saved = b.save_insert_point();
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let a = b.build_int_add(n, 1_i32, "a")?;
-    let _ = b.build_ret(a)?;
+    let a = b.int_add(n, 1_i32, "a")?;
+    let _ = b.ret(a)?;
     let err = match IrBuilder::new_for::<Dyn>(&m).restore_insert_point(saved) {
         Ok(_) => panic!("terminated block cannot be reopened from a saved insert point"),
         Err(err) => err,
@@ -135,13 +135,13 @@ fn position_at_end_dyn_reopens_an_unterminated_block_from_its_id() -> Result<(),
     // The linear token is consumed here; only the id survives.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let a = b.build_int_add(n, 1_i32, "a")?;
+    let a = b.int_add(n, 1_i32, "a")?;
     // Give the block's linear token back to the builder and let it go:
     // from here only `entry_id` names the block.
     let _consumed = b.into_insert_block();
 
     let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end_dyn(entry_id)?;
-    b2.build_ret(a)?;
+    b2.ret(a)?;
     let text = format!("{m}");
     assert!(
         text.contains("%a = add i32 %0, 1\n  ret i32 %a\n"),
@@ -164,8 +164,8 @@ fn position_at_end_dyn_rejects_a_terminated_block() -> Result<(), IrError> {
     let entry_id = entry.id();
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let a = b.build_int_add(n, 1_i32, "a")?;
-    let _ = b.build_ret(a)?;
+    let a = b.int_add(n, 1_i32, "a")?;
+    let _ = b.ret(a)?;
 
     let err = match IrBuilder::new_for::<Dyn>(&m).position_at_end_dyn(entry_id) {
         Ok(_) => panic!("a terminated block must not be reopened from its id"),
@@ -227,8 +227,8 @@ fn build_int_neg_emits_sub_zero() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let neg = b.build_int_neg(n, "neg")?;
-    b.build_ret(neg)?;
+    let neg = b.int_neg(n, "neg")?;
+    b.ret(neg)?;
     let text = format!("{m}");
     assert!(text.contains("%neg = sub i32 0, %0\n"), "got:\n{text}");
     Ok(())
@@ -248,8 +248,8 @@ fn build_int_neg_nsw_emits_sub_nsw() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let neg = b.build_int_neg_nsw(n, "neg")?;
-    b.build_ret(neg)?;
+    let neg = b.int_neg_nsw(n, "neg")?;
+    b.ret(neg)?;
     let text = format!("{m}");
     assert!(text.contains("%neg = sub nsw i32 0, %0\n"), "got:\n{text}");
     let _ = SubFlags::new().nsw();
@@ -269,8 +269,8 @@ fn build_int_not_emits_xor_minus_one() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let inv = b.build_int_not(n, "inv")?;
-    b.build_ret(inv)?;
+    let inv = b.int_not(n, "inv")?;
+    b.ret(inv)?;
     let text = format!("{m}");
     assert!(text.contains("%inv = xor i32 %0, -1\n"), "got:\n{text}");
     Ok(())
@@ -292,8 +292,8 @@ fn build_pointer_cast_same_addrspace_emits_bitcast() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let cast = b.build_pointer_cast(p, ptr_ty, "cast")?;
-    b.build_ret(cast)?;
+    let cast = b.pointer_cast(p, ptr_ty, "cast")?;
+    b.ret(cast)?;
     let text = format!("{m}");
     assert!(
         text.contains("%cast = bitcast ptr %0 to ptr\n"),
@@ -316,8 +316,8 @@ fn build_is_null_emits_icmp_eq_null() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_is_null(p, "isn")?;
-    b.build_ret(r)?;
+    let r = b.is_null(p, "isn")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%isn = icmp eq ptr %0, null\n"),
@@ -339,8 +339,8 @@ fn build_is_not_null_emits_icmp_ne_null() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_is_not_null(p, "ok")?;
-    b.build_ret(r)?;
+    let r = b.is_not_null(p, "ok")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%ok = icmp ne ptr %0, null\n"),

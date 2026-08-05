@@ -1208,7 +1208,7 @@ impl Clone for PhiData {
 // runtime `IrError::InvalidOperation`.
 //
 // Opcodes without flags (`urem`/`srem`/`and`/`or`/`xor`) have no
-// matching flag type - they only ship the flag-free `build_int_*`
+// matching flag type - they only ship the flag-free `int_*`
 // methods.
 
 macro_rules! decl_overflowing_flags {
@@ -1535,7 +1535,7 @@ impl BinaryOpcode {
 /// The counterpart of [`IntBinOpFlags`] for the erased cast path: a caller
 /// holding a *runtime* `CastOpcode` cannot pick between [`TruncFlags`] and
 /// [`ZextFlags`] statically, so it supplies both and
-/// `IrBuilder::build_int_cast_erased` writes through whichever the opcode
+/// `IrBuilder::int_cast_erased` writes through whichever the opcode
 /// reads. `trunc` reads `nuw` / `nsw`, `zext` reads `nneg`, and `sext` reads
 /// none — a flag set for an opcode that does not accept it is dropped rather
 /// than rejected, matching the typed builders, which simply have no parameter
@@ -3421,7 +3421,7 @@ impl core::hash::Hash for CatchSwitchInstData {
     }
 }
 
-/// Bundled configuration for [`crate::IrBuilder::build_atomic_cmpxchg`].
+/// Bundled configuration for [`crate::IrBuilder::atomic_cmpxchg`].
 /// Mirrors the per-instruction state stored on `AtomicCmpXchgInst`
 /// (orderings + scope + flags + alignment).
 #[derive(Debug, Clone)]
@@ -3511,7 +3511,7 @@ impl AtomicCmpXchgConfig {
     }
 }
 
-/// Bundled configuration for [`crate::IrBuilder::build_atomicrmw`].
+/// Bundled configuration for [`crate::IrBuilder::atomicrmw`].
 /// Mirrors the per-instruction state stored on `AtomicRMWInst`.
 #[derive(Debug, Clone)]
 pub struct AtomicRMWConfig {
@@ -3578,8 +3578,8 @@ impl AtomicRMWConfig {
     }
 }
 
-/// Bundled configuration for atomic [`crate::IrBuilder::build_int_load_atomic`]
-/// / `build_load_atomic` / `build_int_load_atomic_volatile`. Mirrors the
+/// Bundled configuration for atomic [`crate::IrBuilder::int_load_atomic`]
+/// / `load_atomic` / `int_load_atomic_volatile`. Mirrors the
 /// state passed to the 5-arg upstream constructor
 /// `LoadInst::LoadInst(Type*, Value*, Twine&, bool isVolatile, Align,
 /// AtomicOrdering, SyncScope::ID)` (`Instructions.h`).
@@ -3646,8 +3646,8 @@ impl AtomicLoadConfig {
     }
 }
 
-/// Bundled configuration for atomic [`crate::IrBuilder::build_store_atomic`]
-/// / `build_store_atomic_volatile`. Mirrors the state passed to the 6-arg
+/// Bundled configuration for atomic [`crate::IrBuilder::store_atomic`]
+/// / `store_atomic_volatile`. Mirrors the state passed to the 6-arg
 /// upstream constructor `StoreInst::StoreInst(Value*, Value*, bool isVolatile,
 /// Align, AtomicOrdering, SyncScope::ID)`.
 #[derive(Debug, Clone)]

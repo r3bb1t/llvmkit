@@ -33,7 +33,7 @@ fn main() {
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = llvmkit_ir::IrBuilder::at_end(entry);
-    b.build_ret_void();
+    b.ret_void();
     let node = m.metadata_string("attached");
 
     // Consumes the `Unverified` token: `m` is moved into `verify`.

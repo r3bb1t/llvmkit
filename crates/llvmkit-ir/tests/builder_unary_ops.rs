@@ -23,8 +23,8 @@ fn build_fneg_round_trip() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_float_neg::<f32, _, _>(x, "y")?;
-    b.build_ret(r)?;
+    let r = b.fp_neg::<f32, _, _>(x, "y")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%y = fneg float %0\n"), "got:\n{text}");
     Ok(())
@@ -44,9 +44,9 @@ fn fneg_with_fmf_prints_canonical_form() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
     let nnan_only = FastMathFlags::NO_NANS;
-    let n = b.build_float_neg_with_flags::<f32, _, _>(x, nnan_only, "n")?;
-    let fast = b.build_float_neg_with_flags::<f32, _, _>(x, FastMathFlags::fast(), "fst")?;
-    b.build_ret(n)?;
+    let n = b.fp_neg_fmf::<f32, _, _>(x, nnan_only, "n")?;
+    let fast = b.fp_neg_fmf::<f32, _, _>(x, FastMathFlags::fast(), "fst")?;
+    b.ret(n)?;
     let text = format!("{m}");
     // Mirrors `; CHECK: %f.nnan = fneg nnan float %op1` (compatibility.ll line 1008).
     assert!(text.contains("%n = fneg nnan float %0\n"), "got:\n{text}");
@@ -69,8 +69,8 @@ fn fneg_double_no_flags_unnamed_result() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
-    let _ = b.build_float_neg::<f64, _, _>(x, "")?;
-    b.build_ret_void()?;
+    let _ = b.fp_neg::<f64, _, _>(x, "")?;
+    b.ret_void()?;
     let text = format!("{m}");
     // Mirrors `; CHECK: fneg double %op1` (compatibility.ll line 1445).
     assert!(text.contains("fneg double %0\n"), "got:\n{text}");
@@ -88,7 +88,7 @@ fn default_constant_folder_folds_fneg_to_constant() -> Result<(), IrError> {
     let f = m.add_function_dyn("neg", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let result = b.build_float_neg::<f64, _, _>(f64_ty.const_double(1.25), "neg")?;
+    let result = b.fp_neg::<f64, _, _>(f64_ty.const_double(1.25), "neg")?;
     let folded =
         ConstantFloatValue::<f64, _>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
     assert!(folded.ap_float().is_exactly_value_f64(-1.25));
@@ -116,8 +116,8 @@ fn freeze_i8_round_trip() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
-    let _ = b.build_freeze(arg, "")?;
-    b.build_ret_void()?;
+    let _ = b.freeze(arg, "")?;
+    b.ret_void()?;
     let text = format!("{m}");
     // Mirrors the upstream textual fixture in `TEST(InstructionsTest, FreezeInst)`:
     //   `freeze i8 %arg` (the result is discarded — void function).
@@ -144,9 +144,9 @@ fn freeze_int_and_pointer_print_forms() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let iop: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let pop: PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
-    let _ = b.build_freeze(iop, "")?;
-    let _ = b.build_freeze(pop, "")?;
-    b.build_ret_void()?;
+    let _ = b.freeze(iop, "")?;
+    let _ = b.freeze(pop, "")?;
+    b.ret_void()?;
     let text = format!("{m}");
     // Mirrors `; CHECK: freeze i32 %op1` (compatibility.ll line 1733).
     assert!(text.contains("freeze i32 %0\n"), "got:\n{text}");
@@ -172,8 +172,8 @@ fn verifier_accepts_freeze_int() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let zero = i32_ty.const_int(0_i32);
-    let _ = b.build_freeze(zero, "")?;
-    b.build_ret_void()?;
+    let _ = b.freeze(zero, "")?;
+    b.ret_void()?;
     m.verify_borrowed()?;
     Ok(())
 }
@@ -196,9 +196,9 @@ fn va_arg_int_round_trip() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let ap: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let v = b.build_va_arg(ap, i32_ty.as_type(), "tmp")?;
+    let v = b.va_arg(ap, i32_ty.as_type(), "tmp")?;
     let asv: IntValue<'_, i32, _> = b.view(v).to_erased().try_into()?;
-    b.build_ret(asv)?;
+    b.ret(asv)?;
     let text = format!("{m}");
     // Mirrors the upstream `%tmp = va_arg ptr %ap, i32` form.
     assert!(text.contains("%tmp = va_arg ptr %0, i32\n"), "got:\n{text}");
@@ -219,13 +219,13 @@ fn va_arg_print_keyword_and_destination_type() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let ap: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let v = b.build_va_arg(ap, i32_ty.as_type(), "build_va_arg")?;
+    let v = b.va_arg(ap, i32_ty.as_type(), "build_va_arg")?;
     let _ = ap; // silence unused-variable lint when `pop` accessor changes.
-    // `build_va_arg` hands back a `VaArgInstId`, so one view recovers the
+    // `va_arg` hands back a `VaArgInstId`, so one view recovers the
     // opcode handle and its `result_type` accessor.
     assert_eq!(b.view(v).result_type(), i32_ty.as_type());
     let asv: IntValue<'_, i32, _> = b.view(v).to_erased().try_into()?;
-    b.build_ret(asv)?;
+    b.ret(asv)?;
     Ok(())
 }
 
@@ -243,8 +243,8 @@ fn verifier_accepts_va_arg_pointer_source() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let ap: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let _ = b.build_va_arg(ap, i8_ty.as_type(), "argval")?;
-    b.build_ret_void()?;
+    let _ = b.va_arg(ap, i8_ty.as_type(), "argval")?;
+    b.ret_void()?;
     m.verify_borrowed()?;
     Ok(())
 }

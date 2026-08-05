@@ -1,6 +1,6 @@
-//! Typed-call surface (Task 15, `b43798a`): `build_call` /
-//! `build_call_with_config` / `typed_call_builder` /
-//! `build_varargs_call` / `build_indirect_call::<Sig>` / `build_invoke`
+//! Typed-call surface (Task 15, `b43798a`): `call` /
+//! `call_with_config` / `typed_call_builder` /
+//! `varargs_call` / `indirect_call::<Sig>` / `invoke`
 //! and `TypedCallInst::result()`, plus the dyn-path build-time
 //! rejections that back them (`validate_call_site_args`).
 //!
@@ -35,7 +35,7 @@ use llvmkit_ir::{
 /// arguments passed at the call site, and the emitted text is the exact
 /// same locked form `builder_call.rs::call_int_returning_function`
 /// checks for the dyn path. `result()` (an `IntValue<i32>`, no runtime
-/// `try_into`) then feeds directly into `build_int_add` and `build_ret`,
+/// `try_into`) then feeds directly into `int_add` and `ret`,
 /// proving the `CallResult` GAT narrowing composes with the rest of the
 /// typed builder surface.
 #[test]
@@ -47,11 +47,11 @@ fn typed_call_result_feeds_int_add_and_ret_with_no_try_into() -> Result<(), IrEr
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (x,) = m.view(caller).params();
     let one = m.i32_type().const_int(1_i32);
-    let call = b.build_call(callee, (x, one), "r")?;
+    let call = b.call(callee, (x, one), "r")?;
     // `b.view(call).result()` is already `IntValue<i32>` -- no `try_into`.
     let r = b.view(call).result();
-    let doubled = b.build_int_add::<i32, _, _, _>(r, r, "doubled")?;
-    b.build_ret(doubled)?;
+    let doubled = b.int_add::<i32, _, _, _>(r, r, "doubled")?;
+    b.ret(doubled)?;
     let text = format!("{m}");
     assert!(
         text.contains("%r = call i32 @callee(i32 %0, i32 1)"),
@@ -80,11 +80,11 @@ fn typed_call_void_result_is_unit() -> Result<(), IrError> {
     let caller = m.add_typed_function::<(), (), _>("caller", Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
-    let call = b.build_call(callee, (), "")?;
+    let call = b.call(callee, (), "")?;
     // Runtime-cover the void arm: `result()` really produces `()`,
     // executed (not just type-checked away) via the `let ()` binding.
     let () = b.view(call).result();
-    b.build_ret_void();
+    b.ret_void();
     let text = format!("{m}");
     assert!(text.contains("call void @sink()"), "got:\n{text}");
     Ok(())
@@ -92,7 +92,7 @@ fn typed_call_void_result_is_unit() -> Result<(), IrError> {
 
 /// Pointer arm: `TypedCallInst::result()` against a `Ptr`-returning
 /// callee narrows to `PointerValue<'ctx, B>` with no runtime check, and
-/// that handle feeds directly into `build_ret`. Mirrors
+/// that handle feeds directly into `ret`. Mirrors
 /// `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest,
 /// CallInst)` specialized for a pointer-returning callee, same shape as
 /// `builder_call.rs::call_to_pointer_returning_function`'s dyn-path
@@ -104,9 +104,9 @@ fn typed_call_pointer_result_feeds_ret() -> Result<(), IrError> {
     let caller = m.add_typed_function::<Ptr, (), _>("g", Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Ptr>(&m).position_at_end(entry);
-    let call = b.build_call(callee, (), "p")?;
+    let call = b.call(callee, (), "p")?;
     let p: PointerValue<'_, _> = b.view(call).result();
-    b.build_ret(p)?;
+    b.ret(p)?;
     let text = format!("{m}");
     assert!(text.contains("%p = call ptr @alloc_ptr()"), "got:\n{text}");
     Ok(())
@@ -114,7 +114,7 @@ fn typed_call_pointer_result_feeds_ret() -> Result<(), IrError> {
 
 /// Float arm: `TypedCallInst::result()` against an `f64`-returning
 /// callee narrows to `FloatValue<'ctx, f64, B>` with no runtime check,
-/// feeding directly into `build_fp_add` and `build_ret`. Closest
+/// feeding directly into `fp_add` and `ret`. Closest
 /// upstream coverage: same
 /// `unittests/IR/InstructionsTest.cpp::TEST_F(ModuleWithFunctionTest,
 /// CallInst)` operand-wiring shape, specialized for a
@@ -127,10 +127,10 @@ fn typed_call_float_result_feeds_fadd_and_ret() -> Result<(), IrError> {
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<f64>(&m).position_at_end(entry);
     let (x,) = m.view(caller).params();
-    let call = b.build_call(callee, (x,), "r")?;
+    let call = b.call(callee, (x,), "r")?;
     let r = b.view(call).result();
-    let sum = b.build_fp_add(r, r, "sum")?;
-    b.build_ret(sum)?;
+    let sum = b.fp_add(r, r, "sum")?;
+    b.ret(sum)?;
     let text = format!("{m}");
     assert!(
         text.contains("%r = call double @dsquare(double %0)"),
@@ -151,7 +151,7 @@ fn typed_call_float_result_feeds_fadd_and_ret() -> Result<(), IrError> {
 /// InvokeInst)` (line 114): the upstream test builds an `InvokeInst`
 /// against a 3-argument callee and asserts each `Invoke->getArgOperand(Idx)`
 /// matches the declared parameter type in order. This ports that
-/// operand-wiring check through `build_invoke`: three typed arguments
+/// operand-wiring check through `invoke`: three typed arguments
 /// (`i32`, `i32`, `ptr`) land at the emitted call site in the same
 /// order, and the invoke's typed result narrows to `IntValue<i32>` with
 /// no runtime `try_into`.
@@ -168,10 +168,10 @@ fn typed_invoke_wires_multiple_argument_operands_in_order() -> Result<(), IrErro
     let (a, b_arg, p) = m.view(caller).params();
     {
         let bb_b = IrBuilder::new_for::<i32>(&m).position_at_end(unwind);
-        bb_b.build_ret(0_i32)?;
+        bb_b.ret(0_i32)?;
     }
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
-    let (_sealed, invoke) = b.build_invoke(
+    let (_sealed, invoke) = b.invoke(
         m.view(callee),
         (a, b_arg, p),
         normal_label,
@@ -180,7 +180,7 @@ fn typed_invoke_wires_multiple_argument_operands_in_order() -> Result<(), IrErro
     )?;
     let result: IntValue<'_, i32, _> = invoke.to_erased().try_into()?;
     let bn = IrBuilder::new_for::<i32>(&m).position_at_end(normal);
-    bn.build_ret(result)?;
+    bn.ret(result)?;
     let text = format!("{m}");
     assert!(
         text.contains(
@@ -199,7 +199,7 @@ fn typed_invoke_wires_multiple_argument_operands_in_order() -> Result<(), IrErro
 /// erased `...` tail, mirroring the classic C `int printf(const char*,
 /// ...)` idiom (here: `i32 @logf(i32, ...)`, since llvmkit's varargs
 /// facade fixes the prefix arity/type through `Params` like
-/// `build_call`). Anchors: `test/Feature/varargs.ll` line 14 (`define
+/// `call`). Anchors: `test/Feature/varargs.ll` line 14 (`define
 /// i32 @test(i32 %X, ...)` -- the local tree's exact fixed-i32-prefix +
 /// `...` declaration shape) and `test/Bitcode/compatibility.ll` lines
 /// 1900-1904 (`declare void @llvm.localescape(...)` /
@@ -208,7 +208,7 @@ fn typed_invoke_wires_multiple_argument_operands_in_order() -> Result<(), IrErro
 /// followed by positional argument printing; a plain `call`, unlike the
 /// nearby `invoke`-with-operand-bundles fixture at lines 2079-2087,
 /// which uses a different instruction and syntax). This test exercises
-/// the call form of that same shape through `build_varargs_call` rather
+/// the call form of that same shape through `varargs_call` rather
 /// than `invoke`, which the existing
 /// `builder_call.rs::build_varargs_call_lowers_fixed_prefix_and_appends_erased_tail`
 /// test already covers for a single fixed arg; this one adds a second
@@ -224,9 +224,9 @@ fn build_varargs_call_printf_shape_two_fixed_args_and_int_tail() -> Result<(), I
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (fmt, level) = m.view(caller).params();
     let extra = i32_ty.const_int(7_i32);
-    let call = b.build_varargs_call(m.view(callee), (fmt, level), [extra.into_erased()], "r")?;
+    let call = b.varargs_call(m.view(callee), (fmt, level), [extra.into_erased()], "r")?;
     let ret_val = b.view(call).result();
-    b.build_ret(ret_val)?;
+    b.ret(ret_val)?;
     let text = format!("{m}");
     assert!(
         text.contains("%r = call i32 (i32, i32, ...) @logf(i32 %0, i32 %1, i32 7)"),
@@ -241,8 +241,8 @@ fn build_varargs_call_printf_shape_two_fixed_args_and_int_tail() -> Result<(), I
 // --------------------------------------------------------------------------
 
 /// REVIEW CARRY-IN: build the *same* 2-argument `i32` call through the
-/// typed path (`build_call`) in one module and the dyn path
-/// (`build_call_dyn`) in a separate module, then compare the two
+/// typed path (`call`) in one module and the dyn path
+/// (`call_dyn`) in a separate module, then compare the two
 /// modules' full `format!("{m}")` text for exact equality -- not
 /// fragment substring checks. Locks that the typed call surface is a
 /// pure compile-time layer over the same runtime `CallInst` shape:
@@ -258,14 +258,14 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
         let entry = m.view(caller).append_basic_block(m, "entry");
         let b = IrBuilder::new_for::<i32>(m).position_at_end(entry);
         let (x, y) = m.view(caller).params();
-        let call = b.build_call(callee, (x, y), "r")?;
+        let call = b.call(callee, (x, y), "r")?;
         let ret_val = b.view(call).result();
-        b.build_ret(ret_val)?;
+        b.ret(ret_val)?;
         Ok(())
     }
     fn build_dyn<'ctx, B: ModuleBrand + 'ctx>(m: &Module<B, Unverified>) -> Result<(), IrError> {
         let i32_ty = m.i32_type();
-        // The callee stays typed: `build_call_dyn` propagates the
+        // The callee stays typed: `call_dyn` propagates the
         // callee's return marker into the `CallInst`, and the dyn arm's
         // `return_int_value()` accessor is gated on that marker.
         let callee = m.add_typed_function::<i32, (i32, i32), _>("callee", Linkage::External)?;
@@ -275,13 +275,13 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
         let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
         let y: IntValue<'_, i32, _> = m.view(caller).param(1)?.try_into()?;
-        let inst = b.build_call_dyn(
+        let inst = b.call_dyn(
             callee.as_function(),
             [x.into_erased(), y.into_erased()],
             "r",
         )?;
         let ret_val = b.view(inst).return_int_value();
-        b.build_ret(ret_val)?;
+        b.ret(ret_val)?;
         Ok(())
     }
     let m_typed = {
@@ -325,9 +325,9 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
         let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
         let callee_ptr = PointerValue::try_from(m.view(host).param(0)?)?;
         let x = i32_ty.const_int(7_i32);
-        let call = b.build_indirect_call::<fn(i32) -> i32, _, _, _>(callee_ptr, (x,), "r")?;
+        let call = b.indirect_call::<fn(i32) -> i32, _, _, _>(callee_ptr, (x,), "r")?;
         let ret_val = b.view(call).result();
-        b.build_ret(ret_val)?;
+        b.ret(ret_val)?;
         Ok(())
     }
     fn build_dyn<'ctx, B: ModuleBrand + 'ctx>(m: &Module<B, Unverified>) -> Result<(), IrError> {
@@ -340,14 +340,10 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
         let callee_ptr = PointerValue::try_from(m.view(host).param(0)?)?;
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let x = i32_ty.const_int(7_i32);
-        let inst = b.build_indirect_call_dyn::<i32, _, _, _, _>(
-            fn_ty,
-            callee_ptr,
-            [x.into_erased()],
-            "r",
-        )?;
+        let inst =
+            b.indirect_call_dyn::<i32, _, _, _, _>(fn_ty, callee_ptr, [x.into_erased()], "r")?;
         let ret_val = b.view(inst).return_int_value();
-        b.build_ret(ret_val)?;
+        b.ret(ret_val)?;
         Ok(())
     }
     let m_typed = {
@@ -372,11 +368,11 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
 }
 
 // --------------------------------------------------------------------------
-// (7) dyn-path build-time rejection through `build_call_dyn` directly
+// (7) dyn-path build-time rejection through `call_dyn` directly
 // (not `call_builder`, which `builder_call.rs` already covers).
 // --------------------------------------------------------------------------
 
-/// `build_call_dyn` (the flat form, not the `call_builder` fluent form
+/// `call_dyn` (the flat form, not the `call_builder` fluent form
 /// `builder_call.rs::call_builder_rejects_too_few_arguments` already
 /// covers) with 1 argument against a 2-parameter callee must fail at
 /// build time with `CallArgumentCountMismatch`, not reach the verifier.
@@ -396,7 +392,7 @@ fn build_call_dyn_rejects_wrong_argument_count() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let err = b
-        .build_call_dyn(callee, [x.into_erased()], "bad")
+        .call_dyn(callee, [x.into_erased()], "bad")
         .expect_err("one argument against a two-parameter callee must be rejected");
     assert_eq!(
         err,
@@ -405,11 +401,11 @@ fn build_call_dyn_rejects_wrong_argument_count() -> Result<(), IrError> {
             got: 1,
         }
     );
-    let _ = b.build_ret(i32_ty.const_int(0_i32));
+    let _ = b.ret(i32_ty.const_int(0_i32));
     Ok(())
 }
 
-/// `build_call_dyn` with an argument whose type does not match the
+/// `call_dyn` with an argument whose type does not match the
 /// parameter at that position must fail at build time with
 /// `CallArgumentTypeMismatch`. Example-locks the same
 /// `CallInst::init` assertion's per-argument type half
@@ -428,7 +424,7 @@ fn build_call_dyn_rejects_wrong_argument_type() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: llvmkit_ir::FloatValue<'_, f64, _> = m.view(caller).param(0)?.try_into()?;
     let err = b
-        .build_call_dyn(callee, [x.into_erased()], "bad")
+        .call_dyn(callee, [x.into_erased()], "bad")
         .expect_err("an f64 argument against an i32 parameter must be rejected");
     assert_eq!(
         err,
@@ -438,21 +434,21 @@ fn build_call_dyn_rejects_wrong_argument_type() -> Result<(), IrError> {
             got: "double".to_owned(),
         }
     );
-    let _ = b.build_ret(i32_ty.const_int(0_i32));
+    let _ = b.ret(i32_ty.const_int(0_i32));
     Ok(())
 }
 
 // --------------------------------------------------------------------------
-// (8) `build_indirect_call_dyn::<i32>` against a void fn type ->
+// (8) `indirect_call_dyn::<i32>` against a void fn type ->
 // `ReturnTypeMismatch { expected: Integer, got: Void }` -- locks the
 // `marker_kind_label` fix from `b43798a`.
 // --------------------------------------------------------------------------
 
-/// `build_indirect_call_dyn::<i32>` against a `void`-returning function
+/// `indirect_call_dyn::<i32>` against a `void`-returning function
 /// type must fail with `ReturnTypeMismatch { expected: Integer, got:
 /// Void }` -- *not* `{ expected: Void, got: Void }` (the duplication bug
 /// `marker_kind_label` fixed in `b43798a`). Before that fix,
-/// `build_indirect_call_dyn` computed `expected` from `fn_ty`'s own
+/// `indirect_call_dyn` computed `expected` from `fn_ty`'s own
 /// return type instead of from the caller-asserted marker `R2`, so a
 /// mismatch always reported `expected == got`, never actually telling
 /// the caller what marker they asserted. Mirrors the
@@ -478,7 +474,7 @@ fn build_indirect_call_dyn_int_marker_against_void_fn_type_reports_asymmetric_mi
         false,
     );
     let err = b
-        .build_indirect_call_dyn::<i32, _, _, _, _>(
+        .indirect_call_dyn::<i32, _, _, _, _>(
             void_fn_ty,
             callee_ptr,
             Vec::<llvmkit_ir::Value<'_, _>>::new(),
@@ -492,11 +488,11 @@ fn build_indirect_call_dyn_int_marker_against_void_fn_type_reports_asymmetric_mi
             got: TypeKindLabel::Void,
         }
     );
-    b.build_ret_void()?;
+    b.ret_void()?;
     Ok(())
 }
 
-/// `CallSiteConfig` threaded through `build_call_with_config` on the
+/// `CallSiteConfig` threaded through `call_with_config` on the
 /// void arm: `result()` still returns `()` when a non-default calling
 /// convention is configured, proving the `CallResult` GAT narrowing
 /// doesn't depend on the call-site configuration path taken. Mirrors
@@ -512,13 +508,13 @@ fn typed_call_with_config_void_result_is_unit() -> Result<(), IrError> {
     let caller = m.add_typed_function::<(), (), _>("f", Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
-    let call = b.build_call_with_config(
+    let call = b.call_with_config(
         callee,
         (),
         CallSiteConfig::new("").calling_conv(llvmkit_ir::CallingConv::FAST),
     )?;
     let () = b.view(call).result();
-    b.build_ret_void();
+    b.ret_void();
     let text = format!("{m}");
     assert!(text.contains("call fastcc void @g()"), "got:\n{text}");
     Ok(())

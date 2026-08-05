@@ -33,8 +33,8 @@ fn main() -> Result<(), IrError> {
         .as_function();
     let entry = right.view(right_fn).append_basic_block(&right, "entry");
     let builder = IrBuilder::new_for::<()>(&right).position_at_end(entry);
-    let _ = builder.build_insert_field::<Point, i32, _, _, _>(left_point, 1_i32, 0, "wrong_module")?;
-    builder.build_ret_void();
+    let _ = builder.insert_field::<Point, i32, _, _, _>(left_point, 1_i32, 0, "wrong_module")?;
+    builder.ret_void();
 
     Ok(())
 }

@@ -371,14 +371,14 @@ fn operand_lifts_reject_a_foreign_tag() -> Result<(), IrError> {
     let builder = IrBuilder::new_for::<Dyn>(&b).position_at_end(b_entry);
 
     let err = builder
-        .build_int_add(foreign, 1_i32, "bad")
+        .int_add(foreign, 1_i32, "bad")
         .expect_err("an operand from another module must not lift");
     assert!(matches!(err, IrError::ForeignValueId), "got {err:?}");
 
     // The same slot accepts B's own id, so the rejection is about the tag and
     // nothing else.
     let b_param: IntValue<'_, i32, _> = b.view(b_f).param(0)?.try_into()?;
-    builder.build_int_add(b_param.id(), 1_i32, "good")?;
+    builder.int_add(b_param.id(), 1_i32, "good")?;
     Ok(())
 }
 
@@ -442,8 +442,8 @@ fn every_id_is_an_erased_operand() {
 }
 
 /// B1-ops: a stored id drives an erased operand slot end-to-end, with no
-/// intervening `view`. The typed id goes in at `build_store`'s value operand
-/// and the erased id at `build_freeze`'s — both slots that took only a
+/// intervening `view`. The typed id goes in at `store`'s value operand
+/// and the erased id at `freeze`'s — both slots that took only a
 /// borrowing handle before this slice — and the emitted IR is exactly what the
 /// handle spelling produces.
 #[test]
@@ -456,16 +456,16 @@ fn ids_drive_erased_operand_slots_without_a_view() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
 
-    let v = b.build_int_load::<i32, _, _>(p, "v")?;
-    // `build_int_add` already hands back a storable id (cycle B1a).
-    let n: IntValueId<i32, _> = b.build_int_add(v, 1_i32, "n")?;
+    let v = b.int_load::<i32, _, _>(p, "v")?;
+    // `int_add` already hands back a storable id (cycle B1a).
+    let n: IntValueId<i32, _> = b.int_add(v, 1_i32, "n")?;
 
     // Typed id straight into the erased *stored value* operand.
-    b.build_store(n, p)?;
+    b.store(n, p)?;
     // Erased id straight into `freeze`'s erased operand.
     let erased: ValueId<_> = b.view(n).into_erased().id();
-    b.build_freeze(erased, "fr")?;
-    b.build_ret_void()?;
+    b.freeze(erased, "fr")?;
+    b.ret_void()?;
 
     let text = format!("{m}");
     assert!(

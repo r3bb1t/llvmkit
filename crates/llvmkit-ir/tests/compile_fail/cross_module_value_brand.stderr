@@ -1,8 +1,8 @@
 error[E0277]: the trait bound `ConstantIntValue<'_, i64, Left>: IntoIntValue<'_, _, Right>` is not satisfied
-  --> tests/compile_fail/cross_module_value_brand.rs:33:35
+  --> tests/compile_fail/cross_module_value_brand.rs:33:29
    |
-33 |     let _ = builder.build_int_add(left_value, left_value, "bad");
-   |                     ------------- ^^^^^^^^^^ the trait `IntoIntValue<'_, _, Right>` is not implemented for `ConstantIntValue<'_, i64, Left>`
+33 |     let _ = builder.int_add(left_value, left_value, "bad");
+   |                     ------- ^^^^^^^^^^ the trait `IntoIntValue<'_, _, Right>` is not implemented for `ConstantIntValue<'_, i64, Left>`
    |                     |
    |                     required by a bound introduced by this call
    |
@@ -14,20 +14,20 @@ help: the trait `IntoIntValue<'_, _, Right>` is not implemented for `ConstantInt
    | |     for ConstantIntValue<'ctx, W, B>
    | |____________________________________^
    = help: for that trait implementation, expected `Left`, found `Right`
-note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::build_int_add`
+note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::int_add`
   --> src/ir_builder.rs
    |
-   |     pub fn build_int_add<W, Lhs, Rhs, Name>(
-   |            ------------- required by a bound in this associated function
+   |     pub fn int_add<W, Lhs, Rhs, Name>(
+   |            ------- required by a bound in this associated function
 ...
    |         Lhs: IntoIntValue<'ctx, W, B>,
-   |              ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::build_int_add`
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::int_add`
 
 error[E0277]: the trait bound `ConstantIntValue<'_, i64, Left>: IntoIntValue<'_, _, Right>` is not satisfied
-  --> tests/compile_fail/cross_module_value_brand.rs:33:47
+  --> tests/compile_fail/cross_module_value_brand.rs:33:41
    |
-33 |     let _ = builder.build_int_add(left_value, left_value, "bad");
-   |                     -------------             ^^^^^^^^^^ the trait `IntoIntValue<'_, _, Right>` is not implemented for `ConstantIntValue<'_, i64, Left>`
+33 |     let _ = builder.int_add(left_value, left_value, "bad");
+   |                     -------             ^^^^^^^^^^ the trait `IntoIntValue<'_, _, Right>` is not implemented for `ConstantIntValue<'_, i64, Left>`
    |                     |
    |                     required by a bound introduced by this call
    |
@@ -39,11 +39,11 @@ help: the trait `IntoIntValue<'_, _, Right>` is not implemented for `ConstantInt
    | |     for ConstantIntValue<'ctx, W, B>
    | |____________________________________^
    = help: for that trait implementation, expected `Left`, found `Right`
-note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::build_int_add`
+note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::int_add`
   --> src/ir_builder.rs
    |
-   |     pub fn build_int_add<W, Lhs, Rhs, Name>(
-   |            ------------- required by a bound in this associated function
+   |     pub fn int_add<W, Lhs, Rhs, Name>(
+   |            ------- required by a bound in this associated function
 ...
    |         Rhs: IntoIntValue<'ctx, W, B>,
-   |              ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::build_int_add`
+   |              ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::int_add`

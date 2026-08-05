@@ -356,7 +356,7 @@ fn call_vararg_extra_args_round_trips() {
 /// Crafted against `llvm/lib/AsmParser/LLParser.cpp::parseCall`'s argument
 /// loop, reached through an indirect (undef) callee so validation runs
 /// against the explicit call-site function type alone —
-/// `build_indirect_call_dyn`'s `validate_call_site_args` gate.
+/// `indirect_call_dyn`'s `validate_call_site_args` gate.
 #[test]
 fn indirect_call_arg_type_mismatch_rejected() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -608,7 +608,7 @@ fn callbr_explicit_type_vararg_round_trips() {
 /// expected type") with an explicit call-site type; no upstream lit or
 /// unittest coverage, rule shape is the anchor (D11). llvmkit routes the
 /// check through `validate_call_site_args` in
-/// `build_invoke_dyn_with_config`.
+/// `invoke_dyn_with_config`.
 #[test]
 fn invoke_explicit_type_arg_type_mismatch_rejected() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -625,7 +625,7 @@ fn invoke_explicit_type_arg_type_mismatch_rejected() {
 /// Crafted against `parseCallBr`'s argument loop with an explicit
 /// call-site type — same rule as
 /// [`invoke_explicit_type_arg_type_mismatch_rejected`], surfaced through
-/// `build_callbr_with_config`.
+/// `callbr_with_config`.
 #[test]
 fn callbr_explicit_type_arg_type_mismatch_rejected() {
     const FIXTURE: &[u8] = include_bytes!(

@@ -604,7 +604,7 @@ impl<B: ModuleBrand> HasDebugLoc for Value<'_, B> {
 /// The erased sibling of [`IntoIntValue`](crate::IntoIntValue) /
 /// [`IntoFloatValue`](crate::IntoFloatValue) / [`IntoPointerValue`]: it is the
 /// bound on every builder operand whose declared parameter type is the erased
-/// [`Value`] — `build_store`'s stored value, `build_freeze`'s operand, the
+/// [`Value`] — `store`'s stored value, `freeze`'s operand, the
 /// aggregate/vector element slots, the call-argument lists, and so on. Where
 /// those three *narrow* to a pinned IR type, this one only widens, so it
 /// accepts strictly more:

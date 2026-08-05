@@ -15,7 +15,7 @@ fn main() {
     let entry = m.view(f).append_basic_block(&m, "entry");
 
     let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
-    b.build_ret_void();
+    b.ret_void();
 
     let _ = IrBuilder::new_for::<()>(&m).position_at_end(entry);
 }

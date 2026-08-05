@@ -24,8 +24,8 @@ fn exercise_tables<'ctx, B: ModuleBrand + 'ctx>(module: Module<B, Unverified>) -
     let lhs = *integers.get("parameter").expect("int value");
     let rhs: IntValue<'_, i64, _> = (*values.get("parameter").expect("value")).try_into()?;
     let builder = IrBuilder::new_for::<Dyn>(&module).position_at_end(entry);
-    let sum = builder.build_int_add(lhs, rhs, "sum")?;
-    builder.build_ret(sum)?;
+    let sum = builder.int_add(lhs, rhs, "sum")?;
+    builder.ret(sum)?;
 
     let text = format!("{module}");
     assert!(text.contains("add i64"));
@@ -57,7 +57,7 @@ fn generic_function_display_preserves_brand() -> IrResult<()> {
     let entry = module.view(function).append_basic_block(&module, "entry");
     IrBuilder::new_for::<()>(&module)
         .position_at_end(entry)
-        .build_ret_void();
+        .ret_void();
     assert!(format_generic_function(module.view(function)).contains("define void @f()"));
     Ok(())
 }

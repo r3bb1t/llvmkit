@@ -19,7 +19,7 @@
 //! family (`Ult`/`Ule`/`Ugt`/`Uge`) and the signed family
 //! (`Slt`/`Sle`/`Sgt`/`Sge`). For ergonomics,
 //! [`crate::IrBuilder`] also ships per-predicate convenience methods
-//! (`build_icmp_eq`, `build_icmp_slt`, ...) that bake the predicate
+//! (`icmp_eq`, `icmp_slt`, ...) that bake the predicate
 //! into the method name --- see `IrBuilder::CreateICmp{EQ,SLT,...}` in
 //! `IrBuilder.h` for the upstream parallel.
 

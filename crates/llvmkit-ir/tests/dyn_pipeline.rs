@@ -40,7 +40,7 @@ fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
-    b.build_ret(i32_ty.const_int(1_u32))?;
+    b.ret(i32_ty.const_int(1_u32))?;
     Ok(f)
 }
 
@@ -55,12 +55,9 @@ fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let b = IrBuilder::with_folder(m, NoFolder).position_at_end(entry);
-    let _dead = b.build_int_add::<i32, _, _, _>(
-        i32_ty.const_int(10_u32),
-        i32_ty.const_int(20_u32),
-        "dead",
-    )?;
-    b.build_ret(i32_ty.const_int(1_u32))?;
+    let _dead =
+        b.int_add::<i32, _, _, _>(i32_ty.const_int(10_u32), i32_ty.const_int(20_u32), "dead")?;
+    b.ret(i32_ty.const_int(1_u32))?;
     Ok(f)
 }
 

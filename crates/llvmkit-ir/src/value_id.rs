@@ -1063,7 +1063,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for PointerPhiInstId<B> {
 // --------------------------------------------------------------------------
 //
 // The three *typed-value* ids lift into their handle at an operand position,
-// so that (in cycle B) `build_int_add(some_int_id, 2i32, "x")` compiles. Each
+// so that (in cycle B) `int_add(some_int_id, 2i32, "x")` compiles. Each
 // conversion is *fallible* on a foreign module tag — unlike
 // [`Module::view`](crate::Module::view), which panics — because the operand
 // path is already `IrResult` and a foreign id is a recoverable caller error
@@ -1108,7 +1108,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoPointerValue<'ctx, B> for PointerValueId<B
 // --------------------------------------------------------------------------
 //
 // The counterpart to the block above for operand slots whose declared type is
-// the *erased* [`Value`] — `build_store`'s stored value, the call-argument
+// the *erased* [`Value`] — `store`'s stored value, the call-argument
 // lists, the aggregate element slots, ... Every id lifts here, including the
 // erased [`ValueId`], because widening an erased id to an erased operand is
 // not the erased -> typed narrowing the `Into*Value` traits forbid; the

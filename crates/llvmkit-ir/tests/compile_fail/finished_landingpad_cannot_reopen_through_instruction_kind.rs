@@ -15,7 +15,7 @@ fn main() {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let null_ptr = ptr_ty.const_null();
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
-    let lp = b.build_landingpad(i32_ty.as_type(), true, "lp").unwrap();
+    let lp = b.landingpad(i32_ty.as_type(), true, "lp").unwrap();
     let closed = lp.finish();
 
     if let Some(InstructionKind::LandingPad(reopened)) = closed.as_view().kind() {

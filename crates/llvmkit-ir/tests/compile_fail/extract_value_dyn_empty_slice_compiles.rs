@@ -4,7 +4,7 @@
 //! `cargo build` for the whole harness once at least one `t.pass(...)` case
 //! is registered (`trybuild::cargo::build_dependencies`'s
 //! `if project.has_pass { "build" } else { "check" }`). This fixture
-//! flips that switch: `build_extract_value_dyn(agg, &[], name)` compiles
+//! flips that switch: `extract_value_dyn(agg, &[], name)` compiles
 //! fine (the empty-slice rejection is a runtime `IrError`, not a
 //! compile-time one), proving the harness now exercises full codegen so
 //! the sibling `compile_fail` case is actually meaningful.
@@ -23,8 +23,8 @@ fn main() -> Result<(), IrError> {
     let b = llvmkit_ir::IrBuilder::new_for::<()>(&m).position_at_end(entry);
     let up = f.param(0)?;
     // Compiles fine: the empty-slice rejection is the runtime
-    // `IrError::InvalidOperation` kept by `build_extract_value_dyn`,
+    // `IrError::InvalidOperation` kept by `extract_value_dyn`,
     // not a compile-time error.
-    let _ = b.build_extract_value_dyn(up, &[], "bad");
+    let _ = b.extract_value_dyn(up, &[], "bad");
     Ok(())
 }

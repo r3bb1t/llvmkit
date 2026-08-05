@@ -106,23 +106,23 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
 
     let (cond, x, y) = m.view(f).params();
 
-    IrBuilder::at_end(entry).build_cond_br(cond, then_label, else_label)?;
+    IrBuilder::at_end(entry).cond_br(cond, then_label, else_label)?;
 
     let bt = IrBuilder::at_end(then_bb);
-    let add_xy = bt.build_int_add(x, y, "add_xy")?;
-    bt.build_br_with_args(merge_label, &[m.view(add_xy).into_erased()])?;
+    let add_xy = bt.int_add(x, y, "add_xy")?;
+    bt.br_with_args(merge_label, &[m.view(add_xy).into_erased()])?;
 
     let be = IrBuilder::at_end(else_bb);
-    let sub_xy = be.build_int_sub(x, y, "sub_xy")?;
-    be.build_br_with_args(merge_label, &[m.view(sub_xy).into_erased()])?;
+    let sub_xy = be.int_sub(x, y, "sub_xy")?;
+    be.br_with_args(merge_label, &[m.view(sub_xy).into_erased()])?;
 
     let bm = IrBuilder::at_end(merge);
     // `params[0]` is `merge`'s head-phi, seeded with `[ %add_xy, %then ]` and
     // `[ %sub_xy, %else ]` by the two block-argument branches above.
     let result: IntValue<'_, i32, _> = params[0].try_into()?;
-    let is_zero = bm.build_int_cmp(IntPredicate::Eq, result, 0_i32, "is_zero")?;
-    let selected = bm.build_select(is_zero, x, result, "selected")?;
-    bm.build_ret(selected)?;
+    let is_zero = bm.int_cmp(IntPredicate::Eq, result, 0_i32, "is_zero")?;
+    let selected = bm.select(is_zero, x, result, "selected")?;
+    bm.ret(selected)?;
     Ok(())
 }
 

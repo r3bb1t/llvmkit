@@ -18,7 +18,7 @@ fn main() {
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
-    let (terminated_bb, _term) = b.build_ret_void();
+    let (terminated_bb, _term) = b.ret_void();
     // `terminated_bb` carries `Terminated`, which `position_at_end` does not accept.
     let _ = IrBuilder::new_for::<()>(&m).position_at_end(terminated_bb);
 }

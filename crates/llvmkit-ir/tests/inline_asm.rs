@@ -32,9 +32,9 @@ fn inline_asm_call_with_side_effects() -> Result<(), IrError> {
         llvmkit_ir::InlineAsmOptions::new().side_effects(true),
     );
 
-    let r = b.build_inline_asm_call::<i64, _, _, _>(asm, [a, bb], "r")?;
+    let r = b.inline_asm_call::<i64, _, _, _>(asm, [a, bb], "r")?;
     let ret = b.view(r).return_int_value();
-    b.build_ret(ret)?;
+    b.ret(ret)?;
 
     let text = format!("{m}");
 
@@ -84,9 +84,9 @@ fn inline_asm_call_without_side_effects() -> Result<(), IrError> {
         llvmkit_ir::InlineAsmOptions::new(),
     );
 
-    let r = b.build_inline_asm_call::<i32, _, _, _>(asm, [x], "r")?;
+    let r = b.inline_asm_call::<i32, _, _, _>(asm, [x], "r")?;
     let ret = b.view(r).return_int_value();
-    b.build_ret(ret)?;
+    b.ret(ret)?;
 
     let text = format!("{m}");
 
@@ -125,8 +125,8 @@ fn inline_asm_multiline_escapes_newline() -> Result<(), IrError> {
         llvmkit_ir::InlineAsmOptions::new().side_effects(true),
     );
 
-    b.build_inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value<'_, _>>::new(), "")?;
-    b.build_ret_void()?;
+    b.inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value<'_, _>>::new(), "")?;
+    b.ret_void()?;
 
     let text = format!("{m}");
 
@@ -165,7 +165,7 @@ fn indirect_call_rejects_wrong_return_marker() -> Result<(), IrError> {
         false,
     );
     let err = b
-        .build_indirect_call_dyn::<i64, _, _, _, _>(
+        .indirect_call_dyn::<i64, _, _, _, _>(
             callee_ty,
             callee_ptr,
             Vec::<llvmkit_ir::Value<'_, _>>::new(),
@@ -191,8 +191,8 @@ fn inline_asm_call_rejects_label_constraint() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let asm_ty = m.fn_type_no_params(void_ty.as_type(), false);
     let asm = m.inline_asm(asm_ty, "", "!i", llvmkit_ir::InlineAsmOptions::new());
-    b.build_inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value<'_, _>>::new(), "")?;
-    b.build_ret_void()?;
+    b.inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value<'_, _>>::new(), "")?;
+    b.ret_void()?;
     let err = m
         .verify_borrowed()
         .expect_err("ordinary call with label constraint must fail");
@@ -226,9 +226,9 @@ fn inline_asm_intel_dialect_keyword() -> Result<(), IrError> {
         llvmkit_ir::InlineAsmOptions::new().with_dialect(AsmDialect::Intel),
     );
 
-    let r = b.build_inline_asm_call::<i64, _, _, _>(asm, [x], "r")?;
+    let r = b.inline_asm_call::<i64, _, _, _>(asm, [x], "r")?;
     let ret = b.view(r).return_int_value();
-    b.build_ret(ret)?;
+    b.ret(ret)?;
 
     let text = format!("{m}");
     assert!(

@@ -16,12 +16,12 @@ fn alloca_materialises_preferred_align() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    b.build_alloca(m.i32_type(), "a32")?;
-    b.build_alloca(m.i64_type(), "a64")?;
-    b.build_alloca(m.f64_type(), "af64")?;
-    b.build_alloca(m.bool_type(), "a1")?;
-    b.build_alloca(m.int_type_n::<128>(), "a128")?;
-    b.build_ret_void()?;
+    b.alloca(m.i32_type(), "a32")?;
+    b.alloca(m.i64_type(), "a64")?;
+    b.alloca(m.f64_type(), "af64")?;
+    b.alloca(m.bool_type(), "a1")?;
+    b.alloca(m.int_type_n::<128>(), "a128")?;
+    b.ret_void()?;
 
     let text = format!("{m}");
     assert!(text.contains("%a32 = alloca i32, align 4\n"), "{text}");
@@ -46,12 +46,12 @@ fn load_store_materialise_abi_align() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    b.build_load(m.i64_type(), p, "l64")?;
-    b.build_load(m.ptr_type(0), p, "lptr")?;
+    b.load(m.i64_type(), p, "l64")?;
+    b.load(m.ptr_type(0), p, "lptr")?;
     // Store default keys off the *stored value's* type (f32 -> align 4),
     // not the pointer.
-    b.build_store(m.f32_type().const_float(0.0), p)?;
-    b.build_ret_void()?;
+    b.store(m.f32_type().const_float(0.0), p)?;
+    b.ret_void()?;
 
     let text = format!("{m}");
     assert!(
@@ -81,9 +81,9 @@ fn alloca_uses_datalayout_alloca_address_space() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let p = b.build_alloca(m.i32_type(), "p")?;
+    let p = b.alloca(m.i32_type(), "p")?;
     assert_eq!(b.view(p).ty().address_space(), 5);
-    b.build_ret_void()?;
+    b.ret_void()?;
 
     let text = format!("{m}");
     assert!(

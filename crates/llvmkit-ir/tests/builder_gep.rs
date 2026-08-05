@@ -27,8 +27,8 @@ fn gep_array_offset() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let n: llvmkit_ir::IntValue<'_, llvmkit_ir::IntDyn, _> = m.view(f).param(1)?.try_into()?;
-    let r = b.build_gep(i32_ty, p, [n], "p2")?;
-    b.build_ret(r)?;
+    let r = b.gep(i32_ty, p, [n], "p2")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%p2 = getelementptr i32, ptr %0, i32 %1"),
@@ -55,8 +55,8 @@ fn gep_inbounds() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let n: llvmkit_ir::IntValue<'_, llvmkit_ir::IntDyn, _> = m.view(f).param(1)?.try_into()?;
-    let r = b.build_inbounds_gep(i32_ty, p, [n], "p2")?;
-    b.build_ret(r)?;
+    let r = b.inbounds_gep(i32_ty, p, [n], "p2")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%p2 = getelementptr inbounds i32, ptr %0, i32 %1"),
@@ -88,8 +88,8 @@ fn struct_gep() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_struct_gep(s_ty, p, 1, "p2")?;
-    b.build_ret(r)?;
+    let r = b.struct_gep(s_ty, p, 1, "p2")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%p2 = getelementptr inbounds nuw %S, ptr %0, i32 0, i32 1"),
@@ -113,8 +113,8 @@ fn gep_zero_index() -> Result<(), IrError> {
     // Zero-index degenerate GEP: just `getelementptr i32, ptr %0` (no
     // indices). Mirrors `2009-07-24-ZeroArgGEP.ll`.
     let no_indices: [llvmkit_ir::ConstantIntValue<'_, llvmkit_ir::IntDyn, _>; 0] = [];
-    let r = b.build_gep(i32_ty, p, no_indices, "p2")?;
-    b.build_ret(r)?;
+    let r = b.gep(i32_ty, p, no_indices, "p2")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%p2 = getelementptr i32, ptr %0"),

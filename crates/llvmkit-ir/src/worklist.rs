@@ -153,9 +153,9 @@ mod tests {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let a = b.build_int_add(x, 1_i32, "a")?;
-        let c = b.build_int_add(x, 2_i32, "c")?;
-        b.build_ret(x)?;
+        let a = b.int_add(x, 1_i32, "a")?;
+        let c = b.int_add(x, 2_i32, "c")?;
+        b.ret(x)?;
 
         let (a_id, c_id) = (m.view(a).into_erased().id(), m.view(c).into_erased().id());
         let module = m.module_ref();
@@ -188,9 +188,9 @@ mod tests {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let a = b.build_int_add(x, 1_i32, "a")?;
-        let c = b.build_int_add(x, 2_i32, "c")?;
-        b.build_ret(x)?;
+        let a = b.int_add(x, 1_i32, "a")?;
+        let c = b.int_add(x, 2_i32, "c")?;
+        b.ret(x)?;
         let (a_id, c_id) = (m.view(a).into_erased().id(), m.view(c).into_erased().id());
         let module = m.module_ref();
 
@@ -217,8 +217,8 @@ mod tests {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let a = b.build_int_add(x, 1_i32, "a")?;
-        b.build_ret(x)?;
+        let a = b.int_add(x, 1_i32, "a")?;
+        b.ret(x)?;
 
         // A constant operand id — the kind of id the erase cascade pushes.
         let const_id = i32_ty.const_int(1_i32).into_erased().id();
@@ -262,8 +262,8 @@ mod tests {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        let a = b.build_int_add(x, 1_i32, "a")?;
-        b.build_ret(x)?;
+        let a = b.int_add(x, 1_i32, "a")?;
+        b.ret(x)?;
 
         let a_id = m.view(a).into_erased().id();
         // The `ret` terminator is the block's last instruction; reach it the

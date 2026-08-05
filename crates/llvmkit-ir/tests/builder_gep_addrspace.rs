@@ -24,8 +24,8 @@ fn gep_result_preserves_base_pointer_address_space() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let one = i32_ty.const_int(1_i32).as_dyn();
-    let gep = b.build_inbounds_gep(i32_ty, p, [one], "q")?;
-    let (_entry, _ret) = b.build_ret_void()?;
+    let gep = b.inbounds_gep(i32_ty, p, [one], "q")?;
+    let (_entry, _ret) = b.ret_void()?;
 
     let printed = format!("{m}");
     assert!(

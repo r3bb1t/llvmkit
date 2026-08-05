@@ -3,7 +3,7 @@
 //!
 //! Closest upstream behaviour: LLVM's verifier (`Verifier::visitSwitchInst`)
 //! rejects a `switch` whose case value type disagrees with the condition's
-//! type *at runtime*. llvmkit's typed `build_switch` pins the
+//! type *at runtime*. llvmkit's typed `switch` pins the
 //! condition width `W` into the type system: `SwitchInst::add_case` on a
 //! width-`W` switch carries an `IntoIntValue<'ctx, W, B>` bound, so a
 //! wrong-width case value cannot type-check.
@@ -29,7 +29,7 @@ fn main() {
     // `W` is inferred as `i32` from the typed condition.
     let cond: IntValue<i32, _> = m.view(f).param(0).unwrap().try_into().unwrap();
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, switch) = b.build_switch(cond, dest_label, "").unwrap();
+    let (_sealed, switch) = b.switch(cond, dest_label, "").unwrap();
 
     // `5_i64` does not implement `IntoIntValue<'_, i32, _>`, so it cannot
     // be a case value on an `i32`-width switch: `.add_case` does not

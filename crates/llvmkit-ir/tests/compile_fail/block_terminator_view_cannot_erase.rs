@@ -12,7 +12,7 @@ fn main() {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
-    let (sealed, _ret) = b.build_ret_void().unwrap();
+    let (sealed, _ret) = b.ret_void().unwrap();
     let term = sealed.terminator().unwrap();
 
     term.erase_from_parent(&m);

@@ -1,8 +1,8 @@
 error[E0277]: the trait bound `FloatValue<'_, f64, DynBrand>: IntoIntValue<'_, i32, DynBrand>` is not satisfied
-  --> tests/compile_fail/typed_call_wrong_arg_type_lifted.rs:38:35
+  --> tests/compile_fail/typed_call_wrong_arg_type_lifted.rs:38:29
    |
-38 |     let _ = b.build_call(callee, (x,), "bad");
-   |               ----------          ^ the trait `IntoIntValue<'_, i32, DynBrand>` is not implemented for `FloatValue<'_, f64, DynBrand>`
+38 |     let _ = b.call(callee, (x,), "bad");
+   |               ----          ^ the trait `IntoIntValue<'_, i32, DynBrand>` is not implemented for `FloatValue<'_, f64, DynBrand>`
    |               |
    |               required by a bound introduced by this call
    |
@@ -18,11 +18,11 @@ error[E0277]: the trait bound `FloatValue<'_, f64, DynBrand>: IntoIntValue<'_, i
            and $N others
    = note: required for `FloatValue<'_, f64, DynBrand>` to implement `IntoCallArg<'_, i32, DynBrand>`
    = note: required for `(FloatValue<'_, f64, DynBrand>,)` to implement `CallArgs<'_, (i32,), DynBrand>`
-note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::build_call`
+note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::call`
   --> src/ir_builder.rs
    |
-   |     pub fn build_call<Ret, Params, A, Callee, Name>(
-   |            ---------- required by a bound in this associated function
+   |     pub fn call<Ret, Params, A, Callee, Name>(
+   |            ---- required by a bound in this associated function
 ...
    |         A: CallArgs<'ctx, Params, B>,
-   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::build_call`
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::call`

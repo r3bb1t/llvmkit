@@ -9,7 +9,7 @@
 //! (and the wider `CreateSelect` family) narrows a select's arm types at
 //! runtime; llvmkit's `SelectArm` sealed-trait evidence proves arm-type
 //! agreement at compile time instead, so there must be no way to mint that
-//! evidence except through the real `IrBuilder::build_select` construction
+//! evidence except through the real `IrBuilder::select` construction
 //! path.
 
 use llvmkit_ir::SelectNarrow;

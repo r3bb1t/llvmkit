@@ -92,7 +92,7 @@ fn constant_folder_folds_fneg_constant_without_instruction() -> Result<(), IrErr
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-    let result = b.build_float_neg::<f32, _, _>(f32_ty.const_float(1.0), "n")?;
+    let result = b.fp_neg::<f32, _, _>(f32_ty.const_float(1.0), "n")?;
 
     let folded =
         ConstantFloatValue::<f32, _>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
@@ -112,8 +112,7 @@ fn constant_folder_folds_udiv_by_zero_to_poison_without_instruction() -> Result<
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-    let result =
-        b.build_int_udiv::<i32, _, _, _>(i32_ty.const_int(42_i32), i32_ty.const_zero(), "q")?;
+    let result = b.int_udiv::<i32, _, _, _>(i32_ty.const_int(42_i32), i32_ty.const_zero(), "q")?;
 
     assert_eq!(
         Constant::try_from(b.view(result).into_erased())?,
@@ -136,7 +135,7 @@ fn constant_folder_exact_udiv_inexact_constants_match_upstream_plain_fold() -> R
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-    let result = b.build_int_udiv_with_flags::<i32, _, _, _>(
+    let result = b.int_udiv_with_flags::<i32, _, _, _>(
         i32_ty.const_int(7_i32),
         i32_ty.const_int(3_i32),
         UDivFlags::new().exact(),
@@ -426,7 +425,7 @@ fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Resul
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let null = PointerValue::try_from(ptr_ty.const_null().into_erased())?;
 
-    let result = b.build_is_null(null, "isn")?;
+    let result = b.is_null(null, "isn")?;
 
     assert_eq!(
         Constant::try_from(b.view(result).into_erased())?,
@@ -450,7 +449,7 @@ fn constant_folder_folds_is_not_null_of_constant_null_without_instruction() -> R
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let null = PointerValue::try_from(ptr_ty.const_null().into_erased())?;
 
-    let result = b.build_is_not_null(null, "ok")?;
+    let result = b.is_not_null(null, "ok")?;
 
     assert_eq!(
         Constant::try_from(b.view(result).into_erased())?,
@@ -477,8 +476,8 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-    let eq = b.build_pointer_cmp(IntPredicate::Eq, gp, ptr_ty.const_null(), "eq")?;
-    let ne = b.build_pointer_cmp(IntPredicate::Ne, gp, ptr_ty.const_null(), "ne")?;
+    let eq = b.pointer_cmp(IntPredicate::Eq, gp, ptr_ty.const_null(), "eq")?;
+    let ne = b.pointer_cmp(IntPredicate::Ne, gp, ptr_ty.const_null(), "ne")?;
 
     assert_eq!(
         Constant::try_from(b.view(eq).into_erased())?,
@@ -507,16 +506,16 @@ fn default_builder_folds_insert_extract_element_chain() -> Result<(), IrError> {
     let elt1 = i64_ty.const_int(-1_i64);
     let elt2 = i64_ty.const_int(-2_i64);
 
-    let vec = b.build_insert_element::<_, _, i8, _, _>(
+    let vec = b.insert_element::<_, _, i8, _, _>(
         vec_ty.as_type().get_poison(),
         elt1,
         m.i8_type().const_int(1_i8),
         "v1",
     )?;
     let vec =
-        b.build_insert_element::<_, _, i32, _, _>(vec, elt2, m.i32_type().const_int(2_i32), "v2")?;
-    let x1 = b.build_extract_element::<_, i8, _, _>(vec, m.i8_type().const_int(1_i8), "x1")?;
-    let x2 = b.build_extract_element::<_, i32, _, _>(vec, m.i32_type().const_int(2_i32), "x2")?;
+        b.insert_element::<_, _, i32, _, _>(vec, elt2, m.i32_type().const_int(2_i32), "v2")?;
+    let x1 = b.extract_element::<_, i8, _, _>(vec, m.i8_type().const_int(1_i8), "x1")?;
+    let x2 = b.extract_element::<_, i32, _, _>(vec, m.i32_type().const_int(2_i32), "x2")?;
 
     assert_eq!(Constant::try_from(b.view(x1))?, elt1.as_constant());
     assert_eq!(Constant::try_from(b.view(x2))?, elt2.as_constant());
@@ -548,7 +547,7 @@ fn custom_folder_no_wrap_hook_receives_mul() -> Result<(), IrError> {
     )
     .position_at_end(entry);
 
-    let result = b.build_int_mul_with_flags::<i32, _, _, _>(
+    let result = b.int_mul_with_flags::<i32, _, _, _>(
         i32_ty.const_int(6_i32),
         i32_ty.const_int(7_i32),
         MulFlags::new().nuw(),
@@ -584,7 +583,7 @@ fn custom_folder_no_wrap_hook_receives_shl() -> Result<(), IrError> {
     )
     .position_at_end(entry);
 
-    let result = b.build_int_shl_with_flags::<i32, _, _, _>(
+    let result = b.int_shl_with_flags::<i32, _, _, _>(
         i32_ty.const_int(1_i32),
         i32_ty.const_int(3_i32),
         ShlFlags::new().nuw().nsw(),
@@ -607,8 +606,7 @@ fn no_folder_names_add_instruction_exactly() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
-    let add =
-        b.build_int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "add")?;
+    let add = b.int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "add")?;
 
     let name = b.view(add).into_erased().name();
     assert_eq!(name.as_deref(), Some("add"));
@@ -630,7 +628,7 @@ fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
     let lhs = i32_ty.const_int(42_i32);
     let rhs = i32_ty.const_zero();
 
-    let result = b.build_int_udiv::<i32, _, _, _>(lhs, rhs, "q")?;
+    let result = b.int_udiv::<i32, _, _, _>(lhs, rhs, "q")?;
     let instruction = InstructionView::try_from(b.view(result).into_erased())?;
     let Some(InstructionKind::UDiv(udiv)) = instruction.kind() else {
         panic!("expected udiv instruction");
@@ -659,7 +657,7 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let ptr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
 
-    let result = b.build_ptr_to_addr(ptr, "addr")?;
+    let result = b.ptr_to_addr(ptr, "addr")?;
     let instruction = InstructionView::try_from(b.view(result).into_erased())?;
     // Match the exact cast opcode through the nested `CastKind`; the
     // `PtrToAddr` handle exposes a statically pointer-typed `src()`.
@@ -693,7 +691,7 @@ fn no_folder_emits_pointer_cmp_instruction_for_constant_nulls() -> Result<(), Ir
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let null = ptr_ty.const_null();
 
-    let result = b.build_pointer_cmp(IntPredicate::Eq, null, null, "isn")?;
+    let result = b.pointer_cmp(IntPredicate::Eq, null, null, "isn")?;
     let instruction = InstructionView::try_from(b.view(result).into_erased())?;
     let Some(InstructionKind::ICmp(icmp)) = instruction.kind() else {
         panic!("expected icmp instruction");
@@ -719,7 +717,7 @@ fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrErro
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    let result = b.build_int_add(x, i32_ty.const_zero(), "sum")?;
+    let result = b.int_add(x, i32_ty.const_zero(), "sum")?;
 
     assert!(InstructionView::try_from(b.view(result).into_erased()).is_ok());
     assert_eq!(b.insert_block().instructions().len(), 1);
@@ -730,7 +728,7 @@ fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrErro
 /// an existing value, but the builder rejects a value with the wrong type.
 ///
 /// `ReturningFolder` overrides only the erased `fold_bin_op_dyn`, so
-/// `build_int_add::<i32>` reaches it through the typed hook's *default* body
+/// `int_add::<i32>` reaches it through the typed hook's *default* body
 /// and the wrong-width result is caught by `folder::narrow_folded_int`'s
 /// re-narrow. Both sides are integers, so that seam reports the two widths
 /// rather than a `TypeMismatch { expected: Integer, got: Integer }` that could
@@ -753,7 +751,7 @@ fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
     .position_at_end(entry);
 
     let err = b
-        .build_int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "sum")
+        .int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "sum")
         .expect_err("wrong-type folded value is rejected");
 
     assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
@@ -761,8 +759,8 @@ fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Typed-vs-dyn parity: `build_int_add::<i32>` (typed hook path,
-/// `fold_int_bin_op`) and `build_int_add_dyn` (erased path, `fold_bin_op_dyn`)
+/// Typed-vs-dyn parity: `int_add::<i32>` (typed hook path,
+/// `fold_int_bin_op`) and `int_add_dyn` (erased path, `fold_bin_op_dyn`)
 /// must fold `add i32 7, 9` to the identical constant and printed module
 /// under `ConstantFolder`. Closest upstream anchor: the constant-folding
 /// rows of `unittests/IR/ConstantsTest.cpp` (`TEST(ConstantsTest, FoldFunctionCall)`
@@ -779,11 +777,8 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let result = b.build_int_add::<i32, _, _, _>(
-            i32_ty.const_int(7_i32),
-            i32_ty.const_int(9_i32),
-            "sum",
-        )?;
+        let result =
+            b.int_add::<i32, _, _, _>(i32_ty.const_int(7_i32), i32_ty.const_int(9_i32), "sum")?;
 
         assert_eq!(
             Constant::try_from(b.view(result).into_erased())?,
@@ -801,7 +796,7 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-        let result = b.build_int_add_dyn(
+        let result = b.int_add_dyn(
             i32_ty.const_int(7_i32).into_erased(),
             i32_ty.const_int(9_i32).into_erased(),
             "sum",
@@ -821,9 +816,9 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
 
 /// A folder whose `fold_bin_op_dyn` override returns a wrong-width value for
 /// `IntDyn` operands must yield `IrError::TypeMismatch` through the typed
-/// `build_int_add::<IntDyn, _, _, _>` path. This locks the
+/// `int_add::<IntDyn, _, _, _>` path. This locks the
 /// `narrow_folded_int` default-delegation seam: `WideningDynFolder` overrides
-/// only the erased `fold_bin_op_dyn` hook, so `build_int_add`'s call to
+/// only the erased `fold_bin_op_dyn` hook, so `int_add`'s call to
 /// `fold_int_bin_op` runs the trait's *default* body (`folder.rs`'s
 /// `fold_int_bin_op<W>` -- there is no native override here), which forwards
 /// to `fold_bin_op_dyn` and then re-narrows the erased result by `TypeSlot`
@@ -831,7 +826,7 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
 /// 64-bit replacement is rejected; the builder's own `accept_folded_int`
 /// type check (`ir_builder.rs`) is never reached on this path, because
 /// `fold_int_bin_op` already returns `Err(TypeMismatch)` before
-/// `build_int_add` gets to call it.
+/// `int_add` gets to call it.
 ///
 /// `accept_folded_int` is only reachable behind a
 /// *native* override of a typed hook (`fold_int_bin_op<W>` or one of its
@@ -903,7 +898,7 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B>
         // Deliberately answers with a 64-bit constant zero regardless of the
         // (32-bit) operand width -- this IS the erased hook (it has no
         // default body to bypass), so overriding only this hook routes the
-        // typed `build_int_add::<IntDyn, ...>` call through
+        // typed `int_add::<IntDyn, ...>` call through
         // `fold_int_bin_op`'s *default* body, which re-narrows this erased
         // result via `narrow_folded_int`'s TypeSlot check. That is the seam
         // this test exercises -- not the builder's separate
@@ -945,7 +940,7 @@ fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
     let rhs = i32_dyn_ty.const_int_checked(2_i32)?;
 
     let err = b
-        .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
+        .int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
         .expect_err("64-bit fold result for 32-bit IntDyn operands is rejected");
 
     assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
@@ -979,7 +974,7 @@ fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
 ///   *on this route* precisely because `narrow` is checked.
 /// - At `W = `[`IntDyn`] the marker names no width, so `narrow` proves only
 ///   "some integer" and *succeeds* on the 64-bit payload. The override then
-///   hands `build_int_add` an `IntValue<'ctx, IntDyn, B>` whose runtime
+///   hands `int_add` an `IntValue<'ctx, IntDyn, B>` whose runtime
 ///   width contradicts the 32-bit operands', and the builder's
 ///   `accept_folded_int` is the only thing left between that payload and the
 ///   IR.
@@ -1046,7 +1041,7 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B>
 /// from a downstream user's visibility.
 ///
 /// Trace confirming *this* line rejects, not `narrow_folded_int`:
-/// `build_int_add::<IntDyn, _, _, _>` calls
+/// `int_add::<IntDyn, _, _, _>` calls
 /// `self.folder.fold_int_bin_op(BinaryOpcode::Add, lhs, rhs)`.
 /// [`NarrowingTypedFolder`]'s override is *native*, so it runs directly and
 /// the trait's default body -- the only caller of `fold_bin_op_dyn` and
@@ -1054,7 +1049,7 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B>
 /// `IntDyn::narrow(replacement)` succeeds: the payload is an integer, and
 /// `IntDyn` asserts nothing about width. The resulting
 /// `IntValue<'ctx, IntDyn, B>` (real IR type: 64-bit) returns to
-/// `build_int_add`, which forwards it to `self.accept_folded_int(folded, lhs)`.
+/// `int_add`, which forwards it to `self.accept_folded_int(folded, lhs)`.
 /// There, `folded.into_erased().ty().id() != like.into_erased().ty().id()` is
 /// `true` -- 64-bit payload against `lhs`'s 32-bit custom-width type -- so
 /// the acceptor returns `Err(IrError::OperandWidthMismatch { lhs: 32, rhs: 64 })`
@@ -1084,7 +1079,7 @@ fn external_narrow_override_wrong_width_rejected_by_accept_folded_int() -> Resul
     let rhs = i32_dyn_ty.const_int_checked(2_i32)?;
 
     let err = b
-        .build_int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
+        .int_add::<IntDyn, _, _, _>(lhs, rhs, "sum")
         .expect_err("64-bit narrow-built fold result for 32-bit IntDyn operands is rejected");
 
     assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });

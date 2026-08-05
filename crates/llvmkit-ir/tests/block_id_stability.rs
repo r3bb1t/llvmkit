@@ -65,18 +65,18 @@ fn build<'ctx, B: ModuleBrand + 'ctx>(m: &'ctx Module<B, Unverified>) -> IrResul
     let (left_id, right_id, old_id, new_id) = (left.id(), right.id(), old.id(), new.id());
 
     let bo = IrBuilder::new_for::<Dyn>(m).position_at_end(old);
-    bo.build_ret(i32_ty.const_int(3_i32))?;
+    bo.ret(i32_ty.const_int(3_i32))?;
     let bn = IrBuilder::new_for::<Dyn>(m).position_at_end(new);
-    bn.build_ret(i32_ty.const_int(7_i32))?;
+    bn.ret(i32_ty.const_int(7_i32))?;
     let bl = IrBuilder::new_for::<Dyn>(m).position_at_end(left);
-    bl.build_br(old_id)?;
+    bl.br(old_id)?;
     let br = IrBuilder::new_for::<Dyn>(m).position_at_end(right);
-    br.build_br(old_id)?;
+    br.br(old_id)?;
 
     let be = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(function).param(0)?.try_into()?;
-    let c = be.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "c")?;
-    be.build_cond_br(c, left_id, right_id)?;
+    let c = be.int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "c")?;
+    be.cond_br(c, left_id, right_id)?;
 
     Ok(Fixture {
         function,

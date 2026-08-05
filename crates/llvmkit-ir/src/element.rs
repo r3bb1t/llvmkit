@@ -89,7 +89,7 @@ pub trait StaticVecElem<'ctx, B: ModuleBrand>: VecElem {
     ///
     /// [`IntoErasedValue`] is bound alongside [`IsValue`] because the typed
     /// vector builders forward this handle into the erased element operand of
-    /// `build_insert_element` / `build_vector_splat`, which is what that
+    /// `insert_element` / `vector_splat_dyn`, which is what that
     /// bound spells. Every [`IsValue`] handle satisfies it.
     type Value: IsValue<'ctx, B> + IntoErasedValue<'ctx, B> + Copy;
 

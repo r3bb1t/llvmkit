@@ -575,10 +575,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for bool {
 /// macro. Mirrors the runtime check
 /// `IntegerType::getBitWidth() > other.getBitWidth()`
 /// (`DerivedTypes.h`). The trait is the bound used by
-/// [`IrBuilder::build_trunc`](crate::IrBuilder::build_trunc) (where
+/// [`IrBuilder::trunc`](crate::IrBuilder::trunc) (where
 /// `Src: WiderThan<Dst>`) and the inverse on
-/// [`IrBuilder::build_zext`](crate::IrBuilder::build_zext) /
-/// [`build_sext`](crate::IrBuilder::build_sext) (where
+/// [`IrBuilder::zext`](crate::IrBuilder::zext) /
+/// [`sext`](crate::IrBuilder::sext) (where
 /// `Dst: WiderThan<Src>`).
 ///
 /// Signed-only: every `WiderThan` involves two static markers.
@@ -725,8 +725,8 @@ impl_into_int_value_static!(u128, i128, i128_type);
 /// Sealed: integer-width markers whose width is known at compile time
 /// AND whose `IntType<'ctx, Self>` can be projected from a
 /// [`Module`](crate::Module) without an extra runtime parameter. Lets the IR
-/// builder accept `b.build_int_phi::<i32, _>("acc")?` instead of
-/// `b.build_int_phi(i32_ty, "acc")?`.
+/// builder accept `b.int_phi::<i32, _>("acc")?` instead of
+/// `b.int_phi(i32_ty, "acc")?`.
 ///
 /// Not implemented for [`IntDyn`] - there is no single "dyn
 /// integer type" in a module; the dyn-flavour builder methods take an
@@ -777,7 +777,7 @@ impl<const N: u32> StaticIntWidth for Width<N> {
 // NOTE: the `impl<const N> IntoIntValue<Width<N>> for <rust scalar>` lifts
 // were removed in the "no silent erasure" strict cut (task #72). A Rust
 // scalar now maps to exactly its own `iN` marker, so `W` in
-// `build_int_add(2i32, 3i32, "n")` infers uniquely with no turbofish; a
+// `int_add(2i32, 3i32, "n")` infers uniquely with no turbofish; a
 // `Width<N>` slot must be fed a typed `IntValue<Width<N>>` /
 // `ConstantIntValue<Width<N>>` (both still lift via the identity/const
 // impls above), not a bare Rust literal.

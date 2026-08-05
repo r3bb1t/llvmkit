@@ -22,13 +22,13 @@ fn demanded_bits_basic_trunc_zext_chain() -> Result<(), IrError> {
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let b_arg: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
 
-    let add = b.build_int_add::<i32, _, _, _>(a, i32_ty.const_int(5_u32), "add")?;
-    let mul = b.build_int_mul::<i32, _, _, _>(add, b_arg, "mul")?;
-    let trunc_i8 = b.build_trunc(mul, i8_ty, "lo8")?;
-    let trunc_i1 = b.build_trunc(mul, i1_ty, "lo1")?;
-    let zext = b.build_zext(trunc_i1, i8_ty, "wide")?;
-    let sum = b.build_int_add::<i8, _, _, _>(trunc_i8, zext, "sum")?;
-    b.build_ret(sum)?;
+    let add = b.int_add::<i32, _, _, _>(a, i32_ty.const_int(5_u32), "add")?;
+    let mul = b.int_mul::<i32, _, _, _>(add, b_arg, "mul")?;
+    let trunc_i8 = b.trunc(mul, i8_ty, "lo8")?;
+    let trunc_i1 = b.trunc(mul, i1_ty, "lo1")?;
+    let zext = b.zext(trunc_i1, i8_ty, "wide")?;
+    let sum = b.int_add::<i8, _, _, _>(trunc_i8, zext, "sum")?;
+    b.ret(sum)?;
 
     let mut fam = FunctionAnalysisManager::new();
     fam.register_pass(DemandedBitsAnalysis);
@@ -88,15 +88,15 @@ fn demanded_bits_add_and_or_carry_propagation() -> Result<(), IrError> {
     let c: IntValue<'_, i32, _> = m.view(f).param(2)?.try_into()?;
     let d: IntValue<'_, i32, _> = m.view(f).param(3)?.try_into()?;
 
-    let and_a = b.build_int_and::<i32, _, _, _>(a, i32_ty.const_int(9_u32), "and.a")?;
-    let and_b = b.build_int_and::<i32, _, _, _>(b_arg, i32_ty.const_int(9_u32), "and.b")?;
-    let and_c = b.build_int_and::<i32, _, _, _>(c, i32_ty.const_int(13_u32), "and.c")?;
-    let and_d = b.build_int_and::<i32, _, _, _>(d, i32_ty.const_int(4_u32), "and.d")?;
-    let or_bc = b.build_int_or::<i32, _, _, _>(and_b, and_c, "or.bc")?;
-    let or_dbc = b.build_int_or::<i32, _, _, _>(and_d, or_bc, "or.dbc")?;
-    let add = b.build_int_add::<i32, _, _, _>(and_a, or_dbc, "add")?;
-    let mask = b.build_int_and::<i32, _, _, _>(add, i32_ty.const_int(16_u32), "mask")?;
-    b.build_ret(mask)?;
+    let and_a = b.int_and::<i32, _, _, _>(a, i32_ty.const_int(9_u32), "and.a")?;
+    let and_b = b.int_and::<i32, _, _, _>(b_arg, i32_ty.const_int(9_u32), "and.b")?;
+    let and_c = b.int_and::<i32, _, _, _>(c, i32_ty.const_int(13_u32), "and.c")?;
+    let and_d = b.int_and::<i32, _, _, _>(d, i32_ty.const_int(4_u32), "and.d")?;
+    let or_bc = b.int_or::<i32, _, _, _>(and_b, and_c, "or.bc")?;
+    let or_dbc = b.int_or::<i32, _, _, _>(and_d, or_bc, "or.dbc")?;
+    let add = b.int_add::<i32, _, _, _>(and_a, or_dbc, "add")?;
+    let mask = b.int_and::<i32, _, _, _>(add, i32_ty.const_int(16_u32), "mask")?;
+    b.ret(mask)?;
 
     let mut fam = FunctionAnalysisManager::new();
     fam.register_pass(DemandedBitsAnalysis);
@@ -168,8 +168,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         .return_value()
         .expect("bitreverse returns value")
         .try_into()?;
-    let rev_mask = rev_b.build_int_and::<i8, _, _, _>(rev, i8_ty.const_int(0x0f_u8), "mask")?;
-    rev_b.build_ret(rev_mask)?;
+    let rev_mask = rev_b.int_and::<i8, _, _, _>(rev, i8_ty.const_int(0x0f_u8), "mask")?;
+    rev_b.ret(rev_mask)?;
 
     let swap_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i16")?;
     let swap_host_ty = m.fn_type(i16_ty, [i16_ty.as_type()], false);
@@ -187,9 +187,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         .return_value()
         .expect("bswap returns value")
         .try_into()?;
-    let swap_mask =
-        swap_b.build_int_and::<i16, _, _, _>(swap, i16_ty.const_int(0x00ff_u16), "mask")?;
-    swap_b.build_ret(swap_mask)?;
+    let swap_mask = swap_b.int_and::<i16, _, _, _>(swap, i16_ty.const_int(0x00ff_u16), "mask")?;
+    swap_b.ret(swap_mask)?;
 
     let fshl_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshl.i8")?;
     let fshl_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
@@ -210,8 +209,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         .return_value()
         .expect("fshl returns value")
         .try_into()?;
-    let fshl_mask = fshl_b.build_int_and::<i8, _, _, _>(fshl, i8_ty.const_int(0x0f_u8), "mask")?;
-    fshl_b.build_ret(fshl_mask)?;
+    let fshl_mask = fshl_b.int_and::<i8, _, _, _>(fshl, i8_ty.const_int(0x0f_u8), "mask")?;
+    fshl_b.ret(fshl_mask)?;
 
     let fshr_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshr.i8")?;
     let fshr_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
@@ -232,8 +231,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         .return_value()
         .expect("fshr returns value")
         .try_into()?;
-    let fshr_mask = fshr_b.build_int_and::<i8, _, _, _>(fshr, i8_ty.const_int(0x0f_u8), "mask")?;
-    fshr_b.build_ret(fshr_mask)?;
+    let fshr_mask = fshr_b.int_and::<i8, _, _, _>(fshr, i8_ty.const_int(0x0f_u8), "mask")?;
+    fshr_b.ret(fshr_mask)?;
 
     let fshr_zero_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
     let fshr_zero_host =
@@ -255,8 +254,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         .expect("fshr returns value")
         .try_into()?;
     let fshr_zero_mask =
-        fshr_zero_b.build_int_and::<i8, _, _, _>(fshr_zero, i8_ty.const_int(0x0f_u8), "mask")?;
-    fshr_zero_b.build_ret(fshr_zero_mask)?;
+        fshr_zero_b.int_and::<i8, _, _, _>(fshr_zero, i8_ty.const_int(0x0f_u8), "mask")?;
+    fshr_zero_b.ret(fshr_zero_mask)?;
 
     let wide_fshl_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.fshl.i128")?;
     let wide_fshl_host_ty = m.fn_type(i128_ty, [i128_ty.as_type(), i128_ty.as_type()], false);
@@ -281,8 +280,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         .try_into()?;
     let wide_fshl_mask = i128_ty.const_ap_int(&ApInt::from_words(128, &[0xff]))?;
     let wide_fshl_masked =
-        wide_fshl_b.build_int_and::<i128, _, _, _>(wide_fshl, wide_fshl_mask, "mask")?;
-    wide_fshl_b.build_ret(wide_fshl_masked)?;
+        wide_fshl_b.int_and::<i128, _, _, _>(wide_fshl, wide_fshl_mask, "mask")?;
+    wide_fshl_b.ret(wide_fshl_masked)?;
 
     let umax_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.umax.i8")?;
     let umax_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
@@ -302,8 +301,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         .return_value()
         .expect("umax returns value")
         .try_into()?;
-    let umax_mask = umax_b.build_int_and::<i8, _, _, _>(umax, i8_ty.const_int(0xf0_u8), "mask")?;
-    umax_b.build_ret(umax_mask)?;
+    let umax_mask = umax_b.int_and::<i8, _, _, _>(umax, i8_ty.const_int(0xf0_u8), "mask")?;
+    umax_b.ret(umax_mask)?;
 
     let umin_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.umin.i8")?;
     let umin_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
@@ -323,8 +322,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         .return_value()
         .expect("umin returns value")
         .try_into()?;
-    let umin_mask = umin_b.build_int_and::<i8, _, _, _>(umin, i8_ty.const_int(0xf0_u8), "mask")?;
-    umin_b.build_ret(umin_mask)?;
+    let umin_mask = umin_b.int_and::<i8, _, _, _>(umin, i8_ty.const_int(0xf0_u8), "mask")?;
+    umin_b.ret(umin_mask)?;
 
     let smax_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.smax.i8")?;
     let smax_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
@@ -344,8 +343,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         .return_value()
         .expect("smax returns value")
         .try_into()?;
-    let smax_mask = smax_b.build_int_and::<i8, _, _, _>(smax, i8_ty.const_int(0xf0_u8), "mask")?;
-    smax_b.build_ret(smax_mask)?;
+    let smax_mask = smax_b.int_and::<i8, _, _, _>(smax, i8_ty.const_int(0xf0_u8), "mask")?;
+    smax_b.ret(smax_mask)?;
 
     let smin_fn = m.get_or_insert_intrinsic_declaration_by_name("llvm.smin.i8")?;
     let smin_host_ty = m.fn_type(i8_ty, [i8_ty.as_type(), i8_ty.as_type()], false);
@@ -365,8 +364,8 @@ fn demanded_bits_intrinsic_operand_masks_match_upstream() -> Result<(), IrError>
         .return_value()
         .expect("smin returns value")
         .try_into()?;
-    let smin_mask = smin_b.build_int_and::<i8, _, _, _>(smin, i8_ty.const_int(0xf0_u8), "mask")?;
-    smin_b.build_ret(smin_mask)?;
+    let smin_mask = smin_b.int_and::<i8, _, _, _>(smin, i8_ty.const_int(0xf0_u8), "mask")?;
+    smin_b.ret(smin_mask)?;
 
     let mut fam = FunctionAnalysisManager::new();
     fam.register_pass(DemandedBitsAnalysis);
@@ -506,8 +505,8 @@ fn demanded_bits_ignore_mismatched_intrinsic_declarations() -> Result<(), IrErro
         .return_value()
         .expect("lookalike returns value")
         .try_into()?;
-    let masked = b.build_int_and::<i16, _, _, _>(call, i16_ty.const_int(0x00ff_u16), "mask")?;
-    b.build_ret(masked)?;
+    let masked = b.int_and::<i16, _, _, _>(call, i16_ty.const_int(0x00ff_u16), "mask")?;
+    b.ret(masked)?;
 
     let mut fam = FunctionAnalysisManager::new();
     fam.register_pass(DemandedBitsAnalysis);
@@ -530,8 +529,8 @@ fn operands_of_dead_integer_instruction_are_dead() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let dead = b.build_int_and::<i32, _, _, _>(a, i32_ty.const_int(15_u32), "dead")?;
-    b.build_ret(i32_ty.const_int(0_u32))?;
+    let dead = b.int_and::<i32, _, _, _>(a, i32_ty.const_int(15_u32), "dead")?;
+    b.ret(i32_ty.const_int(0_u32))?;
 
     let mut fam = FunctionAnalysisManager::new();
     fam.register_pass(DemandedBitsAnalysis);
@@ -559,9 +558,9 @@ fn simplify_demanded_bits_replaces_known_demanded_low_bits() -> Result<(), IrErr
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let lhs = i32_ty.const_int(0xffff_0000_u32);
-    let high = b.build_int_and::<i32, _, _, _>(lhs, i32_ty.const_int(0x0000_00ff_u32), "high")?;
-    let lo = b.build_trunc(high, i8_ty, "lo")?;
-    b.build_ret(lo)?;
+    let high = b.int_and::<i32, _, _, _>(lhs, i32_ty.const_int(0x0000_00ff_u32), "high")?;
+    let lo = b.trunc(high, i8_ty, "lo")?;
+    b.ret(lo)?;
 
     let mut fam = FunctionAnalysisManager::new();
     fam.register_pass(DemandedBitsAnalysis);
@@ -606,9 +605,9 @@ fn simplify_demanded_bits_pass_folds_known_demanded_low_bits() -> Result<(), IrE
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let lhs = i32_ty.const_int(0xffff_0000_u32);
-    let high = b.build_int_and::<i32, _, _, _>(lhs, i32_ty.const_int(0x0000_00ff_u32), "high")?;
-    let lo = b.build_trunc(high, i8_ty, "lo")?;
-    b.build_ret(lo)?;
+    let high = b.int_and::<i32, _, _, _>(lhs, i32_ty.const_int(0x0000_00ff_u32), "high")?;
+    let lo = b.trunc(high, i8_ty, "lo")?;
+    b.ret(lo)?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -637,10 +636,10 @@ fn simplify_demanded_bits_pass_ports_and_zext_and() -> Result<(), IrError> {
     let a: IntValue<'_, Width<3>, _> = m.view(f).param(0)?.try_into()?;
     let op1_rhs = i3_ty.const_ap_int(&ApInt::from_words(3, &[3]))?;
     let op2_rhs = i5_ty.const_ap_int(&ApInt::from_words(5, &[14]))?;
-    let op1 = b.build_int_and::<Width<3>, _, _, _>(a, op1_rhs, "op1")?;
-    let cast = b.build_zext_dyn(b.view(op1).as_dyn(), i5_ty.as_dyn(), "cast")?;
-    let op2 = b.build_int_and_dyn(b.view(cast).into_erased(), op2_rhs.into_erased(), "op2")?;
-    b.build_ret(op2)?;
+    let op1 = b.int_and::<Width<3>, _, _, _>(a, op1_rhs, "op1")?;
+    let cast = b.zext_dyn(b.view(op1).as_dyn(), i5_ty.as_dyn(), "cast")?;
+    let op2 = b.int_and_dyn(b.view(cast).into_erased(), op2_rhs.into_erased(), "op2")?;
+    b.ret(op2)?;
 
     let before = format!("{m}");
     assert!(before.contains("%op1 = and i3 %0, 3"), "{before}");
@@ -683,16 +682,16 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let a: IntValue<'_, Width<3>, _> = m.view(f).param(0)?.try_into()?;
     let proof_mask = i3_ty.const_ap_int(&ApInt::from_words(3, &[3]))?;
-    let proof = b.build_int_and::<Width<3>, _, _, _>(a, proof_mask, "proof")?;
-    let cast = b.build_zext_with_flags_dyn(
+    let proof = b.int_and::<Width<3>, _, _, _>(a, proof_mask, "proof")?;
+    let cast = b.zext_with_flags_dyn(
         b.view(proof).as_dyn(),
         i5_ty.as_dyn(),
         ZextFlags::new().nneg(),
         "cast",
     )?;
     let low_mask = i5_ty.const_ap_int(&ApInt::from_words(5, &[3]))?;
-    let low = b.build_int_and_dyn(b.view(cast).into_erased(), low_mask.into_erased(), "low")?;
-    b.build_ret(low)?;
+    let low = b.int_and_dyn(b.view(cast).into_erased(), low_mask.into_erased(), "low")?;
+    b.ret(low)?;
 
     let mutate_fn_ty = m.fn_type(i5_ty, [i3_ty.as_type()], false);
     let mutate_f =
@@ -701,23 +700,22 @@ fn simplify_demanded_bits_pass_drops_stale_zext_nneg_after_operand_replacement()
     let mutate_b = IrBuilder::with_folder(&m, NoFolder).position_at_end(mutate_entry);
     let mutate_arg: IntValue<'_, Width<3>, _> = m.view(mutate_f).param(0)?.try_into()?;
     let sign_bit = i3_ty.const_ap_int(&ApInt::from_words(3, &[4]))?;
-    let sign_mut = mutate_b.build_int_or::<Width<3>, _, _, _>(mutate_arg, sign_bit, "sign.mut")?;
-    let proof_mut = mutate_b.build_int_xor::<Width<3>, _, _, _>(sign_mut, sign_bit, "proof.mut")?;
-    let cast_mut = mutate_b.build_zext_with_flags_dyn(
+    let sign_mut = mutate_b.int_or::<Width<3>, _, _, _>(mutate_arg, sign_bit, "sign.mut")?;
+    let proof_mut = mutate_b.int_xor::<Width<3>, _, _, _>(sign_mut, sign_bit, "proof.mut")?;
+    let cast_mut = mutate_b.zext_with_flags_dyn(
         mutate_b.view(proof_mut).as_dyn(),
         i5_ty.as_dyn(),
         ZextFlags::new().nneg(),
         "cast.mut",
     )?;
-    let low_mut = mutate_b.build_int_and_dyn(
+    let low_mut = mutate_b.int_and_dyn(
         mutate_b.view(cast_mut).into_erased(),
         low_mask.into_erased(),
         "low.mut",
     )?;
     let zero_i3 = i3_ty.const_ap_int(&ApInt::zero(3))?;
-    let _extra_mut =
-        mutate_b.build_int_add::<Width<3>, _, _, _>(proof_mut, zero_i3, "extra.mut")?;
-    mutate_b.build_ret(low_mut)?;
+    let _extra_mut = mutate_b.int_add::<Width<3>, _, _, _>(proof_mut, zero_i3, "extra.mut")?;
+    mutate_b.ret(low_mut)?;
 
     let before = format!("{m}");
     assert!(before.contains("%proof = and i3 %0, 3"), "{before}");
@@ -772,9 +770,9 @@ fn simplify_demanded_bits_pass_erases_dead_integer_chain() -> Result<(), IrError
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let dead0 = b.build_int_and::<i32, _, _, _>(x, i32_ty.const_int(15_u32), "dead0")?;
-    let _dead1 = b.build_int_xor::<i32, _, _, _>(dead0, i32_ty.const_int(3_u32), "dead1")?;
-    b.build_ret(i32_ty.const_int(0_u32))?;
+    let dead0 = b.int_and::<i32, _, _, _>(x, i32_ty.const_int(15_u32), "dead0")?;
+    let _dead1 = b.int_xor::<i32, _, _, _>(dead0, i32_ty.const_int(3_u32), "dead1")?;
+    b.ret(i32_ty.const_int(0_u32))?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -801,10 +799,10 @@ fn variable_lshr_demands_source_bits_that_can_reach_low_result() -> Result<(), I
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let amount: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let masked = b.build_int_and::<i32, _, _, _>(a, i32_ty.const_int(256_u32), "masked")?;
-    let shifted = b.build_int_lshr::<i32, _, _, _>(masked, amount, "shifted")?;
-    let lo = b.build_trunc(shifted, i1_ty, "lo")?;
-    b.build_ret(lo)?;
+    let masked = b.int_and::<i32, _, _, _>(a, i32_ty.const_int(256_u32), "masked")?;
+    let shifted = b.int_lshr::<i32, _, _, _>(masked, amount, "shifted")?;
+    let lo = b.trunc(shifted, i1_ty, "lo")?;
+    b.ret(lo)?;
 
     let mut fam = FunctionAnalysisManager::new();
     fam.register_pass(DemandedBitsAnalysis);
@@ -840,10 +838,10 @@ fn variable_lshr_with_known_amount_range_demands_reachable_source_bits() -> Resu
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let amount: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let amount_range =
-        b.build_int_and::<i32, _, _, _>(amount, i32_ty.const_int(3_u32), "amount.range")?;
-    let shifted = b.build_int_lshr::<i32, _, _, _>(a, amount_range, "shifted")?;
-    let lo = b.build_trunc(shifted, i1_ty, "lo")?;
-    b.build_ret(lo)?;
+        b.int_and::<i32, _, _, _>(amount, i32_ty.const_int(3_u32), "amount.range")?;
+    let shifted = b.int_lshr::<i32, _, _, _>(a, amount_range, "shifted")?;
+    let lo = b.trunc(shifted, i1_ty, "lo")?;
+    b.ret(lo)?;
 
     let mut fam = FunctionAnalysisManager::new();
     fam.register_pass(DemandedBitsAnalysis);

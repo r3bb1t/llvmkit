@@ -21,12 +21,12 @@ fn module_with(op: &str) -> Result<String, IrError> {
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let r = match op {
-        "and" => b.build_int_and(x, y, "z")?,
-        "or" => b.build_int_or(x, y, "z")?,
-        "xor" => b.build_int_xor(x, y, "z")?,
+        "and" => b.int_and(x, y, "z")?,
+        "or" => b.int_or(x, y, "z")?,
+        "xor" => b.int_xor(x, y, "z")?,
         _ => unreachable!(),
     };
-    b.build_ret(r)?;
+    b.ret(r)?;
     Ok(format!("{m}"))
 }
 

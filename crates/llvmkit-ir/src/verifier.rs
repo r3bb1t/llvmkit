@@ -3541,7 +3541,7 @@ mod tests {
     /// verifier now rejects an invalid phi *result* type before any coherence
     /// check, mirroring the `.ll` parser's parse-time rejection so the
     /// guarantee holds regardless of construction path (the raw phi builders
-    /// are internal, but `build_phi_dyn`/`make_phi_in_block` still take an
+    /// are internal, but `phi_dyn`/`make_phi_in_block` still take an
     /// erased type).
     #[test]
     fn phi_with_invalid_result_type_rejected() {

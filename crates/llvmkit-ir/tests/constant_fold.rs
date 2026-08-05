@@ -837,7 +837,7 @@ fn analysis_instruction_fold_uses_apint_binary_folder() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let high = ty.const_ap_int(&ApInt::one_bit_set(257, 256))?;
-    let value = b.build_int_add(high, ty.const_zero(), "sum")?;
+    let value = b.int_add(high, ty.const_zero(), "sum")?;
     let instruction = InstructionView::try_from(b.view(value).into_erased())?;
     let folded = constant_fold_instruction(&instruction)?.expect("constant add folds");
     let int = ConstantIntValue::<IntDyn, _>::try_from(folded)?;
@@ -859,7 +859,7 @@ fn analysis_instruction_fold_exact_udiv_inexact_matches_plain_udiv() -> Result<(
     let f = m.add_function_dyn("exact", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let value = b.build_int_udiv_with_flags::<i32, _, _, _>(
+    let value = b.int_udiv_with_flags::<i32, _, _, _>(
         ty.const_int(7_i32),
         ty.const_int(2_i32),
         UDivFlags::new().exact(),
@@ -887,7 +887,7 @@ fn analysis_instruction_fold_exact_udiv_undef_identity() -> Result<(), IrError> 
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let undef = IntValue::try_from(ty.as_type().get_undef().into_erased())?;
-    let value = b.build_int_udiv_with_flags::<i32, _, _, _>(
+    let value = b.int_udiv_with_flags::<i32, _, _, _>(
         undef,
         ty.const_int(1_i32),
         UDivFlags::new().exact(),

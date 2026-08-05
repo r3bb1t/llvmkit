@@ -34,20 +34,16 @@ fn reachable_and_unreachable_block_dominance() -> Result<(), IrError> {
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let cond = b.build_int_cmp(IntPredicate::Eq, x, 0_i32, "cond")?;
-    b.build_cond_br(cond, then_label, else_label)?;
+    let cond = b.int_cmp(IntPredicate::Eq, x, 0_i32, "cond")?;
+    b.cond_br(cond, then_label, else_label)?;
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(then_bb)
-        .build_br(join_label)?;
+        .br(join_label)?;
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(else_bb)
-        .build_br(join_label)?;
-    IrBuilder::new_for::<Dyn>(&m)
-        .position_at_end(join)
-        .build_ret(x)?;
-    IrBuilder::new_for::<Dyn>(&m)
-        .position_at_end(dead)
-        .build_ret(x)?;
+        .br(join_label)?;
+    IrBuilder::new_for::<Dyn>(&m).position_at_end(join).ret(x)?;
+    IrBuilder::new_for::<Dyn>(&m).position_at_end(dead).ret(x)?;
 
     let dt = DominatorTree::new(m.view(f).as_dyn());
     assert!(dt.is_reachable_from_entry(entry_label));
@@ -85,14 +81,14 @@ fn same_block_instruction_order_and_unreachable_use_semantics() -> Result<(), Ir
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let y1 = b.build_int_add(x, 1_i32, "y1")?;
-    let y2 = b.build_int_add(y1, 1_i32, "y2")?;
-    b.build_ret(y2)?;
+    let y1 = b.int_add(x, 1_i32, "y1")?;
+    let y2 = b.int_add(y1, 1_i32, "y2")?;
+    b.ret(y2)?;
 
     let bd = IrBuilder::new_for::<Dyn>(&m).position_at_end(dead);
-    let z1 = bd.build_int_add(x, 1_i32, "z1")?;
-    let z2 = bd.build_int_add(z1, 1_i32, "z2")?;
-    bd.build_ret(z2)?;
+    let z1 = bd.int_add(x, 1_i32, "z1")?;
+    let z2 = bd.int_add(z1, 1_i32, "z2")?;
+    bd.ret(z2)?;
 
     let y1i = inst(m.view(y1).into_erased())?;
     let y2i = inst(m.view(y2).into_erased())?;
@@ -139,17 +135,15 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
 
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_cond_br(cond, then_label, else_label)?;
+        .cond_br(cond, then_label, else_label)?;
     let bt = IrBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
-    let y = bt.build_int_add(x, 1_i32, "y")?;
-    bt.build_br_with_args(join_label, &[m.view(y).into_erased()])?;
+    let y = bt.int_add(x, 1_i32, "y")?;
+    bt.br_with_args(join_label, &[m.view(y).into_erased()])?;
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(else_bb)
-        .build_br_with_args(join_label, &[x.into_erased()])?;
+        .br_with_args(join_label, &[x.into_erased()])?;
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
-    IrBuilder::new_for::<Dyn>(&m)
-        .position_at_end(join)
-        .build_ret(p)?;
+    IrBuilder::new_for::<Dyn>(&m).position_at_end(join).ret(p)?;
 
     let yi = inst(m.view(y).into_erased())?;
     // The phi is the join block's head param; recover its view from
@@ -185,7 +179,7 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
 
     let (_sealed, invoke) = IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_invoke_dyn(
+        .invoke_dyn(
             m.view(callee),
             Vec::<llvmkit_ir::Value<'_, _>>::new(),
             normal_label,
@@ -195,11 +189,11 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
     let invoke_value: IntValue<'_, i32, _> = invoke.to_erased().try_into()?;
 
     let bn = IrBuilder::new_for::<Dyn>(&m).position_at_end(normal);
-    let normal_use = bn.build_int_add(invoke_value, 1_i32, "normal_use")?;
-    bn.build_ret(normal_use)?;
+    let normal_use = bn.int_add(invoke_value, 1_i32, "normal_use")?;
+    bn.ret(normal_use)?;
     let bu = IrBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
-    let unwind_use = bu.build_int_add(invoke_value, 1_i32, "unwind_use")?;
-    bu.build_ret(x)?;
+    let unwind_use = bu.int_add(invoke_value, 1_i32, "unwind_use")?;
+    bu.ret(x)?;
 
     let invoke_inst = invoke.as_view();
     let normal_use_inst = inst(m.view(normal_use).into_erased())?;
@@ -235,7 +229,7 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
 
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_cond_br_with_args(
+        .cond_br_with_args(
             cond,
             join_label,
             &[x.into_erased()],
@@ -243,9 +237,7 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
             &[x.into_erased()],
         )?;
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
-    IrBuilder::new_for::<Dyn>(&m)
-        .position_at_end(join)
-        .build_ret(p)?;
+    IrBuilder::new_for::<Dyn>(&m).position_at_end(join).ret(p)?;
 
     let cfg = FunctionCfg::new(m.view(f).as_dyn());
     let edge: BasicBlockEdge<_> = cfg.edges().next().expect("conditional branch has an edge");

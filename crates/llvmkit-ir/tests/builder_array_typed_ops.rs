@@ -1,11 +1,11 @@
-//! Coverage for the TYPED array-op builders (`build_arr_extract` /
-//! `build_arr_insert`), which carry the element marker `E` and length marker
+//! Coverage for the TYPED array-op builders (`array_extract` /
+//! `array_insert`), which carry the element marker `E` and length marker
 //! `L` in the type system. They lower into the erased aggregate ops
-//! (`build_extract_value` / `build_insert_value`), so their emitted IR is
+//! (`extract_value` / `insert_value`), so their emitted IR is
 //! byte-for-byte identical to the erased family's — this file locks the typed
 //! ops against the same golden `extractvalue`/`insertvalue` strings
 //! `builder_aggregate_vector.rs` asserts, plus checks the element inference the
-//! typed forms add. Also exercises `build_alloca` on a statically-typed array
+//! typed forms add. Also exercises `alloca` on a statically-typed array
 //! type (the retrofitted handle still implements `IrType`).
 //!
 //! The wrong-element-is-a-compile-error guarantee lives in the compile-fail
@@ -14,11 +14,11 @@
 
 use llvmkit_ir::{ArrLen, ArrayValue, Dyn, IntValue, IrBuilder, Linkage, module_new};
 
-/// `build_arr_extract` at index 2 on a `[4 x i32]` typed `ArrayValue` returns
+/// `array_extract` at index 2 on a `[4 x i32]` typed `ArrayValue` returns
 /// the element as its statically typed scalar handle — `IntValue<'_, i32>`,
 /// inferred from the array's element marker with no turbofish. The
 /// `let`-binding annotation is the type assertion. The emitted IR matches the
-/// golden `extractvalue [4 x i32] ..., 2` the erased `build_extract_value`
+/// golden `extractvalue [4 x i32] ..., 2` the erased `extract_value`
 /// produces.
 #[test]
 fn typed_arr_extract_returns_typed_element() {
@@ -43,10 +43,10 @@ fn typed_arr_extract_returns_typed_element() {
         .expect("narrow p0");
 
     // Return type inferred from `a`'s element marker: `IntValue<'_, i32>`.
-    let e: IntValue<'_, i32, _> = b.build_arr_extract(a, 2, "e").expect("extract");
+    let e: IntValue<'_, i32, _> = b.array_extract(a, 2, "e").expect("extract");
     assert_eq!(e.ty(), i32_ty, "extracted element must be i32-typed");
 
-    b.build_ret(e).expect("ret");
+    b.ret(e).expect("ret");
 
     let txt = format!("{m}");
     assert!(
@@ -55,10 +55,10 @@ fn typed_arr_extract_returns_typed_element() {
     );
 }
 
-/// `build_arr_insert` writes a typed `IntValue<i32>` into a `[4 x i32]` typed
+/// `array_insert` writes a typed `IntValue<i32>` into a `[4 x i32]` typed
 /// array and returns the same-marker `ArrayValue<i32, ArrLen<4>>`, so the
 /// result round-trips into further typed ops. The emitted IR matches the
-/// golden `insertvalue [4 x i32] ..., i32 7, 1` the erased `build_insert_value`
+/// golden `insertvalue [4 x i32] ..., i32 7, 1` the erased `insert_value`
 /// produces.
 #[test]
 fn typed_arr_insert_round_trips() {
@@ -91,11 +91,11 @@ fn typed_arr_insert_round_trips() {
     // Result keeps the `i32` / `ArrLen<4>` markers, so it feeds straight
     // back into another typed array op.
     let updated: ArrayValue<'_, i32, ArrLen<4>, _> =
-        b.build_arr_insert(a, seven, 1, "u").expect("insert");
-    let back: IntValue<'_, i32, _> = b.build_arr_extract(updated, 1, "back").expect("extract");
+        b.array_insert(a, seven, 1, "u").expect("insert");
+    let back: IntValue<'_, i32, _> = b.array_extract(updated, 1, "back").expect("extract");
     assert_eq!(back.ty(), i32_ty, "round-tripped element must be i32-typed");
 
-    b.build_ret_void().expect("ret void");
+    b.ret_void().expect("ret void");
 
     let txt = format!("{m}");
     assert!(
@@ -108,7 +108,7 @@ fn typed_arr_insert_round_trips() {
     );
 }
 
-/// `build_alloca` accepts a statically-typed `[4 x i32]` array type directly —
+/// `alloca` accepts a statically-typed `[4 x i32]` array type directly —
 /// the retrofitted `ArrayType<'ctx, E, ArrLen<N>, B>` still implements
 /// `IrType`, so no dedicated typed-alloca method is needed. The result is
 /// still an erased `PointerValue` (pointee typing is separate future work),
@@ -126,11 +126,11 @@ fn typed_array_type_allocas() {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-    // `build_alloca` takes any `IrType`; the typed array handle qualifies.
-    let slot = b.build_alloca(arr_ty, "slot").expect("alloca");
+    // `alloca` takes any `IrType`; the typed array handle qualifies.
+    let slot = b.alloca(arr_ty, "slot").expect("alloca");
     let _ = b.view(slot).into_erased();
 
-    b.build_ret_void().expect("ret void");
+    b.ret_void().expect("ret void");
 
     let txt = format!("{m}");
     assert!(

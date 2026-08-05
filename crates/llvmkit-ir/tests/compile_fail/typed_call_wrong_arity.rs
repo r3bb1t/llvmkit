@@ -3,7 +3,7 @@
 //! Closest upstream behaviour: `CallInst::init`'s "Calling a function with a
 //! bad signature!" assertion (`lib/IR/Instructions.cpp`) and
 //! `Verifier::visitCallBase`'s authoritative arity check reject a wrong
-//! argument count for a call site *at runtime*. llvmkit's typed `build_call`
+//! argument count for a call site *at runtime*. llvmkit's typed `call`
 //! pushes that same invariant into the Rust type system for statically-known
 //! callee schemas: passing a 1-element tuple against a 2-parameter typed
 //! callee has no `CallArgs<'ctx, (i32, i32), _>` impl, so it is a compile
@@ -24,5 +24,5 @@ fn main() {
     let (x,) = m.view(caller).params();
     // `(x,)` is a 1-tuple; `callee`'s schema is `(i32, i32)` (arity 2).
     // There is no `CallArgs<'_, (i32, i32), _>` impl for `(IntValue<i32>,)`.
-    let _ = b.build_call(callee, (x,), "bad");
+    let _ = b.call(callee, (x,), "bad");
 }

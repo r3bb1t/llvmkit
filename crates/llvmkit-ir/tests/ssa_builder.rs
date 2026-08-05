@@ -279,7 +279,7 @@ fn diamond_merge_places_single_phi_at_join() -> Result<(), IrError> {
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let cond = b
         .ins()?
-        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "cond")?;
+        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "cond")?;
     b.cond_br(cond, left, right)?;
     b.seal_block(left)?;
     b.seal_block(right)?;
@@ -336,7 +336,7 @@ fn loop_backedge_completes_incomplete_phi_on_seal() -> Result<(), IrError> {
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let is_zero = b
         .ins()?
-        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
+        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
     // The loop's own entry-edge incoming values: `acc` starts at 1,
     // `i` starts at the parameter `n` (mirrors the factorial
     // example's `acc_phi.add_incoming(1_i32, entry_label)` /
@@ -370,11 +370,11 @@ fn loop_backedge_completes_incomplete_phi_on_seal() -> Result<(), IrError> {
          {before_seal_text}"
     );
 
-    let next_acc = b.ins()?.build_int_mul(acc, i, "next_acc")?;
-    let next_i = b.ins()?.build_int_sub(i, 1_i32, "next_i")?;
+    let next_acc = b.ins()?.int_mul(acc, i, "next_acc")?;
+    let next_i = b.ins()?.int_sub(i, 1_i32, "next_i")?;
     let done = b
         .ins()?
-        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
+        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
     b.def_int_var(acc_var, next_acc)?;
     b.def_int_var(i_var, next_i)?;
     b.cond_br(done, exit, loop_bb)?;
@@ -840,9 +840,9 @@ fn switch_records_one_edge_per_case_occurrence() -> Result<(), IrError> {
 
     b.switch_to_block(entry)?;
     let mode: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let take_pre =
-        b.ins()?
-            .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, mode, 0_i32, "take_pre")?;
+    let take_pre = b
+        .ins()?
+        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, mode, 0_i32, "take_pre")?;
     b.cond_br(take_pre, pre, switch_source)?;
     b.seal_block(pre)?;
     b.seal_block(switch_source)?;
@@ -936,7 +936,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let cond = b
         .ins()?
-        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "cond")?;
+        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "cond")?;
     b.cond_br(cond, left, right)?;
     b.seal_block(left)?;
     b.seal_block(right)?;
@@ -975,7 +975,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let is_zero = b
         .ins()?
-        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
+        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
     b.def_int_var(acc_var, 1_i32)?;
     b.def_int_var(i_var, n)?;
     b.cond_br(is_zero, base, loop_bb)?;
@@ -987,11 +987,11 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
     b.switch_to_block(loop_bb)?;
     let acc = b.use_int_var(acc_var)?;
     let i = b.use_int_var(i_var)?;
-    let next_acc = b.ins()?.build_int_mul(acc, i, "next_acc")?;
-    let next_i = b.ins()?.build_int_sub(i, 1_i32, "next_i")?;
+    let next_acc = b.ins()?.int_mul(acc, i, "next_acc")?;
+    let next_i = b.ins()?.int_sub(i, 1_i32, "next_i")?;
     let done = b
         .ins()?
-        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
+        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
     b.def_int_var(acc_var, next_acc)?;
     b.def_int_var(i_var, next_i)?;
     b.cond_br(done, exit, loop_bb)?;
@@ -1056,7 +1056,7 @@ fn every_auto_ssa_module_verifies() -> Result<(), IrError> {
 /// condition paired with an out-of-range `i32` case literal must fail
 /// with `IrError::ImmediateOverflow` from the pre-pass lift, and --
 /// unlike the old `IsValue`-bounded shape, where `SwitchInst::add_case`
-/// would only catch a bad case AFTER `build_switch_dyn` had already emitted
+/// would only catch a bad case AFTER `switch_dyn` had already emitted
 /// the terminator with its default target -- the printed module must
 /// show NO `switch` instruction at all: the failure happens strictly
 /// before the terminator is built.
@@ -1077,7 +1077,7 @@ fn switch_dyn_condition_bad_width_case_rejected_before_emit() -> Result<(), IrEr
     b.switch_to_block(entry)?;
     // 1000 does not fit in the condition's actual 8-bit runtime
     // width -- the pre-pass lift via `IntoConstantInt<IntDyn>` must
-    // reject it before `build_switch_dyn` ever runs.
+    // reject it before `switch_dyn` ever runs.
     let bad_case = 1000_i32;
     match b.switch(cond, default_bb, [(bad_case, case_bb)]) {
         Err(IrError::ImmediateOverflow { bits: 8, .. }) => {}
@@ -1158,7 +1158,7 @@ fn shape_kind_strategy() -> impl Strategy<Value = ShapeKind> {
 /// values themselves are irrelevant to well-formedness, only their
 /// presence as distinct phi incoming operands matters). The undef-sweep
 /// arm's `undef_var` is sampled uniformly from `0..var_count` (rather
-/// than pinned to variable 0) -- the doc comments on each `build_*`
+/// than pinned to variable 0) -- the doc comments on each emitter
 /// function below advertise a "randomised which-variable" schedule, so
 /// every declared variable, not just the first, must actually get
 /// exercised as the undefined one across the property's shrink space.
@@ -1299,7 +1299,7 @@ fn build_diamond<B: ModuleBrand>(
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let cond = b
         .ins()?
-        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "cond")?;
+        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "cond")?;
     b.cond_br(cond, left, right)?;
     b.seal_block(left)?;
     b.seal_block(right)?;
@@ -1368,7 +1368,7 @@ fn build_loop<B: ModuleBrand>(
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let is_zero = b
         .ins()?
-        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
+        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
     for (i, var) in vars.iter().enumerate() {
         if case.undef_var != Some(i) {
             b.def_int_var(*var, case.literals[i])?;
@@ -1389,9 +1389,9 @@ fn build_loop<B: ModuleBrand>(
         .collect::<Result<_, IrError>>()?;
     let done = b
         .ins()?
-        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, reads[0], 0_i32, "done")?;
+        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, reads[0], 0_i32, "done")?;
     for (i, var) in vars.iter().enumerate() {
-        let next = b.ins()?.build_int_add(reads[i], case.literals[i], "next")?;
+        let next = b.ins()?.int_add(reads[i], case.literals[i], "next")?;
         b.def_int_var(*var, next)?;
     }
     b.cond_br(done, exit, loop_bb)?;
@@ -1572,7 +1572,7 @@ fn dead_block_poison_read_user_is_rerouted_to_poison() -> Result<(), IrError> {
     // phi that a REAL instruction then consumes.
     b.switch_to_block(dead)?;
     let read = b.use_int_var(x)?;
-    let sum = b.ins()?.build_int_add(read, 1_i32, "sum")?;
+    let sum = b.ins()?.int_add(read, 1_i32, "sum")?;
     b.ret(m.view(sum))?;
 
     // finish() seals `dead` with zero predecessors: the incomplete phi
@@ -1612,7 +1612,7 @@ fn dead_cycle_poison_read_with_live_user_resolves_to_poison() -> Result<(), IrEr
 
     b.switch_to_block(loop1)?;
     let read = b.use_int_var(x)?;
-    let _sum = b.ins()?.build_int_add(read, 1_i32, "sum")?;
+    let _sum = b.ins()?.int_add(read, 1_i32, "sum")?;
     b.br(loop2)?;
 
     b.switch_to_block(loop2)?;

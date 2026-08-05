@@ -6097,7 +6097,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Token::Instruction(Opcode::Unreachable) => {
                     let b = take_live_builder(&mut builder, self.loc())?;
                     self.bump()?;
-                    let _ = b.build_unreachable();
+                    let _ = b.unreachable();
                     self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
                     return Ok(());
                 }
@@ -6338,7 +6338,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.bump()?; // eat `ret`
         if let Token::PrimitiveType(PrimitiveTy::Void) = self.peek() {
             self.bump()?;
-            let _ = b.build_ret_void().map_err(|e| ParseError::Expected {
+            let _ = b.ret_void().map_err(|e| ParseError::Expected {
                 expected: format!("valid ret void: {e}"),
                 loc: DiagLoc::span(self.loc()),
             })?;
@@ -6346,7 +6346,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let ty = self.parse_type(false)?;
         let v = self.parse_value(state, ty)?;
-        let _ = b.build_ret(v).map_err(|e| ParseError::Expected {
+        let _ = b.ret(v).map_err(|e| ParseError::Expected {
             expected: format!("valid ret: {e}"),
             loc: DiagLoc::span(self.loc()),
         })?;
@@ -6364,7 +6364,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if matches!(self.peek(), Token::PrimitiveType(PrimitiveTy::Label)) {
             self.bump()?;
             let target = self.parse_block_ref(state)?;
-            let _ = b.build_br(target).map_err(|e| ParseError::Expected {
+            let _ = b.br(target).map_err(|e| ParseError::Expected {
                 expected: format!("valid br: {e}"),
                 loc: DiagLoc::span(self.loc()),
             })?;
@@ -6392,7 +6392,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .try_into()
             .map_err(|_| self.expected("i1 condition"))?;
         let _ = b
-            .build_cond_br(cond_i1, then_bb, else_bb)
+            .cond_br(cond_i1, then_bb, else_bb)
             .map_err(|e| ParseError::Expected {
                 expected: format!("valid cond_br: {e}"),
                 loc: DiagLoc::span(self.loc()),
@@ -6440,7 +6440,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_punct(PunctKind::Comma, "',' between binop operands")?;
         let rhs_v = self.parse_value_no_type(state, ty)?;
 
-        // Vector operands take the erased builder. The typed `build_int_*`
+        // Vector operands take the erased builder. The typed `int_*`
         // family routes both operands through `IntoIntValue<W>`, whose
         // `IntWidth` marker describes a *scalar* width, so `<N x iM>` cannot
         // convert. Upstream has one path for both (`LLParser::parseArithmetic`
@@ -6450,7 +6450,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let name = result_name.as_str();
             let flags = int_binop_flags(nuw, nsw, exact, disjoint_or);
             let v = b
-                .build_int_binop_erased(op.opcode(), lhs_v, rhs_v, flags, name)
+                .int_binop_erased(op.opcode(), lhs_v, rhs_v, flags, name)
                 .map_err(|e| self.builder_err(op.mnemonic(), e))?;
             return Ok(b.view(v));
         }
@@ -6471,7 +6471,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if nsw {
                     flags = flags.nsw();
                 }
-                b.build_int_add_with_flags::<IntDyn, _, _, _>(lhs, rhs, flags, name)
+                b.int_add_with_flags::<IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("add", e))?
             }
             IntBinOp::Sub => {
@@ -6482,7 +6482,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if nsw {
                     flags = flags.nsw();
                 }
-                b.build_int_sub_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
+                b.int_sub_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("sub", e))?
             }
             IntBinOp::Mul => {
@@ -6493,7 +6493,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if nsw {
                     flags = flags.nsw();
                 }
-                b.build_int_mul_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
+                b.int_mul_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("mul", e))?
             }
             IntBinOp::Shl => {
@@ -6504,7 +6504,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if nsw {
                     flags = flags.nsw();
                 }
-                b.build_int_shl_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
+                b.int_shl_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("shl", e))?
             }
             IntBinOp::UDiv => {
@@ -6512,7 +6512,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if exact {
                     flags = flags.exact();
                 }
-                b.build_int_udiv_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
+                b.int_udiv_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("udiv", e))?
             }
             IntBinOp::SDiv => {
@@ -6520,7 +6520,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if exact {
                     flags = flags.exact();
                 }
-                b.build_int_sdiv_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
+                b.int_sdiv_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("sdiv", e))?
             }
             IntBinOp::LShr => {
@@ -6528,7 +6528,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if exact {
                     flags = flags.exact();
                 }
-                b.build_int_lshr_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
+                b.int_lshr_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("lshr", e))?
             }
             IntBinOp::AShr => {
@@ -6536,17 +6536,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if exact {
                     flags = flags.exact();
                 }
-                b.build_int_ashr_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
+                b.int_ashr_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("ashr", e))?
             }
             IntBinOp::URem => b
-                .build_int_urem::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
+                .int_urem::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
                 .map_err(|e| self.builder_err("urem", e))?,
             IntBinOp::SRem => b
-                .build_int_srem::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
+                .int_srem::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
                 .map_err(|e| self.builder_err("srem", e))?,
             IntBinOp::And => b
-                .build_int_and::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
+                .int_and::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
                 .map_err(|e| self.builder_err("and", e))?,
             IntBinOp::Or => {
                 let flags = if disjoint_or {
@@ -6554,11 +6554,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 } else {
                     OrFlags::new()
                 };
-                b.build_int_or_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
+                b.int_or_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("or", e))?
             }
             IntBinOp::Xor => b
-                .build_int_xor::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
+                .int_xor::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
                 .map_err(|e| self.builder_err("xor", e))?,
         };
         Ok(b.view(v).into_erased())
@@ -6601,7 +6601,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 llvmkit_ir::instr_types::IcmpFlags::new()
             };
             let r = b
-                .build_int_cmp_erased(pred, lhs_v, rhs_v, flags, name)
+                .int_cmp_erased(pred, lhs_v, rhs_v, flags, name)
                 .map_err(|e| self.builder_err("icmp", e))?;
             return Ok(b.view(r));
         }
@@ -6619,7 +6619,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             llvmkit_ir::instr_types::IcmpFlags::new()
         };
         let r = b
-            .build_int_cmp_with_flags_dyn(pred, lhs, rhs, flags, name)
+            .int_cmp_with_flags_dyn(pred, lhs, rhs, flags, name)
             .map_err(|e| self.builder_err("icmp", e))?;
         Ok(b.view(r).into_erased())
     }
@@ -6651,7 +6651,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let dst_ty = self.parse_type(false)?;
 
         // Vector operands take the erased builder, as in `parse_int_binop`.
-        // The typed `build_*_dyn` cast family routes the source through
+        // The typed `*_dyn` cast family routes the source through
         // `IntoIntValue<IntDyn>` and takes an `IntType` destination, both of
         // which describe a *scalar* width, so `<N x iM>` converts to neither.
         // Upstream has one path for both — `LLParser::parseCast` hands the
@@ -6662,7 +6662,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let flags = if trunc_nsw { flags.nsw() } else { flags };
             let flags = if zext_nneg { flags.nneg() } else { flags };
             let v = b
-                .build_int_cast_erased(op.cast_opcode(), src_v, dst_ty, flags, result_name.as_str())
+                .int_cast_erased(op.cast_opcode(), src_v, dst_ty, flags, result_name.as_str())
                 .map_err(|e| self.builder_err(op.mnemonic(), e))?;
             return Ok(b.view(v));
         }
@@ -6681,25 +6681,25 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let flags = if trunc_nuw { flags.nuw() } else { flags };
                 let flags = if trunc_nsw { flags.nsw() } else { flags };
                 if trunc_nuw || trunc_nsw {
-                    b.build_trunc_with_flags_dyn(src_int, dst_int, flags, name)
+                    b.trunc_with_flags_dyn(src_int, dst_int, flags, name)
                 } else {
-                    b.build_trunc_dyn(src_int, dst_int, name)
+                    b.trunc_dyn(src_int, dst_int, name)
                 }
                 .map_err(|e| self.builder_err("trunc", e))?
             }
             IntCast::ZExt => if zext_nneg {
-                b.build_zext_with_flags_dyn(
+                b.zext_with_flags_dyn(
                     src_int,
                     dst_int,
                     llvmkit_ir::instr_types::ZextFlags::new().nneg(),
                     name,
                 )
             } else {
-                b.build_zext_dyn(src_int, dst_int, name)
+                b.zext_dyn(src_int, dst_int, name)
             }
             .map_err(|e| self.builder_err("zext", e))?,
             IntCast::SExt => b
-                .build_sext_dyn(src_int, dst_int, name)
+                .sext_dyn(src_int, dst_int, name)
                 .map_err(|e| self.builder_err("sext", e))?,
         };
         Ok(b.view(v).into_erased())
@@ -6725,7 +6725,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return Err(self.expected("integer destination type for ptrtoint")),
         };
         let v = b
-            .build_ptr_to_int(src_ptr, dst_int, result_name.as_str())
+            .ptr_to_int(src_ptr, dst_int, result_name.as_str())
             .map_err(|e| self.builder_err("ptrtoint", e))?;
         Ok(b.view(v).into_erased())
     }
@@ -6750,7 +6750,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return Err(self.expected("pointer destination type for inttoptr")),
         };
         let v = b
-            .build_int_to_ptr(src_int, dst_ptr, result_name.as_str())
+            .int_to_ptr(src_int, dst_ptr, result_name.as_str())
             .map_err(|e| self.builder_err("inttoptr", e))?;
         Ok(b.view(v).into_erased())
     }
@@ -6768,7 +6768,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // Erased for the same reason as the binary operators below: a float
         // *vector* has no typed handle, `FloatKind` being scalar.
         let r = b
-            .build_fp_neg_erased(v, fmf, result_name.as_str())
+            .fp_neg_erased(v, fmf, result_name.as_str())
             .map_err(|e| self.builder_err("fneg", e))?;
         Ok(b.view(r))
     }
@@ -6800,7 +6800,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             FpBinOp::Rem => (llvmkit_ir::BinaryOpcode::FRem, "frem"),
         };
         let v = b
-            .build_fp_binop_erased(opcode, lhs_v, rhs_v, fmf, result_name.as_str())
+            .fp_binop_erased(opcode, lhs_v, rhs_v, fmf, result_name.as_str())
             .map_err(|e| self.builder_err(what, e))?;
         Ok(b.view(v))
     }
@@ -6841,7 +6841,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // Erased: a vector compare has neither a typed float operand nor a
         // typed `i1` result, so it can use neither half of the typed builder.
         let r = b
-            .build_fp_cmp_erased(pred, lhs_v, rhs_v, fmf, result_name.as_str())
+            .fp_cmp_erased(pred, lhs_v, rhs_v, fmf, result_name.as_str())
             .map_err(|e| self.builder_err("fcmp", e))?;
         Ok(b.view(r))
     }
@@ -6872,7 +6872,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .unwrap_or(MaybeAlign::NONE);
         let addr_space = self.parse_optional_comma_addrspace()?;
         let r = b
-            .build_alloca_dyn(ty, size, align, addr_space, flags, result_name.as_str())
+            .alloca_dyn(ty, size, align, addr_space, flags, result_name.as_str())
             .map_err(|e| self.builder_err("alloca", e))?;
         Ok(b.view(r).into_erased())
     }
@@ -6959,20 +6959,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let config = AtomicLoadConfig::new(ordering, sync_scope, align);
             let config = if volatile { config.volatile() } else { config };
             let v = b
-                .build_load_atomic(ty, ptr, config, result_name.as_str())
+                .load_atomic(ty, ptr, config, result_name.as_str())
                 .map_err(|e| self.builder_err("load", e))?;
             Ok(b.view(v))
         } else {
             let align = self.parse_optional_comma_align()?;
             let v = if volatile {
                 match align {
-                    Some(a) => b.build_load_volatile_with_align(ty, ptr, a, result_name.as_str()),
-                    None => b.build_load_volatile(ty, ptr, result_name.as_str()),
+                    Some(a) => b.load_volatile_with_align(ty, ptr, a, result_name.as_str()),
+                    None => b.load_volatile(ty, ptr, result_name.as_str()),
                 }
             } else {
                 match align {
-                    Some(a) => b.build_load_with_align(ty, ptr, a, result_name.as_str()),
-                    None => b.build_load(ty, ptr, result_name.as_str()),
+                    Some(a) => b.load_with_align(ty, ptr, a, result_name.as_str()),
+                    None => b.load(ty, ptr, result_name.as_str()),
                 }
             }
             .map_err(|e| self.builder_err("load", e))?;
@@ -7005,15 +7005,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let align = self.parse_align_val()?;
             let config = AtomicStoreConfig::new(ordering, sync_scope, align);
             let config = if volatile { config.volatile() } else { config };
-            b.build_store_atomic(val_v, ptr, config)
+            b.store_atomic(val_v, ptr, config)
                 .map_err(|e| self.builder_err("store", e))?;
         } else {
             let align = self.parse_optional_comma_align()?;
             match (volatile, align) {
-                (true, Some(a)) => b.build_store_volatile_with_align(val_v, ptr, a),
-                (true, None) => b.build_store_volatile(val_v, ptr),
-                (false, Some(a)) => b.build_store_with_align(val_v, ptr, a),
-                (false, None) => b.build_store(val_v, ptr),
+                (true, Some(a)) => b.store_volatile_with_align(val_v, ptr, a),
+                (true, None) => b.store_volatile(val_v, ptr),
+                (false, Some(a)) => b.store_with_align(val_v, ptr, a),
+                (false, None) => b.store(val_v, ptr),
             }
             .map_err(|e| self.builder_err("store", e))?;
         }
@@ -7065,7 +7065,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let name = result_name.as_str();
         let v = b
-            .build_gep_with_flags(source_ty, ptr, indices, flags, name)
+            .gep_with_flags(source_ty, ptr, indices, flags, name)
             .map_err(|e| self.builder_err("getelementptr", e))?;
         Ok(b.view(v).into_erased())
     }
@@ -7074,8 +7074,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// form alongside it. Mirrors `LLParser::parseSelect`.
     ///
     /// Construction goes through
-    /// [`llvmkit_ir::IrBuilder::build_select_erased`] for every arm category.
-    /// The typed [`llvmkit_ir::IrBuilder::build_select`] cannot express two of
+    /// [`llvmkit_ir::IrBuilder::select_erased`] for every arm category.
+    /// The typed [`llvmkit_ir::IrBuilder::select`] cannot express two of
     /// the shapes LLVM allows — a `<N x i1>` condition, which is no
     /// `IntValue<bool>`, and a vector arm, which no `SelectArm` marker
     /// describes — and its narrowing would be discarded here anyway, since
@@ -7132,7 +7132,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Ok(folded.into_erased());
         }
         let id = b
-            .build_select_erased(cond_value, true_v, false_v, result_name.as_str())
+            .select_erased(cond_value, true_v, false_v, result_name.as_str())
             .map_err(|e| self.builder_err("select", e))?;
         Ok(b.view(id))
     }
@@ -7160,10 +7160,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let name = result_name.as_str();
         let v = match op {
             FpToInt::FpToSI => b
-                .build_fp_to_si(src_fp, dst_int, name)
+                .fp_to_si(src_fp, dst_int, name)
                 .map_err(|e| self.builder_err("fptosi", e))?,
             FpToInt::FpToUI => b
-                .build_fp_to_ui(src_fp, dst_int, name)
+                .fp_to_ui(src_fp, dst_int, name)
                 .map_err(|e| self.builder_err("fptoui", e))?,
         };
         Ok(b.view(v).into_erased())
@@ -7193,19 +7193,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let name = result_name.as_str();
         let v = match op {
             IntToFp::SIToFp => b
-                .build_si_to_fp(src_int, dst_fp, name)
+                .si_to_fp(src_int, dst_fp, name)
                 .map_err(|e| self.builder_err("sitofp", e))?,
             IntToFp::UIToFp => {
                 if nneg {
-                    b.build_ui_to_fp_with_flags_dyn(
-                        src_int,
-                        dst_fp,
-                        UiToFpFlags::new().nneg(),
-                        name,
-                    )
-                    .map_err(|e| self.builder_err("uitofp", e))?
+                    b.ui_to_fp_with_flags_dyn(src_int, dst_fp, UiToFpFlags::new().nneg(), name)
+                        .map_err(|e| self.builder_err("uitofp", e))?
                 } else {
-                    b.build_ui_to_fp(src_int, dst_fp, name)
+                    b.ui_to_fp(src_int, dst_fp, name)
                         .map_err(|e| self.builder_err("uitofp", e))?
                 }
             }
@@ -7233,7 +7228,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return Err(self.expected("ptr destination for addrspacecast")),
         };
         let v = b
-            .build_addrspace_cast(src_ptr, dst_ptr, result_name.as_str())
+            .addrspace_cast(src_ptr, dst_ptr, result_name.as_str())
             .map_err(|e| self.builder_err("addrspacecast", e))?;
         Ok(b.view(v).into_erased())
     }
@@ -7241,7 +7236,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     // ── S3.2: new opcode parsers ──────────────────────────────────────────
 
     /// `bitcast <src-ty> <src-val> to <dst-ty>`. Mirrors `LLParser::parseCast`
-    /// `Instruction::BitCast` arm. Uses `build_bitcast_dyn` for the parser's
+    /// `Instruction::BitCast` arm. Uses `bitcast_dyn` for the parser's
     /// runtime-typed path.
     ///
     /// Upstream: `test/Assembler/bitcast.ll`.
@@ -7257,13 +7252,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let dst_ty = self.parse_type(false)?;
         let name = result_name.as_str();
         let v = b
-            .build_bitcast_dyn(src_v, dst_ty, name)
+            .bitcast_dyn(src_v, dst_ty, name)
             .map_err(|e| self.builder_err("bitcast", e))?;
         Ok(b.view(v))
     }
 
     /// `fptrunc <fp-ty> <val> to <fp-ty>`. Mirrors `LLParser::parseCast`
-    /// `Instruction::FPTrunc` arm. Uses `build_fp_trunc_dyn`.
+    /// `Instruction::FPTrunc` arm. Uses `fp_trunc_dyn`.
     ///
     /// Upstream: `test/Assembler/fptrunc.ll`.
     fn parse_fptrunc(
@@ -7284,13 +7279,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return Err(self.expected("float destination type for fptrunc")),
         };
         let v = b
-            .build_fp_trunc_dyn(sv, df, result_name.as_str())
+            .fp_trunc_dyn(sv, df, result_name.as_str())
             .map_err(|e| self.builder_err("fptrunc", e))?;
         Ok(b.view(v).into_erased())
     }
 
     /// `fpext <fp-ty> <val> to <fp-ty>`. Mirrors `LLParser::parseCast`
-    /// `Instruction::FPExt` arm. Uses `build_fp_ext_dyn`.
+    /// `Instruction::FPExt` arm. Uses `fp_ext_dyn`.
     ///
     /// Upstream: `test/Assembler/fpext.ll`.
     fn parse_fpext(
@@ -7311,7 +7306,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return Err(self.expected("float destination type for fpext")),
         };
         let v = b
-            .build_fp_ext_dyn(sv, df, result_name.as_str())
+            .fp_ext_dyn(sv, df, result_name.as_str())
             .map_err(|e| self.builder_err("fpext", e))?;
         Ok(b.view(v).into_erased())
     }
@@ -7331,7 +7326,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_keyword(Keyword::To, "'to' in ptrtoaddr")?;
         let dst_ty = self.parse_type(false)?;
         let v = b
-            .build_ptr_to_addr_dyn(src_v, dst_ty, result_name.as_str())
+            .ptr_to_addr_dyn(src_v, dst_ty, result_name.as_str())
             .map_err(|e| self.builder_err("ptrtoaddr", e))?;
         Ok(b.view(v))
     }
@@ -7355,7 +7350,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .try_into()
             .map_err(|_| self.expected("integer index for extractelement"))?;
         let v = b
-            .build_extract_element(vec_v, idx, result_name.as_str())
+            .extract_element(vec_v, idx, result_name.as_str())
             .map_err(|e| self.builder_err("extractelement", e))?;
         Ok(b.view(v))
     }
@@ -7382,7 +7377,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .try_into()
             .map_err(|_| self.expected("integer index for insertelement"))?;
         let v = b
-            .build_insert_element(vec_v, elt_v, idx, result_name.as_str())
+            .insert_element(vec_v, elt_v, idx, result_name.as_str())
             .map_err(|e| self.builder_err("insertelement", e))?;
         Ok(b.view(v))
     }
@@ -7407,7 +7402,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // Parse mask as the upstream typed constant operand.
         let mask = self.parse_shuffle_mask(v1_ty)?;
         let v = b
-            .build_shuffle_vector(v1, v2, &mask, result_name.as_str())
+            .shuffle_vector(v1, v2, &mask, result_name.as_str())
             .map_err(|e| self.builder_err("shufflevector", e))?;
         Ok(b.view(v))
     }
@@ -7468,7 +7463,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             indices.push(idx);
         }
         let v = b
-            .build_extract_value_dyn(agg_v, &indices, result_name.as_str())
+            .extract_value_dyn(agg_v, &indices, result_name.as_str())
             .map_err(|e| self.builder_err("extractvalue", e))?;
         Ok(b.view(v))
     }
@@ -7494,7 +7489,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             indices.push(idx);
         }
         let v = b
-            .build_insert_value_dyn(agg_v, elt_v, &indices, result_name.as_str())
+            .insert_value_dyn(agg_v, elt_v, &indices, result_name.as_str())
             .map_err(|e| self.builder_err("insertvalue", e))?;
         Ok(b.view(v))
     }
@@ -7520,25 +7515,25 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let phi_val = match ty.into_type_enum() {
             AnyTypeEnum::Int(int_ty) => {
                 let phi = b
-                    .build_int_phi_dyn(int_ty, name)
+                    .int_phi_dyn(int_ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
                 b.view(phi).to_erased()
             }
             AnyTypeEnum::Float(fp_ty) => {
                 let phi = b
-                    .build_fp_phi_dyn(fp_ty, name)
+                    .fp_phi_dyn(fp_ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
                 b.view(phi).to_erased()
             }
             AnyTypeEnum::Pointer(ptr_ty) => {
                 let phi = b
-                    .build_pointer_phi_in_addrspace(ptr_ty, name)
+                    .pointer_phi_in_addrspace(ptr_ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
                 b.view(phi).to_erased()
             }
             // The remaining first-class *data* types — vector, array, and
             // non-opaque struct — are legal phi result types. Route them through
-            // the erased `build_phi_dyn`; the type-checked incoming-add path is
+            // the erased `phi_dyn`; the type-checked incoming-add path is
             // unchanged. The `is_first_class` guard is what excludes an *opaque*
             // struct (no body, hence unsized): it is `AnyTypeEnum::Struct` but
             // not a valid phi result, and `Module::verify()` rejects it, so
@@ -7547,7 +7542,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if ty.is_first_class() =>
             {
                 let phi = b
-                    .build_phi_dyn(ty, name)
+                    .phi_dyn(ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
                 b.view(phi).to_erased()
             }
@@ -7847,13 +7842,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     return Err(self.expected("inline asm call without label constraints"));
                 }
                 let call = b
-                    .build_inline_asm_call::<llvmkit_ir::Dyn, _, _, _>(asm, args, name)
+                    .inline_asm_call::<llvmkit_ir::Dyn, _, _, _>(asm, args, name)
                     .map_err(|e| self.builder_err("call", e))?;
                 b.view(call).to_erased()
             }
             ParsedCallee::Indirect(callee) => {
                 let call = b
-                    .build_indirect_call_dyn::<llvmkit_ir::Dyn, _, _, _, _>(
+                    .indirect_call_dyn::<llvmkit_ir::Dyn, _, _, _, _>(
                         parsed_fn_ty,
                         callee,
                         args,
@@ -8126,7 +8121,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_punct(PunctKind::Comma, "',' in va_arg")?;
         let result_ty = self.parse_type(false)?;
         let v = b
-            .build_va_arg(list_ptr, result_ty, result_name.as_str())
+            .va_arg(list_ptr, result_ty, result_name.as_str())
             .map_err(|e| self.builder_err("va_arg", e))?;
         Ok(b.view(v).to_erased())
     }
@@ -8143,7 +8138,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let ty = self.parse_type(false)?;
         let v = self.parse_value(state, ty)?;
         let r = b
-            .build_freeze(v, result_name.as_str())
+            .freeze(v, result_name.as_str())
             .map_err(|e| self.builder_err("freeze", e))?;
         Ok(b.view(r).to_erased())
     }
@@ -8164,7 +8159,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_primitive(PrimitiveTy::Label, "'label' for switch default")?;
         let default_bb = self.parse_block_ref(state)?;
         let (_, mut sw) = b
-            .build_switch_dyn(cond_v, default_bb, "")
+            .switch_dyn(cond_v, default_bb, "")
             .map_err(|e| self.builder_err("switch", e))?;
         // Case list: `[ ty N, label %bb, ... ]`
         self.expect_punct(PunctKind::LSquare, "'[' to open switch case list")?;
@@ -8206,7 +8201,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .try_into()
             .map_err(|_| self.expected("ptr-typed indirectbr address"))?;
         let (_, mut ibr) = b
-            .build_indirectbr(addr, "")
+            .indirectbr(addr, "")
             .map_err(|e| self.builder_err("indirectbr", e))?;
         // Destination list: `[ label %dest, ... ]`
         self.expect_punct(
@@ -8237,7 +8232,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let sync_scope = self.parse_optional_syncscope()?;
         let ordering = self.parse_atomic_ordering("fence ordering")?;
         let _ = b
-            .build_fence(ordering, sync_scope, "")
+            .fence(ordering, sync_scope, "")
             .map_err(|e| self.builder_err("fence", e))?;
         Ok(())
     }
@@ -8284,7 +8279,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             config = config.volatile();
         }
         let v = b
-            .build_atomic_cmpxchg(ptr, cmp_v, new_v, config, result_name.as_str())
+            .atomic_cmpxchg(ptr, cmp_v, new_v, config, result_name.as_str())
             .map_err(|e| self.builder_err("cmpxchg", e))?;
         Ok(b.view(v).to_erased())
     }
@@ -8323,7 +8318,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             config = config.volatile();
         }
         let v = b
-            .build_atomicrmw(op, ptr, val_v, config, result_name.as_str())
+            .atomicrmw(op, ptr, val_v, config, result_name.as_str())
             .map_err(|e| self.builder_err("atomicrmw", e))?;
         let v = b.view(v);
         if let Some((val_ref, loc)) = deferred_value {
@@ -8384,7 +8379,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let result_ty = self.parse_type(false)?;
         let cleanup = self.eat_keyword(Keyword::Cleanup)?;
         let mut lp = b
-            .build_landingpad(result_ty, cleanup, result_name.as_str())
+            .landingpad(result_ty, cleanup, result_name.as_str())
             .map_err(|e| self.builder_err("landingpad", e))?;
         // Parse clauses: `catch <ty> <val>` | `filter <array-ty> <val>`
         loop {
@@ -8425,8 +8420,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let parent_pad = self.parse_optional_pad_token(state)?;
         let args = self.parse_bracket_value_list(state)?;
         let v = match parent_pad {
-            Some(parent) => b.build_cleanup_pad(parent, args, result_name.as_str()),
-            None => b.build_cleanup_pad_within_none(args, result_name.as_str()),
+            Some(parent) => b.cleanup_pad(parent, args, result_name.as_str()),
+            None => b.cleanup_pad_within_none(args, result_name.as_str()),
         }
         .map_err(|e| self.builder_err("cleanuppad", e))?;
         Ok(v.to_erased())
@@ -8447,7 +8442,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let parent_v = self.parse_value(state, parent_ty)?;
         let args = self.parse_bracket_value_list(state)?;
         let v = b
-            .build_catch_pad(parent_v, args, result_name.as_str())
+            .catch_pad(parent_v, args, result_name.as_str())
             .map_err(|e| self.builder_err("catchpad", e))?;
         Ok(v.to_erased())
     }
@@ -8463,9 +8458,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<()> {
         let ty = self.parse_type(false)?;
         let v = self.parse_value(state, ty)?;
-        let _ = b
-            .build_resume(v, "")
-            .map_err(|e| self.builder_err("resume", e))?;
+        let _ = b.resume(v, "").map_err(|e| self.builder_err("resume", e))?;
         Ok(())
     }
 
@@ -8496,8 +8489,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             None
         };
         let _ = match unwind_dest {
-            Some(dest) => b.build_cleanup_ret(pad_v, dest, ""),
-            None => b.build_cleanup_ret_to_caller(pad_v, ""),
+            Some(dest) => b.cleanup_ret(pad_v, dest, ""),
+            None => b.cleanup_ret_to_caller(pad_v, ""),
         }
         .map_err(|e| self.builder_err("cleanupret", e))?;
         Ok(())
@@ -8519,7 +8512,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_primitive(PrimitiveTy::Label, "'label' in catchret destination")?;
         let dest = self.parse_block_ref(state)?;
         let _ = b
-            .build_catch_ret(pad_v, dest, "")
+            .catch_ret(pad_v, dest, "")
             .map_err(|e| self.builder_err("catchret", e))?;
         Ok(())
     }
@@ -8565,10 +8558,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let name = result_name.as_str();
         let (_, mut cs) = match (parent_pad, unwind_dest) {
-            (Some(parent), Some(dest)) => b.build_catch_switch(parent, dest, name),
-            (Some(parent), None) => b.build_catch_switch_to_caller(parent, name),
-            (None, Some(dest)) => b.build_catch_switch_within_none(dest, name),
-            (None, None) => b.build_catch_switch_within_none_to_caller(name),
+            (Some(parent), Some(dest)) => b.catch_switch(parent, dest, name),
+            (Some(parent), None) => b.catch_switch_to_caller(parent, name),
+            (None, Some(dest)) => b.catch_switch_within_none(dest, name),
+            (None, None) => b.catch_switch_within_none_to_caller(name),
         }
         .map_err(|e| self.builder_err("catchswitch", e))?;
         for h in handlers {
@@ -8648,7 +8641,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let name = result_name.as_str();
         let (_, inst) = match callee {
             ParsedCallee::Function(callee) => b
-                .build_invoke_dyn_with_config(
+                .invoke_dyn_with_config(
                     callee,
                     args,
                     normal_bb,
@@ -8663,7 +8656,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if asm.label_constraint_count() != 0 {
                     return Err(self.expected("inline asm call without label constraints"));
                 }
-                b.build_inline_asm_invoke_with_config::<llvmkit_ir::Dyn, _, _, _, _>(
+                b.inline_asm_invoke_with_config::<llvmkit_ir::Dyn, _, _, _, _>(
                     asm,
                     args,
                     normal_bb,
@@ -8675,7 +8668,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .map_err(|e| self.builder_err("invoke", e))?
             }
             ParsedCallee::Indirect(callee_ptr) => b
-                .build_indirect_invoke_dyn_with_config::<llvmkit_ir::Dyn, _, _, _, _, _>(
+                .indirect_invoke_dyn_with_config::<llvmkit_ir::Dyn, _, _, _, _, _>(
                     callee_ptr,
                     parsed_fn_ty,
                     args,
@@ -8787,7 +8780,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let name = result_name.as_str();
         let (_, inst) = match callee {
             ParsedCallee::Function(callee) => b
-                .build_callbr_with_config(
+                .callbr_with_config(
                     callee,
                     args,
                     fallthrough,
@@ -8804,7 +8797,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         "inline asm callbr label constraint count matches indirect labels",
                     ));
                 }
-                b.build_inline_asm_callbr_with_config::<llvmkit_ir::Dyn, _, _, _, _, _>(
+                b.inline_asm_callbr_with_config::<llvmkit_ir::Dyn, _, _, _, _, _>(
                     asm,
                     args,
                     fallthrough,
@@ -9707,7 +9700,7 @@ enum IntToFp {
 
 /// Alias for the dyn-positioned, dyn-return IrBuilder we drive while
 /// emitting one block's instructions. The terminator-emitting calls
-/// (`build_ret` / `build_br` / etc.) take this by value, so the parser
+/// (`ret` / `br` / etc.) take this by value, so the parser
 /// stores it inside an `Option<Self>` for the duration of the block.
 type ParsedBlockBuilder<'m, 'ctx, B> = IrBuilder<'m, 'ctx, B, NoFolder, Positioned, Dyn>;
 

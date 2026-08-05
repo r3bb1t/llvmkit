@@ -22,8 +22,8 @@ fn ptrtoint_emits_canonical_form() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_ptr_to_int(arg, i64_ty, "y")?;
-    b.build_ret(r)?;
+    let r = b.ptr_to_int(arg, i64_ty, "y")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%y = ptrtoint ptr %0 to i64"), "got:\n{text}");
     Ok(())
@@ -41,8 +41,8 @@ fn inttoptr_emits_canonical_form() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: llvmkit_ir::IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_int_to_ptr(arg, ptr_ty, "y")?;
-    b.build_ret(r)?;
+    let r = b.int_to_ptr(arg, ptr_ty, "y")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%y = inttoptr i64 %0 to ptr"), "got:\n{text}");
     Ok(())
@@ -63,8 +63,8 @@ fn addrspacecast_emits_canonical_form() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_addrspace_cast(arg, ptr1, "y")?;
-    b.build_ret(r)?;
+    let r = b.addrspace_cast(arg, ptr1, "y")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%y = addrspacecast ptr %0 to ptr addrspace(1)"),

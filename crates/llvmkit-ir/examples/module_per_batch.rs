@@ -50,8 +50,8 @@ pub fn compile_batch<B: ModuleBrand>(
 
     let b = IrBuilder::new_for::<llvmkit_ir::Dyn>(&module).position_at_end(entry);
     let x: llvmkit_ir::IntValue<'_, i32, _> = module.view(f).param(0)?.try_into()?;
-    let sum = b.build_int_add(x, n, "sum")?;
-    b.build_ret(module.view(sum))?;
+    let sum = b.int_add(x, n, "sum")?;
+    b.ret(module.view(sum))?;
 
     module.verify()
 }

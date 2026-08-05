@@ -23,13 +23,13 @@ fn module_for(op: &str) -> Result<String, IrError> {
     let x: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let y: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = match op {
-        "udiv" => b.build_int_udiv(x, y, "z")?,
-        "sdiv" => b.build_int_sdiv(x, y, "z")?,
-        "urem" => b.build_int_urem(x, y, "z")?,
-        "srem" => b.build_int_srem(x, y, "z")?,
+        "udiv" => b.int_udiv(x, y, "z")?,
+        "sdiv" => b.int_sdiv(x, y, "z")?,
+        "urem" => b.int_urem(x, y, "z")?,
+        "srem" => b.int_srem(x, y, "z")?,
         _ => unreachable!(),
     };
-    b.build_ret(r)?;
+    b.ret(r)?;
     Ok(format!("{m}"))
 }
 
@@ -78,8 +78,8 @@ fn udiv_exact() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
-    let r = b.build_int_udiv_with_flags(lhs, rhs, UDivFlags::new().exact(), "z")?;
-    b.build_ret(r)?;
+    let r = b.int_udiv_with_flags(lhs, rhs, UDivFlags::new().exact(), "z")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%z = udiv exact i64 %0, %1"), "got:\n{text}");
     Ok(())
@@ -96,8 +96,8 @@ fn sdiv_exact() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
-    let r = b.build_int_sdiv_with_flags(lhs, rhs, SDivFlags::new().exact(), "z")?;
-    b.build_ret(r)?;
+    let r = b.int_sdiv_with_flags(lhs, rhs, SDivFlags::new().exact(), "z")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%z = sdiv exact i64 %0, %1"), "got:\n{text}");
     Ok(())
@@ -106,5 +106,5 @@ fn sdiv_exact() -> Result<(), IrError> {
 // `urem` / `srem` accept no flags. There is no `URemFlags` /
 // `SRemFlags` type, so the bug "exact on urem" is unspellable. The
 // previous `exact_on_urem_rejected` runtime test is replaced by the
-// type system itself; attempting `b.build_int_urem_with_flags(...)` is
+// type system itself; attempting `b.int_urem_with_flags(...)` is
 // a method-not-found compile error.

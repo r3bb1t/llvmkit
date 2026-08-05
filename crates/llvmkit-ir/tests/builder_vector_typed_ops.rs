@@ -1,5 +1,5 @@
-//! Coverage for the TYPED vector-op builders (`build_vec_int_*`,
-//! `build_vec_extract` / `build_vec_insert` / `build_vec_splat`), which
+//! Coverage for the TYPED vector-op builders (`vector_int_*`,
+//! `vector_extract` / `vector_insert` / `vector_splat`), which
 //! carry the element marker `E` and lane-count marker `L` in the type
 //! system. They lower into the erased builders, so their emitted IR is
 //! byte-for-byte identical to the erased family's — this file locks the
@@ -13,7 +13,7 @@
 use llvmkit_ir::{Dyn, IntValue, IrBuilder, Len, Linkage, VectorValue, module_new};
 
 /// The typed `<2 x i64>` binops emit the same element-wise IR as the erased
-/// `build_int_*_dyn` family (golden strings ported from
+/// `int_*_dyn` family (golden strings ported from
 /// `builder_vector_binop_dyn.rs::vector_binops_emit_elementwise_ir`), but now
 /// a length/element mismatch would be a compile error rather than a verifier
 /// diagnostic.
@@ -53,8 +53,8 @@ fn typed_vector_binops_match_dyn_golden() {
 
     // Both operands are `VectorValue<i64, Len<2>>`; a width/length
     // mismatch here would not compile.
-    let x = b.build_vec_int_xor(a, c, "x").expect("xor vec");
-    let s = b.build_vec_int_add(x, a, "s").expect("add vec");
+    let x = b.vector_int_xor(a, c, "x").expect("xor vec");
+    let s = b.vector_int_add(x, a, "s").expect("add vec");
 
     let two = i64_ty.const_int(2i64);
     let shamt_const = vec_ty
@@ -62,9 +62,9 @@ fn typed_vector_binops_match_dyn_golden() {
         .expect("shamt vec");
     let shamt: VectorValue<'_, i64, Len<2>, _> =
         shamt_const.into_erased().try_into().expect("narrow shamt");
-    let _sh = b.build_vec_int_shl(s, shamt, "sh").expect("shl vec");
+    let _sh = b.vector_int_shl(s, shamt, "sh").expect("shl vec");
 
-    b.build_ret_void().expect("ret void");
+    b.ret_void().expect("ret void");
 
     let txt = format!("{m}");
     assert!(
@@ -81,7 +81,7 @@ fn typed_vector_binops_match_dyn_golden() {
     );
 }
 
-/// `build_vec_extract` returns the element as its statically typed scalar
+/// `vector_extract` returns the element as its statically typed scalar
 /// handle — for a `<2 x i64>` that is `IntValue<'_, i64>`, inferred from the
 /// vector's element marker with no turbofish. The `let`-binding annotation is
 /// the type assertion: it compiles only if the return type is exactly that.
@@ -108,11 +108,11 @@ fn typed_extract_returns_typed_element() {
 
     // Return type inferred from `a`'s element marker: `IntValue<'_, i64>`.
     let e: IntValue<'_, i64, _> = b
-        .build_vec_extract(a, i64_ty.const_int(0_i64), "e")
+        .vector_extract(a, i64_ty.const_int(0_i64), "e")
         .expect("extract");
     assert_eq!(e.ty(), i64_ty, "extracted element must be i64-typed");
 
-    b.build_ret(e).expect("ret");
+    b.ret(e).expect("ret");
 
     let txt = format!("{m}");
     assert!(
@@ -121,7 +121,7 @@ fn typed_extract_returns_typed_element() {
     );
 }
 
-/// `build_vec_splat` broadcasts an `i32` scalar across a statically-sized
+/// `vector_splat` broadcasts an `i32` scalar across a statically-sized
 /// `<4 x i32>` vector. `E`/`L` are pinned by the result annotation (`E` cannot
 /// be inferred from the scalar — Rust does not invert the `E::Value`
 /// projection); `scalar: E::Value` then checks the scalar is an `IntValue<i32>`.
@@ -146,10 +146,10 @@ fn typed_splat_element_from_scalar_length_free() {
 
     // Element `i32` and length `Len<4>` come from the result annotation;
     // `scalar: E::Value` then checks the scalar is an `IntValue<i32>`.
-    let sp: VectorValue<'_, i32, Len<4>, _> = b.build_vec_splat(scalar, "sp").expect("splat");
+    let sp: VectorValue<'_, i32, Len<4>, _> = b.vector_splat(scalar, "sp").expect("splat");
     let _ = sp.into_erased();
 
-    b.build_ret_void().expect("ret void");
+    b.ret_void().expect("ret void");
 
     let txt = format!("{m}");
     assert!(

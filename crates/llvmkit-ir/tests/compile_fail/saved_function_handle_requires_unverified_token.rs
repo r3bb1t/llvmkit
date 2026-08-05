@@ -8,7 +8,7 @@ fn main() -> IrResult<()> {
     let entry = function.append_basic_block(&module, "entry");
     IrBuilder::new_for::<Dyn>(&module)
         .position_at_end(entry)
-        .build_ret_void()?;
+        .ret_void()?;
 
     let _verified = module.verify()?;
     function.set_linkage(&module, Linkage::Internal);

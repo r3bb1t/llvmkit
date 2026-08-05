@@ -25,8 +25,8 @@ fn extract_value_struct_field0() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let up = m.view(f).param(0)?;
-    let _ = b.build_extract_value(up, [0u32], "")?;
-    b.build_ret_void()?;
+    let _ = b.extract_value(up, [0u32], "")?;
+    b.ret_void()?;
     let text = format!("{m}");
     // Mirrors `; CHECK: extractvalue { i8, i32 } %up, 0` (line 1550).
     assert!(
@@ -49,8 +49,8 @@ fn extract_value_array_index() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arr = m.view(f).param(0)?;
-    let _ = b.build_extract_value(arr, [2u32], "")?;
-    b.build_ret_void()?;
+    let _ = b.extract_value(arr, [2u32], "")?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("extractvalue [3 x i8] %0, 2\n"),
@@ -75,8 +75,8 @@ fn extract_value_nested_indices() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n = m.view(f).param(0)?;
-    let _ = b.build_extract_value(n, [1u32, 0u32], "")?;
-    b.build_ret_void()?;
+    let _ = b.extract_value(n, [1u32, 0u32], "")?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("extractvalue { i8, { i32 } } %0, 1, 0\n"),
@@ -86,9 +86,9 @@ fn extract_value_nested_indices() -> Result<(), IrError> {
 }
 
 /// Mirrors `ExtractValueInst::init` (`lib/IR/Instructions.cpp`): LLVM rejects
-/// `extractvalue` with an empty index list. The typed `build_extract_value`
+/// `extractvalue` with an empty index list. The typed `extract_value`
 /// upgrades this to a compile-time `const { assert!(N > 0) }` failure (see
-/// `tests/compile_fail/extract_value_empty_indices.rs`); `build_extract_value_dyn`
+/// `tests/compile_fail/extract_value_empty_indices.rs`); `extract_value_dyn`
 /// keeps the runtime check for slice/`Vec`-driven index lists, ported from
 /// the assembler diagnostic in `test/Assembler/extractvalue-no-idx.ll`.
 #[test]
@@ -104,7 +104,7 @@ fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let up = m.view(f).param(0)?;
     let err = b
-        .build_extract_value_dyn(up, &[], "bad")
+        .extract_value_dyn(up, &[], "bad")
         .expect_err("empty extractvalue indices must be rejected");
     assert_eq!(
         err,
@@ -113,7 +113,7 @@ fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
         }
     );
     assert_eq!(b.insert_block().instructions().len(), 0);
-    b.build_ret_void()?;
+    b.ret_void()?;
     Ok(())
 }
 
@@ -135,14 +135,14 @@ fn extract_value_rejects_out_of_range_array_index() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let undef = arr_ty.as_type().get_undef();
     let err = b
-        .build_extract_value(undef, [0u32], "")
+        .extract_value(undef, [0u32], "")
         .expect_err("index 0 into a 0-element array must be rejected");
     assert_eq!(
         err,
         IrError::AggregateIndexOutOfRange { index: 0, count: 0 }
     );
     assert_eq!(b.insert_block().instructions().len(), 0);
-    b.build_ret_void()?;
+    b.ret_void()?;
     Ok(())
 }
 
@@ -165,14 +165,14 @@ fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let undef = s_ty.as_type().get_undef();
     let err = b
-        .build_extract_value(undef, [2u32], "")
+        .extract_value(undef, [2u32], "")
         .expect_err("index 2 into a 2-field struct must be rejected");
     assert_eq!(
         err,
         IrError::AggregateIndexOutOfRange { index: 2, count: 2 }
     );
     assert_eq!(b.insert_block().instructions().len(), 0);
-    b.build_ret_void()?;
+    b.ret_void()?;
     Ok(())
 }
 
@@ -195,8 +195,8 @@ fn insert_value_struct_field0() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let up = m.view(f).param(0)?;
     let one = i8_ty.const_int(1_i8);
-    let _ = b.build_insert_value(up, one, [0u32], "")?;
-    b.build_ret_void()?;
+    let _ = b.insert_value(up, one, [0u32], "")?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("insertvalue { i8, i32 } %0, i8 1, 0\n"),
@@ -219,8 +219,8 @@ fn insert_value_array_index_zero() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arr = m.view(f).param(0)?;
     let zero = i8_ty.const_int(0_i8);
-    let _ = b.build_insert_value(arr, zero, [0u32], "")?;
-    b.build_ret_void()?;
+    let _ = b.insert_value(arr, zero, [0u32], "")?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("insertvalue [3 x i8] %0, i8 0, 0\n"),
@@ -230,10 +230,10 @@ fn insert_value_array_index_zero() -> Result<(), IrError> {
 }
 
 /// Mirrors `InsertValueInst::init` (`lib/IR/Instructions.cpp`): LLVM rejects
-/// `insertvalue` with an empty index list. The typed `build_insert_value`
+/// `insertvalue` with an empty index list. The typed `insert_value`
 /// upgrades this to a compile-time `const { assert!(N > 0) }` failure (see
 /// `tests/compile_fail/extract_value_empty_indices.rs` for the shared
-/// pattern); `build_insert_value_dyn` keeps the runtime check for
+/// pattern); `insert_value_dyn` keeps the runtime check for
 /// slice/`Vec`-driven index lists, ported from the assembler diagnostic in
 /// `test/Assembler/extractvalue-no-idx.ll`.
 #[test]
@@ -249,7 +249,7 @@ fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let up = m.view(f).param(0)?;
     let err = b
-        .build_insert_value_dyn(up, up, &[], "bad")
+        .insert_value_dyn(up, up, &[], "bad")
         .expect_err("empty insertvalue indices must be rejected");
     assert_eq!(
         err,
@@ -258,7 +258,7 @@ fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
         }
     );
     assert_eq!(b.insert_block().instructions().len(), 0);
-    b.build_ret_void()?;
+    b.ret_void()?;
     Ok(())
 }
 
@@ -282,8 +282,8 @@ fn extract_element_vector_i8_index() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let vec = m.view(f).param(0)?;
     let zero = i8_ty.const_int(0_i8);
-    let _ = b.build_extract_element(vec, zero, "")?;
-    b.build_ret_void()?;
+    let _ = b.extract_element(vec, zero, "")?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("extractelement <4 x float> %0, i8 0\n"),
@@ -312,8 +312,8 @@ fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
     let vec = m.view(f).param(0)?;
     let three_five = f32_ty.const_float(3.5_f32);
     let zero = i8_ty.const_int(0_i8);
-    let _ = b.build_insert_element(vec, three_five, zero, "")?;
-    b.build_ret_void()?;
+    let _ = b.insert_element(vec, three_five, zero, "")?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("insertelement <4 x float> %0, float 3.500000e+00, i8 0\n"),
@@ -345,8 +345,8 @@ fn shuffle_vector_zeroinitializer_mask() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v0 = m.view(f).param(0)?;
     let v1 = m.view(f).param(1)?;
-    let _ = b.build_shuffle_vector(v0, v1, &[Lane(0), Lane(0)], "")?;
-    b.build_ret_void()?;
+    let _ = b.shuffle_vector(v0, v1, &[Lane(0), Lane(0)], "")?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("shufflevector <4 x float> %0, <4 x float> %1, <2 x i32> zeroinitializer\n"),
@@ -378,8 +378,8 @@ fn shuffle_vector_explicit_mask_print() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v0 = m.view(f).param(0)?;
     let v1 = m.view(f).param(1)?;
-    let _ = b.build_shuffle_vector(v0, v1, &[Lane(1), Lane(1), Lane(0), Lane(0)], "")?;
-    b.build_ret_void()?;
+    let _ = b.shuffle_vector(v0, v1, &[Lane(1), Lane(1), Lane(0), Lane(0)], "")?;
+    b.ret_void()?;
     let text = format!("{m}");
     // Asserts the canonical `<<N> x i32> <i32 e0, ...>` body that the
     // upstream `printShuffleMask` produces for non-zero, non-poison masks.

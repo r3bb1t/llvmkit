@@ -3,7 +3,7 @@
 //! Closest upstream behaviour: `CallInst::init`'s "Calling a function with a
 //! bad signature!" assertion (`lib/IR/Instructions.cpp`) and
 //! `Verifier::visitCallBase`'s per-argument type check reject a
-//! wrong-typed call argument *at runtime*. llvmkit's typed `build_call`
+//! wrong-typed call argument *at runtime*. llvmkit's typed `call`
 //! pushes that same invariant into the Rust type system via the
 //! `IntoCallArg<'ctx, P, B>` bound on each call-argument position.
 //!
@@ -63,5 +63,5 @@ fn main() {
     // `IntoCallArg` itself as unsatisfied and its on_unimplemented
     // message fires.
     let bogus = String::from("not a value");
-    let _ = b.build_call(callee, (bogus, x), "bad");
+    let _ = b.call(callee, (bogus, x), "bad");
 }

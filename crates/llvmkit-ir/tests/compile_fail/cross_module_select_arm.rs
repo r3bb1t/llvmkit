@@ -30,7 +30,7 @@ fn main() {
     let left_builder = IrBuilder::new_for::<i32>(&left).position_at_end(entry);
     let left_arm = left_builder.view(
         left_builder
-            .build_int_add(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "left")
+            .int_add(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "left")
             .unwrap(),
     );
 
@@ -45,8 +45,8 @@ fn main() {
     let entry = right.view(f).append_basic_block(&right, "entry");
     let builder = IrBuilder::new_for::<i32>(&right).position_at_end(entry);
     let right_arm = builder
-        .build_int_add(i32_ty.const_int(3_i32), i32_ty.const_int(4_i32), "right")
+        .int_add(i32_ty.const_int(3_i32), i32_ty.const_int(4_i32), "right")
         .unwrap();
     let right_arm = builder.view(right_arm);
-    let _ = builder.build_select(cond, left_arm, right_arm, "bad");
+    let _ = builder.select(cond, left_arm, right_arm, "bad");
 }

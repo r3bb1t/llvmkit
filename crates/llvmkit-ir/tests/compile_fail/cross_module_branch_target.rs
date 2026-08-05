@@ -34,5 +34,5 @@ fn main() {
         .as_function();
     let entry = right.view(f).append_basic_block(&right, "entry");
     let builder = IrBuilder::new_for::<()>(&right).position_at_end(entry);
-    let _ = builder.build_br(left_target);
+    let _ = builder.br(left_target);
 }

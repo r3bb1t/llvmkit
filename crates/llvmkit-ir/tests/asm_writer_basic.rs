@@ -25,8 +25,8 @@ fn module_prints_simple_add_function() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let sum = b.build_int_add(lhs, rhs, "sum")?;
-    b.build_ret(sum)?;
+    let sum = b.int_add(lhs, rhs, "sum")?;
+    b.ret(sum)?;
 
     let text = format!("{m}");
     let expected = "; ModuleID = 'demo'\n\
@@ -57,7 +57,7 @@ fn module_prints_blank_line_between_type_identities_and_first_function() -> Resu
     let entry = m.view(f).append_basic_block(&m, "entry");
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_ret_void()?;
+        .ret_void()?;
 
     let expected = "; ModuleID = 'type_separator'\n\
         \n\
@@ -83,8 +83,8 @@ fn dollar_names_print_without_quotes() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry$bb");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let sum = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "sum$value")?;
-    b.build_ret(sum)?;
+    let sum = b.int_add::<i32, _, _, _>(arg, 1_i32, "sum$value")?;
+    b.ret(sum)?;
 
     let text = format!("{m}");
     assert!(text.contains("define i32 @foo$bar(i32 %0)"), "{text}");
@@ -108,8 +108,8 @@ fn function_local_names_share_argument_block_and_instruction_namespace() -> Resu
     let entry_name = entry.name();
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let result = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "entry")?;
-    b.build_ret(result)?;
+    let result = b.int_add::<i32, _, _, _>(arg, 1_i32, "entry")?;
+    b.ret(result)?;
 
     assert_eq!(m.view(f).param(0)?.name().as_deref(), Some("entry"));
     assert_eq!(entry_name.as_deref(), Some("entry1"));
@@ -139,11 +139,11 @@ fn set_name_reinserts_and_frees_old_binding() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    let first = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "tmp")?;
-    let second = b.build_int_add::<i32, _, _, _>(first, 1_i32, "other")?;
+    let first = b.int_add::<i32, _, _, _>(arg, 1_i32, "tmp")?;
+    let second = b.int_add::<i32, _, _, _>(first, 1_i32, "other")?;
     b.view(second).set_name(&m, "tmp");
-    let third = b.build_int_add::<i32, _, _, _>(second, first, "other")?;
-    b.build_ret(third)?;
+    let third = b.int_add::<i32, _, _, _>(second, first, "other")?;
+    b.ret(third)?;
 
     assert_eq!(m.view(second).name().as_deref(), Some("tmp1"));
     assert_eq!(m.view(third).name().as_deref(), Some("other"));
@@ -173,16 +173,16 @@ fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a = i32_ty.const_int(40_i32);
     let bb = i32_ty.const_int(2_i32);
-    // build_int_add on two constants: the folder produces a constant.
-    // We feed it through build_int_add to exercise the fold path; the
+    // int_add on two constants: the folder produces a constant.
+    // We feed it through int_add to exercise the fold path; the
     // folded value reaches the `ret` operand directly with no `add`
     // instruction emitted.
-    let folded = b.build_int_add(
+    let folded = b.int_add(
         IntValue::<i32, _>::try_from(a.into_erased())?,
         IntValue::<i32, _>::try_from(bb.into_erased())?,
         "sum",
     )?;
-    b.build_ret(folded)?;
+    b.ret(folded)?;
 
     let text = format!("{m}");
     // The folded value is a constant; it should print as `42`.
@@ -204,7 +204,7 @@ fn function_print_standalone_matches_module_section() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    b.build_ret(arg)?;
+    b.ret(arg)?;
 
     let standalone = format!("{}", m.view(f));
     let module = format!("{m}");
@@ -242,7 +242,7 @@ fn unnamed_basic_block_uses_slot_label() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    b.build_ret(arg)?;
+    b.ret(arg)?;
     let text = format!("{m}");
     // Block 0 (the only block) should label as `1:` because slot 0 is
     // claimed by the unnamed argument %0.

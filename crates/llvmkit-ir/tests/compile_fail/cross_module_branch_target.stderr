@@ -1,8 +1,8 @@
 error[E0277]: the trait bound `llvmkit_ir::BasicBlock<'_, (), Unterminated, Left>: IntoBasicBlockLabel<'_, (), Right>` is not satisfied
-  --> tests/compile_fail/cross_module_branch_target.rs:37:30
+  --> tests/compile_fail/cross_module_branch_target.rs:37:24
    |
-37 |     let _ = builder.build_br(left_target);
-   |                     -------- ^^^^^^^^^^^ the trait `IntoBasicBlockLabel<'_, (), Right>` is not implemented for `llvmkit_ir::BasicBlock<'_, (), Unterminated, Left>`
+37 |     let _ = builder.br(left_target);
+   |                     -- ^^^^^^^^^^^ the trait `IntoBasicBlockLabel<'_, (), Right>` is not implemented for `llvmkit_ir::BasicBlock<'_, (), Unterminated, Left>`
    |                     |
    |                     required by a bound introduced by this call
    |
@@ -26,11 +26,11 @@ help: the following other types implement trait `IntoBasicBlockLabel<'ctx, R, B>
    | |     B: ModuleBrand + 'ctx,
    | |     Params: BlockParams,
    | |________________________^ `&llvmkit_ir::BasicBlock<'_, R, Term, B, Params>`
-note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::build_br`
+note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::br`
   --> src/ir_builder.rs
    |
-   |     pub fn build_br<T>(self, target: T) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
-   |            -------- required by a bound in this associated function
+   |     pub fn br<T>(self, target: T) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
+   |            -- required by a bound in this associated function
    |     where
    |         T: IntoBasicBlockLabel<'ctx, R, B>,
-   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::build_br`
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::br`

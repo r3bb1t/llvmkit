@@ -86,7 +86,7 @@ fn a_scalable_undef_splat_prints_as_a_splat() {
 ///
 /// The float half is a `ret` rather than an `fadd` because the parser cannot
 /// yet read a vector floating-point binary operator — the FP mirror of the
-/// integer gap `build_int_binop_erased` closed. Recorded in
+/// integer gap `int_binop_erased` closed. Recorded in
 /// `docs/future-work.md`; it is unrelated to printing, and routing around it
 /// keeps this case about the splat rule.
 #[test]

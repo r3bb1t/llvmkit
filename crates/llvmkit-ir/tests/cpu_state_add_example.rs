@@ -7,7 +7,7 @@
 //! function building via IrBuilder).
 //!
 //! The example exercises every Phase A3 + Phase D-lite + Phase C
-//! `build_trunc` deliverable in one place. If this test ever diverges
+//! `trunc` deliverable in one place. If this test ever diverges
 //! from the example, one of them is wrong.
 
 use llvmkit_ir::module_new;

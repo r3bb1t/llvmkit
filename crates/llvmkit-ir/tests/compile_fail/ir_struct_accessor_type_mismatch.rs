@@ -22,6 +22,6 @@ fn main() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
     let (point,) = m.view(f).params();
     expects_pointer(point.x(&b)?);
-    b.build_ret_void();
+    b.ret_void();
     Ok(())
 }

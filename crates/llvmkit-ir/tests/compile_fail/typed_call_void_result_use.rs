@@ -6,7 +6,7 @@
 //! optimized builds that skip verification). llvmkit's typed
 //! `TypedCallInst::result()` narrows a void callee's result to an actual
 //! `()` value via the `CallResult` GAT -- `()` does not implement
-//! `IntoIntValue<'_, i32, _>`, so feeding it into `build_int_add` is a
+//! `IntoIntValue<'_, i32, _>`, so feeding it into `int_add` is a
 //! compile error, not a runtime/UB path.
 
 use llvmkit_ir::{IrBuilder, Linkage, Module};
@@ -22,7 +22,7 @@ fn main() {
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (n,) = m.view(caller).params();
-    let void_call = b.build_call(void_callee, (), "").unwrap();
+    let void_call = b.call(void_callee, (), "").unwrap();
     // `b.view(void_call).result()` is `()`, not an `IntoIntValue<'_, i32, _>`.
-    let _ = b.build_int_add::<i32, _, _, _>(b.view(void_call).result(), n, "x");
+    let _ = b.int_add::<i32, _, _, _>(b.view(void_call).result(), n, "x");
 }

@@ -25,8 +25,8 @@ fn main() {
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
-    let (_terminated_bb, _term) = b.build_ret_void();
-    // `build_ret_void` took `b` by value: there is no builder left to terminate
+    let (_terminated_bb, _term) = b.ret_void();
+    // `ret_void` took `b` by value: there is no builder left to terminate
     // a second time.
-    let (_again, _term2) = b.build_ret_void();
+    let (_again, _term2) = b.ret_void();
 }

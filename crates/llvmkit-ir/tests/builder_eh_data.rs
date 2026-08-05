@@ -26,12 +26,12 @@ fn landingpad_cleanup_only() -> Result<(), IrError> {
     let exception = m.view(f).append_basic_block(&m, "exception");
     {
         let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        bb_b.build_ret_void()?;
+        bb_b.ret_void()?;
     }
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exception);
-    let lp = b.build_landingpad(i8_ty.as_type(), true, "cleanup")?;
+    let lp = b.landingpad(i8_ty.as_type(), true, "cleanup")?;
     let _closed = lp.finish();
-    b.build_ret_void()?;
+    b.ret_void()?;
     let text = format!("{m}");
     // Mirrors `; CHECK: %cleanup = landingpad i8` followed by
     // `; CHECK: cleanup` (compatibility.ll lines 789 + the upstream
@@ -62,13 +62,13 @@ fn landingpad_cleanup_plus_catch() -> Result<(), IrError> {
     let catch3 = m.view(f).append_basic_block(&m, "catch3");
     {
         let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        bb_b.build_ret_void()?;
+        bb_b.ret_void()?;
     }
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(catch3);
     let null_ptr = ptr_ty.const_null();
-    let lp = b.build_landingpad(i32_ty.as_type(), true, "")?;
+    let lp = b.landingpad(i32_ty.as_type(), true, "")?;
     let _closed = lp.add_catch_clause(null_ptr)?.finish();
-    b.build_ret_void()?;
+    b.ret_void()?;
     let text = format!("{m}");
     // Mirrors `landingpad i32\n          cleanup\n          catch ptr null`.
     assert!(
@@ -99,7 +99,7 @@ fn resume_i32_undef() -> Result<(), IrError> {
     let exc = m.view(f).append_basic_block(&m, "exc");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exc);
     let undef = i32_ty.as_type().get_undef();
-    let _ = b.build_resume(undef, "")?;
+    let _ = b.resume(undef, "")?;
     let text = format!("{m}");
     assert!(text.contains("resume i32 undef"), "got:\n{text}");
     Ok(())
@@ -122,10 +122,10 @@ fn landingpad_followed_by_resume() -> Result<(), IrError> {
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let exc = m.view(f).append_basic_block(&m, "exc");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exc);
-    let lp = b.build_landingpad(i32_ty.as_type(), true, "cleanup")?;
+    let lp = b.landingpad(i32_ty.as_type(), true, "cleanup")?;
     let _closed = lp.finish();
     let undef = i32_ty.as_type().get_undef();
-    let _ = b.build_resume(undef, "")?;
+    let _ = b.resume(undef, "")?;
     let text = format!("{m}");
     assert!(
         text.contains("%cleanup = landingpad i32\n          cleanup"),

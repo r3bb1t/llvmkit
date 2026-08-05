@@ -21,7 +21,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointValue<'ctx, B> {
         F: llvmkit_ir::IrBuilderFolder<'ctx, B>,
         R: llvmkit_ir::ReturnMarker,
     {
-        b.build_extract_field::<Point, i32, _, _>(self, 0, "x")
+        b.extract_field::<Point, i32, _, _>(self, 0, "x")
     }
 
     fn with_x<'m, F, R, V>(
@@ -34,7 +34,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointValue<'ctx, B> {
         R: llvmkit_ir::ReturnMarker,
         V: IntoIrField<'ctx, i32, B>,
     {
-        b.build_insert_field::<Point, i32, _, _, _>(self, value, 0, "with_x")
+        b.insert_field::<Point, i32, _, _, _>(self, value, 0, "with_x")
     }
 
     fn as_struct_value(self) -> StructValue<'ctx, B> {
@@ -204,7 +204,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> RectValue<'ctx, B> {
         F: llvmkit_ir::IrBuilderFolder<'ctx, B>,
         R: llvmkit_ir::ReturnMarker,
     {
-        b.build_extract_field::<Rect, Point, _, _>(self, 0, "min")
+        b.extract_field::<Rect, Point, _, _>(self, 0, "min")
     }
 
     fn max<'m, F, R>(
@@ -215,7 +215,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> RectValue<'ctx, B> {
         F: llvmkit_ir::IrBuilderFolder<'ctx, B>,
         R: llvmkit_ir::ReturnMarker,
     {
-        b.build_extract_field::<Rect, Point, _, _>(self, 1, "max")
+        b.extract_field::<Rect, Point, _, _>(self, 1, "max")
     }
 }
 
@@ -394,7 +394,7 @@ fn struct_fields_unpacks_manual_schema_into_params() -> Result<(), IrError> {
     let (x, y) = m.view(f).params();
     let _: IntValue<'_, i32, _> = x;
     let _: IntValue<'_, i32, _> = y;
-    b.build_ret_void();
+    b.ret_void();
     let text = format!("{m}");
     assert!(
         text.contains("define void @take_point_fields(i32 %0, i32 %1)"),
@@ -420,7 +420,7 @@ fn struct_schema_extracts_and_inserts_typed_fields() -> Result<(), IrError> {
     let x = point.x(&b)?;
     let _: IntValue<'_, i32, _> = x;
     let _updated = point.with_x(&b, 42_i32)?;
-    b.build_ret_void()?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(text.contains("extractvalue %Point %0, 0\n"), "got:\n{text}");
     assert!(
@@ -444,7 +444,7 @@ fn struct_schema_extract_field_mismatch_does_not_append_instruction() -> Result<
         raw: StructValue::try_from(m.view(f).param(0)?)?,
     };
     let err = b
-        .build_extract_field::<Point, i64, _, _>(point, 0, "bad")
+        .extract_field::<Point, i64, _, _>(point, 0, "bad")
         .expect_err("field type mismatch must be rejected");
     assert_eq!(
         err,
@@ -454,7 +454,7 @@ fn struct_schema_extract_field_mismatch_does_not_append_instruction() -> Result<
         }
     );
     assert_eq!(b.insert_block().instructions().len(), 0);
-    b.build_ret_void()?;
+    b.ret_void()?;
     Ok(())
 }
 
@@ -467,9 +467,9 @@ fn struct_schema_can_be_function_return() -> Result<(), IrError> {
     let f = m.add_typed_function::<Point, (), _>("origin", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new(&m).position_at_end(entry);
-    let point = b.build_insert_field::<Point, i32, _, _, _>(poison_point(&m)?, 1_i32, 0, "p0")?;
-    let point = b.build_insert_field::<Point, i32, _, _, _>(point, 2_i32, 1, "p1")?;
-    b.build_ret(point.as_struct_value())?;
+    let point = b.insert_field::<Point, i32, _, _, _>(poison_point(&m)?, 1_i32, 0, "p0")?;
+    let point = b.insert_field::<Point, i32, _, _, _>(point, 2_i32, 1, "p1")?;
+    b.ret(point.as_struct_value())?;
     let text = format!("{m}");
     assert!(text.contains("define %Point @origin()"), "got:\n{text}");
     assert!(
@@ -498,7 +498,7 @@ fn nested_struct_schema_accessors_return_nested_wrapper() -> Result<(), IrError>
     let _: PointValue<'_, _> = min;
     let _: PointValue<'_, _> = max;
     let _ = min.x(&b)?;
-    b.build_ret_void()?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("%Point = type { i32, i32 }\n%Rect = type { %Point, %Point }"),

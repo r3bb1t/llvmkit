@@ -1,11 +1,11 @@
-//! Compile-fail lock for the typed `build_arr_insert` (Slice 6, Doctrine D4).
+//! Compile-fail lock for the typed `array_insert` (Slice 6, Doctrine D4).
 //! The element parameter is typed `element: E::Value`, where `E` is pinned by
 //! the `array: ArrayValue<'ctx, E, L, B>` argument. Inserting a
 //! `FloatValue<f32>` into an `ArrayValue<i32, ArrLen<4>>` therefore demands
 //! `E::Value == IntValue<i32>` but is handed a `FloatValue<f32>`, a compile
 //! error (`E0308 mismatched types`) instead of the runtime
 //! `Verifier::visitInsertValueInst` element-type mismatch the erased
-//! `build_insert_value` would still surface at verify time.
+//! `insert_value` would still surface at verify time.
 
 use llvmkit_ir::{ArrLen, ArrayValue, FloatValue, IrBuilder, Linkage, Module};
 
@@ -30,6 +30,6 @@ fn main() {
     // `E` is fixed to `i32` by `arr`, so `element` must be `IntValue<i32>`;
     // a `FloatValue<f32>` does not fit.
     let _bad = b
-        .build_arr_insert(arr, wrong, 0, "x") //~ ERROR mismatched types
+        .array_insert(arr, wrong, 0, "x") //~ ERROR mismatched types
         .unwrap();
 }

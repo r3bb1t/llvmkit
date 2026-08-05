@@ -14,7 +14,7 @@ fn main() {
     let handler = m.view(f).append_basic_block(&m, "handler");
     let handler_label = handler.id();
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, cs) = b.build_catch_switch_within_none_to_caller("cs").unwrap();
+    let (_sealed, cs) = b.catch_switch_within_none_to_caller("cs").unwrap();
 
     let _closed = cs.finish();
     let _ = cs.add_handler(handler_label);

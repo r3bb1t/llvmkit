@@ -22,8 +22,8 @@ fn load_plain() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_int_load::<i32, _, _>(p, "v")?;
-    b.build_ret(r)?;
+    let r = b.int_load::<i32, _, _>(p, "v")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%v = load i32, ptr %0, align 4\n"),
@@ -44,8 +44,8 @@ fn load_aligned() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_int_load_with_align::<i32, _, _>(p, Align::new(4)?, "v")?;
-    b.build_ret(r)?;
+    let r = b.int_load_with_align::<i32, _, _>(p, Align::new(4)?, "v")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%v = load i32, ptr %0, align 4\n"),
@@ -71,8 +71,8 @@ fn store_plain() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
-    b.build_store(v, p)?;
-    b.build_ret_void()?;
+    b.store(v, p)?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("store i32 %0, ptr %1, align 4\n"),
@@ -98,8 +98,8 @@ fn store_aligned() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
-    b.build_store_with_align(v, p, Align::new(4)?)?;
-    b.build_ret_void()?;
+    b.store_with_align(v, p, Align::new(4)?)?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("store i32 %0, ptr %1, align 4\n"),
@@ -121,10 +121,10 @@ fn load_add_store_round_trip() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let v = b.build_int_load::<i32, _, _>(p, "v")?;
-    let n = b.build_int_add(v, 1_i32, "n")?;
-    b.build_store(n, p)?;
-    b.build_ret_void()?;
+    let v = b.int_load::<i32, _, _>(p, "v")?;
+    let n = b.int_add(v, 1_i32, "n")?;
+    b.store(n, p)?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("%v = load i32, ptr %0, align 4\n"),

@@ -1,10 +1,10 @@
 //! Compile-fail lock for the typed vector binops (Slice 5, Doctrine D4).
-//! `build_vec_int_add<E, L>` takes BOTH operands as `VectorValue<'ctx, E, L,
+//! `vector_int_add<E, L>` takes BOTH operands as `VectorValue<'ctx, E, L,
 //! B>` — the SAME lane-count marker `L`. Adding a `Len<4>` vector to a
 //! `Len<2>` vector therefore cannot unify `L`, and is a compile error
 //! (`E0308 mismatched types`, `Len<4>` vs `Len<2>`) instead of the runtime
 //! `Verifier::visitBinaryOperator` shape mismatch the erased
-//! `build_int_add_dyn` would still surface at verify time.
+//! `int_add_dyn` would still surface at verify time.
 
 use llvmkit_ir::{Dyn, IrBuilder, Len, Linkage, Module, VectorValue};
 
@@ -25,5 +25,5 @@ fn main() {
         m.view(f).param(1).unwrap().into_erased().try_into().unwrap();
 
     // `Len<4>` and `Len<2>` cannot unify the single `L` the binop demands.
-    let _bad = b.build_vec_int_add(a4, a2, "x").unwrap(); //~ ERROR mismatched types
+    let _bad = b.vector_int_add(a4, a2, "x").unwrap(); //~ ERROR mismatched types
 }

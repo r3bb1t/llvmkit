@@ -3,14 +3,14 @@ error[E0382]: use of moved value: `b`
    |
 27 |     let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
    |         - move occurs because `b` has type `IrBuilder<'_, '_, DynBrand, ConstantFolder, Positioned, ()>`, which does not implement the `Copy` trait
-28 |     let (_terminated_bb, _term) = b.build_ret_void();
-   |                                     ---------------- `b` moved due to this method call
+28 |     let (_terminated_bb, _term) = b.ret_void();
+   |                                     ---------- `b` moved due to this method call
 ...
-31 |     let (_again, _term2) = b.build_ret_void();
+31 |     let (_again, _term2) = b.ret_void();
    |                            ^ value used here after move
    |
-note: `IrBuilder::<'m, 'ctx, B, F, Positioned, ()>::build_ret_void` takes ownership of the receiver `self`, which moves `b`
+note: `IrBuilder::<'m, 'ctx, B, F, Positioned, ()>::ret_void` takes ownership of the receiver `self`, which moves `b`
   --> src/ir_builder.rs
    |
-   |     pub fn build_ret_void(self) -> VoidReturnInst<'ctx, B> {
-   |                           ^^^^
+   |     pub fn ret_void(self) -> VoidReturnInst<'ctx, B> {
+   |                     ^^^^

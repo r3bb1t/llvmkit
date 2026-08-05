@@ -15,7 +15,7 @@
 //! returns them typed and the marker gates real accessors. `AddInst`,
 //! `LoadInst`, and the other per-opcode handles do not: the typed
 //! information already lives on the value handles the builder returns
-//! (D4 — `build_int_add::<W>` returns `IntValue<W>`), and the handles'
+//! (D4 — `int_add::<W>` returns `IntValue<W>`), and the handles'
 //! reachable constructors are rediscovery paths (`BlockCursor`,
 //! `InstructionView`, `TryFrom`) which are inherently dyn-shaped — a
 //! marker there would instantiate as `AddInst<IntDyn>` everywhere and
@@ -720,7 +720,7 @@ pub enum Callee<'ctx, B: ModuleBrand> {
 /// `call` instruction. Mirrors `CallInst` (`Instructions.h`).
 ///
 /// The `R: ReturnMarker` parameter (default [`crate::Dyn`]) propagates
-/// the callee's return shape, so a typed [`crate::IrBuilder::build_call_dyn`] for an `i32`
+/// the callee's return shape, so a typed [`crate::IrBuilder::call_dyn`] for an `i32`
 /// callee returns `CallInst<'ctx, i32>` and exposes a typed
 /// `return_int_value()` accessor without a runtime
 /// [`crate::IrError::TypeMismatch`].
@@ -799,7 +799,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> CallInst<'ctx, R, B> {
         CallInstId::from_raw(self.module.id(), self.id)
     }
 
-    /// Re-tag the return marker. Crate-internal: only [`build_call_dyn`]
+    /// Re-tag the return marker. Crate-internal: only [`call_dyn`]
     /// flows the typed marker; [`as_dyn`] erases it.
     #[inline]
     pub(super) fn retag<R2: ReturnMarker>(self) -> CallInst<'ctx, R2, B> {
@@ -927,7 +927,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallInst<'ctx, Ptr, B> {
 
 /// Call handle whose full return schema is carried at the type level.
 /// The marker on the inner [`CallInst`] is `Ret::Marker` — derived from
-/// the callee by [`crate::IrBuilder::build_call`], never caller-asserted.
+/// the callee by [`crate::IrBuilder::call`], never caller-asserted.
 pub struct TypedCallInst<'ctx, Ret, B: ModuleBrand>
 where
     Ret: FunctionReturn,
@@ -967,7 +967,7 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand> fmt::Debug for TypedCallInst<'ct
 impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, B> {
     /// Crate-internal: wrap a raw [`CallInst`] already known to have
     /// been emitted against a validated [`crate::TypedFunctionValue`]
-    /// callee. Only the typed `build_call` family constructs this —
+    /// callee. Only the typed `call` family constructs this —
     /// the schema-carrying guarantee comes from the callee facade's
     /// own construction-time validation, not from anything checked
     /// here.
@@ -2750,7 +2750,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
 /// `W` — a wrong-width case is a *compile* error (there is no
 /// `IntoIntValue<'ctx, W, B>` impl for the mismatched value). The erased
 /// `W = IntDyn` flavour (produced by the parser / SSA builder via the
-/// width-erased [`build_switch_dyn`](crate::IrBuilder::build_switch_dyn)) keeps the
+/// width-erased [`switch_dyn`](crate::IrBuilder::switch_dyn)) keeps the
 /// runtime [`crate::IrError::TypeMismatch`] check instead. `W` is the LAST parameter
 /// and defaults to `IntDyn`, so width-agnostic `SwitchInst<'ctx, P, B>`
 /// annotations keep resolving to the erased flavour unchanged.
@@ -2884,7 +2884,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
     /// must not be a **parameterised** block — the same guard the plain
     /// terminator builders apply, reported as
     /// [`crate::IrError::PhiArgArityMismatch`]. The argument-carrying route is
-    /// [`IrBuilder::build_switch_with_args`](crate::IrBuilder::build_switch_with_args)
+    /// [`IrBuilder::switch_with_args`](crate::IrBuilder::switch_with_args)
     /// (and its erased twin), which spells every case at the call and hands
     /// back an already-[`TermClosed`] switch — so a `switch` reaching a
     /// parameterised block either carries that block's arguments or does not
@@ -2902,7 +2902,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
     /// Append a case whose target's block parameters this call's caller has
     /// **already seeded**, skipping the parameterised-target rejection
     /// `push_case_checked` applies. Crate-internal: only
-    /// [`IrBuilder::build_switch_with_args`](crate::IrBuilder::build_switch_with_args)
+    /// [`IrBuilder::switch_with_args`](crate::IrBuilder::switch_with_args)
     /// and its erased twin reach for it, after `add_block_args` has recorded
     /// each edge's incomings.
     pub(crate) fn push_case_seeded<R, Target>(
@@ -3204,8 +3204,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     /// Re-tag the return marker. Crate-internal: both
-    /// [`crate::IrBuilder::build_invoke_dyn`] (caller-asserted `R2`) and
-    /// the typed [`crate::IrBuilder::build_invoke`] (marker derived
+    /// [`crate::IrBuilder::invoke_dyn`] (caller-asserted `R2`) and
+    /// the typed [`crate::IrBuilder::invoke`] (marker derived
     /// from the callee's `Ret::Marker`) flow through this.
     #[inline]
     pub(super) fn retag<R2: ReturnMarker>(self) -> InvokeInst<'ctx, R2, B> {
@@ -3817,7 +3817,7 @@ mod tests {
         let b = crate::IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let call: CallInst<'_, i32, _> =
-            b.view(b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?);
+            b.view(b.call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?);
         let call_id = call.to_erased().slot();
 
         let typed = TypedCallInst::<i32, _> {

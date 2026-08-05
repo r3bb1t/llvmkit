@@ -30,7 +30,7 @@ fn function_with_noundef_param_and_return() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    b.build_ret(x)?;
+    b.ret(x)?;
 
     let text = format!("{m}");
     let expected = "; ModuleID = 'p'\n\
@@ -61,7 +61,7 @@ fn attribute_added_via_attribute_method_path() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    b.build_ret(n)?;
+    b.ret(n)?;
 
     let text = format!("{m}");
     assert!(

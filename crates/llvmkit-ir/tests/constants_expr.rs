@@ -85,7 +85,7 @@ fn blockaddress_constant_round_trips() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let addr = m.block_address(m.view(f), &entry)?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let terminator = b.build_ret_void()?.1;
+    let terminator = b.ret_void()?.1;
     assert!(terminator.is_terminator());
     m.add_global("addr", addr)?;
 
@@ -114,7 +114,7 @@ fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let addr = m.block_address(m.view(f), &entry)?;
     let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
-    let terminator = b.build_ret_void().1;
+    let terminator = b.ret_void().1;
     assert!(terminator.is_terminator());
     m.add_global("addr", addr)?;
 

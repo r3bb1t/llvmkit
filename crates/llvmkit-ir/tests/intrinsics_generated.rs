@@ -235,7 +235,7 @@ fn verifier_rejects_nonconstant_immarg_operand() -> Result<(), IrError> {
         .arg(is_poison)
         .name("abs")
         .build()?;
-    b.build_ret_void()?;
+    b.ret_void()?;
 
     let err = m
         .verify_borrowed()
@@ -271,7 +271,7 @@ fn descriptor_call_builder_returns_intrinsic_view() -> Result<(), IrError> {
     assert_eq!(view.intrinsic_id(), IntrinsicId::ABS);
     assert_eq!(view.descriptor()?, descriptor);
     let ret: IntValue<'_, i32, _> = view.return_value().expect("abs returns value").try_into()?;
-    b.build_ret(ret)?;
+    b.ret(ret)?;
     m.verify_borrowed()?;
     Ok(())
 }
@@ -299,7 +299,7 @@ fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> 
     let dst: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
     let src: PointerValue<'_, _> = m.view(caller).param(1)?.try_into()?;
     let len: IntValue<'_, i64, _> = m.view(caller).param(2)?.try_into()?;
-    let view = b.build_intrinsic_call(
+    let view = b.intrinsic_call(
         &descriptor,
         &[
             dst.into_erased(),
@@ -314,7 +314,7 @@ fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> 
     let mem = MemIntrinsic::try_from_intrinsic(view)?;
     assert_eq!(mem.inner().intrinsic_id(), IntrinsicId::MEMCPY);
     assert!(LifetimeIntrinsic::try_from_intrinsic(view).is_err());
-    b.build_ret_void()?;
+    b.ret_void()?;
     m.verify_borrowed()?;
     Ok(())
 }
@@ -346,7 +346,7 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
         memcpy_inline,
         [ptr_ty.as_type(), ptr_ty.as_type(), i64_ty.as_type()],
     )?;
-    let memcpy = b.build_intrinsic_call(
+    let memcpy = b.intrinsic_call(
         &memcpy_descriptor,
         &[
             dst.into_erased(),
@@ -362,7 +362,7 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
         IntrinsicId::lookup("llvm.memset.inline.p0.i64").expect("memset.inline intrinsic");
     let memset_descriptor =
         IntrinsicDescriptor::new(memset_inline, [ptr_ty.as_type(), i64_ty.as_type()])?;
-    let memset = b.build_intrinsic_call(
+    let memset = b.intrinsic_call(
         &memset_descriptor,
         &[
             dst.into_erased(),
@@ -374,7 +374,7 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
     )?;
     assert!(MemIntrinsic::try_from_intrinsic(b.view(memset)).is_ok());
 
-    b.build_ret_void()?;
+    b.ret_void()?;
     m.verify_borrowed()?;
     Ok(())
 }
@@ -391,13 +391,13 @@ fn lifetime_intrinsic_wrapper_narrows_generated_lifetime_call() -> Result<(), Ir
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let ptr: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
-    let view = b.build_intrinsic_call(&descriptor, &[ptr.into_erased()], "")?;
+    let view = b.intrinsic_call(&descriptor, &[ptr.into_erased()], "")?;
 
     let view = b.view(view);
     let lifetime = LifetimeIntrinsic::try_from_intrinsic(view)?;
     assert_eq!(lifetime.inner().intrinsic_id(), IntrinsicId::LIFETIME_START);
     assert!(MemIntrinsic::try_from_intrinsic(view).is_err());
-    b.build_ret_void()?;
+    b.ret_void()?;
     m.verify_borrowed()?;
     Ok(())
 }
@@ -415,7 +415,7 @@ fn descriptor_call_builder_rejects_wrong_argument_count() -> Result<(), IrError>
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let err = b
-        .build_intrinsic_call(&descriptor, &[x.into_erased()], "bad")
+        .intrinsic_call(&descriptor, &[x.into_erased()], "bad")
         .expect_err("missing immarg is rejected before call emission");
     assert!(
         matches!(err, IrError::IntrinsicSignatureMismatch { .. }),
@@ -641,12 +641,12 @@ fn asm_writer_prints_generated_intrinsic_immediate_argument_comments() -> Result
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let ptr: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
-    b.build_intrinsic_call(
+    b.intrinsic_call(
         &descriptor,
         &[ptr.into_erased(), i32_ty.const_int(1_i32).into_erased()],
         "",
     )?;
-    b.build_ret_void()?;
+    b.ret_void()?;
 
     let text = format!("{m}");
     assert!(

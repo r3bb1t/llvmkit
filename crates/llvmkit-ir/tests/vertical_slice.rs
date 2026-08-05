@@ -24,7 +24,7 @@
 //!   cleanly when the argument's type is not integral.
 //! - The typed `m.add_typed_function::<i32, (), _>(...)` path produces a
 //!   `FunctionValue<i32>` whose IrBuilder accepts only matching
-//!   `IntValue<i32>` operands at `build_ret` (compile-time enforced).
+//!   `IntValue<i32>` operands at `ret` (compile-time enforced).
 
 use llvmkit_ir::{
     Argument, Dyn, IntValue, IrBuilder, IrError, Linkage, TerminatorKind, module_new,
@@ -45,8 +45,8 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
 
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let sum = b.build_int_add(lhs, rhs, "sum")?;
-    let (entry, _) = b.build_ret(sum)?;
+    let sum = b.int_add(lhs, rhs, "sum")?;
+    let (entry, _) = b.ret(sum)?;
 
     // ---- Assertions ----
 
@@ -196,13 +196,13 @@ fn function_builder_chains_options() -> Result<(), IrError> {
 // independent `R` -- keeps its runtime gate, locked by
 // `return_marker_mismatch_diagnostic.rs::function_builder_rejects_mismatched_return_marker`.
 
-/// llvmkit-specific: runtime-checked `Dyn` builder still validates `build_ret`
+/// llvmkit-specific: runtime-checked `Dyn` builder still validates `ret`
 /// types. Closest upstream reference: assertion in `IRBuilderBase::CreateRet`.
 #[test]
 fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     // Building against the runtime-checked `Dyn` builder reproduces
-    // the pre-A3 behaviour: feeding `build_ret` a value of the wrong
+    // the pre-A3 behaviour: feeding `ret` a value of the wrong
     // type returns `IrError::ReturnTypeMismatch` at runtime.
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
@@ -212,7 +212,7 @@ fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
     let b = IrBuilder::new(&m).position_at_end(entry);
     let arg = m.view(f).param(0)?; // i64
     let err = b
-        .build_ret(arg)
+        .ret(arg)
         .expect_err("returning i64 from i32-returning function must error");
     assert!(matches!(err, IrError::ReturnTypeMismatch { .. }));
     Ok(())

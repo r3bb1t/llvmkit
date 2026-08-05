@@ -66,18 +66,18 @@ fn build() -> Result<(), IrError> {
         .try_into()
         .expect("narrow param 1 to <4 x i32>");
 
-    // Both operands are `VectorValue<i32, Len<4>>`. `build_vec_int_add` pins
+    // Both operands are `VectorValue<i32, Len<4>>`. `vector_int_add` pins
     // both to the SAME `E` and `L`, so a length or element mismatch has no
     // matching impl — a compile error, not a verifier diagnostic. E.g.:
     //   let half: VectorValue<'_, i32, Len<2>> = /* ... */;
-    //   b.build_vec_int_add(a, half, "bad")?;   // E0308: Len<4> vs Len<2>
-    let sum = b.build_vec_int_add(a, c, "sum")?;
+    //   b.vector_int_add(a, half, "bad")?;   // E0308: Len<4> vs Len<2>
+    let sum = b.vector_int_add(a, c, "sum")?;
 
-    // `build_vec_extract` returns the element as its typed scalar handle;
+    // `vector_extract` returns the element as its typed scalar handle;
     // the return type is inferred from the element marker as
     // `IntValue<'_, i32>` — no turbofish needed.
-    let lane0: IntValue<'_, i32, _> = b.build_vec_extract(sum, i32_ty.const_int(0_i32), "lane0")?;
-    b.build_ret(lane0)?;
+    let lane0: IntValue<'_, i32, _> = b.vector_extract(sum, i32_ty.const_int(0_i32), "lane0")?;
+    b.ret(lane0)?;
 
     // ---- Typed arrays: `[4 x i32]` -------------------------------------
     let a4i32 = m.array_type_n::<i32, 4>();
@@ -95,7 +95,7 @@ fn build() -> Result<(), IrError> {
         .try_into()
         .expect("narrow param 0 to [4 x i32]");
 
-    // `build_arr_insert` takes an element typed by the array's marker
+    // `array_insert` takes an element typed by the array's marker
     // (`IntValue<i32>`); passing an `IntValue<i64>` or a float would not
     // compile. The result keeps the `i32` / `ArrLen<4>` markers, so it
     // feeds straight back into another typed array op.
@@ -104,11 +104,11 @@ fn build() -> Result<(), IrError> {
         .into_erased()
         .try_into()
         .expect("i32 constant");
-    let updated: ArrayValue<'_, i32, ArrLen<4>, _> = b.build_arr_insert(arr, seven, 1, "u")?;
+    let updated: ArrayValue<'_, i32, ArrLen<4>, _> = b.array_insert(arr, seven, 1, "u")?;
 
     // Read index 1 back; element type inferred as `IntValue<i32>`.
-    let back: IntValue<'_, i32, _> = b.build_arr_extract(updated, 1, "back")?;
-    b.build_ret(back)?;
+    let back: IntValue<'_, i32, _> = b.array_extract(updated, 1, "back")?;
+    b.ret(back)?;
 
     print!("{m}");
     Ok(())

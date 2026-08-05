@@ -24,6 +24,22 @@ bullet below names its wave.
 
 #### Changed
 
+- **Breaking (W2): the `build_` prefix is gone from every `IrBuilder` method.**
+  All 265 emitters lose the C++ `CreateAdd`-heritage prefix: `build_int_add` →
+  `int_add`, `build_ret` → `ret`, `build_br` → `br`, `build_call` → `call`,
+  `build_gep` → `gep`, and so on — call sites now read
+  `b.int_add(lhs, rhs, "sum")?`, and the `IrBuilder` and `SsaBuilder` layers
+  spell their instruction vocabulary identically
+  (`ssa.ins()?.int_mul(a, b, "x")`). Folded-in normalizations: the two
+  `float_neg` stragglers join the `fp_` family as `fp_neg` / `fp_neg_fmf`
+  (the FMF variant also swaps its misleading `_with_flags` suffix for the
+  `_fmf` the rest of the fast-math family uses); the abbreviated `vec_*` /
+  `arr_*` typed vector/array emitters become `vector_*` / `array_*` (full-words
+  law); and the confusing near-duplicate splat pair is resolved as
+  `vector_splat` (typed, was `build_vec_splat`) vs `vector_splat_dyn` (erased,
+  was `build_vector_splat`). Chainable builders keep their `.build()`
+  terminals (C-BUILDER); test function names keep their historical spellings.
+
 - **Breaking (W1): strict RFC-430 acronym casing on type names.**
   `IRBuilder` → `IrBuilder`, `IRBuilderFolder` → `IrBuilderFolder`,
   `CFGAnalyses` → `CfgAnalyses`, `ICmpInst` → `IcmpInst`, `FCmpInst` →

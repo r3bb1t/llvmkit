@@ -1,8 +1,8 @@
 error[E0277]: the trait bound `ConstantIntValue<'_, i32, Left>: IntoIntValue<'_, i32, Right>` is not satisfied
-  --> tests/compile_fail/typed_call_cross_module_arg.rs:42:41
+  --> tests/compile_fail/typed_call_cross_module_arg.rs:42:35
    |
-42 |     let _ = builder.build_call(callee, (left_value,), "bad");
-   |                     ----------          ^^^^^^^^^^ the trait `IntoIntValue<'_, i32, Right>` is not implemented for `ConstantIntValue<'_, i32, Left>`
+42 |     let _ = builder.call(callee, (left_value,), "bad");
+   |                     ----          ^^^^^^^^^^ the trait `IntoIntValue<'_, i32, Right>` is not implemented for `ConstantIntValue<'_, i32, Left>`
    |                     |
    |                     required by a bound introduced by this call
    |
@@ -16,11 +16,11 @@ help: the trait `IntoIntValue<'_, i32, Right>` is not implemented for `ConstantI
    = help: for that trait implementation, expected `Left`, found `Right`
    = note: required for `ConstantIntValue<'_, i32, Left>` to implement `IntoCallArg<'_, i32, Right>`
    = note: required for `(ConstantIntValue<'_, i32, Left>,)` to implement `CallArgs<'_, (i32,), Right>`
-note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::build_call`
+note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::call`
   --> src/ir_builder.rs
    |
-   |     pub fn build_call<Ret, Params, A, Callee, Name>(
-   |            ---------- required by a bound in this associated function
+   |     pub fn call<Ret, Params, A, Callee, Name>(
+   |            ---- required by a bound in this associated function
 ...
    |         A: CallArgs<'ctx, Params, B>,
-   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::build_call`
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::call`

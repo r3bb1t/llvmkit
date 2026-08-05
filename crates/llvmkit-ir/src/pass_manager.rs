@@ -61,7 +61,7 @@
 //!     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 //!     let entry = m.view(f).append_basic_block(&m, "entry");
 //!     let b = IrBuilder::at_end(entry);
-//!     b.build_ret(i32_ty.const_int(1_u32))?;
+//!     b.ret(i32_ty.const_int(1_u32))?;
 //!
 //!     let verified = m.verify()?;
 //!     let mut analyses = Analyses::new();

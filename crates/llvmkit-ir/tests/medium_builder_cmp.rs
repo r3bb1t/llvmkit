@@ -1,4 +1,4 @@
-//! Phase C-cmp coverage. Covers `IrBuilder::build_int_cmp` with
+//! Phase C-cmp coverage. Covers `IrBuilder::int_cmp` with
 //! representative integer predicates and the `i1` result type.
 //!
 //! ## Upstream provenance
@@ -22,8 +22,8 @@ fn build_eq_module() -> Result<String, IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "r")?;
-    b.build_ret(r)?;
+    let r = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "r")?;
+    b.ret(r)?;
     Ok(format!("{m}"))
 }
 
@@ -49,21 +49,21 @@ fn build_int_cmp_slt_emits_icmp_slt() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Slt, a, bv, "r")?;
-    b.build_ret(r)?;
+    let r = b.int_cmp::<i32, _, _, _>(IntPredicate::Slt, a, bv, "r")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%r = icmp slt i32 %0, %1"), "got:\n{text}");
     Ok(())
 }
 
-/// llvmkit-specific: typed-result invariant -- `build_int_cmp` returns
+/// llvmkit-specific: typed-result invariant -- `int_cmp` returns
 /// `IntValue<bool>` so the result is a typestate-checked `i1`. Closest upstream
 /// coverage: `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest,
 /// CmpPredicate)` (predicate -> i1 result type).
 #[test]
 fn build_int_cmp_returns_i1_for_chaining() -> Result<(), IrError> {
-    // The result of `build_int_cmp` is `IntValue<bool>`, suitable for
-    // `build_cond_br` and other `i1` consumers without further
+    // The result of `int_cmp` is `IntValue<bool>`, suitable for
+    // `cond_br` and other `i1` consumers without further
     // narrowing.
     let m = module_new!("c")?;
     let bool_ty = m.bool_type();
@@ -73,9 +73,8 @@ fn build_int_cmp_returns_i1_for_chaining() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let r: IntValueId<bool, _> =
-        b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ne, n, 1_i32, "r")?;
-    b.build_ret(r)?;
+    let r: IntValueId<bool, _> = b.int_cmp::<i32, _, _, _>(IntPredicate::Ne, n, 1_i32, "r")?;
+    b.ret(r)?;
     Ok(())
 }
 
@@ -92,8 +91,8 @@ fn build_int_cmp_ule_emits_icmp_ule() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ule, a, bv, "r")?;
-    b.build_ret(r)?;
+    let r = b.int_cmp::<i32, _, _, _>(IntPredicate::Ule, a, bv, "r")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%r = icmp ule i32 %0, %1"), "got:\n{text}");
     Ok(())
@@ -110,7 +109,7 @@ fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
     let f = m.add_function_dyn("cmp", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let result = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ugt, 9_i32, 3_i32, "is_gt")?;
+    let result = b.int_cmp::<i32, _, _, _>(IntPredicate::Ugt, 9_i32, 3_i32, "is_gt")?;
     let folded =
         ConstantIntValue::<bool, _>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
     assert!(folded.ap_int().try_zext_u64() == Some(1));
@@ -137,14 +136,14 @@ fn typed_icmp_samesign_prints_flag() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let r = b.build_int_cmp_with_flags::<i32, _, _, _>(
+    let r = b.int_cmp_with_flags::<i32, _, _, _>(
         IntPredicate::Ult,
         a,
         bv,
         IcmpFlags::new().samesign(),
         "res",
     )?;
-    b.build_ret(r)?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%res = icmp samesign ult i32 %0, %1"),

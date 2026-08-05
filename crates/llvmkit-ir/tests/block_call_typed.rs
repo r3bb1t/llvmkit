@@ -3,16 +3,16 @@
 //! `append_block_typed` stamps a block with a `FunctionParamList` schema and
 //! hands back typed head-phi handles; `label.call(args)` (or `block.call(args)`)
 //! bundles that typed target with block-arguments checked against the schema at
-//! *compile* time, and `build_br_call` / `build_cond_br_call` consume the bundle
+//! *compile* time, and `br_call` / `cond_br_call` consume the bundle
 //! — lowering the (already compile-checked) args and seeding the target's
-//! leading head-phis. The erased `build_br_with_args` / `build_cond_br_with_args`
+//! leading head-phis. The erased `br_with_args` / `cond_br_with_args`
 //! path (parameter-erased `BlockParamsDyn`) is unchanged and still works.
 
 use llvmkit_ir::{
     IntPredicate, IntValue, IrBuilder, IrError, Linkage, PointerValue, Ptr, module_new,
 };
 
-/// `build_br_call(head.call((x,)))` seeds `head`'s leading head-phi with the
+/// `br_call(head.call((x,)))` seeds `head`'s leading head-phi with the
 /// edge argument: the emitted `br label %head` carries `%x` into the head-phi as
 /// `[ %x, %entry ]`, and the module verifies. Exercises the *label* constructor
 /// `head.call(..)`.
@@ -32,13 +32,13 @@ fn build_br_call_seeds_typed_head_phi_and_verifies() -> Result<(), IrError> {
     // entry: %x = add i32 %a, 1 ; br head(%x)
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let x = b.build_int_add(a, 1_i32, "x")?;
+    let x = b.int_add(a, 1_i32, "x")?;
     // `.call((x,))` is compile-checked against the block's `(i32,)` schema.
-    b.build_br_call(head.call((x,)))?;
+    b.br_call(head.call((x,)))?;
 
     // head: ret %p (the head-phi carrying the branch argument).
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(head);
-    b.build_ret(p)?;
+    b.ret(p)?;
 
     let text = format!("{m}");
     assert!(
@@ -74,11 +74,11 @@ fn block_call_convenience_two_params_verifies() -> Result<(), IrError> {
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let ptr: PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
     // `block.call((..))` borrows `head`, so it stays usable below.
-    b.build_br_call(head.call((a, ptr)))?;
+    b.br_call(head.call((a, ptr)))?;
 
     // head: ret %pi.
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(head);
-    b.build_ret(pi)?;
+    b.ret(pi)?;
 
     let text = format!("{m}");
     assert!(
@@ -93,7 +93,7 @@ fn block_call_convenience_two_params_verifies() -> Result<(), IrError> {
     Ok(())
 }
 
-/// `build_cond_br_call` seeds each successor's head-phi from its own edge's
+/// `cond_br_call` seeds each successor's head-phi from its own edge's
 /// arguments: a diamond feeds `%x` to `then(%pt)` and `%y` to `else(%pe)`, both
 /// with `entry` as predecessor, so both incomings print and the module verifies.
 #[test]
@@ -113,16 +113,16 @@ fn build_cond_br_call_two_targets_verify() -> Result<(), IrError> {
     //        br (%a == 0) ? then(%x) : else(%y)
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let x = b.build_int_add(a, 1_i32, "x")?;
-    let y = b.build_int_add(a, 2_i32, "y")?;
-    let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
-    b.build_cond_br_call(cond, then_bb.call((x,)), else_bb.call((y,)))?;
+    let x = b.int_add(a, 1_i32, "x")?;
+    let y = b.int_add(a, 2_i32, "y")?;
+    let cond = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
+    b.cond_br_call(cond, then_bb.call((x,)), else_bb.call((y,)))?;
 
     // then: ret %pt ; else: ret %pe.
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(then_bb);
-    b.build_ret(pt)?;
+    b.ret(pt)?;
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(else_bb);
-    b.build_ret(pe)?;
+    b.ret(pe)?;
 
     let text = format!("{m}");
     assert!(
@@ -137,7 +137,7 @@ fn build_cond_br_call_two_targets_verify() -> Result<(), IrError> {
     Ok(())
 }
 
-/// `build_cond_br_call` is generic over each edge's schema independently: a
+/// `cond_br_call` is generic over each edge's schema independently: a
 /// `then` edge with a `(i32,)` schema and an `else` edge with the arity-0 `()`
 /// schema coexist in one call (`ThenP != ElseP`) and verify.
 #[test]
@@ -157,14 +157,14 @@ fn build_cond_br_call_distinct_schemas_per_edge() -> Result<(), IrError> {
     // entry: br (%a == 0) ? then(%a) : join()
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
-    b.build_cond_br_call(cond, then_bb.call((a,)), join_bb.call(()))?;
+    let cond = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
+    b.cond_br_call(cond, then_bb.call((a,)), join_bb.call(()))?;
 
     // then: ret %pt ; join: ret 0.
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(then_bb);
-    b.build_ret(pt)?;
+    b.ret(pt)?;
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(join_bb);
-    b.build_ret(i32_ty.const_int(0_i32))?;
+    b.ret(i32_ty.const_int(0_i32))?;
 
     let text = format!("{m}");
     assert!(
@@ -175,7 +175,7 @@ fn build_cond_br_call_distinct_schemas_per_edge() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Regression: the erased `build_br_with_args` path (parameter-erased
+/// Regression: the erased `br_with_args` path (parameter-erased
 /// `BlockParamsDyn` block from `append_block_with_params`) is unchanged and
 /// still seeds head-phis and verifies, coexisting with the typed `BlockCall`
 /// surface.
@@ -194,12 +194,12 @@ fn erased_build_br_with_args_still_works() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let x = b.build_int_add(a, 1_i32, "x")?;
-    b.build_br_with_args(hdr_label, &[m.view(x).into_erased()])?;
+    let x = b.int_add(a, 1_i32, "x")?;
+    b.br_with_args(hdr_label, &[m.view(x).into_erased()])?;
 
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(hdr);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
-    b.build_ret(p)?;
+    b.ret(p)?;
 
     let text = format!("{m}");
     assert!(

@@ -51,8 +51,8 @@ fn function_value_define_matches_module_output() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let sum = b.build_int_add(lhs, rhs, "sum")?;
-    b.build_ret(sum)?;
+    let sum = b.int_add(lhs, rhs, "sum")?;
+    b.ret(sum)?;
 
     let printed = format!("{}", m.view(f));
     let expected = "define i32 @add(i32 %0, i32 %1) {\n\
@@ -115,8 +115,8 @@ fn typed_handles_agree_with_erased_value() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let doubled = b.build_int_add(x, x, "doubled")?;
-    b.build_ret(doubled)?;
+    let doubled = b.int_add(x, x, "doubled")?;
+    b.ret(doubled)?;
 
     // Argument.
     let arg = m.view(f).param(0)?;

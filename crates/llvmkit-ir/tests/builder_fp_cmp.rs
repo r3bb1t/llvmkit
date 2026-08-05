@@ -25,8 +25,8 @@ fn module_with_pred(pred: FloatPredicate, name: &str) -> Result<String, IrError>
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: FloatValue<'_, f64, _> = m.view(f).param(1)?.try_into()?;
-    let r = b.build_fp_cmp(pred, lhs, rhs, "r")?;
-    b.build_ret(r)?;
+    let r = b.fp_cmp(pred, lhs, rhs, "r")?;
+    b.ret(r)?;
     Ok(format!("{m}"))
 }
 
@@ -99,7 +99,7 @@ fn default_constant_folder_folds_float_compare() -> Result<(), IrError> {
     let f = m.add_function_dyn("cmp", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let result = b.build_fp_cmp::<f64, _, _, _>(
+    let result = b.fp_cmp::<f64, _, _, _>(
         FloatPredicate::Olt,
         f64_ty.const_double(1.0),
         f64_ty.const_double(2.0),

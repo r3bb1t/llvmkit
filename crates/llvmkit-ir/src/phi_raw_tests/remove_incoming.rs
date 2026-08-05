@@ -45,16 +45,16 @@ fn remove_incoming_backfills_from_the_end_like_upstream() -> Result<(), IrError>
     for pred in [a, b_bb, c] {
         IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(pred)
-            .build_br(join_lbl)?;
+            .br(join_lbl)?;
     }
 
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.build_int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, a_lbl)?
         .add_incoming(2_i32, b_lbl)?
         .add_incoming(3_i32, c_lbl)?;
-    bld.build_ret(phi.as_int_value())?;
+    bld.ret(phi.as_int_value())?;
 
     // Drop `[ 1, %a ]`, the entry at index 0.
     let removed = phi.remove_incoming(&m, 0)?;
@@ -85,13 +85,13 @@ fn remove_incoming_deregisters_one_use_of_the_removed_value() -> Result<(), IrEr
     let (a_lbl, join_lbl) = (a.id(), join.id());
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(a)
-        .build_br(join_lbl)?;
+        .br(join_lbl)?;
 
     // `7` interns to one constant, so both edges from `%a` are the same
     // SSA value: two use-list entries for one value.
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.build_int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p")?)
         .add_incoming(7_i32, a_lbl)?
         .add_incoming(7_i32, a_lbl)?;
     let seven = i32_ty.const_int(7_i32).into_erased();
@@ -120,11 +120,11 @@ fn remove_incoming_rejects_an_out_of_range_index() -> Result<(), IrError> {
     let (a_lbl, join_lbl) = (a.id(), join.id());
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(a)
-        .build_br(join_lbl)?;
+        .br(join_lbl)?;
 
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.build_int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, a_lbl)?;
 
     let err = phi.remove_incoming(&m, 1).expect_err("index 1 of 1 is oob");
@@ -159,15 +159,15 @@ fn remove_incoming_leaves_the_verifier_to_flag_the_missing_edge() -> Result<(), 
     for pred in [a, b_bb] {
         IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(pred)
-            .build_br(join_lbl)?;
+            .br(join_lbl)?;
     }
 
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.build_int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, a_lbl)?
         .add_incoming(2_i32, b_lbl)?;
-    bld.build_ret(phi.as_int_value())?;
+    bld.ret(phi.as_int_value())?;
     m.verify_borrowed()?;
 
     phi.remove_incoming(&m, 1)?;
@@ -198,13 +198,13 @@ fn remove_incoming_never_deletes_an_emptied_phi() -> Result<(), IrError> {
     let (a_lbl, join_lbl) = (a.id(), join.id());
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(a)
-        .build_br(join_lbl)?;
+        .br(join_lbl)?;
 
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
-        .view(bld.build_int_phi::<i32, _>("p")?)
+        .view(bld.int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, a_lbl)?;
-    bld.build_ret(phi.as_int_value())?;
+    bld.ret(phi.as_int_value())?;
 
     phi.remove_incoming(&m, 0)?;
     assert_eq!(phi.incoming_count(), 0);
@@ -239,12 +239,12 @@ fn remove_incoming_through_phi_kind_covers_every_flavour() -> Result<(), IrError
     let (a_lbl, join_lbl) = (a.id(), join.id());
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(a)
-        .build_br(join_lbl)?;
+        .br(join_lbl)?;
 
     let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
-    let fp = bld.build_fp_phi_dyn(f64_ty.as_dyn(), "fp")?;
-    let pp = bld.build_pointer_phi_in_addrspace(ptr_ty, "pp")?;
-    let vp = bld.build_phi_dyn(vec_ty.as_type(), "vp")?;
+    let fp = bld.fp_phi_dyn(f64_ty.as_dyn(), "fp")?;
+    let pp = bld.pointer_phi_in_addrspace(ptr_ty, "pp")?;
+    let vp = bld.phi_dyn(vec_ty.as_type(), "vp")?;
     for (phi, ty) in [
         (bld.view(fp).to_erased(), f64_ty.as_type()),
         (bld.view(pp).to_erased(), ptr_ty.as_type()),

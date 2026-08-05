@@ -517,7 +517,7 @@ impl_struct_into_call_arg!(Instruction<'ctx, Attached, B>);
 /// The `I`-th top-level field schema of a field tuple. Implemented for
 /// tuple arities 1..=16, one impl per (arity, index) pair, so an
 /// out-of-range index is "no impl" -- a compile error at the
-/// `build_field_gep::<S, I>` call site.
+/// `field_gep::<S, I>` call site.
 pub trait StructFieldAt<const I: u32> {
     type Field: IrField;
 }

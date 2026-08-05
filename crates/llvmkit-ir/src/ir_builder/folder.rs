@@ -30,7 +30,7 @@ use crate::value::{FloatValue, IntValue, Typed};
 ///   only a handful of hooks (e.g. [`super::constant_folder::ConstantFolder`]'s
 ///   predecessors before this trait grew) still compiles.
 /// - The typed hooks (below) are called by the statically-typed
-///   `build_*` paths and return typed handles. The builder does **not**
+///   the emitters paths and return typed handles. The builder does **not**
 ///   take that static marker on trust: its `accept_folded_*` helpers
 ///   re-check the result's runtime type against the operand's (or the
 ///   cast's destination) for *every* marker, static ones included. A
@@ -232,7 +232,7 @@ pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
         Ok(None)
     }
 
-    // ---- Typed hooks. Called by the statically-typed build_* paths and
+    // ---- Typed hooks. Called by the statically-typed emitter paths and
     //      return typed handles. The builder does NOT take that static
     //      marker on trust: its accept_folded_* helpers re-check the
     //      result's runtime type against the operand's (or the cast's

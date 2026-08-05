@@ -30,8 +30,8 @@ fn load_atomic_monotonic_align4() -> Result<(), IrError> {
         SyncScope::System,
         Align::new(4).expect("align 4"),
     );
-    let ld = b.build_int_load_atomic::<i32, _, _>(word, cfg, "ld.1")?;
-    b.build_ret(ld)?;
+    let ld = b.int_load_atomic::<i32, _, _>(word, cfg, "ld.1")?;
+    b.ret(ld)?;
     let text = format!("{m}");
     assert!(
         text.contains("%ld.1 = load atomic i32, ptr %0 monotonic, align 4\n"),
@@ -58,8 +58,8 @@ fn load_atomic_volatile_acquire_align8() -> Result<(), IrError> {
         Align::new(8).expect("align 8"),
     )
     .volatile();
-    let ld = b.build_int_load_atomic::<i32, _, _>(word, cfg, "ld.2")?;
-    b.build_ret(ld)?;
+    let ld = b.int_load_atomic::<i32, _, _>(word, cfg, "ld.2")?;
+    b.ret(ld)?;
     let text = format!("{m}");
     assert!(
         text.contains("%ld.2 = load atomic volatile i32, ptr %0 acquire, align 8\n"),
@@ -86,8 +86,8 @@ fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
         Align::new(16).expect("align 16"),
     )
     .volatile();
-    let ld = b.build_int_load_atomic::<i32, _, _>(word, cfg, "ld.3")?;
-    b.build_ret(ld)?;
+    let ld = b.int_load_atomic::<i32, _, _>(word, cfg, "ld.3")?;
+    b.ret(ld)?;
     let text = format!("{m}");
     assert!(
         text.contains(
@@ -118,8 +118,8 @@ fn store_atomic_monotonic_align4() -> Result<(), IrError> {
         SyncScope::System,
         Align::new(4).expect("align 4"),
     );
-    b.build_store_atomic(val, word, cfg)?;
-    b.build_ret_void()?;
+    b.store_atomic(val, word, cfg)?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("store atomic i32 23, ptr %0 monotonic, align 4\n"),
@@ -147,8 +147,8 @@ fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
         Align::new(4).expect("align 4"),
     )
     .volatile();
-    b.build_store_atomic(val, word, cfg)?;
-    b.build_ret_void()?;
+    b.store_atomic(val, word, cfg)?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("store atomic volatile i32 24, ptr %0 monotonic, align 4\n"),
@@ -176,8 +176,8 @@ fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
         Align::new(4).expect("align 4"),
     )
     .volatile();
-    b.build_store_atomic(val, word, cfg)?;
-    b.build_ret_void()?;
+    b.store_atomic(val, word, cfg)?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains(
@@ -207,8 +207,8 @@ fn verifier_rejects_atomic_load_release_ordering() -> Result<(), IrError> {
         SyncScope::System,
         Align::new(4).expect("align 4"),
     );
-    let ld = b.build_int_load_atomic::<i32, _, _>(word, cfg, "ld")?;
-    b.build_ret(ld)?;
+    let ld = b.int_load_atomic::<i32, _, _>(word, cfg, "ld")?;
+    b.ret(ld)?;
     let err = m
         .verify_borrowed()
         .expect_err("verifier must reject release-ordered atomic load");
@@ -236,8 +236,8 @@ fn verifier_rejects_atomic_store_acquire_ordering() -> Result<(), IrError> {
         SyncScope::System,
         Align::new(4).expect("align 4"),
     );
-    b.build_store_atomic(val, word, cfg)?;
-    b.build_ret_void()?;
+    b.store_atomic(val, word, cfg)?;
+    b.ret_void()?;
     let err = m
         .verify_borrowed()
         .expect_err("verifier must reject acquire-ordered atomic store");
@@ -268,8 +268,8 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
         SyncScope::System,
         Align::new(4).expect("align 4"),
     );
-    let _ = b.build_int_load_atomic::<llvmkit_ir::Width<17>, _, _>(word, cfg, "ld")?;
-    b.build_ret_void()?;
+    let _ = b.int_load_atomic::<llvmkit_ir::Width<17>, _, _>(word, cfg, "ld")?;
+    b.ret_void()?;
     let err = m
         .verify_borrowed()
         .expect_err("verifier must reject non-power-of-two atomic size");
@@ -300,8 +300,8 @@ fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
         SyncScope::System,
         Align::new(8).expect("align 8"),
     );
-    let _ = b.build_load_atomic(struct_ty, ptr, cfg, "v")?;
-    b.build_ret_void()?;
+    let _ = b.load_atomic(struct_ty, ptr, cfg, "v")?;
+    b.ret_void()?;
     let err = m
         .verify_borrowed()
         .expect_err("verifier must reject atomic load of struct type");
@@ -329,8 +329,8 @@ fn bitcast_int_to_fp_emits_text() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let bc = b.build_bitcast_int_to_fp(n, f32_ty, "bc")?;
-    b.build_ret(bc)?;
+    let bc = b.bitcast_int_to_fp(n, f32_ty, "bc")?;
+    b.ret(bc)?;
     let text = format!("{m}");
     assert!(
         text.contains("%bc = bitcast i32 %0 to float\n"),
@@ -354,7 +354,7 @@ fn default_constant_folder_folds_bitcast_int_to_fp() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let one_bits: IntValue<'_, i32, _> =
         i32_ty.const_int(0x3f80_0000_i32).into_erased().try_into()?;
-    let result = b.build_bitcast_int_to_fp(one_bits, f32_ty, "bc")?;
+    let result = b.bitcast_int_to_fp(one_bits, f32_ty, "bc")?;
     let folded =
         ConstantFloatValue::<f32, _>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
     assert!(folded.ap_float().is_exactly_value_f64(1.0));
@@ -374,8 +374,8 @@ fn bitcast_fp_to_int_emits_text() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: llvmkit_ir::FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
-    let bc = b.build_bitcast_fp_to_int(n, i64_ty, "bc")?;
-    b.build_ret(bc)?;
+    let bc = b.bitcast_fp_to_int(n, i64_ty, "bc")?;
+    b.ret(bc)?;
     let text = format!("{m}");
     assert!(
         text.contains("%bc = bitcast double %0 to i64\n"),

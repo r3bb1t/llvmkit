@@ -13,7 +13,7 @@ fn main() {
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
-    let (terminated, _ret) = b.build_ret_void();
+    let (terminated, _ret) = b.ret_void();
 
     let _cursor = BlockCursor::at_start(terminated);
 }

@@ -25,7 +25,7 @@
 //! `FunctionValue<'ctx, ()>`; parsed / runtime IR uses
 //! `FunctionValue<'ctx, Dyn>`. The marker propagates to the function's
 //! basic blocks and to any [`IrBuilder`](crate::IrBuilder) positioned
-//! inside them, so the builder's `build_ret` can be statically typed.
+//! inside them, so the builder's `ret` can be statically typed.
 
 use core::cell::{Cell, RefCell};
 use core::iter::FusedIterator;

@@ -569,7 +569,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
     let f = m.add_function_dyn("api_fold_inst", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let add = b.build_int_add::<i32, _, _, _>(c2_i, c5_i, "sum")?;
+    let add = b.int_add::<i32, _, _, _>(c2_i, c5_i, "sum")?;
     let instruction = InstructionView::try_from(b.view(add).into_erased())?;
     assert_eq!(
         constant_fold_inst_operands(
@@ -614,9 +614,9 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
-    let concrete = b.build_freeze(i32_ty.const_int(42_i32), "concrete")?;
-    let undef = b.build_freeze(i32_ty.as_type().get_undef(), "undef")?;
-    let poison = b.build_freeze(i32_ty.as_type().get_poison(), "poison")?;
+    let concrete = b.freeze(i32_ty.const_int(42_i32), "concrete")?;
+    let undef = b.freeze(i32_ty.as_type().get_undef(), "undef")?;
+    let poison = b.freeze(i32_ty.as_type().get_poison(), "poison")?;
 
     let concrete_inst = b.view(concrete).as_view();
     let undef_inst = b.view(undef).as_view();
@@ -737,7 +737,7 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
     assert!(denormal.is_denormal());
     let lhs = f32_ty.const_ap_float(&denormal)?;
     let rhs = f32_ty.const_ap_float(&denormal)?;
-    let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
+    let add = b.fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
     let instruction = InstructionView::try_from(b.view(add).into_erased())?;
 
     let folded = constant_fold_instruction(&instruction, &dl, None)?
@@ -777,7 +777,7 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
     let denormal = ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
     let lhs = f32_ty.const_ap_float(&denormal)?;
     let rhs = f32_ty.const_ap_float(&denormal)?;
-    let add = b.build_fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
+    let add = b.fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
     let instruction = InstructionView::try_from(b.view(add).into_erased())?;
 
     let folded = constant_fold_instruction(&instruction, &dl, None)?
@@ -863,8 +863,7 @@ fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let one = f32_ty.const_float(1.0);
     let two = f32_ty.const_float(2.0);
-    let add =
-        b.build_fp_add_fmf::<f32, _, _, _>(one, two, FastMathFlags::NO_SIGNED_ZEROS, "sum")?;
+    let add = b.fp_add_fmf::<f32, _, _, _>(one, two, FastMathFlags::NO_SIGNED_ZEROS, "sum")?;
     let instruction = InstructionView::try_from(b.view(add).into_erased())?;
     let operands = [one.as_constant(), two.as_constant()];
 

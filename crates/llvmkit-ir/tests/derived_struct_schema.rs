@@ -63,7 +63,7 @@ fn derive_builds_nested_named_structs_and_accessors() -> Result<(), IrError> {
         adjusted_rect,
         "rebuilt",
     )?;
-    b.build_ret(rebuilt)?;
+    b.ret(rebuilt)?;
 
     let text = format!("{m}");
     assert!(text.contains("%Point = type { i32, i32 }"), "got:\n{text}");
@@ -119,7 +119,7 @@ fn derive_try_from_raw_ir_values() -> Result<(), IrError> {
     let placement = WindowPlacementValue::try_from(arg)?;
     let normal_position = placement.normal_position(&b)?;
     let _: RectValue<'_, _> = normal_position;
-    b.build_ret_void();
+    b.ret_void();
     Ok(())
 }
 
@@ -140,7 +140,7 @@ fn derive_struct_fields_unpacks_top_level_fields() -> Result<(), IrError> {
     let _: RectValue<'_, _> = normal_position;
     let rebuilt =
         WindowPlacementValue::build(m.as_view(), &b, show_cmd, normal_position, "rebuilt")?;
-    b.build_ret(rebuilt)?;
+    b.ret(rebuilt)?;
     let text = format!("{m}");
     assert!(
         text.contains("define %WindowPlacement @normalize_fields(i32 %0, %Rect %1)"),
@@ -173,7 +173,7 @@ fn derive_build_accepts_fields_named_like_helper_parameters() -> Result<(), IrEr
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let value = CollisionNamesValue::build(m.as_view(), &b, 1_i32, 2_i32, 3_i32, "collision")?;
-    b.build_ret(value)?;
+    b.ret(value)?;
     let text = format!("{m}");
     assert!(
         text.contains("ret %CollisionNames %collision.name"),
@@ -197,7 +197,7 @@ fn derive_emits_into_call_arg_for_struct_schema() -> Result<(), IrError> {
     let ids = <(_,) as CallArgs<'_, (Point,), _>>::lower((point,), (&m).into())?;
 
     assert_eq!(ids.len(), 1, "expected one lowered call-argument id");
-    b.build_ret(0_i32)?;
+    b.ret(0_i32)?;
     Ok(())
 }
 

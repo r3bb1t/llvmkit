@@ -33,9 +33,9 @@ fn fmf_propagates_from_builder_to_fadd() -> Result<(), IrError> {
     assert_eq!(b.fast_math_flags(), FastMathFlags::fast());
     assert!(b.fast_math_flags().is_fast());
     let p: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
-    let add = b.build_fp_add(p, p, "add")?;
-    let div = b.build_fp_div(add, add, "div")?;
-    b.build_ret(div)?;
+    let add = b.fp_add(p, p, "add")?;
+    let div = b.fp_div(add, add, "div")?;
+    b.ret(div)?;
     let text = format!("{m}");
     assert!(
         text.contains("%add = fadd fast float %0, %0\n"),
@@ -65,8 +65,8 @@ fn clear_fast_math_flags_drops_flags_from_subsequent_ops() -> Result<(), IrError
         .clear_fast_math_flags();
     assert!(b.fast_math_flags().is_empty());
     let p: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_fp_div(p, p, "r")?;
-    b.build_ret(r)?;
+    let r = b.fp_div(p, p, "r")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%r = fdiv float %0, %0\n"), "got:\n{text}");
     Ok(())
@@ -89,8 +89,8 @@ fn fmf_allow_reciprocal_propagates_to_fdiv() -> Result<(), IrError> {
         .with_fast_math_flags(fmf);
     assert_eq!(b.fast_math_flags(), fmf);
     let p: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_fp_div(p, p, "r")?;
-    b.build_ret(r)?;
+    let r = b.fp_div(p, p, "r")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%r = fdiv arcp float %0, %0\n"),
@@ -114,12 +114,12 @@ fn fmf_propagates_to_fcmp_oeq() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     assert!(b.fast_math_flags().is_empty());
     let p: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
-    let c0 = b.build_fcmp_oeq::<f32, _, _, _>(p, p, "c0")?;
+    let c0 = b.fcmp_oeq::<f32, _, _, _>(p, p, "c0")?;
     let fmf = FastMathFlags::ALLOW_RECIPROCAL;
     let b = b.with_fast_math_flags(fmf);
     assert_eq!(b.fast_math_flags(), fmf);
-    let c1 = b.build_fcmp_oeq::<f32, _, _, _>(p, p, "c1")?;
-    b.build_ret(c1)?;
+    let c1 = b.fcmp_oeq::<f32, _, _, _>(p, p, "c1")?;
+    b.ret(c1)?;
     let text = format!("{m}");
     assert!(
         text.contains("%c0 = fcmp oeq float %0, %0\n"),
@@ -152,14 +152,14 @@ fn fmf_save_and_restore_round_trip() -> Result<(), IrError> {
     let orig = b.fast_math_flags();
     let b = b.with_fast_math_flags(FastMathFlags::ALLOW_RECIPROCAL);
     let p: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_fp_add(p, p, "r")?;
+    let r = b.fp_add(p, p, "r")?;
     assert!(
         b.fast_math_flags()
             .contains(FastMathFlags::ALLOW_RECIPROCAL)
     );
     let b = b.with_fast_math_flags(orig);
     assert!(b.fast_math_flags().is_empty());
-    b.build_ret(r)?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%r = fadd arcp float %0, %0\n"),
@@ -171,7 +171,7 @@ fn fmf_save_and_restore_round_trip() -> Result<(), IrError> {
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, UnaryOperators)`
 /// (line 535-555): `Builder.CreateUnOp(Instruction::FNeg, V)` followed by
 /// `Builder.CreateFNegFMF(V, I)` where `I` carries `nnan` + `nsz`. We mirror
-/// both shapes via `build_float_neg` / `build_float_neg_with_flags` and
+/// both shapes via `fp_neg` / `fp_neg_fmf` and
 /// assert the exposed `FnegInst` FMF bits directly.
 #[test]
 fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
@@ -182,7 +182,7 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
-    let n0 = b.build_float_neg::<f32, _, _>(p, "n0")?;
+    let n0 = b.fp_neg::<f32, _, _>(p, "n0")?;
     let Some(InstructionKind::FNeg(n0_inst)) =
         InstructionView::try_from(b.view(n0).into_erased())?.kind()
     else {
@@ -190,14 +190,14 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
     };
     assert!(n0_inst.fast_math_flags().is_empty());
     let fmf = FastMathFlags::NO_NANS | FastMathFlags::NO_SIGNED_ZEROS;
-    let n1 = b.build_float_neg_with_flags::<f32, _, _>(n0, fmf, "n1")?;
+    let n1 = b.fp_neg_fmf::<f32, _, _>(n0, fmf, "n1")?;
     let Some(InstructionKind::FNeg(n1_inst)) =
         InstructionView::try_from(b.view(n1).into_erased())?.kind()
     else {
         panic!("expected n1 to be fneg");
     };
     assert_eq!(n1_inst.fast_math_flags(), fmf);
-    b.build_ret(n1)?;
+    b.ret(n1)?;
     let text = format!("{m}");
     assert!(
         text.contains("%n0 = fneg float %0\n"),
@@ -224,23 +224,23 @@ fn fmf_accumulates_contract_approx_reassoc_on_fmul() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     assert!(b.fast_math_flags().is_empty());
     let p: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
-    let _ = b.build_fp_add(p, p, "no_contract")?;
+    let _ = b.fp_add(p, p, "no_contract")?;
 
     let contract = FastMathFlags::ALLOW_CONTRACT;
     let b = b.with_fast_math_flags(contract);
     assert_eq!(b.fast_math_flags(), contract);
-    let _ = b.build_fp_add(p, p, "contract")?;
+    let _ = b.fp_add(p, p, "contract")?;
 
     let contract_afn = contract | FastMathFlags::APPROX_FUNC;
     let b = b.with_fast_math_flags(contract_afn);
     assert_eq!(b.fast_math_flags(), contract_afn);
-    let _ = b.build_fp_mul(p, p, "mul_contract_afn")?;
+    let _ = b.fp_mul(p, p, "mul_contract_afn")?;
 
     let contract_afn_reassoc = contract_afn | FastMathFlags::ALLOW_REASSOC;
     let b = b.with_fast_math_flags(contract_afn_reassoc);
     assert_eq!(b.fast_math_flags(), contract_afn_reassoc);
-    let r = b.build_fp_mul(p, p, "mul_contract_afn_reassoc")?;
-    b.build_ret(r)?;
+    let r = b.fp_mul(p, p, "mul_contract_afn_reassoc")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%no_contract = fadd float %0, %0\n"),
@@ -288,7 +288,7 @@ macro_rules! fcmp_predicate_emits {
             let ($lhs, $rhs) = (lhs, rhs);
             $mk
         }?;
-        b.build_ret(r)?;
+        b.ret(r)?;
         let text = format!("{m}");
         let needle = format!(
             "%r = fcmp {expected_pred} float %0, %1
@@ -312,7 +312,7 @@ macro_rules! fcmp_predicate_emits {
 #[test]
 fn build_fcmp_oeq_emits_oeq() -> Result<(), IrError> {
     fcmp_predicate_emits!("oeq", |b, lhs, rhs| {
-        b.build_fcmp_oeq::<f32, _, _, _>(lhs, rhs, "r")
+        b.fcmp_oeq::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -320,7 +320,7 @@ fn build_fcmp_oeq_emits_oeq() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_ogt_emits_ogt() -> Result<(), IrError> {
     fcmp_predicate_emits!("ogt", |b, lhs, rhs| {
-        b.build_fcmp_ogt::<f32, _, _, _>(lhs, rhs, "r")
+        b.fcmp_ogt::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -328,7 +328,7 @@ fn build_fcmp_ogt_emits_ogt() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_oge_emits_oge() -> Result<(), IrError> {
     fcmp_predicate_emits!("oge", |b, lhs, rhs| {
-        b.build_fcmp_oge::<f32, _, _, _>(lhs, rhs, "r")
+        b.fcmp_oge::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -336,7 +336,7 @@ fn build_fcmp_oge_emits_oge() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_olt_emits_olt() -> Result<(), IrError> {
     fcmp_predicate_emits!("olt", |b, lhs, rhs| {
-        b.build_fcmp_olt::<f32, _, _, _>(lhs, rhs, "r")
+        b.fcmp_olt::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -344,7 +344,7 @@ fn build_fcmp_olt_emits_olt() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_ole_emits_ole() -> Result<(), IrError> {
     fcmp_predicate_emits!("ole", |b, lhs, rhs| {
-        b.build_fcmp_ole::<f32, _, _, _>(lhs, rhs, "r")
+        b.fcmp_ole::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -352,7 +352,7 @@ fn build_fcmp_ole_emits_ole() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_ord_emits_ord() -> Result<(), IrError> {
     fcmp_predicate_emits!("ord", |b, lhs, rhs| {
-        b.build_fcmp_ord::<f32, _, _, _>(lhs, rhs, "r")
+        b.fcmp_ord::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -360,7 +360,7 @@ fn build_fcmp_ord_emits_ord() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_uno_emits_uno() -> Result<(), IrError> {
     fcmp_predicate_emits!("uno", |b, lhs, rhs| {
-        b.build_fcmp_uno::<f32, _, _, _>(lhs, rhs, "r")
+        b.fcmp_uno::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -368,7 +368,7 @@ fn build_fcmp_uno_emits_uno() -> Result<(), IrError> {
 #[test]
 fn build_fcmp_ueq_emits_ueq() -> Result<(), IrError> {
     fcmp_predicate_emits!("ueq", |b, lhs, rhs| {
-        b.build_fcmp_ueq::<f32, _, _, _>(lhs, rhs, "r")
+        b.fcmp_ueq::<f32, _, _, _>(lhs, rhs, "r")
     })
 }
 
@@ -394,11 +394,11 @@ fn build_fp_phi_emits_phi_with_double_kind() -> Result<(), IrError> {
     // entry: br join(%0) — the incoming f64 rides the edge into the head-phi.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
-    b.build_br_with_args(join_label, &[p.into_erased()])?;
+    b.br_with_args(join_label, &[p.into_erased()])?;
     // join: ret %p (the head-phi param, where the phi result was used).
     let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi: FloatValue<'_, f64, _> = params[0].try_into()?;
-    b2.build_ret(phi)?;
+    b2.ret(phi)?;
     let text = format!("{m}");
     // The param-phi is unnamed, so assert on the load-bearing `phi double`
     // kind + incoming pair rather than a `%merge =` label.
@@ -426,11 +426,11 @@ fn build_pointer_phi_emits_phi_with_ptr() -> Result<(), IrError> {
     // entry: br join(%0) — the incoming ptr rides the edge into the head-phi.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    b.build_br_with_args(join_label, &[p.into_erased()])?;
+    b.br_with_args(join_label, &[p.into_erased()])?;
     // join: ret %p (the head-phi param, where the phi result was used).
     let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi: PointerValue<'_, _> = params[0].try_into()?;
-    b2.build_ret(phi)?;
+    b2.ret(phi)?;
     let text = format!("{m}");
     // The param-phi is unnamed, so assert on the load-bearing `phi ptr`
     // kind + incoming pair rather than a `%merge =` label.

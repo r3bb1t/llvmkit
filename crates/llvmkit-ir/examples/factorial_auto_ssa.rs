@@ -1,6 +1,6 @@
 //! Auto-SSA twin of `examples/factorial.rs`: the SAME factorial loop,
 //! built through [`SsaBuilder`]'s Braun on-the-fly SSA layer instead of
-//! hand-rolled `build_int_phi` + `add_incoming` calls. Byte-parity locked
+//! hand-rolled `int_phi` + `add_incoming` calls. Byte-parity locked
 //! against the manual example by `tests/factorial_auto_ssa_example.rs`
 //! (see that file for why this is the flagship D11 example-lock).
 //!
@@ -34,7 +34,7 @@
 //! - `def_int_var`/`use_int_var` reading and writing typed variables as
 //!   if they were mutable locals -- no explicit phi construction.
 //! - The phi RESULT names (`acc`, `i`) come from the declared variable
-//!   names, matching the manual example's `build_int_phi::<i32, _>("acc")`
+//!   names, matching the manual example's `int_phi::<i32, _>("acc")`
 //!   naming exactly.
 //! - Reading `acc`/`i` in `loop` BEFORE that block's own back-edge is
 //!   recorded creates Braun's "incomplete" operandless phis; sealing
@@ -94,7 +94,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     b.switch_to_block(entry)?;
     let is_zero = b
         .ins()?
-        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
+        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
     b.def_int_var(acc_var, 1_i32)?;
     b.def_int_var(i_var, n)?;
     b.cond_br(is_zero, base, loop_bb)?;
@@ -111,16 +111,16 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     // variable, head-inserted in creation order (each new phi lands after
     // the block's existing leading phis). Reading `acc` THEN `i` therefore
     // prints `acc` first, matching the manual example's phi creation order
-    // (`build_int_phi("acc")` before `build_int_phi("i")`). `next_acc`/
+    // (`int_phi("acc")` before `int_phi("i")`). `next_acc`/
     // `next_i`/`done` reuse the manual example's exact instruction names.
     b.switch_to_block(loop_bb)?;
     let acc = b.use_int_var(acc_var)?;
     let i = b.use_int_var(i_var)?;
-    let next_acc = b.ins()?.build_int_mul(acc, i, "next_acc")?;
-    let next_i = b.ins()?.build_int_sub(i, 1_i32, "next_i")?;
+    let next_acc = b.ins()?.int_mul(acc, i, "next_acc")?;
+    let next_i = b.ins()?.int_sub(i, 1_i32, "next_i")?;
     let done = b
         .ins()?
-        .build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
+        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
     b.def_int_var(acc_var, next_acc)?;
     b.def_int_var(i_var, next_i)?;
     b.cond_br(done, exit, loop_bb)?;

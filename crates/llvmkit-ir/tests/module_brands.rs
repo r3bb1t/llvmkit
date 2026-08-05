@@ -48,8 +48,8 @@ fn bare_brand_builds_a_module() {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::at_end(entry);
     let (lhs, rhs) = m.view(f).params();
-    let sum = b.build_int_add(lhs, rhs, "sum").expect("add");
-    b.build_ret(sum).expect("ret");
+    let sum = b.int_add(lhs, rhs, "sum").expect("add");
+    b.ret(sum).expect("ret");
     let verified = m.verify().expect("verifies");
     assert!(format!("{verified}").contains("define i32 @add"));
 }
@@ -342,8 +342,8 @@ fn a_named_brand_emits_byte_identical_ir() -> Result<(), IrError> {
         let entry = module.view(f).append_basic_block(module, "entry");
         let builder = IrBuilder::new_for::<Dyn>(module).position_at_end(entry);
         let n: IntValue<'_, i32, _> = module.view(f).param(0)?.try_into()?;
-        let sum = builder.build_int_add(n, 1_i32, "sum")?;
-        builder.build_ret(sum)?;
+        let sum = builder.int_add(n, 1_i32, "sum")?;
+        builder.ret(sum)?;
         Ok(format!("{module}"))
     }
 

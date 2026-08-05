@@ -1,4 +1,4 @@
-//! End-to-end Phase A3 + Phase D-lite + Phase C `build_trunc` demo.
+//! End-to-end Phase A3 + Phase D-lite + Phase C `trunc` demo.
 //!
 //! Builds the equivalent of:
 //!
@@ -74,12 +74,12 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     // arriving as typed `i64` values.
     let _rdx: IntValue<'_, i64, _> = m.view(add_fn).param(3)?.try_into()?;
 
-    let t0 = b.build_trunc(rax, i32_ty, "")?;
-    let t1 = b.build_trunc(rbx, i32_ty, "")?;
-    let t2 = b.build_trunc(rcx, i32_ty, "")?;
-    let s1 = b.build_int_add(t0, t1, "add1")?;
-    let s2 = b.build_int_add(s1, t2, "add2")?;
-    b.build_ret(s2)?;
+    let t0 = b.trunc(rax, i32_ty, "")?;
+    let t1 = b.trunc(rbx, i32_ty, "")?;
+    let t2 = b.trunc(rcx, i32_ty, "")?;
+    let s1 = b.int_add(t0, t1, "add1")?;
+    let s2 = b.int_add(s1, t2, "add2")?;
+    b.ret(s2)?;
 
     // ---- `main`: no params, returns i32, ret-attr `noundef`. ----
     let main_sig = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
@@ -93,7 +93,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let b = IrBuilder::at_end(entry);
     let one = i32_ty.const_int(1_i32);
     let one_v = IntValue::<i32, _>::try_from(one.into_erased())?;
-    b.build_ret(one_v)?;
+    b.ret(one_v)?;
 
     Ok(())
 }

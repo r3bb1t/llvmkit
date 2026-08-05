@@ -3,7 +3,7 @@
 //!
 //! Closest upstream behaviour: LLVM's verifier
 //! (`Verifier::visitIndirectBrInst`) rejects an `indirectbr` whose address
-//! operand is not a pointer *at runtime*. llvmkit's `build_indirectbr` binds
+//! operand is not a pointer *at runtime*. llvmkit's `indirectbr` binds
 //! the address by `IntoPointerValue<'ctx, B>`, so a typed non-pointer value
 //! handle cannot type-check — the pointer-ness check moves from `verify()` to
 //! compile time.
@@ -32,7 +32,7 @@ fn main() {
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
 
     // `IntValue<'_, i32, _>` does not implement `IntoPointerValue`, so it
-    // cannot be an `indirectbr` address: `build_indirectbr` does not
+    // cannot be an `indirectbr` address: `indirectbr` does not
     // type-check.
-    let _ = b.build_indirectbr(addr, "");
+    let _ = b.indirectbr(addr, "");
 }

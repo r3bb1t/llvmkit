@@ -3,12 +3,12 @@
 //! Mirrors the type-level distinction LLVM C++ keeps implicit at the
 //! `Function::getReturnType()` boundary: in C++ you read the return
 //! type at runtime and pattern-match on it; in Rust we encode it in
-//! the type system so the IrBuilder can reject a `build_ret(int_value)`
+//! the type system so the IrBuilder can reject a `ret(int_value)`
 //! against a `void`-returning function at compile time.
 //!
 //! The marker is the bare type the caller already names:
 //!
-//! - `()` — `void` return; the builder exposes only `build_ret_void`.
+//! - `()` — `void` return; the builder exposes only `ret_void`.
 //! - `bool` / `i8` / `i16` / `i32` / `i64` / `i128` / [`crate::IntDyn`]
 //!   — `iN` return for the matching width.
 //! - `f32` / `f64` / [`crate::Half`] / [`crate::BFloat`] /

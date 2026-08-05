@@ -122,7 +122,7 @@ fn a_half_authored_module_is_finished_on_another_thread() -> Result<(), IrError>
     {
         let builder = IrBuilder::new_for::<Dyn>(&module).position_at_end_dyn(entry)?;
         let n: IntValue<'_, i32, _> = module.view(f).param(0)?.try_into()?;
-        builder.build_int_add(n, 1_i32, "sum")?;
+        builder.int_add(n, 1_i32, "sum")?;
         // Deliberately no terminator yet: the module is unfinished, and an
         // unfinished module is exactly what could not previously be moved.
     }
@@ -141,7 +141,7 @@ fn a_half_authored_module_is_finished_on_another_thread() -> Result<(), IrError>
             .expect("the add emitted on the other thread")
             .to_erased()
             .try_into()?;
-        builder.build_ret(sum)?;
+        builder.ret(sum)?;
 
         // Verification also happens on the far thread — `verify` consumes the
         // token, which is only possible because the token is owned here.
@@ -171,7 +171,7 @@ fn splitting_authoring_across_threads_emits_identical_ir() -> Result<(), IrError
         let entry = module.view(f).append_basic_block(module, "entry").id();
         let builder = IrBuilder::new_for::<Dyn>(module).position_at_end_dyn(entry)?;
         let n: IntValue<'_, i32, _> = module.view(f).param(0)?.try_into()?;
-        builder.build_int_add(n, 7_i32, "sum")?;
+        builder.int_add(n, 7_i32, "sum")?;
         Ok((f, entry))
     }
 
@@ -191,7 +191,7 @@ fn splitting_authoring_across_threads_emits_identical_ir() -> Result<(), IrError
             .expect("the add")
             .to_erased()
             .try_into()?;
-        builder.build_ret(sum)?;
+        builder.ret(sum)?;
         Ok(())
     }
 
@@ -495,12 +495,9 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     let f = b.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = b.view(f).append_basic_block(&b, "entry");
     let builder = IrBuilder::with_folder(&b, NoFolder).position_at_end(entry);
-    let sum = builder.build_int_add::<i8, _, _, _>(
-        i8_ty.const_int(1_u8),
-        i8_ty.const_int(2_u8),
-        "sum",
-    )?;
-    builder.build_ret_void()?;
+    let sum =
+        builder.int_add::<i8, _, _, _>(i8_ty.const_int(1_u8), i8_ty.const_int(2_u8), "sum")?;
+    builder.ret_void()?;
     let inst = InstructionView::try_from(b.view(sum).into_erased())?;
 
     assert!(matches!(
@@ -527,12 +524,9 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     let a_entry = a.view(a_fn).append_basic_block(&a, "entry");
     let a_builder = IrBuilder::with_folder(&a, NoFolder).position_at_end(a_entry);
     let a_i8 = a.i8_type();
-    let a_sum = a_builder.build_int_add::<i8, _, _, _>(
-        a_i8.const_int(1_u8),
-        a_i8.const_int(2_u8),
-        "sum",
-    )?;
-    a_builder.build_ret_void()?;
+    let a_sum =
+        a_builder.int_add::<i8, _, _, _>(a_i8.const_int(1_u8), a_i8.const_int(2_u8), "sum")?;
+    a_builder.ret_void()?;
     assert!(matches!(
         inst.push_debug_record(
             &b,

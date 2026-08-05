@@ -16,7 +16,7 @@ fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    b.build_alloca_dyn(
+    b.alloca_dyn(
         m.ptr_type(0),
         None,
         MaybeAlign::NONE,
@@ -24,7 +24,7 @@ fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
         AllocaFlags::none().with_swifterror(),
         "e",
     )?;
-    b.build_ret_void()?;
+    b.ret_void()?;
     m.verify_borrowed()?;
     let text = format!("{m}");
     assert!(
@@ -42,7 +42,7 @@ fn inalloca_alloca_prints() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    b.build_alloca_dyn(
+    b.alloca_dyn(
         m.i32_type(),
         None,
         MaybeAlign::NONE,
@@ -50,7 +50,7 @@ fn inalloca_alloca_prints() -> Result<(), IrError> {
         AllocaFlags::none().with_inalloca(),
         "i",
     )?;
-    b.build_ret_void()?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(text.contains("%i = alloca inalloca i32, align 4"), "{text}");
     Ok(())
@@ -64,7 +64,7 @@ fn swifterror_non_pointer_alloca_rejected() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    b.build_alloca_dyn(
+    b.alloca_dyn(
         m.i32_type(),
         None,
         MaybeAlign::NONE,
@@ -72,7 +72,7 @@ fn swifterror_non_pointer_alloca_rejected() -> Result<(), IrError> {
         AllocaFlags::none().with_swifterror(),
         "e",
     )?;
-    b.build_ret_void()?;
+    b.ret_void()?;
     let err = m
         .verify_borrowed()
         .expect_err("swifterror i32 alloca must be rejected");
@@ -94,7 +94,7 @@ fn swifterror_array_alloca_rejected() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let count: IntValue<IntDyn, _> = i32_ty.const_int_checked(4_i64)?.into_erased().try_into()?;
-    b.build_alloca_dyn(
+    b.alloca_dyn(
         m.ptr_type(0),
         Some(count),
         MaybeAlign::NONE,
@@ -102,7 +102,7 @@ fn swifterror_array_alloca_rejected() -> Result<(), IrError> {
         AllocaFlags::none().with_swifterror(),
         "e",
     )?;
-    b.build_ret_void()?;
+    b.ret_void()?;
     let err = m
         .verify_borrowed()
         .expect_err("array swifterror alloca must be rejected");
@@ -125,7 +125,7 @@ fn swifterror_size_one_alloca_verifies_and_drops_canonical_size() -> Result<(), 
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let one: IntValue<IntDyn, _> = i32_ty.const_int_checked(1_i64)?.into_erased().try_into()?;
-    b.build_alloca_dyn(
+    b.alloca_dyn(
         m.ptr_type(0),
         Some(one),
         MaybeAlign::NONE,
@@ -133,7 +133,7 @@ fn swifterror_size_one_alloca_verifies_and_drops_canonical_size() -> Result<(), 
         AllocaFlags::none().with_swifterror(),
         "e",
     )?;
-    b.build_ret_void()?;
+    b.ret_void()?;
     m.verify_borrowed()?;
     let text = format!("{m}");
     assert!(

@@ -32,11 +32,11 @@
 //! - `i32` typed function builder.
 //! - `IntoIntValue<i32>` lifting Rust scalars (`0_i32`, `1_i32`) at
 //!   call sites without an intermediate constant binding.
-//! - `build_int_cmp::<i32, _, _, _>` returning `IntValue<bool>`.
+//! - `int_cmp::<i32, _, _, _>` returning `IntValue<bool>`.
 //! - `append_block_with_named_params` creating the `loop` header whose two
 //!   named parameters ARE the accumulator/counter head-phis: `params[0]` is
 //!   `%acc`, `params[1]` is `%i`.
-//! - `build_cond_br_with_args` seeding those head-phis with block
+//! - `cond_br_with_args` seeding those head-phis with block
 //!   arguments: `entry` carries the initial values `[ 1, %n ]` down the
 //!   loop edge, and the loop latch carries the back-edge values
 //!   `[ %next_acc, %next_i ]`. The back-edge values are computed in the
@@ -87,8 +87,8 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     // arguments, or into `loop` carrying the header-phis' initial values
     // `[ acc = 1, i = %n ]`.
     let b = IrBuilder::at_end(entry);
-    let is_zero = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
-    b.build_cond_br_with_args(
+    let is_zero = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
+    b.cond_br_with_args(
         is_zero,
         base_label,
         &[],
@@ -98,7 +98,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
 
     // base: ret i32 1
     let b = IrBuilder::at_end(base);
-    b.build_ret(1_i32)?;
+    b.ret(1_i32)?;
 
     // loop: `params[0]`/`params[1]` are the `%acc`/`%i` head-phis. Compute the
     // back-edge values from them, then re-enter `loop` carrying
@@ -107,10 +107,10 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let b = IrBuilder::at_end(loop_bb);
     let acc: IntValue<'_, i32, _> = params[0].try_into()?;
     let i: IntValue<'_, i32, _> = params[1].try_into()?;
-    let next_acc = b.build_int_mul(acc, i, "next_acc")?;
-    let next_i = b.build_int_sub(i, 1_i32, "next_i")?;
-    let done = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
-    b.build_cond_br_with_args(
+    let next_acc = b.int_mul(acc, i, "next_acc")?;
+    let next_i = b.int_sub(i, 1_i32, "next_i")?;
+    let done = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, next_i, 0_i32, "done")?;
+    b.cond_br_with_args(
         done,
         exit_label,
         &[],
@@ -120,7 +120,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
 
     // exit: ret i32 %next_acc
     let b = IrBuilder::at_end(exit);
-    b.build_ret(next_acc)?;
+    b.ret(next_acc)?;
     Ok(())
 }
 

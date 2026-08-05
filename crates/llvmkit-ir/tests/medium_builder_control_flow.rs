@@ -1,5 +1,5 @@
-//! Phase C-cf coverage: `build_br` / `build_cond_br` /
-//! `build_unreachable` plus their AsmWriter output.
+//! Phase C-cf coverage: `br` / `cond_br` /
+//! `unreachable` plus their AsmWriter output.
 //!
 //! ## Upstream provenance
 //!
@@ -21,9 +21,9 @@ fn build_br_emits_unconditional() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let exit = m.view(f).append_basic_block(&m, "exit");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    b.build_br(&exit)?;
+    b.br(&exit)?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exit);
-    b.build_ret_void()?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(text.contains("br label %exit"), "got:\n{text}");
     Ok(())
@@ -44,12 +44,12 @@ fn build_cond_br_branches_on_i1() -> Result<(), IrError> {
     let else_bb = m.view(f).append_basic_block(&m, "else");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
-    b.build_cond_br(cond, &then_bb, &else_bb)?;
+    let cond = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
+    b.cond_br(cond, &then_bb, &else_bb)?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
-    b.build_ret_void()?;
+    b.ret_void()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
-    b.build_ret_void()?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("br i1 %is_zero, label %then, label %else"),
@@ -70,7 +70,7 @@ fn build_unreachable_terminator() -> Result<(), IrError> {
     let f = m.add_function_dyn("dead", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, inst) = b.build_unreachable();
+    let (_sealed, inst) = b.unreachable();
     assert!(matches!(
         inst.terminator_kind(),
         Some(TerminatorKind::Unreachable(_))

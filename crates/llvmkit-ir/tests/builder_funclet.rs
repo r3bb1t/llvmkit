@@ -29,10 +29,10 @@ fn catchswitch_within_none_unwind_to_caller() -> Result<(), IrError> {
     {
         // Stub a terminator on the handler so the block is well-formed.
         let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(cp1_block);
-        bb_b.build_unreachable();
+        bb_b.unreachable();
     }
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(cs1_block);
-    let (_sealed, cs) = b.build_catch_switch_within_none_to_caller("cs1")?;
+    let (_sealed, cs) = b.catch_switch_within_none_to_caller("cs1")?;
     let _closed = cs.add_handler(cp1_label)?.finish();
     let text = format!("{m}");
     assert!(
@@ -60,15 +60,15 @@ fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
     let cp_label = cp_block.id();
     {
         let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exit);
-        bb_b.build_ret_void()?;
+        bb_b.ret_void()?;
     }
     let b_cs = IrBuilder::new_for::<Dyn>(&m).position_at_end(cs_block);
-    let (_sealed, cs) = b_cs.build_catch_switch_within_none_to_caller("cs1")?;
+    let (_sealed, cs) = b_cs.catch_switch_within_none_to_caller("cs1")?;
     let cs_closed = cs.add_handler(cp_label)?.finish();
     let cs_value = cs_closed.to_erased();
     let b_cp = IrBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
-    let _cp = b_cp.build_catch_pad(cs_value, Vec::<llvmkit_ir::value::Value<'_, _>>::new(), "")?;
-    b_cp.build_unreachable();
+    let _cp = b_cp.catch_pad(cs_value, Vec::<llvmkit_ir::value::Value<'_, _>>::new(), "")?;
+    b_cp.unreachable();
     let text = format!("{m}");
     assert!(text.contains("catchpad within %cs1 []"), "got:\n{text}");
     Ok(())
@@ -92,9 +92,8 @@ fn cleanuppad_within_none_empty_args() -> Result<(), IrError> {
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let _ =
-        b.build_cleanup_pad_within_none(Vec::<llvmkit_ir::value::Value<'_, _>>::new(), "clean.1")?;
-    b.build_unreachable();
+    let _ = b.cleanup_pad_within_none(Vec::<llvmkit_ir::value::Value<'_, _>>::new(), "clean.1")?;
+    b.unreachable();
     let text = format!("{m}");
     assert!(
         text.contains("%clean.1 = cleanuppad within none []"),
@@ -118,9 +117,8 @@ fn cleanupret_unwind_to_caller() -> Result<(), IrError> {
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let cp =
-        b.build_cleanup_pad_within_none(Vec::<llvmkit_ir::value::Value<'_, _>>::new(), "clean")?;
-    let _ = b.build_cleanup_ret_to_caller(cp.to_erased(), "")?;
+    let cp = b.cleanup_pad_within_none(Vec::<llvmkit_ir::value::Value<'_, _>>::new(), "clean")?;
+    let _ = b.cleanup_ret_to_caller(cp.to_erased(), "")?;
     let text = format!("{m}");
     assert!(
         text.contains("cleanupret from %clean unwind to caller"),
@@ -154,19 +152,19 @@ fn catchret_to_label() -> Result<(), IrError> {
     let return_label = return_block.id();
     {
         let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(return_block);
-        bb_b.build_ret_void()?;
+        bb_b.ret_void()?;
     }
     let b_cs = IrBuilder::new_for::<Dyn>(&m).position_at_end(cs_block);
-    let (_sealed, cs) = b_cs.build_catch_switch_within_none_to_caller("cs")?;
+    let (_sealed, cs) = b_cs.catch_switch_within_none_to_caller("cs")?;
     let cs_closed = cs.add_handler(cp_label)?.finish();
     let cs_value = cs_closed.to_erased();
     let b_cp = IrBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
-    let cp = b_cp.build_catch_pad(
+    let cp = b_cp.catch_pad(
         cs_value,
         Vec::<llvmkit_ir::value::Value<'_, _>>::new(),
         "catch",
     )?;
-    let _ = b_cp.build_catch_ret(cp.to_erased(), return_label, "")?;
+    let _ = b_cp.catch_ret(cp.to_erased(), return_label, "")?;
     let text = format!("{m}");
     assert!(
         text.contains("catchret from %catch to label %return"),

@@ -1776,7 +1776,7 @@ mod tests {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        b.build_ret(i32_ty.const_int(0_u32))?;
+        b.ret(i32_ty.const_int(0_u32))?;
         m.verify_borrowed()?;
 
         let function: FunctionView<'_, _> = m.view(f).into();
@@ -1818,9 +1818,9 @@ mod tests {
 
         // entry: br next    next: ret 0
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        b.build_br(next.id())?;
+        b.br(next.id())?;
         let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(next);
-        b2.build_ret(i32_ty.const_int(0_u32))?;
+        b2.ret(i32_ty.const_int(0_u32))?;
 
         let function: FunctionView<'_, _> = m.view(f).into();
 
@@ -1901,7 +1901,7 @@ mod tests {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-        b.build_ret(i32_ty.const_int(0_u32))?;
+        b.ret(i32_ty.const_int(0_u32))?;
 
         let function: FunctionView<'_, _> = m.view(f).into();
         type Reqs = (ThresholdAnalysis,);

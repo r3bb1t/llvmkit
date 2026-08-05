@@ -164,15 +164,15 @@ where
 
     let entry = module.view(f).append_basic_block(&module, "entry");
     let b = IrBuilder::new_for::<()>(&module).position_at_end(entry);
-    b.build_call_dyn(g, Vec::<Value<'_, _>>::new(), "")?;
-    b.build_call_dyn(h, Vec::<Value<'_, _>>::new(), "")?;
-    b.build_ret_void();
+    b.call_dyn(g, Vec::<Value<'_, _>>::new(), "")?;
+    b.call_dyn(h, Vec::<Value<'_, _>>::new(), "")?;
+    b.ret_void();
 
     for function in [g, h] {
         let entry = module.view(function).append_basic_block(&module, "entry");
         IrBuilder::new_for::<()>(&module)
             .position_at_end(entry)
-            .build_ret_void();
+            .ret_void();
     }
     run(module)
 }

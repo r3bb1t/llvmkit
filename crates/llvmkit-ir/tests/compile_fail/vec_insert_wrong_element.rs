@@ -1,11 +1,11 @@
-//! Compile-fail lock for the typed `build_vec_insert` (Slice 5, Doctrine
+//! Compile-fail lock for the typed `vector_insert` (Slice 5, Doctrine
 //! D4). The element parameter is typed `element: E::Value`, where `E` is
 //! pinned by the `vec: VectorValue<'ctx, E, L, B>` argument. Inserting a
 //! `FloatValue<f32>` into a `VectorValue<i32, Len<4>>` therefore demands
 //! `E::Value == IntValue<i32>` but is handed a `FloatValue<f32>`, a compile
 //! error (`E0308 mismatched types`) instead of the runtime
 //! `Verifier::visitInsertElementInst` element-type mismatch the erased
-//! `build_insert_element` would still surface at verify time.
+//! `insert_element` would still surface at verify time.
 
 use llvmkit_ir::{FloatValue, IrBuilder, Len, Linkage, Module, VectorValue};
 
@@ -26,6 +26,6 @@ fn main() {
     // `E` is fixed to `i32` by `vec`, so `element` must be `IntValue<i32>`;
     // a `FloatValue<f32>` does not fit.
     let _bad = b
-        .build_vec_insert(vec, wrong, i32_ty.const_int(0_i32), "x") //~ ERROR mismatched types
+        .vector_insert(vec, wrong, i32_ty.const_int(0_i32), "x") //~ ERROR mismatched types
         .unwrap();
 }

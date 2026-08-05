@@ -66,7 +66,7 @@ where
 fn compute_num_sign_bits_pr32045() -> Result<(), IrError> {
     let bits = in_function("nsb-pr32045", |m, b, a| {
         let minus_one = m.i32_type().const_int(-1_i32);
-        let shifted = b.build_int_ashr::<i32, _, _, _>(a, minus_one, "A")?;
+        let shifted = b.int_ashr::<i32, _, _, _>(a, minus_one, "A")?;
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
         compute_num_sign_bits(b.view(shifted).into_erased(), &query)
@@ -216,16 +216,16 @@ fn ported_arms_never_over_report_sign_bits() -> Result<(), IrError> {
             let lhs = i32_ty.const_int(i32::try_from(case.lhs).expect("fits i32"));
             let rhs = i32_ty.const_int(i32::try_from(case.rhs).expect("fits i32"));
             let result = match case.label {
-                "sdiv" => b.build_int_sdiv::<i32, _, _, _>(lhs, rhs, "r")?,
-                "srem" => b.build_int_srem::<i32, _, _, _>(lhs, rhs, "r")?,
-                "ashr" => b.build_int_ashr::<i32, _, _, _>(lhs, rhs, "r")?,
-                "shl" => b.build_int_shl::<i32, _, _, _>(lhs, rhs, "r")?,
-                "add" => b.build_int_add::<i32, _, _, _>(lhs, rhs, "r")?,
-                "sub" => b.build_int_sub::<i32, _, _, _>(lhs, rhs, "r")?,
-                "mul" => b.build_int_mul::<i32, _, _, _>(lhs, rhs, "r")?,
-                "and" => b.build_int_and::<i32, _, _, _>(lhs, rhs, "r")?,
-                "or" => b.build_int_or::<i32, _, _, _>(lhs, rhs, "r")?,
-                "xor" => b.build_int_xor::<i32, _, _, _>(lhs, rhs, "r")?,
+                "sdiv" => b.int_sdiv::<i32, _, _, _>(lhs, rhs, "r")?,
+                "srem" => b.int_srem::<i32, _, _, _>(lhs, rhs, "r")?,
+                "ashr" => b.int_ashr::<i32, _, _, _>(lhs, rhs, "r")?,
+                "shl" => b.int_shl::<i32, _, _, _>(lhs, rhs, "r")?,
+                "add" => b.int_add::<i32, _, _, _>(lhs, rhs, "r")?,
+                "sub" => b.int_sub::<i32, _, _, _>(lhs, rhs, "r")?,
+                "mul" => b.int_mul::<i32, _, _, _>(lhs, rhs, "r")?,
+                "and" => b.int_and::<i32, _, _, _>(lhs, rhs, "r")?,
+                "or" => b.int_or::<i32, _, _, _>(lhs, rhs, "r")?,
+                "xor" => b.int_xor::<i32, _, _, _>(lhs, rhs, "r")?,
                 other => panic!("unhandled case label {other}"),
             };
             let dl = m.data_layout();
@@ -267,11 +267,11 @@ fn sext_and_trunc_arms_never_over_report() -> Result<(), IrError> {
 
     // sext i8 -8 to i32 == -8; an i8 -8 has 5 sign bits, the i32 has 29.
     let narrow: IntValue<'_, i8, _> = i8_ty.const_int(-8_i8).as_constant().try_into()?;
-    let widened = b.build_sext::<i8, i32, _, _>(narrow, i32_ty, "s")?;
+    let widened = b.sext::<i8, i32, _, _>(narrow, i32_ty, "s")?;
 
     // trunc i32 -8 to i8 == -8.
     let wide: IntValue<'_, i32, _> = i32_ty.const_int(-8_i32).as_constant().try_into()?;
-    let narrowed = b.build_trunc::<i32, i8, _, _>(wide, i8_ty, "t")?;
+    let narrowed = b.trunc::<i32, i8, _, _>(wide, i8_ty, "t")?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);

@@ -138,7 +138,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                     R: #ir::ReturnMarker,
                     #ty: #ir::IrField,
                 {
-                    builder.build_extract_field::<#ident, #ty, _, _>(self, #idx, #field_name)
+                    builder.extract_field::<#ident, #ty, _, _>(self, #idx, #field_name)
                 }
             }
         });
@@ -428,7 +428,7 @@ fn build_value_steps(
             } else {
                 ::std::format!("{}.{}", #base_name_ident, #field_name)
             };
-            let #value_ident = #builder_param.build_insert_field::<#schema_ident, #ty, _, _, _>(
+            let #value_ident = #builder_param.insert_field::<#schema_ident, #ty, _, _, _>(
                 #aggregate,
                 #field_ident,
                 #idx,

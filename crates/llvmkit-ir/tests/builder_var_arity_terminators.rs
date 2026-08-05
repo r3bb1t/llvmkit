@@ -31,11 +31,11 @@ fn switch_three_cases_print_form() -> Result<(), IrError> {
     // Seal the case targets with `unreachable` so the verifier accepts them.
     for bb in [default_bb, case0, case1, case2] {
         let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
-        bb_b.build_ret_void()?;
+        bb_b.ret_void()?;
     }
     let val: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, switch) = b.build_switch_dyn(val, default_label, "")?;
+    let (_sealed, switch) = b.switch_dyn(val, default_label, "")?;
     let _closed = switch
         .add_case(i8_ty.const_int(0_i8), case0_label)?
         .add_case(i8_ty.const_int(1_i8), case1_label)?
@@ -82,11 +82,11 @@ fn switch_cases_reader_round_trips() -> Result<(), IrError> {
     for block in [default_bb, a, bb] {
         IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(block)
-            .build_ret_void()?;
+            .ret_void()?;
     }
     let val: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
     let builder = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, switch) = builder.build_switch_dyn(val, default_label, "")?;
+    let (_sealed, switch) = builder.switch_dyn(val, default_label, "")?;
     let closed = switch
         .add_case(i8_ty.const_int(10_i8), a_label)?
         .add_case(i8_ty.const_int(20_i8), b_label)?
@@ -127,11 +127,11 @@ fn switch_no_cases_only_default() -> Result<(), IrError> {
     let dest_label = dest.id();
     {
         let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(dest);
-        bb_b.build_ret_void()?;
+        bb_b.ret_void()?;
     }
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, switch) = b.build_switch_dyn(x, dest_label, "")?;
+    let (_sealed, switch) = b.switch_dyn(x, dest_label, "")?;
     let _closed = switch.finish();
     m.verify_borrowed()?;
     let text = format!("{m}");
@@ -142,7 +142,7 @@ fn switch_no_cases_only_default() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Typed `build_switch`: the width `W` is inferred from the typed
+/// Typed `switch`: the width `W` is inferred from the typed
 /// `i32` condition, and matching-width `i32` cases (a Rust literal and a
 /// `ConstantIntValue<i32>`) build, print the `switch i32 ...` form, and
 /// verify. The wrong-width negation is the `switch_case_wrong_width`
@@ -164,12 +164,12 @@ fn switch_typed_i32_matching_cases() -> Result<(), IrError> {
     for block in [default_bb, a, bb] {
         IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(block)
-            .build_ret_void()?;
+            .ret_void()?;
     }
     let val: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let builder = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     // `W` is inferred as `i32` from `val: IntValue<i32>`.
-    let (_sealed, switch) = builder.build_switch(val, default_label, "")?;
+    let (_sealed, switch) = builder.switch(val, default_label, "")?;
     let _closed = switch
         // Rust `i32` literal lifts to the `i32`-width case slot.
         .add_case(10_i32, a_label)?
@@ -187,7 +187,7 @@ fn switch_typed_i32_matching_cases() -> Result<(), IrError> {
     Ok(())
 }
 
-/// The width-erased `build_switch_dyn` is unchanged by `SwitchInst<W>`: it still
+/// The width-erased `switch_dyn` is unchanged by `SwitchInst<W>`: it still
 /// lands in `SwitchInst<IntDyn>` and its runtime-checked `add_case` still
 /// rejects a wrong-width case value with the runtime [`IrError::TypeMismatch`]
 /// the verifier would raise — a compile error is NOT forced on the erased
@@ -211,14 +211,14 @@ fn switch_erased_dyn_wrong_width_case_is_runtime_type_mismatch() -> Result<(), I
     for block in [default_bb, a] {
         IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(block)
-            .build_ret_void()?;
+            .ret_void()?;
     }
     // Erased condition: `Argument` widens through the `IsValue` path, so
     // the resulting switch is `SwitchInst<IntDyn>` (compiles for any case
     // width; discipline is deferred to the runtime check below).
     let cond = m.view(f).param(0)?;
     let builder = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, switch) = builder.build_switch_dyn(cond, default_label, "")?;
+    let (_sealed, switch) = builder.switch_dyn(cond, default_label, "")?;
     // A wrong-width (`i8`) case on the `i32` condition is a RUNTIME
     // `TypeMismatch`, not a compile error (`add_case` consumes `switch`).
     let err = switch
@@ -252,11 +252,11 @@ fn indirectbr_single_destination() -> Result<(), IrError> {
     let dest_label = dest.id();
     {
         let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(dest);
-        bb_b.build_ret_void()?;
+        bb_b.ret_void()?;
     }
     let addr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
+    let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let _closed = ibr.add_destination(dest_label)?.finish();
     let text = format!("{m}");
     assert!(
@@ -284,11 +284,11 @@ fn indirectbr_multiple_destinations() -> Result<(), IrError> {
     let bb2_label = bb2.id();
     for bb in [bb1, bb2] {
         let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
-        bb_b.build_ret_void()?;
+        bb_b.ret_void()?;
     }
     let addr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
+    let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let _closed = ibr
         .add_destination(bb1_label)?
         .add_destination(bb2_label)?
@@ -301,7 +301,7 @@ fn indirectbr_multiple_destinations() -> Result<(), IrError> {
     Ok(())
 }
 
-/// OP Slice 2: `build_indirectbr` binds the address by `IntoPointerValue`, so
+/// OP Slice 2: `indirectbr` binds the address by `IntoPointerValue`, so
 /// a typed [`PointerValue`] address is accepted directly (identity impl). It
 /// builds, prints the `indirectbr ptr ...` skeleton, and `verify()` passes.
 #[test]
@@ -316,12 +316,12 @@ fn indirectbr_typed_pointer_address_builds_and_verifies() -> Result<(), IrError>
     let dest_label = dest.id();
     {
         let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(dest);
-        bb_b.build_ret_void()?;
+        bb_b.ret_void()?;
     }
     // A typed pointer handle: accepted by the identity `IntoPointerValue`.
     let addr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
+    let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let _closed = ibr.add_destination(dest_label)?.finish();
     let text = format!("{m}");
     assert!(
@@ -333,7 +333,7 @@ fn indirectbr_typed_pointer_address_builds_and_verifies() -> Result<(), IrError>
 }
 
 /// OP Slice 2: an *erased* [`Value`](llvmkit_ir::Value) pointer address (the
-/// form the parser feeds `build_indirectbr`) still builds and verifies — the
+/// form the parser feeds `indirectbr`) still builds and verifies — the
 /// runtime-checked `IntoPointerValue for Value` impl narrows it back to a
 /// pointer at *build* time. Proves the tighter bound did not break the erased
 /// path.
@@ -349,15 +349,15 @@ fn indirectbr_erased_value_pointer_address_builds_and_verifies() -> Result<(), I
     let dest_label = dest.id();
     {
         let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(dest);
-        bb_b.build_ret_void()?;
+        bb_b.ret_void()?;
     }
     // The strict cut removed the silent `IntoPointerValue for Value`
     // lift, so an erased param must be narrowed to `PointerValue`
     // explicitly (a runtime-checked `try_into`) before it can fill the
-    // pointer-typed `build_indirectbr` operand.
+    // pointer-typed `indirectbr` operand.
     let addr: PointerValue<'_, _> = m.view(f).param(0)?.into_erased().try_into()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let (_sealed, ibr) = b.build_indirectbr(addr, "")?;
+    let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let _closed = ibr.add_destination(dest_label)?.finish();
     let text = format!("{m}");
     assert!(

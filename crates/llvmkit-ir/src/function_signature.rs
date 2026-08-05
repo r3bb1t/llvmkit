@@ -363,7 +363,7 @@ where
 /// Variadic twin of [`TypedFunctionValue`]: wraps a raw function whose
 /// signature is `(Params..., ...)` — the fixed-prefix parameters are
 /// statically typed via `Params`, and the `...` tail is accepted at
-/// each call site through [`crate::IrBuilder::build_varargs_call`]'s
+/// each call site through [`crate::IrBuilder::varargs_call`]'s
 /// erased trailing argument list. Mirrors LLVM's variadic-function
 /// convention (`FunctionType::isVarArg`); the fixed-arity
 /// [`TypedFunctionValue`] and this facade are mutually exclusive —
@@ -495,7 +495,7 @@ where
 
     /// Return typed fixed-prefix parameter values in declaration order.
     /// The `...` tail is not represented here — it is supplied
-    /// per-call through [`crate::IrBuilder::build_varargs_call`].
+    /// per-call through [`crate::IrBuilder::varargs_call`].
     #[inline]
     pub fn params(self) -> Params::Values<'ctx, B> {
         let validated = ValidatedFunctionParams::new();
@@ -542,8 +542,8 @@ mod typed_callee_sealed {
 }
 
 /// Values accepted where a builder names a **schema-typed** direct callee —
-/// the callee operand of [`build_call`](crate::IrBuilder::build_call),
-/// [`build_invoke`](crate::IrBuilder::build_invoke) and their `_with_config` /
+/// the callee operand of [`call`](crate::IrBuilder::call),
+/// [`invoke`](crate::IrBuilder::invoke) and their `_with_config` /
 /// chainable twins.
 ///
 /// The storable currency at these positions is [`TypedFunctionId`], which is
@@ -569,7 +569,7 @@ where
 }
 
 /// The variadic twin of [`IntoTypedCallee`], accepted at
-/// [`build_varargs_call`](crate::IrBuilder::build_varargs_call)'s callee
+/// [`varargs_call`](crate::IrBuilder::varargs_call)'s callee
 /// position. Separate from [`IntoTypedCallee`] because the two facades are
 /// exactly what separates a fixed-arity declaration from a `...` one — a
 /// single trait would let a non-variadic callee reach the varargs builder.

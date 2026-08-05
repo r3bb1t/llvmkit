@@ -1,6 +1,6 @@
 //! Mirrors of upstream `.ll` fixtures that exercise specific `icmp`
 //! predicates, exercised here through the new per-predicate
-//! `build_icmp_*` convenience methods (mirror `IrBuilder::CreateICmp{EQ,
+//! `icmp_*` convenience methods (mirror `IrBuilder::CreateICmp{EQ,
 //! SLT, ...}` in `IrBuilder.h`). Each test cites the closest upstream
 //! Assembler / unit fixture that emits the same IR shape.
 
@@ -19,8 +19,8 @@ fn build_icmp_eq_emits_icmp_eq() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let r = b.build_icmp_eq::<i32, _, _, _>(a, bv, "r")?;
-    b.build_ret(r)?;
+    let r = b.icmp_eq::<i32, _, _, _>(a, bv, "r")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%r = icmp eq i32 %0, %1"), "got:\n{text}");
     Ok(())
@@ -39,8 +39,8 @@ fn build_icmp_ne_emits_icmp_ne() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let z: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_icmp_ne::<i32, _, _, _>(z, 0_i32, "r")?;
-    b.build_ret(r)?;
+    let r = b.icmp_ne::<i32, _, _, _>(z, 0_i32, "r")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%r = icmp ne i32 %0, 0"), "got:\n{text}");
     Ok(())
@@ -58,8 +58,8 @@ fn build_icmp_slt_emits_icmp_slt() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_icmp_slt::<i32, _, _, _>(n, 0_i32, "r")?;
-    b.build_ret(r)?;
+    let r = b.icmp_slt::<i32, _, _, _>(n, 0_i32, "r")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%r = icmp slt i32 %0, 0"), "got:\n{text}");
     Ok(())
@@ -77,8 +77,8 @@ fn build_icmp_sge_emits_icmp_sge() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_icmp_sge::<i32, _, _, _>(a, 0_i32, "r")?;
-    b.build_ret(r)?;
+    let r = b.icmp_sge::<i32, _, _, _>(a, 0_i32, "r")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%r = icmp sge i32 %0, 0"), "got:\n{text}");
     Ok(())

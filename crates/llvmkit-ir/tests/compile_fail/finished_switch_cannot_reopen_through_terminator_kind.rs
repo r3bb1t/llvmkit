@@ -16,7 +16,7 @@ fn main() {
     let dest_label = dest.id();
     let cond = m.view(f).param(0).unwrap();
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
-    let (sealed, switch) = b.build_switch_dyn(cond, dest_label, "").unwrap();
+    let (sealed, switch) = b.switch_dyn(cond, dest_label, "").unwrap();
     let _closed = switch.finish();
 
     if let Some(TerminatorKind::Switch(reopened)) = sealed.terminator().unwrap().terminator_kind() {

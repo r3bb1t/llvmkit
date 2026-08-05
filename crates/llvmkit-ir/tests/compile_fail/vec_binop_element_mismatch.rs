@@ -1,10 +1,10 @@
 //! Compile-fail lock for the typed vector binops (Slice 5, Doctrine D4).
-//! `build_vec_int_add<E, L>` takes BOTH operands as `VectorValue<'ctx, E, L,
+//! `vector_int_add<E, L>` takes BOTH operands as `VectorValue<'ctx, E, L,
 //! B>` — the SAME element marker `E`. Adding a `<4 x i32>` to a `<4 x i64>`
 //! therefore cannot unify `E`, and is a compile error (`E0308 mismatched
 //! types`, `i32` vs `i64`) instead of the runtime
 //! `Verifier::visitBinaryOperator` element-type mismatch the erased
-//! `build_int_add_dyn` would still surface at verify time.
+//! `int_add_dyn` would still surface at verify time.
 
 use llvmkit_ir::{Dyn, IrBuilder, Len, Linkage, Module, VectorValue};
 
@@ -30,5 +30,5 @@ fn main() {
         m.view(f).param(1).unwrap().into_erased().try_into().unwrap();
 
     // `i32` and `i64` cannot unify the single `E` the binop demands.
-    let _bad = b.build_vec_int_add(a, c, "x").unwrap(); //~ ERROR mismatched types
+    let _bad = b.vector_int_add(a, c, "x").unwrap(); //~ ERROR mismatched types
 }

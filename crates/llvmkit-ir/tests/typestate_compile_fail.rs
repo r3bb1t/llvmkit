@@ -36,7 +36,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/terminated_block_cannot_start_cursor.rs");
     // Slice 7 "the break": the raw typed-phi builders and the open-phi
     // `add_incoming`/`finish` mutators are `pub(crate)`, so block arguments
-    // (`append_block_with_params` + `build_*_with_args`) are the ONLY public
+    // (`append_block_with_params` + `*_with_args`) are the ONLY public
     // phi-authoring surface. This replaces the three former phi-typestate
     // fixtures (add-after-finish / retained-open / reopen-through-kind): once
     // the raw builders are unnameable, an external caller cannot even construct
@@ -157,7 +157,7 @@ fn typestate_compile_fail() {
     // across rustc versions.
     t.compile_fail("tests/compile_fail/block_call_wrong_arity.rs");
     t.compile_fail("tests/compile_fail/block_call_wrong_arg_type.rs");
-    // OP Slice 1 (typed `SwitchInst<W>`): `build_switch` pins the
+    // OP Slice 1 (typed `SwitchInst<W>`): `switch` pins the
     // condition width `W`, so `SwitchInst::add_case` carries an
     // `IntoIntValue<'ctx, W, B>` bound and a wrong-width case value is a
     // compile error. The primary error is our own `IntoIntValue<'_, i32, _>`
@@ -167,7 +167,7 @@ fn typestate_compile_fail() {
     // *specifically* — it would compile under a hypothetical `IsValue` bound.
     t.compile_fail("tests/compile_fail/switch_case_wrong_width.rs");
     t.compile_fail("tests/compile_fail/switch_case_wrong_width_value_handle.rs");
-    // OP Slice 2 (typed `indirectbr` address): `build_indirectbr` binds the
+    // OP Slice 2 (typed `indirectbr` address): `indirectbr` binds the
     // address by `IntoPointerValue<'ctx, B>`, so a typed non-pointer value
     // handle (an `IntValue<i32>`) is a compile error — the pointer-ness check
     // moves from `verify()` to build/compile time. The primary error is our

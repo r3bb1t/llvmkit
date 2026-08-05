@@ -24,8 +24,8 @@ fn alloca_plain() -> Result<(), IrError> {
     let f = m.add_function_dyn("a", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let p = b.build_alloca(i32_ty, "p")?;
-    b.build_ret(p)?;
+    let p = b.alloca(i32_ty, "p")?;
+    b.ret(p)?;
     let text = format!("{m}");
     assert!(text.contains("%p = alloca i32"), "got:\n{text}");
     Ok(())
@@ -44,8 +44,8 @@ fn alloca_array_size() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: llvmkit_ir::IntValue<'_, llvmkit_ir::IntDyn, _> = m.view(f).param(0)?.try_into()?;
-    let p = b.build_array_alloca(i32_ty, n, "p")?;
-    b.build_ret(p)?;
+    let p = b.array_alloca(i32_ty, n, "p")?;
+    b.ret(p)?;
     let text = format!("{m}");
     assert!(text.contains("%p = alloca i32, i32 %0"), "got:\n{text}");
     Ok(())
@@ -66,8 +66,8 @@ fn alloca_aligned() -> Result<(), IrError> {
     let f = m.add_function_dyn("a", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let p = b.build_alloca_with_align(i32_ty, Align::new(8)?, "p")?;
-    b.build_ret(p)?;
+    let p = b.alloca_with_align(i32_ty, Align::new(8)?, "p")?;
+    b.ret(p)?;
     let text = format!("{m}");
     assert!(text.contains("%p = alloca i32, align 8\n"), "got:\n{text}");
     Ok(())

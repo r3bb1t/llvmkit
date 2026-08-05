@@ -2,10 +2,10 @@
 //!
 //! Most feed phi incomings from `switch`/`invoke`/`callbr` CFG edges, which the
 //! block-argument authoring surface (`append_block_with_params` +
-//! `build_*_with_args`, which only carry `br`/`cond_br` edges) cannot express;
+//! `*_with_args`, which only carry `br`/`cond_br` edges) cannot express;
 //! the rest are malformed-by-design verifier-negative cases for which the raw
 //! path is the natural way to author a deliberately-broken phi. They exercise
-//! the raw `build_int_phi`/`add_incoming` API
+//! the raw `int_phi`/`add_incoming` API
 //! from inside the crate and are kept verbatim from their integration-test
 //! origin (only the `llvmkit_ir::` paths are rewritten to `crate::`).
 
@@ -29,17 +29,17 @@ fn verify_phi_predecessors_through_switch_passes() -> Result<(), IrError> {
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let (_sealed, switch) = IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_switch_dyn(x, join_label, "")?;
+        .switch_dyn(x, join_label, "")?;
     let _closed = switch
         .add_case(i32_ty.const_int(0_i32), join_label)?
         .finish();
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_label)?
         .add_incoming(x, entry_label)?;
-    b.build_ret(phi.as_int_value())?;
+    b.ret(phi.as_int_value())?;
 
     m.verify_borrowed()?;
     Ok(())
@@ -61,16 +61,16 @@ fn verify_phi_predecessors_through_switch_rejects_missing_edge() -> Result<(), I
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let (_sealed, switch) = IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_switch_dyn(x, join_label, "")?;
+        .switch_dyn(x, join_label, "")?;
     let _closed = switch
         .add_case(i32_ty.const_int(0_i32), join_label)?
         .finish();
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_label)?;
-    b.build_ret(phi.as_int_value())?;
+    b.ret(phi.as_int_value())?;
 
     let err = m
         .verify_borrowed()
@@ -109,7 +109,7 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
 
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_invoke_dyn(
+        .invoke_dyn(
             m.view(callee),
             Vec::<crate::Value<'_, _>>::new(),
             join_label,
@@ -118,13 +118,13 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
         )?;
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(unwind)
-        .build_ret(x)?;
+        .ret(x)?;
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_label)?;
-    b.build_ret(phi.as_int_value())?;
+    b.ret(phi.as_int_value())?;
 
     m.verify_borrowed()?;
     Ok(())
@@ -152,7 +152,7 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
 
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_invoke_dyn(
+        .invoke_dyn(
             m.view(callee),
             Vec::<crate::Value<'_, _>>::new(),
             join_label,
@@ -161,16 +161,16 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
         )?;
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(unwind)
-        .build_ret(x)?;
+        .ret(x)?;
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(other)
-        .build_ret(x)?;
+        .ret(x)?;
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(x, other_label)?;
-    b.build_ret(phi.as_int_value())?;
+    b.ret(phi.as_int_value())?;
 
     let err = m
         .verify_borrowed()
@@ -207,7 +207,7 @@ fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
 
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_callbr(
+        .callbr(
             callee,
             Vec::<crate::Value<'_, _>>::new(),
             join_label,
@@ -217,10 +217,10 @@ fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_label)?
         .add_incoming(x, entry_label)?;
-    b.build_ret(phi.as_int_value())?;
+    b.ret(phi.as_int_value())?;
 
     m.verify_borrowed()?;
     Ok(())
@@ -245,7 +245,7 @@ fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), I
 
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_callbr(
+        .callbr(
             callee,
             Vec::<crate::Value<'_, _>>::new(),
             join_label,
@@ -255,9 +255,9 @@ fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), I
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
-        .view(b.build_int_phi::<i32, _>("p")?)
+        .view(b.int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_label)?;
-    b.build_ret(phi.as_int_value())?;
+    b.ret(phi.as_int_value())?;
 
     let err = m
         .verify_borrowed()
@@ -297,19 +297,19 @@ fn verify_phi_incoming_edge_dominance_fails() -> Result<(), IrError> {
 
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_cond_br(cond, then_label, else_label)?;
+        .cond_br(cond, then_label, else_label)?;
     let bt = IrBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
-    let y = bt.build_int_add(x, 1_i32, "y")?;
-    bt.build_br(join_label)?;
+    let y = bt.int_add(x, 1_i32, "y")?;
+    bt.br(join_label)?;
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(else_bb)
-        .build_br(join_label)?;
+        .br(join_label)?;
     let bj = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bj
-        .view(bj.build_int_phi::<i32, _>("p")?)
+        .view(bj.int_phi::<i32, _>("p")?)
         .add_incoming(x, then_label)?
         .add_incoming(y, else_label)?;
-    bj.build_ret(phi.as_int_value())?;
+    bj.ret(phi.as_int_value())?;
 
     let err = m
         .verify_borrowed()

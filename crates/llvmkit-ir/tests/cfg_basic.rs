@@ -48,10 +48,10 @@ fn unconditional_branch_cfg_edges() -> Result<(), IrError> {
 
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(exit)
-        .build_ret_void()?;
+        .ret_void()?;
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_br(exit_label)?;
+        .br(exit_label)?;
 
     let cfg = FunctionCfg::new(m.view(f).as_dyn());
     assert_successors(&cfg, entry_label, &[exit_label]);
@@ -76,11 +76,11 @@ fn conditional_branch_preserves_duplicate_edges() -> Result<(), IrError> {
 
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(target)
-        .build_ret_void()?;
+        .ret_void()?;
     let cond: IntValue<'_, bool, _> = m.view(f).param(0)?.try_into()?;
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_cond_br(cond, target_label, target_label)?;
+        .cond_br(cond, target_label, target_label)?;
 
     let cfg = FunctionCfg::new(m.view(f).as_dyn());
     assert_successors(&cfg, entry_label, &[target_label, target_label]);
@@ -108,13 +108,13 @@ fn switch_cfg_edges_include_default_then_cases() -> Result<(), IrError> {
     for bb in [default_bb, case0, case1] {
         IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(bb)
-            .build_ret_void()?;
+            .ret_void()?;
     }
 
     let val: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
     let (_sealed, switch) = IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_switch_dyn(val, default_label, "")?;
+        .switch_dyn(val, default_label, "")?;
     let _closed = switch
         .add_case(i8_ty.const_int(0_i8), case0_label)?
         .add_case(i8_ty.const_int(1_i8), case1_label)?
@@ -150,13 +150,13 @@ fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
     for bb in [bb1, bb2] {
         IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(bb)
-            .build_ret_void()?;
+            .ret_void()?;
     }
 
     let addr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let (_sealed, ibr) = IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_indirectbr(addr, "")?;
+        .indirectbr(addr, "")?;
     let _closed = ibr
         .add_destination(bb1_label)?
         .add_destination(bb2_label)?
@@ -196,12 +196,12 @@ fn invoke_cfg_edges_are_normal_then_unwind() -> Result<(), IrError> {
     for bb in [normal, unwind] {
         IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(bb)
-            .build_ret_void()?;
+            .ret_void()?;
     }
 
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_invoke_dyn(
+        .invoke_dyn(
             m.view(callee),
             Vec::<llvmkit_ir::Value<'_, _>>::new(),
             normal_label,
@@ -243,12 +243,12 @@ fn callbr_cfg_edges_are_default_then_indirect_dests() -> Result<(), IrError> {
     for bb in [dflt, indirect] {
         IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(bb)
-            .build_ret_void()?;
+            .ret_void()?;
     }
 
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_callbr(
+        .callbr(
             callee,
             Vec::<llvmkit_ir::Value<'_, _>>::new(),
             dflt_label,
@@ -283,19 +283,19 @@ fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
     let ret_label = ret_block.id();
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(ret_block)
-        .build_ret_void()?;
+        .ret_void()?;
 
     let (_sealed, cs) = IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(cs_block)
-        .build_catch_switch_within_none_to_caller("cs")?;
+        .catch_switch_within_none_to_caller("cs")?;
     let cs_closed = cs.add_handler(cp_label)?.finish();
     let b_cp = IrBuilder::new_for::<Dyn>(&m).position_at_end(cp_block);
-    let cp = b_cp.build_catch_pad(
+    let cp = b_cp.catch_pad(
         cs_closed.to_erased(),
         Vec::<llvmkit_ir::Value<'_, _>>::new(),
         "cp",
     )?;
-    b_cp.build_catch_ret(cp.to_erased(), ret_label, "")?;
+    b_cp.catch_ret(cp.to_erased(), ret_label, "")?;
 
     let cfg = FunctionCfg::new(m.view(f).as_dyn());
     assert_successors(&cfg, cs_label, &[cp_label]);
@@ -322,11 +322,11 @@ fn cleanupret_cfg_edge_is_optional_unwind_dest() -> Result<(), IrError> {
     let unwind_label = unwind.id();
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(unwind)
-        .build_ret_void()?;
+        .ret_void()?;
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let cp = b.build_cleanup_pad_within_none(Vec::<llvmkit_ir::Value<'_, _>>::new(), "cp")?;
-    b.build_cleanup_ret(cp.to_erased(), unwind_label, "")?;
+    let cp = b.cleanup_pad_within_none(Vec::<llvmkit_ir::Value<'_, _>>::new(), "cp")?;
+    b.cleanup_ret(cp.to_erased(), unwind_label, "")?;
 
     let cfg = FunctionCfg::new(m.view(f).as_dyn());
     assert_successors(&cfg, entry_label, &[unwind_label]);
@@ -357,12 +357,12 @@ fn catchswitch_cfg_edges_are_handlers_then_unwind_dest() -> Result<(), IrError> 
     for bb in [handler0, handler1, unwind] {
         IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(bb)
-            .build_ret_void()?;
+            .ret_void()?;
     }
 
     let (_sealed, cs) = IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
-        .build_catch_switch_within_none(unwind_label, "cs")?;
+        .catch_switch_within_none(unwind_label, "cs")?;
     let _closed = cs
         .add_handler(handler0_label)?
         .add_handler(handler1_label)?

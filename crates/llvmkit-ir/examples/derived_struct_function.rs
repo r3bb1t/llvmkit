@@ -62,7 +62,7 @@ fn main() -> Result<(), IrError> {
             rebuilt_rect,
             "placement",
         )?;
-        b.build_ret(rebuilt)?;
+        b.ret(rebuilt)?;
 
         format!("{m}")
     };

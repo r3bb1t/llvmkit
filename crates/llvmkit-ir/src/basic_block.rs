@@ -13,7 +13,7 @@
 //!
 //! [`BasicBlock<'ctx, R>`] inherits its parent function's
 //! [`ReturnMarker`]. When the IrBuilder positions itself inside a
-//! block, the marker propagates to the builder so its `build_ret`
+//! block, the marker propagates to the builder so its `ret`
 //! is statically typed.
 //!
 //! [`IrBuilder`]: crate::ir_builder::IrBuilder
@@ -91,14 +91,14 @@ impl BasicBlockData {
 ///
 /// The `R: ReturnMarker` parameter pins the parent function's return
 /// shape at the type level so a typed [`IrBuilder`]
-/// positioned inside the block can keep its compile-time `build_ret`
+/// positioned inside the block can keep its compile-time `ret`
 /// invariant.
 ///
 /// The `Term: BlockTerminationState` parameter (default [`Unterminated`])
 /// distinguishes blocks that still accept appended instructions from
 /// blocks whose terminator has been emitted. The termination marker is
 /// enforced at [`crate::IrBuilder::position_at_end`], which only accepts
-/// an [`Unterminated`] block; once a terminator-emitting `build_*`
+/// an [`Unterminated`] block; once a terminator-emitting the emitters
 /// consumes the builder, the returned handle names the same block with
 /// `Term = Terminated`. `BasicBlock` is intentionally linear (`!Copy` /
 /// `!Clone`) so retaining an old unterminated insertion capability cannot
@@ -434,15 +434,15 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, 
 /// [`CallArgs<Params>`](crate::CallArgs) bound on `.call()`: a wrong arity has
 /// no `CallArgs` impl and a wrong-typed position fails its per-position
 /// [`IntoCallArg`](crate::IntoCallArg) bound, so a mismatched edge does not
-/// compile — the same machinery that guards typed `build_call`.
+/// compile — the same machinery that guards typed `call`.
 ///
 /// The arguments are lowered eagerly at construction (the typed label carries
 /// its owning module), so `.call()` stays infallible and ergonomic. Any
 /// *value-level* lowering failure — the fallibility [`CallArgs::lower`] carries,
 /// e.g. a cross-module constant — is captured and re-surfaced when the bundle
 /// is consumed by
-/// [`IrBuilder::build_br_call`](crate::IrBuilder::build_br_call) /
-/// [`IrBuilder::build_cond_br_call`](crate::IrBuilder::build_cond_br_call),
+/// [`IrBuilder::br_call`](crate::IrBuilder::br_call) /
+/// [`IrBuilder::cond_br_call`](crate::IrBuilder::cond_br_call),
 /// where a `?` is already expected.
 pub struct BlockCall<R: ReturnMarker, B: ModuleBrand, Params: BlockParams = BlockParamsDyn> {
     target: BlockId<R, B, Params>,
@@ -462,13 +462,13 @@ where
 {
     /// Bundle this typed branch target with the block-arguments that seed its
     /// leading head-phis, forming a [`BlockCall`] edge for
-    /// [`IrBuilder::build_br_call`](crate::IrBuilder::build_br_call) /
-    /// [`IrBuilder::build_cond_br_call`](crate::IrBuilder::build_cond_br_call).
+    /// [`IrBuilder::br_call`](crate::IrBuilder::br_call) /
+    /// [`IrBuilder::cond_br_call`](crate::IrBuilder::cond_br_call).
     ///
     /// `args` must be an argument tuple matching this block's `Params` schema:
     /// the [`CallArgs<'ctx, Params, B>`](crate::CallArgs) bound makes a wrong
     /// arity or a wrong-typed position a **compile** error, reusing the exact
-    /// machinery of a typed `build_call`. The values are lowered here (this
+    /// machinery of a typed `call`. The values are lowered here (this
     /// label carries its module), so `.call()` is infallible; a value-level
     /// lowering failure is deferred into the returned [`BlockCall`] and surfaces
     /// when the branch builder consumes it.
@@ -929,10 +929,10 @@ pub(crate) fn block_parameter_phis<'ctx, B: ModuleBrand>(
 /// Reject an edge that carries **no** block arguments into a block created
 /// *with* block parameters.
 ///
-/// This is the guard on the plain terminator builders — `build_br`,
-/// `build_cond_br`, `build_switch`/`build_switch_dyn`'s default target and
+/// This is the guard on the plain terminator builders — `br`,
+/// `cond_br`, `switch`/`switch_dyn`'s default target and
 /// [`SwitchInst::add_case`](crate::SwitchInst::add_case), both edges of every
-/// `build_invoke*`, `build_callbr*`'s default and indirect destinations, and
+/// `invoke*`, `callbr*`'s default and indirect destinations, and
 /// [`IndirectBrInst::add_destination`](crate::IndirectBrInst::add_destination).
 /// Branching
 /// into a parameterised block without arguments adds no incomings, so the

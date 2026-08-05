@@ -778,13 +778,13 @@ pub enum IrError {
         name: String,
     },
 
-    /// `IrBuilder::build_ret` was given a value whose type does not
+    /// `IrBuilder::ret` was given a value whose type does not
     /// match the function's declared return type.
     #[error("return type mismatch: function returns {expected}, got {got}")]
     ReturnTypeMismatch {
         /// The type kind the function is declared to return.
         expected: TypeKindLabel,
-        /// The type kind of the value passed to `build_ret`.
+        /// The type kind of the value passed to `ret`.
         got: TypeKindLabel,
     },
 

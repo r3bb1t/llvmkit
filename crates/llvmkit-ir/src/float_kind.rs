@@ -4,7 +4,7 @@
 //! `BFloatTyID`, `FloatTyID`, `DoubleTyID`, `X86_FP80TyID`,
 //! `FP128TyID`, `PPC_FP128TyID`). Encoding the kind in the type
 //! system lets `FloatValue<'ctx, f32>` be a different type from
-//! `FloatValue<'ctx, f64>` — a `build_fp_add` between them is a
+//! `FloatValue<'ctx, f64>` — a `fp_add` between them is a
 //! compile error rather than a runtime check.
 //!
 //! ## Rust scalars *are* the markers
@@ -375,8 +375,8 @@ impl_into_float_value_static!(f64, f64, f64_type);
 
 /// Sealed: float-kind markers whose `FloatType<'ctx, Self>` can be
 /// projected from a [`Module`](crate::Module) without an extra runtime parameter.
-/// Lets the IR builder accept `b.build_fp_load::<f32, _, _>(p, "v")?`
-/// instead of `b.build_fp_load(f32_ty, p, "v")?`.
+/// Lets the IR builder accept `b.fp_load::<f32, _, _>(p, "v")?`
+/// instead of `b.fp_load(f32_ty, p, "v")?`.
 ///
 /// Not implemented for [`FloatDyn`] - the dyn-flavour builder
 /// methods take an explicit [`FloatType<'ctx, FloatDyn>`] for the
