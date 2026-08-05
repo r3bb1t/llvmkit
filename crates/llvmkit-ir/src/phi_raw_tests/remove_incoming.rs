@@ -58,7 +58,7 @@ fn remove_incoming_backfills_from_the_end_like_upstream() -> Result<(), IrError>
 
     // Drop `[ 1, %a ]`, the entry at index 0.
     let removed = phi.remove_incoming(&m, 0)?;
-    assert_eq!(removed, i32_ty.const_int(1_i32).into_erased());
+    assert_eq!(removed, i32_ty.const_int(1_i32).as_erased());
     assert_eq!(phi.incoming_count(), 2);
 
     // Upstream backfills from the tail: `[ 3, %c ]` now sits at index 0.
@@ -94,7 +94,7 @@ fn remove_incoming_deregisters_one_use_of_the_removed_value() -> Result<(), IrEr
         .view(bld.int_phi::<i32, _>("p")?)
         .add_incoming(7_i32, a_lbl)?
         .add_incoming(7_i32, a_lbl)?;
-    let seven = i32_ty.const_int(7_i32).into_erased();
+    let seven = i32_ty.const_int(7_i32).as_erased();
     assert_eq!(seven.num_uses(), 2);
 
     phi.remove_incoming(&m, 0)?;
@@ -250,7 +250,7 @@ fn remove_incoming_through_phi_kind_covers_every_flavour() -> Result<(), IrError
         (bld.view(pp).to_erased(), ptr_ty.as_type()),
         (bld.view(vp).to_erased(), vec_ty.as_type()),
     ] {
-        bld.phi_add_incoming_from_value(phi, ty.get_poison(), a_lbl)?;
+        bld.phi_add_incoming_from_value(phi, ty.poison(), a_lbl)?;
     }
 
     // Rediscover each phi and remove its single incoming through `PhiKind`.

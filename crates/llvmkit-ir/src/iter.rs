@@ -83,7 +83,7 @@ where
     /// Yield the instruction at the current position, returning `Some`
     /// of it together with a fresh cursor advanced past it. Returns
     /// `None` when the snapshot is exhausted.
-    pub fn next(self) -> Option<BlockCursorStep<'ctx, R, S, B>> {
+    pub fn step(self) -> Option<BlockCursorStep<'ctx, R, S, B>> {
         let id = *self.snapshot.get(self.next_index)?;
         let module = self.block.module_ref();
         let inst = Instruction::from_parts(id, module);

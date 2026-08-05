@@ -26,7 +26,7 @@ fn return_marker_mismatch_reports_distinct_expected_and_got() -> Result<(), IrEr
     // Look it up demanding a *pointer* return marker: a real kind mismatch,
     // so the two diagnostic fields must differ.
     let err = m
-        .function_by_name::<Ptr>("f")
+        .function::<Ptr>("f")
         .expect_err("an i32 function looked up as `Ptr` must mismatch");
 
     match err {

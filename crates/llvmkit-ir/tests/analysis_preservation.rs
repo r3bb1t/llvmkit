@@ -78,7 +78,7 @@ fn reshape_pass_preserves_and_repairs_dominator_tree() -> Result<(), IrError> {
     let f_view = unverified.view(f);
     let cached: Option<&DominatorTree> = analyses
         .function_manager()
-        .get_cached_result::<DominatorTreeAnalysis, _>(FunctionView::from(f_view));
+        .cached_result::<DominatorTreeAnalysis, _>(FunctionView::from(f_view));
     let dt = cached.expect("dominator tree was witnessed-preserved across the reshape");
 
     // And the kept tree is the REPAIRED one: it reflects the edited CFG, in
@@ -131,7 +131,7 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
     let ip = b.save_insert_point();
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.int_add(a, 1_i32, "x")?;
-    b.br_with_args(merge_label, &[m.view(x).into_erased()])?;
+    b.br_with_args(merge_label, &[m.view(x).as_erased()])?;
 
     // merge: ret %p (the head-phi param carrying the branch argument).
     let b2 = IrBuilder::new(&m).position_at_end(merge);
@@ -290,9 +290,9 @@ fn build_diamond<'ctx, B: ModuleBrand + 'ctx>(
 
     Ok((
         f,
-        m.view(lv).into_erased().id(),
+        m.view(lv).as_erased().id(),
         left_label,
-        m.view(rv).into_erased().id(),
+        m.view(rv).as_erased().id(),
         right_label,
     ))
 }
@@ -592,7 +592,7 @@ fn build_switch_redirect<'ctx, B: ModuleBrand + 'ctx>(
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(dflt);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let nd = b.int_add(a, 5_i32, "nd")?;
-    b.br_with_args(new_lbl, &[m.view(nd).into_erased()])?;
+    b.br_with_args(new_lbl, &[m.view(nd).as_erased()])?;
 
     // old: ret 0
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(old);
@@ -603,7 +603,7 @@ fn build_switch_redirect<'ctx, B: ModuleBrand + 'ctx>(
     let np: IntValue<'_, i32, _> = new_params[0].try_into()?;
     b.ret(np)?;
 
-    Ok((f, old_dyn, new_dyn, m.view(ev).into_erased().id()))
+    Ok((f, old_dyn, new_dyn, m.view(ev).as_erased().id()))
 }
 
 /// `redirect_successor` retargets the `entry → old` switch case onto `new` AND
@@ -684,7 +684,7 @@ fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
     let (f, old_dyn, new_dyn, _ev) = build_switch_redirect(&m)?;
     // `new`'s phi is i32; an i64 constant is the wrong type for it. Taken as
     // an **id** before the move: the constant handle borrows the token.
-    let wrong: ValueId<_> = i64_ty.const_int(0_u32).into_erased().id();
+    let wrong: ValueId<_> = i64_ty.const_int(0_u32).as_erased().id();
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -877,7 +877,7 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
     let pass = RedirectCondBrThen {
         from_name: "entry",
         new_to: new_dyn,
-        phi_values: vec![verified.view(ev).into_erased().id()],
+        phi_values: vec![verified.view(ev).as_erased().id()],
     };
     let out = run_function_pass(pass, verified, f, &mut analyses)?;
     let reverified = out.verify().expect("redirect_then output must re-verify");
@@ -938,13 +938,13 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let ev = b.int_add(a, 3_i32, "ev")?;
     let c = b.int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
-    b.cond_br_with_args(c, keep_lbl, &[], drop_lbl, &[m.view(ev).into_erased()])?;
+    b.cond_br_with_args(c, keep_lbl, &[], drop_lbl, &[m.view(ev).as_erased()])?;
 
     // keep: %kv = add %a, 7 ; br drop(%kv)
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(keep);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let kv = b.int_add(a, 7_i32, "kv")?;
-    b.br_with_args(drop_lbl, &[m.view(kv).into_erased()])?;
+    b.br_with_args(drop_lbl, &[m.view(kv).as_erased()])?;
 
     // drop: ret %dp
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(drop_bb);
@@ -960,7 +960,7 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
     // branch — the collapse deregistered it. Nothing in `verify()` checks
     // use-list consistency, so assert it directly.
     assert!(
-        !out.view(c).into_erased().has_uses(),
+        !out.view(c).as_erased().has_uses(),
         "the collapse must deregister the dead condition operand"
     );
 
@@ -1019,7 +1019,7 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
     let pass = RedirectBr {
         from_name: "entry",
         new_to: new_dyn,
-        phi_values: vec![verified.view(ev).into_erased().id()],
+        phi_values: vec![verified.view(ev).as_erased().id()],
     };
     let out = run_function_pass(pass, verified, f, &mut analyses)?;
     let reverified = out.verify().expect("redirect output must re-verify");
@@ -1229,16 +1229,16 @@ fn build_cond_br_both_arms_phi<'ctx, B: ModuleBrand + 'ctx>(
     b.cond_br_with_args(
         c1,
         shared_lbl,
-        &[m.view(sv).into_erased()],
+        &[m.view(sv).as_erased()],
         shared_lbl,
-        &[m.view(sv).into_erased()],
+        &[m.view(sv).as_erased()],
     )?;
 
     // keep: %kv = add %a, 7 ; br shared(%kv)
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(keep);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let kv = b.int_add(a, 7_i32, "kv")?;
-    b.br_with_args(shared_lbl, &[m.view(kv).into_erased()])?;
+    b.br_with_args(shared_lbl, &[m.view(kv).as_erased()])?;
 
     // shared: ret %sp
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(shared);

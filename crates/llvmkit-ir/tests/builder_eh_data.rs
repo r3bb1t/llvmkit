@@ -98,7 +98,7 @@ fn resume_i32_undef() -> Result<(), IrError> {
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let exc = m.view(f).append_basic_block(&m, "exc");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exc);
-    let undef = i32_ty.as_type().get_undef();
+    let undef = i32_ty.as_type().undef();
     let _ = b.resume(undef, "")?;
     let text = format!("{m}");
     assert!(text.contains("resume i32 undef"), "got:\n{text}");
@@ -124,7 +124,7 @@ fn landingpad_followed_by_resume() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exc);
     let lp = b.landingpad(i32_ty.as_type(), true, "cleanup")?;
     let _closed = lp.finish();
-    let undef = i32_ty.as_type().get_undef();
+    let undef = i32_ty.as_type().undef();
     let _ = b.resume(undef, "")?;
     let text = format!("{m}");
     assert!(

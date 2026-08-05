@@ -24,6 +24,35 @@ bullet below names its wave.
 
 #### Changed
 
+- **Breaking (W3): lookups are bare nouns; `get_` is reserved for
+  get-or-insert.** `Module::get_global` → `global`, `get_alias` → `alias`,
+  `get_ifunc` → `ifunc`, `get_comdat` → `comdat`, `function_by_name::<R>` →
+  `function::<R>`, `function_by_name_dyn` → `function_dyn` (C-GETTER). The
+  named-struct pair untangles: the get-or-create former `named_struct`
+  becomes `get_or_insert_named_struct`, freeing `named_struct(name)` for the
+  pure lookup; the bespoke `get_or_set_named_struct_body::<S>` becomes
+  `get_or_insert_struct_of::<S>`. Also de-prefixed: `Type::get_undef`/
+  `get_poison` → `undef`/`poison`; the free functions `splat_value`,
+  `select_pattern`, `underlying_object{,_aggressive,s,s_for_code_gen}`,
+  `constant_data_array_info`, `constant_string_info`, `string_length`;
+  `DemandedBits::{demanded_bits, operand_demanded_bits}`; the analysis
+  managers' `result::<A>` / `cached_result::<A>`; asmparser
+  `NumberedValues::next_unused_id` (was `get_next`);
+  `AttributeStorage::or_default_mut` (was `get_mut_or_default`).
+  The `get_or_insert_*` family keeps its std-consistent names.
+
+- **Breaking (W3): conversion-name honesty (C-CONV).**
+  `Value::as_const_int` → `to_const_int` (it allocates an `ApInt`);
+  `AtomicOrdering::to_ir_string` and `IntPredicate`/`FloatPredicate::name`
+  unify on `as_str`; the `IsValue` widening accessor and every inherent
+  twin rename `into_erased` → `as_erased`, joining the `as_dyn`/`as_view`
+  family (the operand-lift trait method `into_erased_value` is unchanged);
+  `BlockCursor::next` → `step` (it is deliberately not an `Iterator`; the
+  old name invited `for`-loop attempts that failed confusingly).
+  `set_data_layout` is now the single, infallible setter taking a parsed
+  `DataLayout`; the string-parsing overload is gone — parse explicitly with
+  `DataLayout::parse(...)` (fallibility lives where the failure is).
+
 - **Breaking (W2): the `build_` prefix is gone from every `IrBuilder` method.**
   All 265 emitters lose the C++ `CreateAdd`-heritage prefix: `build_int_add` →
   `int_add`, `build_ret` → `ret`, `build_br` → `br`, `build_call` → `call`,

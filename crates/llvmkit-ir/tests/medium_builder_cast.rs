@@ -147,10 +147,10 @@ fn default_constant_folder_folds_zext_to_constant() -> Result<(), IrError> {
     let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let value: IntValue<'_, i32, _> = i32_ty.const_int(42_i32).into_erased().try_into()?;
+    let value: IntValue<'_, i32, _> = i32_ty.const_int(42_i32).as_erased().try_into()?;
     let result = b.zext(value, i64_ty, "z")?;
     let folded =
-        ConstantIntValue::<i64, _>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
+        ConstantIntValue::<i64, _>::try_from(Constant::try_from(b.view(result).as_erased())?)?;
     assert_eq!(folded.ap_int().try_zext_u64(), Some(42));
     Ok(())
 }
@@ -180,7 +180,7 @@ fn typed_zext_nneg_prints_flag() -> Result<(), IrError> {
 
 /// Mirrors `test/Assembler/flags.ll:254-258` (`test_trunc_both`:
 /// `%res = trunc nuw nsw i64 %a to i32`). Typed operands, no `_dyn` erasure
-/// needed to spell `nuw`/`nsw`. Upstream `IrBuilder::CreateTrunc` returns `V`
+/// needed to spell `nuw`/`nsw`. Upstream `IRBuilder::CreateTrunc` returns `V`
 /// unchanged (silently dropping any requested nuw/nsw) when `SrcTy ==
 /// DestTy`; llvmkit's `Src: WiderThan<Dst>` bound makes that same-type trunc
 /// unspellable, so the flag-dropping case cannot arise here (D10).

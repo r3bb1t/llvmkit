@@ -841,8 +841,8 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     /// invariant a construction-time fact instead of a verifier-time one:
     /// the IR builder routes every phi through here, so a phi built while
     /// the cursor sits past a non-phi still lands at the phi head. Mirrors
-    /// the placement `IrBuilder::SetInsertPoint(&BB.getFirstNonPHI())`
-    /// gives phis in `llvm/lib/IR/IrBuilder.cpp`.
+    /// the placement `IRBuilder::SetInsertPoint(&BB.getFirstNonPHI())`
+    /// gives phis in `llvm/lib/IR/IRBuilder.cpp`.
     pub(crate) fn insert_instruction_at_phi_head(&self, id: ValueSlot) {
         let mut list = self.data().instructions.borrow_mut();
         let at = list
@@ -1221,7 +1221,7 @@ mod tests {
     #[test]
     fn non_block_value_is_rejected() {
         let m = crate::module_new!("bp-slice1-reject").expect("fresh module");
-        let v = m.i32_type().const_zero().into_erased();
+        let v = m.i32_type().const_zero().as_erased();
         let narrowed: IrResult<BasicBlockLabel<'_, Dyn, _, BlockParamsDyn>> = v.try_into();
         assert!(
             narrowed.is_err(),

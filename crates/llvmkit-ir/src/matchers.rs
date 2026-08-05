@@ -221,7 +221,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MConstIntPred {
     type Bindings = ();
     #[inline]
     fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
-        let ap = value.as_const_int()?;
+        let ap = value.to_const_int()?;
         (self.pred)(&ap).then_some(())
     }
 }
@@ -275,7 +275,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MApInt {
     type Bindings = (ApInt,);
     #[inline]
     fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
-        value.as_const_int().map(|ap| (ap,))
+        value.to_const_int().map(|ap| (ap,))
     }
 }
 
@@ -292,7 +292,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MSpecificInt {
     type Bindings = ();
     #[inline]
     fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
-        let ap = value.as_const_int()?;
+        let ap = value.to_const_int()?;
         (ap.try_sext_i128() == Some(self.0)).then_some(())
     }
 }
@@ -578,7 +578,7 @@ where
     fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
         let view = InstructionView::try_from(value).ok()?;
         match view.kind()? {
-            InstructionKind::Load(load) => self.0.try_match(load.pointer().into_erased()),
+            InstructionKind::Load(load) => self.0.try_match(load.pointer().as_erased()),
             _ => None,
         }
     }
@@ -629,7 +629,7 @@ where
     fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
         let view = InstructionView::try_from(value).ok()?;
         match view.kind()? {
-            InstructionKind::Gep(gep) => self.0.try_match(gep.pointer().into_erased()),
+            InstructionKind::Gep(gep) => self.0.try_match(gep.pointer().as_erased()),
             _ => None,
         }
     }

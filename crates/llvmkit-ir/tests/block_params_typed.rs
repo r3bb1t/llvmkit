@@ -36,8 +36,8 @@ fn append_block_typed_yields_typed_params_from_head_phis() -> Result<(), IrError
 
     // Runtime: each handle's IR type matches its schema position, and both
     // are sourced from the freshly built head-phis.
-    assert_eq!(p0.into_erased().ty(), i32_ty.as_type());
-    assert_eq!(p1.into_erased().ty(), ptr_ty.as_type());
+    assert_eq!(p0.as_erased().ty(), i32_ty.as_type());
+    assert_eq!(p1.as_erased().ty(), ptr_ty.as_type());
 
     // Compile-time assertion: the typed block's id threads `Params`, so a
     // typed branch target keeps its `(i32, Ptr)` promise, and viewing it

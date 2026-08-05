@@ -70,7 +70,7 @@ const MAX_VISITED_AGGRESSIVE: usize = 8;
 /// at whatever it cannot peel, which may be a `load`, an argument, or `value`
 /// itself. [`get_underlying_objects_for_code_gen`] is the variant that insists
 /// on identifiability.
-pub fn get_underlying_object<'ctx, B: ModuleBrand + 'ctx>(
+pub fn underlying_object<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     max_lookup: u32,
 ) -> Value<'ctx, B> {
@@ -140,10 +140,10 @@ fn peel_one_layer<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<
 /// Ports `llvm::getUnderlyingObjectAggressive`. When the paths disagree, or
 /// more than eight distinct objects turn up, the answer falls back to
 /// `get_underlying_object(value)`.
-pub fn get_underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
+pub fn underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Value<'ctx, B> {
-    let first_object = get_underlying_object(value, MAX_LOOKUP_SEARCH_DEPTH);
+    let first_object = underlying_object(value, MAX_LOOKUP_SEARCH_DEPTH);
     let mut visited: HashSet<ValueSlot> = HashSet::new();
     let mut worklist = vec![value];
     let mut object: Option<Value<'ctx, B>> = None;
@@ -154,7 +154,7 @@ pub fn get_underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
             first = false;
             first_object
         } else {
-            get_underlying_object(candidate, MAX_LOOKUP_SEARCH_DEPTH)
+            underlying_object(candidate, MAX_LOOKUP_SEARCH_DEPTH)
         };
 
         if !visited.insert(candidate.slot()) {
@@ -197,7 +197,7 @@ pub fn get_underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports `llvm::getUnderlyingObjects`. Where
 /// [`get_underlying_object_aggressive`] gives up on disagreement, this collects
 /// each answer: given `select %c, ptr %a, ptr %b` it returns both.
-pub fn get_underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
+pub fn underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     max_lookup: u32,
 ) -> Vec<Value<'ctx, B>> {
@@ -206,7 +206,7 @@ pub fn get_underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
     let mut worklist = vec![value];
 
     while let Some(candidate) = worklist.pop() {
-        let candidate = get_underlying_object(candidate, max_lookup);
+        let candidate = underlying_object(candidate, max_lookup);
         if !visited.insert(candidate.slot()) {
             continue;
         }
@@ -237,7 +237,7 @@ pub fn get_underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
 /// Ports `llvm::getUnderlyingObjectsForCodeGen`. Upstream returns a `bool` and
 /// clears its out-parameter on failure; here failure is `None`, so a caller
 /// cannot read a half-filled list.
-pub fn get_underlying_objects_for_code_gen<'ctx, B: ModuleBrand + 'ctx>(
+pub fn underlying_objects_for_code_gen<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<Vec<Value<'ctx, B>>> {
     let mut objects = Vec::new();
@@ -245,7 +245,7 @@ pub fn get_underlying_objects_for_code_gen<'ctx, B: ModuleBrand + 'ctx>(
     let mut working = vec![value];
 
     while let Some(current) = working.pop() {
-        for object in get_underlying_objects(current, MAX_LOOKUP_SEARCH_DEPTH) {
+        for object in underlying_objects(current, MAX_LOOKUP_SEARCH_DEPTH) {
             if !visited.insert(object.slot()) {
                 continue;
             }
@@ -595,7 +595,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ConstantDataArraySlice<'ctx, B> {
 ///
 /// `offset` is upstream's starting element offset, added to whatever the
 /// pointer arithmetic contributes.
-pub fn get_constant_data_array_info<'ctx, B: ModuleBrand + 'ctx>(
+pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     element_size: u32,
     offset: u64,
@@ -608,7 +608,7 @@ pub fn get_constant_data_array_info<'ctx, B: ModuleBrand + 'ctx>(
 
     // Drill down through the pointer expression, ignoring intervening casts,
     // and identify the object it references.
-    let global = get_underlying_object(value, MAX_LOOKUP_SEARCH_DEPTH);
+    let global = underlying_object(value, MAX_LOOKUP_SEARCH_DEPTH);
     let ValueKindData::GlobalVariable(data) = &global.data().kind else {
         return None;
     };
@@ -685,12 +685,12 @@ pub fn get_constant_data_array_info<'ctx, B: ModuleBrand + 'ctx>(
 /// Upstream writes a `StringRef` into the caller's buffer and returns a
 /// `bool`; here the string is the `Some`. It is a `Vec<u8>` rather than a
 /// `String` because the bytes are IR data and need not be UTF-8.
-pub fn get_constant_string_info<'ctx, B: ModuleBrand + 'ctx>(
+pub fn constant_string_info<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     trim_at_nul: bool,
     data_layout: &DataLayout,
 ) -> Option<Vec<u8>> {
-    let slice = get_constant_data_array_info(value, 8, 0, data_layout)?;
+    let slice = constant_data_array_info(value, 8, 0, data_layout)?;
 
     let Some(_) = slice.array() else {
         if trim_at_nul {
@@ -726,7 +726,7 @@ pub fn get_constant_string_info<'ctx, B: ModuleBrand + 'ctx>(
 /// tell"; that is `None` here, so a caller cannot mistake it for a length.
 ///
 /// `char_size` is in bits and defaults to 8 upstream.
-pub fn get_string_length<'ctx, B: ModuleBrand + 'ctx>(
+pub fn string_length<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     char_size: u32,
     data_layout: &DataLayout,
@@ -815,7 +815,7 @@ fn string_length_recursive<'ctx, B: ModuleBrand + 'ctx>(
     }
 
     // Otherwise, try to read the string.
-    let Some(slice) = get_constant_data_array_info(value, char_size, 0, data_layout) else {
+    let Some(slice) = constant_data_array_info(value, char_size, 0, data_layout) else {
         return StringLength::Unknown;
     };
     if slice.array().is_none() {
@@ -972,7 +972,7 @@ pub fn find_inserted_value<'ctx, B: ModuleBrand + 'ctx>(
     if let ValueKindData::Constant(_) = &value.data().kind {
         // `C->getAggregateElement(idx)`.
         let element = Constant::from_parts(value).aggregate_element(first)?;
-        return find_inserted_value(element.into_erased(), rest);
+        return find_inserted_value(element.as_erased(), rest);
     }
 
     match instruction_kind(value)? {

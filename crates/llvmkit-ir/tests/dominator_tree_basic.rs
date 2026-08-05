@@ -90,10 +90,10 @@ fn same_block_instruction_order_and_unreachable_use_semantics() -> Result<(), Ir
     let z2 = bd.int_add(z1, 1_i32, "z2")?;
     bd.ret(z2)?;
 
-    let y1i = inst(m.view(y1).into_erased())?;
-    let y2i = inst(m.view(y2).into_erased())?;
-    let z1i = inst(m.view(z1).into_erased())?;
-    let z2i = inst(m.view(z2).into_erased())?;
+    let y1i = inst(m.view(y1).as_erased())?;
+    let y2i = inst(m.view(y2).as_erased())?;
+    let z1i = inst(m.view(z1).as_erased())?;
+    let z2i = inst(m.view(z2).as_erased())?;
     let dt = DominatorTree::new(m.view(f).as_dyn());
 
     assert!(!dt.dominates_instruction(&y1i, &y1i));
@@ -138,14 +138,14 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
         .cond_br(cond, then_label, else_label)?;
     let bt = IrBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
     let y = bt.int_add(x, 1_i32, "y")?;
-    bt.br_with_args(join_label, &[m.view(y).into_erased()])?;
+    bt.br_with_args(join_label, &[m.view(y).as_erased()])?;
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(else_bb)
-        .br_with_args(join_label, &[x.into_erased()])?;
+        .br_with_args(join_label, &[x.as_erased()])?;
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
     IrBuilder::new_for::<Dyn>(&m).position_at_end(join).ret(p)?;
 
-    let yi = inst(m.view(y).into_erased())?;
+    let yi = inst(m.view(y).as_erased())?;
     // The phi is the join block's head param; recover its view from
     // `params[0]`. `operand_use` consumes the view, so recover it twice.
     let phii = inst(params[0])?;
@@ -155,7 +155,7 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
     let dt = DominatorTree::new(m.view(f).as_dyn());
 
     assert!(!dt.dominates_instruction(&yi, &phii));
-    assert!(dt.dominates_use(m.view(y).into_erased(), y_use));
+    assert!(dt.dominates_use(m.view(y).as_erased(), y_use));
     Ok(())
 }
 
@@ -196,8 +196,8 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
     bu.ret(x)?;
 
     let invoke_inst = invoke.as_view();
-    let normal_use_inst = inst(m.view(normal_use).into_erased())?;
-    let unwind_use_inst = inst(m.view(unwind_use).into_erased())?;
+    let normal_use_inst = inst(m.view(normal_use).as_erased())?;
+    let unwind_use_inst = inst(m.view(unwind_use).as_erased())?;
     let dt = DominatorTree::new(m.view(f).as_dyn());
 
     assert!(dt.dominates_instruction(&invoke_inst, &normal_use_inst));
@@ -232,9 +232,9 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
         .cond_br_with_args(
             cond,
             join_label,
-            &[x.into_erased()],
+            &[x.as_erased()],
             join_label,
-            &[x.into_erased()],
+            &[x.as_erased()],
         )?;
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
     IrBuilder::new_for::<Dyn>(&m).position_at_end(join).ret(p)?;

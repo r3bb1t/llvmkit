@@ -48,7 +48,7 @@ fn zero_length_array_is_allowed() {
 fn value_narrows_to_matching_typed_array() {
     let m = module_new!("at").expect("fresh module");
     let at = m.array_type_n::<i32, 4>();
-    let v = at.as_type().get_poison().into_erased();
+    let v = at.as_type().poison().as_erased();
 
     let typed: ArrayValue<'_, i32, ArrLen<4>, _> = v.try_into().expect("[4 x i32] narrows");
     assert_eq!(format!("{}", typed.ty().as_type()), "[4 x i32]");
@@ -65,7 +65,7 @@ fn value_narrows_to_matching_typed_array() {
 fn wrong_element_count_is_rejected() {
     let m = module_new!("at").expect("fresh module");
     let i32_ty = m.i32_type();
-    let v = m.array_type(i32_ty, 2).as_type().get_poison().into_erased();
+    let v = m.array_type(i32_ty, 2).as_type().poison().as_erased();
 
     let err = ArrayValue::<i32, ArrLen<4>, _>::try_from(v)
         .expect_err("[2 x i32] must not narrow to ArrLen<4>");
@@ -84,7 +84,7 @@ fn wrong_element_count_is_rejected() {
 fn wrong_element_type_is_rejected() {
     let m = module_new!("at").expect("fresh module");
     let i64_ty = m.i64_type();
-    let v = m.array_type(i64_ty, 4).as_type().get_poison().into_erased();
+    let v = m.array_type(i64_ty, 4).as_type().poison().as_erased();
 
     let err = ArrayValue::<i32, ArrLen<4>, _>::try_from(v)
         .expect_err("[4 x i64] must not narrow to <i32, ArrLen<4>>");
@@ -100,7 +100,7 @@ fn wrong_element_type_is_rejected() {
 fn erased_narrowing_accepts_any_array() {
     let m = module_new!("at").expect("fresh module");
     let i64_ty = m.i64_type();
-    let v = m.array_type(i64_ty, 3).as_type().get_poison().into_erased();
+    let v = m.array_type(i64_ty, 3).as_type().poison().as_erased();
 
     let erased: ArrayValue<'_, ElemDyn, ArrLenDyn, _> =
         v.try_into().expect("any array narrows to the dyn form");

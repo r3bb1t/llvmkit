@@ -84,9 +84,7 @@ pub fn stale_id_is_refused_by_the_next_batch() -> Result<bool, IrError> {
     // `first` drops at the end of this block: the brand claim is released and
     // the storage is freed. The id outlives it — ids are `'static`.
     let first = compile_batch(Module::branded::<Jit, _>("batch0")?, 0)?;
-    let batch_fn = first
-        .function_by_name_dyn("batch")
-        .expect("declared just above");
+    let batch_fn = first.function_dyn("batch").expect("declared just above");
     let stale: ValueId<Jit> = first
         .view(batch_fn)
         .basic_blocks()

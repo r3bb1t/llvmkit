@@ -92,7 +92,7 @@ fn block_args_br_round_trips_and_verifies() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.int_add(a, 1_i32, "x")?;
-    b.br_with_args(hdr_label, &[m.view(x).into_erased()])?;
+    b.br_with_args(hdr_label, &[m.view(x).as_erased()])?;
 
     // hdr: ret %p (the head-phi param carrying the branch argument).
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(hdr);
@@ -143,13 +143,13 @@ fn block_args_cond_br_diamond_verifies() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let vt = b.int_add(a, 10_i32, "vt")?;
-    b.br_with_args(merge_label, &[m.view(vt).into_erased()])?;
+    b.br_with_args(merge_label, &[m.view(vt).as_erased()])?;
 
     // else: %ve = add %a, 20 ; br merge(%ve)
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let ve = b.int_add(a, 20_i32, "ve")?;
-    b.br_with_args(merge_label, &[m.view(ve).into_erased()])?;
+    b.br_with_args(merge_label, &[m.view(ve).as_erased()])?;
 
     // merge: ret %p
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(merge);
@@ -202,9 +202,9 @@ fn block_args_cond_br_with_args_carries_both_edges() -> Result<(), IrError> {
     b.cond_br_with_args(
         cond,
         then_label,
-        &[m.view(x).into_erased()],
+        &[m.view(x).as_erased()],
         else_label,
-        &[m.view(y).into_erased()],
+        &[m.view(y).as_erased()],
     )?;
 
     // then: ret %pt
@@ -280,7 +280,7 @@ fn block_args_br_type_mismatch_errors() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg_f64 = m.view(f).param(1)?; // f64 argument
-    let res = b.br_with_args(hdr_label, &[arg_f64.into_erased()]);
+    let res = b.br_with_args(hdr_label, &[arg_f64.as_erased()]);
     assert!(
         matches!(res, Err(IrError::TypeMismatch { .. })),
         "expected TypeMismatch, got: {res:?}"
@@ -315,8 +315,8 @@ fn append_block_with_named_params_names_head_phis() -> Result<(), IrError> {
     b.br_with_args(
         hdr_label,
         &[
-            i32_ty.const_int(1_i32).into_erased(),
-            i32_ty.const_int(2_i32).into_erased(),
+            i32_ty.const_int(1_i32).as_erased(),
+            i32_ty.const_int(2_i32).as_erased(),
         ],
     )?;
 

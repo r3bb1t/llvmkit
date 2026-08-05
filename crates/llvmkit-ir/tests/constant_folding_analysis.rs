@@ -71,7 +71,7 @@ fn load_from_const_ptr_oob_returns_poison() -> Result<(), IrError> {
     )?
     .expect("oob constant load folds to poison");
 
-    assert_eq!(folded, i32_ty.as_type().get_poison().as_constant());
+    assert_eq!(folded, i32_ty.as_type().poison().as_constant());
     Ok(())
 }
 
@@ -570,7 +570,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let add = b.int_add::<i32, _, _, _>(c2_i, c5_i, "sum")?;
-    let instruction = InstructionView::try_from(b.view(add).into_erased())?;
+    let instruction = InstructionView::try_from(b.view(add).as_erased())?;
     assert_eq!(
         constant_fold_inst_operands(
             &instruction,
@@ -615,8 +615,8 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
     let concrete = b.freeze(i32_ty.const_int(42_i32), "concrete")?;
-    let undef = b.freeze(i32_ty.as_type().get_undef(), "undef")?;
-    let poison = b.freeze(i32_ty.as_type().get_poison(), "poison")?;
+    let undef = b.freeze(i32_ty.as_type().undef(), "undef")?;
+    let poison = b.freeze(i32_ty.as_type().poison(), "poison")?;
 
     let concrete_inst = b.view(concrete).as_view();
     let undef_inst = b.view(undef).as_view();
@@ -654,9 +654,9 @@ fn recursive_gep_load_through_bitcast_from_global_folds() -> Result<(), IrError>
         m.ptr_type(0).as_type(),
         ConstantExprOpcode::GetElementPtr,
         [
-            m.view(g).as_global_constant_ptr().into_erased(),
-            zero.into_erased(),
-            one.into_erased(),
+            m.view(g).as_global_constant_ptr().as_erased(),
+            zero.as_erased(),
+            one.as_erased(),
         ],
         [],
         [],
@@ -738,7 +738,7 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
     let lhs = f32_ty.const_ap_float(&denormal)?;
     let rhs = f32_ty.const_ap_float(&denormal)?;
     let add = b.fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
-    let instruction = InstructionView::try_from(b.view(add).into_erased())?;
+    let instruction = InstructionView::try_from(b.view(add).as_erased())?;
 
     let folded = constant_fold_instruction(&instruction, &dl, None)?
         .expect("f32 denormal inputs fold after f32 attribute flush");
@@ -778,7 +778,7 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
     let lhs = f32_ty.const_ap_float(&denormal)?;
     let rhs = f32_ty.const_ap_float(&denormal)?;
     let add = b.fp_add::<f32, _, _, _>(lhs, rhs, "sum")?;
-    let instruction = InstructionView::try_from(b.view(add).into_erased())?;
+    let instruction = InstructionView::try_from(b.view(add).as_erased())?;
 
     let folded = constant_fold_instruction(&instruction, &dl, None)?
         .expect("f32 denormal inputs fold after attribute-group f32 flush");
@@ -864,7 +864,7 @@ fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
     let one = f32_ty.const_float(1.0);
     let two = f32_ty.const_float(2.0);
     let add = b.fp_add_fmf::<f32, _, _, _>(one, two, FastMathFlags::NO_SIGNED_ZEROS, "sum")?;
-    let instruction = InstructionView::try_from(b.view(add).into_erased())?;
+    let instruction = InstructionView::try_from(b.view(add).as_erased())?;
     let operands = [one.as_constant(), two.as_constant()];
 
     assert_eq!(
@@ -903,7 +903,7 @@ fn inttoptr_vs_null_folds_via_integer_compare() -> Result<(), IrError> {
     let lhs = m.constant_expr(
         ptr_ty.as_type(),
         ConstantExprOpcode::IntToPtr,
-        [five.into_erased()],
+        [five.as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
@@ -938,7 +938,7 @@ fn ptrtoint_eq_null_folds_to_false_for_nonweak_global() -> Result<(), IrError> {
     let ptrtoint = m.constant_expr(
         i64_ty.as_type(),
         ConstantExprOpcode::PtrToInt,
-        [m.view(g).as_global_constant_ptr().into_erased()],
+        [m.view(g).as_global_constant_ptr().as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
@@ -971,7 +971,7 @@ fn inttoptr_pair_ult_folds_via_integer_compare() -> Result<(), IrError> {
     let lhs = m.constant_expr(
         ptr_ty.as_type(),
         ConstantExprOpcode::IntToPtr,
-        [four.into_erased()],
+        [four.as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
@@ -979,7 +979,7 @@ fn inttoptr_pair_ult_folds_via_integer_compare() -> Result<(), IrError> {
     let rhs = m.constant_expr(
         ptr_ty.as_type(),
         ConstantExprOpcode::IntToPtr,
-        [eight.into_erased()],
+        [eight.as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
@@ -1013,7 +1013,7 @@ fn ptrtoint_pair_eq_folds_via_pointer_operand_compare() -> Result<(), IrError> {
     let lhs = m.constant_expr(
         i64_ty.as_type(),
         ConstantExprOpcode::PtrToInt,
-        [m.view(g1).as_global_constant_ptr().into_erased()],
+        [m.view(g1).as_global_constant_ptr().as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
@@ -1021,7 +1021,7 @@ fn ptrtoint_pair_eq_folds_via_pointer_operand_compare() -> Result<(), IrError> {
     let rhs = m.constant_expr(
         i64_ty.as_type(),
         ConstantExprOpcode::PtrToInt,
-        [m.view(g2).as_global_constant_ptr().into_erased()],
+        [m.view(g2).as_global_constant_ptr().as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
@@ -1061,7 +1061,7 @@ fn same_base_inbounds_gep_ult_folds_via_offset_compare() -> Result<(), IrError> 
     let lhs = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [base.into_erased(), four.into_erased()],
+        [base.as_erased(), four.as_erased()],
         [],
         [],
         inbounds.clone(),
@@ -1069,7 +1069,7 @@ fn same_base_inbounds_gep_ult_folds_via_offset_compare() -> Result<(), IrError> 
     let rhs = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [base.into_erased(), eight.into_erased()],
+        [base.as_erased(), eight.as_erased()],
         [],
         [],
         inbounds,
@@ -1105,7 +1105,7 @@ fn non_inbounds_same_base_gep_eq_still_folds() -> Result<(), IrError> {
     let lhs = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [base.into_erased(), four.into_erased()],
+        [base.as_erased(), four.as_erased()],
         [],
         [],
         ConstantExprOptions::new().source_ty(i8_ty.as_type()),
@@ -1113,7 +1113,7 @@ fn non_inbounds_same_base_gep_eq_still_folds() -> Result<(), IrError> {
     let rhs = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [base.into_erased(), eight.into_erased()],
+        [base.as_erased(), eight.as_erased()],
         [],
         [],
         ConstantExprOptions::new().source_ty(i8_ty.as_type()),
@@ -1151,7 +1151,7 @@ fn non_inbounds_same_base_gep_ult_declines_to_fold() -> Result<(), IrError> {
     let lhs = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [base.into_erased(), four.into_erased()],
+        [base.as_erased(), four.as_erased()],
         [],
         [],
         ConstantExprOptions::new().source_ty(i8_ty.as_type()),
@@ -1159,7 +1159,7 @@ fn non_inbounds_same_base_gep_ult_declines_to_fold() -> Result<(), IrError> {
     let rhs = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [base.into_erased(), eight.into_erased()],
+        [base.as_erased(), eight.as_erased()],
         [],
         [],
         ConstantExprOptions::new().source_ty(i8_ty.as_type()),
@@ -1244,7 +1244,7 @@ fn nested_gep_over_gep_offset_mid_folds_via_offset_compare() -> Result<(), IrErr
     let lhs = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [mid_lhs.into_erased(), one.into_erased()],
+        [mid_lhs.as_erased(), one.as_erased()],
         [],
         [],
         inbounds.clone(),
@@ -1252,7 +1252,7 @@ fn nested_gep_over_gep_offset_mid_folds_via_offset_compare() -> Result<(), IrErr
     let rhs = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [mid_rhs.into_erased(), two.into_erased()],
+        [mid_rhs.as_erased(), two.as_erased()],
         [],
         [],
         inbounds,
@@ -1322,8 +1322,8 @@ fn gep_i32_index_canonicalizes_to_i8_offset() -> Result<(), IrError> {
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
         [
-            m.view(g).as_global_constant_ptr().into_erased(),
-            four.into_erased(),
+            m.view(g).as_global_constant_ptr().as_erased(),
+            four.as_erased(),
         ],
         [],
         [],
@@ -1362,8 +1362,8 @@ fn nested_gep_merges_into_single_i8_offset() -> Result<(), IrError> {
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
         [
-            m.view(g).as_global_constant_ptr().into_erased(),
-            one.into_erased(),
+            m.view(g).as_global_constant_ptr().as_erased(),
+            one.as_erased(),
         ],
         [],
         [],
@@ -1372,7 +1372,7 @@ fn nested_gep_merges_into_single_i8_offset() -> Result<(), IrError> {
     let outer = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [inner.into_erased(), one.into_erased()],
+        [inner.as_erased(), one.as_erased()],
         [],
         [],
         inbounds,
@@ -1413,7 +1413,7 @@ fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
     let inner = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [g_ptr.into_erased(), one.into_erased()],
+        [g_ptr.as_erased(), one.as_erased()],
         [],
         [],
         inbounds.clone(),
@@ -1421,7 +1421,7 @@ fn nested_gep_cancelling_offsets_fold_to_base_pointer() -> Result<(), IrError> {
     let outer = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [inner.into_erased(), neg_one.into_erased()],
+        [inner.as_erased(), neg_one.as_erased()],
         [],
         [],
         inbounds,
@@ -1477,7 +1477,7 @@ fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), 
     let h_int = m.constant_expr(
         i64_ty.as_type(),
         ConstantExprOpcode::PtrToInt,
-        [m.view(h).as_global_constant_ptr().into_erased()],
+        [m.view(h).as_global_constant_ptr().as_erased()],
         [],
         [],
         ConstantExprFlags::none(),
@@ -1490,8 +1490,8 @@ fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), 
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
         [
-            m.view(g).as_global_constant_ptr().into_erased(),
-            h_int.into_erased(),
+            m.view(g).as_global_constant_ptr().as_erased(),
+            h_int.as_erased(),
         ],
         [],
         [],
@@ -1501,7 +1501,7 @@ fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), 
     let outer = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [inner.into_erased(), four.into_erased()],
+        [inner.as_erased(), four.as_erased()],
         [],
         [],
         ConstantExprOptions::new()
@@ -1520,7 +1520,7 @@ fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), 
     let expected = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [inner.into_erased(), sixteen.into_erased()],
+        [inner.as_erased(), sixteen.as_erased()],
         [],
         [],
         ConstantExprOptions::new().source_ty(i8_ty.as_type()),
@@ -1535,7 +1535,7 @@ fn nested_gep_non_constant_index_intersects_inner_no_wrap_flags() -> Result<(), 
     let wrongly_inbounds = m.constant_expr_with_options(
         ptr_ty.as_type(),
         ConstantExprOpcode::GetElementPtr,
-        [inner.into_erased(), sixteen.into_erased()],
+        [inner.as_erased(), sixteen.as_erased()],
         [],
         [],
         ConstantExprOptions::new()

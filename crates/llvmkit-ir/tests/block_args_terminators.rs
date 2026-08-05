@@ -416,8 +416,8 @@ fn switch_with_args_authors_a_sil_style_loop() -> Result<(), IrError> {
     b.br_with_args(
         loop_label,
         &[
-            i32_ty.const_int(0_i32).into_erased(),
-            i32_ty.const_int(1_i32).into_erased(),
+            i32_ty.const_int(0_i32).as_erased(),
+            i32_ty.const_int(1_i32).as_erased(),
         ],
     )?;
 
@@ -433,7 +433,7 @@ fn switch_with_args_authors_a_sil_style_loop() -> Result<(), IrError> {
         i,
         (
             loop_label,
-            &[m.view(next_i).into_erased(), m.view(next_acc).into_erased()][..],
+            &[m.view(next_i).as_erased(), m.view(next_acc).as_erased()][..],
         ),
         [(10_i32, exit_label, &[loop_params[1]][..])],
         "",
@@ -497,7 +497,7 @@ fn switch_with_args_arity_mismatch_errors() -> Result<(), IrError> {
     // Case edge: one parameter, two arguments.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(case_entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let two = [a.into_erased(), a.into_erased()];
+    let two = [a.as_erased(), a.as_erased()];
     let res = b.switch_with_args(a, (plain_label, &[]), [(0_i32, param_label, &two[..])], "");
     assert!(
         matches!(
@@ -532,7 +532,7 @@ fn switch_with_args_type_mismatch_errors() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let wrong = [m.view(f).param(1)?.into_erased()]; // f64 into an i32 parameter
+    let wrong = [m.view(f).param(1)?.as_erased()]; // f64 into an i32 parameter
     let res = b.switch_with_args(
         a,
         (plain_label, &[]),
@@ -566,8 +566,8 @@ fn switch_dyn_with_args_seeds_default_and_case() -> Result<(), IrError> {
 
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let dflt_arg = [a.into_erased()];
-    let case_arg = [i32_ty.const_int(7_i32).into_erased()];
+    let dflt_arg = [a.as_erased()];
+    let case_arg = [i32_ty.const_int(7_i32).as_erased()];
     b.switch_dyn_with_args(
         a,
         (dflt_label, &dflt_arg),
@@ -622,7 +622,7 @@ fn invoke_with_args_seeds_both_edges() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.int_add(a, 1_i32, "x")?;
-    let carried = [m.view(x).into_erased()];
+    let carried = [m.view(x).as_erased()];
     b.invoke_with_args(
         m.view(callee),
         (),
@@ -680,7 +680,7 @@ fn invoke_dyn_with_args_seeds_edges_and_checks_arity() -> Result<(), IrError> {
     // ordinary block and carries nothing.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let carried = [a.into_erased()];
+    let carried = [a.as_erased()];
     b.invoke_dyn_with_args::<Dyn, _, llvmkit_ir::Value<'_, _>, _, _, _>(
         m.view(callee),
         Vec::new(),

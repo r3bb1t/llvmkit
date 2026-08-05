@@ -49,7 +49,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
     }
 
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -221,8 +221,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFunc<'ctx, B> {
 impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalIFunc<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalIFunc<'ctx, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        GlobalIFunc::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        GlobalIFunc::as_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(GlobalIFunc);
@@ -240,7 +240,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalIFunc<'ctx, B> {
 }
 impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalIFunc<'ctx, B> {
     fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
     fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
     where
@@ -258,7 +258,7 @@ impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalIFunc<'_, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalIFunc<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(i: GlobalIFunc<'ctx, B>) -> Self {
-        i.into_erased()
+        i.as_erased()
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalIFunc<'ctx, B>> for Constant<'ctx, B> {

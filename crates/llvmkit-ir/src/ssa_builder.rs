@@ -1031,7 +1031,7 @@ where
     {
         self.check_owner_var(var.owner)?;
         let v = value.into_int_value(self.module_ref())?;
-        super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.into_erased().ty())?;
+        super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.as_erased().ty())?;
         let block = self.current_block_id()?;
         self.write_variable(var.index, block, v.slot());
         Ok(())
@@ -1148,7 +1148,7 @@ where
     // predecessors" check -- at construction time rather than at
     // `verify()` time.
 
-    /// Produce `br label %dest`. Mirrors `IrBuilder::CreateBr`.
+    /// Produce `br label %dest`. Mirrors `IRBuilder::CreateBr`.
     pub fn br(&mut self, dest: SsaBlock<R, B>) -> IrResult<()> {
         self.check_owner_block(&dest)?;
         let dest_id = dest.id.slot();
@@ -1166,7 +1166,7 @@ where
     }
 
     /// Produce `br i1 <cond>, label %then, label %else`. Mirrors
-    /// `IrBuilder::CreateCondBr`. Records the then-edge before the
+    /// `IRBuilder::CreateCondBr`. Records the then-edge before the
     /// else-edge -- a phi at a block reachable from both arms sees its
     /// incoming operands added in the same order once each predecessor
     /// is later completed.
@@ -1203,7 +1203,7 @@ where
     }
 
     /// Produce `switch <cond>, label %default [ <case> label %dest ... ]`.
-    /// Mirrors `IrBuilder::CreateSwitch` followed by the closed-form
+    /// Mirrors `IRBuilder::CreateSwitch` followed by the closed-form
     /// `SwitchInst::add_case` chain. `cases` is collected up front
     /// (closed form: every destination edge is observed by the time
     /// this method records any of them) and each `(value, target)` is
@@ -1287,7 +1287,7 @@ where
         Ok(())
     }
 
-    /// Produce `ret <value>`. Mirrors `IrBuilder::CreateRet`. Records no
+    /// Produce `ret <value>`. Mirrors `IRBuilder::CreateRet`. Records no
     /// edges -- a `ret` has no successors.
     pub fn ret<V>(&mut self, value: V) -> IrResult<()>
     where
@@ -1300,7 +1300,7 @@ where
         Ok(())
     }
 
-    /// Produce `unreachable`. Mirrors `IrBuilder::CreateUnreachable`.
+    /// Produce `unreachable`. Mirrors `IRBuilder::CreateUnreachable`.
     /// Records no edges. The inner `unreachable` is infallible, so
     /// the only failure here is an empty cursor.
     pub fn unreachable(&mut self) -> IrResult<()> {
@@ -1317,7 +1317,7 @@ where
     B: ModuleBrand + 'ctx,
     F: IrBuilderFolder<'ctx, B> + Clone,
 {
-    /// Produce `ret void`. Mirrors `IrBuilder::CreateRetVoid`. Gated on
+    /// Produce `ret void`. Mirrors `IRBuilder::CreateRetVoid`. Gated on
     /// the builder's return marker being statically `()`, matching the
     /// inner builder's own `ret_void` split (a [`Dyn`]-marker
     /// builder's `ret_void` would need a runtime parent-function check;
@@ -1799,7 +1799,7 @@ where
         if data.poison_on_undef {
             let module = self.module_ref();
             let ty = super::r#type::Type::new(data.ty, module);
-            let poison = ty.get_poison();
+            let poison = ty.poison();
             return Ok(poison.slot());
         }
         Err(IrError::SsaUseOfUndefinedVariable {
@@ -1845,7 +1845,7 @@ where
         })];
         if var.poison_on_undef {
             let poison_ty = super::r#type::Type::new(ty, module);
-            let poison = poison_ty.get_poison();
+            let poison = poison_ty.poison();
             // Braun's `same == None` arm still runs `phi.replaceBy(same)`:
             // reroute every user to the poison constant BEFORE erasing, or
             // surviving instructions keep an operand naming an erased
@@ -1860,7 +1860,7 @@ where
                 )
             }
             Instruction::<Attached, B>::from_parts(phi, module)
-                .replace_all_uses_with(self.module, poison.into_erased())
+                .replace_all_uses_with(self.module, poison.as_erased())
                 .unwrap_or_else(|_| {
                     unreachable!(
                         "SsaBuilder invariant: the poison constant is built from the phi's own \
@@ -1889,7 +1889,7 @@ mod tests {
     use super::*;
     use crate::Linkage;
 
-    /// llvmkit-specific: no upstream C++ equivalent (LLVM's `IrBuilder`
+    /// llvmkit-specific: no upstream C++ equivalent (LLVM's `IRBuilder`
     /// has no on-the-fly SSA layer -- the closest functional relative is
     /// `SSAUpdater::Initialize`, which likewise treats the first block it
     /// sees as needing no predecessor completion). Locks that
@@ -2185,7 +2185,7 @@ mod tests {
         let var: IntVariable<i32, _> = b.declare_int_var_poison("x");
         let read = b.read_variable_in(var.index, entry_id)?;
         let i32_ty = m.i32_type();
-        let poison_id = i32_ty.as_type().get_poison().slot();
+        let poison_id = i32_ty.as_type().poison().slot();
         assert_eq!(read, poison_id);
         Ok(())
     }
@@ -2298,7 +2298,7 @@ mod tests {
 
         b.switch_to_block(entry)?;
         let forged: IntValue<'_, i32, _> =
-            IntValue::from_value_unchecked(m.i64_type().const_zero().into_erased());
+            IntValue::from_value_unchecked(m.i64_type().const_zero().as_erased());
 
         let err = b
             .def_int_var(x, forged)
@@ -2336,7 +2336,7 @@ mod tests {
 
         b.switch_to_block(entry)?;
         let forged: FloatValue<'_, f32, _> =
-            FloatValue::from_value_unchecked(m.f64_type().const_from_bits(0).into_erased());
+            FloatValue::from_value_unchecked(m.f64_type().const_from_bits(0).as_erased());
 
         let err = b
             .def_float_var(x, forged)
@@ -2381,7 +2381,7 @@ mod tests {
 
         b.switch_to_block(entry)?;
         let forged: PointerValue<'_, _> =
-            PointerValue::from_value_unchecked(m.i32_type().const_zero().into_erased());
+            PointerValue::from_value_unchecked(m.i32_type().const_zero().as_erased());
 
         let err = b
             .def_pointer_var(p, forged)

@@ -5,7 +5,7 @@
 //! (D2 evidence-token capability, follows the `ValidatedStructValue`
 //! precedent in `struct_schema.rs`).
 //!
-//! Closest upstream behaviour: `llvm/include/llvm/IR/IrBuilder.h::IRBuilderBase::CreateSelect`
+//! Closest upstream behaviour: `llvm/include/llvm/IR/IRBuilder.h::IRBuilderBase::CreateSelect`
 //! (and the wider `CreateSelect` family) narrows a select's arm types at
 //! runtime; llvmkit's `SelectArm` sealed-trait evidence proves arm-type
 //! agreement at compile time instead, so there must be no way to mint that

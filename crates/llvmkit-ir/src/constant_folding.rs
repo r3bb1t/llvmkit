@@ -163,9 +163,9 @@ pub fn flush_fp_constant<'ctx, B: ModuleBrand + 'ctx>(
     // decline for a non-splat scalable operand.
     if matches!(operand.ty().data(), TypeData::FixedVector { .. })
         && let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
-            &operand.into_erased().data().kind
+            &operand.as_erased().data().kind
     {
-        let module = operand.into_erased().module();
+        let module = operand.as_erased().module();
         let mut flushed = Vec::with_capacity(elements.len());
         for id in elements.iter().copied() {
             let Some(element) = constant_from_id(module, id) else {
@@ -251,7 +251,7 @@ pub fn constant_fold_load_from_const<'ctx, B: ModuleBrand + 'ctx>(
     };
     let alloc_size = dl.type_alloc_size(erase_type(constant.ty()));
     if start >= alloc_size {
-        return Ok(Some(ty.get_poison().as_constant()));
+        return Ok(Some(ty.poison().as_constant()));
     }
     let load_size = dl.type_store_size(erase_type(ty));
     let Some(end) = start.checked_add(load_size) else {
@@ -276,7 +276,7 @@ pub fn constant_fold_load_from_const<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(None);
     };
     if end_index > bytes.len() {
-        return Ok(Some(ty.get_poison().as_constant()));
+        return Ok(Some(ty.poison().as_constant()));
     }
     constant_from_store_bytes(ty, &bytes[start_index..end_index], dl)
 }
@@ -330,15 +330,15 @@ pub fn constant_fold_cast_operand<'ctx, B: ModuleBrand + 'ctx>(
         let Some(expr_opcode) = cast_constant_expr_opcode(opcode) else {
             return Ok(None);
         };
-        let expr = operand.into_erased().module().core_ref().constant_expr(
+        let expr = operand.as_erased().module().core_ref().constant_expr(
             erase_type(dest_ty),
             expr_opcode,
-            [erase_value(operand.into_erased())],
+            [erase_value(operand.as_erased())],
             [],
             [],
             ConstantExprFlags::none(),
         )?;
-        return Ok(Some(rebrand_constant(expr, operand.into_erased().module())));
+        return Ok(Some(rebrand_constant(expr, operand.as_erased().module())));
     }
 
     Ok(None)
@@ -363,7 +363,7 @@ pub fn constant_fold_instruction<'ctx, B>(
 where
     B: ModuleBrand + 'ctx,
 {
-    let value = instruction.into_erased();
+    let value = instruction.as_erased();
     let ValueKindData::Instruction(data) = &value.data().kind else {
         return Ok(None);
     };
@@ -412,8 +412,8 @@ pub fn constant_fold_constant<'ctx, B: ModuleBrand + 'ctx>(
     dl: &DataLayout,
     tli: Option<&TargetLibraryInfo>,
 ) -> IrResult<Constant<'ctx, B>> {
-    let module = constant.into_erased().module();
-    match &constant.into_erased().data().kind {
+    let module = constant.as_erased().module();
+    match &constant.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::Expr(expr)) => {
             let Some(operands) =
                 folded_constants_from_ids(module, expr.operands.iter().copied(), dl, tli)?
@@ -466,7 +466,7 @@ pub fn constant_fold_inst_operands<'ctx, B>(
 where
     B: ModuleBrand + 'ctx,
 {
-    let value = instruction.into_erased();
+    let value = instruction.as_erased();
     let ValueKindData::Instruction(data) = &value.data().kind else {
         return Ok(None);
     };
@@ -763,7 +763,7 @@ pub fn constant_fold_compare_inst_operands<'ctx, B: ModuleBrand + 'ctx>(
 /// `ConstantExpr` representation it has.
 fn is_constant_expr_like<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
     matches!(
-        &constant.into_erased().data().kind,
+        &constant.as_erased().data().kind,
         ValueKindData::Constant(ConstantData::Expr(_) | ConstantData::GepOffset { .. })
     )
 }
@@ -775,7 +775,7 @@ fn is_constant_expr_like<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B
 fn constant_expr_data<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
 ) -> Option<&'ctx ConstantExprData> {
-    match &constant.into_erased().data().kind {
+    match &constant.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::Expr(expr)) => Some(expr),
         _ => None,
     }
@@ -804,7 +804,7 @@ fn fold_ptr_int_cast_vs_null<'ctx, B: ModuleBrand + 'ctx>(
     let Some(expr) = constant_expr_data(lhs) else {
         return Ok(None);
     };
-    let module = lhs.into_erased().module();
+    let module = lhs.as_erased().module();
 
     if expr.opcode == ConstantExprOpcode::IntToPtr
         && let [operand_id] = expr.operands.as_ref()
@@ -875,7 +875,7 @@ fn fold_matching_cast_pair<'ctx, B: ModuleBrand + 'ctx>(
     if lhs_expr.opcode != rhs_expr.opcode {
         return Ok(None);
     }
-    let module = lhs.into_erased().module();
+    let module = lhs.as_erased().module();
 
     if lhs_expr.opcode == ConstantExprOpcode::IntToPtr
         && let [lhs_operand_id] = lhs_expr.operands.as_ref()
@@ -960,7 +960,7 @@ fn fold_pointer_base_offset<'ctx, B: ModuleBrand + 'ctx>(
     }
     let signed_predicate = predicate.flip_signedness();
     let result = compare_ap_int_with_predicate(signed_predicate, &lhs_offset, &rhs_offset);
-    let module = lhs.into_erased().module();
+    let module = lhs.as_erased().module();
     Some(module.bool_type().const_int(result).as_constant())
 }
 
@@ -991,8 +991,8 @@ fn strip_and_accumulate_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
     let mut offset = ApInt::zero(index_bits);
     let mut current = pointer;
     loop {
-        let module = current.into_erased().module();
-        match &current.into_erased().data().kind {
+        let module = current.as_erased().module();
+        match &current.as_erased().data().kind {
             ValueKindData::Constant(ConstantData::GepOffset { base_id, off }) => {
                 // Only ever constructed for an inbounds GEP (see
                 // `ConstantData::GepOffset`'s doc comment), so this compact
@@ -1094,7 +1094,7 @@ fn swap_cmp_predicate(predicate: CmpPredicate) -> CmpPredicate {
 /// `is_undef`/`is_poison` duplication here rather than threading
 /// cross-module visibility.
 fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
-    match &constant.into_erased().data().kind {
+    match &constant.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::Int(_)) => is_zero_int_constant(constant),
         ValueKindData::Constant(ConstantData::Float(_)) => {
             ConstantFloatValue::<FloatDyn, B>::try_from(constant)
@@ -1102,7 +1102,7 @@ fn constant_is_null_value<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, 
         }
         ValueKindData::Constant(ConstantData::PointerNull) => true,
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            let module = constant.into_erased().module();
+            let module = constant.as_erased().module();
             elements
                 .iter()
                 .all(|id| constant_from_id(module, *id).is_some_and(constant_is_null_value))
@@ -1142,14 +1142,11 @@ pub fn constant_fold_binary_op_operands<'ctx, B: ModuleBrand + 'ctx>(
     let Some(expr_opcode) = binary_constant_expr_opcode(opcode) else {
         return Ok(None);
     };
-    let module = lhs.into_erased().module();
+    let module = lhs.as_erased().module();
     let expr = module.core_ref().constant_expr(
         erase_type(lhs.ty()),
         expr_opcode,
-        [
-            erase_value(lhs.into_erased()),
-            erase_value(rhs.into_erased()),
-        ],
+        [erase_value(lhs.as_erased()), erase_value(rhs.as_erased())],
         [],
         [],
         ConstantExprFlags::none(),
@@ -1375,7 +1372,7 @@ fn fold_phi<'ctx, B: ModuleBrand + 'ctx>(
     }
     Ok(Some(match common {
         Some(value) => value,
-        None => ty.get_undef().as_constant(),
+        None => ty.undef().as_constant(),
     }))
 }
 
@@ -1458,8 +1455,8 @@ fn constant_offset_from_global_with_offset<'ctx, B: ModuleBrand + 'ctx>(
     offset: ApInt,
     dl: &DataLayout,
 ) -> Option<ConstantOffsetFromGlobal<'ctx, B>> {
-    let module = pointer.into_erased().module();
-    match &pointer.into_erased().data().kind {
+    let module = pointer.as_erased().module();
+    match &pointer.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => {
             let global_value =
                 Value::from_parts(*value, module, module.context().value_data(*value).ty);
@@ -1663,7 +1660,7 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(None);
     };
 
-    let module = pointer.into_erased().module();
+    let module = pointer.as_erased().module();
     let index_ids: Vec<ValueSlot> = indices.iter().map(|index| index.slot()).collect();
     // `Offset = APInt(BitWidth, DL.getIndexedOffsetInType(SrcElemTy, Ops[1..]), ...)`.
     // Bails (matching `for i in 1..: if (!isa<ConstantInt>(Ops[i])) return
@@ -1733,7 +1730,7 @@ fn symbolically_evaluate_gep<'ctx, B: ModuleBrand + 'ctx>(
 fn gep_level_no_wrap_flags<'ctx, B: ModuleBrand + 'ctx>(
     ptr: Constant<'ctx, B>,
 ) -> Option<GepNoWrapFlags> {
-    match &ptr.into_erased().data().kind {
+    match &ptr.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::GepOffset { .. }) => Some(GepNoWrapFlags::inbounds()),
         ValueKindData::Constant(ConstantData::Expr(expr))
             if expr.opcode == ConstantExprOpcode::GetElementPtr =>
@@ -1766,8 +1763,8 @@ fn peel_one_gep_level<'ctx, B: ModuleBrand + 'ctx>(
     index_bits: u32,
     dl: &DataLayout,
 ) -> Option<(Constant<'ctx, B>, ApInt)> {
-    let module = ptr.into_erased().module();
-    match &ptr.into_erased().data().kind {
+    let module = ptr.as_erased().module();
+    match &ptr.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::GepOffset { base_id, off }) => {
             // `base_id` names the host global/function directly — its own
             // `ValueKindData` is `GlobalVariable`/`Function`, never
@@ -1829,7 +1826,7 @@ fn is_null_or_inttoptr_nonzero_base<'ctx, B: ModuleBrand + 'ctx>(ptr: Constant<'
     if constant_is_null_value(ptr) {
         return true;
     }
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &ptr.into_erased().data().kind else {
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &ptr.as_erased().data().kind else {
         return false;
     };
     if expr.opcode != ConstantExprOpcode::IntToPtr {
@@ -1838,7 +1835,7 @@ fn is_null_or_inttoptr_nonzero_base<'ctx, B: ModuleBrand + 'ctx>(ptr: Constant<'
     let [operand_id] = expr.operands.as_ref() else {
         return false;
     };
-    let module = ptr.into_erased().module();
+    let module = ptr.as_erased().module();
     let Some(operand) = constant_from_id(module, *operand_id) else {
         return false;
     };
@@ -1879,11 +1876,11 @@ fn build_canonical_i8_gep<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(Some(ptr));
     }
 
-    let module = ptr.into_erased().module();
+    let module = ptr.as_erased().module();
 
     if nw.contains(GepNoWrapFlags::IN_BOUNDS)
         && let ValueKindData::Constant(ConstantData::GlobalValueRef { value }) =
-            &ptr.into_erased().data().kind
+            &ptr.as_erased().data().kind
         && let Some(off) = offset.try_sext_i64()
     {
         let ptr_ty = ptr.ty();
@@ -1905,7 +1902,7 @@ fn build_canonical_i8_gep<'ctx, B: ModuleBrand + 'ctx>(
         .constant_expr_with_options(
             ptr.ty(),
             ConstantExprOpcode::GetElementPtr,
-            [ptr.into_erased(), offset_const.into_erased()],
+            [ptr.as_erased(), offset_const.as_erased()],
             [],
             [],
             ConstantExprOptions::new()
@@ -1924,11 +1921,11 @@ fn constant_at_offset<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(Some(constant));
     }
     let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
-        &constant.into_erased().data().kind
+        &constant.as_erased().data().kind
     else {
         return Ok(None);
     };
-    let module = constant.into_erased().module();
+    let module = constant.as_erased().module();
     match constant.ty().data() {
         TypeData::Array { elem, .. } => {
             let elem_ty = Type::new(*elem, module);
@@ -2000,10 +1997,10 @@ fn fold_uniform_constant_load<'ctx, B: ModuleBrand + 'ctx>(
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
     if is_poison(constant) {
-        return Ok(Some(ty.get_poison().as_constant()));
+        return Ok(Some(ty.poison().as_constant()));
     }
     if is_undef(constant) {
-        return Ok(Some(ty.get_undef().as_constant()));
+        return Ok(Some(ty.undef().as_constant()));
     }
     if !dl.type_size_equals_store_size(erase_type(constant.ty())) {
         return Ok(None);
@@ -2100,7 +2097,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
             let Some((pointer, indices)) = operands.split_first() else {
                 return Ok(None);
             };
-            let source_ty = Type::new(source_ty, original.into_erased().module());
+            let source_ty = Type::new(source_ty, original.as_erased().module());
             let (nw, in_range) = match &expr.flags {
                 ConstantExprFlags::Gep(flags) => (flags.no_wrap(), flags.in_range()),
                 _ => (GepNoWrapFlags::empty(), None),
@@ -2148,7 +2145,7 @@ fn constant_fold_constant_expr_operands<'ctx, B: ModuleBrand + 'ctx>(
             constant_fold_cast_operand(
                 opcode,
                 *operand,
-                Type::new(expr.result_ty, original.into_erased().module()),
+                Type::new(expr.result_ty, original.as_erased().module()),
                 dl,
             )
         }
@@ -2261,11 +2258,11 @@ fn aggregate_first_element<'ctx, B: ModuleBrand + 'ctx>(
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
     let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
-        &constant.into_erased().data().kind
+        &constant.as_erased().data().kind
     else {
         return Ok(None);
     };
-    let module = constant.into_erased().module();
+    let module = constant.as_erased().module();
     match constant.ty().data() {
         TypeData::Struct(_) => {
             for id in elements.iter().copied() {
@@ -2307,7 +2304,7 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Vec<u8>>> {
-    match &constant.into_erased().data().kind {
+    match &constant.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::Int(words)) => {
             let Some(bits) = constant.ty().data().as_integer() else {
                 return Ok(None);
@@ -2331,7 +2328,7 @@ fn constant_to_store_bytes<'ctx, B: ModuleBrand + 'ctx>(
             )))
         }
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
-            aggregate_to_store_bytes(constant.ty(), elements, constant.into_erased().module(), dl)
+            aggregate_to_store_bytes(constant.ty(), elements, constant.as_erased().module(), dl)
         }
         ValueKindData::Constant(ConstantData::PointerNull) => {
             let Some(addr_space) = pointer_address_space(constant.ty()) else {
@@ -2432,8 +2429,7 @@ fn fold_ptr_to_int_pair<'ctx, B: ModuleBrand + 'ctx>(
     dest_ty: Type<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &operand.into_erased().data().kind
-    else {
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &operand.as_erased().data().kind else {
         return Ok(None);
     };
     let [src] = expr.operands.as_ref() else {
@@ -2442,7 +2438,7 @@ fn fold_ptr_to_int_pair<'ctx, B: ModuleBrand + 'ctx>(
     if expr.opcode != ConstantExprOpcode::IntToPtr {
         return Ok(None);
     }
-    let module = operand.into_erased().module();
+    let module = operand.as_erased().module();
     let source = Constant::from_parts(Value::from_parts(
         *src,
         module,
@@ -2474,8 +2470,7 @@ fn fold_int_to_ptr_pair<'ctx, B: ModuleBrand + 'ctx>(
     dest_ty: Type<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &operand.into_erased().data().kind
-    else {
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &operand.as_erased().data().kind else {
         return Ok(None);
     };
     if expr.opcode != ConstantExprOpcode::PtrToInt {
@@ -2484,7 +2479,7 @@ fn fold_int_to_ptr_pair<'ctx, B: ModuleBrand + 'ctx>(
     let [src] = expr.operands.as_ref() else {
         return Ok(None);
     };
-    let module = operand.into_erased().module();
+    let module = operand.as_erased().module();
     let source = Constant::from_parts(Value::from_parts(
         *src,
         module,
@@ -2608,8 +2603,8 @@ fn index_bits_for_constant_offset<'ctx, B: ModuleBrand + 'ctx>(
     if let Some(bits) = index_bits_for_pointer(constant.ty(), dl) {
         return Some(bits);
     }
-    let module = constant.into_erased().module();
-    let ValueKindData::Constant(ConstantData::Expr(expr)) = &constant.into_erased().data().kind
+    let module = constant.as_erased().module();
+    let ValueKindData::Constant(ConstantData::Expr(expr)) = &constant.as_erased().data().kind
     else {
         return None;
     };
@@ -2717,14 +2712,14 @@ fn usize_from_u64(value: u64) -> IrResult<usize> {
 
 fn is_undef<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
     matches!(
-        &constant.into_erased().data().kind,
+        &constant.as_erased().data().kind,
         ValueKindData::Constant(ConstantData::Undef)
     )
 }
 
 fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
     matches!(
-        &constant.into_erased().data().kind,
+        &constant.as_erased().data().kind,
         ValueKindData::Constant(ConstantData::Poison)
     )
 }
@@ -2732,8 +2727,8 @@ fn is_poison<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>) -> bool {
 fn is_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
 ) -> bool {
-    let module = constant.into_erased().module();
-    match &constant.into_erased().data().kind {
+    let module = constant.as_erased().module();
+    match &constant.as_erased().data().kind {
         ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison) => false,
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements
             .iter()

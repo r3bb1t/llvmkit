@@ -1225,14 +1225,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// unset. Pure type interning, so it belongs to the same
     /// preservation-neutral family as the primitive constructors above.
     #[inline]
-    pub fn named_struct(self, name: &str) -> StructType<'ctx, StructBodyDyn, B> {
+    pub fn get_or_insert_named_struct(self, name: &str) -> StructType<'ctx, StructBodyDyn, B> {
         let (id, _existed) = self.core.ctx.get_or_create_named_struct(name);
         StructType::new(id, ModuleRef::new(self.core))
     }
 
     /// Look up an existing identified struct type by name, or `None`.
     #[inline]
-    pub fn get_named_struct(self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
+    pub fn named_struct(self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
         self.core
             .ctx
             .get_named_struct(name)
@@ -1256,7 +1256,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// The *typestate* body setters — [`Module::set_struct_body`] and
     /// [`Module::set_struct_body_dyn`], which drive an `Opaque` struct handle
     /// to `BodySet` — stay on the token alone.
-    pub fn get_or_set_named_struct_body<S>(self) -> IrResult<StructType<'ctx, BodySet, B>>
+    pub fn get_or_insert_struct_of<S>(self) -> IrResult<StructType<'ctx, BodySet, B>>
     where
         S: StructSchema,
     {
@@ -2216,21 +2216,11 @@ impl<'ctx> ModuleCore {
         self.data_layout.borrow()
     }
 
-    /// Replace the data layout with a parsed copy of the given
-    /// string. Mirrors `Module::setDataLayout(StringRef)`.
-    pub fn set_data_layout<Layout>(&self, layout: Layout) -> IrResult<()>
-    where
-        Layout: AsRef<str>,
-    {
-        let parsed = DataLayout::parse(layout.as_ref())?;
-        *self.data_layout.borrow_mut() = parsed;
-        Ok(())
-    }
-
-    /// Replace the data layout with an already-parsed
-    /// [`DataLayout`](crate::data_layout::DataLayout). Mirrors
-    /// `Module::setDataLayout(const DataLayout &)`.
-    pub fn set_data_layout_value(&self, layout: DataLayout) {
+    /// Replace the data layout. Mirrors
+    /// `Module::setDataLayout(const DataLayout &)`; the string-directive
+    /// path parses first ([`DataLayout::parse`]) so this setter itself
+    /// cannot fail.
+    pub fn set_data_layout(&self, layout: DataLayout) {
         *self.data_layout.borrow_mut() = layout;
     }
 
@@ -2640,7 +2630,7 @@ impl<'ctx> ModuleCore {
 
     /// Look up an existing comdat by name. Returns `None` when not
     /// present.
-    pub fn get_comdat<B: ModuleBrand>(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
+    pub fn comdat<B: ModuleBrand>(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
         let id = *self.comdat_by_name.borrow().get(name)?;
         Some(ComdatRef {
             module: ModuleRef::new(self),
@@ -2942,7 +2932,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     ///
     /// The id borrows nothing, so this takes `&self` rather than `&'ctx self` —
     /// a lookup can be interleaved with other borrows of the module.
-    pub fn function_by_name_dyn(&self, name: &str) -> Option<FunctionId<Dyn, B>> {
+    pub fn function_dyn(&self, name: &str) -> Option<FunctionId<Dyn, B>> {
         let slot = self.core().function_by_name.borrow().get(name).copied()?;
         Some(FunctionId::from_raw(self.core().id, slot))
     }
@@ -2953,7 +2943,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// Symmetric with the `add_*` family. The marker check is unchanged: a
     /// signature that does not match `R` is
     /// [`IrError::ReturnTypeMismatch`], not a silently-widened id.
-    pub fn function_by_name<R>(&self, name: &str) -> IrResult<Option<FunctionId<R, B>>>
+    pub fn function<R>(&self, name: &str) -> IrResult<Option<FunctionId<R, B>>>
     where
         R: ReturnMarker,
     {
@@ -3065,7 +3055,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// [`view`](Self::view).
     ///
     /// The id borrows nothing, so this takes `&self`.
-    pub fn get_global(&self, name: &str) -> Option<GlobalId<B>> {
+    pub fn global(&self, name: &str) -> Option<GlobalId<B>> {
         let slot = self.core().global_by_name.borrow().get(name).copied()?;
         Some(GlobalId::from_raw(self.core().id, slot))
     }
@@ -3073,14 +3063,14 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// Look up a global alias by name, returning its storable
     /// [`GlobalAliasId`]. Symmetric with
     /// [`alias_builder`](Self::alias_builder)'s `build()`.
-    pub fn get_alias(&self, name: &str) -> Option<GlobalAliasId<B>> {
+    pub fn alias(&self, name: &str) -> Option<GlobalAliasId<B>> {
         let slot = self.core().alias_by_name.borrow().get(name).copied()?;
         Some(GlobalAliasId::from_raw(self.core().id, slot))
     }
 
     /// Look up an ifunc by name, returning its storable [`GlobalIFuncId`].
     /// Symmetric with [`ifunc_builder`](Self::ifunc_builder)'s `build()`.
-    pub fn get_ifunc(&self, name: &str) -> Option<GlobalIFuncId<B>> {
+    pub fn ifunc(&self, name: &str) -> Option<GlobalIFuncId<B>> {
         let slot = self.core().ifunc_by_name.borrow().get(name).copied()?;
         Some(GlobalIFuncId::from_raw(self.core().id, slot))
     }
@@ -3094,8 +3084,8 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// family and [`view`](Self::view) cannot resolve it. Returning it here
     /// would hand back something strictly *weaker* than the handle — untagged,
     /// unbranded, and unresolvable — so the handle stays.
-    pub fn get_comdat(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
-        self.core().get_comdat::<B>(name)
+    pub fn comdat(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
+        self.core().comdat::<B>(name)
     }
 }
 
@@ -3460,8 +3450,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
 
     /// Get or create the identified struct type `%name`, body unset.
     /// Delegates to [`ModuleView::named_struct`].
-    pub fn named_struct(&'ctx self, name: &str) -> StructType<'ctx, StructBodyDyn, B> {
-        self.as_view().named_struct(name)
+    pub fn get_or_insert_named_struct(
+        &'ctx self,
+        name: &str,
+    ) -> StructType<'ctx, StructBodyDyn, B> {
+        self.as_view().get_or_insert_named_struct(name)
     }
 
     pub fn opaque_struct(&'ctx self, name: &str) -> IrResult<StructType<'ctx, Opaque, B>> {
@@ -3484,18 +3477,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
 
     /// Look up an existing identified struct type by name. Delegates to
     /// [`ModuleView::get_named_struct`].
-    pub fn get_named_struct(&'ctx self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
-        self.as_view().get_named_struct(name)
+    pub fn named_struct(&'ctx self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
+        self.as_view().named_struct(name)
     }
 
     /// Idempotently intern schema `S`'s named struct type. Delegates to
     /// [`ModuleView::get_or_set_named_struct_body`], which is where the schema
     /// traits reach it.
-    pub fn get_or_set_named_struct_body<S>(&'ctx self) -> IrResult<StructType<'ctx, BodySet, B>>
+    pub fn get_or_insert_struct_of<S>(&'ctx self) -> IrResult<StructType<'ctx, BodySet, B>>
     where
         S: StructSchema,
     {
-        self.as_view().get_or_set_named_struct_body::<S>()
+        self.as_view().get_or_insert_struct_of::<S>()
     }
 
     pub fn set_struct_body_dyn<I, T>(
@@ -3968,15 +3961,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().clear_source_filename();
     }
 
-    pub fn set_data_layout<L>(&'ctx self, layout: L) -> IrResult<()>
-    where
-        L: AsRef<str>,
-    {
-        self.core().set_data_layout(layout)
-    }
-
-    pub fn set_data_layout_value(&'ctx self, layout: DataLayout) {
-        self.core().set_data_layout_value(layout);
+    /// Replace the data layout with an already-parsed [`DataLayout`].
+    /// Infallible: parse failures belong to [`DataLayout::parse`], not
+    /// to the setter.
+    pub fn set_data_layout(&'ctx self, layout: DataLayout) {
+        self.core().set_data_layout(layout);
     }
 
     pub fn set_target_triple<T>(&'ctx self, triple: T)

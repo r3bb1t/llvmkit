@@ -14,7 +14,7 @@ struct CpuState {
 }
 
 /// Example-lock: no upstream typed-pointer-overlay test exists (opaque
-/// pointers carry no compile-time pointee in C++ IrBuilder either).
+/// pointers carry no compile-time pointee in C++ IRBuilder either).
 /// Asserts the D3 requirement directly -- the typed `alloca`/`store`/
 /// `load` overlay must print byte-identical IR to the erased path
 /// (`alloca` + `store` + `int_load`), anchored on the
@@ -55,7 +55,7 @@ fn typed_alloca_load_store_round_trip_prints_identically_to_erased() -> IrResult
 /// on `test/Assembler/getelementptr.ll`'s positive struct-GEP print form,
 /// shared with `tests/builder_gep.rs::struct_gep`'s exact `getelementptr
 /// inbounds nuw %S, ptr %x, i32 0, i32 N` form (the `nuw` flag matches
-/// `IrBuilder::CreateStructGEP` in `IrBuilder.h`, which passes
+/// `IRBuilder::CreateStructGEP` in `IRBuilder.h`, which passes
 /// `GEPNoWrapFlags::inBounds() | GEPNoWrapFlags::noUnsignedWrap()`).
 #[test]
 fn field_gep_projects_field_type_at_compile_time() -> IrResult<()> {

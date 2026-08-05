@@ -56,7 +56,7 @@ fn only_param<'m>(module: &'m Module<DynBrand, Unverified>) -> Value<'m, DynBran
         .params()
         .next()
         .expect("fixture's function takes a parameter")
-        .into_erased()
+        .as_erased()
 }
 
 /// Assert that `strip_null_test` recovers the function's parameter from the

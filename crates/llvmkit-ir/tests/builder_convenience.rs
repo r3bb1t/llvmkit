@@ -8,7 +8,7 @@ use llvmkit_ir::{IntValue, IrBuilder, IrError, Linkage, PointerValue, module_new
 /// (line 92): `IRB.CreateVectorSplat(5, ScalarC)`. The upstream call splats
 /// an `i8` constant across 5 lanes; we exercise the same shape through the
 /// typed `vector_splat_dyn` wrapper. The expected AsmWriter form mirrors
-/// `lib/IR/IrBuilder.cpp::IRBuilderBase::CreateVectorSplat` lines 1141-1158
+/// `lib/IR/IRBuilder.cpp::IRBuilderBase::CreateVectorSplat` lines 1141-1158
 /// (insertelement-into-poison + zero-mask shufflevector).
 #[test]
 fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrError> {
@@ -21,7 +21,7 @@ fn build_vector_splat_expands_to_insertelement_plus_shuffle() -> Result<(), IrEr
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
     let scalar: IntValue<'_, i8, _> = m.view(f).param(0)?.try_into()?;
     let splat = b.vector_splat_dyn(5, scalar, "v")?;
-    b.ret(splat.into_erased())?;
+    b.ret(splat.as_erased())?;
     let text = format!("{m}");
     // The two-step expansion that upstream emits, mirrored byte-for-byte:
     // %v.splatinsert = insertelement <5 x i8> poison, i8 %0, i64 0
@@ -66,7 +66,7 @@ fn build_ptr_add_emits_gep_i8() -> Result<(), IrError> {
 /// Mirrors `test/Assembler/flags.ll` line 322:
 /// `%gep = getelementptr inbounds i8, ptr %p, i64 %idx`. The upstream
 /// `; CHECK:` directive is the canonical print form for
-/// `IrBuilder::CreateInBoundsPtrAdd`.
+/// `IRBuilder::CreateInBoundsPtrAdd`.
 #[test]
 fn build_inbounds_ptr_add_emits_gep_inbounds_i8() -> Result<(), IrError> {
     let m = module_new!("a")?;

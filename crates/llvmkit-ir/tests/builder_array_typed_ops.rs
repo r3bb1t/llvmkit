@@ -38,7 +38,7 @@ fn typed_arr_extract_returns_typed_element() {
         .view(f)
         .param(0)
         .expect("p0")
-        .into_erased()
+        .as_erased()
         .try_into()
         .expect("narrow p0");
 
@@ -78,13 +78,13 @@ fn typed_arr_insert_round_trips() {
         .view(f)
         .param(0)
         .expect("p0")
-        .into_erased()
+        .as_erased()
         .try_into()
         .expect("narrow p0");
 
     let seven: IntValue<'_, i32, _> = i32_ty
         .const_int(7_i32)
-        .into_erased()
+        .as_erased()
         .try_into()
         .expect("i32 const");
 
@@ -128,7 +128,7 @@ fn typed_array_type_allocas() {
 
     // `alloca` takes any `IrType`; the typed array handle qualifies.
     let slot = b.alloca(arr_ty, "slot").expect("alloca");
-    let _ = b.view(slot).into_erased();
+    let _ = b.view(slot).as_erased();
 
     b.ret_void().expect("ret void");
 

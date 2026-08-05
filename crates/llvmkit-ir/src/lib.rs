@@ -396,18 +396,17 @@ pub use int_width::{
 };
 pub use pointer_analysis::{
     BytewiseValue, ConstantDataArraySlice, MAX_LOOKUP_SEARCH_DEPTH,
-    argument_aliasing_to_returned_pointer, find_alloca_for_value, find_inserted_value,
-    get_constant_data_array_info, get_constant_string_info, get_string_length,
-    get_underlying_object, get_underlying_object_aggressive, get_underlying_objects,
-    get_underlying_objects_for_code_gen, is_bytewise_value,
+    argument_aliasing_to_returned_pointer, constant_data_array_info, constant_string_info,
+    find_alloca_for_value, find_inserted_value, is_bytewise_value,
     is_intrinsic_returning_pointer_aliasing_argument_without_capturing,
     only_used_by_lifetime_markers, only_used_by_lifetime_markers_or_droppable_instructions,
-    pointer_base_with_constant_offset,
+    pointer_base_with_constant_offset, string_length, underlying_object,
+    underlying_object_aggressive, underlying_objects, underlying_objects_for_code_gen,
 };
 pub use select_pattern::{
     MinMaxIntrinsic, MinMaxOperation, SelectPatternFlavor, SelectPatternMatch,
     SelectPatternNaNBehavior, SelectPatternResult, can_convert_to_min_or_max_intrinsic,
-    get_select_pattern, match_decomposed_select_pattern, match_select_pattern,
+    match_decomposed_select_pattern, match_select_pattern, select_pattern,
 };
 pub use speculation::{
     DEFAULT_TRANSFER_SCAN_LIMIT, SpeculationOptions, block_transfers_execution_to_successor,
@@ -439,13 +438,13 @@ pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
 pub use vector_utils::{
     MaskedSlide, ShuffleSource, create_interleave_mask, create_replicated_mask,
     create_sequential_mask, create_stride_mask, create_unary_mask, deinterleave_intrinsic_factor,
-    find_scalar_element, get_splat_value, horizontal_demanded_elements_for_first_operand,
+    find_scalar_element, horizontal_demanded_elements_for_first_operand,
     interleave_intrinsic_factor, is_splat_value, is_trivially_scalarizable,
     is_trivially_vectorizable, is_vector_intrinsic_with_struct_return_overload_at_field,
     mask_contains_all_one_or_undefined, mask_is_all_one_or_undefined,
     mask_is_all_zero_or_undefined, masked_slide_pair, narrow_shuffle_mask_elements,
     possibly_demanded_elements_in_mask, scale_shuffle_mask_elements, shuffle_demanded_elements,
-    shuffle_mask_with_widest_elements, splat_index, widen_shuffle_mask_elements,
+    shuffle_mask_with_widest_elements, splat_index, splat_value, widen_shuffle_mask_elements,
     widen_shuffle_mask_elements_in_pairs,
 };
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.

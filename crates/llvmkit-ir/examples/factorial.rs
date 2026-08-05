@@ -93,7 +93,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
         base_label,
         &[],
         loop_label,
-        &[i32_ty.const_int(1_i32).into_erased(), n.into_erased()],
+        &[i32_ty.const_int(1_i32).as_erased(), n.as_erased()],
     )?;
 
     // base: ret i32 1
@@ -115,7 +115,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
         exit_label,
         &[],
         loop_label,
-        &[m.view(next_acc).into_erased(), m.view(next_i).into_erased()],
+        &[m.view(next_acc).as_erased(), m.view(next_i).as_erased()],
     )?;
 
     // exit: ret i32 %next_acc

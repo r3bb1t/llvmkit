@@ -1,7 +1,7 @@
 //! Mirrors of upstream `.ll` fixtures that exercise specific `icmp`
 //! predicates, exercised here through the new per-predicate
-//! `icmp_*` convenience methods (mirror `IrBuilder::CreateICmp{EQ,
-//! SLT, ...}` in `IrBuilder.h`). Each test cites the closest upstream
+//! `icmp_*` convenience methods (mirror `IRBuilder::CreateICmp{EQ,
+//! SLT, ...}` in `IRBuilder.h`). Each test cites the closest upstream
 //! Assembler / unit fixture that emits the same IR shape.
 
 use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, module_new};

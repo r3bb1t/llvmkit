@@ -20,8 +20,8 @@
 //! (`Slt`/`Sle`/`Sgt`/`Sge`). For ergonomics,
 //! [`crate::IrBuilder`] also ships per-predicate convenience methods
 //! (`icmp_eq`, `icmp_slt`, ...) that bake the predicate
-//! into the method name --- see `IrBuilder::CreateICmp{EQ,SLT,...}` in
-//! `IrBuilder.h` for the upstream parallel.
+//! into the method name --- see `IRBuilder::CreateICmp{EQ,SLT,...}` in
+//! `IRBuilder.h` for the upstream parallel.
 
 use core::fmt;
 
@@ -360,7 +360,7 @@ impl FloatPredicate {
     /// Mnemonic suffix as it appears in `.ll` syntax (`oeq`, `ord`, …).
     /// Mirrors `CmpInst::getPredicateName` (`Instructions.cpp`).
     #[inline]
-    pub const fn name(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::False => "false",
             Self::Oeq => "oeq",
@@ -466,7 +466,7 @@ impl FloatPredicate {
 
 impl fmt::Display for FloatPredicate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
+        f.write_str(self.as_str())
     }
 }
 
@@ -544,7 +544,7 @@ impl IntPredicate {
     /// Mnemonic suffix as it appears in `.ll` syntax (`eq`, `slt`, …).
     /// Mirrors `CmpInst::getPredicateName`.
     #[inline]
-    pub const fn name(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Eq => "eq",
             Self::Ne => "ne",
@@ -653,7 +653,7 @@ impl IntPredicate {
 
 impl fmt::Display for IntPredicate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
+        f.write_str(self.as_str())
     }
 }
 

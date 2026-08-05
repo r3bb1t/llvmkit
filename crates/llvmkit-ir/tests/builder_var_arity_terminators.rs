@@ -96,14 +96,8 @@ fn switch_cases_reader_round_trips() -> Result<(), IrError> {
     let cases: Vec<_> = closed.cases().collect();
     // Case values round-trip, in order (constants are interned, so the
     // rediscovered value ids equal freshly-built ones).
-    assert_eq!(
-        cases[0].0.into_erased(),
-        i8_ty.const_int(10_i8).into_erased()
-    );
-    assert_eq!(
-        cases[1].0.into_erased(),
-        i8_ty.const_int(20_i8).into_erased()
-    );
+    assert_eq!(cases[0].0.as_erased(), i8_ty.const_int(10_i8).as_erased());
+    assert_eq!(cases[1].0.as_erased(), i8_ty.const_int(20_i8).as_erased());
     // Targets round-trip too.
     assert_eq!(cases[0].1, a_label);
     assert_eq!(cases[1].1, b_label);
@@ -355,7 +349,7 @@ fn indirectbr_erased_value_pointer_address_builds_and_verifies() -> Result<(), I
     // lift, so an erased param must be narrowed to `PointerValue`
     // explicitly (a runtime-checked `try_into`) before it can fill the
     // pointer-typed `indirectbr` operand.
-    let addr: PointerValue<'_, _> = m.view(f).param(0)?.into_erased().try_into()?;
+    let addr: PointerValue<'_, _> = m.view(f).param(0)?.as_erased().try_into()?;
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let (_sealed, ibr) = b.indirectbr(addr, "")?;
     let _closed = ibr.add_destination(dest_label)?.finish();

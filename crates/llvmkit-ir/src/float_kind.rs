@@ -334,7 +334,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> IntoFloatValue<'ctx, K, B>
     #[inline]
     fn into_float_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<FloatValue<'ctx, K, B>> {
         Ok(FloatValue::<K, B>::from_value_unchecked(
-            crate::value::IsValue::into_erased(self),
+            crate::value::IsValue::as_erased(self),
         ))
     }
 }
@@ -353,7 +353,7 @@ macro_rules! impl_into_float_value_static {
                 );
                 match self.into_constant_float(ty) {
                     Ok(c) => Ok(FloatValue::<$marker, B>::from_value_unchecked(
-                        crate::value::IsValue::into_erased(c),
+                        crate::value::IsValue::as_erased(c),
                     )),
                     Err(_) => unreachable!(
                         "IntoConstantFloat for static target is infallible per the trait impls"

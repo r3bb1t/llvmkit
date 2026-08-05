@@ -4,7 +4,7 @@
 //! align-less `alloca`/`load`/`store` materialises the DataLayout default and
 //! prints `, align N` with the exact values the default DataLayout yields.
 
-use llvmkit_ir::{IrBuilder, IrError, Linkage, NoFolder, PointerValue, module_new};
+use llvmkit_ir::{DataLayout, IrBuilder, IrError, Linkage, NoFolder, PointerValue, module_new};
 
 /// `alloca` materialises `getPrefTypeAlign`. The default DataLayout gives
 /// i32->4, i64->8, double->8, i1->1, and i128->8 (no i128 spec, so the walk
@@ -69,14 +69,14 @@ fn load_store_materialise_abi_align() -> Result<(), IrError> {
     Ok(())
 }
 
-/// `IrBuilder::CreateAlloca` uses `DL.getAllocaAddrSpace()`: with a
+/// `IRBuilder::CreateAlloca` uses `DL.getAllocaAddrSpace()`: with a
 /// DataLayout that sets alloca address space 5 (`A5`), the alloca result is
 /// `ptr addrspace(5)` and its printed form carries `, addrspace(5)` after
 /// the alignment.
 #[test]
 fn alloca_uses_datalayout_alloca_address_space() -> Result<(), IrError> {
     let m = module_new!("as")?;
-    m.set_data_layout("A5")?;
+    m.set_data_layout(DataLayout::parse("A5")?);
     let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");

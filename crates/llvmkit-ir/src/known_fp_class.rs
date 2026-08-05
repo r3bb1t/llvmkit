@@ -69,7 +69,7 @@ use crate::value_tracking::{
     is_known_not_undef, is_sign_bit_check, logical_op_parts, not_operand, parent_block,
     shuffle_source_demands,
 };
-use crate::vector_utils::get_splat_value;
+use crate::vector_utils::splat_value;
 use crate::{ApFloat, ApInt};
 
 /// Which floating-point classes `value` may belong to.
@@ -518,7 +518,7 @@ fn shuffle_vector_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // no `DemandedElts`, resetting the demanded set. `query` is passed along
     // unchanged here because the answer is the same: the splat is a scalar, and
     // `demanded_elements_for` yields `None` for anything that is not a vector.
-    if let Some(splat) = get_splat_value(value) {
+    if let Some(splat) = splat_value(value) {
         return known_fp_class(splat, interested_classes, query, depth + 1);
     }
 

@@ -73,7 +73,7 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
         .return_value()
         .expect("read_register returns value")
         .try_into()?;
-    b.call_dyn(write, [md, rsp_val.into_erased()], "")?;
+    b.call_dyn(write, [md, rsp_val.as_erased()], "")?;
     b.ret(rsp_val)?;
 
     let text = format!("{m}");
@@ -256,7 +256,7 @@ fn range_metadata_on_load_verifies_and_prints() -> Result<(), IrError> {
     let lo = m.metadata_constant(i8_ty.const_int(0x10_u8))?;
     let hi = m.metadata_constant(i8_ty.const_int(0x20_u8))?;
     let range = m.metadata_tuple([lo, hi])?;
-    let inst = InstructionView::try_from(b.view(ld).into_erased())?;
+    let inst = InstructionView::try_from(b.view(ld).as_erased())?;
     inst.set_metadata(&m, MetadataAttachmentKind::Range, range)?;
     b.ret(ld)?;
 
@@ -282,7 +282,7 @@ fn range_metadata_rejects_odd_operand_count() -> Result<(), IrError> {
     let ld = b.int_load::<i8, _, _>(p, "v")?;
     let lo = m.metadata_constant(i8_ty.const_int(0x10_u8))?;
     let range = m.metadata_tuple([lo])?;
-    let inst = InstructionView::try_from(b.view(ld).into_erased())?;
+    let inst = InstructionView::try_from(b.view(ld).as_erased())?;
     inst.set_metadata(&m, MetadataAttachmentKind::Range, range)?;
     b.ret(ld)?;
 
@@ -318,7 +318,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
     let call_entry = m.view(call_host).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(call_entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(call_host).param(0)?.try_into()?;
-    let call = b.view(b.call_dyn(callee, [p.into_erased()], "v")?);
+    let call = b.view(b.call_dyn(callee, [p.as_erased()], "v")?);
     call.as_view()
         .set_metadata(&m, MetadataAttachmentKind::Range, range)?;
     let ret = call.return_int_value();
@@ -336,7 +336,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
         .position_at_end(entry)
         .invoke_dyn(
             m.view(callee),
-            [p.into_erased()],
+            [p.as_erased()],
             normal_label,
             unwind_label,
             "v",
@@ -369,7 +369,7 @@ fn range_metadata_rejects_non_load_call_invoke_user() -> Result<(), IrError> {
     let lo = m.metadata_constant(i8_ty.const_int(0x10_u8))?;
     let hi = m.metadata_constant(i8_ty.const_int(0x20_u8))?;
     let range = m.metadata_tuple([lo, hi])?;
-    let inst = InstructionView::try_from(b.view(add).into_erased())?;
+    let inst = InstructionView::try_from(b.view(add).as_erased())?;
     inst.set_metadata(&m, MetadataAttachmentKind::Range, range)?;
     b.ret(add)?;
 

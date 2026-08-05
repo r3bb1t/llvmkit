@@ -57,7 +57,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIrField<'ctx, Point, B> for PointValue<'ct
         self,
         _module: llvmkit_ir::ModuleRef<'ctx, B>,
     ) -> Result<Value<'ctx, B>, IrError> {
-        Ok(self.raw.into_erased())
+        Ok(self.raw.as_erased())
     }
 }
 
@@ -144,7 +144,9 @@ impl StructSchema for RecursiveNode {
     where
         B: ModuleBrand + 'ctx,
     {
-        Ok(vec![module.named_struct(Self::NAME).as_type()])
+        Ok(vec![
+            module.get_or_insert_named_struct(Self::NAME).as_type(),
+        ])
     }
 
     fn matches_fields<'ctx, B>(fields: &[Type<'ctx, B>]) -> bool
@@ -234,7 +236,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoIrField<'ctx, Rect, B> for RectValue<'ctx,
         self,
         _module: llvmkit_ir::ModuleRef<'ctx, B>,
     ) -> Result<Value<'ctx, B>, IrError> {
-        Ok(self.raw.into_erased())
+        Ok(self.raw.as_erased())
     }
 }
 
@@ -269,7 +271,7 @@ fn poison_point<'ctx, B: ModuleBrand + 'ctx>(
 ) -> Result<Constant<'ctx, B>, IrError> {
     Ok(<Point as StructSchema>::ir_type(module.as_view())?
         .as_type()
-        .get_poison()
+        .poison()
         .as_constant())
 }
 

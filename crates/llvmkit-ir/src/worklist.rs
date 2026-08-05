@@ -157,7 +157,7 @@ mod tests {
         let c = b.int_add(x, 2_i32, "c")?;
         b.ret(x)?;
 
-        let (a_id, c_id) = (m.view(a).into_erased().id(), m.view(c).into_erased().id());
+        let (a_id, c_id) = (m.view(a).as_erased().id(), m.view(c).as_erased().id());
         let module = m.module_ref();
 
         let mut wl = Worklist::new();
@@ -191,7 +191,7 @@ mod tests {
         let a = b.int_add(x, 1_i32, "a")?;
         let c = b.int_add(x, 2_i32, "c")?;
         b.ret(x)?;
-        let (a_id, c_id) = (m.view(a).into_erased().id(), m.view(c).into_erased().id());
+        let (a_id, c_id) = (m.view(a).as_erased().id(), m.view(c).as_erased().id());
         let module = m.module_ref();
 
         let mut wl = Worklist::new();
@@ -221,10 +221,10 @@ mod tests {
         b.ret(x)?;
 
         // A constant operand id — the kind of id the erase cascade pushes.
-        let const_id = i32_ty.const_int(1_i32).into_erased().id();
+        let const_id = i32_ty.const_int(1_i32).as_erased().id();
         // A parameter id — likewise not an instruction (`x` is param 0).
-        let param_id = x.into_erased().id();
-        let a_id = m.view(a).into_erased().id();
+        let param_id = x.as_erased().id();
+        let a_id = m.view(a).as_erased().id();
         let module = m.module_ref();
 
         let mut wl = Worklist::new();
@@ -265,7 +265,7 @@ mod tests {
         let a = b.int_add(x, 1_i32, "a")?;
         b.ret(x)?;
 
-        let a_id = m.view(a).into_erased().id();
+        let a_id = m.view(a).as_erased().id();
         // The `ret` terminator is the block's last instruction; reach it the
         // same way `pass_context`'s tests do, then take its storable id.
         let ret_id = FunctionView::from(m.view(f))

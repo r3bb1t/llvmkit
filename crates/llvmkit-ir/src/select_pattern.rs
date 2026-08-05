@@ -297,7 +297,7 @@ impl SelectPatternResult {
 /// Equality predicates select one operand regardless of order, so they are not
 /// a min/max and fall into [`SelectPatternFlavor::Unknown`] — upstream's
 /// `default` arm, commented "Equality".
-pub fn get_select_pattern(
+pub fn select_pattern(
     predicate: CmpPredicate,
     nan_behavior: SelectPatternNaNBehavior,
     ordered: bool,
@@ -641,7 +641,7 @@ fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
     // `([if]cmp X, Y) ? X : Y`.
     if true_value == compare_lhs && false_value == compare_rhs {
-        let result = get_select_pattern(predicate, nan_behavior, ordered);
+        let result = select_pattern(predicate, nan_behavior, ordered);
         return Ok(matched(result, compare_lhs, compare_rhs));
     }
 

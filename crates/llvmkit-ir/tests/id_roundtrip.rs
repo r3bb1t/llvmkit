@@ -69,7 +69,7 @@ fn handles_round_trip_through_to_id_and_view() -> Result<(), IrError> {
     );
 
     // Erased value id.
-    let v: Value<'_, _> = a.into_erased();
+    let v: Value<'_, _> = a.as_erased();
     let v_id: ValueId<_> = v.id();
     assert_eq!(m.view(v_id), v, "erased Value did not survive id/view");
 
@@ -230,7 +230,7 @@ fn builder_view_agrees_with_module_view() -> Result<(), IrError> {
 
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let p: PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
-    let v: Value<'_, _> = a.into_erased();
+    let v: Value<'_, _> = a.as_erased();
 
     let b = IrBuilder::new(&m);
 
@@ -420,7 +420,7 @@ fn every_id_is_an_erased_operand() {
     let x: FloatValue<'_, f32, _> = m.view(f).param(1).unwrap().try_into().unwrap();
     let p: PointerValue<'_, _> = m.view(f).param(2).unwrap().try_into().unwrap();
 
-    assert_erased_operand(&a.into_erased().id());
+    assert_erased_operand(&a.as_erased().id());
     assert_erased_operand(&a.id());
     assert_erased_operand(&x.id());
     assert_erased_operand(&p.id());
@@ -463,7 +463,7 @@ fn ids_drive_erased_operand_slots_without_a_view() -> Result<(), IrError> {
     // Typed id straight into the erased *stored value* operand.
     b.store(n, p)?;
     // Erased id straight into `freeze`'s erased operand.
-    let erased: ValueId<_> = b.view(n).into_erased().id();
+    let erased: ValueId<_> = b.view(n).as_erased().id();
     b.freeze(erased, "fr")?;
     b.ret_void()?;
 

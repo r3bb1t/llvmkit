@@ -588,7 +588,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     /// Widen to the erased [`Value`] handle.
     ///
     /// Borrows rather than consumes; the by-value
-    /// [`IsValue::into_erased`] form is also available on this type.
+    /// [`IsValue::as_erased`] form is also available on this type.
     #[inline]
     pub fn to_erased(&self) -> Value<'ctx, B> {
         Value {
@@ -1037,7 +1037,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         module_token: &'ctx Module<B, Unverified>,
         replacement: V,
     ) -> IrResult<()> {
-        let new_value = replacement.into_erased();
+        let new_value = replacement.as_erased();
         if new_value.id == self.id {
             // `self.replaceAllUsesWith(self)` is a no-op upstream; mirror.
             return Ok(());
@@ -1586,7 +1586,7 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand> sealed::Sealed for Instru
 impl<'ctx, B: ModuleBrand> sealed::Sealed for InstructionView<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for InstructionView<'ctx, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
+    fn as_erased(self) -> Value<'ctx, B> {
         InstructionView::to_erased(&self)
     }
 }
@@ -1617,7 +1617,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for InstructionView<'ctx, B> 
 impl<B: ModuleBrand> HasDebugLoc for InstructionView<'_, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.into_erased().debug_loc()
+        self.as_erased().debug_loc()
     }
 }
 
@@ -1781,11 +1781,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
             Self::FpToSI(i) => i.src(),
             Self::UIToFp(i) => i.src(),
             Self::SIToFp(i) => i.src(),
-            Self::PtrToAddr(i) => i.src().into_erased(),
-            Self::PtrToInt(i) => i.src().into_erased(),
+            Self::PtrToAddr(i) => i.src().as_erased(),
+            Self::PtrToInt(i) => i.src().as_erased(),
             Self::IntToPtr(i) => i.src(),
             Self::BitCast(i) => i.src(),
-            Self::AddrSpaceCast(i) => i.src().into_erased(),
+            Self::AddrSpaceCast(i) => i.src().as_erased(),
         }
     }
 

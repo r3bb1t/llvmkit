@@ -36,7 +36,7 @@ fn main() -> IrResult<()> {
 
     let replacement = i32_ty.const_int(99_i32);
     // Missing the `&Module<Unverified>` capability token.
-    armw.set_value_operand(replacement.into_erased())?;
+    armw.set_value_operand(replacement.as_erased())?;
 
     b.ret_void()?;
     Ok(())

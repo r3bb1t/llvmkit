@@ -715,14 +715,13 @@ fn exercises_every_modeled_value_tracking_entry_point() {
         BytewiseValue, ConstantDataArraySlice, MinMaxIntrinsic, MinMaxKind, MinMaxOperation,
         SelectPatternFlavor, SelectPatternMatch, SelectPatternNaNBehavior, SelectPatternResult,
         argument_aliasing_to_returned_pointer, can_convert_to_min_or_max_intrinsic,
-        collect_possible_values, find_alloca_for_value, find_inserted_value,
-        get_constant_data_array_info, get_constant_string_info, get_select_pattern,
-        get_string_length, get_underlying_object, get_underlying_object_aggressive,
-        get_underlying_objects, get_underlying_objects_for_code_gen, is_bytewise_value,
+        collect_possible_values, constant_data_array_info, constant_string_info,
+        find_alloca_for_value, find_inserted_value, is_bytewise_value,
         is_intrinsic_returning_pointer_aliasing_argument_without_capturing,
         match_decomposed_select_pattern, match_select_pattern, only_used_by_lifetime_markers,
         only_used_by_lifetime_markers_or_droppable_instructions, pointer_base_with_constant_offset,
-        strip_null_test,
+        select_pattern, string_length, strip_null_test, underlying_object,
+        underlying_object_aggressive, underlying_objects, underlying_objects_for_code_gen,
     };
     use llvmkit_ir::{
         DynBrand, SpeculationOptions, block_transfers_execution_to_successor, can_create_poison,
@@ -822,10 +821,10 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _default_transfer_scan_limit = llvmkit_ir::DEFAULT_TRANSFER_SCAN_LIMIT;
 
     // Pointer and object analysis (tranche 5).
-    let _get_underlying_object = get_underlying_object::<DynBrand>;
-    let _get_underlying_object_aggressive = get_underlying_object_aggressive::<DynBrand>;
-    let _get_underlying_objects = get_underlying_objects::<DynBrand>;
-    let _get_underlying_objects_for_code_gen = get_underlying_objects_for_code_gen::<DynBrand>;
+    let _get_underlying_object = underlying_object::<DynBrand>;
+    let _get_underlying_object_aggressive = underlying_object_aggressive::<DynBrand>;
+    let _get_underlying_objects = underlying_objects::<DynBrand>;
+    let _get_underlying_objects_for_code_gen = underlying_objects_for_code_gen::<DynBrand>;
     let _pointer_base_with_constant_offset = pointer_base_with_constant_offset::<DynBrand>;
     let _find_alloca_for_value = find_alloca_for_value::<DynBrand>;
     let _only_used_by_lifetime_markers = only_used_by_lifetime_markers::<DynBrand>;
@@ -834,9 +833,9 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _argument_aliasing_to_returned_pointer = argument_aliasing_to_returned_pointer::<DynBrand>;
     let _is_intrinsic_returning_pointer_aliasing_argument_without_capturing =
         is_intrinsic_returning_pointer_aliasing_argument_without_capturing::<DynBrand>;
-    let _get_constant_data_array_info = get_constant_data_array_info::<DynBrand>;
-    let _get_constant_string_info = get_constant_string_info::<DynBrand>;
-    let _get_string_length = get_string_length::<DynBrand>;
+    let _get_constant_data_array_info = constant_data_array_info::<DynBrand>;
+    let _get_constant_string_info = constant_string_info::<DynBrand>;
+    let _get_string_length = string_length::<DynBrand>;
     let _is_bytewise_value = is_bytewise_value::<DynBrand>;
     let _find_inserted_value = find_inserted_value::<DynBrand>;
     // A type rather than a function: what `get_constant_data_array_info`
@@ -925,7 +924,7 @@ fn exercises_every_modeled_value_tracking_entry_point() {
 
     // The flavour classification and the record it answers with (tranche 4a).
     let _get_select_pattern: fn(_, SelectPatternNaNBehavior, bool) -> SelectPatternResult =
-        get_select_pattern;
+        select_pattern;
     let _select_pattern_result = SelectPatternResult::unknown;
 
     // Select-pattern matching (tranche 4b).

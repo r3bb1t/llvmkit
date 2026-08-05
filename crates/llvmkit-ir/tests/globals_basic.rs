@@ -547,8 +547,8 @@ fn const_struct_initializer() {
     let i64_ty = m.i64_type();
     let st = m.struct_type([i32_ty.as_type(), i8_ty.as_type(), i64_ty.as_type()], false);
     let neg_one = i32_ty.const_int(-1i32);
-    let undef_i8 = i8_ty.as_type().get_undef();
-    let poison_i64 = i64_ty.as_type().get_poison();
+    let undef_i8 = i8_ty.as_type().undef();
+    let poison_i64 = i64_ty.as_type().poison();
     let s = st
         .const_struct::<llvmkit_ir::Constant<'_, _>, _>([
             neg_one.as_constant(),
@@ -936,10 +936,10 @@ fn module_named_global_lookup_round_trip() {
     let g = m.add_global("foo", zero).expect("add");
     // The lookup returns the *same id* the declaration handed back — that is
     // the whole point of the `add_* -> Id` / `get_* -> Option<Id>` symmetry.
-    let looked_up = m.get_global("foo").expect("found");
+    let looked_up = m.global("foo").expect("found");
     assert_eq!(g, looked_up);
     assert_eq!(m.view(g), m.view(looked_up));
-    assert!(m.get_global("missing").is_none());
+    assert!(m.global("missing").is_none());
 }
 
 /// Mirrors `unittests/IR/ModuleTest.cpp::TEST(ModuleTest, GlobalList)`

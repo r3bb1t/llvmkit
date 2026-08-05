@@ -70,8 +70,8 @@ fn gep_inbounds() -> Result<(), IrError> {
 /// the `getelementptr inbounds nuw %S, ptr %x, i32 0, i32 N` struct-field
 /// access print form -- `getelementptr_struct.ll` is a NEGATIVE fixture
 /// (`RUN: not llvm-as`, invalid indices) and is not an accurate print-form
-/// anchor. The `nuw` flag matches `IrBuilder::CreateStructGEP`
-/// (`IrBuilder.h`), which passes `GEPNoWrapFlags::inBounds() |
+/// anchor. The `nuw` flag matches `IRBuilder::CreateStructGEP`
+/// (`IRBuilder.h`), which passes `GEPNoWrapFlags::inBounds() |
 /// GEPNoWrapFlags::noUnsignedWrap()`; the combined printed form is locked
 /// against `test/Assembler/flags.ll` (`gep_inbounds_nuw`, `inbounds nuw`
 /// prints in that order per `GEPNoWrapFlags`'s canonical ordering).
@@ -80,7 +80,7 @@ fn struct_gep() -> Result<(), IrError> {
     let m = module_new!("g")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let s_ty = m.named_struct("S");
+    let s_ty = m.get_or_insert_named_struct("S");
     m.set_struct_body_dyn(s_ty, [i32_ty.as_type(), i64_ty.as_type()], false)?;
     let ptr_ty = m.ptr_type(0);
     let fn_ty = m.fn_type(ptr_ty.as_type(), [ptr_ty.as_type()], false);

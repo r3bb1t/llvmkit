@@ -33,5 +33,5 @@ fn main() {
 
     let right = Module::branded::<Right, _>("right").unwrap();
     let mut fam = manager_for(right.as_view());
-    let _ = fam.get_result::<DominatorTreeAnalysis, _>(left_function.as_view());
+    let _ = fam.result::<DominatorTreeAnalysis, _>(left_function.as_view());
 }

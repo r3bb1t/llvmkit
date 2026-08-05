@@ -29,7 +29,7 @@ fn add_nuw_nsw_flags_round_trip() -> Result<(), IrError> {
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let r = b.int_add_with_flags(lhs, rhs, AddFlags::new().nuw().nsw(), "r")?;
-    let inst = InstructionView::try_from(b.view(r).into_erased())?;
+    let inst = InstructionView::try_from(b.view(r).as_erased())?;
     let add = match inst.kind() {
         Some(InstructionKind::Add(a)) => a,
         _ => panic!("expected Add"),
@@ -58,7 +58,7 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
     let lhs: IntValue<'_, i32, _> = m.view(sub_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(sub_fn).param(1)?.try_into()?;
     let r = b.int_sub_with_flags(lhs, rhs, SubFlags::new().nuw(), "r")?;
-    let inst = InstructionView::try_from(b.view(r).into_erased())?;
+    let inst = InstructionView::try_from(b.view(r).as_erased())?;
     if let Some(InstructionKind::Sub(s)) = inst.kind() {
         assert!(s.has_no_unsigned_wrap());
     } else {
@@ -72,7 +72,7 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
     let lhs: IntValue<'_, i32, _> = m.view(mul_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(mul_fn).param(1)?.try_into()?;
     let r = b.int_mul_with_flags(lhs, rhs, MulFlags::new().nuw(), "r")?;
-    let inst = InstructionView::try_from(b.view(r).into_erased())?;
+    let inst = InstructionView::try_from(b.view(r).as_erased())?;
     if let Some(InstructionKind::Mul(s)) = inst.kind() {
         assert!(s.has_no_unsigned_wrap());
     } else {
@@ -86,7 +86,7 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
     let lhs: IntValue<'_, i32, _> = m.view(shl_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(shl_fn).param(1)?.try_into()?;
     let r = b.int_shl_with_flags(lhs, rhs, ShlFlags::new().nuw(), "r")?;
-    let inst = InstructionView::try_from(b.view(r).into_erased())?;
+    let inst = InstructionView::try_from(b.view(r).as_erased())?;
     if let Some(InstructionKind::Shl(s)) = inst.kind() {
         assert!(s.has_no_unsigned_wrap());
     } else {
@@ -114,7 +114,7 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
     let lhs: IntValue<'_, i32, _> = m.view(udiv_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(udiv_fn).param(1)?.try_into()?;
     let r = b.int_udiv_with_flags(lhs, rhs, UDivFlags::new().exact(), "r")?;
-    let inst = InstructionView::try_from(b.view(r).into_erased())?;
+    let inst = InstructionView::try_from(b.view(r).as_erased())?;
     if let Some(InstructionKind::UDiv(s)) = inst.kind() {
         assert!(s.is_exact());
     } else {
@@ -128,7 +128,7 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
     let lhs: IntValue<'_, i32, _> = m.view(sdiv_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(sdiv_fn).param(1)?.try_into()?;
     let r = b.int_sdiv_with_flags(lhs, rhs, SDivFlags::new().exact(), "r")?;
-    let inst = InstructionView::try_from(b.view(r).into_erased())?;
+    let inst = InstructionView::try_from(b.view(r).as_erased())?;
     if let Some(InstructionKind::SDiv(s)) = inst.kind() {
         assert!(s.is_exact());
     } else {
@@ -142,7 +142,7 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
     let lhs: IntValue<'_, i32, _> = m.view(lshr_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(lshr_fn).param(1)?.try_into()?;
     let r = b.int_lshr_with_flags(lhs, rhs, LShrFlags::new().exact(), "r")?;
-    let inst = InstructionView::try_from(b.view(r).into_erased())?;
+    let inst = InstructionView::try_from(b.view(r).as_erased())?;
     if let Some(InstructionKind::LShr(s)) = inst.kind() {
         assert!(s.is_exact());
     } else {
@@ -156,7 +156,7 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
     let lhs: IntValue<'_, i32, _> = m.view(ashr_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(ashr_fn).param(1)?.try_into()?;
     let r = b.int_ashr_with_flags(lhs, rhs, AShrFlags::new().exact(), "r")?;
-    let inst = InstructionView::try_from(b.view(r).into_erased())?;
+    let inst = InstructionView::try_from(b.view(r).as_erased())?;
     if let Some(InstructionKind::AShr(s)) = inst.kind() {
         assert!(s.is_exact());
     } else {

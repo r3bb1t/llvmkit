@@ -866,7 +866,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AttributeList<'ctx, B> {
 
     /// Mutably borrow the set at `index`, creating an empty entry if
     /// none exists.
-    pub fn get_mut_or_default(&mut self, index: AttrIndex) -> &mut AttributeSet<'ctx, B> {
+    pub fn or_default_mut(&mut self, index: AttrIndex) -> &mut AttributeSet<'ctx, B> {
         if let Some(pos) = self.entries.iter().position(|(i, _)| *i == index) {
             return &mut self.entries[pos].1;
         }
@@ -880,7 +880,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AttributeList<'ctx, B> {
     /// Add `attr` at `index`. Convenience wrapper around
     /// [`get_mut_or_default`](Self::get_mut_or_default).
     pub fn add(&mut self, index: AttrIndex, attr: Attribute<'ctx, B>) {
-        self.get_mut_or_default(index).add(attr);
+        self.or_default_mut(index).add(attr);
     }
 
     /// `true` if no index has any attributes.

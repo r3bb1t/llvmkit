@@ -71,7 +71,7 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
     // The `add` instruction's operands are the function's two args.
     let arg0: Argument<'_, _> = m.view(f).param(0)?;
     let arg1: Argument<'_, _> = m.view(f).param(1)?;
-    let add_kind = m.view(sum).into_erased().name();
+    let add_kind = m.view(sum).as_erased().name();
     assert_eq!(add_kind.as_deref(), Some("sum"));
     let _ = arg0;
     let _ = arg1;
@@ -124,7 +124,7 @@ fn const_int_interns() -> Result<(), IrError> {
     // Same value, different type: distinct handles.
     let i64_ty = m.i64_type();
     let d: llvmkit_ir::ConstantIntValue<'_, i64, _> = i64_ty.const_int(42_i64);
-    assert_ne!(a.into_erased().ty(), d.into_erased().ty());
+    assert_ne!(a.as_erased().ty(), d.as_erased().ty());
     Ok(())
 }
 

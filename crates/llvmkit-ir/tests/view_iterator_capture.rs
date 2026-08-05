@@ -53,13 +53,13 @@ fn two_block_function<B: ModuleBrand>(m: &llvmkit_ir::Module<B>) -> Result<Vec<S
     let b = IrBuilder::with_folder(m, NoFolder).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let sum = b.int_add::<i32, _, _, _>(a, a, "sum")?;
-    let sum_erased = b.view(sum).into_erased();
+    let sum_erased = b.view(sum).as_erased();
     b.br_with_args(join_label, &[sum_erased])?;
 
     let b = IrBuilder::with_folder(m, NoFolder).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
     let doubled = b.int_add::<i32, _, _, _>(p, p, "doubled")?;
-    let doubled_erased = b.view(doubled).into_erased();
+    let doubled_erased = b.view(doubled).as_erased();
     b.ret(doubled_erased)?;
 
     // The phi carries no name of its own (it is an anonymous block parameter),

@@ -519,44 +519,26 @@ fn preserved_analyses_explicit_keys_intersect_and_abandon() {
 }
 
 /// Ports `unittests/IR/PassManagerTest.cpp` local function-analysis cache and
-/// invalidation behavior: `get_result` runs once, cached lookup does not run,
+/// invalidation behavior: `result` runs once, cached lookup does not run,
 /// and unpreserved invalidation drops the cached result.
 #[test]
 fn function_analysis_runs_once_caches_and_invalidates() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.view(m.function_by_name_dyn("f").expect("sample has f"));
+        let f = m.view(m.function_dyn("f").expect("sample has f"));
         let runs = Rc::new(Cell::new(0));
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(CountFunctionAnalysis { runs: runs.clone() });
 
-        assert!(
-            fam.get_cached_result::<CountFunctionAnalysis, _>(f)
-                .is_none()
-        );
-        assert_eq!(
-            fam.get_result::<CountFunctionAnalysis, _>(f)?.instructions,
-            3
-        );
-        assert_eq!(
-            fam.get_result::<CountFunctionAnalysis, _>(f)?.instructions,
-            3
-        );
+        assert!(fam.cached_result::<CountFunctionAnalysis, _>(f).is_none());
+        assert_eq!(fam.result::<CountFunctionAnalysis, _>(f)?.instructions, 3);
+        assert_eq!(fam.result::<CountFunctionAnalysis, _>(f)?.instructions, 3);
         assert_eq!(runs.get(), 1);
 
         fam.invalidate(f, &PreservedAnalyses::all())?;
-        assert!(
-            fam.get_cached_result::<CountFunctionAnalysis, _>(f)
-                .is_some()
-        );
+        assert!(fam.cached_result::<CountFunctionAnalysis, _>(f).is_some());
         fam.invalidate(f, &PreservedAnalyses::none())?;
-        assert!(
-            fam.get_cached_result::<CountFunctionAnalysis, _>(f)
-                .is_none()
-        );
-        assert_eq!(
-            fam.get_result::<CountFunctionAnalysis, _>(f)?.instructions,
-            3
-        );
+        assert!(fam.cached_result::<CountFunctionAnalysis, _>(f).is_none());
+        assert_eq!(fam.result::<CountFunctionAnalysis, _>(f)?.instructions, 3);
         assert_eq!(runs.get(), 2);
         Ok(())
     })
@@ -573,24 +555,24 @@ fn module_analysis_runs_once_caches_and_invalidates() -> Result<(), IrError> {
         mam.register_pass(CountModuleAnalysis { runs: runs.clone() });
 
         assert!(
-            mam.get_cached_result::<CountModuleAnalysis, _>(m.as_view())
+            mam.cached_result::<CountModuleAnalysis, _>(m.as_view())
                 .is_none()
         );
-        assert_eq!(mam.get_result::<CountModuleAnalysis>(&m)?.functions, 3);
-        assert_eq!(mam.get_result::<CountModuleAnalysis>(&m)?.functions, 3);
+        assert_eq!(mam.result::<CountModuleAnalysis>(&m)?.functions, 3);
+        assert_eq!(mam.result::<CountModuleAnalysis>(&m)?.functions, 3);
         assert_eq!(runs.get(), 1);
 
         mam.invalidate(m.as_view(), &PreservedAnalyses::all())?;
         assert!(
-            mam.get_cached_result::<CountModuleAnalysis, _>(m.as_view())
+            mam.cached_result::<CountModuleAnalysis, _>(m.as_view())
                 .is_some()
         );
         mam.invalidate(m.as_view(), &PreservedAnalyses::none())?;
         assert!(
-            mam.get_cached_result::<CountModuleAnalysis, _>(m.as_view())
+            mam.cached_result::<CountModuleAnalysis, _>(m.as_view())
                 .is_none()
         );
-        assert_eq!(mam.get_result::<CountModuleAnalysis>(&m)?.functions, 3);
+        assert_eq!(mam.result::<CountModuleAnalysis>(&m)?.functions, 3);
         assert_eq!(runs.get(), 2);
         Ok(())
     })
@@ -601,10 +583,10 @@ fn module_analysis_runs_once_caches_and_invalidates() -> Result<(), IrError> {
 #[test]
 fn invalidator_reports_missing_cached_dependency() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.view(m.function_by_name_dyn("f").expect("sample has f"));
+        let f = m.view(m.function_dyn("f").expect("sample has f"));
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DependsOnMissingFunctionAnalysis);
-        let _ = fam.get_result::<DependsOnMissingFunctionAnalysis, _>(f)?;
+        let _ = fam.result::<DependsOnMissingFunctionAnalysis, _>(f)?;
 
         let error = fam
             .invalidate(f, &PreservedAnalyses::none())
@@ -625,31 +607,22 @@ fn invalidator_reports_missing_cached_dependency() -> Result<(), IrError> {
 #[test]
 fn module_level_invalidation_honors_fam_proxy_and_function_set() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.view(m.function_by_name_dyn("f").expect("sample has f"));
+        let f = m.view(m.function_dyn("f").expect("sample has f"));
         let runs = Rc::new(Cell::new(0));
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(CountFunctionAnalysis { runs: runs.clone() });
-        let _ = fam.get_result::<CountFunctionAnalysis, _>(f)?;
-        assert!(
-            fam.get_cached_result::<CountFunctionAnalysis, _>(f)
-                .is_some()
-        );
+        let _ = fam.result::<CountFunctionAnalysis, _>(f)?;
+        assert!(fam.cached_result::<CountFunctionAnalysis, _>(f).is_some());
 
         fam.invalidate_module(f.module(), &PreservedAnalyses::none())?;
-        assert!(
-            fam.get_cached_result::<CountFunctionAnalysis, _>(f)
-                .is_none()
-        );
+        assert!(fam.cached_result::<CountFunctionAnalysis, _>(f).is_none());
 
-        let _ = fam.get_result::<CountFunctionAnalysis, _>(f)?;
+        let _ = fam.result::<CountFunctionAnalysis, _>(f)?;
         let mut pa = PreservedAnalyses::none();
         pa.preserve::<FunctionAnalysisManagerModuleProxy>();
         pa.preserve_set::<AllAnalysesOnFunction>();
         fam.invalidate_module(f.module(), &pa)?;
-        assert!(
-            fam.get_cached_result::<CountFunctionAnalysis, _>(f)
-                .is_some()
-        );
+        assert!(fam.cached_result::<CountFunctionAnalysis, _>(f).is_some());
         assert_eq!(runs.get(), 2);
         Ok(())
     })
@@ -660,26 +633,20 @@ fn module_level_invalidation_honors_fam_proxy_and_function_set() -> Result<(), I
 #[test]
 fn dominator_tree_analysis_caches_and_cfg_preserves() -> Result<(), IrError> {
     with_sample_module(|m| {
-        let f = m.view(m.function_by_name_dyn("f").expect("sample has f"));
+        let f = m.view(m.function_dyn("f").expect("sample has f"));
         let mut fam = FunctionAnalysisManager::new();
         fam.register_pass(DominatorTreeAnalysis);
 
-        let dt = fam.get_result::<DominatorTreeAnalysis, _>(f)?;
+        let dt = fam.result::<DominatorTreeAnalysis, _>(f)?;
         assert!(dt.is_reachable_from_entry(f.entry_block().expect("body")));
 
         let mut pa = PreservedAnalyses::none();
         pa.preserve_set::<CfgAnalyses>();
         fam.invalidate(f, &pa)?;
-        assert!(
-            fam.get_cached_result::<DominatorTreeAnalysis, _>(f)
-                .is_some()
-        );
+        assert!(fam.cached_result::<DominatorTreeAnalysis, _>(f).is_some());
 
         fam.invalidate(f, &PreservedAnalyses::none())?;
-        assert!(
-            fam.get_cached_result::<DominatorTreeAnalysis, _>(f)
-                .is_none()
-        );
+        assert!(fam.cached_result::<DominatorTreeAnalysis, _>(f).is_none());
         Ok(())
     })
 }

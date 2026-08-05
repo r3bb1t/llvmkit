@@ -33,7 +33,7 @@ use crate::pointer_analysis::strip_pointer_casts_same_representation;
 use crate::speculation::program_undefined_for_value;
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
 use crate::value::{Value, ValueKindData, ValueSlot};
-use crate::vector_utils::get_splat_value;
+use crate::vector_utils::splat_value;
 use crate::{ApInt, IrResult, KnownBits};
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
@@ -171,7 +171,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysis<'ctx, B> for KnownBitsAnalysi
         'ctx: 'v,
     {
         let dominator_tree = am
-            .get_cached_result_by_type::<DominatorTreeAnalysis, DominatorTree, _>(function)
+            .cached_result_by_type::<DominatorTreeAnalysis, DominatorTree, _>(function)
             .cloned();
         Ok(KnownBitsAnalysisResult {
             data_layout: function.module().data_layout().clone(),
@@ -5406,7 +5406,7 @@ fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // `demanded_elements_for` yields `None` for anything that is not a vector.
     // The width agrees for the same reason `KnownBits` is per-element upstream —
     // `type_bit_width` recurses to a vector's element type.
-    if let Some(splat) = get_splat_value(value) {
+    if let Some(splat) = splat_value(value) {
         return compute_known_bits_inner(splat, query, depth + 1, stack);
     }
 
@@ -5612,7 +5612,7 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 return Ok(true);
             }
         } else if let InstructionKindData::ShuffleVector(_) = operator
-            && let Some(splat) = get_splat_value(value)
+            && let Some(splat) = splat_value(value)
         {
             // For a splat, only the value being splatted has to be checked.
             if is_guaranteed_not_to_be_undef_or_poison(splat, query, depth + 1, stack, kind)? {
@@ -5947,6 +5947,7 @@ fn erase_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Type<'ctx, DynB
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_layout::DataLayout;
     use crate::instruction::build_instruction_value;
     use crate::module::Module;
     use crate::value::IsValue;
@@ -5982,7 +5983,7 @@ mod tests {
     #[test]
     fn vector_gep_uses_element_pointer_address_space_for_index_width() -> crate::IrResult<()> {
         let m = crate::module_new!("vt-vector-gep-as")?;
-        m.set_data_layout("p1:64:64:64:32")?;
+        m.set_data_layout(DataLayout::parse("p1:64:64:64:32")?);
         let i8_ty = m.i8_type();
         let i32_ty = m.i32_type();
         let ptr1_ty = m.ptr_type(1);

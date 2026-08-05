@@ -133,7 +133,7 @@ fn extract_value_rejects_out_of_range_array_index() -> Result<(), IrError> {
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let undef = arr_ty.as_type().get_undef();
+    let undef = arr_ty.as_type().undef();
     let err = b
         .extract_value(undef, [0u32], "")
         .expect_err("index 0 into a 0-element array must be rejected");
@@ -163,7 +163,7 @@ fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let undef = s_ty.as_type().get_undef();
+    let undef = s_ty.as_type().undef();
     let err = b
         .extract_value(undef, [2u32], "")
         .expect_err("index 2 into a 2-field struct must be rejected");

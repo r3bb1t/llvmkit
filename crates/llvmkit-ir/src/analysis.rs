@@ -387,7 +387,7 @@ pub trait FunctionAnalysis<'ctx, B: ModuleBrand>: 'static {
 /// No upstream analog: LLVM registers analyses by runtime
 /// `AnalysisManager::registerPass` calls with no compile-time `Requires` list.
 pub trait PrefetchableAnalysis<'ctx, B: ModuleBrand>: FunctionAnalysis<'ctx, B> {
-    /// Ensure this analysis is registered in `fam`, so a following `get_result`
+    /// Ensure this analysis is registered in `fam`, so a following `result`
     /// cannot fail with [`IrError::AnalysisNotRegistered`].
     fn ensure_registered(fam: &mut FunctionAnalysisManager<'ctx, B>);
 }
@@ -761,7 +761,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     }
 
     /// Register a function-analysis pass instance, keyed by its type, so its
-    /// result can be computed on demand by [`Self::get_result`].
+    /// result can be computed on demand by [`Self::result`].
     pub fn register_pass<A>(&mut self, analysis: A)
     where
         A: FunctionAnalysis<'ctx, B>,
@@ -846,7 +846,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
     /// Fetch `function`'s result for analysis `A`, running the pass and caching
     /// the result on the first request. Errors with
     /// [`IrError::AnalysisNotRegistered`] if `A` was never registered.
-    pub fn get_result<'v, A, F>(&mut self, function: F) -> IrResult<&A::Result>
+    pub fn result<'v, A, F>(&mut self, function: F) -> IrResult<&A::Result>
     where
         A: FunctionAnalysis<'ctx, B>,
         F: Into<FunctionView<'v, B>>,
@@ -870,7 +870,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
                 callbacks.run_after_analysis(type_name::<A>());
             }
         }
-        self.get_cached_result::<A, _>(function)
+        self.cached_result::<A, _>(function)
             .ok_or(IrError::AnalysisNotCached {
                 name: type_name::<A>(),
             })
@@ -878,7 +878,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
 
     /// Return `function`'s already-cached result for `A`, or `None` if it has
     /// not been computed. Never runs the pass.
-    pub fn get_cached_result<'v, A, F>(&self, function: F) -> Option<&A::Result>
+    pub fn cached_result<'v, A, F>(&self, function: F) -> Option<&A::Result>
     where
         A: FunctionAnalysis<'ctx, B>,
         F: Into<FunctionView<'v, B>>,
@@ -891,7 +891,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
             .downcast_ref::<A::Result>()
     }
 
-    pub(crate) fn get_cached_result_by_type<'v, A, R, F>(&self, function: F) -> Option<&R>
+    pub(crate) fn cached_result_by_type<'v, A, R, F>(&self, function: F) -> Option<&R>
     where
         A: 'static,
         R: 'static,
@@ -1020,7 +1020,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
     }
 
     /// Register a module-analysis pass instance, keyed by its type, so its
-    /// result can be computed on demand by [`Self::get_result`].
+    /// result can be computed on demand by [`Self::result`].
     pub fn register_pass<A>(&mut self, analysis: A)
     where
         A: ModuleAnalysis<'ctx, B>,
@@ -1046,23 +1046,20 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
     /// Fetch the module's result for analysis `A`, running the pass and caching
     /// the result on the first request. Takes a verified module; errors with
     /// [`IrError::AnalysisNotRegistered`] if `A` was never registered.
-    pub fn get_result<'v, A>(&mut self, module: &'v Module<B, Verified>) -> IrResult<&A::Result>
+    pub fn result<'v, A>(&mut self, module: &'v Module<B, Verified>) -> IrResult<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,
         'ctx: 'v,
     {
         let module_view = module.as_view();
-        self.get_result_view::<A>(module_view)
+        self.result_view::<A>(module_view)
     }
 
-    /// [`Self::get_result`] variant for callers that already hold a [`ModuleView`]
+    /// [`Self::result`] variant for callers that already hold a [`ModuleView`]
     /// rather than a `&Module<Verified>` (the typed pipeline runner keys its
     /// [`ModuleRunner`] by `ModuleView` already). Not part of the public API:
     /// [`ModuleAnalysisList::prefetch`] is the only caller.
-    pub(crate) fn get_result_view<'v, A>(
-        &mut self,
-        module: ModuleView<'v, B>,
-    ) -> IrResult<&A::Result>
+    pub(crate) fn result_view<'v, A>(&mut self, module: ModuleView<'v, B>) -> IrResult<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,
         'ctx: 'v,
@@ -1083,7 +1080,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
                 callbacks.run_after_analysis(type_name::<A>());
             }
         }
-        self.get_cached_result::<A, _>(module)
+        self.cached_result::<A, _>(module)
             .ok_or(IrError::AnalysisNotCached {
                 name: type_name::<A>(),
             })
@@ -1091,7 +1088,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
 
     /// Return the module's already-cached result for `A`, or `None` if it has
     /// not been computed. Never runs the pass.
-    pub fn get_cached_result<'v, A, M>(&self, module: M) -> Option<&A::Result>
+    pub fn cached_result<'v, A, M>(&self, module: M) -> Option<&A::Result>
     where
         A: ModuleAnalysis<'ctx, B>,
         M: Into<ModuleView<'v, B>>,
@@ -1535,7 +1532,7 @@ macro_rules! impl_function_analysis_list {
             {
                 $(
                     <$member as PrefetchableAnalysis<'ctx, B>>::ensure_registered(fam);
-                    fam.get_result::<$member, _>(function)?;
+                    fam.result::<$member, _>(function)?;
                 )+
                 Ok(())
             }
@@ -1548,7 +1545,7 @@ macro_rules! impl_function_analysis_list {
                 'ctx: 'v,
             {
                 Ok(($(
-                    fam.get_cached_result::<$member, _>(function)
+                    fam.cached_result::<$member, _>(function)
                         .ok_or(IrError::AnalysisNotCached {
                             name: type_name::<$member>(),
                         })?,
@@ -1704,7 +1701,7 @@ macro_rules! impl_module_analysis_list {
             {
                 $(
                     mam.ensure_registered_default::<$member>();
-                    mam.get_result_view::<$member>(module)?;
+                    mam.result_view::<$member>(module)?;
                 )+
                 Ok(())
             }
@@ -1717,7 +1714,7 @@ macro_rules! impl_module_analysis_list {
                 'ctx: 'v,
             {
                 Ok(($(
-                    mam.get_cached_result::<$member, _>(module)
+                    mam.cached_result::<$member, _>(module)
                         .ok_or(IrError::AnalysisNotCached {
                             name: type_name::<$member>(),
                         })?,

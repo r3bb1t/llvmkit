@@ -29,7 +29,7 @@ pub enum AtomicOrdering {
 
 impl AtomicOrdering {
     /// IR text spelling. Mirrors `Support/AtomicOrdering.h::toIRString`.
-    pub const fn to_ir_string(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::NotAtomic => "not_atomic",
             Self::Unordered => "unordered",
@@ -44,6 +44,6 @@ impl AtomicOrdering {
 
 impl fmt::Display for AtomicOrdering {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.to_ir_string())
+        f.write_str(self.as_str())
     }
 }

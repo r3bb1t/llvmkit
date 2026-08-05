@@ -37,7 +37,7 @@ fn main() {
 
     // Mint an *erased* id from a typed handle.
     let a: IntValue<i32, _> = m.view(f).param(0).unwrap().try_into().unwrap();
-    let erased: ValueId<_> = a.into_erased().id();
+    let erased: ValueId<_> = a.as_erased().id();
 
     // `ValueId<B>` has no `IntoIntValue` impl: erased -> typed must be
     // spelled with `try_view`, never lifted as an operand.

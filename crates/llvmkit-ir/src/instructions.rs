@@ -1016,7 +1016,7 @@ impl<'ctx, Ret: FunctionReturn, B: ModuleBrand + 'ctx> TypedCallInst<'ctx, Ret, 
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         self.inner.to_erased()
     }
 }
@@ -1635,7 +1635,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     {
         let module = self.module.module();
         let value = value.into_int_value(self.module)?;
-        if value.into_erased().ty == self.ty {
+        if value.as_erased().ty == self.ty {
             let value_id = value.slot();
             let block_id = block.into_basic_block_label(self.module)?.slot();
             if self
@@ -1664,7 +1664,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
         } else {
             Err(crate::IrError::TypeMismatch {
                 expected: Type::<B>::new(self.ty, module).kind_label(),
-                got: value.into_erased().ty().kind_label(),
+                got: value.as_erased().ty().kind_label(),
             })
         }
     }
@@ -1855,7 +1855,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
     {
         let module = self.module.module();
         let value = value.into_float_value(self.module)?;
-        if value.into_erased().ty == self.ty {
+        if value.as_erased().ty == self.ty {
             let value_id = value.slot();
             let block_id = block.into_basic_block_label(self.module)?.slot();
             if self
@@ -1883,7 +1883,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
         } else {
             Err(crate::IrError::TypeMismatch {
                 expected: Type::<B>::new(self.ty, module).kind_label(),
-                got: value.into_erased().ty().kind_label(),
+                got: value.as_erased().ty().kind_label(),
             })
         }
     }
@@ -2064,7 +2064,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
     {
         let module = self.module.module();
         let value = value.into_pointer_value(self.module)?;
-        if value.into_erased().ty == self.ty {
+        if value.as_erased().ty == self.ty {
             let value_id = value.slot();
             let block_id = block.into_basic_block_label(self.module)?.slot();
             if self
@@ -2092,7 +2092,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
         } else {
             Err(crate::IrError::TypeMismatch {
                 expected: Type::<B>::new(self.ty, module).kind_label(),
-                got: IsValue::into_erased(value).ty().kind_label(),
+                got: IsValue::as_erased(value).ty().kind_label(),
             })
         }
     }
@@ -2987,7 +2987,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> SwitchInst<'ctx, TermOpen, B, IntDyn> {
         R: ReturnMarker,
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        let v = case_value.into_erased();
+        let v = case_value.as_erased();
         self.push_case_checked(v, target)
     }
 }
@@ -3009,7 +3009,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: StaticIntWidth> SwitchInst<'ctx, TermOpen, 
         Target: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let module_ref = self.module;
-        let v = IsValue::into_erased(case_value.into_int_value(module_ref)?);
+        let v = IsValue::as_erased(case_value.into_int_value(module_ref)?);
         self.push_case_checked(v, target)
     }
 }
@@ -3445,7 +3445,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
     /// for `Catch`.
     pub fn add_catch_clause<V: IsValue<'ctx, B>>(self, type_info: V) -> IrResult<Self> {
         let module = self.module.module();
-        let v = type_info.into_erased();
+        let v = type_info.as_erased();
         self.payload()
             .clauses
             .borrow_mut()
@@ -3461,7 +3461,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
     /// Append a `filter <ty> <val>` clause.
     pub fn add_filter_clause<V: IsValue<'ctx, B>>(self, filter_array: V) -> IrResult<Self> {
         let module = self.module.module();
-        let v = filter_array.into_erased();
+        let v = filter_array.as_erased();
         self.payload()
             .clauses
             .borrow_mut()

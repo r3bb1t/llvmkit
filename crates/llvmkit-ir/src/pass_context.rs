@@ -870,7 +870,7 @@ where
         // later `borrow_mut()`. Users must be captured *before* the RAUW rewires
         // them.
         let users: Vec<ValueId<B>> = if self.worklist.borrow().is_some() {
-            view.into_erased()
+            view.as_erased()
                 .users()
                 .map(|u| u.to_erased().id())
                 .collect()
@@ -1402,7 +1402,7 @@ where
         let module = self.patch.module_mut().module_ref();
         for inst_id in emptied {
             let view = InstructionView::from_parts(inst_id, module);
-            let poison = view.ty().get_poison();
+            let poison = view.ty().poison();
             self.replace_all_uses(&view, poison)?;
             self.erase(&view.as_non_terminator().expect("a phi is a non-terminator"));
         }
@@ -2042,7 +2042,7 @@ where
         let mut erased: Vec<(Value<'m, B>, BlockId<Dyn, B>)> = Vec::with_capacity(incomings.len());
         for (id, pred) in incomings {
             let view = id.resolve_in(module_ref).ok_or(IrError::ForeignValueId)?;
-            erased.push((view.into_erased(), *pred));
+            erased.push((view.as_erased(), *pred));
         }
         let ty = first
             .resolve_in(module_ref)
@@ -2883,7 +2883,7 @@ where
     where
         A2: FunctionAnalysis<'ctx, B>,
     {
-        self.fam.get_result::<A2, _>(function)
+        self.fam.result::<A2, _>(function)
     }
 
     /// Read a cached module analysis without computing it.
@@ -2892,7 +2892,7 @@ where
     where
         A2: ModuleAnalysis<'ctx, B>,
     {
-        self.mam.get_cached_result::<A2, _>(self.module)
+        self.mam.cached_result::<A2, _>(self.module)
     }
 
     /// Finish without mutating: report everything preserved. Available at every
@@ -3235,7 +3235,7 @@ mod tests {
         b.ret(x)?;
 
         let function = FunctionView::from(m.view(f));
-        let dead_view = InstructionView::try_from(m.view(dead).into_erased())?;
+        let dead_view = InstructionView::try_from(m.view(dead).as_erased())?;
 
         let mut fam = FunctionAnalysisManager::new();
         Reqs::prefetch(&mut fam, function)?;
@@ -3491,7 +3491,7 @@ mod tests {
         let reshape = cx.mutate();
         // Erase the dead instruction so the dirty flag is set; only then
         // does `done()` report the ReshapeCfg floor.
-        let dead_view = InstructionView::try_from(m.view(dead).into_erased())?;
+        let dead_view = InstructionView::try_from(m.view(dead).as_erased())?;
         reshape.erase(
             &dead_view
                 .as_non_terminator()
@@ -3630,7 +3630,7 @@ mod tests {
 
         // Pre-edit cached tree: `next` is reachable (entry → next).
         assert!(
-            fam.get_cached_result::<DominatorTreeAnalysis, _>(function)
+            fam.cached_result::<DominatorTreeAnalysis, _>(function)
                 .expect("dom tree was prefetched")
                 .is_reachable_from_entry(next_label)
         );
@@ -3771,8 +3771,8 @@ mod tests {
         let fv1 = FunctionView::from(m.view(f1));
         let fv2 = FunctionView::from(m.view(f2));
         let decl_view = FunctionView::from(m.view(decl));
-        let dead1_view = InstructionView::try_from(m.view(dead1).into_erased())?;
-        let dead2_view = InstructionView::try_from(m.view(dead2).into_erased())?;
+        let dead1_view = InstructionView::try_from(m.view(dead1).as_erased())?;
+        let dead2_view = InstructionView::try_from(m.view(dead2).as_erased())?;
 
         // Each def starts with `dead` + `ret`.
         assert_eq!(fv1.entry_block().expect("def").instruction_count(), 2);

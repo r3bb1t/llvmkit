@@ -93,7 +93,7 @@ fn swifterror_array_alloca_rejected() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let count: IntValue<IntDyn, _> = i32_ty.const_int_checked(4_i64)?.into_erased().try_into()?;
+    let count: IntValue<IntDyn, _> = i32_ty.const_int_checked(4_i64)?.as_erased().try_into()?;
     b.alloca_dyn(
         m.ptr_type(0),
         Some(count),
@@ -124,7 +124,7 @@ fn swifterror_size_one_alloca_verifies_and_drops_canonical_size() -> Result<(), 
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let one: IntValue<IntDyn, _> = i32_ty.const_int_checked(1_i64)?.into_erased().try_into()?;
+    let one: IntValue<IntDyn, _> = i32_ty.const_int_checked(1_i64)?.as_erased().try_into()?;
     b.alloca_dyn(
         m.ptr_type(0),
         Some(one),

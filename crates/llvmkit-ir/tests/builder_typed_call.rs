@@ -224,7 +224,7 @@ fn build_varargs_call_printf_shape_two_fixed_args_and_int_tail() -> Result<(), I
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (fmt, level) = m.view(caller).params();
     let extra = i32_ty.const_int(7_i32);
-    let call = b.varargs_call(m.view(callee), (fmt, level), [extra.into_erased()], "r")?;
+    let call = b.varargs_call(m.view(callee), (fmt, level), [extra.as_erased()], "r")?;
     let ret_val = b.view(call).result();
     b.ret(ret_val)?;
     let text = format!("{m}");
@@ -275,11 +275,7 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
         let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
         let y: IntValue<'_, i32, _> = m.view(caller).param(1)?.try_into()?;
-        let inst = b.call_dyn(
-            callee.as_function(),
-            [x.into_erased(), y.into_erased()],
-            "r",
-        )?;
+        let inst = b.call_dyn(callee.as_function(), [x.as_erased(), y.as_erased()], "r")?;
         let ret_val = b.view(inst).return_int_value();
         b.ret(ret_val)?;
         Ok(())
@@ -308,7 +304,7 @@ fn typed_call_full_module_print_equals_dyn_call_full_module_print() -> Result<()
 /// Typed indirect call prints identically to the dyn indirect-call form
 /// for the same signature (FULL-MODULE comparison). Closest upstream
 /// coverage: `unittests/IR/IRBuilderTest.cpp` opaque-pointer indirect
-/// call construction (`IrBuilder::CreateCall(FunctionType*, Value*,
+/// call construction (`IRBuilder::CreateCall(FunctionType*, Value*,
 /// ...)`), same anchor as
 /// `builder_call.rs::typed_build_indirect_call_derives_function_type_from_schema`,
 /// which only checks a fragment; this one proves full-module byte
@@ -341,7 +337,7 @@ fn typed_indirect_call_full_module_print_equals_dyn_indirect_call_full_module_pr
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let x = i32_ty.const_int(7_i32);
         let inst =
-            b.indirect_call_dyn::<i32, _, _, _, _>(fn_ty, callee_ptr, [x.into_erased()], "r")?;
+            b.indirect_call_dyn::<i32, _, _, _, _>(fn_ty, callee_ptr, [x.as_erased()], "r")?;
         let ret_val = b.view(inst).return_int_value();
         b.ret(ret_val)?;
         Ok(())
@@ -392,7 +388,7 @@ fn build_call_dyn_rejects_wrong_argument_count() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let err = b
-        .call_dyn(callee, [x.into_erased()], "bad")
+        .call_dyn(callee, [x.as_erased()], "bad")
         .expect_err("one argument against a two-parameter callee must be rejected");
     assert_eq!(
         err,
@@ -424,7 +420,7 @@ fn build_call_dyn_rejects_wrong_argument_type() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: llvmkit_ir::FloatValue<'_, f64, _> = m.view(caller).param(0)?.try_into()?;
     let err = b
-        .call_dyn(callee, [x.into_erased()], "bad")
+        .call_dyn(callee, [x.as_erased()], "bad")
         .expect_err("an f64 argument against an i32 parameter must be rejected");
     assert_eq!(
         err,

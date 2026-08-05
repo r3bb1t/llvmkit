@@ -49,7 +49,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -79,7 +79,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
     /// Optional textual name.
     #[inline]
     pub fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
 
     /// Set the textual name.
@@ -88,31 +88,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> Argument<'ctx, B> {
     where
         Name: Into<String>,
     {
-        self.into_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name);
     }
 
     /// Clear the textual name.
     #[inline]
     pub fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
-        self.into_erased().clear_name(module_token);
+        self.as_erased().clear_name(module_token);
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for Argument<'ctx, B> {
     /// Print the operand form `<type> %name`, identical to what the erased
-    /// [`Argument::into_erased`] handle prints. An unnamed parameter has no
+    /// [`Argument::as_erased`] handle prints. An unnamed parameter has no
     /// slot number outside a function-wide numbering pass, so it prints as
     /// `%<unnumbered>` here.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(&Argument::into_erased(*self), f)
+        core::fmt::Display::fmt(&Argument::as_erased(*self), f)
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for Argument<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Argument<'ctx, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        Argument::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        Argument::as_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(Argument);
@@ -142,14 +142,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Argument<'ctx, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> HasDebugLoc for Argument<'ctx, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.into_erased().debug_loc()
+        self.as_erased().debug_loc()
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> From<Argument<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(a: Argument<'ctx, B>) -> Self {
-        a.into_erased()
+        a.as_erased()
     }
 }
 

@@ -603,7 +603,7 @@ fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
             let inst_id = inst.slot();
             parent.insert(inst_id, block_id);
             order.insert(inst_id, (block_id, index));
-            if let ValueKindData::Instruction(data) = &inst.into_erased().data().kind {
+            if let ValueKindData::Instruction(data) = &inst.as_erased().data().kind {
                 match &data.kind {
                     InstructionKindData::Invoke(invoke) => {
                         normal_dest.insert(inst_id, invoke.normal_dest.get());
@@ -624,21 +624,21 @@ fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
 
 fn is_phi<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
     matches!(
-        &inst.into_erased().data().kind,
+        &inst.as_erased().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::Phi(_))
     )
 }
 
 fn is_invoke<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
     matches!(
-        &inst.into_erased().data().kind,
+        &inst.as_erased().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::Invoke(_))
     )
 }
 
 fn is_callbr<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
     matches!(
-        &inst.into_erased().data().kind,
+        &inst.as_erased().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::CallBr(_))
     )
 }

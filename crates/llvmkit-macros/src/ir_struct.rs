@@ -106,7 +106,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         quote! {
             let __llvmkit_ty = <#ident as #ir::StructSchema>::ir_type(#module_param)?;
             let __llvmkit_raw = <#ir::StructValue<'ctx, B> as ::core::convert::TryFrom<#ir::Constant<'ctx, B>>>::try_from(
-                __llvmkit_ty.as_type().get_poison().as_constant(),
+                __llvmkit_ty.as_type().poison().as_constant(),
             )?;
             Ok(Self { raw: __llvmkit_raw })
         }
@@ -215,8 +215,8 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             }
 
             #[inline]
-            #vis fn into_erased(self) -> #ir::Value<'ctx, B> {
-                self.raw.into_erased()
+            #vis fn as_erased(self) -> #ir::Value<'ctx, B> {
+                self.raw.as_erased()
             }
 
             #(#accessors)*
@@ -353,7 +353,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 self,
                 _module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                Ok(self.raw.into_erased())
+                Ok(self.raw.as_erased())
             }
         }
 
@@ -365,7 +365,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 self,
                 _module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                Ok(self.as_struct_value().into_erased())
+                Ok(self.as_struct_value().as_erased())
             }
         }
 
@@ -378,7 +378,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 self,
                 _module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                Ok(self.raw.into_erased())
+                Ok(self.raw.as_erased())
             }
         }
     })
@@ -407,7 +407,7 @@ fn build_value_steps(
             quote! {
                 <#schema_ident as #ir::StructSchema>::ir_type(#module_param)?
                     .as_type()
-                    .get_poison()
+                    .poison()
                     .as_constant()
             }
         } else {

@@ -498,7 +498,7 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     let sum =
         builder.int_add::<i8, _, _, _>(i8_ty.const_int(1_u8), i8_ty.const_int(2_u8), "sum")?;
     builder.ret_void()?;
-    let inst = InstructionView::try_from(b.view(sum).into_erased())?;
+    let inst = InstructionView::try_from(b.view(sum).as_erased())?;
 
     assert!(matches!(
         inst.set_metadata(&b, MetadataAttachmentKind::Prof, a_node),
@@ -532,7 +532,7 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
             &b,
             DebugRecord::Variable(DebugVariableRecord::new(
                 DebugVariableRecordKind::Value,
-                DebugMetadataOperand::Value(a.view(a_sum).into_erased().id()),
+                DebugMetadataOperand::Value(a.view(a_sum).as_erased().id()),
                 b_node,
                 b_node,
                 b_node,

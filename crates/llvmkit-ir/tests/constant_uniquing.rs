@@ -32,13 +32,13 @@ fn structurally_equal_constants_are_one_node() -> Result<(), IrError> {
     assert_ne!(i32_ty.const_int(7_i32), i32_ty.const_int(8_i32));
     assert_eq!(f32_ty.const_float(1.5_f32), f32_ty.const_float(1.5_f32));
     assert_eq!(ptr_ty.const_null(), ptr_ty.const_null());
-    assert_eq!(i32_ty.as_type().get_undef(), i32_ty.as_type().get_undef());
-    assert_eq!(i32_ty.as_type().get_poison(), i32_ty.as_type().get_poison());
+    assert_eq!(i32_ty.as_type().undef(), i32_ty.as_type().undef());
+    assert_eq!(i32_ty.as_type().poison(), i32_ty.as_type().poison());
     // Undef and poison are different constants of the same type — and are
     // separate Rust types, so the comparison is spelled on the erased handle.
     assert_ne!(
-        i32_ty.as_type().get_undef().as_constant(),
-        i32_ty.as_type().get_poison().as_constant()
+        i32_ty.as_type().undef().as_constant(),
+        i32_ty.as_type().poison().as_constant()
     );
 
     // The four kinds this cycle added maps for.

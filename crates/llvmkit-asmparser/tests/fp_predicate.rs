@@ -67,7 +67,7 @@ fn only_argument<'m>(module: &'m Module<DynBrand, Unverified>) -> Value<'m, DynB
         .params()
         .next()
         .expect("fixture's function takes an argument")
-        .into_erased()
+        .as_erased()
 }
 
 /// Comparing against a NaN never depends on the value: ordered is always false,

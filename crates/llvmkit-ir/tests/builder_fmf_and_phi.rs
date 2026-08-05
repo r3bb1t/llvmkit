@@ -184,7 +184,7 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
     let p: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
     let n0 = b.fp_neg::<f32, _, _>(p, "n0")?;
     let Some(InstructionKind::FNeg(n0_inst)) =
-        InstructionView::try_from(b.view(n0).into_erased())?.kind()
+        InstructionView::try_from(b.view(n0).as_erased())?.kind()
     else {
         panic!("expected n0 to be fneg");
     };
@@ -192,7 +192,7 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
     let fmf = FastMathFlags::NO_NANS | FastMathFlags::NO_SIGNED_ZEROS;
     let n1 = b.fp_neg_fmf::<f32, _, _>(n0, fmf, "n1")?;
     let Some(InstructionKind::FNeg(n1_inst)) =
-        InstructionView::try_from(b.view(n1).into_erased())?.kind()
+        InstructionView::try_from(b.view(n1).as_erased())?.kind()
     else {
         panic!("expected n1 to be fneg");
     };
@@ -394,7 +394,7 @@ fn build_fp_phi_emits_phi_with_double_kind() -> Result<(), IrError> {
     // entry: br join(%0) — the incoming f64 rides the edge into the head-phi.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
-    b.br_with_args(join_label, &[p.into_erased()])?;
+    b.br_with_args(join_label, &[p.as_erased()])?;
     // join: ret %p (the head-phi param, where the phi result was used).
     let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi: FloatValue<'_, f64, _> = params[0].try_into()?;
@@ -426,7 +426,7 @@ fn build_pointer_phi_emits_phi_with_ptr() -> Result<(), IrError> {
     // entry: br join(%0) — the incoming ptr rides the edge into the head-phi.
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    b.br_with_args(join_label, &[p.into_erased()])?;
+    b.br_with_args(join_label, &[p.as_erased()])?;
     // join: ret %p (the head-phi param, where the phi result was used).
     let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi: PointerValue<'_, _> = params[0].try_into()?;

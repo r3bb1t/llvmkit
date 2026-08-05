@@ -143,15 +143,15 @@ fn literal_struct_intern() {
 #[test]
 fn named_struct_forward_decl_then_set_body() {
     let m = module_new!("t").expect("fresh module");
-    let s = m.named_struct("MyStruct");
+    let s = m.get_or_insert_named_struct("MyStruct");
     assert!(s.is_opaque());
     assert_eq!(s.name(), Some("MyStruct"));
     assert_eq!(s.field_count(), 0);
 
     // Looking up the same name returns the same handle.
-    let s_again = m.named_struct("MyStruct");
+    let s_again = m.get_or_insert_named_struct("MyStruct");
     assert_eq!(s.as_type(), s_again.as_type());
-    let s_lookup = m.get_named_struct("MyStruct").unwrap();
+    let s_lookup = m.named_struct("MyStruct").unwrap();
     assert_eq!(s.as_type(), s_lookup.as_type());
 
     // Set body once.
@@ -178,7 +178,7 @@ fn named_struct_forward_decl_then_set_body() {
 #[test]
 fn missing_named_struct_returns_none() {
     let m = module_new!("t").expect("fresh module");
-    assert!(m.get_named_struct("MissingStruct").is_none());
+    assert!(m.named_struct("MissingStruct").is_none());
 }
 
 /// llvmkit-specific: llvmkit exposes `TypeKind` as a discriminated enum.
@@ -222,7 +222,7 @@ fn sized_refinement_accepts_sized_rejects_unsized() {
         m.wasm_exnref_type().as_type(),
         m.fn_type_no_params(m.void_type().as_type(), false)
             .as_type(),
-        m.named_struct("Opaque").as_type(),
+        m.get_or_insert_named_struct("Opaque").as_type(),
     ];
     for ty in unsized_kinds {
         let err = SizedType::try_from(ty).expect_err("unsized must error");
@@ -242,10 +242,14 @@ fn first_class_predicate_rejects_function_void_opaque() {
             .as_type()
             .is_first_class()
     );
-    assert!(!m.named_struct("Opaque").as_type().is_first_class());
+    assert!(
+        !m.get_or_insert_named_struct("Opaque")
+            .as_type()
+            .is_first_class()
+    );
 
     // Filling the body promotes it to first-class.
-    let s = m.named_struct("Filled");
+    let s = m.get_or_insert_named_struct("Filled");
     let i32 = m.i32_type();
     m.set_struct_body_dyn(s, [i32.as_type()], false).unwrap();
     assert!(s.as_type().is_first_class());

@@ -29,7 +29,7 @@ fn call_int_returning_function() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: llvmkit_ir::IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let y: llvmkit_ir::IntValue<'_, i32, _> = m.view(caller).param(1)?.try_into()?;
-    let inst = b.call_dyn(callee, [x.into_erased(), y.into_erased()], "r")?;
+    let inst = b.call_dyn(callee, [x.as_erased(), y.as_erased()], "r")?;
     // Typed return accessor (Doctrine D4): `R` flows from the callee
     // through `call_dyn` into `CallInst<'ctx, i32>`, which directly
     // exposes `return_int_value(): IntValue<i32>` -- no runtime
@@ -135,7 +135,7 @@ fn call_tail() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `Intrinsic::getOrInsertDeclaration` plus `IrBuilder::CreateCall`:
+/// Mirrors `Intrinsic::getOrInsertDeclaration` plus `IRBuilder::CreateCall`:
 /// an intrinsic call helper inserts the canonical declaration and emits a
 /// direct call to it.
 #[test]
@@ -151,7 +151,7 @@ fn intrinsic_call_inserts_declaration_and_emits_direct_call() -> Result<(), IrEr
         IntrinsicId::lookup("llvm.acos.f32").expect("acos intrinsic"),
         [f32_ty.as_type()],
     )?;
-    let call = b.intrinsic_call(&descriptor, &[x.into_erased()], "r")?;
+    let call = b.intrinsic_call(&descriptor, &[x.as_erased()], "r")?;
     let r: FloatValue<'_, f32, _> = b
         .view(call)
         .return_value()
@@ -171,7 +171,7 @@ fn intrinsic_call_inserts_declaration_and_emits_direct_call() -> Result<(), IrEr
     );
     Ok(())
 }
-/// Mirrors `Intrinsic::getOrInsertDeclaration` plus `IrBuilder::CreateCall`:
+/// Mirrors `Intrinsic::getOrInsertDeclaration` plus `IRBuilder::CreateCall`:
 /// descriptor-backed intrinsic builders reject operands that do not match the
 /// generated IIT signature.
 #[test]
@@ -189,7 +189,7 @@ fn intrinsic_call_rejects_wrong_argument_type() -> Result<(), IrError> {
         [f32_ty.as_type()],
     )?;
     let err = b
-        .intrinsic_call(&descriptor, &[x.into_erased()], "bad")
+        .intrinsic_call(&descriptor, &[x.as_erased()], "bad")
         .expect_err("i32 argument should not match llvm.acos.f32");
     assert!(matches!(
         err,
@@ -303,7 +303,7 @@ fn typed_call_builder_chains_tail() -> Result<(), IrError> {
 /// `Sig` schema rather than spelled by hand, and the result narrows to
 /// `IntValue<i32>` without a runtime `try_into`. Closest upstream
 /// coverage: `unittests/IR/IRBuilderTest.cpp` opaque-pointer indirect
-/// call construction (`IrBuilder::CreateCall(FunctionType*, Value*,
+/// call construction (`IRBuilder::CreateCall(FunctionType*, Value*,
 /// ...)`).
 #[test]
 fn typed_build_indirect_call_derives_function_type_from_schema() -> Result<(), IrError> {
@@ -318,7 +318,7 @@ fn typed_build_indirect_call_derives_function_type_from_schema() -> Result<(), I
     let x = m.i32_type().const_int(7_i32);
     let call = b.indirect_call::<fn(i32) -> i32, _, _, _>(callee_ptr, (x,), "r")?;
     let r = b.view(call).result();
-    let text_ty = format!("{}", r.into_erased().ty());
+    let text_ty = format!("{}", r.as_erased().ty());
     assert_eq!(text_ty, "i32", "typed indirect call result must be i32");
     let text = format!("{m}");
     assert!(text.contains("%r = call i32 %0(i32 7)"), "got:\n{text}");
@@ -510,7 +510,7 @@ fn varargs_facade_rejects_non_variadic_function() -> Result<(), IrError> {
 /// exactly like `call`, then appends the erased varargs tail
 /// unchecked -- matching LLVM's own variadic-argument contract (no
 /// static or verifier type checking on the `...` operands). Mirrors
-/// `IrBuilder::CreateCall` against a variadic `FunctionCallee`, closest
+/// `IRBuilder::CreateCall` against a variadic `FunctionCallee`, closest
 /// upstream fixture `test/Assembler/varargs.ll`-style `(...)` printing.
 #[test]
 fn build_varargs_call_lowers_fixed_prefix_and_appends_erased_tail() -> Result<(), IrError> {
@@ -527,7 +527,7 @@ fn build_varargs_call_lowers_fixed_prefix_and_appends_erased_tail() -> Result<()
     let call = b.varargs_call(
         m.view(callee),
         (count,),
-        [extra_a.into_erased(), extra_b.into_erased()],
+        [extra_a.as_erased(), extra_b.as_erased()],
         "r",
     )?;
     let ret_val = b.view(call).result();

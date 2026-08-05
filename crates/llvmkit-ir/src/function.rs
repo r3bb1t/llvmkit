@@ -228,7 +228,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// LLVM 17+ pointers are opaque (so the signature is the only
     /// useful per-value type-side information).
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -266,7 +266,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     /// Borrow the storage payload.
     pub(super) fn data(self) -> &'ctx FunctionData {
-        match &self.into_erased().data().kind {
+        match &self.as_erased().data().kind {
             ValueKindData::Function(f) => f,
             _ => unreachable!("FunctionValue handle invariant: kind is Function"),
         }
@@ -559,7 +559,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
         let name = self.data().comdat.borrow().clone()?;
-        self.module.module().get_comdat::<B>(&name)
+        self.module.module().comdat::<B>(&name)
     }
 
     pub fn set_comdat(
@@ -1084,7 +1084,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoIterator for FunctionValu
 /// caller's chosen [`ReturnMarker`].
 ///
 /// Mirrors the runtime side of LLVM's `Function::Create` invariant
-/// (the `RetTy` template parameter on the C++ IrBuilder enforces this
+/// (the `RetTy` template parameter on the C++ IRBuilder enforces this
 /// at the type level; we do the same here for static markers, with
 /// a runtime fallback for [`Dyn`] / aggregate return types).
 pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool {
@@ -1121,8 +1121,8 @@ pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> sealed::Sealed for FunctionValue<'ctx, R, B> {}
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        FunctionValue::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        FunctionValue::as_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(FunctionValue[R: ReturnMarker]);
@@ -1135,7 +1135,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionVa
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
     fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
     #[inline]
     fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
@@ -1152,7 +1152,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'
 impl<R: ReturnMarker, B: ModuleBrand> HasDebugLoc for FunctionValue<'_, R, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.into_erased().debug_loc()
+        self.as_erased().debug_loc()
     }
 }
 
@@ -1161,7 +1161,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<FunctionValue<'ctx, R, B
 {
     #[inline]
     fn from(f: FunctionValue<'ctx, R, B>) -> Self {
-        f.into_erased()
+        f.as_erased()
     }
 }
 
@@ -1557,7 +1557,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> core::fmt::Display
     ///
     /// Note this is the *definition*, not the operand form: to print a
     /// function the way it appears as a call operand (`ptr @name`), go
-    /// through [`FunctionValue::into_erased`] instead.
+    /// through [`FunctionValue::as_erased`] instead.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         crate::asm_writer::fmt_function(f, self.as_dyn())
     }

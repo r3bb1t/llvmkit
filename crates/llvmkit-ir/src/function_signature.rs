@@ -140,7 +140,7 @@ pub trait FunctionParam: Sized + 'static {
     /// [`crate::IrBuilder::append_block_typed`] wraps each head-phi through
     /// this method. Reuses `from_value_unchecked` exactly as
     /// [`Self::value_from_argument`] does (that method is precisely this one
-    /// applied to `arg.into_erased()`), and carries the same capability gate:
+    /// applied to `arg.as_erased()`), and carries the same capability gate:
     /// the token is only minted by this crate after the phi types were built
     /// from this schema, so the unchecked wrap cannot mistype and safe
     /// downstream code cannot reach it.
@@ -762,7 +762,7 @@ impl FunctionParam for Ptr {
     where
         B: ModuleBrand + 'ctx,
     {
-        PointerValue::from_value_unchecked(arg.into_erased())
+        PointerValue::from_value_unchecked(arg.as_erased())
     }
 
     #[inline]
@@ -857,7 +857,7 @@ macro_rules! impl_int_signature_marker {
             where
                 B: ModuleBrand + 'ctx,
             {
-                IntValue::<$marker, B>::from_value_unchecked(arg.into_erased())
+                IntValue::<$marker, B>::from_value_unchecked(arg.as_erased())
             }
 
             #[inline]
@@ -959,7 +959,7 @@ impl<const N: u32> FunctionParam for Width<N> {
     where
         B: ModuleBrand + 'ctx,
     {
-        IntValue::<Width<N>, B>::from_value_unchecked(arg.into_erased())
+        IntValue::<Width<N>, B>::from_value_unchecked(arg.as_erased())
     }
 
     #[inline]
@@ -1054,7 +1054,7 @@ macro_rules! impl_float_signature_marker {
             where
                 B: ModuleBrand + 'ctx,
             {
-                FloatValue::<$marker, B>::from_value_unchecked(arg.into_erased())
+                FloatValue::<$marker, B>::from_value_unchecked(arg.as_erased())
             }
 
             #[inline]
@@ -1341,7 +1341,7 @@ macro_rules! impl_into_call_arg_int {
         {
             #[inline]
             fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(self.into_int_value(module)?.into_erased())
+                Ok(self.into_int_value(module)?.as_erased())
             }
         }
     )+};
@@ -1355,7 +1355,7 @@ where
 {
     #[inline]
     fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_int_value(module)?.into_erased())
+        Ok(self.into_int_value(module)?.as_erased())
     }
 }
 
@@ -1368,7 +1368,7 @@ macro_rules! impl_into_call_arg_float {
         {
             #[inline]
             fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(self.into_float_value(module)?.into_erased())
+                Ok(self.into_float_value(module)?.as_erased())
             }
         }
     )+};
@@ -1382,7 +1382,7 @@ where
 {
     #[inline]
     fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_pointer_value(module)?.into_erased())
+        Ok(self.into_pointer_value(module)?.as_erased())
     }
 }
 

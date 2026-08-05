@@ -1,5 +1,5 @@
-//! IR builder. Mirrors `llvm/include/llvm/IR/IrBuilder.h` and
-//! `llvm/lib/IR/IrBuilder.cpp`.
+//! IR builder. Mirrors `llvm/include/llvm/IR/IRBuilder.h` and
+//! `llvm/lib/IR/IRBuilder.cpp`.
 //!
 //! ## Type-state
 //!
@@ -256,7 +256,7 @@ impl BuilderPositionState for Unpositioned {}
 impl BuilderPositionState for Positioned {}
 
 /// Snapshot of an [`IrBuilder`] insertion location. Mirrors
-/// `IRBuilderBase::InsertPoint` in `IrBuilder.h`. The `block` is `None`
+/// `IRBuilderBase::InsertPoint` in `IRBuilder.h`. The `block` is `None`
 /// when the builder was unpositioned at save time; `before` is `None`
 /// when the saved location was end-of-block.
 #[derive(Branded)]
@@ -361,7 +361,7 @@ where
     insert_block: Option<BasicBlock<'ctx, R, Unterminated, B>>,
     /// Optional insertion anchor: when `Some(id)`, new instructions are
     /// inserted *before* the instruction with this id (mirrors upstream
-    /// `IrBuilder::SetInsertPoint(Instruction*)`). When `None`, new
+    /// `IRBuilder::SetInsertPoint(Instruction*)`). When `None`, new
     /// instructions append to the end of `insert_block`.
     insert_before: Option<ValueSlot>,
     folder: F,
@@ -496,7 +496,7 @@ where
     }
 
     /// Position the builder at the end of `bb`. Mirrors
-    /// `IrBuilder::SetInsertPoint(BasicBlock*)`. The block's
+    /// `IRBuilder::SetInsertPoint(BasicBlock*)`. The block's
     /// [`ReturnMarker`] must match the builder's.
     ///
     /// Accepts a block carrying any parameter schema `Params` — including a
@@ -674,7 +674,7 @@ where
 
     /// Re-anchor the builder *before* the given attached instruction.
     /// New instructions land between the prior instruction and `anchor`.
-    /// Mirrors `IrBuilder::SetInsertPoint(Instruction *I)` in `IrBuilder.h`,
+    /// Mirrors `IRBuilder::SetInsertPoint(Instruction *I)` in `IRBuilder.h`,
     /// which sets `BB = I->getParent(); InsertPt = I->getIterator();`.
     pub fn position_before(
         self,
@@ -700,7 +700,7 @@ where
     }
 
     /// Position at the entry block, past any leading `alloca`s. Mirrors
-    /// `IrBuilder::SetInsertPointPastAllocas(Function*)` in `IrBuilder.h`,
+    /// `IRBuilder::SetInsertPointPastAllocas(Function*)` in `IRBuilder.h`,
     /// which sets `BB = &F->getEntryBlock(); InsertPt = BB->getFirstNonPHIOrDbgOrAlloca();`.
     pub fn position_past_allocas(
         self,
@@ -1107,7 +1107,7 @@ where
     }
 
     /// Drop the insertion point. Mirrors
-    /// `IrBuilder::ClearInsertionPoint`.
+    /// `IRBuilder::ClearInsertionPoint`.
     pub fn unposition(self) -> IrBuilder<'m, 'ctx, B, F, Unpositioned, R> {
         IrBuilder {
             module: self.module,
@@ -1144,7 +1144,7 @@ where
     // ---- Fast-math flags (builder-context) ----
 
     /// Get the builder's current default FMF set. Mirrors
-    /// `IRBuilderBase::getFastMathFlags() const` in `IrBuilder.h`.
+    /// `IRBuilderBase::getFastMathFlags() const` in `IRBuilder.h`.
     #[inline]
     pub fn fast_math_flags(&self) -> FastMathFlags {
         self.fmf
@@ -1173,10 +1173,10 @@ where
     // keep; a handle is the ephemeral view you take to read from a value.
     // Chaining costs nothing -- an id satisfies `IntoIntValue` and
     // `IntoCallArg`, so it drops straight into the next builder's operand
-    // slot -- while a *read* (`.ty()`, `.into_erased()`, `{}`) goes through
+    // slot -- while a *read* (`.ty()`, `.as_erased()`, `{}`) goes through
     // `IrBuilder::view` / `Module::view`.
 
-    /// Produce `add lhs, rhs`. Mirrors `IrBuilder::CreateAdd`.
+    /// Produce `add lhs, rhs`. Mirrors `IRBuilder::CreateAdd`.
     ///
     /// Operands share width `W` -- enforced at compile time by the
     /// type system. Either side accepts any [`crate::IntoIntValue<'ctx, W, B>`]:
@@ -1216,7 +1216,7 @@ where
             .id())
     }
 
-    /// Produce `sub lhs, rhs`. Mirrors `IrBuilder::CreateSub`.
+    /// Produce `sub lhs, rhs`. Mirrors `IRBuilder::CreateSub`.
     pub fn int_sub<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -1240,7 +1240,7 @@ where
             .id())
     }
 
-    /// Produce `mul lhs, rhs`. Mirrors `IrBuilder::CreateMul`.
+    /// Produce `mul lhs, rhs`. Mirrors `IRBuilder::CreateMul`.
     pub fn int_mul<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -1264,7 +1264,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `udiv lhs, rhs`. Mirrors `IrBuilder::CreateUDiv`.
+    /// Produce `udiv lhs, rhs`. Mirrors `IRBuilder::CreateUDiv`.
     pub fn int_udiv<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -1287,7 +1287,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `sdiv lhs, rhs`. Mirrors `IrBuilder::CreateSDiv`.
+    /// Produce `sdiv lhs, rhs`. Mirrors `IRBuilder::CreateSDiv`.
     pub fn int_sdiv<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -1310,7 +1310,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `urem lhs, rhs`. Mirrors `IrBuilder::CreateURem`.
+    /// Produce `urem lhs, rhs`. Mirrors `IRBuilder::CreateURem`.
     pub fn int_urem<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -1333,7 +1333,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `srem lhs, rhs`. Mirrors `IrBuilder::CreateSRem`.
+    /// Produce `srem lhs, rhs`. Mirrors `IRBuilder::CreateSRem`.
     pub fn int_srem<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -1356,7 +1356,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `shl lhs, rhs`. Mirrors `IrBuilder::CreateShl`.
+    /// Produce `shl lhs, rhs`. Mirrors `IRBuilder::CreateShl`.
     pub fn int_shl<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -1380,7 +1380,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `lshr lhs, rhs`. Mirrors `IrBuilder::CreateLShr`.
+    /// Produce `lshr lhs, rhs`. Mirrors `IRBuilder::CreateLShr`.
     pub fn int_lshr<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -1403,7 +1403,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `ashr lhs, rhs`. Mirrors `IrBuilder::CreateAShr`.
+    /// Produce `ashr lhs, rhs`. Mirrors `IRBuilder::CreateAShr`.
     pub fn int_ashr<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -1426,7 +1426,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `and lhs, rhs`. Mirrors `IrBuilder::CreateAnd`.
+    /// Produce `and lhs, rhs`. Mirrors `IRBuilder::CreateAnd`.
     pub fn int_and<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -1443,7 +1443,7 @@ where
             .map(|v| v.id())
     }
 
-    /// Produce `or lhs, rhs`. Mirrors `IrBuilder::CreateOr`.
+    /// Produce `or lhs, rhs`. Mirrors `IRBuilder::CreateOr`.
     pub fn int_or<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -1462,7 +1462,7 @@ where
 
     /// Produce `or disjoint lhs, rhs` with explicit [`crate::OrFlags`].
     /// The `disjoint` flag asserts the operands have no bits in common.
-    /// Mirrors `IrBuilder::CreateOr` with `IsDisjoint` set.
+    /// Mirrors `IRBuilder::CreateOr` with `IsDisjoint` set.
     pub fn int_or_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -1487,7 +1487,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `xor lhs, rhs`. Mirrors `IrBuilder::CreateXor`.
+    /// Produce `xor lhs, rhs`. Mirrors `IRBuilder::CreateXor`.
     pub fn int_xor<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -1505,7 +1505,7 @@ where
     }
 
     /// Produce `add lhs, rhs` with explicit [`crate::AddFlags`]. Mirrors
-    /// `IrBuilder::CreateAdd` plus the `nuw`/`nsw` knobs. The flag
+    /// `IRBuilder::CreateAdd` plus the `nuw`/`nsw` knobs. The flag
     /// set type only exposes flags LLVM accepts on `add`, so
     /// invalid combinations are a compile error.
     pub fn int_add_with_flags<W, Lhs, Rhs, Name>(
@@ -1707,7 +1707,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Integer negation: `sub 0, V`. Mirrors `IrBuilder::CreateNeg(V, Name)`,
+    /// Integer negation: `sub 0, V`. Mirrors `IRBuilder::CreateNeg(V, Name)`,
     /// which expands to `CreateSub(Constant::getNullValue(V->getType()), V, Name)`.
     pub fn int_neg<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValueId<W, B>>
     where
@@ -1720,7 +1720,7 @@ where
         self.int_sub(zero, v, name)
     }
 
-    /// Integer NSW negation. Mirrors `IrBuilder::CreateNSWNeg(V, Name)` ->
+    /// Integer NSW negation. Mirrors `IRBuilder::CreateNSWNeg(V, Name)` ->
     /// `CreateNeg(V, Name, /*HasNSW=*/true)` -> `CreateSub` with `nsw`.
     pub fn int_neg_nsw<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValueId<W, B>>
     where
@@ -1733,7 +1733,7 @@ where
         self.int_sub_with_flags(zero, v, super::instr_types::SubFlags::new().nsw(), name)
     }
 
-    /// Bitwise complement: `xor V, -1`. Mirrors `IrBuilder::CreateNot(V, Name)`,
+    /// Bitwise complement: `xor V, -1`. Mirrors `IRBuilder::CreateNot(V, Name)`,
     /// which expands to `CreateXor(V, Constant::getAllOnesValue(V->getType()))`.
     pub fn int_not<W, V, Name>(&self, value: V, name: Name) -> IrResult<IntValueId<W, B>>
     where
@@ -2634,11 +2634,11 @@ where
     // a *storable id* (`FloatValueId<K, B>`), not a borrowing handle. Feeding
     // the result into the next builder costs nothing -- an id satisfies
     // `IntoFloatValue` / `IntoCallArg` -- while a *read* (`.ty()`,
-    // `.into_erased()`, `{}`) goes through `IrBuilder::view` / `Module::view`.
+    // `.as_erased()`, `{}`) goes through `IrBuilder::view` / `Module::view`.
     // The floating-point *comparisons* below return `IntValueId<bool, B>`,
     // because `fcmp` yields `i1`.
 
-    /// Produce `fadd lhs, rhs`. Mirrors `IrBuilder::CreateFAdd`.
+    /// Produce `fadd lhs, rhs`. Mirrors `IRBuilder::CreateFAdd`.
     ///
     /// Returns the storable [`FloatValueId<K, B>`](crate::FloatValueId) naming
     /// the result -- like every builder in this family. Pass it straight into
@@ -2672,7 +2672,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `fsub lhs, rhs`. Mirrors `IrBuilder::CreateFSub`.
+    /// Produce `fsub lhs, rhs`. Mirrors `IRBuilder::CreateFSub`.
     pub fn fp_sub<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -2695,7 +2695,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `fmul lhs, rhs`. Mirrors `IrBuilder::CreateFMul`.
+    /// Produce `fmul lhs, rhs`. Mirrors `IRBuilder::CreateFMul`.
     pub fn fp_mul<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -2718,7 +2718,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `fdiv lhs, rhs`. Mirrors `IrBuilder::CreateFDiv`.
+    /// Produce `fdiv lhs, rhs`. Mirrors `IRBuilder::CreateFDiv`.
     pub fn fp_div<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -2741,7 +2741,7 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `frem lhs, rhs`. Mirrors `IrBuilder::CreateFRem`.
+    /// Produce `frem lhs, rhs`. Mirrors `IRBuilder::CreateFRem`.
     pub fn fp_rem<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -2788,7 +2788,7 @@ where
         }
         let mut payload = BinaryOpData::new(lhs.slot(), rhs.slot());
         // Apply the builder-context FMF (parallel to upstream
-        // `IRBuilderBase::setFPAttrs` in `IrBuilder.h`, which calls
+        // `IRBuilderBase::setFPAttrs` in `IRBuilder.h`, which calls
         // `I->setFastMathFlags(FMF)` on every FP-math instruction).
         payload.fmf = self.fmf;
         Ok(self.append_fp_like(lhs, kind_ctor(payload), name))
@@ -2979,7 +2979,7 @@ where
     }
 
     /// Produce `fcmp <pred> lhs, rhs`. Mirrors
-    /// `IrBuilder::CreateFCmp`. Result is `i1`.
+    /// `IRBuilder::CreateFCmp`. Result is `i1`.
     pub fn fp_cmp<K, Lhs, Rhs, Name>(
         &self,
         pred: FloatPredicate,
@@ -3009,11 +3009,11 @@ where
 
     // ---- Per-predicate fcmp wrappers ----
     //
-    // Each method mirrors the matching `IrBuilder::CreateFCmpO<Pred>` /
-    // `CreateFCmpU<Pred>` in `IrBuilder.h` (lines 2371-2475). All
+    // Each method mirrors the matching `IRBuilder::CreateFCmpO<Pred>` /
+    // `CreateFCmpU<Pred>` in `IRBuilder.h` (lines 2371-2475). All
     // delegate to `fp_cmp` with the appropriate `FloatPredicate`.
 
-    /// Mirrors `IrBuilder::CreateFCmpOEQ`.
+    /// Mirrors `IRBuilder::CreateFCmpOEQ`.
     pub fn fcmp_oeq<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3029,7 +3029,7 @@ where
         self.fp_cmp::<K, Lhs, Rhs, _>(super::cmp_predicate::FloatPredicate::Oeq, lhs, rhs, name)
     }
 
-    /// Mirrors `IrBuilder::CreateFCmpOGT`.
+    /// Mirrors `IRBuilder::CreateFCmpOGT`.
     pub fn fcmp_ogt<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3045,7 +3045,7 @@ where
         self.fp_cmp::<K, Lhs, Rhs, _>(super::cmp_predicate::FloatPredicate::Ogt, lhs, rhs, name)
     }
 
-    /// Mirrors `IrBuilder::CreateFCmpOGE`.
+    /// Mirrors `IRBuilder::CreateFCmpOGE`.
     pub fn fcmp_oge<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3061,7 +3061,7 @@ where
         self.fp_cmp::<K, Lhs, Rhs, _>(super::cmp_predicate::FloatPredicate::Oge, lhs, rhs, name)
     }
 
-    /// Mirrors `IrBuilder::CreateFCmpOLT`.
+    /// Mirrors `IRBuilder::CreateFCmpOLT`.
     pub fn fcmp_olt<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3077,7 +3077,7 @@ where
         self.fp_cmp::<K, Lhs, Rhs, _>(super::cmp_predicate::FloatPredicate::Olt, lhs, rhs, name)
     }
 
-    /// Mirrors `IrBuilder::CreateFCmpOLE`.
+    /// Mirrors `IRBuilder::CreateFCmpOLE`.
     pub fn fcmp_ole<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3093,7 +3093,7 @@ where
         self.fp_cmp::<K, Lhs, Rhs, _>(super::cmp_predicate::FloatPredicate::Ole, lhs, rhs, name)
     }
 
-    /// Mirrors `IrBuilder::CreateFCmpONE`.
+    /// Mirrors `IRBuilder::CreateFCmpONE`.
     pub fn fcmp_one<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3109,7 +3109,7 @@ where
         self.fp_cmp::<K, Lhs, Rhs, _>(super::cmp_predicate::FloatPredicate::One, lhs, rhs, name)
     }
 
-    /// Mirrors `IrBuilder::CreateFCmpORD`.
+    /// Mirrors `IRBuilder::CreateFCmpORD`.
     pub fn fcmp_ord<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3125,7 +3125,7 @@ where
         self.fp_cmp::<K, Lhs, Rhs, _>(super::cmp_predicate::FloatPredicate::Ord, lhs, rhs, name)
     }
 
-    /// Mirrors `IrBuilder::CreateFCmpUNO`.
+    /// Mirrors `IRBuilder::CreateFCmpUNO`.
     pub fn fcmp_uno<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3141,7 +3141,7 @@ where
         self.fp_cmp::<K, Lhs, Rhs, _>(super::cmp_predicate::FloatPredicate::Uno, lhs, rhs, name)
     }
 
-    /// Mirrors `IrBuilder::CreateFCmpUEQ`.
+    /// Mirrors `IRBuilder::CreateFCmpUEQ`.
     pub fn fcmp_ueq<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3157,7 +3157,7 @@ where
         self.fp_cmp::<K, Lhs, Rhs, _>(super::cmp_predicate::FloatPredicate::Ueq, lhs, rhs, name)
     }
 
-    /// Mirrors `IrBuilder::CreateFCmpUGT`.
+    /// Mirrors `IRBuilder::CreateFCmpUGT`.
     pub fn fcmp_ugt<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3173,7 +3173,7 @@ where
         self.fp_cmp::<K, Lhs, Rhs, _>(super::cmp_predicate::FloatPredicate::Ugt, lhs, rhs, name)
     }
 
-    /// Mirrors `IrBuilder::CreateFCmpUGE`.
+    /// Mirrors `IRBuilder::CreateFCmpUGE`.
     pub fn fcmp_uge<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3189,7 +3189,7 @@ where
         self.fp_cmp::<K, Lhs, Rhs, _>(super::cmp_predicate::FloatPredicate::Uge, lhs, rhs, name)
     }
 
-    /// Mirrors `IrBuilder::CreateFCmpULT`.
+    /// Mirrors `IRBuilder::CreateFCmpULT`.
     pub fn fcmp_ult<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3205,7 +3205,7 @@ where
         self.fp_cmp::<K, Lhs, Rhs, _>(super::cmp_predicate::FloatPredicate::Ult, lhs, rhs, name)
     }
 
-    /// Mirrors `IrBuilder::CreateFCmpULE`.
+    /// Mirrors `IRBuilder::CreateFCmpULE`.
     pub fn fcmp_ule<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3221,7 +3221,7 @@ where
         self.fp_cmp::<K, Lhs, Rhs, _>(super::cmp_predicate::FloatPredicate::Ule, lhs, rhs, name)
     }
 
-    /// Mirrors `IrBuilder::CreateFCmpUNE`.
+    /// Mirrors `IRBuilder::CreateFCmpUNE`.
     pub fn fcmp_une<K, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
@@ -3239,8 +3239,8 @@ where
 
     // ---- Unary ops: fneg / freeze / va_arg ----
 
-    /// Produce `fneg <value>`. Mirrors `IrBuilder::CreateFNeg` in
-    /// `IrBuilder.h`. The result handle has the same float kind as the
+    /// Produce `fneg <value>`. Mirrors `IRBuilder::CreateFNeg` in
+    /// `IRBuilder.h`. The result handle has the same float kind as the
     /// operand (Doctrine D4).
     pub fn fp_neg<K, V, Name>(&self, value: V, name: Name) -> IrResult<FloatValueId<K, B>>
     where
@@ -3251,7 +3251,7 @@ where
         self.fp_neg_fmf::<K, V, _>(value, self.fmf, name)
     }
 
-    /// Produce `fneg <fmf> <value>`. Mirrors `IrBuilder::CreateFNegFMF`.
+    /// Produce `fneg <fmf> <value>`. Mirrors `IRBuilder::CreateFNegFMF`.
     /// The flags are written verbatim onto the instruction (see
     /// `FPMathOperator::setFastMathFlags`).
     pub fn fp_neg_fmf<K, V, Name>(
@@ -3275,7 +3275,7 @@ where
             .id())
     }
 
-    /// Produce `freeze <value>`. Mirrors `IrBuilder::CreateFreeze`.
+    /// Produce `freeze <value>`. Mirrors `IRBuilder::CreateFreeze`.
     /// Accepts any [`IntoErasedValue`] operand — every value handle plus the
     /// storable ids; the result type matches the operand type. Named by the
     /// storable [`FreezeInstId<B>`](crate::FreezeInstId).
@@ -3290,7 +3290,7 @@ where
         Ok(FreezeInstId::from_raw(self.module.id(), inst.slot()))
     }
 
-    /// Produce `va_arg <list>, <ty>`. Mirrors `IrBuilder::CreateVAArg`.
+    /// Produce `va_arg <list>, <ty>`. Mirrors `IRBuilder::CreateVAArg`.
     /// The destination type can be any first-class type; the source
     /// must be a `va_list` pointer. Named by the storable
     /// [`VaArgInstId<B>`](crate::VaArgInstId).
@@ -3305,7 +3305,7 @@ where
         P: IntoPointerValue<'ctx, B>,
     {
         let list_ptr = list_ptr.into_pointer_value(ModuleRef::new(self.module))?;
-        let v = IsValue::into_erased(list_ptr);
+        let v = IsValue::as_erased(list_ptr);
         let payload = VaArgInstData::new(v.id);
         let inst = self.append_instruction(result_ty.id, InstructionKindData::VAArg(payload), name);
         Ok(VaArgInstId::from_raw(self.module.id(), inst.slot()))
@@ -3314,7 +3314,7 @@ where
     // ---- Aggregate ops: extractvalue / insertvalue ----
 
     /// Produce `extractvalue <agg-ty> <agg>, idx0, idx1, ...`.
-    /// Mirrors `IrBuilder::CreateExtractValue`.
+    /// Mirrors `IRBuilder::CreateExtractValue`.
     ///
     /// The index list is a fixed-size array whose length is checked at
     /// compile time (Doctrine D3): `ExtractValueInst::init`
@@ -3339,7 +3339,7 @@ where
     }
 
     /// Produce `extractvalue <agg-ty> <agg>, idx0, idx1, ...` from a
-    /// dynamically-sized index slice. Mirrors `IrBuilder::CreateExtractValue`.
+    /// dynamically-sized index slice. Mirrors `IRBuilder::CreateExtractValue`.
     ///
     /// Ports the empty-index-list rejection in
     /// `ExtractValueInst::init` (`lib/IR/Instructions.cpp`); see
@@ -3374,7 +3374,7 @@ where
     }
 
     /// Produce `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, idx0, ...`.
-    /// Mirrors `IrBuilder::CreateInsertValue`.
+    /// Mirrors `IRBuilder::CreateInsertValue`.
     ///
     /// The index list is a fixed-size array whose length is checked at
     /// compile time (Doctrine D3): `InsertValueInst::init`
@@ -3402,7 +3402,7 @@ where
 
     /// Produce `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, idx0, ...` from
     /// a dynamically-sized index slice. Mirrors
-    /// `IrBuilder::CreateInsertValue`.
+    /// `IRBuilder::CreateInsertValue`.
     ///
     /// Ports the empty-index-list rejection in `InsertValueInst::init`
     /// (`lib/IR/Instructions.cpp`); see
@@ -3497,7 +3497,7 @@ where
     // ---- Vector ops: extractelement / insertelement / shufflevector ----
 
     /// Produce `extractelement <vec-ty> <vec>, <idx-ty> <idx>`.
-    /// Mirrors `IrBuilder::CreateExtractElement`.
+    /// Mirrors `IRBuilder::CreateExtractElement`.
     pub fn extract_element<V, W, I, Name>(
         &self,
         vector: V,
@@ -3512,7 +3512,7 @@ where
     {
         let vec = vector.into_erased_value(ModuleRef::new(self.module))?;
         let idx_v = index.into_int_value(ModuleRef::new(self.module))?;
-        let idx = IsValue::into_erased(idx_v);
+        let idx = IsValue::as_erased(idx_v);
         let elem_ty = match self.module.context().type_data(vec.ty).as_vector() {
             Some((e, _, _)) => e,
             None => {
@@ -3532,7 +3532,7 @@ where
     }
 
     /// Produce `insertelement <vec-ty> <vec>, <elt-ty> <elt>, <idx-ty> <idx>`.
-    /// Mirrors `IrBuilder::CreateInsertElement`.
+    /// Mirrors `IRBuilder::CreateInsertElement`.
     pub fn insert_element<V, E, W, I, Name>(
         &self,
         vector: V,
@@ -3550,7 +3550,7 @@ where
         let vec = vector.into_erased_value(ModuleRef::new(self.module))?;
         let val = elt.into_erased_value(ModuleRef::new(self.module))?;
         let idx_v = index.into_int_value(ModuleRef::new(self.module))?;
-        let idx = IsValue::into_erased(idx_v);
+        let idx = IsValue::as_erased(idx_v);
         if let Some(folded) = self.folder.fold_insert_element_dyn(vec, val, idx)? {
             return self.checked_folded_value(folded, vec.ty).map(|v| v.id());
         }
@@ -3561,7 +3561,7 @@ where
     }
 
     /// Produce `shufflevector <ty> <v1>, <ty> <v2>, <mask>`. Mirrors
-    /// `IrBuilder::CreateShuffleVector`. Each mask element is a
+    /// `IRBuilder::CreateShuffleVector`. Each mask element is a
     /// [`ShuffleMaskElem`]: `Lane(n)` selects lane `n` of the two operands
     /// taken as one concatenated vector, and `Poison` is upstream's `-1`.
     pub fn shuffle_vector<L, Rhs2, Name>(
@@ -3650,13 +3650,7 @@ where
         Name: AsRef<str>,
         F2: FnOnce(BinaryOpData) -> InstructionKindData,
     {
-        let r = self.int_binop_dyn(
-            opcode,
-            lhs.into_erased(),
-            rhs.into_erased(),
-            name,
-            kind_ctor,
-        )?;
+        let r = self.int_binop_dyn(opcode, lhs.as_erased(), rhs.as_erased(), name, kind_ctor)?;
         Ok(VectorValue::from_value_unchecked(r))
     }
 
@@ -3878,7 +3872,7 @@ where
         Name: AsRef<str>,
     {
         let erased = self.vector_splat_dyn(L::STATIC_LEN, scalar, name)?;
-        Ok(VectorValue::from_value_unchecked(erased.into_erased()))
+        Ok(VectorValue::from_value_unchecked(erased.as_erased()))
     }
 
     // ---- Typed array ops: extractvalue / insertvalue ----
@@ -3940,7 +3934,7 @@ where
 
     /// Produce `fence <ordering>` (or
     /// `fence syncscope("...") <ordering>`). Mirrors
-    /// `IrBuilder::CreateFence`.
+    /// `IRBuilder::CreateFence`.
     pub fn fence<Name>(
         &self,
         ordering: AtomicOrdering,
@@ -3958,7 +3952,7 @@ where
 
     /// Produce `cmpxchg [weak] [volatile] <ptr-ty> <ptr>, <cmp-ty> <cmp>,
     /// <new-ty> <new> [syncscope("...")] <success> <failure>, align N`.
-    /// Mirrors `IrBuilder::CreateAtomicCmpXchg`.
+    /// Mirrors `IRBuilder::CreateAtomicCmpXchg`.
     ///
     /// Result type is the literal struct `{ <pointee>, i1 }`. Named by the
     /// storable [`AtomicCmpXchgInstId<B>`](crate::AtomicCmpXchgInstId).
@@ -3996,7 +3990,7 @@ where
 
     /// Produce `atomicrmw [volatile] <op> <ptr-ty> <ptr>, <val-ty> <val>
     /// [syncscope("...")] <ordering>, align N`. Mirrors
-    /// `IrBuilder::CreateAtomicRMW`.
+    /// `IRBuilder::CreateAtomicRMW`.
     ///
     /// Result type matches the value-operand type (the "old" value). Named by
     /// the storable [`AtomicRMWInstId<B>`](crate::AtomicRMWInstId).
@@ -4032,7 +4026,7 @@ where
     // rehydrated: `b.sext(t, i64_ty, "e")`.
 
     /// Produce `trunc <value> to <dst_ty>`. Mirrors
-    /// `IrBuilder::CreateTrunc`.
+    /// `IRBuilder::CreateTrunc`.
     ///
     /// The `Src: WiderThan<Dst>` bound enforces at compile time that
     /// the destination is strictly narrower than the source. Cross-
@@ -4056,7 +4050,7 @@ where
         let value = value.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) =
             self.folder
-                .fold_cast_to_int(CastOpcode::Trunc, value.into_erased(), dst_ty)?
+                .fold_cast_to_int(CastOpcode::Trunc, value.as_erased(), dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
@@ -4067,12 +4061,12 @@ where
     }
 
     /// `trunc nuw/nsw` with explicit [`crate::TruncFlags`]. Mirrors
-    /// `IrBuilder::CreateTrunc` plus `Instruction::setHasNoUnsignedWrap` /
+    /// `IRBuilder::CreateTrunc` plus `Instruction::setHasNoUnsignedWrap` /
     /// `setHasNoSignedWrap`.
     ///
     /// The `Src: WiderThan<Dst>` bound is the same one [`Self::trunc`]
-    /// uses, enforced at compile time. Upstream `IrBuilder::CreateTrunc`
-    /// (`IrBuilder.cpp`) returns `V` unchanged -- silently dropping any
+    /// uses, enforced at compile time. Upstream `IRBuilder::CreateTrunc`
+    /// (`IRBuilder.cpp`) returns `V` unchanged -- silently dropping any
     /// requested `nuw`/`nsw` -- when `SrcTy == DestTy`. Because `WiderThan`
     /// requires `Src` strictly wider than `Dst`, that same-type case is
     /// unspellable through this method: the flag-dropping branch cannot
@@ -4094,7 +4088,7 @@ where
         let value = value.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) =
             self.folder
-                .fold_cast_to_int(CastOpcode::Trunc, value.into_erased(), dst_ty)?
+                .fold_cast_to_int(CastOpcode::Trunc, value.as_erased(), dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
@@ -4107,7 +4101,7 @@ where
     }
 
     /// Produce `zext <value> to <dst_ty>`. Mirrors
-    /// `IrBuilder::CreateZExt`.
+    /// `IRBuilder::CreateZExt`.
     ///
     /// The `Dst: WiderThan<Src>` bound enforces at compile time that
     /// the destination is strictly wider than the source. Use
@@ -4127,7 +4121,7 @@ where
         let value = value.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) =
             self.folder
-                .fold_cast_to_int(CastOpcode::ZExt, value.into_erased(), dst_ty)?
+                .fold_cast_to_int(CastOpcode::ZExt, value.as_erased(), dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
@@ -4138,7 +4132,7 @@ where
     }
 
     /// `zext nneg` with explicit [`crate::ZextFlags`]. Mirrors
-    /// `IrBuilder::CreateZExt` plus `Instruction::setNonNeg`.
+    /// `IRBuilder::CreateZExt` plus `Instruction::setNonNeg`.
     ///
     /// The `Dst: WiderThan<Src>` bound is the same one [`Self::zext`]
     /// uses, enforced at compile time. Use [`Self::zext_with_flags_dyn`]
@@ -4159,7 +4153,7 @@ where
         let value = value.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) =
             self.folder
-                .fold_cast_to_int(CastOpcode::ZExt, value.into_erased(), dst_ty)?
+                .fold_cast_to_int(CastOpcode::ZExt, value.as_erased(), dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
@@ -4171,7 +4165,7 @@ where
     }
 
     /// Produce `sext <value> to <dst_ty>`. Mirrors
-    /// `IrBuilder::CreateSExt`.
+    /// `IRBuilder::CreateSExt`.
     ///
     /// The `Dst: WiderThan<Src>` bound enforces at compile time that
     /// the destination is strictly wider than the source. Use
@@ -4191,7 +4185,7 @@ where
         let value = value.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) =
             self.folder
-                .fold_cast_to_int(CastOpcode::SExt, value.into_erased(), dst_ty)?
+                .fold_cast_to_int(CastOpcode::SExt, value.as_erased(), dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
@@ -4227,7 +4221,7 @@ where
         }
         if let Some(folded) =
             self.folder
-                .fold_cast_dyn(CastOpcode::Trunc, value.into_erased(), dst_ty.as_type())?
+                .fold_cast_dyn(CastOpcode::Trunc, value.as_erased(), dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
@@ -4263,7 +4257,7 @@ where
         }
         if let Some(folded) =
             self.folder
-                .fold_cast_dyn(CastOpcode::Trunc, value.into_erased(), dst_ty.as_type())?
+                .fold_cast_dyn(CastOpcode::Trunc, value.as_erased(), dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
@@ -4319,7 +4313,7 @@ where
         }
         if let Some(folded) =
             self.folder
-                .fold_cast_dyn(CastOpcode::ZExt, src.into_erased(), dst.as_type())?
+                .fold_cast_dyn(CastOpcode::ZExt, src.as_erased(), dst.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
@@ -4370,7 +4364,7 @@ where
         }
         if let Some(folded) =
             self.folder
-                .fold_cast_dyn(opcode, value.into_erased(), dst_ty.as_type())?
+                .fold_cast_dyn(opcode, value.as_erased(), dst_ty.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst_ty.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded));
@@ -4397,13 +4391,13 @@ where
         MaybeAlign::new(dl.pref_align_of_id(self.module, ty_id))
     }
 
-    /// The DataLayout alloca address space (`IrBuilder::CreateAlloca` uses
+    /// The DataLayout alloca address space (`IRBuilder::CreateAlloca` uses
     /// `getAllocaAddrSpace`).
     fn alloca_addr_space(&self) -> u32 {
         self.module.data_layout().alloca_addr_space()
     }
 
-    /// Produce `alloca <ty>`. Mirrors `IrBuilder::CreateAlloca`.
+    /// Produce `alloca <ty>`. Mirrors `IRBuilder::CreateAlloca`.
     /// The result is a `ptr` in the DataLayout's alloca address space, with
     /// the type's preferred alignment materialised, named by the storable
     /// [`PointerValueId<B>`](crate::PointerValueId).
@@ -4423,7 +4417,7 @@ where
     }
 
     /// Produce `alloca <ty>, <size-ty> <num_elements>`. Mirrors
-    /// `IrBuilder::CreateAlloca` with an array-size operand.
+    /// `IRBuilder::CreateAlloca` with an array-size operand.
     pub fn array_alloca<T, N, Name>(
         &self,
         ty: T,
@@ -4447,7 +4441,7 @@ where
     }
 
     /// Produce `alloca <ty>, <size-ty> <num_elements>, align <N>`. The
-    /// array-size form of `IrBuilder::CreateAlloca` with an explicit `Align`.
+    /// array-size form of `IRBuilder::CreateAlloca` with an explicit `Align`.
     pub fn array_alloca_with_align<T, N, Name>(
         &self,
         ty: T,
@@ -4472,7 +4466,7 @@ where
     }
 
     /// Produce `alloca <ty>, align <N>`. Mirrors
-    /// `IrBuilder::CreateAlignedAlloca`.
+    /// `IRBuilder::CreateAlignedAlloca`.
     pub fn alloca_with_align<T, Name>(
         &self,
         ty: T,
@@ -4547,7 +4541,7 @@ where
     /// `alloca` for schema `T`, returning a pointee-typed pointer. The
     /// pointee schema `T` is Rust-side bookkeeping only -- the emitted
     /// IR is identical to [`Self::alloca`] with `T::ir_type`.
-    /// Mirrors `IrBuilder::CreateAlloca` + the Rust-side
+    /// Mirrors `IRBuilder::CreateAlloca` + the Rust-side
     /// [`TypedPointerValue`] overlay.
     pub fn typed_alloca<T, Name>(&self, name: Name) -> IrResult<TypedPointerValue<'ctx, T, B>>
     where
@@ -4563,7 +4557,7 @@ where
     /// `ty` decodes to at runtime; named by the erased storable
     /// [`ValueId<B>`](crate::ValueId), which the caller narrows by viewing
     /// it (`try_view` / `view` + `try_into()`). Mirrors
-    /// `IrBuilder::CreateLoad`.
+    /// `IRBuilder::CreateLoad`.
     pub fn load<T, P, Name>(&self, ty: T, ptr: P, name: Name) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
@@ -4585,7 +4579,7 @@ where
     }
 
     /// `load <ty>, ptr <ptr>, align N`. Non-volatile non-atomic load with explicit
-    /// alignment. Mirrors `IrBuilder::CreateLoad` with an explicit `Align` slot.
+    /// alignment. Mirrors `IRBuilder::CreateLoad` with an explicit `Align` slot.
     pub fn load_with_align<T, P, Name>(
         &self,
         ty: T,
@@ -4614,7 +4608,7 @@ where
 
     /// Typed integer load: `load iN, ptr <ptr>`. Marker-only form:
     /// the result type comes from `W` via [`crate::StaticIntWidth`].
-    /// Mirrors `IrBuilder::CreateLoad` with a fixed integer width.
+    /// Mirrors `IRBuilder::CreateLoad` with a fixed integer width.
     pub fn int_load<W, P, Name>(&self, ptr: P, name: Name) -> IrResult<IntValueId<W, B>>
     where
         Name: AsRef<str>,
@@ -4750,7 +4744,7 @@ where
     }
 
     /// Typed `load`: the result type is derived from the pointer's
-    /// schema `T`. Mirrors `IrBuilder::CreateLoad` + the Rust-side
+    /// schema `T`. Mirrors `IRBuilder::CreateLoad` + the Rust-side
     /// [`TypedPointerValue`] overlay.
     pub fn typed_load<T, Name>(
         &self,
@@ -4801,7 +4795,7 @@ where
     }
 
     /// `load volatile <ty>, ptr <ptr>`. Non-atomic volatile load.
-    /// Mirrors `IrBuilder::CreateLoad` with `isVolatile = true`.
+    /// Mirrors `IRBuilder::CreateLoad` with `isVolatile = true`.
     pub fn load_volatile<T, P, Name>(&self, ty: T, ptr: P, name: Name) -> IrResult<ValueId<B>>
     where
         Name: AsRef<str>,
@@ -4851,7 +4845,7 @@ where
     }
 
     /// Produce `store <value>, ptr <ptr>`. Mirrors
-    /// `IrBuilder::CreateStore`.
+    /// `IRBuilder::CreateStore`.
     pub fn store<V, P>(&self, value: V, ptr: P) -> IrResult<StoreInst<'ctx, B>>
     where
         V: IntoErasedValue<'ctx, B>,
@@ -4891,7 +4885,7 @@ where
     }
 
     /// Typed `store`: the value lifts through the schema's
-    /// [`IntoIrField`]. Mirrors `IrBuilder::CreateStore` + the
+    /// [`IntoIrField`]. Mirrors `IRBuilder::CreateStore` + the
     /// Rust-side [`TypedPointerValue`] overlay.
     pub fn typed_store<T, V>(
         &self,
@@ -4922,7 +4916,7 @@ where
     }
 
     /// `store volatile <value>, ptr <ptr>`. Non-atomic volatile store.
-    /// Mirrors `IrBuilder::CreateStore(V, P, /*isVolatile=*/true)`.
+    /// Mirrors `IRBuilder::CreateStore(V, P, /*isVolatile=*/true)`.
     pub fn store_volatile<V, P>(&self, value: V, ptr: P) -> IrResult<StoreInst<'ctx, B>>
     where
         V: IntoErasedValue<'ctx, B>,
@@ -5145,7 +5139,7 @@ where
     /// TYPED flat call — the primary call-construction form. Wrong
     /// arity, wrong argument types, and wrong result use are all
     /// compile errors; the return marker is derived from the callee,
-    /// never caller-asserted. Mirrors `IrBuilder::CreateCall(FunctionCallee,
+    /// never caller-asserted. Mirrors `IRBuilder::CreateCall(FunctionCallee,
     /// ArrayRef<Value*>, ...)` with the callee schema statically pinned.
     ///
     /// No runtime argument-count/type check is needed here (unlike the
@@ -5257,7 +5251,7 @@ where
     /// `varargs` are erased [`IntoErasedValue`] operands, matching LLVM's own
     /// variadic-argument contract (the `...` tail carries no static
     /// type checking — only the fixed prefix does). Mirrors
-    /// `IrBuilder::CreateCall` against a variadic `FunctionCallee`.
+    /// `IRBuilder::CreateCall` against a variadic `FunctionCallee`.
     pub fn varargs_call<Ret, Params, A, I, V, Callee, Name>(
         &self,
         callee: Callee,
@@ -5298,7 +5292,7 @@ where
 
     /// Flat call form: pass a [`FunctionValue`] callee, an iterable of
     /// pre-widened arguments (each one already a [`Value<'ctx, B>`]), and
-    /// a name. Mirrors the simple shape of `IrBuilder::CreateCall`.
+    /// a name. Mirrors the simple shape of `IRBuilder::CreateCall`.
     /// Use [`Self::call_builder`] for mixed-arg-type construction.
     ///
     /// Returns the storable [`CallInstId<R2, B>`](crate::CallInstId); view it
@@ -5445,7 +5439,7 @@ where
     /// TYPED indirect call through a function-pointer value: the
     /// callee's function type is constructed from the `Sig` schema, so
     /// it is never spelled by hand and can never drift from
-    /// `Sig::Params` / `Sig::Ret`. Mirrors `IrBuilder::CreateCall(FunctionType*,
+    /// `Sig::Params` / `Sig::Ret`. Mirrors `IRBuilder::CreateCall(FunctionType*,
     /// Value* callee, args)` — the opaque-pointer form where the pointee
     /// type is supplied separately — with the pointee type derived
     /// instead of caller-asserted.
@@ -5458,7 +5452,7 @@ where
     /// to that identical schema — the underlying function pointer's
     /// *actual* pointee type is an indirect-call trust boundary LLVM
     /// itself does not statically check either (mirrors
-    /// `IrBuilder::CreateCall`'s own opaque-pointer contract).
+    /// `IRBuilder::CreateCall`'s own opaque-pointer contract).
     pub fn indirect_call<Sig, A, Callee, Name>(
         &self,
         callee: Callee,
@@ -5476,7 +5470,7 @@ where
         let ret = <Sig::Ret as FunctionReturn>::ir_type(module)?;
         let params = <Sig::Params as FunctionParamList>::ir_types(module)?;
         let fn_ty = module.fn_type(ret, params, false);
-        let callee_v = IsValue::into_erased(callee);
+        let callee_v = IsValue::as_erased(callee);
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let payload = CallInstData::new(
             callee_v.id,
@@ -5495,7 +5489,7 @@ where
 
     /// Produce an indirect `call` through a function-pointer **value** (not a
     /// named `@function`), with the callee's function type given explicitly.
-    /// Mirrors `IrBuilder::CreateCall(FunctionType*, Value* callee, args)` — the
+    /// Mirrors `IRBuilder::CreateCall(FunctionType*, Value* callee, args)` — the
     /// opaque-pointer form where the pointee type is supplied separately. Used
     /// to lower a computed code pointer (`call rax`, a vtable slot) to a real
     /// indirect call rather than routing through a named dispatcher.
@@ -5517,7 +5511,7 @@ where
         Callee: IntoPointerValue<'ctx, B>,
     {
         let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
-        let callee_v = IsValue::into_erased(callee);
+        let callee_v = IsValue::as_erased(callee);
         let ret_data = self.module.context().type_data(fn_ty.return_type().id());
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
@@ -5548,7 +5542,7 @@ where
     }
 
     /// Produce a `call` whose callee is an inline-assembly value. Mirrors
-    /// `IrBuilder::CreateCall(InlineAsm*, args)` — the asm carries its own
+    /// `IRBuilder::CreateCall(InlineAsm*, args)` — the asm carries its own
     /// function type, so the call's return / argument shape comes from
     /// [`InlineAsm::function_type`](InlineAsm). The
     /// result prints as the `asm` form, e.g.
@@ -5571,7 +5565,7 @@ where
         I: IntoIterator<Item = V>,
         V: IntoErasedValue<'ctx, B>,
     {
-        let asm_v = asm.into_erased();
+        let asm_v = asm.as_erased();
         let fn_ty = asm.function_type();
         // Reject a return-marker / signature mismatch up front, mirroring
         // the `signature_matches_marker` gate on the typed lookup path
@@ -5609,7 +5603,7 @@ where
     // ---- GEP ----
 
     /// Produce `getelementptr <source-ty>, ptr <ptr>, <indices>`.
-    /// Mirrors `IrBuilder::CreateGEP`.
+    /// Mirrors `IRBuilder::CreateGEP`.
     pub fn gep<T, P, I, V, Name>(
         &self,
         source_ty: T,
@@ -5628,7 +5622,7 @@ where
     }
 
     /// Produce `getelementptr inbounds <source-ty>, ptr <ptr>,
-    /// <indices>`. Mirrors `IrBuilder::CreateInBoundsGEP`.
+    /// <indices>`. Mirrors `IRBuilder::CreateInBoundsGEP`.
     pub fn inbounds_gep<T, P, I, V, Name>(
         &self,
         source_ty: T,
@@ -5647,8 +5641,8 @@ where
     }
 
     /// Produce `getelementptr inbounds nuw <struct-ty>, ptr <ptr>,
-    /// i32 0, i32 <field-idx>`. Mirrors `IrBuilder::CreateStructGEP`
-    /// (`IrBuilder.h`), which passes `GEPNoWrapFlags::inBounds() |
+    /// i32 0, i32 <field-idx>`. Mirrors `IRBuilder::CreateStructGEP`
+    /// (`IRBuilder.h`), which passes `GEPNoWrapFlags::inBounds() |
     /// GEPNoWrapFlags::noUnsignedWrap()` -- a struct-field offset can
     /// never wrap the pointer's index-width arithmetic, so upstream
     /// asserts `nuw` in addition to `inbounds`.
@@ -5682,7 +5676,7 @@ where
     /// `getelementptr inbounds %S, ptr %p, i32 0, i32 I` with the field
     /// type projected at compile time from the [`StructSchema`]. An
     /// out-of-range `I` fails to compile (no [`StructFieldAt<I>`] impl).
-    /// Mirrors `IrBuilder::CreateStructGEP` + the Rust-side
+    /// Mirrors `IRBuilder::CreateStructGEP` + the Rust-side
     /// [`TypedPointerValue`] overlay.
     pub fn field_gep<S, const I: u32, Name>(
         &self,
@@ -5701,7 +5695,7 @@ where
 
     /// `getelementptr T, ptr %p, <idx>` -- element-stride arithmetic;
     /// the pointee schema is preserved. Mirrors the 1-index
-    /// `IrBuilder::CreateGEP` + the Rust-side [`TypedPointerValue`]
+    /// `IRBuilder::CreateGEP` + the Rust-side [`TypedPointerValue`]
     /// overlay.
     pub fn element_gep<T, W, Idx, Name>(
         &self,
@@ -5727,7 +5721,7 @@ where
     }
 
     /// `getelementptr inbounds T, ptr %p, <idx>`. Mirrors the 1-index
-    /// `IrBuilder::CreateInBoundsGEP` + the Rust-side
+    /// `IRBuilder::CreateInBoundsGEP` + the Rust-side
     /// [`TypedPointerValue`] overlay.
     pub fn inbounds_element_gep<T, W, Idx, Name>(
         &self,
@@ -5754,7 +5748,7 @@ where
 
     /// `getelementptr` with explicit [`crate::GepNoWrapFlags`]. Use this
     /// when the parser has decoded `inbounds`, `nuw`, or `nusw` flags directly.
-    /// Mirrors `IrBuilder::CreateGEP` with the full flags bitfield.
+    /// Mirrors `IRBuilder::CreateGEP` with the full flags bitfield.
     pub fn gep_with_flags<T, P, I, V, Name>(
         &self,
         source_ty: T,
@@ -5791,12 +5785,12 @@ where
         let source_ty = source_ty.as_type();
         let source_ty_id = source_ty.id();
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
-        let ptr_value = IsValue::into_erased(p);
+        let ptr_value = IsValue::as_erased(p);
         let mut idx_ids = Vec::new();
         let mut idx_values = Vec::new();
         for index in indices {
             let iv = index.into_int_value(ModuleRef::new(self.module))?;
-            idx_values.push(iv.into_erased());
+            idx_values.push(iv.as_erased());
             idx_ids.push(iv.slot());
         }
         // Reject index sequences that do not index into the source element
@@ -5832,7 +5826,7 @@ where
     // ---- Floating-point casts ----
 
     /// Produce `fpext <value> to <dst>`. Compile-time check:
-    /// `Dst: FloatWiderThan<Src>`. Mirrors `IrBuilder::CreateFPExt`.
+    /// `Dst: FloatWiderThan<Src>`. Mirrors `IRBuilder::CreateFPExt`.
     pub fn fp_ext<Src, Dst, V, Name>(
         &self,
         value: V,
@@ -5851,7 +5845,7 @@ where
     }
 
     /// Produce `fptrunc <value> to <dst>`. Compile-time check:
-    /// `Src: FloatWiderThan<Dst>`. Mirrors `IrBuilder::CreateFPTrunc`.
+    /// `Src: FloatWiderThan<Dst>`. Mirrors `IRBuilder::CreateFPTrunc`.
     pub fn fp_trunc<Src, Dst, V, Name>(
         &self,
         value: V,
@@ -5887,7 +5881,7 @@ where
         V: IntoFloatValue<'ctx, FloatDyn, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
-        let v = IsValue::into_erased(value);
+        let v = IsValue::as_erased(value);
         if let Some(folded) = self
             .folder
             .fold_cast_dyn(CastOpcode::FpTrunc, v, dst_ty.as_type())?
@@ -5919,7 +5913,7 @@ where
         V: IntoFloatValue<'ctx, FloatDyn, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
-        let v = IsValue::into_erased(value);
+        let v = IsValue::as_erased(value);
         if let Some(folded) = self
             .folder
             .fold_cast_dyn(CastOpcode::FpExt, v, dst_ty.as_type())?
@@ -5946,7 +5940,7 @@ where
         Dst: FloatKind,
         N: AsRef<str>,
     {
-        let v = IsValue::into_erased(value);
+        let v = IsValue::as_erased(value);
         if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
             return self.accept_folded_cast_fp(folded, dst_ty);
         }
@@ -5955,7 +5949,7 @@ where
     }
 
     /// Produce `fptoui <value> to <dst>`. Mirrors
-    /// `IrBuilder::CreateFPToUI`.
+    /// `IRBuilder::CreateFPToUI`.
     pub fn fp_to_ui<K, W, V, Name>(
         &self,
         value: V,
@@ -5974,7 +5968,7 @@ where
     }
 
     /// Produce `fptosi <value> to <dst>`. Mirrors
-    /// `IrBuilder::CreateFPToSI`.
+    /// `IRBuilder::CreateFPToSI`.
     pub fn fp_to_si<K, W, V, Name>(
         &self,
         value: V,
@@ -6004,7 +5998,7 @@ where
         W: IntWidth,
         N: AsRef<str>,
     {
-        let v = IsValue::into_erased(value);
+        let v = IsValue::as_erased(value);
         if let Some(folded) = self.folder.fold_cast_to_int(opcode, v, dst_ty)? {
             return self.accept_folded_cast_int(folded, dst_ty);
         }
@@ -6013,7 +6007,7 @@ where
     }
 
     /// Produce `uitofp <value> to <dst>`. Mirrors
-    /// `IrBuilder::CreateUIToFP`.
+    /// `IRBuilder::CreateUIToFP`.
     pub fn ui_to_fp<W, K, V, Name>(
         &self,
         value: V,
@@ -6032,7 +6026,7 @@ where
     }
 
     /// `uitofp nneg` with explicit [`crate::UiToFpFlags`]. Mirrors
-    /// `IrBuilder::CreateUIToFP` plus `Instruction::setNonNeg`. The `nneg`
+    /// `IRBuilder::CreateUIToFP` plus `Instruction::setNonNeg`. The `nneg`
     /// flag asserts the source value is non-negative.
     pub fn ui_to_fp_with_flags<W, K, V, Name>(
         &self,
@@ -6048,7 +6042,7 @@ where
         V: IntoIntValue<'ctx, W, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        let v = value.into_erased();
+        let v = value.as_erased();
         if let Some(folded) = self.folder.fold_cast_to_fp(CastOpcode::UIToFp, v, dst_ty)? {
             return self.accept_folded_cast_fp(folded, dst_ty).map(|v| v.id());
         }
@@ -6060,7 +6054,7 @@ where
     }
 
     /// Produce `sitofp <value> to <dst>`. Mirrors
-    /// `IrBuilder::CreateSIToFP`.
+    /// `IRBuilder::CreateSIToFP`.
     pub fn si_to_fp<W, K, V, Name>(
         &self,
         value: V,
@@ -6095,7 +6089,7 @@ where
         let src = src.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) =
             self.folder
-                .fold_cast_dyn(CastOpcode::UIToFp, src.into_erased(), dst.as_type())?
+                .fold_cast_dyn(CastOpcode::UIToFp, src.as_erased(), dst.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
@@ -6119,7 +6113,7 @@ where
         K: FloatKind,
         N: AsRef<str>,
     {
-        let v = value.into_erased();
+        let v = value.as_erased();
         if let Some(folded) = self.folder.fold_cast_to_fp(opcode, v, dst_ty)? {
             return self.accept_folded_cast_fp(folded, dst_ty);
         }
@@ -6130,7 +6124,7 @@ where
     // ---- Pointer casts ----
 
     /// Produce `ptrtoaddr <value> to <address type>`. Mirrors
-    /// `IrBuilder::CreatePtrToAddr`, using the module
+    /// `IRBuilder::CreatePtrToAddr`, using the module
     /// [`DataLayout`](crate::DataLayout) address type for the pointer
     /// operand's address space.
     pub fn ptr_to_addr<P, Name>(&self, value: P, name: Name) -> IrResult<IntValueId<IntDyn, B>>
@@ -6139,7 +6133,7 @@ where
         P: IntoPointerValue<'ctx, B>,
     {
         let ptr = value.into_pointer_value(ModuleRef::new(self.module))?;
-        let value = ptr.into_erased();
+        let value = ptr.as_erased();
         let dst_ty = self.ptr_to_addr_result_type(value.ty())?;
         let result = self.ptr_to_addr_dyn(value, dst_ty, name)?;
         Ok(IntValue::<IntDyn, B>::from_value_unchecked(self.view(result)).id())
@@ -6180,7 +6174,7 @@ where
     }
 
     /// Produce `ptrtoint <value> to <dst>`. Mirrors
-    /// `IrBuilder::CreatePtrToInt`.
+    /// `IRBuilder::CreatePtrToInt`.
     pub fn ptr_to_int<W, P, Name>(
         &self,
         value: P,
@@ -6193,7 +6187,7 @@ where
         P: IntoPointerValue<'ctx, B>,
     {
         let value = value.into_pointer_value(ModuleRef::new(self.module))?;
-        let v = IsValue::into_erased(value);
+        let v = IsValue::as_erased(value);
         if let Some(folded) = self
             .folder
             .fold_cast_to_int(CastOpcode::PtrToInt, v, dst_ty)?
@@ -6207,7 +6201,7 @@ where
     }
 
     /// Produce `inttoptr <value> to <dst>`. Mirrors
-    /// `IrBuilder::CreateIntToPtr`.
+    /// `IRBuilder::CreateIntToPtr`.
     pub fn int_to_ptr<W, V, Name>(
         &self,
         value: V,
@@ -6220,7 +6214,7 @@ where
         V: IntoIntValue<'ctx, W, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        let v = value.into_erased();
+        let v = value.as_erased();
         if let Some(folded) =
             self.folder
                 .fold_cast_dyn(CastOpcode::IntToPtr, v, dst_ty.as_type())?
@@ -6235,7 +6229,7 @@ where
     }
 
     /// Generic bitcast on values of equal bit width. Mirrors
-    /// `IrBuilder::CreateBitCast` (`IrBuilder.h`), which is itself
+    /// `IRBuilder::CreateBitCast` (`IRBuilder.h`), which is itself
     /// `CreateCast(Instruction::BitCast, V, DestTy)`. The width
     /// equality is enforced statically through
     /// [`super::int_width::StaticIntWidth::STATIC_BITS`] /
@@ -6262,7 +6256,7 @@ where
                 "bitcast int->int requires Src::STATIC_BITS == Dst::STATIC_BITS",
             );
         }
-        let v_value = value.into_erased();
+        let v_value = value.as_erased();
         if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
             v_value,
@@ -6300,7 +6294,7 @@ where
                 "bitcast int->fp requires W::STATIC_BITS == K::STATIC_BITS",
             );
         }
-        let v_value = value.into_erased();
+        let v_value = value.as_erased();
         if let Some(folded) =
             self.folder
                 .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?
@@ -6337,7 +6331,7 @@ where
                 "bitcast fp->int requires K::STATIC_BITS == W::STATIC_BITS",
             );
         }
-        let v_value = value.into_erased();
+        let v_value = value.as_erased();
         if let Some(folded) = self.folder.fold_cast_to_int(
             super::instr_types::CastOpcode::BitCast,
             v_value,
@@ -6375,7 +6369,7 @@ where
                 "bitcast fp->fp requires Src::STATIC_BITS == Dst::STATIC_BITS",
             );
         }
-        let v_value = value.into_erased();
+        let v_value = value.as_erased();
         if let Some(folded) =
             self.folder
                 .fold_cast_to_fp(super::instr_types::CastOpcode::BitCast, v_value, dst_ty)?
@@ -6419,7 +6413,7 @@ where
     }
 
     /// Produce `addrspacecast <value> to <dst>`. Mirrors
-    /// `IrBuilder::CreateAddrSpaceCast`.
+    /// `IRBuilder::CreateAddrSpaceCast`.
     pub fn addrspace_cast<P, Name>(
         &self,
         value: P,
@@ -6431,7 +6425,7 @@ where
         P: IntoPointerValue<'ctx, B>,
     {
         let value = value.into_pointer_value(ModuleRef::new(self.module))?;
-        let v = IsValue::into_erased(value);
+        let v = IsValue::as_erased(value);
         if let Some(folded) =
             self.folder
                 .fold_cast_dyn(CastOpcode::AddrSpaceCast, v, dst_ty.as_type())?
@@ -6448,8 +6442,8 @@ where
     /// Pointer cast: pick `bitcast` for same-addrspace pointer-to-pointer
     /// (a no-op in opaque-pointer LLVM, but a structurally-distinct `Cast`
     /// instruction) and `addrspacecast` when address spaces differ.
-    /// Mirrors `IrBuilder::CreatePointerBitCastOrAddrSpaceCast`
-    /// (`IrBuilder.h`), which dispatches the same way.
+    /// Mirrors `IRBuilder::CreatePointerBitCastOrAddrSpaceCast`
+    /// (`IRBuilder.h`), which dispatches the same way.
     pub fn pointer_cast<P, Name>(
         &self,
         value: P,
@@ -6461,7 +6455,7 @@ where
         P: IntoPointerValue<'ctx, B>,
     {
         let value = value.into_pointer_value(ModuleRef::new(self.module))?;
-        let v = IsValue::into_erased(value);
+        let v = IsValue::as_erased(value);
         let opcode = if value.ty().address_space() == dst_ty.address_space() {
             super::instr_types::CastOpcode::BitCast
         } else {
@@ -6486,7 +6480,7 @@ where
     }
 
     /// `icmp eq <ptr>, null` -- pointer-null test. Mirrors
-    /// `IrBuilder::CreateIsNull(Arg)` ->
+    /// `IRBuilder::CreateIsNull(Arg)` ->
     /// `CreateICmpEQ(Arg, Constant::getNullValue(Arg->getType()))`.
     pub fn is_null<P, Name>(&self, ptr: P, name: Name) -> IrResult<IntValueId<bool, B>>
     where
@@ -6503,7 +6497,7 @@ where
     }
 
     /// `icmp ne <ptr>, null` -- pointer-non-null test. Mirrors
-    /// `IrBuilder::CreateIsNotNull(Arg)` ->
+    /// `IRBuilder::CreateIsNotNull(Arg)` ->
     /// `CreateICmpNE(Arg, Constant::getNullValue(Arg->getType()))`.
     pub fn is_not_null<P, Name>(&self, ptr: P, name: Name) -> IrResult<IntValueId<bool, B>>
     where
@@ -6519,7 +6513,7 @@ where
         )
     }
 
-    /// Pointer-pointer comparison. Mirrors `IrBuilder::CreateICmp` with
+    /// Pointer-pointer comparison. Mirrors `IRBuilder::CreateICmp` with
     /// pointer operands; LLVM's `icmp` works on integers OR pointers, but
     /// our typed [`Self::int_cmp`] is integer-only. This helper
     /// covers the pointer arm directly (used by `is_null` /
@@ -6540,8 +6534,8 @@ where
         let rhs = rhs.into_pointer_value(ModuleRef::new(self.module))?;
         let folded = self.folder.fold_cmp_dyn(
             pred.into(),
-            IsValue::into_erased(lhs),
-            IsValue::into_erased(rhs),
+            IsValue::as_erased(lhs),
+            IsValue::as_erased(rhs),
         )?;
         if let Some(folded) = folder::narrow_folded_bool(folded)? {
             return Ok(folded.id());
@@ -6557,7 +6551,7 @@ where
 
     /// Broadcast `scalar` across a fixed-width vector of `count` lanes.
     /// Mirrors `IRBuilderBase::CreateVectorSplat(unsigned NumElts, Value*,
-    /// const Twine&)` (`lib/IR/IrBuilder.cpp` line 1141), which expands to
+    /// const Twine&)` (`lib/IR/IRBuilder.cpp` line 1141), which expands to
     /// `insertelement <count x T> poison, <T> %v, i64 0` followed by
     /// `shufflevector ..., <count x T> poison, <count x i32> zeroinitializer`.
     /// The result is named `<name>.splat`; the intermediate insertelement
@@ -6580,7 +6574,7 @@ where
         let scalar_value = scalar.into_erased_value(ModuleRef::new(self.module))?;
         let elem_ty = scalar_value.ty();
         let vec_ty = ModuleView::<B>::new(self.module).vector_type(elem_ty, count, false);
-        let poison = vec_ty.as_type().get_poison();
+        let poison = vec_ty.as_type().poison();
         let i64_ty = ModuleView::<B>::new(self.module).i64_type();
         let zero_idx = i64_ty.const_int(0_u32);
         let name_ref = name.as_ref();
@@ -6616,7 +6610,7 @@ where
     // ---- ptr_add / inbounds_ptr_add ----
 
     /// `getelementptr i8, ptr <ptr>, <offset>` -- byte-offset pointer
-    /// arithmetic. Mirrors `IrBuilder::CreatePtrAdd` in `IrBuilder.h`
+    /// arithmetic. Mirrors `IRBuilder::CreatePtrAdd` in `IRBuilder.h`
     /// (line 2039), which expands to `CreateGEP(getInt8Ty(), Ptr, Offset, ...)`.
     pub fn ptr_add<P, O, W, Name>(
         &self,
@@ -6637,7 +6631,7 @@ where
     }
 
     /// `getelementptr inbounds i8, ptr <ptr>, <offset>`. Mirrors
-    /// `IrBuilder::CreateInBoundsPtrAdd` (`IrBuilder.h` line 2044), which
+    /// `IRBuilder::CreateInBoundsPtrAdd` (`IRBuilder.h` line 2044), which
     /// expands to `CreateGEP(getInt8Ty(), Ptr, Offset, Name, GEPNoWrapFlags::inBounds())`.
     pub fn inbounds_ptr_add<P, O, W, Name>(
         &self,
@@ -6664,7 +6658,7 @@ where
     // `is_not_null` -- returns the storable `IntValueId<bool, B>`.
 
     /// Produce `icmp <pred> <ty> <lhs>, <rhs>`. Mirrors
-    /// `IrBuilder::CreateICmp`.
+    /// `IRBuilder::CreateICmp`.
     ///
     /// Both operands share width `W` at the type level. The result
     /// type is always `i1`, named by an
@@ -6695,7 +6689,7 @@ where
     }
 
     /// `icmp samesign` with explicit [`crate::IcmpFlags`]. Mirrors
-    /// `IrBuilder::CreateICmp` plus `IcmpInst::setSameSign`. The `samesign`
+    /// `IRBuilder::CreateICmp` plus `IcmpInst::setSameSign`. The `samesign`
     /// flag asserts both operands carry the same sign (LLVM 20+).
     ///
     /// Upstream sets `samesign` post-hoc via `IcmpInst::setSameSign`
@@ -6760,7 +6754,7 @@ where
     }
 
     // Per-predicate convenience wrappers. Mirror the LLVM C++
-    // `IrBuilder::CreateICmp{EQ,NE,SLT,...}` family (`IrBuilder.h`):
+    // `IRBuilder::CreateICmp{EQ,NE,SLT,...}` family (`IRBuilder.h`):
     // each one bakes the predicate into the method name so the call
     // site spells signedness intent explicitly. The predicate is
     // signedness-agnostic at the LLVM IR value level (the `i32` bit
@@ -6769,7 +6763,7 @@ where
     // free-floating `IntPredicate::Slt` token.
 
     /// `icmp eq` -- equal. Signedness-irrelevant. Mirrors
-    /// `IrBuilder::CreateICmpEQ`.
+    /// `IRBuilder::CreateICmpEQ`.
     #[inline]
     pub fn icmp_eq<W, Lhs, Rhs, Name>(
         &self,
@@ -6787,7 +6781,7 @@ where
     }
 
     /// `icmp ne` -- not equal. Signedness-irrelevant. Mirrors
-    /// `IrBuilder::CreateICmpNE`.
+    /// `IRBuilder::CreateICmpNE`.
     #[inline]
     pub fn icmp_ne<W, Lhs, Rhs, Name>(
         &self,
@@ -6805,7 +6799,7 @@ where
     }
 
     /// `icmp ult` -- unsigned less than. Mirrors
-    /// `IrBuilder::CreateICmpULT`.
+    /// `IRBuilder::CreateICmpULT`.
     #[inline]
     pub fn icmp_ult<W, Lhs, Rhs, Name>(
         &self,
@@ -6823,7 +6817,7 @@ where
     }
 
     /// `icmp ule` -- unsigned less than or equal. Mirrors
-    /// `IrBuilder::CreateICmpULE`.
+    /// `IRBuilder::CreateICmpULE`.
     #[inline]
     pub fn icmp_ule<W, Lhs, Rhs, Name>(
         &self,
@@ -6841,7 +6835,7 @@ where
     }
 
     /// `icmp ugt` -- unsigned greater than. Mirrors
-    /// `IrBuilder::CreateICmpUGT`.
+    /// `IRBuilder::CreateICmpUGT`.
     #[inline]
     pub fn icmp_ugt<W, Lhs, Rhs, Name>(
         &self,
@@ -6859,7 +6853,7 @@ where
     }
 
     /// `icmp uge` -- unsigned greater than or equal. Mirrors
-    /// `IrBuilder::CreateICmpUGE`.
+    /// `IRBuilder::CreateICmpUGE`.
     #[inline]
     pub fn icmp_uge<W, Lhs, Rhs, Name>(
         &self,
@@ -6877,7 +6871,7 @@ where
     }
 
     /// `icmp slt` -- signed less than. Mirrors
-    /// `IrBuilder::CreateICmpSLT`.
+    /// `IRBuilder::CreateICmpSLT`.
     #[inline]
     pub fn icmp_slt<W, Lhs, Rhs, Name>(
         &self,
@@ -6895,7 +6889,7 @@ where
     }
 
     /// `icmp sle` -- signed less than or equal. Mirrors
-    /// `IrBuilder::CreateICmpSLE`.
+    /// `IRBuilder::CreateICmpSLE`.
     #[inline]
     pub fn icmp_sle<W, Lhs, Rhs, Name>(
         &self,
@@ -6913,7 +6907,7 @@ where
     }
 
     /// `icmp sgt` -- signed greater than. Mirrors
-    /// `IrBuilder::CreateICmpSGT`.
+    /// `IRBuilder::CreateICmpSGT`.
     #[inline]
     pub fn icmp_sgt<W, Lhs, Rhs, Name>(
         &self,
@@ -6931,7 +6925,7 @@ where
     }
 
     /// `icmp sge` -- signed greater than or equal. Mirrors
-    /// `IrBuilder::CreateICmpSGE`.
+    /// `IRBuilder::CreateICmpSGE`.
     #[inline]
     pub fn icmp_sge<W, Lhs, Rhs, Name>(
         &self,
@@ -6954,7 +6948,7 @@ where
     /// form: the result type comes from the `W` type parameter via
     /// [`crate::StaticIntWidth`], so callers spell it as
     /// `b.int_phi::<i32, _>("acc")?` without first binding
-    /// `let i32_ty = m.i32_type();`. Mirrors `IrBuilder::CreatePHI`
+    /// `let i32_ty = m.i32_type();`. Mirrors `IRBuilder::CreatePHI`
     /// followed by zero `PHINode::addIncoming` calls. Returns the storable
     /// [`PhiInstId<W, B>`](crate::PhiInstId); view it
     /// ([`view`](Self::view)) to reach the typed phi surface, and add edges
@@ -7002,7 +6996,7 @@ where
     }
 
     /// Float-typed phi: `phi <fpty>`. Marker-only form keyed on
-    /// `K: StaticFloatKind`. Mirrors `IrBuilder::CreatePHI(Type*, ...)`
+    /// `K: StaticFloatKind`. Mirrors `IRBuilder::CreatePHI(Type*, ...)`
     /// applied to a floating-point type. Returns the storable
     /// [`FpPhiInstId<K, B>`](crate::FpPhiInstId). Inserted at the block's phi
     /// head regardless of cursor position, so phi placement is correct by
@@ -7048,7 +7042,7 @@ where
     }
 
     /// Pointer-typed phi in the default address space (addrspace 0).
-    /// Mirrors `IrBuilder::CreatePHI(PointerType::getUnqual(...), ...)`.
+    /// Mirrors `IRBuilder::CreatePHI(PointerType::getUnqual(...), ...)`.
     /// Returns the storable [`PointerPhiInstId<B>`](crate::PointerPhiInstId).
     /// Inserted at the block's phi head regardless of cursor position, so
     /// phi placement is correct by construction.
@@ -7070,7 +7064,7 @@ where
     }
 
     /// Pointer-typed phi in a caller-specified address space. Mirrors
-    /// `IrBuilder::CreatePHI(PointerType::get(Ctx, AS), ...)`. Returns the
+    /// `IRBuilder::CreatePHI(PointerType::get(Ctx, AS), ...)`. Returns the
     /// storable [`PointerPhiInstId<B>`](crate::PointerPhiInstId). Inserted at
     /// the block's phi head regardless of cursor position, so phi
     /// placement is correct by construction.
@@ -7155,7 +7149,7 @@ where
         Ok(target)
     }
 
-    /// Produce `br label %target`. Mirrors `IrBuilder::CreateBr`.
+    /// Produce `br label %target`. Mirrors `IRBuilder::CreateBr`.
     ///
     /// Consumes `self`: the builder's insertion block is terminated and
     /// returned alongside the new terminator instruction. The branch
@@ -7209,7 +7203,7 @@ where
     }
 
     /// Produce `br i1 <cond>, label %then, label %else`. Mirrors
-    /// `IrBuilder::CreateCondBr`.
+    /// `IRBuilder::CreateCondBr`.
     ///
     /// Consumes `self`; both target blocks may be in any termination state.
     ///
@@ -7518,7 +7512,7 @@ where
     }
 
     /// Produce a TYPED `switch <cond>, label <default> [...]` whose
-    /// condition is a width-`W` integer. Mirrors `IrBuilder::CreateSwitch`
+    /// condition is a width-`W` integer. Mirrors `IRBuilder::CreateSwitch`
     /// with the case-value width statically pinned.
     ///
     /// The width `W` is inferred from a typed integer `cond` (e.g. an
@@ -7664,7 +7658,7 @@ where
         let lowered = cases
             .into_iter()
             .map(|(case_value, case_target, case_args)| {
-                let value = IsValue::into_erased(case_value.into_int_value(module_ref)?);
+                let value = IsValue::as_erased(case_value.into_int_value(module_ref)?);
                 let target = case_target.into_basic_block_label(module_ref)?;
                 Ok((value, target, case_args))
             })
@@ -7753,7 +7747,7 @@ where
     }
 
     /// Produce a width-ERASED `switch <cond>, label <default> [...]`.
-    /// Mirrors `IrBuilder::CreateSwitch`.
+    /// Mirrors `IRBuilder::CreateSwitch`.
     ///
     /// Returns the terminated parent block plus an [`Open`]-typestate
     /// [`SwitchInst`]. The caller adds
@@ -7790,7 +7784,7 @@ where
     }
 
     /// Produce `indirectbr <addr>, [...]`. Mirrors
-    /// `IrBuilder::CreateIndirectBr`.
+    /// `IRBuilder::CreateIndirectBr`.
     ///
     /// The address is bound by [`IntoPointerValue<'ctx, B>`](crate::IntoPointerValue),
     /// so a typed [`PointerValue`] is accepted directly while a typed
@@ -7813,7 +7807,7 @@ where
         Name: AsRef<str>,
         A: IntoPointerValue<'ctx, B>,
     {
-        let addr_v = IsValue::into_erased(address.into_pointer_value(ModuleRef::new(self.module))?);
+        let addr_v = IsValue::as_erased(address.into_pointer_value(ModuleRef::new(self.module))?);
         let void_ty = self.module.void_type::<B>().as_type().id();
         let payload = IndirectBrInstData::new(addr_v.id);
         let inst = self.append_instruction(void_ty, InstructionKindData::IndirectBr(payload), name);
@@ -7828,7 +7822,7 @@ where
     /// TYPED `invoke <ret-ty> <callee>(<args>) to label %normal unwind
     /// label %unwind`. Wrong arity / wrong argument types / wrong
     /// result use are compile errors; the invoke's return marker is
-    /// derived from the callee. Mirrors `IrBuilder::CreateInvoke` with
+    /// derived from the callee. Mirrors `IRBuilder::CreateInvoke` with
     /// the callee schema statically pinned.
     pub fn invoke<Ret, Params, A, Normal, Unwind, Name>(
         self,
@@ -7991,7 +7985,7 @@ where
     }
 
     /// Produce `invoke <ret-ty> <callee>(<args>) to label %normal
-    /// unwind label %unwind`. Mirrors `IrBuilder::CreateInvoke`.
+    /// unwind label %unwind`. Mirrors `IRBuilder::CreateInvoke`.
     pub fn invoke_dyn<R2, I, V, Normal, Unwind, Name>(
         self,
         callee: FunctionValue<'ctx, R2, B>,
@@ -8122,7 +8116,7 @@ where
     {
         let normal_dest = normal_dest.into_basic_block_label(ModuleRef::new(self.module))?;
         let unwind_dest = unwind_dest.into_basic_block_label(ModuleRef::new(self.module))?;
-        let callee_v = callee.into_erased();
+        let callee_v = callee.as_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueSlot> = args
@@ -8153,7 +8147,7 @@ where
 
     /// `invoke` through a function-pointer value (D3 dyn form of
     /// [`Self::invoke_dyn_with_config`]): the call-site function type
-    /// is supplied explicitly, mirroring `IrBuilder::CreateInvoke(FunctionType*,
+    /// is supplied explicitly, mirroring `IRBuilder::CreateInvoke(FunctionType*,
     /// Value* Callee, ...)`. Used by the parser for `invoke ... %fp(...)`.
     /// Arguments are validated against the spelled `fn_ty`.
     ///
@@ -8183,7 +8177,7 @@ where
         let callee = callee.into_pointer_value(ModuleRef::new(self.module))?;
         let normal_dest = self.plain_edge_target(normal_dest)?;
         let unwind_dest = self.plain_edge_target(unwind_dest)?;
-        let callee_v = IsValue::into_erased(callee);
+        let callee_v = IsValue::as_erased(callee);
         let ret_ty = fn_ty.return_type().id();
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueSlot> = args
@@ -8260,7 +8254,7 @@ where
     {
         let normal_dest = self.plain_edge_target(normal_dest)?;
         let unwind_dest = self.plain_edge_target(unwind_dest)?;
-        let asm_v = asm.into_erased();
+        let asm_v = asm.as_erased();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
         let ret_data = self.module.context().type_data(ret_ty);
@@ -8297,7 +8291,7 @@ where
     }
 
     /// Produce `callbr <ret-ty> <callee>(<args>) to label %default
-    /// [label %indirect1, ...]`. Mirrors `IrBuilder::CreateCallBr`.
+    /// [label %indirect1, ...]`. Mirrors `IRBuilder::CreateCallBr`.
     pub fn callbr<R2, I, V, Callee, Default, Indirects, Indirect, Name>(
         self,
         callee: Callee,
@@ -8352,7 +8346,7 @@ where
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let default_dest = self.plain_edge_target(default_dest)?;
-        let callee_v = callee.into_erased();
+        let callee_v = callee.as_erased();
         let (fn_ty, ret_ty) = self.resolve_call_site_type(&callee, &config);
         let (name, calling_conv, attrs) = config.into_parts();
         let arg_ids: Vec<ValueSlot> = args
@@ -8433,7 +8427,7 @@ where
         Indirect: IntoBasicBlockLabel<'ctx, R, B>,
     {
         let default_dest = self.plain_edge_target(default_dest)?;
-        let asm_v = asm.into_erased();
+        let asm_v = asm.as_erased();
         let fn_ty = asm.function_type();
         let ret_ty = fn_ty.return_type().id();
         let ret_data = self.module.context().type_data(ret_ty);
@@ -8473,10 +8467,10 @@ where
         ))
     }
 
-    /// Produce `unreachable`. Mirrors `IrBuilder::CreateUnreachable`.
+    /// Produce `unreachable`. Mirrors `IRBuilder::CreateUnreachable`.
     ///
     /// Consumes `self`; infallible (no operands, no brand check).
-    /// Produce `landingpad <ty>`. Mirrors `IrBuilder::CreateLandingPad`.
+    /// Produce `landingpad <ty>`. Mirrors `IRBuilder::CreateLandingPad`.
     /// Returns an [`Open`]-typestate
     /// handle; the caller adds clauses with `add_catch_clause` /
     /// `add_filter_clause` and seals the list with `finish`.
@@ -8499,7 +8493,7 @@ where
         ))
     }
 
-    /// Produce `resume <ty> <value>`. Mirrors `IrBuilder::CreateResume`.
+    /// Produce `resume <ty> <value>`. Mirrors `IRBuilder::CreateResume`.
     /// The `value` is typically a previously-built `landingpad` result.
     pub fn resume<V, Name>(self, value: V, name: Name) -> IrResult<TerminatedBlockInst<'ctx, R, B>>
     where
@@ -8515,7 +8509,7 @@ where
     }
 
     /// Produce `cleanuppad within <parent> [<args>]`. Mirrors
-    /// `IrBuilder::CreateCleanupPad`.
+    /// `IRBuilder::CreateCleanupPad`.
     pub fn cleanup_pad<I, V, Pad, Name>(
         &self,
         parent_pad: Pad,
@@ -8533,7 +8527,7 @@ where
     }
 
     /// Produce `cleanuppad within none [<args>]`. Mirrors
-    /// `IrBuilder::CreateCleanupPad`.
+    /// `IRBuilder::CreateCleanupPad`.
     pub fn cleanup_pad_within_none<I, V, Name>(
         &self,
         args: I,
@@ -8577,7 +8571,7 @@ where
     }
 
     /// Produce `catchpad within <catchswitch> [<args>]`. Mirrors
-    /// `IrBuilder::CreateCatchPad`.
+    /// `IRBuilder::CreateCatchPad`.
     pub fn catch_pad<I, V, Switch, Name>(
         &self,
         catch_switch: Switch,
@@ -8609,7 +8603,7 @@ where
     }
 
     /// Produce `catchret from <catchpad> to label <bb>`. Mirrors
-    /// `IrBuilder::CreateCatchRet`.
+    /// `IRBuilder::CreateCatchRet`.
     pub fn catch_ret<Target, Pad, Name>(
         self,
         catch_pad: Pad,
@@ -8632,7 +8626,7 @@ where
     }
 
     /// Produce `cleanupret from <cleanuppad> unwind label <bb>`.
-    /// Mirrors `IrBuilder::CreateCleanupRet`.
+    /// Mirrors `IRBuilder::CreateCleanupRet`.
     pub fn cleanup_ret<Unwind, Pad, Name>(
         self,
         cleanup_pad: Pad,
@@ -8650,7 +8644,7 @@ where
     }
 
     /// Produce `cleanupret from <cleanuppad> unwind to caller`.
-    /// Mirrors `IrBuilder::CreateCleanupRet`.
+    /// Mirrors `IRBuilder::CreateCleanupRet`.
     pub fn cleanup_ret_to_caller<Pad, Name>(
         self,
         cleanup_pad: Pad,
@@ -8682,7 +8676,7 @@ where
     }
 
     /// Produce `catchswitch within <parent> [...] unwind label <bb>`.
-    /// Mirrors `IrBuilder::CreateCatchSwitch`.
+    /// Mirrors `IRBuilder::CreateCatchSwitch`.
     pub fn catch_switch<Unwind, Pad, Name>(
         self,
         parent_pad: Pad,
@@ -8700,7 +8694,7 @@ where
     }
 
     /// Produce `catchswitch within <parent> [...] unwind to caller`.
-    /// Mirrors `IrBuilder::CreateCatchSwitch`.
+    /// Mirrors `IRBuilder::CreateCatchSwitch`.
     pub fn catch_switch_to_caller<Pad, Name>(
         self,
         parent_pad: Pad,
@@ -8715,7 +8709,7 @@ where
     }
 
     /// Produce `catchswitch within none [...] unwind label <bb>`.
-    /// Mirrors `IrBuilder::CreateCatchSwitch`.
+    /// Mirrors `IRBuilder::CreateCatchSwitch`.
     pub fn catch_switch_within_none<Unwind, Name>(
         self,
         unwind_dest: Unwind,
@@ -8730,7 +8724,7 @@ where
     }
 
     /// Produce `catchswitch within none [...] unwind to caller`.
-    /// Mirrors `IrBuilder::CreateCatchSwitch`.
+    /// Mirrors `IRBuilder::CreateCatchSwitch`.
     pub fn catch_switch_within_none_to_caller<Name>(
         self,
         name: Name,
@@ -8811,7 +8805,7 @@ where
         }
         match self.insert_before {
             Some(anchor) => {
-                // Mirrors `IrBuilder::SetInsertPoint(Instruction*)`: new
+                // Mirrors `IRBuilder::SetInsertPoint(Instruction*)`: new
                 // instruction is inserted before the anchor.
                 if bb.insert_instruction_before(id, anchor).is_err() {
                     unreachable!(
@@ -9096,9 +9090,9 @@ where
         folded: IntValue<'ctx, W, B>,
         like: IntValue<'ctx, W, B>,
     ) -> IrResult<IntValue<'ctx, W, B>> {
-        like.into_erased()
+        like.as_erased()
             .ty()
-            .require_match(folded.into_erased().ty())?;
+            .require_match(folded.as_erased().ty())?;
         Ok(folded)
     }
 
@@ -9125,7 +9119,7 @@ where
         folded: IntValue<'ctx, W, B>,
         dst_ty: IntType<'ctx, W, B>,
     ) -> IrResult<IntValue<'ctx, W, B>> {
-        dst_ty.as_type().require_match(folded.into_erased().ty())?;
+        dst_ty.as_type().require_match(folded.as_erased().ty())?;
         Ok(folded)
     }
 
@@ -9160,7 +9154,7 @@ where
 // `<K: FloatKind>`) on `IrBuilder<R>` even when no type implements both
 // traits. We dispatch through a single sealed trait that pins the
 // return-value lift per concrete marker. Each impl is concrete-typed so
-// no overlap arises. Mirrors `IrBuilder::CreateRet` in `IrBuilder.h`.
+// no overlap arises. Mirrors `IRBuilder::CreateRet` in `IRBuilder.h`.
 
 /// Types that can be passed to [`IrBuilder::ret`] for a function
 /// carrying [`ReturnMarker`] `R`. Concrete impls are provided per
@@ -9192,7 +9186,7 @@ macro_rules! impl_into_return_value_int {
                 self,
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<Value<'ctx, B>> {
-                Ok(IsValue::into_erased(self.into_int_value(module)?))
+                Ok(IsValue::as_erased(self.into_int_value(module)?))
             }
         }
     )+ };
@@ -9215,7 +9209,7 @@ macro_rules! impl_into_return_value_float {
                 self,
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<Value<'ctx, B>> {
-                Ok(IsValue::into_erased(self.into_float_value(module)?))
+                Ok(IsValue::as_erased(self.into_float_value(module)?))
             }
         }
     )+ };
@@ -9229,7 +9223,7 @@ where
 {
     #[inline]
     fn into_return_value(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(IsValue::into_erased(self.into_pointer_value(module)?))
+        Ok(IsValue::as_erased(self.into_pointer_value(module)?))
     }
 }
 
@@ -9297,7 +9291,7 @@ where
     B: ModuleBrand + 'ctx,
     F: IrBuilderFolder<'ctx, B>,
 {
-    /// Produce `ret void`. Mirrors `IrBuilder::CreateRetVoid`. The
+    /// Produce `ret void`. Mirrors `IRBuilder::CreateRetVoid`. The
     /// `()` builder does not expose `ret(value)` at all (no
     /// `IntoReturnValue<'ctx, ()>` impls exist), so `ret_void`
     /// is the only return option.
@@ -9794,7 +9788,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for IntValue<'
     }
     #[inline]
     fn arm_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(IsValue::into_erased(self))
+        Ok(IsValue::as_erased(self))
     }
 }
 
@@ -9806,7 +9800,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for FloatValu
     }
     #[inline]
     fn arm_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(IsValue::into_erased(self))
+        Ok(IsValue::as_erased(self))
     }
 }
 
@@ -9818,7 +9812,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> SelectArm<'ctx, B> for PointerValue<'ctx, B> {
     }
     #[inline]
     fn arm_value(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(IsValue::into_erased(self))
+        Ok(IsValue::as_erased(self))
     }
 }
 
@@ -9865,7 +9859,7 @@ where
     R: ReturnMarker,
 {
     /// Produce `select i1 <cond>, <ty> <true>, <ty> <false>`.
-    /// Mirrors `IrBuilder::CreateSelect`.
+    /// Mirrors `IRBuilder::CreateSelect`.
     ///
     /// Both arms must share the same Rust type `A`, which pins the
     /// IR-type invariant that LangRef requires. The returned storable id
@@ -9895,7 +9889,7 @@ where
         }
         if let Some(folded) = self
             .folder
-            .fold_select_dyn(c.into_erased(), true_v, false_v)?
+            .fold_select_dyn(c.as_erased(), true_v, false_v)?
         {
             let folded = self.checked_folded_value(folded, true_ty)?;
             return Ok(A::from_select_value(folded, &SelectNarrow::new()));
@@ -10079,7 +10073,7 @@ mod tests {
             // with the audit deliberately false: the payload's true IR type
             // is `i64` and matches no 32-bit `W`, static or dyn.
             Ok(Some(IntValue::<W, B>::from_value_unchecked(
-                self.stored.into_erased(),
+                self.stored.as_erased(),
             )))
         }
 
@@ -10095,7 +10089,7 @@ mod tests {
             // `accept_folded_cast_int`, which checks against `dst_ty`
             // rather than an operand.
             Ok(Some(IntValue::<W, B>::from_value_unchecked(
-                self.stored.into_erased(),
+                self.stored.as_erased(),
             )))
         }
     }
@@ -10124,7 +10118,7 @@ mod tests {
             _fmf: FastMathFlags,
         ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
             Ok(Some(FloatValue::<K, B>::from_value_unchecked(
-                IsValue::into_erased(self.stored),
+                IsValue::as_erased(self.stored),
             )))
         }
 
@@ -10135,7 +10129,7 @@ mod tests {
             _dest_ty: FloatType<'ctx, K, B>,
         ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
             Ok(Some(FloatValue::<K, B>::from_value_unchecked(
-                IsValue::into_erased(self.stored),
+                IsValue::as_erased(self.stored),
             )))
         }
     }
@@ -10158,7 +10152,7 @@ mod tests {
     /// The native override returns `Ok(Some(wrong_width_value))`
     /// straight back to `int_add`, which forwards it to
     /// `self.accept_folded_int(folded, lhs)`. Inside `accept_folded_int`,
-    /// `folded.into_erased().ty().id() != like.into_erased().ty().id()` is
+    /// `folded.as_erased().ty().id() != like.as_erased().ty().id()` is
     /// `true` (the stored value's real type is `i64`, `lhs`'s is the
     /// 32-bit custom-width `IntDyn` type) -- so `accept_folded_int`
     /// returns `Err(IrError::OperandWidthMismatch { lhs: 32, rhs: 64 })`.
@@ -10178,7 +10172,7 @@ mod tests {
         let entry = m.view(f).append_basic_block(&m, "entry");
 
         let stored: IntValue<'_, i64, _> =
-            IntValue::from_value_unchecked(i64_dyn_ty.const_zero().into_erased());
+            IntValue::from_value_unchecked(i64_dyn_ty.const_zero().as_erased());
         let folder = HostileTypedFolder { stored };
         let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
 
@@ -10227,7 +10221,7 @@ mod tests {
         // genuinely is an i64), and in a test whose whole subject is
         // `from_value_unchecked` lying, the lie belongs only where it is
         // under test -- inside the folder's override.
-        let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().into_erased())?;
+        let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().as_erased())?;
         let folder = HostileTypedFolder { stored };
         let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
 
@@ -10267,11 +10261,11 @@ mod tests {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 
-        let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().into_erased())?;
+        let stored: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_zero().as_erased())?;
         let folder = HostileTypedFolder { stored };
         let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
 
-        let src: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_int(1_i64).into_erased())?;
+        let src: IntValue<'_, i64, _> = i64::narrow(i64_ty.const_int(1_i64).as_erased())?;
         let err = b
             .trunc::<i64, i32, _, _>(src, i32_ty, "narrowed")
             .expect_err("wrong-width cast fold result must be rejected at a static width");
@@ -10300,7 +10294,7 @@ mod tests {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 
-        let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).into_erased())?;
+        let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).as_erased())?;
         let folder = HostileTypedFpFolder { stored };
         let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
 
@@ -10341,11 +10335,11 @@ mod tests {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 
-        let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).into_erased())?;
+        let stored: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(0.0).as_erased())?;
         let folder = HostileTypedFpFolder { stored };
         let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
 
-        let src: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(1.0).into_erased())?;
+        let src: FloatValue<'_, f64, _> = f64::narrow(f64_ty.const_double(1.0).as_erased())?;
         let err = b
             .fp_trunc::<f64, f32, _, _>(src, f32_ty, "narrowed")
             .expect_err("wrong-kind cast fold result must be rejected at a static kind");

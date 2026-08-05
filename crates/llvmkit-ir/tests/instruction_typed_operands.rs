@@ -30,7 +30,7 @@ fn load_pointer_operand_is_typed() -> Result<(), IrError> {
     };
     // `pointer()` returns `PointerValue`, not an erased `Value`.
     let ptr: PointerValue<'_, _> = load.pointer();
-    assert_eq!(ptr.into_erased(), p.into_erased());
+    assert_eq!(ptr.as_erased(), p.as_erased());
     Ok(())
 }
 
@@ -46,11 +46,11 @@ fn direct_call_callee_is_direct() -> Result<(), IrError> {
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
-    let call = b.call_dyn(callee, [x.into_erased()], "r")?;
+    let call = b.call_dyn(callee, [x.as_erased()], "r")?;
 
     match b.view(call).classify_callee() {
         Callee::Direct(function) => {
-            assert_eq!(function.into_erased(), b.view(callee).into_erased())
+            assert_eq!(function.as_erased(), b.view(callee).as_erased())
         }
         Callee::Indirect(_) => panic!("expected a direct call to classify as Direct"),
     }
@@ -72,7 +72,7 @@ fn classify_is_total() -> Result<(), IrError> {
     let sum = b.int_add::<i32, _, _, _>(x, y, "s")?;
     b.ret(sum)?;
 
-    let sum_view = InstructionView::try_from(m.view(sum).into_erased())?;
+    let sum_view = InstructionView::try_from(m.view(sum).as_erased())?;
     assert!(matches!(
         sum_view.classify(),
         Classified::Inst(InstructionKind::Add(_))
@@ -110,24 +110,24 @@ fn binop_and_cmp_groupings() -> Result<(), IrError> {
     let sum = b.int_add::<i32, _, _, _>(x, y, "s")?;
     let cmp = b.icmp_slt::<i32, _, _, _>(x, y, "c")?;
 
-    let sum_view = InstructionView::try_from(b.view(sum).into_erased())?;
+    let sum_view = InstructionView::try_from(b.view(sum).as_erased())?;
     let bop = sum_view
         .kind()
         .and_then(|k| k.as_binary_op())
         .expect("add classifies as a binary op");
     assert_eq!(bop.opcode(), BinaryOpcode::Add);
     assert!(bop.is_commutative());
-    assert_eq!(bop.lhs(), x.into_erased());
-    assert_eq!(bop.rhs(), y.into_erased());
+    assert_eq!(bop.lhs(), x.as_erased());
+    assert_eq!(bop.rhs(), y.as_erased());
 
-    let cmp_view = InstructionView::try_from(b.view(cmp).into_erased())?;
+    let cmp_view = InstructionView::try_from(b.view(cmp).as_erased())?;
     let cv = cmp_view
         .kind()
         .and_then(|k| k.as_cmp())
         .expect("icmp classifies as a cmp");
     assert_eq!(cv.predicate(), CmpPredicate::Int(IntPredicate::Slt));
     assert!(cv.is_integer());
-    assert_eq!(cv.lhs(), x.into_erased());
+    assert_eq!(cv.lhs(), x.as_erased());
     Ok(())
 }
 
@@ -153,7 +153,7 @@ fn indirect_call_callee_is_indirect() -> Result<(), IrError> {
     )?;
 
     match b.view(call).classify_callee() {
-        Callee::Indirect(pointer) => assert_eq!(pointer.into_erased(), fp.into_erased()),
+        Callee::Indirect(pointer) => assert_eq!(pointer.as_erased(), fp.as_erased()),
         Callee::Direct(_) => panic!("expected an indirect call to classify as Indirect"),
     }
     Ok(())

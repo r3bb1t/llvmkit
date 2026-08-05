@@ -160,7 +160,7 @@ pub trait StructSchema: Sized + 'static {
     where
         B: ModuleBrand + 'ctx,
     {
-        module.get_or_set_named_struct_body::<Self>()
+        module.get_or_insert_struct_of::<Self>()
     }
 
     /// Convert an existing raw IR value into this schema's branded wrapper.
@@ -270,7 +270,7 @@ macro_rules! impl_int_field {
         {
             #[inline]
             fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(self.into_int_value(module)?.into_erased())
+                Ok(self.into_int_value(module)?.as_erased())
             }
         }
     )+};
@@ -327,7 +327,7 @@ where
 {
     #[inline]
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_int_value(module)?.into_erased())
+        Ok(self.into_int_value(module)?.as_erased())
     }
 }
 
@@ -371,7 +371,7 @@ where
 {
     #[inline]
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_int_value(module)?.into_erased())
+        Ok(self.into_int_value(module)?.as_erased())
     }
 }
 
@@ -417,7 +417,7 @@ macro_rules! impl_float_field {
         {
             #[inline]
             fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(self.into_float_value(module)?.into_erased())
+                Ok(self.into_float_value(module)?.as_erased())
             }
         }
     )+};
@@ -473,7 +473,7 @@ where
 {
     #[inline]
     fn into_ir_field(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_pointer_value(module)?.into_erased())
+        Ok(self.into_pointer_value(module)?.as_erased())
     }
 }
 
@@ -485,7 +485,7 @@ macro_rules! impl_struct_into_field {
             B: ModuleBrand + 'ctx,
         {
             fn into_ir_field(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(S::try_value_from_ir(self)?.as_struct_value().into_erased())
+                Ok(S::try_value_from_ir(self)?.as_struct_value().as_erased())
             }
         }
     };
@@ -504,7 +504,7 @@ macro_rules! impl_struct_into_call_arg {
             B: ModuleBrand + 'ctx,
         {
             fn into_call_arg(self, _module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(S::try_value_from_ir(self)?.as_struct_value().into_erased())
+                Ok(S::try_value_from_ir(self)?.as_struct_value().as_erased())
             }
         }
     };
@@ -729,7 +729,7 @@ where
     {
         let validated = ValidatedStructValue::new();
         S::Value::from_struct_value(
-            StructValue::from_value_unchecked(arg.into_erased()),
+            StructValue::from_value_unchecked(arg.as_erased()),
             &validated,
         )
     }

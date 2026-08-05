@@ -110,11 +110,11 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
 
     let bt = IrBuilder::at_end(then_bb);
     let add_xy = bt.int_add(x, y, "add_xy")?;
-    bt.br_with_args(merge_label, &[m.view(add_xy).into_erased()])?;
+    bt.br_with_args(merge_label, &[m.view(add_xy).as_erased()])?;
 
     let be = IrBuilder::at_end(else_bb);
     let sub_xy = be.int_sub(x, y, "sub_xy")?;
-    be.br_with_args(merge_label, &[m.view(sub_xy).into_erased()])?;
+    be.br_with_args(merge_label, &[m.view(sub_xy).as_erased()])?;
 
     let bm = IrBuilder::at_end(merge);
     // `params[0]` is `merge`'s head-phi, seeded with `[ %add_xy, %then ]` and
@@ -132,7 +132,7 @@ pub fn run_demo<B: ModuleBrand>(m: Module<B>) -> Result<(String, String, String)
     // token that is about to move. Ids survive the move; views are re-minted on
     // the far side against whichever module the run produced.
     let function = m
-        .function_by_name_dyn("select_or_add")
+        .function_dyn("select_or_add")
         .expect("demo function is present");
     let entry = m
         .view(function)
@@ -162,7 +162,7 @@ pub fn run_demo<B: ModuleBrand>(m: Module<B>) -> Result<(String, String, String)
     analyses.register_function_analysis(DominatorTreeAnalysis);
     let dt = analyses
         .function_manager_mut()
-        .get_result::<DominatorTreeAnalysis, _>(module.view(function))?;
+        .result::<DominatorTreeAnalysis, _>(module.view(function))?;
 
     let lines = Rc::new(RefCell::new(vec![format!(
         "analysis entry_dominates_merge={}",

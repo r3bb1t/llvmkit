@@ -504,11 +504,11 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
     analyses.register_function_analysis(DominatorTreeAnalysis);
     let _dt = analyses
         .function_manager_mut()
-        .get_result::<DominatorTreeAnalysis, _>(verified.view(f))?;
+        .result::<DominatorTreeAnalysis, _>(verified.view(f))?;
     assert!(
         analyses
             .function_manager()
-            .get_cached_result::<DominatorTreeAnalysis, _>(verified.view(f))
+            .cached_result::<DominatorTreeAnalysis, _>(verified.view(f))
             .is_some(),
         "dominator tree must be cached after computing it"
     );
@@ -521,7 +521,7 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
     assert!(
         analyses
             .function_manager()
-            .get_cached_result::<DominatorTreeAnalysis, _>(after_noop.view(f))
+            .cached_result::<DominatorTreeAnalysis, _>(after_noop.view(f))
             .is_some(),
         "a witnessed no-op ReshapeCfg run must preserve the cached dominator tree"
     );
@@ -537,7 +537,7 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
     assert!(
         analyses
             .function_manager()
-            .get_cached_result::<DominatorTreeAnalysis, _>(unverified.view(f))
+            .cached_result::<DominatorTreeAnalysis, _>(unverified.view(f))
             .is_none(),
         "a mutating ReshapeCfg run's none() floor must invalidate the cached dominator tree"
     );
@@ -545,7 +545,7 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
     // The still-registered analysis recomputes on demand.
     let dt = analyses
         .function_manager_mut()
-        .get_result::<DominatorTreeAnalysis, _>(unverified.view(f))?;
+        .result::<DominatorTreeAnalysis, _>(unverified.view(f))?;
     let entry = unverified
         .view(f)
         .entry_block()
@@ -554,7 +554,7 @@ fn mutating_member_invalidates_and_analysis_recomputes() -> Result<(), IrError> 
     assert!(
         analyses
             .function_manager()
-            .get_cached_result::<DominatorTreeAnalysis, _>(unverified.view(f))
+            .cached_result::<DominatorTreeAnalysis, _>(unverified.view(f))
             .is_some(),
         "dominator tree must be re-cached after recomputation"
     );

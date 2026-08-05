@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use llvmkit_ir::{
     ApInt, CmpPredicate, FloatPredicate, IntPredicate, MinMaxIntrinsic, MinMaxKind,
     MinMaxOperation, SelectPatternFlavor, SelectPatternNaNBehavior, SelectPatternResult,
-    get_select_pattern,
+    select_pattern,
 };
 
 const ALL_FLAVORS: [SelectPatternFlavor; 9] = [
@@ -312,7 +312,7 @@ fn get_select_pattern_classifies_every_predicate() {
     ];
     for (predicate, flavor) in integer {
         // Whatever NaN behaviour is passed in, an integer answer discards it.
-        let result = get_select_pattern(
+        let result = select_pattern(
             CmpPredicate::Int(*predicate),
             SelectPatternNaNBehavior::ReturnsNaN,
             true,
@@ -330,7 +330,7 @@ fn get_select_pattern_classifies_every_predicate() {
 
     for predicate in [I::Eq, I::Ne] {
         assert_eq!(
-            get_select_pattern(
+            select_pattern(
                 CmpPredicate::Int(predicate),
                 SelectPatternNaNBehavior::NotApplicable,
                 false,
@@ -352,7 +352,7 @@ fn get_select_pattern_classifies_every_predicate() {
         (F::Ole, SelectPatternFlavor::FMinNum),
     ];
     for (predicate, flavor) in float {
-        let result = get_select_pattern(
+        let result = select_pattern(
             CmpPredicate::Float(*predicate),
             SelectPatternNaNBehavior::ReturnsOther,
             true,
@@ -380,7 +380,7 @@ fn get_select_pattern_classifies_every_predicate() {
         F::True,
     ] {
         assert_eq!(
-            get_select_pattern(
+            select_pattern(
                 CmpPredicate::Float(predicate),
                 SelectPatternNaNBehavior::NotApplicable,
                 false,
@@ -407,7 +407,7 @@ fn min_max_predicate_round_trips_through_get_select_pattern() {
         }
         for ordered in [false, true] {
             let predicate = flavor.min_max_predicate(ordered).expect("min/max flavour");
-            let back = get_select_pattern(predicate, SelectPatternNaNBehavior::ReturnsAny, ordered);
+            let back = select_pattern(predicate, SelectPatternNaNBehavior::ReturnsAny, ordered);
             assert_eq!(
                 back.flavor, flavor,
                 "{flavor:?} ordered={ordered} did not round trip"

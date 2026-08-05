@@ -2,7 +2,7 @@
 //!
 //! Closest upstream behaviour: `Verifier::visitBasicBlock` in
 //! `lib/IR/Verifier.cpp` rejects a block carrying two terminators at run time.
-//! In LLVM C++ nothing stops the caller — `IrBuilder` keeps its insertion point
+//! In LLVM C++ nothing stops the caller — `IRBuilder` keeps its insertion point
 //! after `CreateRetVoid()`, so a second `CreateRetVoid()` on the same builder
 //! silently appends a second terminator and the module is malformed until the
 //! verifier is run.

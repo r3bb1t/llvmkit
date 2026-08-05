@@ -1149,7 +1149,7 @@ macro_rules! impl_into_erased_value_for_id {
                 module: ModuleRef<'ctx, B>,
             ) -> IrResult<Value<'ctx, B>> {
                 self.resolve_in(module)
-                    .map(IsValue::into_erased)
+                    .map(IsValue::as_erased)
                     .ok_or(IrError::ForeignValueId)
             }
         }

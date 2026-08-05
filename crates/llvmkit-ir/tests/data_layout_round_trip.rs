@@ -572,8 +572,7 @@ fn wasm32_round_trip() {
 #[test]
 fn module_emits_target_datalayout_directive() {
     let m = module_new!("m").expect("fresh module");
-    m.set_data_layout("e-m:e-p:64:64-i64:64-n8:16:32:64-S128")
-        .expect("parse");
+    m.set_data_layout(DataLayout::parse("e-m:e-p:64:64-i64:64-n8:16:32:64-S128").expect("parse"));
     let text = format!("{m}");
     assert_line(
         &text,

@@ -161,13 +161,13 @@ fn exercises_every_modeled_entry_point() {
     use llvmkit_ir::{
         DynBrand, create_interleave_mask, create_replicated_mask, create_sequential_mask,
         create_stride_mask, create_unary_mask, deinterleave_intrinsic_factor, find_scalar_element,
-        get_splat_value, horizontal_demanded_elements_for_first_operand,
-        interleave_intrinsic_factor, is_splat_value, is_trivially_scalarizable,
-        is_trivially_vectorizable, is_vector_intrinsic_with_struct_return_overload_at_field,
+        horizontal_demanded_elements_for_first_operand, interleave_intrinsic_factor,
+        is_splat_value, is_trivially_scalarizable, is_trivially_vectorizable,
+        is_vector_intrinsic_with_struct_return_overload_at_field,
         mask_contains_all_one_or_undefined, mask_is_all_one_or_undefined,
         mask_is_all_zero_or_undefined, masked_slide_pair, narrow_shuffle_mask_elements,
         possibly_demanded_elements_in_mask, scale_shuffle_mask_elements, shuffle_demanded_elements,
-        shuffle_mask_with_widest_elements, splat_index, widen_shuffle_mask_elements,
+        shuffle_mask_with_widest_elements, splat_index, splat_value, widen_shuffle_mask_elements,
         widen_shuffle_mask_elements_in_pairs,
     };
 
@@ -188,7 +188,7 @@ fn exercises_every_modeled_entry_point() {
     let _unary = create_unary_mask;
 
     // Value-taking functions: instantiated at a concrete brand.
-    let _get_splat_value = get_splat_value::<DynBrand>;
+    let _get_splat_value = splat_value::<DynBrand>;
     let _is_splat_value = is_splat_value::<DynBrand>;
     let _find_scalar_element = find_scalar_element::<DynBrand>;
     let _all_zero = mask_is_all_zero_or_undefined::<DynBrand>;

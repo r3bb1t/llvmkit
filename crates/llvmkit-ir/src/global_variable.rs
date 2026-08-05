@@ -101,7 +101,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -472,7 +472,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// Comdat reference, if attached. Mirrors `GlobalValue::getComdat`.
     pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
         let name = self.data().comdat.borrow().clone()?;
-        self.module.module().get_comdat::<B>(&name)
+        self.module.module().comdat::<B>(&name)
     }
 
     /// Attach a comdat. The comdat must already exist in the owning module
@@ -530,7 +530,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalVariable<'ctx, B>
     /// definition rather than their operand form.
     ///
     /// To print the global the way it appears as an instruction operand
-    /// (`ptr @name`), go through [`GlobalVariable::into_erased`] instead.
+    /// (`ptr @name`), go through [`GlobalVariable::as_erased`] instead.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         crate::asm_writer::fmt_global(f, *self)
     }
@@ -539,8 +539,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalVariable<'ctx, B>
 impl<'ctx, B: ModuleBrand> sealed::Sealed for GlobalVariable<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for GlobalVariable<'ctx, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        GlobalVariable::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        GlobalVariable::as_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(GlobalVariable);
@@ -558,7 +558,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for GlobalVariable<'ctx, B> {
 }
 impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for GlobalVariable<'ctx, B> {
     fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
     fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
     where
@@ -579,7 +579,7 @@ impl<B: ModuleBrand + 'static> HasDebugLoc for GlobalVariable<'_, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalVariable<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(g: GlobalVariable<'ctx, B>) -> Self {
-        g.into_erased()
+        g.as_erased()
     }
 }
 impl<'ctx, B: ModuleBrand + 'ctx> From<GlobalVariable<'ctx, B>> for Constant<'ctx, B> {

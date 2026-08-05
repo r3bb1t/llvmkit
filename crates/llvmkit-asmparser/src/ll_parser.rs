@@ -29,6 +29,7 @@
 //!   `'ctx` brand on [`llvmkit_ir::Module`].
 
 use core::marker::PhantomData;
+use llvmkit_ir::DataLayout;
 use llvmkit_ir::attributes::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, MemoryEffects, MemoryLocation, ModRefInfo,
 };
@@ -1101,7 +1102,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let function = match &item.function {
                 NameOrId::Name(name) => self
                     .module
-                    .function_by_name_dyn(name)
+                    .function_dyn(name)
                     .map(|id| self.module.view(id)),
                 NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
                     GlobalRef::Function(f) => Some(*f),
@@ -1733,7 +1734,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.expect_punct(PunctKind::Equal, "'=' after target datalayout")?;
                 let loc = self.loc();
                 let s = self.parse_string_constant("target-datalayout string constant")?;
-                self.module.set_data_layout(s).map_err(|e| match e {
+                let parsed = DataLayout::parse(&s).map_err(|e| match e {
                     IrError::InvalidDataLayout { reason } => ParseError::Expected {
                         expected: format!("valid datalayout: {reason}"),
                         loc: DiagLoc::span(loc),
@@ -1743,6 +1744,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         loc: DiagLoc::span(loc),
                     },
                 })?;
+                self.module.set_data_layout(parsed);
                 Ok(())
             }
             _ => Err(self.expected("'triple' or 'datalayout' after 'target'")),
@@ -1864,13 +1866,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected("function name in uselistorder_bb"))?;
                 self.bump()?;
-                let fn_id = self.module.function_by_name_dyn(&name).ok_or_else(|| {
-                    ParseError::UndefinedSymbol {
-                        kind: SymbolKind::Global,
-                        id: SymbolId::Named(name),
-                        loc: DiagLoc::span(loc),
-                    }
-                })?;
+                let fn_id =
+                    self.module
+                        .function_dyn(&name)
+                        .ok_or_else(|| ParseError::UndefinedSymbol {
+                            kind: SymbolKind::Global,
+                            id: SymbolId::Named(name),
+                            loc: DiagLoc::span(loc),
+                        })?;
                 self.module.view(fn_id)
             }
             Token::GlobalId(id) => {
@@ -1931,7 +1934,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_punct(PunctKind::Comma, "',' before uselistorder_bb indexes")?;
         let indexes = self.parse_use_list_order_indexes()?;
         let record = UseListOrderBBRecord::new(
-            function.into_erased().slot(),
+            function.as_erased().slot(),
             block.to_erased().slot(),
             indexes,
         )
@@ -2526,7 +2529,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<()> {
         // Resolve the *handle* the directive should populate.
         let handle: StructType<'ctx, llvmkit_ir::StructBodyDyn, B> = match (&name, slot) {
-            (Some(n), None) => self.module.named_struct(n),
+            (Some(n), None) => self.module.get_or_insert_named_struct(n),
             (None, Some(id)) => {
                 if id != self.next_unnamed_type_id {
                     return Err(ParseError::Expected {
@@ -3032,7 +3035,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // Forward-reference: create an opaque-named struct now, record the
         // first-seen span, and let the matching definition fill in the body
         // later (or stay opaque if it never lands).
-        let st = self.module.named_struct(name);
+        let st = self.module.get_or_insert_named_struct(name);
         self.named_types
             .insert(name.to_owned(), TypeEntry { ty: st.as_type() });
         st.as_type()
@@ -4000,7 +4003,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let c = int_ty
                     .const_ap_int(&bits)
                     .map_err(|e| self.builder_err("integer constant", e))?;
-                Ok(c.into_erased())
+                Ok(c.as_erased())
             }
             ValId::ApFloat(value) => {
                 let float_ty = match ty.into_type_enum() {
@@ -4010,20 +4013,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Ok(float_ty
                     .const_ap_float(&value)
                     .map_err(|e| self.builder_err("float constant", e))?
-                    .into_erased())
+                    .as_erased())
             }
             ValId::Null => {
                 let pty = match ty.into_type_enum() {
                     AnyTypeEnum::Pointer(t) => t,
                     _ => return Err(self.expected("'null' is only valid for pointer types")),
                 };
-                Ok(pty.const_null().into_erased())
+                Ok(pty.const_null().as_erased())
             }
-            ValId::Zero => self.zero_initializer_constant(ty).map(|c| c.into_erased()),
-            ValId::Undef => Ok(ty.get_undef().into_erased()),
-            ValId::Poison => Ok(ty.get_poison().into_erased()),
-            ValId::Constant(c) => Ok(c.into_erased()),
-            ValId::ConstantSplat(c) => self.expand_splat_constant(ty, c).map(|c| c.into_erased()),
+            ValId::Zero => self.zero_initializer_constant(ty).map(|c| c.as_erased()),
+            ValId::Undef => Ok(ty.undef().as_erased()),
+            ValId::Poison => Ok(ty.poison().as_erased()),
+            ValId::Constant(c) => Ok(c.as_erased()),
+            ValId::ConstantSplat(c) => self.expand_splat_constant(ty, c).map(|c| c.as_erased()),
             ValId::Value(v) => Ok(v),
         }
     }
@@ -4080,8 +4083,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Ok(ptr_ty.const_null().as_constant())
             }
             ValId::Zero => self.zero_initializer_constant(ty),
-            ValId::Undef => Ok(ty.get_undef().as_constant()),
-            ValId::Poison => Ok(ty.get_poison().as_constant()),
+            ValId::Undef => Ok(ty.undef().as_constant()),
+            ValId::Poison => Ok(ty.poison().as_constant()),
             ValId::Constant(c) => Ok(c),
             ValId::ConstantSplat(c) => self.expand_splat_constant(ty, c),
             ValId::LocalId(_) | ValId::LocalName(_) | ValId::Value(_) => {
@@ -4148,14 +4151,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(self.loc()),
             });
         }
-        if let Some(id) = self.module.get_global(&name) {
-            Ok(self.module.view(id).into_erased())
-        } else if let Some(id) = self.module.function_by_name_dyn(&name) {
-            Ok(self.module.view(id).into_erased())
-        } else if let Some(id) = self.module.get_alias(&name) {
-            Ok(self.module.view(id).into_erased())
-        } else if let Some(id) = self.module.get_ifunc(&name) {
-            Ok(self.module.view(id).into_erased())
+        if let Some(id) = self.module.global(&name) {
+            Ok(self.module.view(id).as_erased())
+        } else if let Some(id) = self.module.function_dyn(&name) {
+            Ok(self.module.view(id).as_erased())
+        } else if let Some(id) = self.module.alias(&name) {
+            Ok(self.module.view(id).as_erased())
+        } else if let Some(id) = self.module.ifunc(&name) {
+            Ok(self.module.view(id).as_erased())
         } else {
             Err(ParseError::UndefinedSymbol {
                 kind: SymbolKind::Global,
@@ -4170,10 +4173,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .get(id)
             .copied()
             .map(|r| match r {
-                GlobalRef::Function(f) => f.into_erased(),
-                GlobalRef::Variable(g) => g.into_erased(),
-                GlobalRef::Alias(a) => a.into_erased(),
-                GlobalRef::IFunc(i) => i.into_erased(),
+                GlobalRef::Function(f) => f.as_erased(),
+                GlobalRef::Variable(g) => g.as_erased(),
+                GlobalRef::Alias(a) => a.as_erased(),
+                GlobalRef::IFunc(i) => i.as_erased(),
             })
             .ok_or_else(|| ParseError::UndefinedSymbol {
                 kind: SymbolKind::Global,
@@ -4195,13 +4198,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(self.loc()),
             });
         }
-        if let Some(id) = self.module.get_global(&name) {
+        if let Some(id) = self.module.global(&name) {
             Ok(self.module.view(id).as_global_constant_ptr())
-        } else if let Some(id) = self.module.function_by_name_dyn(&name) {
+        } else if let Some(id) = self.module.function_dyn(&name) {
             Ok(self.module.view(id).as_global_constant_ptr())
-        } else if let Some(id) = self.module.get_alias(&name) {
+        } else if let Some(id) = self.module.alias(&name) {
             Ok(self.module.view(id).as_global_constant_ptr())
-        } else if let Some(id) = self.module.get_ifunc(&name) {
+        } else if let Some(id) = self.module.ifunc(&name) {
             Ok(self.module.view(id).as_global_constant_ptr())
         } else {
             Err(ParseError::UndefinedSymbol {
@@ -4233,13 +4236,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
     fn resolve_global_name_as_ref(&self, name: String) -> ParseResult<GlobalRef<'ctx, B>> {
-        if let Some(id) = self.module.get_global(&name) {
+        if let Some(id) = self.module.global(&name) {
             Ok(GlobalRef::Variable(self.module.view(id)))
-        } else if let Some(id) = self.module.function_by_name_dyn(&name) {
+        } else if let Some(id) = self.module.function_dyn(&name) {
             Ok(GlobalRef::Function(self.module.view(id)))
-        } else if let Some(id) = self.module.get_alias(&name) {
+        } else if let Some(id) = self.module.alias(&name) {
             Ok(GlobalRef::Alias(self.module.view(id)))
-        } else if let Some(id) = self.module.get_ifunc(&name) {
+        } else if let Some(id) = self.module.ifunc(&name) {
             Ok(GlobalRef::IFunc(self.module.view(id)))
         } else {
             Err(ParseError::UndefinedSymbol {
@@ -4289,11 +4292,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .current_str_payload()
                     .ok_or_else(|| self.expected(expected))?;
                 self.bump()?;
-                if let Some(id) = self.module.function_by_name_dyn(&name) {
+                if let Some(id) = self.module.function_dyn(&name) {
                     Ok(ParsedBlockAddressFunction::Resolved(self.module.view(id)))
-                } else if self.module.get_global(&name).is_some()
-                    || self.module.get_alias(&name).is_some()
-                    || self.module.get_ifunc(&name).is_some()
+                } else if self.module.global(&name).is_some()
+                    || self.module.alias(&name).is_some()
+                    || self.module.ifunc(&name).is_some()
                 {
                     Err(self.expected(expected))
                 } else {
@@ -4771,7 +4774,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .constant_expr_with_options(
                 result_ty,
                 opcode,
-                operands.into_iter().map(|c| c.into_erased()),
+                operands.into_iter().map(|c| c.as_erased()),
                 [],
                 [],
                 options,
@@ -5638,7 +5641,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             NameOrId::Name(_) => None,
         };
         let existing_by_name = (!name.is_empty())
-            .then(|| self.module.function_by_name_dyn(&name))
+            .then(|| self.module.function_dyn(&name))
             .flatten()
             .map(|id| self.module.view(id));
         let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
@@ -5851,7 +5854,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             NameOrId::Name(_) => None,
         };
         let existing_by_name = (!name.is_empty())
-            .then(|| self.module.function_by_name_dyn(&name))
+            .then(|| self.module.function_dyn(&name))
             .flatten()
             .map(|id| self.module.view(id));
         let f = if let Some(existing) = existing_by_id.or(existing_by_name) {
@@ -5972,7 +5975,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 expected: format!("function parameter slot {slot}: {e}"),
                 loc: DiagLoc::span(decl_loc),
             })?;
-            let v = arg.into_erased();
+            let v = arg.as_erased();
             match name {
                 Some(ParamName::Named(n)) => {
                     state.local_named.insert(n, v);
@@ -6561,7 +6564,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .int_xor::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
                 .map_err(|e| self.builder_err("xor", e))?,
         };
-        Ok(b.view(v).into_erased())
+        Ok(b.view(v).as_erased())
     }
 
     /// `icmp [samesign] PRED TYPE LHS, RHS`. Mirrors `LLParser::parseCompare`.
@@ -6621,7 +6624,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let r = b
             .int_cmp_with_flags_dyn(pred, lhs, rhs, flags, name)
             .map_err(|e| self.builder_err("icmp", e))?;
-        Ok(b.view(r).into_erased())
+        Ok(b.view(r).as_erased())
     }
 
     /// `trunc [nuw] [nsw] TYPE VALUE to TYPE` / `zext [nneg] TYPE VALUE to TYPE` / `sext TYPE VALUE to TYPE`.
@@ -6702,7 +6705,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .sext_dyn(src_int, dst_int, name)
                 .map_err(|e| self.builder_err("sext", e))?,
         };
-        Ok(b.view(v).into_erased())
+        Ok(b.view(v).as_erased())
     }
 
     /// `ptrtoint TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
@@ -6727,7 +6730,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let v = b
             .ptr_to_int(src_ptr, dst_int, result_name.as_str())
             .map_err(|e| self.builder_err("ptrtoint", e))?;
-        Ok(b.view(v).into_erased())
+        Ok(b.view(v).as_erased())
     }
 
     /// `inttoptr TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
@@ -6752,7 +6755,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let v = b
             .int_to_ptr(src_int, dst_ptr, result_name.as_str())
             .map_err(|e| self.builder_err("inttoptr", e))?;
-        Ok(b.view(v).into_erased())
+        Ok(b.view(v).as_erased())
     }
 
     /// `fneg [nnan ninf ...] TYPE VALUE`. Mirrors `LLParser::parseUnaryOp` for `Instruction::FNeg`.
@@ -6874,7 +6877,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let r = b
             .alloca_dyn(ty, size, align, addr_space, flags, result_name.as_str())
             .map_err(|e| self.builder_err("alloca", e))?;
-        Ok(b.view(r).into_erased())
+        Ok(b.view(r).as_erased())
     }
 
     /// Optional `, <intty> <size>` array-size operand for `alloca`, present
@@ -7067,7 +7070,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let v = b
             .gep_with_flags(source_ty, ptr, indices, flags, name)
             .map_err(|e| self.builder_err("getelementptr", e))?;
-        Ok(b.view(v).into_erased())
+        Ok(b.view(v).as_erased())
     }
 
     /// `select i1 COND, TYPE TRUE, TYPE FALSE`, and the `<N x i1>` condition
@@ -7129,7 +7132,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             constant_fold_select_instruction(condition, true_constant, false_constant)
                 .map_err(|e| self.builder_err("select", e))?
         {
-            return Ok(folded.into_erased());
+            return Ok(folded.as_erased());
         }
         let id = b
             .select_erased(cond_value, true_v, false_v, result_name.as_str())
@@ -7166,7 +7169,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .fp_to_ui(src_fp, dst_int, name)
                 .map_err(|e| self.builder_err("fptoui", e))?,
         };
-        Ok(b.view(v).into_erased())
+        Ok(b.view(v).as_erased())
     }
 
     /// `sitofp`/`uitofp TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`
@@ -7205,7 +7208,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
             }
         };
-        Ok(b.view(v).into_erased())
+        Ok(b.view(v).as_erased())
     }
 
     /// `addrspacecast ptr VALUE to ptr`. Mirrors `LLParser::parseCast`
@@ -7230,7 +7233,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let v = b
             .addrspace_cast(src_ptr, dst_ptr, result_name.as_str())
             .map_err(|e| self.builder_err("addrspacecast", e))?;
-        Ok(b.view(v).into_erased())
+        Ok(b.view(v).as_erased())
     }
 
     // ── S3.2: new opcode parsers ──────────────────────────────────────────
@@ -7281,7 +7284,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let v = b
             .fp_trunc_dyn(sv, df, result_name.as_str())
             .map_err(|e| self.builder_err("fptrunc", e))?;
-        Ok(b.view(v).into_erased())
+        Ok(b.view(v).as_erased())
     }
 
     /// `fpext <fp-ty> <val> to <fp-ty>`. Mirrors `LLParser::parseCast`
@@ -7308,7 +7311,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let v = b
             .fp_ext_dyn(sv, df, result_name.as_str())
             .map_err(|e| self.builder_err("fpext", e))?;
-        Ok(b.view(v).into_erased())
+        Ok(b.view(v).as_erased())
     }
 
     /// `ptrtoaddr <ptr-or-vector-ty> <val> to <int-or-vector-ty>`. Mirrors
@@ -7617,13 +7620,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let c = int_ty
                         .const_ap_int(&bits)
                         .map_err(|e| self.builder_err("phi constant", e))?;
-                    PhiValRef::Resolved(c.into_erased())
+                    PhiValRef::Resolved(c.as_erased())
                 }
                 Token::Kw(Keyword::Zeroinitializer) => {
                     self.bump()?;
                     let v = match ty.into_type_enum() {
-                        AnyTypeEnum::Int(t) => t.const_zero().into_erased(),
-                        AnyTypeEnum::Pointer(t) => t.const_null().into_erased(),
+                        AnyTypeEnum::Int(t) => t.const_zero().as_erased(),
+                        AnyTypeEnum::Pointer(t) => t.const_null().as_erased(),
                         _ => return Err(self.expected("zeroinitializer for int/ptr phi")),
                     };
                     PhiValRef::Resolved(v)
@@ -7631,7 +7634,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Token::Kw(Keyword::Null) => {
                     self.bump()?;
                     let v = match ty.into_type_enum() {
-                        AnyTypeEnum::Pointer(t) => t.const_null().into_erased(),
+                        AnyTypeEnum::Pointer(t) => t.const_null().as_erased(),
                         _ => return Err(self.expected("null only valid for pointer phi")),
                     };
                     PhiValRef::Resolved(v)
@@ -7642,8 +7645,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     // handled by the verifier / optimizer).
                     self.bump()?;
                     let v = match ty.into_type_enum() {
-                        AnyTypeEnum::Int(t) => t.const_zero().into_erased(),
-                        AnyTypeEnum::Pointer(t) => t.const_null().into_erased(),
+                        AnyTypeEnum::Int(t) => t.const_zero().as_erased(),
+                        AnyTypeEnum::Pointer(t) => t.const_null().as_erased(),
                         AnyTypeEnum::Float(_t) => {
                             self.expect_punct(PunctKind::Comma, "',' in phi incoming pair")?;
                             let bb_ref = self.parse_phi_label(state)?;
@@ -7975,7 +7978,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ParsedDirectCallee::Name { name, loc } => {
                 if let Some(f) = self
                     .module
-                    .function_by_name_dyn(&name)
+                    .function_dyn(&name)
                     .map(|id| self.module.view(id))
                 {
                     match resolve_intrinsic_name(&name) {
@@ -8929,14 +8932,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ValId::LocalName(name) => match state.local_named.get(&name).copied() {
                 Some(value) => Ok((value, None)),
                 None => Ok((
-                    ty.get_undef().into_erased(),
+                    ty.undef().as_erased(),
                     Some((DeferredLocalValueRef::Named(name), loc)),
                 )),
             },
             ValId::LocalId(id) => match state.local_numbered.get(&id).copied() {
                 Some(value) => Ok((value, None)),
                 None => Ok((
-                    ty.get_undef().into_erased(),
+                    ty.undef().as_erased(),
                     Some((DeferredLocalValueRef::Numbered(id), loc)),
                 )),
             },
@@ -9493,9 +9496,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                     // Use a zero constant of the appropriate type.
                     let ty = edge.phi_val.ty();
                     match llvmkit_ir::AnyTypeEnum::from(ty) {
-                        llvmkit_ir::AnyTypeEnum::Int(t) => t.const_zero().into_erased(),
+                        llvmkit_ir::AnyTypeEnum::Int(t) => t.const_zero().as_erased(),
                         llvmkit_ir::AnyTypeEnum::Float(_t) => continue,
-                        llvmkit_ir::AnyTypeEnum::Pointer(t) => t.const_null().into_erased(),
+                        llvmkit_ir::AnyTypeEnum::Pointer(t) => t.const_null().as_erased(),
                         _ => continue,
                     }
                 }

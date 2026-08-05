@@ -302,10 +302,10 @@ fn mem_intrinsic_wrapper_narrows_generated_memory_call() -> Result<(), IrError> 
     let view = b.intrinsic_call(
         &descriptor,
         &[
-            dst.into_erased(),
-            src.into_erased(),
-            len.into_erased(),
-            i1_ty.const_int(false).into_erased(),
+            dst.as_erased(),
+            src.as_erased(),
+            len.as_erased(),
+            i1_ty.const_int(false).as_erased(),
         ],
         "",
     )?;
@@ -349,10 +349,10 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
     let memcpy = b.intrinsic_call(
         &memcpy_descriptor,
         &[
-            dst.into_erased(),
-            src.into_erased(),
-            len.into_erased(),
-            i1_ty.const_int(false).into_erased(),
+            dst.as_erased(),
+            src.as_erased(),
+            len.as_erased(),
+            i1_ty.const_int(false).as_erased(),
         ],
         "",
     )?;
@@ -365,10 +365,10 @@ fn mem_intrinsic_wrapper_narrows_generated_inline_memory_calls() -> Result<(), I
     let memset = b.intrinsic_call(
         &memset_descriptor,
         &[
-            dst.into_erased(),
-            i8_ty.const_int(0_i8).into_erased(),
-            len.into_erased(),
-            i1_ty.const_int(false).into_erased(),
+            dst.as_erased(),
+            i8_ty.const_int(0_i8).as_erased(),
+            len.as_erased(),
+            i1_ty.const_int(false).as_erased(),
         ],
         "",
     )?;
@@ -391,7 +391,7 @@ fn lifetime_intrinsic_wrapper_narrows_generated_lifetime_call() -> Result<(), Ir
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let ptr: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
-    let view = b.intrinsic_call(&descriptor, &[ptr.into_erased()], "")?;
+    let view = b.intrinsic_call(&descriptor, &[ptr.as_erased()], "")?;
 
     let view = b.view(view);
     let lifetime = LifetimeIntrinsic::try_from_intrinsic(view)?;
@@ -415,7 +415,7 @@ fn descriptor_call_builder_rejects_wrong_argument_count() -> Result<(), IrError>
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let err = b
-        .intrinsic_call(&descriptor, &[x.into_erased()], "bad")
+        .intrinsic_call(&descriptor, &[x.as_erased()], "bad")
         .expect_err("missing immarg is rejected before call emission");
     assert!(
         matches!(err, IrError::IntrinsicSignatureMismatch { .. }),
@@ -511,7 +511,7 @@ fn target_extension_overload_name_round_trips() -> Result<(), IrError> {
         m.intrinsic_descriptor_from_signature(raw_name, raw_descriptor.function_type(&m)?)?;
     assert_eq!(raw_matched, raw_descriptor);
 
-    let layout_struct = m.named_struct("__cblayout_d").as_type();
+    let layout_struct = m.get_or_insert_named_struct("__cblayout_d").as_type();
     let layout = m
         .target_ext_type("dx.Layout", [layout_struct], [16, 0, 4, 8, 12])
         .as_type();
@@ -536,7 +536,7 @@ fn target_extension_overload_name_round_trips() -> Result<(), IrError> {
 #[test]
 fn function_and_named_struct_mangled_overload_suffix_round_trips() -> Result<(), IrError> {
     let m = module_new!("intrinsic-function-struct-overload")?;
-    let point = m.named_struct("Point").as_type();
+    let point = m.get_or_insert_named_struct("Point").as_type();
     let fn_overload = m
         .fn_type(
             m.i32_type().as_type(),
@@ -643,7 +643,7 @@ fn asm_writer_prints_generated_intrinsic_immediate_argument_comments() -> Result
     let ptr: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
     b.intrinsic_call(
         &descriptor,
-        &[ptr.into_erased(), i32_ty.const_int(1_i32).into_erased()],
+        &[ptr.as_erased(), i32_ty.const_int(1_i32).as_erased()],
         "",
     )?;
     b.ret_void()?;

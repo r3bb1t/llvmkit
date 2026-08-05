@@ -1,5 +1,5 @@
 //! Folder trait for the IR builder. Mirrors
-//! `llvm/include/llvm/IR/IrBuilderFolder.h`.
+//! `llvm/include/llvm/IR/IRBuilderFolder.h`.
 //!
 //! Upstream returns `Value *` from every hook, with `nullptr` meaning
 //! "no fold". The Rust analog uses `IrResult<Option<Value<'ctx, B>>>`:
@@ -253,7 +253,7 @@ pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
         lhs: IntValue<'ctx, W, B>,
         rhs: IntValue<'ctx, W, B>,
     ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
-        let folded = self.fold_bin_op_dyn(opcode, lhs.into_erased(), rhs.into_erased())?;
+        let folded = self.fold_bin_op_dyn(opcode, lhs.as_erased(), rhs.as_erased())?;
         narrow_folded_int(folded, lhs)
     }
 
@@ -265,7 +265,7 @@ pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
         flags: OverflowFlags,
     ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
         let folded =
-            self.fold_no_wrap_bin_op_dyn(opcode, lhs.into_erased(), rhs.into_erased(), flags)?;
+            self.fold_no_wrap_bin_op_dyn(opcode, lhs.as_erased(), rhs.as_erased(), flags)?;
         narrow_folded_int(folded, lhs)
     }
 
@@ -275,7 +275,7 @@ pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
         lhs: IntValue<'ctx, W, B>,
         rhs: IntValue<'ctx, W, B>,
     ) -> IrResult<Option<IntValue<'ctx, W, B>>> {
-        let folded = self.fold_exact_bin_op_dyn(opcode, lhs.into_erased(), rhs.into_erased())?;
+        let folded = self.fold_exact_bin_op_dyn(opcode, lhs.as_erased(), rhs.as_erased())?;
         narrow_folded_int(folded, lhs)
     }
 
@@ -286,7 +286,7 @@ pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
         rhs: FloatValue<'ctx, K, B>,
         fmf: FastMathFlags,
     ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
-        let folded = self.fold_bin_op_fmf_dyn(opcode, lhs.into_erased(), rhs.into_erased(), fmf)?;
+        let folded = self.fold_bin_op_fmf_dyn(opcode, lhs.as_erased(), rhs.as_erased(), fmf)?;
         narrow_folded_fp(folded, lhs)
     }
 
@@ -296,7 +296,7 @@ pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
         value: FloatValue<'ctx, K, B>,
         fmf: FastMathFlags,
     ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
-        let folded = self.fold_un_op_fmf_dyn(opcode, value.into_erased(), fmf)?;
+        let folded = self.fold_un_op_fmf_dyn(opcode, value.as_erased(), fmf)?;
         narrow_folded_fp(folded, value)
     }
 
@@ -306,7 +306,7 @@ pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
         lhs: IntValue<'ctx, W, B>,
         rhs: IntValue<'ctx, W, B>,
     ) -> IrResult<Option<IntValue<'ctx, bool, B>>> {
-        let folded = self.fold_cmp_dyn(predicate.into(), lhs.into_erased(), rhs.into_erased())?;
+        let folded = self.fold_cmp_dyn(predicate.into(), lhs.as_erased(), rhs.as_erased())?;
         narrow_folded_bool(folded)
     }
 
@@ -316,7 +316,7 @@ pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
         lhs: FloatValue<'ctx, K, B>,
         rhs: FloatValue<'ctx, K, B>,
     ) -> IrResult<Option<IntValue<'ctx, bool, B>>> {
-        let folded = self.fold_cmp_dyn(predicate.into(), lhs.into_erased(), rhs.into_erased())?;
+        let folded = self.fold_cmp_dyn(predicate.into(), lhs.as_erased(), rhs.as_erased())?;
         narrow_folded_bool(folded)
     }
 
@@ -358,7 +358,7 @@ where
     B: ModuleBrand + 'ctx,
 {
     let Some(v) = folded else { return Ok(None) };
-    like.into_erased().ty().require_match(v.ty())?;
+    like.as_erased().ty().require_match(v.ty())?;
     Ok(Some(IntValue::from_value_unchecked(v)))
 }
 

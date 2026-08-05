@@ -1,6 +1,6 @@
 //! A custom folder cannot return a wrong-width typed fold result:
 //! the typed hook's signature pins the width. Example-lock (C++ has
-//! no static analog; nearest family: IrBuilderFolder.h contract).
+//! no static analog; nearest family: IRBuilderFolder.h contract).
 use llvmkit_ir::{BinaryOpcode, IrBuilderFolder, IntValue, IrResult, ModuleBrand};
 
 struct BadFolder;

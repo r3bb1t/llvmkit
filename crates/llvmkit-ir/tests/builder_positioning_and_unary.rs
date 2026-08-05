@@ -43,7 +43,7 @@ fn position_before_inserts_between_prev_and_anchor() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `IrBuilder.h::IrBuilder::SetInsertPointPastAllocas(Function*)`.
+/// Mirrors `IRBuilder.h::IRBuilder::SetInsertPointPastAllocas(Function*)`.
 /// llvmkit-specific scaffold: upstream `unittests/IR/IRBuilderTest.cpp` has
 /// no dedicated `TEST_F` for this entry-block-scan helper; closest upstream
 /// coverage is the live use sites in `lib/Frontend/OpenMP/OMPIRBuilder.cpp`
@@ -76,7 +76,7 @@ fn position_past_allocas_anchors_after_alloca_prefix() -> Result<(), IrError> {
 
 /// Mirrors `unittests/Frontend/OpenMPIRBuilderTest.cpp` use of
 /// `Builder.saveIP()` / `Builder.restoreIP(...)` (lines 244 / 253) --
-/// the canonical upstream usage of the IrBuilder save/restore API.
+/// the canonical upstream usage of the IRBuilder save/restore API.
 #[test]
 fn save_and_restore_insert_point_before_terminator() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -119,7 +119,7 @@ fn restore_insert_point_rejects_terminated_block() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific (0.0.4 id currency). Closest upstream construct is
-/// `Builder.SetInsertPoint(BB)` in `IrBuilder.h`, which takes a raw
+/// `Builder.SetInsertPoint(BB)` in `IRBuilder.h`, which takes a raw
 /// `BasicBlock*` recovered from a walk. Our linear
 /// [`IrBuilder::position_at_end`] consumes an `Unterminated` block token, so a
 /// pass that only kept the block's [`llvmkit_ir::BlockId`] reaches the same
@@ -213,7 +213,7 @@ fn position_at_end_dyn_rejects_a_block_from_another_module() -> Result<(), IrErr
 
 // --- Unary integer helpers --------------------------------------------
 
-/// Mirrors `IrBuilder.h::IrBuilder::CreateNeg(V, Name)` -> `sub 0, V`.
+/// Mirrors `IRBuilder.h::IRBuilder::CreateNeg(V, Name)` -> `sub 0, V`.
 /// AsmWriter print form locked against
 /// `test/Assembler/auto_upgrade_nvvm_intrinsics.ll` line 128 (which has the
 /// upstream `; CHECK-DAG: ... = sub i32 0, %a` directive).
@@ -234,7 +234,7 @@ fn build_int_neg_emits_sub_zero() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `IrBuilder.h::IrBuilder::CreateNSWNeg` -> `sub nsw 0, V`.
+/// Mirrors `IRBuilder.h::IRBuilder::CreateNSWNeg` -> `sub nsw 0, V`.
 /// Closest upstream `TEST_F`:
 /// `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, WrapFlags)` (line
 /// 773) which exercises `CreateNSWAdd` / `CreateNSWSub` -- the same
@@ -256,7 +256,7 @@ fn build_int_neg_nsw_emits_sub_nsw() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `IrBuilder.h::IrBuilder::CreateNot(V)` -> `xor V, -1`.
+/// Mirrors `IRBuilder.h::IRBuilder::CreateNot(V)` -> `xor V, -1`.
 /// llvmkit-specific scaffold (no upstream `TEST_F` for `CreateNot`).
 /// AsmWriter print form mirrors `lib/IR/AsmWriter.cpp::printInstruction`
 /// Xor arm.
@@ -278,7 +278,7 @@ fn build_int_not_emits_xor_minus_one() -> Result<(), IrError> {
 
 // --- Pointer cast / is_null / is_not_null -----------------------------
 
-/// Mirrors `IrBuilder.h::IrBuilder::CreatePointerBitCastOrAddrSpaceCast`.
+/// Mirrors `IRBuilder.h::IRBuilder::CreatePointerBitCastOrAddrSpaceCast`.
 /// Upstream call site:
 /// `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 6473 invokes
 /// `Builder.CreatePointerBitCastOrAddrSpaceCast(Addr, Input->getType())`.
@@ -302,7 +302,7 @@ fn build_pointer_cast_same_addrspace_emits_bitcast() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `IrBuilder.h::IrBuilder::CreateIsNull(Arg)` ->
+/// Mirrors `IRBuilder.h::IRBuilder::CreateIsNull(Arg)` ->
 /// `icmp eq <ptr>, null`. llvmkit-specific scaffold (no dedicated `TEST_F`).
 /// Sibling `CreateIsNotNull` is exercised at
 /// `unittests/Frontend/OpenMPIRBuilderTest.cpp` line 1153.

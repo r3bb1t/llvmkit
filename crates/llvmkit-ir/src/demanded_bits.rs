@@ -92,7 +92,7 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             demanded_bits_changed: false,
         });
     };
-    let demanded = demanded_bits.get_demanded_bits(value);
+    let demanded = demanded_bits.demanded_bits(value);
     let full = ApInt::low_bits_set(width, u32::MAX);
     let known = compute_known_bits(value, query)?;
     let known_mask = known.zero_mask().bitor(known.one_mask());
@@ -105,7 +105,7 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         // never has to re-narrow an erased id to use it as an int operand.
         let konst: IntValue<'ctx, IntDyn, B> = int_ty
             .const_ap_int(known.one_mask())?
-            .into_erased()
+            .as_erased()
             .try_into()?;
         Some(konst.id())
     } else {
@@ -142,7 +142,7 @@ impl DemandedBits {
     }
 
     /// Return the bits demanded from an instruction value.
-    pub fn get_demanded_bits<'ctx, B: ModuleBrand + 'ctx>(&self, value: Value<'ctx, B>) -> ApInt {
+    pub fn demanded_bits<'ctx, B: ModuleBrand + 'ctx>(&self, value: Value<'ctx, B>) -> ApInt {
         if let Some(bits) = self.alive_bits.get(&value.slot()) {
             return bits.clone();
         }
@@ -153,7 +153,7 @@ impl DemandedBits {
     }
 
     /// Return the bits demanded from operand `operand_index` of instruction `user`.
-    pub fn get_operand_demanded_bits<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn operand_demanded_bits<'ctx, B: ModuleBrand + 'ctx>(
         &self,
         user: Value<'ctx, B>,
         operand_index: usize,
@@ -177,7 +177,7 @@ impl DemandedBits {
         if self.is_use_dead(user, operand_index)? {
             return Ok(ApInt::zero(width));
         }
-        let a_out = self.get_demanded_bits(user);
+        let a_out = self.demanded_bits(user);
         self.determine_live_operand_bits(user, operand, operand_index, &a_out)
     }
 
@@ -247,7 +247,7 @@ impl DemandedBits {
     ) -> IrResult<()> {
         let mut worklist = VecDeque::new();
         let mut queued = HashSet::new();
-        let anchor = function.as_function().into_erased();
+        let anchor = function.as_function().as_erased();
 
         for block in function.as_function().basic_blocks() {
             for inst in block.instructions() {
@@ -1023,7 +1023,7 @@ fn simplify_demanded_operands<'a, 'ctx, B: ModuleBrand + 'ctx>(
     demanded_bits: &DemandedBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
-    let demanded = demanded_bits.get_demanded_bits(value);
+    let demanded = demanded_bits.demanded_bits(value);
     let ValueKindData::Instruction(inst) = &value.data().kind else {
         return Ok(false);
     };
@@ -1052,7 +1052,7 @@ fn demanded_value_replacement<'a, 'ctx, B: ModuleBrand + 'ctx>(
     demanded_bits: &DemandedBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<Option<Value<'ctx, B>>> {
-    let demanded = demanded_bits.get_demanded_bits(value);
+    let demanded = demanded_bits.demanded_bits(value);
     if !demanded.is_all_ones() && value.num_uses() != 1 {
         return Ok(None);
     }
@@ -1211,7 +1211,7 @@ fn simplify_xor_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
     if rhs_bits.bitor(&demanded.not()).is_all_ones() {
         let int_ty = IntType::<IntDyn, B>::try_from(rhs.ty())?;
         let all_ones = int_ty.const_ap_int(&ApInt::all_ones(demanded.bit_width()))?;
-        return replace_instruction_operand(value, &bin.rhs, all_ones.into_erased());
+        return replace_instruction_operand(value, &bin.rhs, all_ones.as_erased());
     }
     shrink_demanded_constant_operand(value, &bin.rhs, demanded)
 }
@@ -1232,7 +1232,7 @@ fn shrink_demanded_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
     }
     let int_ty = IntType::<IntDyn, B>::try_from(current.ty())?;
     let replacement = int_ty.const_ap_int(&shrunk)?;
-    replace_instruction_operand(user, operand, replacement.into_erased())
+    replace_instruction_operand(user, operand, replacement.as_erased())
 }
 
 fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(

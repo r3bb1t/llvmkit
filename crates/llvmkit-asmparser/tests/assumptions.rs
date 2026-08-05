@@ -93,7 +93,7 @@ fn parameter<'m>(module: &'m Module<DynBrand, Unverified>, index: usize) -> Valu
         .params()
         .nth(index)
         .expect("fixture has that many parameters")
-        .into_erased()
+        .as_erased()
 }
 
 /// The right-hand operand of the `icmp` named `%name`.

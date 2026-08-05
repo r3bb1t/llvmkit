@@ -464,7 +464,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 message: "intrinsic declaration modifier",
             });
         }
-        let intrinsic_value = f.into_erased();
+        let intrinsic_value = f.as_erased();
         for user in intrinsic_value.users() {
             let used_as_callee = match user.kind() {
                 Some(InstructionKind::Call(call)) => call.callee().slot() == intrinsic_value.slot(),
@@ -614,7 +614,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         // directly because every typed handle re-narrows the same
         // payload anyway; one match arm per opcode keeps the dispatch
         // table local.
-        let kind = match &inst.into_erased().data().kind {
+        let kind = match &inst.as_erased().data().kind {
             ValueKindData::Instruction(i) => &i.kind,
             // Instruction's invariant (asserted at handle construction)
             // is that the value-kind is Instruction.
@@ -2819,7 +2819,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             let operand = crate::Value::from_parts(op_id, self.module, op_data.ty);
             let index = u32::try_from(index)
                 .unwrap_or_else(|_| unreachable!("instruction operand index exceeds u32::MAX"));
-            let use_edge = crate::Use::new(inst.into_erased(), operand, index);
+            let use_edge = crate::Use::new(inst.as_erased(), operand, index);
             if !dom_tree.dominates_use(operand, use_edge) {
                 return Err(self.fail(
                     f,
@@ -2855,7 +2855,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         if is_phi {
             return Ok(());
         }
-        let kind = match &inst.into_erased().data().kind {
+        let kind = match &inst.as_erased().data().kind {
             ValueKindData::Instruction(i) => &i.kind,
             _ => unreachable!("instruction handle invariant: value kind is Instruction"),
         };
@@ -3246,6 +3246,7 @@ mod tests {
     use super::*;
     use crate::Linkage;
     use crate::constant::ConstantData;
+    use crate::data_layout::DataLayout;
     use crate::function::FunctionValue;
     use crate::instr_types::{BinaryOpData, BranchInstData, BranchKind, PhiData, ReturnOpData};
     use crate::instruction::{InstructionKindData, build_instruction_value};
@@ -3737,7 +3738,7 @@ mod tests {
     #[test]
     fn ptrtoaddr_result_uses_index_width() {
         let m = crate::module_new!("t").expect("fresh module");
-        m.set_data_layout("p1:64:64:64:32").unwrap();
+        m.set_data_layout(DataLayout::parse("p1:64:64:64:32").unwrap());
         let void_ty = m.void_type().as_type();
         let i64_ty = m.i64_type().as_type();
         let ptr1_ty = m.ptr_type(1).as_type();

@@ -598,7 +598,7 @@ fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
     let b = IrBuilder::new_for::<i32>(m).position_at_end(dflt);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let nd = b.int_add(a, 5_i32, "nd")?;
-    b.br_with_args(new_lbl, &[m.view(nd).into_erased()])?;
+    b.br_with_args(new_lbl, &[m.view(nd).as_erased()])?;
 
     // case0: ret 0
     let b = IrBuilder::new_for::<i32>(m).position_at_end(case0);
@@ -613,7 +613,7 @@ fn build_switch_bogus_fn<'ctx, B: ModuleBrand + 'ctx>(
     let np: IntValue<'_, i32, _> = new_params[0].try_into()?;
     b.ret(np)?;
 
-    Ok((f, bogus_dyn, new_dyn, m.view(ev).into_erased().id()))
+    Ok((f, bogus_dyn, new_dyn, m.view(ev).as_erased().id()))
 }
 
 /// `redirect_successor` rejects an `old_to` that is not a case successor of the

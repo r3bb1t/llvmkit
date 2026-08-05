@@ -16,5 +16,5 @@ fn main() {
         .int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "sum")
         .unwrap();
 
-    let _inst: llvmkit_ir::Instruction<_, _> = b.view(add).into_erased().try_into().unwrap();
+    let _inst: llvmkit_ir::Instruction<_, _> = b.view(add).as_erased().try_into().unwrap();
 }

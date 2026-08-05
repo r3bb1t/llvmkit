@@ -146,7 +146,7 @@ fn inline_asm_multiline_escapes_newline() -> Result<(), IrError> {
 }
 
 /// Indirect call return marker must match the explicit function type.
-/// Mirrors `IrBuilder::CreateCall(FunctionType*, Value*, ...)`, where the
+/// Mirrors `IRBuilder::CreateCall(FunctionType*, Value*, ...)`, where the
 /// result type is determined by `FunctionType`.
 #[test]
 fn indirect_call_rejects_wrong_return_marker() -> Result<(), IrError> {

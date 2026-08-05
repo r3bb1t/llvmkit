@@ -69,7 +69,7 @@ fn compute_num_sign_bits_pr32045() -> Result<(), IrError> {
         let shifted = b.int_ashr::<i32, _, _, _>(a, minus_one, "A")?;
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        compute_num_sign_bits(b.view(shifted).into_erased(), &query)
+        compute_num_sign_bits(b.view(shifted).as_erased(), &query)
     })?;
     assert_eq!(bits, 32);
     Ok(())
@@ -84,7 +84,7 @@ fn unknown_value_has_one_sign_bit_and_full_significant_width() -> Result<(), IrE
     let (sign_bits, significant) = in_function("nsb-unknown", |m, _b, a| {
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        let value: Value<'_, _> = a.into_erased();
+        let value: Value<'_, _> = a.as_erased();
         Ok((
             compute_num_sign_bits(value, &query)?,
             compute_max_significant_bits(value, &query)?,
@@ -230,7 +230,7 @@ fn ported_arms_never_over_report_sign_bits() -> Result<(), IrError> {
             };
             let dl = m.data_layout();
             let query = ValueTrackingQuery::new(&dl);
-            compute_num_sign_bits(b.view(result).into_erased(), &query)
+            compute_num_sign_bits(b.view(result).as_erased(), &query)
         })?;
 
         let truth = i32_const(case.result).num_sign_bits();
@@ -276,14 +276,14 @@ fn sext_and_trunc_arms_never_over_report() -> Result<(), IrError> {
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
 
-    let sext_bits = compute_num_sign_bits(b.view(widened).into_erased(), &query)?;
+    let sext_bits = compute_num_sign_bits(b.view(widened).as_erased(), &query)?;
     let sext_truth = i32_const(-8).num_sign_bits();
     assert!(
         sext_bits >= 1 && sext_bits <= sext_truth,
         "sext: {sext_bits} vs {sext_truth}"
     );
 
-    let trunc_bits = compute_num_sign_bits(b.view(narrowed).into_erased(), &query)?;
+    let trunc_bits = compute_num_sign_bits(b.view(narrowed).as_erased(), &query)?;
     let trunc_truth = ApInt::new(
         8,
         (-8_i64) as u64,

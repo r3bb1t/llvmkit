@@ -64,7 +64,7 @@ impl<T> NumberedValues<T> {
 
     /// Smallest id that has not been used yet. Mirrors `getNext()`.
     #[inline]
-    pub fn get_next(&self) -> u32 {
+    pub fn next_unused_id(&self) -> u32 {
         self.next_unused_id
     }
 
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn empty_registry_starts_at_zero() {
         let n: NumberedValues<u32> = NumberedValues::new();
-        assert_eq!(n.get_next(), 0);
+        assert_eq!(n.next_unused_id(), 0);
         assert_eq!(n.get(0), None);
         assert!(n.is_empty());
     }
@@ -233,11 +233,11 @@ mod tests {
     fn add_advances_next_unused() {
         let mut n: NumberedValues<u32> = NumberedValues::new();
         n.add(0, 100).expect("fresh id");
-        assert_eq!(n.get_next(), 1);
+        assert_eq!(n.next_unused_id(), 1);
         assert_eq!(n.get(0), Some(&100));
 
         n.add(5, 500).expect("monotonic id");
-        assert_eq!(n.get_next(), 6);
+        assert_eq!(n.next_unused_id(), 6);
         assert_eq!(n.get(5), Some(&500));
         // Skipped slots remain empty.
         assert_eq!(n.get(2), None);
@@ -264,7 +264,7 @@ mod tests {
         globals.add(0, "@0").unwrap();
         // After parsing `@0 = global ...`, `getNext()` is 1 — same shape as
         // `Mapping.GlobalValues.getNext()` in the upstream test.
-        assert_eq!(globals.get_next(), 1);
+        assert_eq!(globals.next_unused_id(), 1);
         assert_eq!(globals.get(0), Some(&"@0"));
     }
 

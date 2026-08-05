@@ -171,8 +171,8 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let weak_ptr = PointerValue::try_from(m.view(weak).as_global_constant_ptr().into_erased())?;
-    let strong_ptr = PointerValue::try_from(m.view(strong).as_global_constant_ptr().into_erased())?;
+    let weak_ptr = PointerValue::try_from(m.view(weak).as_global_constant_ptr().as_erased())?;
+    let strong_ptr = PointerValue::try_from(m.view(strong).as_global_constant_ptr().as_erased())?;
     let w = IntValue::try_from(b.view(b.load(i32_ty.as_type(), weak_ptr, "w")?))?;
     let s = IntValue::try_from(b.view(b.load(i32_ty.as_type(), strong_ptr, "s")?))?;
     let sum = b.int_add::<i32, _, _, _>(w, s, "sum")?;
@@ -289,7 +289,7 @@ fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), 
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    let gp = PointerValue::try_from(m.view(g).as_global_constant_ptr().into_erased())?;
+    let gp = PointerValue::try_from(m.view(g).as_global_constant_ptr().as_erased())?;
     let cfg = AtomicLoadConfig::new(AtomicOrdering::Monotonic, SyncScope::System, Align::new(4)?);
     let s = b.int_load_atomic::<i32, _, _>(gp, cfg, "s")?;
     b.ret(s)?;
@@ -343,10 +343,10 @@ fn instsimplify_folds_uniform_phi() -> Result<(), IrError> {
     b.cond_br(cond, l_label, r_label)?;
     // l: br m(%c)
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(l);
-    b.br_with_args(join_label, &[c.into_erased()])?;
+    b.br_with_args(join_label, &[c.as_erased()])?;
     // r: br m(%c)
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(r);
-    b.br_with_args(join_label, &[c.into_erased()])?;
+    b.br_with_args(join_label, &[c.as_erased()])?;
     // m: ret %p (the head-phi param merges %c down both edges -> uniform)
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
@@ -395,7 +395,7 @@ fn instsimplify_folds_self_referential_uniform_phi() -> Result<(), IrError> {
 
     // entry: br loop(%v0)
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    b.br_with_args(loop_label, &[v0.into_erased()])?;
+    b.br_with_args(loop_label, &[v0.as_erased()])?;
     // loop: body; cond_br exit / loop(%p). The self-edge carries the loop
     // param itself back, reproducing `[ %v0, %entry ], [ %p, %loop ]`.
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(loop_bb);
@@ -454,10 +454,10 @@ fn instsimplify_keeps_non_uniform_phi() -> Result<(), IrError> {
     b.cond_br(cond, l_label, r_label)?;
     // l: br m(%a)
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(l);
-    b.br_with_args(join_label, &[a.into_erased()])?;
+    b.br_with_args(join_label, &[a.as_erased()])?;
     // r: br m(%b)
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(r);
-    b.br_with_args(join_label, &[bparam.into_erased()])?;
+    b.br_with_args(join_label, &[bparam.as_erased()])?;
     // m: ret %p -- distinct incomings %a / %b keep the phi non-uniform.
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
@@ -505,10 +505,10 @@ fn uniform_phi_fold_cascades_to_users() -> Result<(), IrError> {
     b.cond_br(cond, l_label, r_label)?;
     // l: br m(3)
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(l);
-    b.br_with_args(join_label, &[i32_ty.const_int(3_i32).into_erased()])?;
+    b.br_with_args(join_label, &[i32_ty.const_int(3_i32).as_erased()])?;
     // r: br m(3)
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(r);
-    b.br_with_args(join_label, &[i32_ty.const_int(3_i32).into_erased()])?;
+    b.br_with_args(join_label, &[i32_ty.const_int(3_i32).as_erased()])?;
     // m: %q = add %p, 4 ; ret %q -- the user reads the head-phi param.
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;

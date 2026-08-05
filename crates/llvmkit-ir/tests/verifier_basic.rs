@@ -205,7 +205,7 @@ fn intrinsic_declaration_used_as_non_callee_operand_is_rejected() -> Result<(), 
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    b.call_dyn(sink, [m.view(intrinsic).into_erased()], "")?;
+    b.call_dyn(sink, [m.view(intrinsic).as_erased()], "")?;
     b.ret_void()?;
 
     let err = m
@@ -408,11 +408,11 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
     // `SelectArm` (constants narrow through value not int-value path).
     let _ = (one_const, two_const);
     let sel = bt.select(cmp, loaded, loaded, "sel")?;
-    let sel_arg = bt.view(sel).into_erased();
+    let sel_arg = bt.view(sel).as_erased();
     bt.br_with_args(join_label, &[sel_arg])?;
 
     let be = IrBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
-    be.br_with_args(join_label, &[loaded.into_erased()])?;
+    be.br_with_args(join_label, &[loaded.as_erased()])?;
 
     let bj = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
@@ -442,7 +442,7 @@ fn verify_call() -> Result<(), IrError> {
     let bb = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
     let arg: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
-    let inst = b.call_dyn(callee, [arg.into_erased()], "c1")?;
+    let inst = b.call_dyn(callee, [arg.as_erased()], "c1")?;
     let one: IntValue<'_, i32, _> = b
         .view(inst)
         .return_value()
@@ -658,10 +658,10 @@ fn verify_phi_incoming_edge_dominance_passes() -> Result<(), IrError> {
         .cond_br(cond, then_label, else_label)?;
     let bt = IrBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
     let y = bt.int_add(x, 1_i32, "y")?;
-    bt.br_with_args(join_label, &[m.view(y).into_erased()])?;
+    bt.br_with_args(join_label, &[m.view(y).as_erased()])?;
     IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(else_bb)
-        .br_with_args(join_label, &[x.into_erased()])?;
+        .br_with_args(join_label, &[x.as_erased()])?;
     let bj = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
     bj.ret(p)?;

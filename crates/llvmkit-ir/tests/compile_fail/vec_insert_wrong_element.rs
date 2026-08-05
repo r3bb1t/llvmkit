@@ -20,7 +20,7 @@ fn main() {
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
 
     let vec: VectorValue<'_, i32, Len<4>, _> =
-        m.view(f).param(0).unwrap().into_erased().try_into().unwrap();
+        m.view(f).param(0).unwrap().as_erased().try_into().unwrap();
     let wrong: FloatValue<'_, f32, _> = m.view(f).param(1).unwrap().try_into().unwrap();
 
     // `E` is fixed to `i32` by `vec`, so `element` must be `IntValue<i32>`;

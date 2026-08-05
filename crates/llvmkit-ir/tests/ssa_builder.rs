@@ -9,7 +9,7 @@
 //!
 //! ## Upstream provenance
 //!
-//! `SsaBuilder` is llvmkit-specific: LLVM's `IrBuilder` has no on-the-fly
+//! `SsaBuilder` is llvmkit-specific: LLVM's `IRBuilder` has no on-the-fly
 //! SSA layer. The nearest functional relatives are `cranelift-frontend`'s
 //! `FunctionBuilder` (construction ergonomics: `declare_var`/`create_block`)
 //! and `llvm/lib/Transforms/Utils/SSAUpdater.cpp` (the completion
@@ -482,7 +482,7 @@ fn poison_variable_reads_poison_on_undef_path() -> Result<(), IrError> {
 /// instead of erroring -- or, if the naming happened to differ, the
 /// error would misname the poison variable rather than the strict one
 /// actually being read. This must instead name the STRICT variable and
-/// error, never poison. No upstream analogue: LLVM's `IrBuilder` has no
+/// error, never poison. No upstream analogue: LLVM's `IRBuilder` has no
 /// on-the-fly SSA layer and never faces this ambiguity (see the module
 /// doc's `SSAUpdater` comparison).
 #[test]

@@ -16,12 +16,11 @@
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
     BytewiseValue, DynBrand, Module, Unverified, Value, argument_aliasing_to_returned_pointer,
-    find_alloca_for_value, find_inserted_value, get_constant_string_info, get_string_length,
-    get_underlying_object, get_underlying_object_aggressive, get_underlying_objects,
-    get_underlying_objects_for_code_gen, is_bytewise_value,
+    constant_string_info, find_alloca_for_value, find_inserted_value, is_bytewise_value,
     is_intrinsic_returning_pointer_aliasing_argument_without_capturing,
     only_used_by_lifetime_markers, only_used_by_lifetime_markers_or_droppable_instructions,
-    pointer_base_with_constant_offset,
+    pointer_base_with_constant_offset, string_length, underlying_object,
+    underlying_object_aggressive, underlying_objects, underlying_objects_for_code_gen,
 };
 
 fn parse(source: &str) -> Module<DynBrand, Unverified> {
@@ -54,7 +53,7 @@ fn global_initializer<'m>(
         .unwrap_or_else(|| panic!("fixture defines @{name}"))
         .initializer()
         .unwrap_or_else(|| panic!("@{name} has an initializer"))
-        .into_erased()
+        .as_erased()
 }
 
 /// A pointer to the global named `@name` — the global value itself, whose type
@@ -64,7 +63,7 @@ fn global_pointer<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> V
         .globals()
         .find(|global| global.name() == name)
         .unwrap_or_else(|| panic!("fixture defines @{name}"))
-        .into_erased()
+        .as_erased()
 }
 
 /// `IsBytewiseValueTests` from `llvm/unittests/Analysis/ValueTrackingTest.cpp`,
@@ -345,7 +344,7 @@ target datalayout = "e-p:32:32:32-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:32:64-f3
         ("null_hello_mid", 10),
     ] {
         assert_eq!(
-            get_string_length(global_pointer(&module, name), 8, &data_layout),
+            string_length(global_pointer(&module, name), 8, &data_layout),
             Some(expected),
             "GetStringLength(@{name})"
         );
@@ -369,21 +368,21 @@ fn constant_string_info_fixtures() {
     let data_layout = module.data_layout();
 
     assert_eq!(
-        get_constant_string_info(global_pointer(&module, "hello"), true, &data_layout),
+        constant_string_info(global_pointer(&module, "hello"), true, &data_layout),
         Some(b"hello".to_vec())
     );
     assert_eq!(
-        get_constant_string_info(global_pointer(&module, "null_hello"), true, &data_layout),
+        constant_string_info(global_pointer(&module, "null_hello"), true, &data_layout),
         Some(Vec::new())
     );
     // Untrimmed, the whole array comes back including both nuls.
     assert_eq!(
-        get_constant_string_info(global_pointer(&module, "hello"), false, &data_layout),
+        constant_string_info(global_pointer(&module, "hello"), false, &data_layout),
         Some(b"hello\0".to_vec())
     );
     // A non-constant global is not readable: the linker may replace it.
     assert_eq!(
-        get_constant_string_info(global_pointer(&module, "not_constant"), true, &data_layout),
+        constant_string_info(global_pointer(&module, "not_constant"), true, &data_layout),
         None
     );
 }
@@ -410,9 +409,9 @@ entry:
     );
     let a = named(&module, "a");
     let r = named(&module, "r");
-    assert_eq!(get_underlying_object(r, 10), a);
+    assert_eq!(underlying_object(r, 10), a);
     // An `alloca` is where the walk stops, so asking again is a fixed point.
-    assert_eq!(get_underlying_object(a, 10), a);
+    assert_eq!(underlying_object(a, 10), a);
 }
 
 /// The three walks that follow `select` and `phi` disagree in exactly the way
@@ -440,15 +439,15 @@ define void @test(i1 %cond) {
     let b = named(&module, "b");
     let r = named(&module, "r");
 
-    let mut objects = get_underlying_objects(r, 10);
+    let mut objects = underlying_objects(r, 10);
     objects.sort_by_key(|object| object.name());
     assert_eq!(objects, vec![a, b]);
 
     // One object was asked for and the arms disagree, so the fallback is the
     // plain walk's answer — the `select`, which peels no further.
-    assert_eq!(get_underlying_object_aggressive(r), r);
+    assert_eq!(underlying_object_aggressive(r), r);
 
-    let mut for_code_gen = get_underlying_objects_for_code_gen(r).expect("both are allocas");
+    let mut for_code_gen = underlying_objects_for_code_gen(r).expect("both are allocas");
     for_code_gen.sort_by_key(|object| object.name());
     assert_eq!(for_code_gen, vec![a, b]);
 }
@@ -469,10 +468,7 @@ define void @test(ptr %p) {
 }
 ",
     );
-    assert_eq!(
-        get_underlying_objects_for_code_gen(named(&module, "r")),
-        None
-    );
+    assert_eq!(underlying_objects_for_code_gen(named(&module, "r")), None);
 }
 
 /// `GetPointerBaseWithConstantOffset` accumulates a chain of constant
@@ -587,8 +583,8 @@ define void @test(i32 %x, i32 %y) {
     let b = named(&module, "b");
 
     // Index 1 is what `%b` inserted; index 0 came from `%a`.
-    assert_eq!(find_inserted_value(b, &[1]), Some(params[1].into_erased()));
-    assert_eq!(find_inserted_value(b, &[0]), Some(params[0].into_erased()));
+    assert_eq!(find_inserted_value(b, &[1]), Some(params[1].as_erased()));
+    assert_eq!(find_inserted_value(b, &[0]), Some(params[0].as_erased()));
     // No indices is the value itself — upstream's recursion base case.
     assert_eq!(find_inserted_value(b, &[]), Some(b));
     // An index nothing wrote reaches the `undef` the chain started from, which
@@ -639,7 +635,7 @@ define void @test(ptr %p) {
         .params()
         .next()
         .expect("@test takes a pointer")
-        .into_erased();
+        .as_erased();
 
     for name in ["returned", "laundered"] {
         assert_eq!(

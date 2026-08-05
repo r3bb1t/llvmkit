@@ -195,7 +195,7 @@ fn erased_build_br_with_args_still_works() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.int_add(a, 1_i32, "x")?;
-    b.br_with_args(hdr_label, &[m.view(x).into_erased()])?;
+    b.br_with_args(hdr_label, &[m.view(x).as_erased()])?;
 
     let b = IrBuilder::new_for::<i32>(&m).position_at_end(hdr);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;

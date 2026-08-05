@@ -106,7 +106,7 @@ fn default_constant_folder_folds_float_compare() -> Result<(), IrError> {
         "is_lt",
     )?;
     let folded =
-        ConstantIntValue::<bool, _>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
+        ConstantIntValue::<bool, _>::try_from(Constant::try_from(b.view(result).as_erased())?)?;
     assert_eq!(folded.ap_int().try_zext_u64(), Some(1));
     Ok(())
 }

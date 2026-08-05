@@ -49,7 +49,7 @@ fn module_prints_simple_add_function() -> Result<(), IrError> {
 fn module_prints_blank_line_between_type_identities_and_first_function() -> Result<(), IrError> {
     let m = module_new!("type_separator")?;
     let i32_ty = m.i32_type();
-    let point_ty = m.named_struct("Point");
+    let point_ty = m.get_or_insert_named_struct("Point");
     m.set_struct_body_dyn(point_ty, [i32_ty.as_type(), i32_ty.as_type()], false)?;
 
     let fn_ty = m.fn_type(m.void_type(), [i32_ty.as_type()], false);
@@ -178,8 +178,8 @@ fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
     // folded value reaches the `ret` operand directly with no `add`
     // instruction emitted.
     let folded = b.int_add(
-        IntValue::<i32, _>::try_from(a.into_erased())?,
-        IntValue::<i32, _>::try_from(bb.into_erased())?,
+        IntValue::<i32, _>::try_from(a.as_erased())?,
+        IntValue::<i32, _>::try_from(bb.as_erased())?,
         "sum",
     )?;
     b.ret(folded)?;

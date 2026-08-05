@@ -181,10 +181,10 @@ fn default_constant_folder_folds_fptosi_to_constant() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let value: llvmkit_ir::FloatValue<'_, f32, _> =
-        f32_ty.const_float(42.0).into_erased().try_into()?;
+        f32_ty.const_float(42.0).as_erased().try_into()?;
     let result = b.fp_to_si(value, i32_ty, "y")?;
     let folded =
-        ConstantIntValue::<i32, _>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
+        ConstantIntValue::<i32, _>::try_from(Constant::try_from(b.view(result).as_erased())?)?;
     assert_eq!(folded.ap_int().try_zext_u64(), Some(42));
     Ok(())
 }

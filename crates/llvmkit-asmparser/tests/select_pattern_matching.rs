@@ -404,8 +404,8 @@ define i32 @test(i32 %x, i32 %y) {
     let matched = match_select_pattern(named(&module, "A"), true, &query, 0)
         .expect("query succeeds")
         .expect("this is an smin");
-    assert_eq!(matched.lhs, params[0].into_erased());
-    assert_eq!(matched.rhs, params[1].into_erased());
+    assert_eq!(matched.lhs, params[0].as_erased());
+    assert_eq!(matched.rhs, params[1].as_erased());
     assert_eq!(matched.cast, None);
 
     // A `select` whose condition is not a compare at all matches nothing.
