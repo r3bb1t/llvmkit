@@ -5382,6 +5382,13 @@ pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx>(
     Some((lhs, lhs_demand, rhs, rhs_demand))
 }
 
+/// Ports `case Instruction::ShuffleVector:` of `computeKnownBits`.
+///
+/// The `getSplatValue` fast path runs first, as upstream's does. It is what
+/// keeps a splat mask carrying poison lanes — `<0, poison, 0, 0>`, which
+/// `m_ZeroMask` accepts — from being answered as "nothing known": the
+/// demanded-lane path below sees a demanded poison lane and gives up, while
+/// the splat match reads straight through to the scalar.
 fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     data: &ShuffleVectorInstData,
@@ -5389,6 +5396,16 @@ fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
+    // Upstream recurses through the `computeKnownBits` overload that takes no
+    // `DemandedElts`, resetting the demanded set. `query` is passed along
+    // unchanged here because the answer is the same: the splat is a scalar, and
+    // `demanded_elements_for` yields `None` for anything that is not a vector.
+    // The width agrees for the same reason `KnownBits` is per-element upstream —
+    // `type_bit_width` recurses to a vector's element type.
+    if let Some(splat) = get_splat_value(value) {
+        return compute_known_bits_inner(splat, query, depth + 1, stack);
+    }
+
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
     let Some((lhs, lhs_demand, rhs, rhs_demand)) =
         shuffle_source_demands(value, data, query, false)

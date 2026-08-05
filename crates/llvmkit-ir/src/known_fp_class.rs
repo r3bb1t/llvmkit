@@ -16,16 +16,8 @@
 //!   `arithmetic_fence`, `vector_reverse`, `fptrunc_round`, and every
 //!   `experimental_constrained_*` / target-specific (`amdgcn_*`) variant.
 //!
-//! Two arms diverge from upstream, in *opposite* directions, and both are
-//! marked at their sites:
+//! One arm diverges from upstream, and it is marked at its site:
 //!
-//! - `shufflevector` is **weaker**. It does not take the `getSplatValue` fast
-//!   path, and the one case that costs is a splat mask carrying poison lanes:
-//!   `m_ZeroMask` accepts `-1` alongside `0`, so upstream still recognises
-//!   `<0, poison, 0, 0>` as a splat and answers from the scalar, where the
-//!   demanded-lane path here sees a demanded poison lane and gives up. A clean
-//!   all-zero mask reaches the same answer either way, and constant vectors
-//!   never get this far — the constant leaf takes them first.
 //! - `bitcast` can be **stronger**. Upstream calls `computeKnownBits` at
 //!   `Depth + 1` on the shared budget, so a bitcast reached late in an FP walk
 //!   gets a known-bits query that is already at the recursion limit and learns
@@ -77,6 +69,7 @@ use crate::value_tracking::{
     is_known_not_undef, is_sign_bit_check, logical_op_parts, not_operand, parent_block,
     shuffle_source_demands,
 };
+use crate::vector_utils::get_splat_value;
 use crate::{ApFloat, ApInt};
 
 /// Which floating-point classes `value` may belong to.
@@ -507,24 +500,11 @@ fn bitcast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// nothing about the result's common state, which is
 /// [`shuffle_demanded_elements`]' `None`.
 ///
-/// **Upstream's `getSplatValue` fast path is not taken**, and exactly one case
-/// costs precision because of it.
-///
-/// `getSplatValue` matches `shuffle(insertelement(?, Splat, 0), ?, ZeroMask)`,
-/// and `m_ZeroMask` accepts poison alongside `0`. So upstream still reads
-/// `<0, poison, 0, 0>` as a splat and answers from the scalar, while the path
-/// below sees a demanded poison lane and gives up.
-///
-/// The other two ways in cost nothing: a clean all-zero mask demands exactly
-/// the splat lane and reaches the same answer one hop later, and a constant
-/// vector never arrives here at all, because the constant leaf answers first.
-///
-/// **This is missing wiring, not a missing capability.** That match is already
-/// ported, as `value_tracking::shuffle_splat_source`, where
-/// `isGuaranteedNotToBeUndefOrPoison` calls it — poison-tolerant mask and all.
-/// This arm simply does not call it. Closing the gap is a call, not an
-/// implementation; the helper's home is wrong too, since `getSplatValue` is
-/// `VectorUtils.cpp` rather than `ValueTracking.cpp`.
+/// The `getSplatValue` fast path runs first, as upstream's does. It is what
+/// keeps a splat mask carrying poison lanes — `<0, poison, 0, 0>`, which
+/// `m_ZeroMask` accepts — from being answered as "nothing known": the
+/// demanded-lane path below sees a demanded poison lane and gives up, while
+/// the splat match reads straight through to the scalar.
 fn shuffle_vector_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     data: &ShuffleVectorInstData,
@@ -532,6 +512,16 @@ fn shuffle_vector_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
 ) -> KnownFpClass {
+    // Handle vector splat idiom.
+    //
+    // Upstream recurses through the `computeKnownFPClass` overload that takes
+    // no `DemandedElts`, resetting the demanded set. `query` is passed along
+    // unchanged here because the answer is the same: the splat is a scalar, and
+    // `demanded_elements_for` yields `None` for anything that is not a vector.
+    if let Some(splat) = get_splat_value(value) {
+        return known_fp_class(splat, interested_classes, query, depth + 1);
+    }
+
     let Some((lhs, lhs_demand, rhs, rhs_demand)) =
         shuffle_source_demands(value, data, query, false)
     else {

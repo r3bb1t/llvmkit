@@ -58,6 +58,18 @@ cut, entries accumulate under **Unreleased**.
   upstream's `isa<ShuffleVectorInst>(Opr) ? getSplatValue(Opr) : nullptr`
   directly.
 
+#### Fixed (analysis precision)
+
+- **Both `shufflevector` analysis arms now take upstream's `getSplatValue`
+  fast path**, which `case Instruction::ShuffleVector:` opens with in
+  `computeKnownBits` and in `computeKnownFPClass` alike. The case it buys is a
+  splat mask carrying a poison lane — `<0, poison, 0, 0>`, which `m_ZeroMask`
+  accepts: the demanded-lane path gives up there, because
+  `getShuffleDemandedElts` rejects a demanded poison element, while the splat
+  match reads straight through to the scalar. Known bits and the float class of
+  such a broadcast now match the scalar being broadcast instead of answering
+  "nothing known".
+
 #### Known gaps
 
 - `Constant::splat_value` does not implement upstream's constant-*expression*
