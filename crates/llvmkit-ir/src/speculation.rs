@@ -37,7 +37,7 @@ use crate::constant::ConstantData;
 use crate::dominator_tree::DominatorTree;
 use crate::instr_types::{
     BranchKind, CallAttributeData, CastOpcode, LandingPadClauseKind, LandingPadInstData, Opcode,
-    POISON_MASK_ELEM, ShuffleVectorInstData,
+    ShuffleMaskElem, ShuffleVectorInstData,
 };
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicId, descriptor_for_callee};
@@ -1473,19 +1473,24 @@ fn shuffle_is_select<'ctx, B: ModuleBrand + 'ctx>(
     let Some((_, lanes, _)) = lhs.ty().data().as_vector() else {
         return false;
     };
-    let Ok(lanes) = i32::try_from(lanes) else {
+    let Ok(lane_count) = usize::try_from(lanes) else {
         return false;
     };
     // `!changesLength()`: the mask is exactly as wide as a source vector.
-    if data.mask.len() != lanes.unsigned_abs() as usize {
+    if data.mask.len() != lane_count {
         return false;
     }
     data.mask.iter().enumerate().all(|(index, element)| {
-        let Ok(index) = i32::try_from(index) else {
+        // A poison mask element is compatible with either choice.
+        let ShuffleMaskElem::Lane(lane) = *element else {
+            return true;
+        };
+        let Ok(index) = u32::try_from(index) else {
             return false;
         };
-        // A poison mask element is compatible with either choice.
-        *element == POISON_MASK_ELEM || *element == index || *element == index + lanes
+        // The second disjunct is `lane == index + lanes`, written as a
+        // subtraction so an oversized mask cannot overflow.
+        lane == index || lane.checked_sub(lanes) == Some(index)
     })
 }
 

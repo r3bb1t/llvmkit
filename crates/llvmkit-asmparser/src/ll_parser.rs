@@ -45,9 +45,9 @@ use llvmkit_ir::{
     DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FloatValue,
     FpClassTest, GepNoWrapFlags, IRBuilder, IntCastFlags, IntDyn, IntType, IntValue,
     IntrinsicNameResolution, IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder,
-    PointerValue, Positioned, RoundingMode, SelectionKind, StructType, SyncScope, ThreadLocalMode,
-    Type, TypeKind, UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord,
-    Visibility, constant_fold_select_instruction, derived_types::PointerType,
+    PointerValue, Positioned, RoundingMode, SelectionKind, ShuffleMaskElem, StructType, SyncScope,
+    ThreadLocalMode, Type, TypeKind, UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord,
+    UseListOrderRecord, Visibility, constant_fold_select_instruction, derived_types::PointerType,
     resolve_intrinsic_name, shufflevector_mask_from_constant,
 };
 use llvmkit_macros::Branded;
@@ -7493,7 +7493,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     /// Parse a shufflevector mask typed constant operand and decode it with
     /// `ShuffleVectorInst::getShuffleMask` semantics.
-    fn parse_shuffle_mask(&mut self, vector_ty: Type<'ctx, B>) -> ParseResult<Vec<i32>> {
+    fn parse_shuffle_mask(
+        &mut self,
+        vector_ty: Type<'ctx, B>,
+    ) -> ParseResult<Vec<ShuffleMaskElem>> {
         let mask_ty = self.parse_type(false)?;
         let loc = self.loc();
         let valid_mask_ty = match (AnyTypeEnum::from(vector_ty), AnyTypeEnum::from(mask_ty)) {

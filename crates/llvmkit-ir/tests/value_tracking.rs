@@ -3,8 +3,8 @@ use llvmkit_ir::{
     ConstantExprOpcode, ConstantExprOptions, DominatorTreeAnalysis, Dyn, DynBrand,
     FunctionAnalysisManager, IRBuilder, InstructionView, IntValue, IrError, KnownBits,
     KnownBitsAnalysis, LShrFlags, Linkage, MetadataAttachmentKind, ModuleBrand, MulFlags, NoFolder,
-    PointerValue, PreservedAnalyses, Value, ValueTrackingQuery, Width, compute_known_bits,
-    is_known_non_zero, is_known_one, is_known_zero, module_new,
+    PointerValue, PreservedAnalyses, ShuffleMaskElem, Value, ValueTrackingQuery, Width,
+    compute_known_bits, is_known_non_zero, is_known_one, is_known_zero, module_new,
 };
 
 fn zeros(width: usize) -> String {
@@ -833,7 +833,7 @@ fn gep_and_vector_lane_operations_compute_known_bits() -> Result<(), IrError> {
         i8_ty.const_int(0x55_u8),
         i8_ty.const_int(0xaa_u8),
     ])?;
-    let shuffle = b.build_shuffle_vector(lane01, rhs, &[1], "shuffle")?;
+    let shuffle = b.build_shuffle_vector(lane01, rhs, &[ShuffleMaskElem::Lane(1)], "shuffle")?;
     let shuffle_extract = b.build_extract_element(shuffle, i8_ty.const_int(0_u8), "shuf.ext")?;
 
     let dl = m.data_layout();

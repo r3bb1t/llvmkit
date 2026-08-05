@@ -40,7 +40,7 @@ use super::instr_types::{
     ExtractValueInstData, FCmpInstData, FNegInstData, FenceInstData, FreezeInstData, GepInstData,
     IndirectBrInstData, InsertElementInstData, InsertValueInstData, InvokeInstData,
     LandingPadClauseKind, LandingPadInstData, LoadInstData, OperandBundleData, OperandBundleTag,
-    POISON_MASK_ELEM, ResumeInstData, SelectInstData, ShuffleVectorInstData, StoreInstData,
+    ResumeInstData, SelectInstData, ShuffleMaskElem, ShuffleVectorInstData, StoreInstData,
     SwitchInstData, TailCallKind, VAArgInstData,
 };
 use super::instr_types::{
@@ -1296,7 +1296,7 @@ fn fmt_shuffle_vector(
 fn print_shuffle_mask<B: ModuleBrand>(
     f: &mut fmt::Formatter<'_>,
     result_ty: Type<'_, B>,
-    mask: &[i32],
+    mask: &[ShuffleMaskElem],
 ) -> fmt::Result {
     // Mirrors `printShuffleMask` in `lib/IR/AsmWriter.cpp`.
     f.write_str(", <")?;
@@ -1304,8 +1304,8 @@ fn print_shuffle_mask<B: ModuleBrand>(
         f.write_str("vscale x ")?;
     }
     write!(f, "{} x i32> ", mask.len())?;
-    let all_zero = !mask.is_empty() && mask.iter().all(|&e| e == 0);
-    let all_poison = !mask.is_empty() && mask.iter().all(|&e| e == POISON_MASK_ELEM);
+    let all_zero = !mask.is_empty() && mask.iter().all(|e| *e == ShuffleMaskElem::Lane(0));
+    let all_poison = !mask.is_empty() && mask.iter().all(|e| *e == ShuffleMaskElem::Poison);
     if all_zero {
         f.write_str("zeroinitializer")?;
     } else if all_poison {
@@ -1317,10 +1317,9 @@ fn print_shuffle_mask<B: ModuleBrand>(
                 f.write_str(", ")?;
             }
             f.write_str("i32 ")?;
-            if e == POISON_MASK_ELEM {
-                f.write_str("poison")?;
-            } else {
-                write!(f, "{e}")?;
+            match e {
+                ShuffleMaskElem::Poison => f.write_str("poison")?,
+                ShuffleMaskElem::Lane(lane) => write!(f, "{lane}")?,
             }
         }
         f.write_str(">")?;

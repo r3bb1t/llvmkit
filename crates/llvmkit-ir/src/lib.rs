@@ -246,8 +246,8 @@ pub use instr_types::{
     AShrFlags, AddFlags, AllocaFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig,
     AtomicRMWFlags, AtomicStoreConfig, BinaryOpcode, CallAttributeData, CmpXchgFlags, ICmpFlags,
     IntBinOpFlags, IntCastFlags, LShrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags,
-    OverflowFlags, SDivFlags, ShlFlags, SubFlags, TailCallKind, TruncFlags, UDivFlags, UIToFpFlags,
-    UnaryOpcode, ZExtFlags,
+    OverflowFlags, SDivFlags, ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags,
+    UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
 };
 pub use instruction::{
     CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,

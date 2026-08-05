@@ -17,7 +17,7 @@ use super::folder::IRBuilderFolder;
 use super::{
     BinaryIntrinsic, BinaryOpcode, CastOpcode, CmpPredicate, Constant, ConstantExprFlags,
     ConstantExprOpcode, ConstantExprOptions, FastMathFlags, FloatType, GepNoWrapFlags, IntType,
-    IrError, IrResult, ModuleBrand, ModuleRef, ModuleView, POISON_MASK_ELEM, Type, TypeData,
+    IrError, IrResult, ModuleBrand, ModuleRef, ModuleView, ShuffleMaskElem, Type, TypeData,
     UnaryOpcode, Value,
 };
 use crate::cmp_predicate::{FloatPredicate, IntPredicate};
@@ -268,7 +268,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
         &self,
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
-        mask: &[i32],
+        mask: &[ShuffleMaskElem],
     ) -> IrResult<Option<Value<'ctx, B>>> {
         let (lhs, rhs) = match constants2(lhs, rhs) {
             Some(values) => values,
@@ -725,7 +725,7 @@ fn vector_element_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option
 
 fn shuffle_result_type<'ctx, B: ModuleBrand + 'ctx>(
     lhs_ty: Type<'ctx, B>,
-    mask: &[i32],
+    mask: &[ShuffleMaskElem],
 ) -> IrResult<Option<Type<'ctx, B>>> {
     let Some((elem, _, scalable)) = lhs_ty.data().as_vector() else {
         return Ok(None);
@@ -744,16 +744,22 @@ fn shuffle_result_type<'ctx, B: ModuleBrand + 'ctx>(
 
 fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
     module: ModuleRef<'ctx, B>,
-    mask: &[i32],
+    mask: &[ShuffleMaskElem],
     scalable: bool,
 ) -> IrResult<Constant<'ctx, B>> {
     let i32_ty = IntType::<i32, B>::new(module.module().i32_type::<B>().as_type().id(), module);
     let mut elements = Vec::with_capacity(mask.len());
     for element in mask {
-        if *element == POISON_MASK_ELEM {
-            elements.push(i32_ty.as_type().get_undef().as_constant());
-        } else {
-            elements.push(i32_ty.const_int(*element).as_constant());
+        match *element {
+            ShuffleMaskElem::Poison => {
+                elements.push(i32_ty.as_type().get_undef().as_constant());
+            }
+            ShuffleMaskElem::Lane(lane) => {
+                let lane = i32::try_from(lane).map_err(|_| IrError::InvalidOperation {
+                    message: "shufflevector mask lane exceeds i32",
+                })?;
+                elements.push(i32_ty.const_int(lane).as_constant());
+            }
         }
     }
     let lanes = u32::try_from(mask.len()).map_err(|_| IrError::InvalidOperation {

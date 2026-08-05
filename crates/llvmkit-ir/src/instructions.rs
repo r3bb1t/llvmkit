@@ -44,6 +44,7 @@ use super::fmf::FastMathFlags;
 use super::function::FunctionValue;
 use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
+use super::instr_types::ShuffleMaskElem;
 use super::instr_types::TailCallKind;
 use super::instr_types::{
     AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
@@ -2529,8 +2530,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
         Value::from_parts(id, self.module, data.ty)
     }
     /// Shuffle mask. Mirrors `ShuffleVectorInst::getShuffleMask`.
-    /// `-1` ([`crate::instr_types::POISON_MASK_ELEM`]) marks poison entries.
-    pub fn mask(self) -> &'ctx [i32] {
+    ///
+    /// Upstream's `-1` poison entries are
+    /// [`ShuffleMaskElem::Poison`](crate::instr_types::ShuffleMaskElem::Poison)
+    /// here, so a consumer names the case rather than testing a sign.
+    pub fn mask(self) -> &'ctx [ShuffleMaskElem] {
         &self.payload().mask
     }
 }

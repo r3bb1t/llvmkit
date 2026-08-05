@@ -4,6 +4,7 @@
 //! `llvm/include/llvm/IR/IRBuilder.h`, and `llvm/include/llvm/IR/NoFolder.h`,
 //! plus exact `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, NoFolderNames)`.
 
+use llvmkit_ir::ShuffleMaskElem;
 use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     BinaryIntrinsic, BinaryOpcode, CastKind, Constant, ConstantFloatValue, ConstantFolder,
@@ -335,7 +336,11 @@ fn constant_folder_scalable_shuffle_builds_scalable_mask_expr() -> Result<(), Ir
     ])?;
 
     let folded = ConstantFolder
-        .fold_shuffle_vector_dyn(lhs.into_erased(), rhs.into_erased(), &[0, 0])?
+        .fold_shuffle_vector_dyn(
+            lhs.into_erased(),
+            rhs.into_erased(),
+            &[ShuffleMaskElem::Lane(0), ShuffleMaskElem::Lane(0)],
+        )?
         .expect("scalable zero-mask shuffle constexpr constructed");
     let folded = Constant::try_from(folded)?;
     assert_eq!(folded.ty(), vec_ty.as_type());

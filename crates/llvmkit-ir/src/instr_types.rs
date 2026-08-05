@@ -2508,25 +2508,61 @@ impl core::hash::Hash for InsertElementInstData {
     }
 }
 
-/// Sentinel mask element representing `poison` (mirrors
-/// `PoisonMaskElem` / `UndefMaskElem` in `Instructions.h`).
-pub const POISON_MASK_ELEM: i32 = -1;
+/// One element of a `shufflevector` mask: a source lane, or poison.
+///
+/// Upstream spells this a bare `int` with `-1` for poison — `PoisonMaskElem`
+/// in `Instructions.h` — and reads it back with `M < 0` tests spread across
+/// every consumer. Naming the two cases means the compiler requires the poison
+/// branch rather than trusting a convention, and `Lane` carries a `u32` so no
+/// consumer needs a fallible narrowing to use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShuffleMaskElem {
+    /// Selects this lane of the two operands taken as one concatenated vector.
+    Lane(u32),
+    /// Upstream's `-1`. The corresponding result lane is poison.
+    Poison,
+}
+
+impl ShuffleMaskElem {
+    /// The lane this selects, or `None` when it is poison.
+    #[inline]
+    pub const fn lane(self) -> Option<u32> {
+        match self {
+            Self::Lane(lane) => Some(lane),
+            Self::Poison => None,
+        }
+    }
+
+    /// The element an upstream-style mask integer denotes.
+    ///
+    /// Mirrors `ShuffleVectorInst::getMaskValue`, where *any* negative value —
+    /// not only `-1` — reads as poison. This is the one place that encoding is
+    /// understood; parsers call it, and nothing else should inspect a raw
+    /// integer.
+    #[inline]
+    pub fn from_encoded(value: i64) -> Self {
+        match u32::try_from(value) {
+            Ok(lane) => Self::Lane(lane),
+            Err(_) => Self::Poison,
+        }
+    }
+}
 
 /// Storage payload for `shufflevector`. Mirrors `ShuffleVectorInst`
-/// (`Instructions.h`). The mask is stored as a list of integers per
-/// upstream's `SmallVector<int, 4> ShuffleMask` representation;
-/// `POISON_MASK_ELEM` (-1) marks poison entries.
+/// (`Instructions.h`), whose mask is a `SmallVector<int, 4>`; here each
+/// element is a [`ShuffleMaskElem`] so the poison case is a variant rather
+/// than a negative sentinel.
 #[derive(Debug)]
 pub(crate) struct ShuffleVectorInstData {
     pub(crate) lhs: Cell<ValueSlot>,
     pub(crate) rhs: Cell<ValueSlot>,
-    pub(crate) mask: Box<[i32]>,
+    pub(crate) mask: Box<[ShuffleMaskElem]>,
 }
 
 impl ShuffleVectorInstData {
     pub(crate) fn new<Mask>(lhs: ValueSlot, rhs: ValueSlot, mask: Mask) -> Self
     where
-        Mask: IntoIterator<Item = i32>,
+        Mask: IntoIterator<Item = ShuffleMaskElem>,
     {
         Self {
             lhs: Cell::new(lhs),

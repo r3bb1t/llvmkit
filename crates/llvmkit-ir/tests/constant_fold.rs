@@ -3,6 +3,7 @@
 //! Source-derived subsets from `llvm/lib/IR/ConstantFold.cpp` plus exact
 //! assembler excerpts where cited explicitly.
 
+use llvmkit_ir::ShuffleMaskElem::{Lane, Poison};
 use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     Align, ApFloat, ApFloatSemantics, ApFloatSign, ApInt, BinaryOpcode, CmpPredicate, Constant,
@@ -1050,7 +1051,7 @@ fn shufflevector_fixed_mask_selects_lanes() -> Result<(), IrError> {
     let folded = constant_fold_shuffle_vector_instruction(
         lhs.as_constant(),
         rhs.as_constant(),
-        &[1, 2, -1],
+        &[Lane(1), Lane(2), Poison],
     )?
     .expect("fixed shufflevector folds");
     let lane_zero =
@@ -1084,7 +1085,7 @@ fn shufflevector_scalable_all_poison_mask_folds() -> Result<(), IrError> {
     let folded = constant_fold_shuffle_vector_instruction(
         splat.as_constant(),
         splat.as_constant(),
-        &[-1, -1],
+        &[Poison, Poison],
     )?
     .expect("all-poison scalable shufflevector mask folds");
     assert_eq!(folded, vec_ty.as_type().get_poison().as_constant());
@@ -2287,9 +2288,12 @@ fn vector_and_aggregate_rebuilders_materialize_constants() -> Result<(), IrError
         i32_ty.const_int(3_i32),
         i32_ty.const_int(4_i32),
     ])?;
-    let shuffled =
-        constant_fold_shuffle_vector_instruction(lhs.as_constant(), rhs.as_constant(), &[0, 4])?
-            .expect("shufflevector rebuilds selected lanes");
+    let shuffled = constant_fold_shuffle_vector_instruction(
+        lhs.as_constant(),
+        rhs.as_constant(),
+        &[Lane(0), Lane(4)],
+    )?
+    .expect("shufflevector rebuilds selected lanes");
     let shuffle_lane_one =
         constant_fold_extract_element_instruction(shuffled, i32_ty.const_int(1_i32).as_constant())?
             .expect("out-of-range shuffle lane extracts");
@@ -2359,7 +2363,7 @@ fn vector_rebuilders_extract_lanes_from_non_aggregate_constants() -> Result<(), 
         .expect("rebuilt lane extracts");
     assert_eq!(lane_one, expected_lane_one);
 
-    let shuffled = constant_fold_shuffle_vector_instruction(base, base, &[1, 0])?
+    let shuffled = constant_fold_shuffle_vector_instruction(base, base, &[Lane(1), Lane(0)])?
         .expect("shufflevector rebuilds constexpr vector");
     let first_lane =
         constant_fold_extract_element_instruction(shuffled, i32_ty.const_zero().as_constant())?

@@ -14,6 +14,7 @@ use crate::cmp_predicate::{FloatPredicate, IntPredicate};
 use crate::derived_types::{FloatType, IntType};
 use crate::float_kind::FloatKind;
 use crate::instr_types::OverflowFlags;
+use crate::instr_types::ShuffleMaskElem;
 use crate::int_width::IntWidth;
 use crate::value::{FloatValue, IntValue, Typed};
 
@@ -174,7 +175,7 @@ pub trait IRBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
         &self,
         lhs: Value<'ctx, B>,
         rhs: Value<'ctx, B>,
-        mask: &[i32],
+        mask: &[ShuffleMaskElem],
     ) -> IrResult<Option<Value<'ctx, B>>> {
         let _ = (lhs, rhs, mask);
         Ok(None)

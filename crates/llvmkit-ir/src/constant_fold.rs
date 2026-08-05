@@ -18,7 +18,7 @@ use super::element::ElemDyn;
 use super::float_kind::FloatDyn;
 use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::global_value::Linkage;
-use super::instr_types::{BinaryOpcode, CastOpcode, POISON_MASK_ELEM, UnaryOpcode};
+use super::instr_types::{BinaryOpcode, CastOpcode, ShuffleMaskElem, UnaryOpcode};
 use super::instruction::{InstructionKindData, InstructionView};
 use super::int_width::IntDyn;
 use super::module::{DynBrand, ModuleBrand, ModuleRef, ModuleView};
@@ -1680,7 +1680,7 @@ pub fn constant_fold_insert_element_instruction<'ctx, B: ModuleBrand + 'ctx>(
 pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
     lhs: Constant<'ctx, B>,
     rhs: Constant<'ctx, B>,
-    mask: &[i32],
+    mask: &[ShuffleMaskElem],
 ) -> IrResult<Option<Constant<'ctx, B>>> {
     let Some((element_ty, lanes, scalable)) = lhs.ty().data().as_vector() else {
         return Ok(None);
@@ -1697,10 +1697,16 @@ pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
         .module()
         .vector_type(element_ty, result_lanes, scalable)
         .as_type();
-    if mask.iter().all(|element| *element == POISON_MASK_ELEM) {
+    if mask
+        .iter()
+        .all(|element| *element == ShuffleMaskElem::Poison)
+    {
         return Ok(Some(poison_for(result_ty)));
     }
-    if mask.iter().all(|element| *element == 0) {
+    if mask
+        .iter()
+        .all(|element| *element == ShuffleMaskElem::Lane(0))
+    {
         let index = lhs
             .into_erased()
             .module()
@@ -1724,12 +1730,9 @@ pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
     };
     let mut result = Vec::with_capacity(mask.len());
     for &element in mask {
-        if element == POISON_MASK_ELEM {
+        let ShuffleMaskElem::Lane(element) = element else {
             result.push(element_ty.get_undef().as_constant());
             continue;
-        }
-        let Ok(element) = u32::try_from(element) else {
-            return Ok(None);
         };
         let source = if element < lanes {
             usize::try_from(element)
@@ -1760,14 +1763,14 @@ pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
 /// `lhs` / `rhs` lane space.
 pub fn shufflevector_mask_from_constant<'ctx, B: ModuleBrand + 'ctx>(
     mask: Constant<'ctx, B>,
-) -> Option<Vec<i32>> {
+) -> Option<Vec<ShuffleMaskElem>> {
     let (_, lanes, scalable) = mask.ty().data().as_vector()?;
     let lane_count = usize::try_from(lanes).ok()?;
     if is_undef_or_poison(mask) {
-        return Some(vec![POISON_MASK_ELEM; lane_count]);
+        return Some(vec![ShuffleMaskElem::Poison; lane_count]);
     }
     if constant_is_null_value(mask) {
-        return Some(vec![0; lane_count]);
+        return Some(vec![ShuffleMaskElem::Lane(0); lane_count]);
     }
     if scalable {
         return None;
@@ -1780,11 +1783,11 @@ pub fn shufflevector_mask_from_constant<'ctx, B: ModuleBrand + 'ctx>(
         .into_iter()
         .map(|element| {
             if is_undef_or_poison(element) {
-                return Some(POISON_MASK_ELEM);
+                return Some(ShuffleMaskElem::Poison);
             }
             let int = ConstantIntValue::<IntDyn, B>::try_from(element).ok()?;
             let value = int.ap_int().try_zext_u64()?;
-            i32::try_from(value).ok()
+            u32::try_from(value).ok().map(ShuffleMaskElem::Lane)
         })
         .collect()
 }

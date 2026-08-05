@@ -21,7 +21,7 @@ use crate::data_layout::DataLayout;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::instr_types::{
     AllocaInstData, BinaryOpData, BinaryOpcode, BranchKind, CastOpData, CastOpcode, CmpInstData,
-    ExtractElementInstData, GepInstData, InsertElementInstData, POISON_MASK_ELEM, PhiData,
+    ExtractElementInstData, GepInstData, InsertElementInstData, PhiData, ShuffleMaskElem,
     ShuffleVectorInstData,
 };
 use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
@@ -4517,7 +4517,7 @@ fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx>(
 
         // A poison mask element creates poison.
         InstructionKindData::ShuffleVector(data) => {
-            kind.includes_poison() && data.mask.contains(&POISON_MASK_ELEM)
+            kind.includes_poison() && data.mask.contains(&ShuffleMaskElem::Poison)
         }
 
         // These never create undef or poison of their own.
@@ -5377,10 +5377,9 @@ pub(crate) fn shuffle_demanded_elements<'a, 'ctx, B: ModuleBrand + 'ctx>(
             continue;
         }
         // A poison lane says nothing about the common state of the result.
-        if *mask == POISON_MASK_ELEM {
+        let ShuffleMaskElem::Lane(mask) = *mask else {
             return None;
-        }
-        let mask = u32::try_from(*mask).ok()?;
+        };
         if mask < lhs_lanes {
             lhs_demand.set_bit(mask);
         } else {
@@ -5695,7 +5694,7 @@ fn shuffle_splat_source<'ctx, B: ModuleBrand + 'ctx>(
     if !shuffle
         .mask
         .iter()
-        .all(|element| *element == 0 || *element == POISON_MASK_ELEM)
+        .all(|element| matches!(element, ShuffleMaskElem::Lane(0) | ShuffleMaskElem::Poison))
     {
         return None;
     }

@@ -3,6 +3,7 @@
 //!
 //! Every test cites its upstream source per Doctrine D11.
 
+use llvmkit_ir::ShuffleMaskElem::Lane;
 use llvmkit_ir::{Dyn, DynBrand, IRBuilder, IntValue, IrError, Linkage, module_new};
 
 // --------------------------------------------------------------------------
@@ -344,7 +345,7 @@ fn shuffle_vector_zeroinitializer_mask() -> Result<(), IrError> {
     let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v0 = m.view(f).param(0)?;
     let v1 = m.view(f).param(1)?;
-    let _ = b.build_shuffle_vector(v0, v1, &[0, 0], "")?;
+    let _ = b.build_shuffle_vector(v0, v1, &[Lane(0), Lane(0)], "")?;
     b.build_ret_void()?;
     let text = format!("{m}");
     assert!(
@@ -377,7 +378,7 @@ fn shuffle_vector_explicit_mask_print() -> Result<(), IrError> {
     let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v0 = m.view(f).param(0)?;
     let v1 = m.view(f).param(1)?;
-    let _ = b.build_shuffle_vector(v0, v1, &[1, 1, 0, 0], "")?;
+    let _ = b.build_shuffle_vector(v0, v1, &[Lane(1), Lane(1), Lane(0), Lane(0)], "")?;
     b.build_ret_void()?;
     let text = format!("{m}");
     // Asserts the canonical `<<N> x i32> <i32 e0, ...>` body that the

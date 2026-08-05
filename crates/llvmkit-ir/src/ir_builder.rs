@@ -83,7 +83,7 @@ use super::instr_types::{
 };
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, CallAttributeData, CastOpData, CastOpcode, LoadInstData,
-    OverflowFlags, POISON_MASK_ELEM, ReturnOpData, StoreInstData, UnaryOpcode,
+    OverflowFlags, ReturnOpData, ShuffleMaskElem, StoreInstData, UnaryOpcode,
 };
 use super::instruction::{
     Instruction, InstructionKind, InstructionKindData, InstructionView, build_instruction_value,
@@ -3405,7 +3405,7 @@ where
         &self,
         lhs: L,
         rhs: Rhs2,
-        mask: &[i32],
+        mask: &[ShuffleMaskElem],
         name: Name,
     ) -> IrResult<ValueId<B>>
     where
@@ -6443,7 +6443,8 @@ where
         let n = usize::try_from(count).map_err(|_| IrError::InvalidOperation {
             message: "vector splat lane count exceeds the platform address range",
         })?;
-        let mask = vec![0_i32; n];
+        // A splat selects lane 0 of the inserted vector for every result lane.
+        let mask = vec![ShuffleMaskElem::Lane(0); n];
         let splat_name = if name_ref.is_empty() {
             String::from("splat")
         } else {
