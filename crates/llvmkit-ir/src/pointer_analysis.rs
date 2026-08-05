@@ -33,7 +33,7 @@
 
 use crate::ApInt;
 use crate::attributes::{AttrIndex, AttrKind, AttributeStored};
-use crate::constant::{ConstantData, ConstantExprOpcode};
+use crate::constant::{Constant, ConstantData, ConstantExprOpcode};
 use crate::data_layout::DataLayout;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::global_value::Linkage;
@@ -968,9 +968,10 @@ pub fn find_inserted_value<'ctx, B: ModuleBrand + 'ctx>(
         return Some(value);
     };
 
-    if let ValueKindData::Constant(constant) = &value.data().kind {
-        let element = aggregate_element(value, constant, first)?;
-        return find_inserted_value(element, rest);
+    if let ValueKindData::Constant(_) = &value.data().kind {
+        // `C->getAggregateElement(idx)`.
+        let element = Constant::from_parts(value).aggregate_element(first)?;
+        return find_inserted_value(element.into_erased(), rest);
     }
 
     match instruction_kind(value)? {
@@ -1176,28 +1177,8 @@ fn is_interposable_linkage(linkage: Linkage) -> bool {
 
 /// Ports `Constant::isNullValue` for the constant forms llvmkit stores.
 fn is_null_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
-    match &value.data().kind {
-        ValueKindData::Constant(ConstantData::Int(words)) => words.iter().all(|word| *word == 0),
-        ValueKindData::Constant(ConstantData::Float(bits)) => *bits == 0,
-        ValueKindData::Constant(ConstantData::PointerNull) => true,
-        ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements
-            .iter()
-            .all(|element| is_null_constant(value_from_slot(value, *element))),
-        _ => false,
-    }
-}
-
-/// Ports `Constant::getAggregateElement`.
-fn aggregate_element<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
-    constant: &ConstantData,
-    index: u32,
-) -> Option<Value<'ctx, B>> {
-    let ConstantData::Aggregate(elements) = constant else {
-        return None;
-    };
-    let position = usize::try_from(index).ok()?;
-    Some(value_from_slot(anchor, *elements.get(position)?))
+    matches!(&value.data().kind, ValueKindData::Constant(_))
+        && Constant::from_parts(value).is_null_value()
 }
 
 /// The one byte `bits` repeats, when every byte is the same.

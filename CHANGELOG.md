@@ -14,6 +14,59 @@ cut, entries accumulate under **Unreleased**.
 > past the 0.0.4 freeze, not two pending releases; they collapse into one entry
 > when the tag is cut.
 
+### VectorUtils: the splat family, and the vector `select` it needed
+
+#### Added
+
+- **`vector_utils::get_splat_value`, `splat_index`, `is_splat_value` and
+  `find_scalar_element`** — the splat half of
+  `llvm/lib/Analysis/VectorUtils.cpp`. `get_splat_value` names the broadcast
+  scalar; `is_splat_value` answers the weaker "do all lanes agree" question and
+  so sees through binary operators and `select`s that have no single scalar to
+  name. Neither subsumes the other, matching upstream. Twenty-nine fixtures
+  from `VectorUtilsTest.cpp` are ported verbatim, including the two upstream
+  marks `FIXME` and the one it marks `TODO`.
+- **`Constant::aggregate_element`**, porting `Constant::getAggregateElement`,
+  and **`Constant::is_null_value`**, porting `Constant::isNullValue`. Both
+  replace private partial copies that lived in `pointer_analysis`; the
+  `getAggregateElement` copy handled only stored element lists, so
+  `find_inserted_value` now also answers for an `undef` or `poison` aggregate,
+  as upstream does.
+- **`IRBuilder::build_select_erased`** — `select` where the condition may be
+  `<N x i1>` and the arms may be vectors. The typed `build_select` pins the
+  condition to a scalar `i1` and the arms to a `SelectArm` marker, neither of
+  which a vector select can satisfy; this is the same erased split
+  `build_int_binop_erased` and `build_int_cmp_erased` already make. Validated
+  against `SelectInst::areInvalidOperands`.
+
+#### Fixed
+
+- **The `.ll` parser rejected every vector `select`.** It validated a
+  `<N x i1>` condition as legal and then unconditionally narrowed the condition
+  to a scalar handle, so `select <2 x i1> %c, <2 x i8> %t, <2 x i8> %f` — plain
+  LLVM that `clang` emits — failed to parse. A scalar `i1` condition over
+  vector arms failed too, for the same reason one level down. Both parse,
+  verify and print byte-identically now. The arm-category restriction the
+  parser announces (int/fp/ptr, scalar or vector) is unchanged: `select` over a
+  struct or array arm is valid LLVM that it still declines.
+
+#### Changed
+
+- `value_tracking`'s private `shuffle_splat_source` moved to
+  `vector_utils::get_splat_value` and gained the constant-vector branch it
+  lacked. Its one caller inside `isGuaranteedNotToBeUndefOrPoison` now spells
+  upstream's `isa<ShuffleVectorInst>(Opr) ? getSplatValue(Opr) : nullptr`
+  directly.
+
+#### Known gaps
+
+- `Constant::splat_value` does not implement upstream's constant-*expression*
+  arm — the `shufflevector`-of-`insertelement` shape `ConstantVector::getSplat`
+  builds for scalable vectors. llvmkit stores that shape's mask in two places
+  (`ConstantExprData::mask` as raw `i32`s, and the mask operand as a constant
+  vector), which needs reconciling first. A scalable splat constant answers
+  "not a splat", which is the conservative direction.
+
 ### ValueTracking: `computeKnownFPClass`'s vector arms
 
 #### Added

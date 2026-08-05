@@ -1803,3 +1803,9 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/known_fp_class_phi.rs::phi_known_sign_true` | the same suite's `PhiKnownSignTrue` | port |
 | `crates/llvmkit-asmparser/tests/known_fp_class_phi.rs::a_self_reference_contributes_nothing_from_either_position` | the same suite's `SelfPhiFirstArg` and `SelfPhiSecondArg` | port |
 | `crates/llvmkit-asmparser/tests/known_fp_class_phi.rs::a_phi_of_only_itself_answers_unknown` | the same suite's `SelfPhiOnly` | port |
+| `crates/llvmkit-asmparser/tests/vector_utils_splat.rs::get_splat_index` | `llvm/unittests/Analysis/VectorUtilsTest.cpp::TEST_F(BasicTest, getSplatIndex)` — all eight assertions, masks verbatim | port |
+| `crates/llvmkit-asmparser/tests/vector_utils_splat.rs::is_splat_value_00` … `is_splat_value_select_binop` | the same file's twenty-six `TEST_F(VectorUtilsTest, isSplatValue_*)` cases, IR and expectations unchanged; the `0u` cases pin behaviour upstream marks `FIXME` | port |
+| `crates/llvmkit-asmparser/tests/vector_utils_splat.rs::get_splat_value_elt0` | the same file's `getSplatValueElt0` | port |
+| `crates/llvmkit-asmparser/tests/vector_utils_splat.rs::get_splat_value_elt_mismatch` | the same file's `getSplatValueEltMismatch` | port |
+| `crates/llvmkit-asmparser/tests/vector_utils_splat.rs::get_splat_value_elt1` | the same file's `getSplatValueElt1`, which upstream marks `TODO: This is a splat, but we don't recognize it` | port |
+| `crates/llvmkit-asmparser/tests/parser_vector_select.rs` (all seven) | `llvm/lib/IR/Instructions.cpp::SelectInst::areInvalidOperands` — one case per diagnostic it returns, plus round trips for the shapes it accepts. No upstream unit test covers vector `select` through the parser; the round-trip half (parse → verify → print) is llvmkit's parser/printer contract | llvmkit-specific (rules from the named function) |

@@ -7107,10 +7107,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(b.view(v).into_erased())
     }
 
-    /// `select i1 COND, TYPE TRUE, TYPE FALSE`. Dispatches to
-    /// [`llvmkit_ir::IRBuilder::build_select`] on the appropriate
-    /// [`llvmkit_ir::SelectArm`] depending on the arm category. Mirrors
-    /// `LLParser::parseSelect`.
+    /// `select i1 COND, TYPE TRUE, TYPE FALSE`, and the `<N x i1>` condition
+    /// form alongside it. Mirrors `LLParser::parseSelect`.
+    ///
+    /// Construction goes through
+    /// [`llvmkit_ir::IRBuilder::build_select_erased`] for every arm category.
+    /// The typed [`llvmkit_ir::IRBuilder::build_select`] cannot express two of
+    /// the shapes LLVM allows — a `<N x i1>` condition, which is no
+    /// `IntValue<bool>`, and a vector arm, which no `SelectArm` marker
+    /// describes — and its narrowing would be discarded here anyway, since
+    /// this returns an erased value whichever arm ran.
+    ///
+    /// The two checks below still run first, so the diagnostics stay the
+    /// parser's rather than the builder's, and the arm-category restriction
+    /// they carry (int/fp/ptr, scalar or vector) is unchanged: `select` over a
+    /// struct or array arm is valid LLVM that this parser still declines.
     fn parse_select(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
@@ -7159,61 +7170,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         {
             return Ok(folded.into_erased());
         }
-        let cond_iv: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = cond_value
-            .try_into()
-            .map_err(|_| self.expected("integer-typed select condition"))?;
-        let cond_i1: llvmkit_ir::IntValue<'ctx, bool, B> = cond_iv
-            .try_into()
-            .map_err(|_| self.expected("i1 select condition"))?;
-        let name = result_name.as_str();
-        let v = match true_ty.into_type_enum() {
-            AnyTypeEnum::Int(_) => {
-                let t: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = true_v
-                    .try_into()
-                    .map_err(|_| self.expected("int-typed select arm"))?;
-                let f: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = false_v
-                    .try_into()
-                    .map_err(|_| self.expected("int-typed select arm"))?;
-                b.view(
-                    b.build_select(cond_i1, t, f, name)
-                        .map_err(|e| self.builder_err("select", e))?,
-                )
-                .into_erased()
-            }
-            AnyTypeEnum::Float(_) => {
-                let t: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn, B> = true_v
-                    .try_into()
-                    .map_err(|_| self.expected("float-typed select arm"))?;
-                let f: llvmkit_ir::FloatValue<'ctx, llvmkit_ir::FloatDyn, B> =
-                    false_v
-                        .try_into()
-                        .map_err(|_| self.expected("float-typed select arm"))?;
-                b.view(
-                    b.build_select(cond_i1, t, f, name)
-                        .map_err(|e| self.builder_err("select", e))?,
-                )
-                .into_erased()
-            }
-            AnyTypeEnum::Pointer(_) => {
-                let t: llvmkit_ir::PointerValue<'ctx, B> = true_v
-                    .try_into()
-                    .map_err(|_| self.expected("ptr-typed select arm"))?;
-                let f: llvmkit_ir::PointerValue<'ctx, B> = false_v
-                    .try_into()
-                    .map_err(|_| self.expected("ptr-typed select arm"))?;
-                b.view(
-                    b.build_select(cond_i1, t, f, name)
-                        .map_err(|e| self.builder_err("select", e))?,
-                )
-                .into_erased()
-            }
-            _ => {
-                return Err(
-                    self.expected("select arm category supported by this parser (int/fp/ptr)")
-                );
-            }
-        };
-        Ok(v)
+        let id = b
+            .build_select_erased(cond_value, true_v, false_v, result_name.as_str())
+            .map_err(|e| self.builder_err("select", e))?;
+        Ok(b.view(id))
     }
 
     /// `fptosi`/`fptoui TYPE VALUE to TYPE`. Mirrors `LLParser::parseCast`

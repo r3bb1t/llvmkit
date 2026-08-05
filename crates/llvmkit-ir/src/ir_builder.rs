@@ -2100,6 +2100,91 @@ where
         Ok(inst.to_erased().id())
     }
 
+    /// `select cond, true_arm, false_arm` on erased operands, where `cond` may
+    /// be a scalar `i1` *or* a `<N x i1>` selecting lane-wise.
+    ///
+    /// The erased counterpart of [`Self::build_select`], which pins the
+    /// condition to a scalar through `IntoIntValue<'ctx, bool, B>` and narrows
+    /// the result back to the arm's own handle type via `SelectArm`. A
+    /// `<N x i1>` is not an `IntValue<bool>` and `<N x iM>` is no `IntWidth`,
+    /// so a vector select can use neither half — the same split
+    /// [`Self::build_int_binop_erased`] and [`Self::build_int_cmp_erased`]
+    /// already make. Upstream needs no split because `LLParser::parseSelect`
+    /// hands all three operands straight to `SelectInst::Create`.
+    ///
+    /// Validated against `SelectInst::areInvalidOperands`, arm order included:
+    /// the two arms must agree in type and must not be tokens, and only then
+    /// is the condition examined — a vector one demanding `i1` elements,
+    /// vector arms, and a matching element count.
+    ///
+    /// Returns the erased [`ValueId`] rather than a typed id because the
+    /// result may be a vector.
+    pub fn build_select_erased<Cond, TrueArm, FalseArm, Name>(
+        &self,
+        cond: Cond,
+        true_arm: TrueArm,
+        false_arm: FalseArm,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        Cond: IntoErasedValue<'ctx, B>,
+        TrueArm: IntoErasedValue<'ctx, B>,
+        FalseArm: IntoErasedValue<'ctx, B>,
+    {
+        let cond = cond.into_erased_value(ModuleRef::new(self.module))?;
+        let true_v = true_arm.into_erased_value(ModuleRef::new(self.module))?;
+        let false_v = false_arm.into_erased_value(ModuleRef::new(self.module))?;
+
+        // "both values to select must have same type"
+        if true_v.ty().id() != false_v.ty().id() {
+            return Err(IrError::TypeMismatch {
+                expected: true_v.ty().kind_label(),
+                got: false_v.ty().kind_label(),
+            });
+        }
+        // "select values cannot have token type"
+        if matches!(true_v.ty().data(), TypeData::Token) {
+            return Err(IrError::InvalidOperation {
+                message: "select values cannot have token type",
+            });
+        }
+
+        match self.vector_shape(cond.ty()) {
+            // Vector select.
+            Some(condition_shape) => {
+                if self.integer_scalar_bit_width(cond.ty()) != Some(1) {
+                    return Err(IrError::InvalidOperation {
+                        message: "vector select condition element type must be i1",
+                    });
+                }
+                // "selected values for vector select must be vectors", and
+                // then the element counts must agree.
+                if self.vector_shape(true_v.ty()) != Some(condition_shape) {
+                    return Err(IrError::InvalidOperation {
+                        message: "vector select requires selected vectors to have the same vector \
+                                  length as select condition",
+                    });
+                }
+            }
+            None => {
+                if !matches!(cond.ty().data(), TypeData::Integer { bits: 1 }) {
+                    return Err(IrError::InvalidOperation {
+                        message: "select condition must be i1 or <n x i1>",
+                    });
+                }
+            }
+        }
+
+        let result_ty = true_v.ty().id();
+        if let Some(folded) = self.folder.fold_select_dyn(cond, true_v, false_v)? {
+            return Ok(self.checked_folded_value(folded, result_ty)?.id());
+        }
+        let payload = SelectInstData::new(cond.slot(), true_v.id, false_v.id);
+        let inst = self.append_instruction(result_ty, InstructionKindData::Select(payload), name);
+        Ok(inst.to_erased().id())
+    }
+
     /// `true` for `ptr` and for a vector of `ptr`. Mirrors the verifier's
     /// `is_pointer_or_pointer_vector`.
     fn is_pointer_or_pointer_vector(&self, ty: Type<'ctx, B>) -> bool {

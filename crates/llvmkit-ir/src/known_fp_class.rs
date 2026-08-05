@@ -15,9 +15,6 @@
 //! - **The remaining intrinsics** — `sin`, `cos`, `powi`, `ldexp`, `frexp`,
 //!   `arithmetic_fence`, `vector_reverse`, `fptrunc_round`, and every
 //!   `experimental_constrained_*` / target-specific (`amdgcn_*`) variant.
-//! - **The remaining intrinsics** — `sin`, `cos`, `powi`, `ldexp`, `frexp`,
-//!   `arithmetic_fence`, `vector_reverse`, `fptrunc_round`, and every
-//!   `experimental_constrained_*` / target-specific (`amdgcn_*`) variant.
 //!
 //! Two arms diverge from upstream, in *opposite* directions, and both are
 //! marked at their sites:

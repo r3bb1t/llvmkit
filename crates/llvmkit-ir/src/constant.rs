@@ -465,13 +465,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// *element* type, and a zeroinitializer to that type's null value.
     ///
     /// `allow_poison` is upstream's flag, and it defaults to `false` there.
-    /// Every `ConstantFold.cpp` call site takes that default — a poison lane
-    /// is a mismatch and the answer is `None`. Only analyses that ask for it
-    /// pass `true`, where a poison lane agrees with any other because it can
-    /// be read as whatever the rest hold; `VectorUtils`' `getSplatValue` is
-    /// the caller that needs it. Passing `true` from a folding path would
-    /// silently loosen folding, so the parameter is deliberately explicit
-    /// rather than defaulted.
+    /// Nearly every caller takes that default — including all of
+    /// `ConstantFold.cpp` and both `VectorUtils.cpp` splat entry points — so a
+    /// poison lane is a mismatch and the answer is `None`. The `true` callers
+    /// are the poison-tolerant `PatternMatch.h` matchers
+    /// (`m_APIntAllowPoison` and its neighbours), where a poison lane agrees
+    /// with any other because it can be read as whatever the rest hold.
+    /// Passing `true` where upstream takes the default would silently widen
+    /// the match, so the parameter is deliberately explicit rather than
+    /// defaulted.
+    ///
+    /// **One arm is not ported.** Upstream also recognises the constant
+    /// *expression* form `ConstantVector::getSplat` builds for scalable
+    /// vectors — a `shufflevector` of an `insertelement` at lane 0 through an
+    /// all-zero mask. llvmkit stores that shape's mask in two places
+    /// (`ConstantExprData::mask` and the mask operand), which has to be
+    /// reconciled before the arm can be read reliably; until then a scalable
+    /// splat constant answers `None` here, which is the conservative
+    /// direction.
     pub fn splat_value(self, allow_poison: bool) -> Option<Constant<'ctx, B>> {
         let (element_ty, _, _) = self.ty().data().as_vector()?;
         let element_ty = Type::new(element_ty, self.into_erased().module());
@@ -525,6 +536,111 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
             }
         }
         splat
+    }
+
+    /// Whether this constant is the all-zero value of its type.
+    ///
+    /// Ports `Constant::isNullValue` for the constant forms llvmkit stores.
+    /// The forms it does not reach — constant expressions, `blockaddress`,
+    /// global references and the symbol-relative payloads — are never null,
+    /// which is the answer upstream gives them too.
+    pub fn is_null_value(self) -> bool {
+        let value = self.into_erased();
+        match &value.data().kind {
+            ValueKindData::Constant(ConstantData::Int(words)) => {
+                words.iter().all(|word| *word == 0)
+            }
+            ValueKindData::Constant(ConstantData::Float(bits)) => *bits == 0,
+            ValueKindData::Constant(ConstantData::PointerNull) => true,
+            ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
+                let module = value.module();
+                elements.iter().all(|slot| {
+                    Constant::from_parts(Value::from_parts(
+                        *slot,
+                        module,
+                        module.context().value_data(*slot).ty,
+                    ))
+                    .is_null_value()
+                })
+            }
+            _ => false,
+        }
+    }
+
+    /// The constant sitting at `index` inside this aggregate or vector
+    /// constant.
+    ///
+    /// Ports `Constant::getAggregateElement(unsigned Elt)`. `None` is
+    /// upstream's `nullptr`: an out-of-range index, a shape that keeps no
+    /// element list, or the scalable-vector bail-out upstream marks `FIXME`.
+    ///
+    /// Upstream reaches the answer through five `dyn_cast` arms; three of them
+    /// collapse here. `ConstantAggregateZero` and `ConstantDataSequential`
+    /// both become an ordinary element list at construction, so they arrive at
+    /// the stored-element-list arm. The vector-typed `ConstantInt` and
+    /// `ConstantFP` splat forms have no llvmkit representation at all — a
+    /// vector constant is always an element list — so those arms are
+    /// unreachable rather than missing.
+    pub fn aggregate_element(self, index: u32) -> Option<Constant<'ctx, B>> {
+        let value = self.into_erased();
+        let ValueKindData::Constant(constant) = &value.data().kind else {
+            return None;
+        };
+        match constant {
+            // `dyn_cast<ConstantAggregate>`: the element is stored, so it is
+            // handed back rather than rebuilt.
+            ConstantData::Aggregate(elements) => {
+                let slot = *elements.get(usize::try_from(index).ok()?)?;
+                let module = value.module();
+                Some(Constant::from_parts(Value::from_parts(
+                    slot,
+                    module,
+                    module.context().value_data(slot).ty,
+                )))
+            }
+            // `dyn_cast<PoisonValue>` and `dyn_cast<UndefValue>`, which answer
+            // the same marker one type down. Upstream's
+            // `isa<ScalableVectorType>` bail-out sits *above* these two, so a
+            // scalable `undef` answers nothing — that ordering is what
+            // [`Self::aggregate_element_type`] reproduces.
+            ConstantData::Undef => Some(
+                self.aggregate_element_type(index)?
+                    .get_undef()
+                    .as_constant(),
+            ),
+            ConstantData::Poison => Some(
+                self.aggregate_element_type(index)?
+                    .get_poison()
+                    .as_constant(),
+            ),
+            _ => None,
+        }
+    }
+
+    /// The element type [`Self::aggregate_element`] hands an `undef` or
+    /// `poison` marker back at, or `None` when `index` is past the end.
+    ///
+    /// Ports the `getNumElements` / `getElementValue` pair that
+    /// `UndefValue` and `PoisonValue` share, plus the `isa<ScalableVectorType>`
+    /// bail-out that guards them.
+    fn aggregate_element_type(self, index: u32) -> Option<Type<'ctx, B>> {
+        let module = self.into_erased().module();
+        let data = self.ty().data();
+        let slot = if let Some((element, lanes, scalable)) = data.as_vector() {
+            if scalable || index >= lanes {
+                return None;
+            }
+            element
+        } else if let Some((element, lanes)) = data.as_array() {
+            if u64::from(index) >= lanes {
+                return None;
+            }
+            element
+        } else {
+            let body = data.as_struct()?.body.borrow();
+            *body.as_ref()?.elements.get(usize::try_from(index).ok()?)?
+        };
+        Some(Type::new(slot, module))
     }
 
     /// Widen to the erased [`Value`] handle.

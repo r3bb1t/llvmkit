@@ -436,6 +436,9 @@ pub use value_tracking::{
     strip_null_test,
 };
 pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
+pub use vector_utils::{
+    find_scalar_element, get_splat_value, is_splat_value, shuffle_demanded_elements, splat_index,
+};
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.
 
 #[cfg(feature = "macros")]

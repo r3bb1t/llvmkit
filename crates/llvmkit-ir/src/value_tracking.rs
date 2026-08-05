@@ -33,6 +33,7 @@ use crate::pointer_analysis::strip_pointer_casts_same_representation;
 use crate::speculation::program_undefined_for_value;
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
 use crate::value::{Value, ValueKindData, ValueSlot};
+use crate::vector_utils::get_splat_value;
 use crate::{ApInt, IrResult, KnownBits};
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
@@ -1584,7 +1585,9 @@ struct SimpleRecurrence {
 /// keeps the *first* qualifying operand the match, exactly as upstream does —
 /// narrowing this to the opcodes the known-bits arms use would let a second
 /// incoming value be matched where upstream stops at the first.
-fn binary_operator_parts(kind: &InstructionKindData) -> Option<(BinaryOpcode, &BinaryOpData)> {
+pub(crate) fn binary_operator_parts(
+    kind: &InstructionKindData,
+) -> Option<(BinaryOpcode, &BinaryOpData)> {
     Some(match kind {
         InstructionKindData::Add(b) => (BinaryOpcode::Add, b),
         InstructionKindData::Sub(b) => (BinaryOpcode::Sub, b),
@@ -2232,7 +2235,7 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `ValueKindData`, so a caller that wants both has to ask twice; every arm
 /// ported below inspects instructions only, matching what upstream's switches
 /// actually reach for the opcodes they name.
-fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
+pub(crate) fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<&'ctx InstructionKindData> {
     match &value.data().kind {
@@ -5587,7 +5590,9 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
             if well_defined {
                 return Ok(true);
             }
-        } else if let Some(splat) = shuffle_splat_source(value, operator) {
+        } else if let InstructionKindData::ShuffleVector(_) = operator
+            && let Some(splat) = get_splat_value(value)
+        {
             // For a splat, only the value being splatted has to be checked.
             if is_guaranteed_not_to_be_undef_or_poison(splat, query, depth + 1, stack, kind)? {
                 return Ok(true);
@@ -5653,50 +5658,6 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 
     Ok(false)
-}
-
-/// The value a `shufflevector` splats, when it is one.
-///
-/// Ports the `isa<ShuffleVectorInst>(Opr) ? getSplatValue(Opr) : nullptr` arm
-/// of `isGuaranteedNotToBeUndefOrPoison`, via the shuffle half of
-/// `llvm::getSplatValue` (`llvm/lib/Analysis/VectorUtils.cpp`):
-///
-/// ```text
-/// shuf (inselt ?, Splat, 0), ?, <0, poison, 0, ...>
-/// ```
-///
-/// The result is `Splat` — the value the `insertelement` put in lane 0 — not
-/// the `insertelement` itself. That distinction is the whole point of the arm:
-/// the `insertelement`'s own vector operand is typically `poison`, so walking
-/// its operands would answer false where the splat is provably well defined.
-///
-/// `getSplatValue`'s other half, a constant vector whose lanes are all equal,
-/// is not reached from here: this arm runs only for a `ShuffleVectorInst`.
-fn shuffle_splat_source<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-    operator: &InstructionKindData,
-) -> Option<Value<'ctx, B>> {
-    let InstructionKindData::ShuffleVector(shuffle) = operator else {
-        return None;
-    };
-    // `m_ZeroMask`: every element zero, or poison standing in for one.
-    if !shuffle
-        .mask
-        .iter()
-        .all(|element| matches!(element, ShuffleMaskElem::Lane(0) | ShuffleMaskElem::Poison))
-    {
-        return None;
-    }
-    // `m_InsertElt(m_Value(), m_Value(Splat), m_ZeroInt())` on operand 0. The
-    // shuffle's second operand is `m_Value()` — anything at all.
-    let inserted = value_from_id(value, shuffle.lhs.get());
-    let InstructionKindData::InsertElement(insert) = instruction_kind(inserted)? else {
-        return None;
-    };
-    let index = value_from_id(inserted, insert.index.get());
-    argument_constant(Some(index))
-        .is_some_and(|index| index.is_zero())
-        .then(|| value_from_id(inserted, insert.value.get()))
 }
 
 /// Whether a `load` carries `!noundef`, `!dereferenceable` or
