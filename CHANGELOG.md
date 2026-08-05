@@ -14,6 +14,68 @@ cut, entries accumulate under **Unreleased**.
 > past the 0.0.4 freeze, not two pending releases; they collapse into one entry
 > when the tag is cut.
 
+### VectorUtils: the mask predicates and constructors — the port closes
+
+#### Added
+
+- **The `<N x i1>` mask predicates** — `mask_is_all_zero_or_undefined`,
+  `mask_is_all_one_or_undefined` and `mask_contains_all_one_or_undefined`. The
+  last one's quantifier is the opposite of its name-alike's, as upstream's is.
+- **The demanded-lane queries** — `possibly_demanded_elements_in_mask` and
+  `horizontal_demanded_elements_for_first_operand`.
+- **The mask constructors** — `create_replicated_mask`,
+  `create_interleave_mask`, `create_stride_mask`, `create_sequential_mask` and
+  `create_unary_mask`.
+- **`masked_slide_pair`**, porting `isMaskedSlidePair`, with `MaskedSlide` and
+  `ShuffleSource` replacing upstream's `(int Src, int Diff)` pairs. Upstream's
+  "unused slot" marker — a `Src` of `-1` beside a `Diff` of `NumElts * 2` that
+  exists only to be asserted against — is `Option`'s absence here.
+- **`Constant::is_all_ones_value`**, porting `Constant::isAllOnesValue`, which
+  the mask predicates need.
+
+**`VectorUtils.cpp` is now ported as far as llvmkit's scope allows**: 20 of its
+37 entry-point names are modeled (21 functions, counting both
+`widenShuffleMaskElts` overloads), and the module header names what blocks each
+of the other 17. Two of those are permanent rather than pending —
+`computeMinimumValueSizes` and `processShuffleMasks`, whose callers all live in
+`lib/CodeGen/SelectionDAG` and `lib/Target/{RISCV,X86}` and which split masks
+across physical registers. llvmkit models no target.
+
+#### Changed
+
+- `possibly_demanded_elements_in_mask` is **stronger than upstream's**, in a
+  sound direction, and says so at its site: upstream reaches its element loop
+  only through `dyn_cast<ConstantVector>`, which a `zeroinitializer` is not, so
+  it reports "every lane demanded" for an all-zero mask that demands none.
+  llvmkit stores both spellings as one element list, so the loop runs.
+
+### VectorUtils: the shuffle-mask transforms
+
+#### Added
+
+- **`vector_utils::narrow_shuffle_mask_elements`,
+  `widen_shuffle_mask_elements`, `widen_shuffle_mask_elements_in_pairs`,
+  `scale_shuffle_mask_elements` and `shuffle_mask_with_widest_elements`** —
+  rewriting a shuffle mask for a wider or narrower element type. The two
+  `widenShuffleMaskElts` overloads are separate functions here rather than one
+  name, because they are separate rules: the `_in_pairs` form accepts a pair
+  that is half poison, which the scaled form rejects.
+- Upstream's `BasicTest` fixtures for all of these are ported, plus the
+  `getShuffleDemandedElts` fixture that `shuffle_demanded_elements` shipped
+  without.
+
+#### Known gaps
+
+- The mask transforms take `&[ShuffleMaskElem]`, which spells the **IR** mask
+  alphabet — a lane index or poison. Upstream's take raw `int`s and so also
+  serve SelectionDAG and the X86 backend, whose alphabet extends past `-1`
+  (`SM_SentinelZero` is `-2`); there, "negatives must be equal across a widened
+  group" is stronger than "all poison". Code generation and target backends are
+  out of scope for llvmkit, so this is a permanent narrowing rather than
+  pending work, and it is unobservable on any mask llvmkit can hold. Three
+  upstream assertions have no llvmkit spelling as a result; they are named in
+  `tests/vector_utils_masks.rs`.
+
 ### VectorUtils: the splat family, and the vector `select` it needed
 
 #### Added

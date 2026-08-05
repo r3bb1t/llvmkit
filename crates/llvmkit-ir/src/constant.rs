@@ -36,9 +36,10 @@ use super::int_width::IntoConstantInt;
 use super::module::ModuleBrand;
 use super::value::ValueKindData;
 use crate::Branded;
+use crate::ap_int::ApInt;
 use crate::gep_no_wrap_flags::GepNoWrapFlags;
 use crate::module::{Module, ModuleRef, Unverified};
-use crate::r#type::{Type, TypeSlot};
+use crate::r#type::{Type, TypeKind, TypeSlot};
 use crate::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueSlot, sealed};
 use crate::{DebugLoc, IrError, IrResult};
 
@@ -567,6 +568,45 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
         }
     }
 
+    /// Whether every bit of this constant is set.
+    ///
+    /// Ports `Constant::isAllOnesValue`, whose three arms this follows: an
+    /// integer equal to `-1`, a float whose bit pattern is all ones, and a
+    /// vector that splats either. Note the asymmetry with
+    /// [`Self::is_null_value`], which walks an aggregate element by element —
+    /// upstream routes this one through `getSplatValue` instead, so a vector
+    /// of all-ones lanes qualifies only where that recognises a splat.
+    pub fn is_all_ones_value(self) -> bool {
+        let value = self.into_erased();
+        match (&value.data().kind, self.ty().kind()) {
+            // Check for -1 integers.
+            (ValueKindData::Constant(ConstantData::Int(words)), TypeKind::Integer { bits }) => {
+                ApInt::from_words(bits, words).is_all_ones()
+            }
+            // Check for FP which are bitcasted from -1 integers. Upstream
+            // spells this `bitcastToAPInt().isAllOnes()`, which is the stored
+            // bit pattern read at the format's own width.
+            (ValueKindData::Constant(ConstantData::Float(pattern)), kind) => {
+                let Some(bits) = float_format_bit_width(kind) else {
+                    return false;
+                };
+                ApInt::from_words(
+                    bits,
+                    &[
+                        u64::try_from(*pattern & u128::from(u64::MAX)).unwrap_or(0),
+                        u64::try_from(*pattern >> 64).unwrap_or(0),
+                    ],
+                )
+                .is_all_ones()
+            }
+            // Check for constant splat vectors of 1 values.
+            _ if self.ty().is_vector() => self
+                .splat_value(false)
+                .is_some_and(Constant::is_all_ones_value),
+            _ => false,
+        }
+    }
+
     /// The constant sitting at `index` inside this aggregate or vector
     /// constant.
     ///
@@ -657,6 +697,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     #[inline]
     pub fn ty(self) -> Type<'ctx, B> {
         Type::new(self.ty, self.module)
+    }
+}
+
+/// The width of a floating-point format's bit pattern, as
+/// `APFloat::bitcastToAPInt` would produce it.
+///
+/// `x86_fp80` and `ppc_fp128` answer `None`: llvmkit stores a float constant's
+/// pattern in a `u128`, and reading an 80-bit format's all-ones question off
+/// that would depend on how the unused bits were stored rather than on the
+/// value. Both are answered `false` by the caller, which is the conservative
+/// direction for an "is this all ones" test.
+fn float_format_bit_width(kind: TypeKind) -> Option<u32> {
+    match kind {
+        TypeKind::Half | TypeKind::BFloat => Some(16),
+        TypeKind::Float => Some(32),
+        TypeKind::Double => Some(64),
+        TypeKind::Fp128 => Some(128),
+        _ => None,
     }
 }
 

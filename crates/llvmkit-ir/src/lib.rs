@@ -437,7 +437,14 @@ pub use value_tracking::{
 };
 pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
 pub use vector_utils::{
-    find_scalar_element, get_splat_value, is_splat_value, shuffle_demanded_elements, splat_index,
+    MaskedSlide, ShuffleSource, create_interleave_mask, create_replicated_mask,
+    create_sequential_mask, create_stride_mask, create_unary_mask, find_scalar_element,
+    get_splat_value, horizontal_demanded_elements_for_first_operand, is_splat_value,
+    mask_contains_all_one_or_undefined, mask_is_all_one_or_undefined,
+    mask_is_all_zero_or_undefined, masked_slide_pair, narrow_shuffle_mask_elements,
+    possibly_demanded_elements_in_mask, scale_shuffle_mask_elements, shuffle_demanded_elements,
+    shuffle_mask_with_widest_elements, splat_index, widen_shuffle_mask_elements,
+    widen_shuffle_mask_elements_in_pairs,
 };
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.
 
