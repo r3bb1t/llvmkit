@@ -105,6 +105,13 @@ across physical registers. llvmkit models no target.
 
 #### Fixed
 
+- **The `.ll` parser rejected `select` over aggregate arms.** It restricted
+  arms to int/fp/ptr and said so in its own diagnostic ("select arm category
+  supported by this parser"). `LLParser::parseSelect` delegates wholly to
+  `SelectInst::areInvalidOperands`, which names no arm restriction beyond
+  token, so `select i1 %c, { i32, i32 } %a, { i32, i32 } %b` is valid LLVM.
+  Only the token check remains, and it stays *before* constant folding —
+  otherwise two equal token arms would fold away instead of being rejected.
 - **The `.ll` parser rejected every vector `select`.** It validated a
   `<N x i1>` condition as legal and then unconditionally narrowed the condition
   to a scalar handle, so `select <2 x i1> %c, <2 x i8> %t, <2 x i8> %f` — plain

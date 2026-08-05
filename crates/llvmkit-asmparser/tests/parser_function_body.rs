@@ -519,6 +519,27 @@ fn parses_select_int_fp_ptr() {
     assert!(printed.contains("%rp = select i1 %c, ptr %pa, ptr %pb\n"));
 }
 
+/// `select` over aggregate arms, which `LLParser::parseSelect` accepts because
+/// it delegates wholly to `SelectInst::areInvalidOperands` — and that names no
+/// arm restriction beyond token.
+///
+/// No upstream unit test covers aggregate arms; the rule is read off
+/// `areInvalidOperands` itself. This parser used to decline them, announcing
+/// the limitation in its own diagnostic ("select arm category supported by
+/// this parser"), so the case is worth pinning.
+#[test]
+fn parses_select_over_struct_and_array_arms() {
+    let printed = parse_and_print(
+        "define void @sel(i1 %c, { i32, i32 } %sa, { i32, i32 } %sb, [4 x i8] %aa, [4 x i8] %ab) {\nentry:\n  \
+           %rs = select i1 %c, { i32, i32 } %sa, { i32, i32 } %sb\n  \
+           %ra = select i1 %c, [4 x i8] %aa, [4 x i8] %ab\n  \
+           ret void\n\
+         }\n",
+    );
+    assert!(printed.contains("%rs = select i1 %c, { i32, i32 } %sa, { i32, i32 } %sb\n"));
+    assert!(printed.contains("%ra = select i1 %c, [4 x i8] %aa, [4 x i8] %ab\n"));
+}
+
 /// Negative regression for `LLParser::parseSelect`: constant-folding must not
 /// accept a non-`i1` condition before the select condition type is validated.
 #[test]

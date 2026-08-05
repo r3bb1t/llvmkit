@@ -7118,10 +7118,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// describes — and its narrowing would be discarded here anyway, since
     /// this returns an erased value whichever arm ran.
     ///
-    /// The two checks below still run first, so the diagnostics stay the
-    /// parser's rather than the builder's, and the arm-category restriction
-    /// they carry (int/fp/ptr, scalar or vector) is unchanged: `select` over a
-    /// struct or array arm is valid LLVM that this parser still declines.
+    /// The condition and token checks below run *before* constant folding, and
+    /// that ordering is the point: the folder answers for two equal arms
+    /// without inspecting the condition, so a malformed `select` whose arms
+    /// agree would otherwise fold away instead of being rejected. Everything
+    /// else is left to the builder, which ports `areInvalidOperands` whole.
     fn parse_select(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
@@ -7149,16 +7150,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if !valid_condition {
             return Err(self.expected("i1 select condition"));
         }
-        let valid_arm_type = match true_ty.into_type_enum() {
-            AnyTypeEnum::Int(_) | AnyTypeEnum::Float(_) | AnyTypeEnum::Pointer(_) => true,
-            AnyTypeEnum::Vector(ty) => matches!(
-                ty.element().into_type_enum(),
-                AnyTypeEnum::Int(_) | AnyTypeEnum::Float(_) | AnyTypeEnum::Pointer(_)
-            ),
-            _ => false,
-        };
-        if !valid_arm_type {
-            return Err(self.expected("select arm category supported by this parser (int/fp/ptr)"));
+        // `"select values cannot have token type"`, checked here rather than
+        // left to the builder because constant folding runs first below and
+        // would answer for two equal token arms before anything rejected them.
+        // `areInvalidOperands` names no other arm restriction: a struct or
+        // array arm is valid LLVM and parses.
+        if matches!(true_ty.into_type_enum(), AnyTypeEnum::Token(_)) {
+            return Err(self.expected("select arms of a type other than token"));
         }
         if let (Ok(condition), Ok(true_constant), Ok(false_constant)) = (
             Constant::try_from(cond_value),
