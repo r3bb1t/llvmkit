@@ -1010,14 +1010,19 @@ remains in library source. Publishing works today. What is left:
       docs.rs reader.
 - [ ] Tag the release. The repository currently carries no tags at all.
 
-Publish order is `llvmkit-support` and `llvmkit-macros`, then `llvmkit-ir`,
-then `llvmkit-asmparser`, then `llvmkit`.
+Publish order is `llvmkit-support`, `llvmkit-macros` and `llvmkit-tablegen`,
+then `llvmkit-ir`, then `llvmkit-asmparser`, then `llvmkit`.
+
+`llvmkit-tablegen` is a **build-dependency** of `llvmkit-ir`, so it has to be on
+crates.io before `llvmkit-ir` can build from the registry at all — a build
+dependency is not optional the way a dev-dependency is. It carries the vendored
+`.td` tree, so it is also the crate that ships the 2.2 MiB.
 
 ### On the vendored TableGen
 
-`llvmkit-ir` ships 2.2 MiB of LLVM 22.1.4 `.td` files and expands them in
-`build.rs` into roughly 217k lines of intrinsic tables. Both obvious
-"optimizations" were measured on 2026-07-27 and rejected:
+`llvmkit-tablegen` ships 2.2 MiB of LLVM 22.1.4 `.td` files, and `llvmkit-ir`'s
+`build.rs` calls it to expand them into roughly 217k lines of intrinsic tables.
+Both obvious "optimizations" were measured on 2026-07-27 and rejected:
 
 - *Pre-generating and committing the expansion* would replace 2.2 MiB of input
   with a 13 MB generated file in git and in every tarball, to save the ~2 s the

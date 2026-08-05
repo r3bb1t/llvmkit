@@ -222,7 +222,6 @@ fn creatable_parent(path: &Path) -> Option<&Path> {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod tests {
     use super::*;
 
