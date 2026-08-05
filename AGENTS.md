@@ -300,9 +300,7 @@ anchors, not as an exhaustive inventory):
     │       └── pass_macro_shared.rs
     ├── llvmkit-ir/                  # IR data model
     │   ├── Cargo.toml
-    │   ├── build.rs                 # runs tools/gen_intrinsics.rs
-    │   ├── tools/gen_intrinsics.rs  # expands the vendored .td into intrinsic tables
-    │   ├── tablegen/                # 2.2 MiB of vendored LLVM 22.1.4 .td (tracked)
+    │   ├── build.rs                 # calls llvmkit_tablegen::table_gen_main()
     │   ├── src/
     │   │   ├── lib.rs
     │   │   ├── type.rs              # Type + TypeData + IrType / TypeKind
@@ -694,8 +692,8 @@ fixtures** (84 `compile_fail` + 1 `pass`).
 enough without disabling it, and forcing full rebuilds on every run wastes
 wall-clock on a machine that may be running other work.
 
-`llvmkit-ir` has a **`build.rs`** — it runs `tools/gen_intrinsics.rs`, which
-expands the vendored `crates/llvmkit-ir/tablegen/` LLVM 22.1.4 `.td` files into
+`llvmkit-ir` has a **`build.rs`** — it calls `llvmkit-tablegen`, which
+expands the vendored `crates/llvmkit-tablegen/tablegen/` LLVM 22.1.4 `.td` files into
 the intrinsic tables (~2 s; measured, and cheaper than committing the ~13 MB
 expansion — see `ROADMAP.md`, "On the vendored TableGen"). There is no
 Make/CMake and there are no submodules. `orig_cpp/` is **not** built — never run

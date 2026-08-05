@@ -14,6 +14,56 @@ cut, entries accumulate under **Unreleased**.
 > past the 0.0.4 freeze, not two pending releases; they collapse into one entry
 > when the tag is cut.
 
+### `llvmkit-tablegen`: the generator becomes a crate that mirrors LLVM
+
+#### Added
+
+- **`llvmkit-tablegen`**, a new workspace crate holding the TableGen front end
+  and intrinsic emitter, plus the vendored `.td` tree they read. It ships an
+  `llvmkit-tblgen` binary for manual regeneration and `--check`, mirroring
+  `llvm-tblgen`.
+
+#### Changed
+
+- **The generator moved out of `llvmkit-ir`'s build script.** It was
+  `crates/llvmkit-ir/tools/gen_intrinsics.rs`, a 4,197-line file pulled into
+  `build.rs` with `#[path]`. `llvmkit-ir/build.rs` now calls
+  `llvmkit_tablegen::table_gen_main()`, and the vendored tablegen tree moved to
+  `crates/llvmkit-tablegen/tablegen/` so it stays with the generator that reads
+  it.
+
+  Two reasons. **A build script is not a test target**, so the generator's ten
+  `#[test]` functions never ran under `cargo test` — despite each carrying an
+  `UPSTREAM.md` provenance row implying it did. They run now. And the single
+  file mirrored no upstream file, in a project whose organising rule is that it
+  mirrors LLVM's: it is really two subsystems fused.
+
+- **The crate's modules now mirror the upstream files**, on the same rule that
+  makes `llvmkit-ir` mirror `llvm/lib/IR` — one module per `.cpp`, named by
+  snake-casing it:
+
+  | Module | Upstream |
+  |---|---|
+  | `error.rs` | `llvm/lib/TableGen/Error.cpp` |
+  | `tg_lexer.rs` | `llvm/lib/TableGen/TGLexer.cpp` |
+  | `tg_parser.rs` | `llvm/lib/TableGen/TGParser.cpp` |
+  | `record.rs` | `llvm/lib/TableGen/Record.cpp` |
+  | `lib.rs` (driver) | `llvm/lib/TableGen/Main.cpp` |
+  | `main.rs` | `llvm/utils/TableGen/TableGen.cpp` |
+  | `basic/code_gen_intrinsics.rs` | `llvm/utils/TableGen/Basic/CodeGenIntrinsics.cpp` |
+  | `basic/intrinsic_emitter.rs` | `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp` |
+
+  The ten tests moved to the modules they exercise, so six of them no longer
+  sit in a file that does not contain the code under test. Their `UPSTREAM.md`
+  rows moved with them.
+
+  The split is pure code motion: the generated intrinsic tables are
+  **byte-identical** across all 213,000 lines, before and after.
+
+- **Breaking:** `llvmkit-ir`'s `gen-intrinsics` feature and its `gen_intrinsics`
+  binary are gone. The manual entry point is the `llvmkit-tblgen` binary, whose
+  usage text and `--check` message changed to match.
+
 ### VectorUtils: the intrinsic classifiers — a recorded blocker that was not real
 
 #### Added

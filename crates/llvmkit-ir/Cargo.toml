@@ -17,7 +17,6 @@ default = ["macros"]
 # `#[derive(Branded)]`. This feature gates only the user-facing macro
 # re-exports (`IrStruct`, `#[function_pass]`, `#[module_pass]`).
 macros = []
-gen-intrinsics = []
 
 [dependencies]
 bitflags  = "2"
@@ -25,11 +24,12 @@ boxcar    = "0.2"
 llvmkit-macros = { workspace = true }
 thiserror = { workspace = true }
 
+# Expands the vendored TableGen tree into this crate's intrinsic tables. The
+# manual entry point that used to be this crate's `gen_intrinsics` binary is now
+# `llvmkit-tblgen`, shipped by that crate.
+[build-dependencies]
+llvmkit-tablegen = { workspace = true }
+
 [dev-dependencies]
 proptest = "1"
 trybuild = "1"
-
-[[bin]]
-name = "gen_intrinsics"
-path = "tools/gen_intrinsics.rs"
-required-features = ["gen-intrinsics"]

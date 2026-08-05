@@ -28,7 +28,7 @@ cargo audit
 The CI gate is exactly that list plus a per-package license check. Baseline on the pin: **0 trybuild failures of 85 registered fixtures** (84 `compile_fail` + 1 `pass`).
 
 - **Do not set `CARGO_INCREMENTAL=0`.** Leave the cache alone; other work may be running on this machine.
-- `llvmkit-ir` has a `build.rs` — it expands the vendored `crates/llvmkit-ir/tablegen/` `.td` files into intrinsic tables (~2 s). Keep it; the `.td` input is 6× smaller than its output.
+- `llvmkit-ir` has a `build.rs` — it expands the vendored `crates/llvmkit-tablegen/tablegen/` `.td` files into intrinsic tables (~2 s). Keep it; the `.td` input is 6× smaller than its output.
 
 ## Architecture
 
