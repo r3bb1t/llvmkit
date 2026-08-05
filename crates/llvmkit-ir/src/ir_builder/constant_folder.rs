@@ -13,7 +13,7 @@ use super::constant_fold::{
     constant_fold_select_instruction, constant_fold_shuffle_vector_instruction,
     constant_fold_unary_instruction, gep_result_type,
 };
-use super::folder::IRBuilderFolder;
+use super::folder::IrBuilderFolder;
 use super::{
     BinaryIntrinsic, BinaryOpcode, CastOpcode, CmpPredicate, Constant, ConstantExprFlags,
     ConstantExprOpcode, ConstantExprOptions, FastMathFlags, FloatType, GepNoWrapFlags, IntType,
@@ -31,7 +31,7 @@ use crate::value::{FloatValue, IntValue};
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ConstantFolder;
 
-impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ConstantFolder {
+impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
     fn fold_bin_op_dyn(
         &self,
         opcode: BinaryOpcode,

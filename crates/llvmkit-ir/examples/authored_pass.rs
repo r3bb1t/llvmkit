@@ -18,7 +18,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, DominatorTreeAnalysis, IRBuilder, IrError, Linkage, Module, Unverified, Verified,
+    Analyses, DominatorTreeAnalysis, IrBuilder, IrError, Linkage, Module, Unverified, Verified,
     function_pass, module_new, module_pass, run_function_pass, run_module_pass,
 };
 
@@ -64,7 +64,7 @@ fn main() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let f = m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
     let verified = m.verify()?;

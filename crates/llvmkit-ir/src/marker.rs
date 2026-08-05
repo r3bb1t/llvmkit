@@ -3,7 +3,7 @@
 //! Mirrors the type-level distinction LLVM C++ keeps implicit at the
 //! `Function::getReturnType()` boundary: in C++ you read the return
 //! type at runtime and pattern-match on it; in Rust we encode it in
-//! the type system so the IRBuilder can reject a `build_ret(int_value)`
+//! the type system so the IrBuilder can reject a `build_ret(int_value)`
 //! against a `void`-returning function at compile time.
 //!
 //! The marker is the bare type the caller already names:
@@ -16,7 +16,7 @@
 //!   [`crate::FloatDyn`] — IEEE/non-IEEE float return.
 //! - [`Ptr`] — opaque-pointer return (any address space).
 //! - [`Dyn`] — anything not statically described (struct, vector,
-//!   array, target-ext, parsed IR…). The IRBuilder keeps a runtime
+//!   array, target-ext, parsed IR…). The IrBuilder keeps a runtime
 //!   [`crate::IrError::ReturnTypeMismatch`] check exclusively for
 //!   `Dyn`.
 //!

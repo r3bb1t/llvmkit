@@ -15,7 +15,7 @@
 //! unsatisfied `IntoIntValue<'_, i32, _>` bound, an llvmkit-authored trait
 //! bound stable across rustc versions.
 
-use llvmkit_ir::{Dyn, IRBuilder, IntValue, Linkage, Module};
+use llvmkit_ir::{Dyn, IrBuilder, IntValue, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("c");
@@ -34,7 +34,7 @@ fn main() {
 
     // `W` is inferred as `i32` from the typed condition.
     let cond: IntValue<i32, _> = m.view(f).param(0).unwrap().try_into().unwrap();
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let (_sealed, switch) = b.build_switch(cond, dest_label, "").unwrap();
 
     // A typed `i64` *value handle* (not a literal): the second parameter

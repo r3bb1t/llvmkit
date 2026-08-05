@@ -18,7 +18,7 @@
 //! mirrors `APInt::toString` in `llvm/lib/Support/APInt.cpp`.
 
 use llvmkit_ir::{
-    ApInt, ApIntSignedness, Dyn, IRBuilder, IntValue, IrError, Linkage, PointerValue, module_new,
+    ApInt, ApIntSignedness, Dyn, IntValue, IrBuilder, IrError, Linkage, PointerValue, module_new,
 };
 
 // --------------------------------------------------------------------------
@@ -48,7 +48,7 @@ fn function_value_define_matches_module_output() -> Result<(), IrError> {
     let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let sum = b.build_int_add(lhs, rhs, "sum")?;
@@ -113,7 +113,7 @@ fn typed_handles_agree_with_erased_value() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let doubled = b.build_int_add(x, x, "doubled")?;
     b.build_ret(doubled)?;

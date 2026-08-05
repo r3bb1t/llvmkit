@@ -1,17 +1,17 @@
-//! IRBuilder folder strategy tests.
+//! IrBuilder folder strategy tests.
 //!
 //! Source-derived folder behavior from `llvm/include/llvm/IR/ConstantFolder.h`,
-//! `llvm/include/llvm/IR/IRBuilder.h`, and `llvm/include/llvm/IR/NoFolder.h`,
+//! `llvm/include/llvm/IR/IrBuilder.h`, and `llvm/include/llvm/IR/NoFolder.h`,
 //! plus exact `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, NoFolderNames)`.
 
 use llvmkit_ir::ShuffleMaskElem;
 use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     BinaryIntrinsic, BinaryOpcode, CastKind, Constant, ConstantFloatValue, ConstantFolder,
-    ConstantIntValue, Dyn, GepNoWrapFlags, IRBuilder, IRBuilderFolder, InstructionKind,
-    InstructionView, IntDyn, IntPredicate, IntValue, IntValueId, IntWidth, IrError, IrResult,
-    Linkage, ModuleBrand, MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type,
-    UDivFlags, Value, constant_fold_binary_instruction, module_new,
+    ConstantIntValue, Dyn, GepNoWrapFlags, InstructionKind, InstructionView, IntDyn, IntPredicate,
+    IntValue, IntValueId, IntWidth, IrBuilder, IrBuilderFolder, IrError, IrResult, Linkage,
+    ModuleBrand, MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type, UDivFlags, Value,
+    constant_fold_binary_instruction, module_new,
 };
 use llvmkit_macros::Branded;
 
@@ -45,9 +45,9 @@ impl<'ctx, B: ModuleBrand> ReturningFolder<'ctx, B> {
 /// Only the two hooks exercised by this file's tests need a real body;
 /// every other hook keeps the trait's default "decline to fold" (the
 /// erased `*_dyn` hooks all default to `Ok(None)`, and the typed hooks
-/// default-delegate to them), matching upstream `IRBuilderFolder.h`'s
+/// default-delegate to them), matching upstream `IrBuilderFolder.h`'s
 /// posture that a custom folder overrides only what it cares about.
-impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for ReturningFolder<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ReturningFolder<'ctx, B> {
     fn fold_bin_op_dyn(
         &self,
         _opcode: BinaryOpcode,
@@ -90,7 +90,7 @@ fn constant_folder_folds_fneg_constant_without_instruction() -> Result<(), IrErr
     let fn_ty = m.fn_type_no_params(f32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let result = b.build_float_neg::<f32, _, _>(f32_ty.const_float(1.0), "n")?;
 
@@ -110,7 +110,7 @@ fn constant_folder_folds_udiv_by_zero_to_poison_without_instruction() -> Result<
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let result =
         b.build_int_udiv::<i32, _, _, _>(i32_ty.const_int(42_i32), i32_ty.const_zero(), "q")?;
@@ -134,7 +134,7 @@ fn constant_folder_exact_udiv_inexact_constants_match_upstream_plain_fold() -> R
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let result = b.build_int_udiv_with_flags::<i32, _, _, _>(
         i32_ty.const_int(7_i32),
@@ -410,8 +410,8 @@ fn constant_folder_pointer_cast_helpers_allow_one_lane_pointer_bitcasts() -> Res
     Ok(())
 }
 
-/// Mirrors `IRBuilder.h::CreateIsNull` -> `CreateICmpEQ` -> `Folder.FoldCmp`
-/// (`IRBuilder.h::CreateICmp` line 2442) +
+/// Mirrors `IrBuilder.h::CreateIsNull` -> `CreateICmpEQ` -> `Folder.FoldCmp`
+/// (`IrBuilder.h::CreateICmp` line 2442) +
 /// `ConstantFold.cpp::ConstantFoldCompareInstruction`: `icmp eq ptr null,
 /// null` folds to `i1 true` under the default folder and no instruction is
 /// inserted.
@@ -423,7 +423,7 @@ fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Resul
     let fn_ty = m.fn_type_no_params(bool_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let null = PointerValue::try_from(ptr_ty.const_null().into_erased())?;
 
     let result = b.build_is_null(null, "isn")?;
@@ -436,7 +436,7 @@ fn constant_folder_folds_is_null_of_constant_null_without_instruction() -> Resul
     Ok(())
 }
 
-/// Sibling of the `CreateIsNull` fold above for `IRBuilder.h::
+/// Sibling of the `CreateIsNull` fold above for `IrBuilder.h::
 /// CreateIsNotNull`: `icmp ne ptr null, null` folds to `i1 false` under the
 /// default folder and no instruction is inserted.
 #[test]
@@ -447,7 +447,7 @@ fn constant_folder_folds_is_not_null_of_constant_null_without_instruction() -> R
     let fn_ty = m.fn_type_no_params(bool_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let null = PointerValue::try_from(ptr_ty.const_null().into_erased())?;
 
     let result = b.build_is_not_null(null, "ok")?;
@@ -475,7 +475,7 @@ fn constant_folder_folds_pointer_cmp_global_vs_null_without_instruction() -> Res
     let fn_ty = m.fn_type_no_params(bool_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let eq = b.build_pointer_cmp(IntPredicate::Eq, gp, ptr_ty.const_null(), "eq")?;
     let ne = b.build_pointer_cmp(IntPredicate::Ne, gp, ptr_ty.const_null(), "ne")?;
@@ -503,7 +503,7 @@ fn default_builder_folds_insert_extract_element_chain() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(i64_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let elt1 = i64_ty.const_int(-1_i64);
     let elt2 = i64_ty.const_int(-2_i64);
 
@@ -524,7 +524,7 @@ fn default_builder_folds_insert_extract_element_chain() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific subset of `llvm/include/llvm/IR/IRBuilder.h::CreateMul`:
+/// llvmkit-specific subset of `llvm/include/llvm/IR/IrBuilder.h::CreateMul`:
 /// custom folders receive `FoldNoWrapBinOp(Instruction::Mul, ...)` instead of
 /// the plain binary hook.
 #[test]
@@ -535,7 +535,7 @@ fn custom_folder_no_wrap_hook_receives_mul() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let folded = i32_ty.const_int(99_i32).into_erased();
-    let b = IRBuilder::with_folder(
+    let b = IrBuilder::with_folder(
         &m,
         ReturningFolder {
             result: FolderReturn::NoWrapCall {
@@ -560,7 +560,7 @@ fn custom_folder_no_wrap_hook_receives_mul() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific subset of `llvm/include/llvm/IR/IRBuilder.h::CreateShl`:
+/// llvmkit-specific subset of `llvm/include/llvm/IR/IrBuilder.h::CreateShl`:
 /// custom folders receive `FoldNoWrapBinOp(Instruction::Shl, ...)` instead of
 /// the plain binary hook.
 #[test]
@@ -571,7 +571,7 @@ fn custom_folder_no_wrap_hook_receives_shl() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let folded = i32_ty.const_int(123_i32).into_erased();
-    let b = IRBuilder::with_folder(
+    let b = IrBuilder::with_folder(
         &m,
         ReturningFolder {
             result: FolderReturn::NoWrapCall {
@@ -605,7 +605,7 @@ fn no_folder_names_add_instruction_exactly() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
     let add =
         b.build_int_add::<i32, _, _, _>(i32_ty.const_int(1_i32), i32_ty.const_int(2_i32), "add")?;
@@ -626,7 +626,7 @@ fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let lhs = i32_ty.const_int(42_i32);
     let rhs = i32_ty.const_zero();
 
@@ -644,7 +644,7 @@ fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific subset of `IRBuilder.h::CreatePtrToAddr`: the builder
+/// llvmkit-specific subset of `IrBuilder.h::CreatePtrToAddr`: the builder
 /// chooses the pointer address type from `DataLayout` and emits a distinct
 /// `ptrtoaddr` cast, not `ptrtoint`.
 #[test]
@@ -656,7 +656,7 @@ fn no_folder_emits_ptrtoaddr_instruction_with_address_type() -> Result<(), IrErr
     let fn_ty = m.fn_type(i32_ty, [ptr1_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let ptr: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
 
     let result = b.build_ptr_to_addr(ptr, "addr")?;
@@ -690,7 +690,7 @@ fn no_folder_emits_pointer_cmp_instruction_for_constant_nulls() -> Result<(), Ir
     let fn_ty = m.fn_type_no_params(bool_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let null = ptr_ty.const_null();
 
     let result = b.build_pointer_cmp(IntPredicate::Eq, null, null, "isn")?;
@@ -716,7 +716,7 @@ fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrErro
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     let result = b.build_int_add(x, i32_ty.const_zero(), "sum")?;
@@ -726,7 +726,7 @@ fn constant_folder_does_not_simplify_nonconstant_add_zero() -> Result<(), IrErro
     Ok(())
 }
 
-/// `llvmkit-specific subset` of `IRBuilderFolder.h`: custom folders may return
+/// `llvmkit-specific subset` of `IrBuilderFolder.h`: custom folders may return
 /// an existing value, but the builder rejects a value with the wrong type.
 ///
 /// `ReturningFolder` overrides only the erased `fold_bin_op_dyn`, so
@@ -744,7 +744,7 @@ fn custom_folder_wrong_type_is_rejected() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let folded = i64_ty.const_int(0_i64).into_erased();
-    let b = IRBuilder::with_folder(
+    let b = IrBuilder::with_folder(
         &m,
         ReturningFolder {
             result: FolderReturn::Value(folded),
@@ -777,7 +777,7 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let result = b.build_int_add::<i32, _, _, _>(
             i32_ty.const_int(7_i32),
@@ -799,7 +799,7 @@ fn typed_and_dyn_int_add_fold_to_identical_constant() -> Result<(), IrError> {
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let result = b.build_int_add_dyn(
             i32_ty.const_int(7_i32).into_erased(),
@@ -891,7 +891,7 @@ struct WideningDynFolder<'ctx, B: llvmkit_ir::ModuleBrand> {
     replacement: Value<'ctx, B>,
 }
 
-impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
+impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B>
     for WideningDynFolder<'ctx, B>
 {
     fn fold_bin_op_dyn(
@@ -914,7 +914,7 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
     }
 }
 
-/// `llvm/include/llvm/IR/IRBuilderFolder.h` `Value*` folder hook contract:
+/// `llvm/include/llvm/IR/IrBuilderFolder.h` `Value*` folder hook contract:
 /// locks the `IntValue<IntDyn>` builder-side `TypeSlot` re-check the
 /// typed-folder rewrite (task 5) preserves for erased markers -- an erased
 /// `fold_bin_op_dyn` override that answers with a wrong-width replacement
@@ -939,7 +939,7 @@ fn dyn_marker_fold_keeps_runtime_width_check() -> Result<(), IrError> {
     let folder = WideningDynFolder {
         replacement: i64_dyn_ty.const_zero().into_erased(),
     };
-    let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
 
     let lhs = i32_dyn_ty.const_int_checked(1_i32)?;
     let rhs = i32_dyn_ty.const_int_checked(2_i32)?;
@@ -1013,7 +1013,7 @@ struct NarrowingTypedFolder<'ctx, B: llvmkit_ir::ModuleBrand> {
     replacement: Value<'ctx, B>,
 }
 
-impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
+impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B>
     for NarrowingTypedFolder<'ctx, B>
 {
     fn fold_int_bin_op<W: IntWidth>(
@@ -1036,7 +1036,7 @@ impl<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B>
     }
 }
 
-/// `llvm/include/llvm/IR/IRBuilderFolder.h` typed fold hook contract, from
+/// `llvm/include/llvm/IR/IrBuilderFolder.h` typed fold hook contract, from
 /// the external-folder position: locks `accept_folded_int`
 /// (`src/ir_builder.rs`) as the seam that rejects a wrong-width result from
 /// an **external** native `fold_int_bin_op<W>` override built with the
@@ -1078,7 +1078,7 @@ fn external_narrow_override_wrong_width_rejected_by_accept_folded_int() -> Resul
     let folder = NarrowingTypedFolder {
         replacement: i64_dyn_ty.const_zero().into_erased(),
     };
-    let b = IRBuilder::with_folder(&m, folder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, folder).position_at_end(entry);
 
     let lhs = i32_dyn_ty.const_int_checked(1_i32)?;
     let rhs = i32_dyn_ty.const_int_checked(2_i32)?;

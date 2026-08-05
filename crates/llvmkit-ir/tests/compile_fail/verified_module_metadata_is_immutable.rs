@@ -32,7 +32,7 @@ fn main() {
         .unwrap()
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = llvmkit_ir::IRBuilder::at_end(entry);
+    let b = llvmkit_ir::IrBuilder::at_end(entry);
     b.build_ret_void();
     let node = m.metadata_string("attached");
 

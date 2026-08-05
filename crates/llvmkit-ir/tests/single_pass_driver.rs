@@ -23,7 +23,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, Inspect, IrError, IrResult, Linkage,
+    Analyses, Dyn, FnCx, FnReport, FunctionPass, Inspect, IrBuilder, IrError, IrResult, Linkage,
     ModCx, ModReport, Module, ModuleBrand, ModulePass, RewriteModule, Unverified, Verified,
     module_new, run_function_pass, run_module_pass,
 };
@@ -67,7 +67,7 @@ fn inspect_module_pass_stays_verified_and_runs() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
     let verified = m.verify()?;
@@ -124,7 +124,7 @@ fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
     let verified = m.verify()?;
@@ -191,7 +191,7 @@ fn inspect_function_pass_stays_verified_and_runs() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
     let verified = m.verify()?;

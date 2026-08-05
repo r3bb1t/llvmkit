@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, DynBrand, FunctionValue, IRBuilder,
-    IntValue, IrResult, Linkage, Module, ModuleBrand, Unverified, Value, module_new,
+    AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, DynBrand, FunctionValue, IntValue,
+    IrBuilder, IrResult, Linkage, Module, ModuleBrand, Unverified, Value, module_new,
 };
 
 fn exercise_tables<'ctx, B: ModuleBrand + 'ctx>(module: Module<B, Unverified>) -> IrResult<()> {
@@ -23,7 +23,7 @@ fn exercise_tables<'ctx, B: ModuleBrand + 'ctx>(module: Module<B, Unverified>) -
 
     let lhs = *integers.get("parameter").expect("int value");
     let rhs: IntValue<'_, i64, _> = (*values.get("parameter").expect("value")).try_into()?;
-    let builder = IRBuilder::new_for::<Dyn>(&module).position_at_end(entry);
+    let builder = IrBuilder::new_for::<Dyn>(&module).position_at_end(entry);
     let sum = builder.build_int_add(lhs, rhs, "sum")?;
     builder.build_ret(sum)?;
 
@@ -55,7 +55,7 @@ fn generic_function_display_preserves_brand() -> IrResult<()> {
         .add_typed_function::<(), (), _>("f", Linkage::External)?
         .as_function();
     let entry = module.view(function).append_basic_block(&module, "entry");
-    IRBuilder::new_for::<()>(&module)
+    IrBuilder::new_for::<()>(&module)
         .position_at_end(entry)
         .build_ret_void();
     assert!(format_generic_function(module.view(function)).contains("define void @f()"));

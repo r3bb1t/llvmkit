@@ -140,7 +140,7 @@ impl<B: ModuleBrand> Worklist<B> {
 #[cfg(test)]
 mod tests {
     use super::Worklist;
-    use crate::{FunctionView, IRBuilder, IntValue, IrError, Linkage, NoFolder};
+    use crate::{FunctionView, IntValue, IrBuilder, IrError, Linkage, NoFolder};
 
     // Build `f(i32 %x)` with three dead adds; return their ids + the module ref.
     // Helper closes over `m` so tests can pop against a live module.
@@ -151,7 +151,7 @@ mod tests {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let a = b.build_int_add(x, 1_i32, "a")?;
         let c = b.build_int_add(x, 2_i32, "c")?;
@@ -186,7 +186,7 @@ mod tests {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let a = b.build_int_add(x, 1_i32, "a")?;
         let c = b.build_int_add(x, 2_i32, "c")?;
@@ -215,7 +215,7 @@ mod tests {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let a = b.build_int_add(x, 1_i32, "a")?;
         b.build_ret(x)?;
@@ -260,7 +260,7 @@ mod tests {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let a = b.build_int_add(x, 1_i32, "a")?;
         b.build_ret(x)?;

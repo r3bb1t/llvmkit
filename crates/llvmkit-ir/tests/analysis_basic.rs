@@ -11,8 +11,8 @@ use llvmkit_ir::analysis::{
     FunctionAnalysisManagerModuleProxy, ModuleAnalysisInvalidator,
 };
 use llvmkit_ir::{
-    AllAnalysesOnFunction, AllAnalysesOnModule, CFGAnalyses, DominatorTreeAnalysis,
-    FunctionAnalysis, FunctionAnalysisManager, FunctionAnalysisResult, FunctionView, IRBuilder,
+    AllAnalysesOnFunction, AllAnalysesOnModule, CfgAnalyses, DominatorTreeAnalysis,
+    FunctionAnalysis, FunctionAnalysisManager, FunctionAnalysisResult, FunctionView, IrBuilder,
     IrError, IrResult, Linkage, Module, ModuleAnalysis, ModuleAnalysisManager,
     ModuleAnalysisResult, ModuleBrand, ModuleView, PreservedAnalyses, Value,
 };
@@ -163,14 +163,14 @@ where
         .as_function();
 
     let entry = module.view(f).append_basic_block(&module, "entry");
-    let b = IRBuilder::new_for::<()>(&module).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(&module).position_at_end(entry);
     b.build_call_dyn(g, Vec::<Value<'_, _>>::new(), "")?;
     b.build_call_dyn(h, Vec::<Value<'_, _>>::new(), "")?;
     b.build_ret_void();
 
     for function in [g, h] {
         let entry = module.view(function).append_basic_block(&module, "entry");
-        IRBuilder::new_for::<()>(&module)
+        IrBuilder::new_for::<()>(&module)
             .position_at_end(entry)
             .build_ret_void();
     }
@@ -229,14 +229,14 @@ fn preserved_analyses_checker_behavior() {
             .preserved_set::<AllAnalysesOnModule>()
     );
 
-    let cfg_set = PreservedAnalyses::all_in_set::<CFGAnalyses>();
+    let cfg_set = PreservedAnalyses::all_in_set::<CfgAnalyses>();
     assert!(!cfg_set.checker::<DominatorTreeAnalysis>().preserved());
     assert!(
         cfg_set
             .checker::<DominatorTreeAnalysis>()
-            .preserved_set::<CFGAnalyses>()
+            .preserved_set::<CfgAnalyses>()
     );
-    assert!(cfg_set.all_analyses_in_set_preserved::<CFGAnalyses>());
+    assert!(cfg_set.all_analyses_in_set_preserved::<CfgAnalyses>());
 
     let mut specific = PreservedAnalyses::none();
     specific.preserve::<CountFunctionAnalysis>();
@@ -656,7 +656,7 @@ fn module_level_invalidation_honors_fam_proxy_and_function_set() -> Result<(), I
 }
 
 /// Ports `llvm/lib/IR/Dominators.cpp::DominatorTreeAnalysis::run` and
-/// `DominatorTree::invalidate`: the cached tree is preserved by `CFGAnalyses`.
+/// `DominatorTree::invalidate`: the cached tree is preserved by `CfgAnalyses`.
 #[test]
 fn dominator_tree_analysis_caches_and_cfg_preserves() -> Result<(), IrError> {
     with_sample_module(|m| {
@@ -668,7 +668,7 @@ fn dominator_tree_analysis_caches_and_cfg_preserves() -> Result<(), IrError> {
         assert!(dt.is_reachable_from_entry(f.entry_block().expect("body")));
 
         let mut pa = PreservedAnalyses::none();
-        pa.preserve_set::<CFGAnalyses>();
+        pa.preserve_set::<CfgAnalyses>();
         fam.invalidate(f, &pa)?;
         assert!(
             fam.get_cached_result::<DominatorTreeAnalysis, _>(f)

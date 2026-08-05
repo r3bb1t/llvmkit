@@ -3,7 +3,7 @@
 //! `LandingPadInst::finish` returns a `Closed` view. Retaining the original
 //! `Open` handle must not permit more clauses to be added.
 
-use llvmkit_ir::{Dyn, IRBuilder, Linkage, Module};
+use llvmkit_ir::{Dyn, IrBuilder, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("retained-landingpad");
@@ -14,7 +14,7 @@ fn main() {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let null_ptr = ptr_ty.const_null();
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lp = b.build_landingpad(i32_ty.as_type(), true, "lp").unwrap();
 
     let _closed = lp.finish();

@@ -3,7 +3,7 @@
 //! `InstructionView::kind` is a read-only discriminator. Re-discovering a
 //! finished landingpad through it must not mint a fresh `Open` landingpad handle.
 
-use llvmkit_ir::{IRBuilder, InstructionKind, Linkage, Module};
+use llvmkit_ir::{IrBuilder, InstructionKind, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("landingpad-kind");
@@ -14,7 +14,7 @@ fn main() {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let null_ptr = ptr_ty.const_null();
-    let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
     let lp = b.build_landingpad(i32_ty.as_type(), true, "lp").unwrap();
     let closed = lp.finish();
 

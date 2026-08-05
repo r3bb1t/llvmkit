@@ -1,4 +1,4 @@
-error[E0599]: no method named `build_int_phi` found for struct `IRBuilder<'m, 'ctx, B, F, S, R>` in the current scope
+error[E0599]: no method named `build_int_phi` found for struct `IrBuilder<'m, 'ctx, B, F, S, R>` in the current scope
   --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:34:18
    |
 34 |     let _int = b.build_int_phi::<i32, _>("p");
@@ -16,7 +16,7 @@ help: there is a method `build_int_phi_dyn` with a similar name, but with differ
    | |         Name: AsRef<str>,
    | |_________________________^
 
-error[E0599]: no method named `build_fp_phi` found for struct `IRBuilder<'m, 'ctx, B, F, S, R>` in the current scope
+error[E0599]: no method named `build_fp_phi` found for struct `IrBuilder<'m, 'ctx, B, F, S, R>` in the current scope
   --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:35:17
    |
 35 |     let _fp = b.build_fp_phi::<f64, _>("q");
@@ -34,7 +34,7 @@ help: there is a method `build_fp_phi_dyn` with a similar name, but with differe
    | |         Name: AsRef<str>,
    | |_________________________^
 
-error[E0599]: no method named `build_pointer_phi` found for struct `IRBuilder<'m, 'ctx, B, F, S, R>` in the current scope
+error[E0599]: no method named `build_pointer_phi` found for struct `IrBuilder<'m, 'ctx, B, F, S, R>` in the current scope
   --> tests/compile_fail/raw_phi_builder_is_unnameable.rs:36:18
    |
 36 |     let _ptr = b.build_pointer_phi("r");

@@ -8,7 +8,7 @@
 //! path of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, WrapFlags)`.
 
 use llvmkit_ir::{
-    AShrFlags, Dyn, IRBuilder, IntValue, IrError, LShrFlags, Linkage, ShlFlags, module_new,
+    AShrFlags, Dyn, IntValue, IrBuilder, IrError, LShrFlags, Linkage, ShlFlags, module_new,
 };
 
 /// Mirrors `test/Assembler/flags.ll` for `shl` print form.
@@ -19,7 +19,7 @@ fn shl_plain() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
     let f = m.add_function_dyn("shl_plain", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_int_shl(lhs, rhs, "z")?;
@@ -37,7 +37,7 @@ fn lshr_plain() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
     let f = m.add_function_dyn("lshr_plain", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_int_lshr(lhs, rhs, "z")?;
@@ -55,7 +55,7 @@ fn ashr_plain() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
     let f = m.add_function_dyn("ashr_plain", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_int_ashr(lhs, rhs, "z")?;
@@ -74,7 +74,7 @@ fn shl_nuw_nsw() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
     let f = m.add_function_dyn("shl_both", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_int_shl_with_flags(lhs, rhs, ShlFlags::new().nuw().nsw(), "z")?;
@@ -92,7 +92,7 @@ fn lshr_exact() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
     let f = m.add_function_dyn("lshr_exact", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_int_lshr_with_flags(lhs, rhs, LShrFlags::new().exact(), "z")?;
@@ -110,7 +110,7 @@ fn ashr_exact() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
     let f = m.add_function_dyn("ashr_exact", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_int_ashr_with_flags(lhs, rhs, AShrFlags::new().exact(), "z")?;

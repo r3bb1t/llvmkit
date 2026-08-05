@@ -9,7 +9,7 @@
 //! `IntoIntValue<'_, i32, _>`, so feeding it into `build_int_add` is a
 //! compile error, not a runtime/UB path.
 
-use llvmkit_ir::{IRBuilder, Linkage, Module};
+use llvmkit_ir::{IrBuilder, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("c");
@@ -20,7 +20,7 @@ fn main() {
         .add_typed_function::<i32, (i32,), _>("caller", Linkage::External)
         .unwrap();
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (n,) = m.view(caller).params();
     let void_call = b.build_call(void_callee, (), "").unwrap();
     // `b.view(void_call).result()` is `()`, not an `IntoIntValue<'_, i32, _>`.

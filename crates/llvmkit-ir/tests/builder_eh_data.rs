@@ -2,7 +2,7 @@
 //!
 //! Every test cites its upstream source per Doctrine D11.
 
-use llvmkit_ir::{Dyn, IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{Dyn, IrBuilder, IrError, Linkage, module_new};
 
 // --------------------------------------------------------------------------
 // landingpad
@@ -25,10 +25,10 @@ fn landingpad_cleanup_only() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let exception = m.view(f).append_basic_block(&m, "exception");
     {
-        let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         bb_b.build_ret_void()?;
     }
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exception);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exception);
     let lp = b.build_landingpad(i8_ty.as_type(), true, "cleanup")?;
     let _closed = lp.finish();
     b.build_ret_void()?;
@@ -61,10 +61,10 @@ fn landingpad_cleanup_plus_catch() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let catch3 = m.view(f).append_basic_block(&m, "catch3");
     {
-        let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         bb_b.build_ret_void()?;
     }
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(catch3);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(catch3);
     let null_ptr = ptr_ty.const_null();
     let lp = b.build_landingpad(i32_ty.as_type(), true, "")?;
     let _closed = lp.add_catch_clause(null_ptr)?.finish();
@@ -97,7 +97,7 @@ fn resume_i32_undef() -> Result<(), IrError> {
     );
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let exc = m.view(f).append_basic_block(&m, "exc");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exc);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exc);
     let undef = i32_ty.as_type().get_undef();
     let _ = b.build_resume(undef, "")?;
     let text = format!("{m}");
@@ -121,7 +121,7 @@ fn landingpad_followed_by_resume() -> Result<(), IrError> {
     );
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let exc = m.view(f).append_basic_block(&m, "exc");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exc);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exc);
     let lp = b.build_landingpad(i32_ty.as_type(), true, "cleanup")?;
     let _closed = lp.finish();
     let undef = i32_ty.as_type().get_undef();

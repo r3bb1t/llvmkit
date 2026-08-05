@@ -80,7 +80,7 @@ pub struct FunctionSummary {
 pub struct VariableSummary {
     pub module: u32,
     pub flags: GvFlags,
-    pub var_flags: GVarFlags,
+    pub var_flags: GlobalVariableFlags,
     pub refs: Vec<GvReference>,
 }
 
@@ -164,7 +164,7 @@ pub struct FunctionFlags {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct GVarFlags {
+pub struct GlobalVariableFlags {
     pub read_only: bool,
     pub write_only: bool,
     pub constant: bool,
@@ -568,11 +568,11 @@ impl<'src> SummaryParser<'src> {
         Ok(flags)
     }
 
-    fn parse_var_flags(&mut self) -> ParseResult<GVarFlags> {
+    fn parse_var_flags(&mut self) -> ParseResult<GlobalVariableFlags> {
         self.expect_keyword(Keyword::VarFlags, "'varFlags'")?;
         self.expect(Token::Colon, "':' here")?;
         self.expect(Token::LParen, "'(' here")?;
-        let mut flags = GVarFlags::default();
+        let mut flags = GlobalVariableFlags::default();
         loop {
             match &self.current.value {
                 Token::Kw(Keyword::Readonly) => {
@@ -1047,7 +1047,7 @@ impl fmt::Display for FunctionFlags {
     }
 }
 
-impl fmt::Display for GVarFlags {
+impl fmt::Display for GlobalVariableFlags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,

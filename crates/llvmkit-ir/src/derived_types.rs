@@ -560,7 +560,7 @@ decl_type_handle!(
 ///
 /// The `W: IntWidth` marker encodes the bit-width at the type level:
 /// `IntType<'ctx, i32>` is a different type from `IntType<'ctx, i64>`,
-/// and the IRBuilder's binary-op methods use this distinction to
+/// and the IrBuilder's binary-op methods use this distinction to
 /// reject mismatched widths at compile time.
 ///
 /// Use [`IntType<'ctx, IntDyn>`](IntDyn) when the width

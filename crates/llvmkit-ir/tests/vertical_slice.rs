@@ -1,37 +1,37 @@
-//! End-to-end smoke test exercising types + values + IRBuilder + AsmWriter.
+//! End-to-end smoke test exercising types + values + IrBuilder + AsmWriter.
 //!
 //! ## Upstream provenance
 //!
 //! llvmkit-specific integration test with no single upstream `TEST` analog.
 //! Closest upstream coverage: `unittests/IR/IRBuilderTest.cpp` exercises
-//! the IRBuilder family at runtime; `unittests/IR/InstructionsTest.cpp`
+//! the IrBuilder family at runtime; `unittests/IR/InstructionsTest.cpp`
 //! exercises Instruction construction. Per-test citations below note
 //! the closest functional reference for each.
 //!
-//! End-to-end test for the value-layer + minimal-IRBuilder slice.
+//! End-to-end test for the value-layer + minimal-IrBuilder slice.
 //!
 //! After Phase A1 / A2 (width-typed integers + kind-typed floats) and
-//! Phase A3 (return-type-safe IRBuilder) the vertical-slice asserts:
+//! Phase A3 (return-type-safe IrBuilder) the vertical-slice asserts:
 //!
 //! - The function has exactly one basic block after `append_basic_block`.
 //! - The entry block's terminator is a `Ret`.
 //! - The `add` instruction's operands are the function's two arguments.
-//! - The IRBuilder's binary-op generic enforces equal widths at compile
+//! - The IrBuilder's binary-op generic enforces equal widths at compile
 //!   time (no runtime `OperandWidthMismatch` for the in-test happy path).
 //! - Constant interning: two `i32_ty.const_int(42i32)` calls return
 //!   equal handles.
 //! - Cross-value-category narrowing (`Argument -> IntValue<i32>`) errors
 //!   cleanly when the argument's type is not integral.
 //! - The typed `m.add_typed_function::<i32, (), _>(...)` path produces a
-//!   `FunctionValue<i32>` whose IRBuilder accepts only matching
+//!   `FunctionValue<i32>` whose IrBuilder accepts only matching
 //!   `IntValue<i32>` operands at `build_ret` (compile-time enforced).
 
 use llvmkit_ir::{
-    Argument, Dyn, IRBuilder, IntValue, IrError, Linkage, TerminatorKind, module_new,
+    Argument, Dyn, IntValue, IrBuilder, IrError, Linkage, TerminatorKind, module_new,
 };
 
 /// llvmkit-specific: end-to-end add+ret smoke test. Closest upstream
-/// reference: `unittests/IR/IRBuilderTest.cpp` (IRBuilder unit tests
+/// reference: `unittests/IR/IRBuilderTest.cpp` (IrBuilder unit tests
 /// build identical add+ret patterns).
 #[test]
 fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
@@ -41,7 +41,7 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
     let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
@@ -79,7 +79,7 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific: validates `IrError::OperandWidthMismatch` from the
-/// runtime-checked `Dyn` IRBuilder path. No upstream analog (C++ asserts).
+/// runtime-checked `Dyn` IrBuilder path. No upstream analog (C++ asserts).
 #[test]
 fn mismatched_widths_error_at_runtime_when_dyn() -> Result<(), IrError> {
     let m = module_new!("demo")?;
@@ -91,7 +91,7 @@ fn mismatched_widths_error_at_runtime_when_dyn() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i64_ty.as_type()], false);
     let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     // Static narrowing rejects the i64 arg as an i32-typed IntValue.
     let _a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
@@ -209,7 +209,7 @@ fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [i64_ty.as_type()], false);
     let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new(&m).position_at_end(entry);
+    let b = IrBuilder::new(&m).position_at_end(entry);
     let arg = m.view(f).param(0)?; // i64
     let err = b
         .build_ret(arg)

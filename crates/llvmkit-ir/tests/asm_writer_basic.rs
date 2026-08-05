@@ -8,7 +8,7 @@
 //! `unnamed_addr` assertions in `module_prints_simple_add_function` track
 //! `test/Assembler/unnamed-addr.ll`.
 
-use llvmkit_ir::{Dyn, IRBuilder, IntValue, IrError, Linkage, module_new};
+use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, module_new};
 
 /// Closest upstream coverage:
 /// `unittests/IR/AsmWriterTest.cpp::TEST(AsmWriterTest, DebugPrintDetachedInstruction)`
@@ -22,7 +22,7 @@ fn module_prints_simple_add_function() -> Result<(), IrError> {
     let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let sum = b.build_int_add(lhs, rhs, "sum")?;
@@ -55,7 +55,7 @@ fn module_prints_blank_line_between_type_identities_and_first_function() -> Resu
     let fn_ty = m.fn_type(m.void_type(), [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
         .build_ret_void()?;
 
@@ -81,7 +81,7 @@ fn dollar_names_print_without_quotes() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("foo$bar", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry$bb");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let sum = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "sum$value")?;
     b.build_ret(sum)?;
@@ -106,7 +106,7 @@ fn function_local_names_share_argument_block_and_instruction_namespace() -> Resu
         .build()?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let entry_name = entry.name();
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let result = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "entry")?;
     b.build_ret(result)?;
@@ -136,7 +136,7 @@ fn set_name_reinserts_and_frees_old_binding() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     let first = b.build_int_add::<i32, _, _, _>(arg, 1_i32, "tmp")?;
@@ -155,7 +155,7 @@ fn set_name_reinserts_and_frees_old_binding() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific: exercises the IRBuilder constant-folder path -- both add
+/// llvmkit-specific: exercises the IrBuilder constant-folder path -- both add
 /// operands are constants so the folder elides the `add` and feeds `42`
 /// directly to `ret`. Closest upstream coverage:
 /// `unittests/IR/AsmWriterTest.cpp` (textual rendering of `ret i32 42`) and
@@ -170,7 +170,7 @@ fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
     let f = m.add_function_dyn("answer", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a = i32_ty.const_int(40_i32);
     let bb = i32_ty.const_int(2_i32);
     // build_int_add on two constants: the folder produces a constant.
@@ -202,7 +202,7 @@ fn function_print_standalone_matches_module_section() -> Result<(), IrError> {
     let f = m.add_function_dyn("identity", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     b.build_ret(arg)?;
 
@@ -240,7 +240,7 @@ fn unnamed_basic_block_uses_slot_label() -> Result<(), IrError> {
     let f = m.add_function_dyn("anon", fn_ty, Linkage::External)?;
     // No name on the entry block.
     let entry = m.view(f).append_basic_block(&m, "");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     b.build_ret(arg)?;
     let text = format!("{m}");

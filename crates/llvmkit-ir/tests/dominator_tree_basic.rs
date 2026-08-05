@@ -3,8 +3,8 @@
 //! Every test cites its upstream source per Doctrine D11.
 
 use llvmkit_ir::{
-    BasicBlockEdge, DominatorTree, Dyn, FunctionCfg, IRBuilder, InstructionView, IntPredicate,
-    IntValue, IrError, Linkage, ModuleBrand, User, module_new,
+    BasicBlockEdge, DominatorTree, Dyn, FunctionCfg, InstructionView, IntPredicate, IntValue,
+    IrBuilder, IrError, Linkage, ModuleBrand, User, module_new,
 };
 
 fn inst<'ctx, B: ModuleBrand + 'ctx>(
@@ -33,19 +33,19 @@ fn reachable_and_unreachable_block_dominance() -> Result<(), IrError> {
     let dead_label = dead.id();
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let cond = b.build_int_cmp(IntPredicate::Eq, x, 0_i32, "cond")?;
     b.build_cond_br(cond, then_label, else_label)?;
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(then_bb)
         .build_br(join_label)?;
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(else_bb)
         .build_br(join_label)?;
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(join)
         .build_ret(x)?;
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(dead)
         .build_ret(x)?;
 
@@ -84,12 +84,12 @@ fn same_block_instruction_order_and_unreachable_use_semantics() -> Result<(), Ir
     let dead = m.view(f).append_basic_block(&m, "dead");
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let y1 = b.build_int_add(x, 1_i32, "y1")?;
     let y2 = b.build_int_add(y1, 1_i32, "y2")?;
     b.build_ret(y2)?;
 
-    let bd = IRBuilder::new_for::<Dyn>(&m).position_at_end(dead);
+    let bd = IrBuilder::new_for::<Dyn>(&m).position_at_end(dead);
     let z1 = bd.build_int_add(x, 1_i32, "z1")?;
     let z2 = bd.build_int_add(z1, 1_i32, "z2")?;
     bd.build_ret(z2)?;
@@ -133,21 +133,21 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
     // order — `then` carries `%y` first, then `else` carries `%x` — so the
     // head-phi records `[%y, then], [%x, else]` and `%p` (params[0]) is the
     // phi result, exactly the explicit phi this test used before.
-    let bwp = IRBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (join, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
     let join_label = join.id();
 
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
         .build_cond_br(cond, then_label, else_label)?;
-    let bt = IRBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
+    let bt = IrBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
     let y = bt.build_int_add(x, 1_i32, "y")?;
     bt.build_br_with_args(join_label, &[m.view(y).into_erased()])?;
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(else_bb)
         .build_br_with_args(join_label, &[x.into_erased()])?;
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(join)
         .build_ret(p)?;
 
@@ -183,7 +183,7 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
     let unwind_label = unwind.id();
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    let (_sealed, invoke) = IRBuilder::new_for::<Dyn>(&m)
+    let (_sealed, invoke) = IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
         .build_invoke_dyn(
             m.view(callee),
@@ -194,10 +194,10 @@ fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrE
         )?;
     let invoke_value: IntValue<'_, i32, _> = invoke.to_erased().try_into()?;
 
-    let bn = IRBuilder::new_for::<Dyn>(&m).position_at_end(normal);
+    let bn = IrBuilder::new_for::<Dyn>(&m).position_at_end(normal);
     let normal_use = bn.build_int_add(invoke_value, 1_i32, "normal_use")?;
     bn.build_ret(normal_use)?;
-    let bu = IRBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
+    let bu = IrBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
     let unwind_use = bu.build_int_add(invoke_value, 1_i32, "unwind_use")?;
     bu.build_ret(x)?;
 
@@ -229,11 +229,11 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
     // duplicate edge), each carrying the same `%x`. The head-phi therefore
     // records `[%x, entry], [%x, entry]` — the same-value duplicate for the
     // shared predecessor is accepted.
-    let bwp = IRBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (join, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
     let join_label = join.id();
 
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
         .build_cond_br_with_args(
             cond,
@@ -243,7 +243,7 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
             &[x.into_erased()],
         )?;
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(join)
         .build_ret(p)?;
 

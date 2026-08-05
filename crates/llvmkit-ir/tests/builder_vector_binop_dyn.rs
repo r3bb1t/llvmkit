@@ -2,7 +2,7 @@
 //! (`build_int_xor_dyn` & friends), which accept integer-*vector* operands
 //! that the scalar-only typed `build_int_*` family rejects.
 
-use llvmkit_ir::{Dyn, IRBuilder, Linkage, module_new};
+use llvmkit_ir::{Dyn, IrBuilder, Linkage, module_new};
 
 /// llvmkit-specific: `xor`/`add`/`shl` on `<2 x i64>` vector operands emit
 /// element-wise vector IR through llvmkit's type-erased builders. Closest
@@ -24,7 +24,7 @@ fn vector_binops_emit_elementwise_ir() {
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let a = m.view(f).param(0).expect("p0").into_erased();
     let c = m.view(f).param(1).expect("p1").into_erased();
@@ -73,7 +73,7 @@ fn scalar_binop_dyn_still_works() {
         .add_function_dyn("h", fn_ty, Linkage::External)
         .expect("h");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let a = m.view(f).param(0).expect("p0").into_erased();
     let c = m.view(f).param(1).expect("p1").into_erased();

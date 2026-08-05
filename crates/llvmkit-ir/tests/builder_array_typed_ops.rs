@@ -12,7 +12,7 @@
 //! fixture (`tests/compile_fail/array_insert_wrong_element`); here we only
 //! exercise the well-typed happy path.
 
-use llvmkit_ir::{ArrLen, ArrayValue, Dyn, IRBuilder, IntValue, Linkage, module_new};
+use llvmkit_ir::{ArrLen, ArrayValue, Dyn, IntValue, IrBuilder, Linkage, module_new};
 
 /// `build_arr_extract` at index 2 on a `[4 x i32]` typed `ArrayValue` returns
 /// the element as its statically typed scalar handle — `IntValue<'_, i32>`,
@@ -31,7 +31,7 @@ fn typed_arr_extract_returns_typed_element() {
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     // Narrow the erased `[4 x i32]` param into the statically typed handle.
     let a: ArrayValue<'_, i32, ArrLen<4>, _> = m
@@ -72,7 +72,7 @@ fn typed_arr_insert_round_trips() {
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let a: ArrayValue<'_, i32, ArrLen<4>, _> = m
         .view(f)
@@ -124,7 +124,7 @@ fn typed_array_type_allocas() {
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     // `build_alloca` takes any `IrType`; the typed array handle qualifies.
     let slot = b.build_alloca(arr_ty, "slot").expect("alloca");

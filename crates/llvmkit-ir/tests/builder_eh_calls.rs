@@ -3,7 +3,7 @@
 //! Every test cites its upstream source per Doctrine D11.
 
 use llvmkit_ir::{
-    CallSiteConfig, CallingConv, Dyn, IRBuilder, InlineAsmOptions, IntValue, IrError, Linkage,
+    CallSiteConfig, CallingConv, Dyn, InlineAsmOptions, IntValue, IrBuilder, IrError, Linkage,
     module_new,
 };
 
@@ -39,14 +39,14 @@ fn invoke_void_to_unwind() -> Result<(), IrError> {
     let normal_label = normal.id();
     let unwind_label = unwind.id();
     {
-        let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(normal);
+        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(normal);
         bb_b.build_ret_void()?;
     }
     {
-        let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
+        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(unwind);
         bb_b.build_ret_void()?;
     }
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let _ = b.build_invoke_dyn_with_config(
         m.view(callee),
         Vec::<llvmkit_ir::Value<'_, _>>::new(),
@@ -69,7 +69,7 @@ fn invoke_void_to_unwind() -> Result<(), IrError> {
 /// `invoke.to_erased()` narrows via `TryFrom` to `IntValue<i32>` without
 /// error, proving the marker is really `i32` and not `Dyn`. Prints
 /// identically to the dyn form for the same signature. Closest
-/// upstream coverage: same `IRBuilder::CreateInvoke` shape as
+/// upstream coverage: same `IrBuilder::CreateInvoke` shape as
 /// `invoke_void_to_unwind`, exercised through the typed callee facade.
 #[test]
 fn typed_invoke_derives_return_marker_from_callee() -> Result<(), IrError> {
@@ -83,15 +83,15 @@ fn typed_invoke_derives_return_marker_from_callee() -> Result<(), IrError> {
     let unwind_label = unwind.id();
     let (x,) = m.view(caller).params();
     {
-        let bb_b = IRBuilder::new_for::<i32>(&m).position_at_end(unwind);
+        let bb_b = IrBuilder::new_for::<i32>(&m).position_at_end(unwind);
         bb_b.build_ret(x)?;
     }
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (_sealed, invoke) = b.build_invoke(m.view(callee), (), normal_label, unwind_label, "iv")?;
     // The invoke's marker is already `i32` (derived from the callee),
     // so this infallible-in-practice narrowing never errors.
     let result: IntValue<'_, i32, _> = invoke.to_erased().try_into()?;
-    let bn = IRBuilder::new_for::<i32>(&m).position_at_end(normal);
+    let bn = IrBuilder::new_for::<i32>(&m).position_at_end(normal);
     bn.build_ret(result)?;
     let text = format!("{m}");
     assert!(
@@ -124,14 +124,14 @@ fn callbr_void_with_one_indirect_dest() -> Result<(), IrError> {
     let kill_label = kill.id();
     let cont_label = cont.id();
     {
-        let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(kill);
+        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(kill);
         bb_b.build_unreachable();
     }
     {
-        let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(cont);
+        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(cont);
         bb_b.build_ret_void()?;
     }
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let c: llvmkit_ir::IntValue<'_, bool, _> = m.view(caller).param(0)?.try_into()?;
     let _ = b.build_callbr(callee, [c.into_erased()], cont_label, [kill_label], "")?;
     let text = format!("{m}");
@@ -179,10 +179,10 @@ fn callbr_two_indirect_dests_print_form() -> Result<(), IrError> {
     let bb1_label = bb1.id();
     let bb2_label = bb2.id();
     for bb in [bb1, bb2] {
-        let bb_b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+        let bb_b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
         bb_b.build_ret_void()?;
     }
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let _ = b.build_inline_asm_callbr::<(), _, _, _, _, _, _>(
         asm,
         Vec::<llvmkit_ir::Value<'_, _>>::new(),

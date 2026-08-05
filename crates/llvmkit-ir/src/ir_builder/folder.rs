@@ -1,5 +1,5 @@
 //! Folder trait for the IR builder. Mirrors
-//! `llvm/include/llvm/IR/IRBuilderFolder.h`.
+//! `llvm/include/llvm/IR/IrBuilderFolder.h`.
 //!
 //! Upstream returns `Value *` from every hook, with `nullptr` meaning
 //! "no fold". The Rust analog uses `IrResult<Option<Value<'ctx, B>>>`:
@@ -45,7 +45,7 @@ use crate::value::{FloatValue, IntValue, Typed};
 ///   `fold_select_dyn`, ...) deliberately stay erased: `PointerValue`
 ///   does not statically pin the address space and vector element
 ///   typing is deferred (T4).
-pub trait IRBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
+pub trait IrBuilderFolder<'ctx, B: ModuleBrand + 'ctx> {
     fn fold_bin_op_dyn(
         &self,
         opcode: BinaryOpcode,

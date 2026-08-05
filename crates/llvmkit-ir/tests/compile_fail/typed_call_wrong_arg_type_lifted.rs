@@ -17,7 +17,7 @@
 //! when `IntoCallArg` itself has zero candidate impls for the argument
 //! type (see `typed_call_wrong_arg_type.rs` for that lock).
 
-use llvmkit_ir::{IRBuilder, Linkage, Module};
+use llvmkit_ir::{IrBuilder, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("c");
@@ -28,7 +28,7 @@ fn main() {
         .add_typed_function::<i32, (f64,), _>("caller", Linkage::External)
         .unwrap();
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (x,) = m.view(caller).params();
     // `x` is `FloatValue<f64>`; `callee`'s single parameter schema is
     // `i32`. `FloatValue<f64>` does not implement

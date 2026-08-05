@@ -16,7 +16,7 @@
 //! return ids, one family at a time — arithmetic, casts, comparisons, memory,
 //! aggregates, vectors, calls, the module-level declarations, blocks/branches
 //! and phi have all flipped, so no builder hands back a borrowing handle any
-//! more. [`IRBuilder::view`](crate::IRBuilder::view) is the builder-side twin
+//! more. [`IrBuilder::view`](crate::IrBuilder::view) is the builder-side twin
 //! of [`Module::view`](crate::Module::view) for reading at a build site.
 //!
 //! One naming rule holds across the whole surface: `handle.id()` mints the
@@ -62,7 +62,7 @@ use crate::global_variable::GlobalVariable;
 use crate::instruction::InstructionKindData;
 use crate::instructions::{
     AtomicCmpXchgInst, AtomicRMWInst, CallInst, FpPhiInst, FreezeInst, OtherPhiInst, PhiInst,
-    PointerPhiInst, TypedCallInst, VAArgInst,
+    PointerPhiInst, TypedCallInst, VaArgInst,
 };
 use crate::int_width::{IntDyn, IntWidth, IntoIntValue, into_int_value_sealed};
 use crate::intrinsic_inst::IntrinsicInst;
@@ -392,8 +392,8 @@ decl_value_id! {
 
 decl_value_id! {
     /// Storable, module-tagged id for a `va_arg` instruction, resolved into a
-    /// [`VAArgInst`].
-    VAArgInstId
+    /// [`VaArgInst`].
+    VaArgInstId
 }
 
 decl_value_id! {
@@ -415,7 +415,7 @@ decl_value_id! {
     /// ([`PhiInst::as_int_value`](crate::PhiInst::as_int_value),
     /// [`PhiInst::incomings`](crate::PhiInst::incomings),
     /// [`PhiInst::remove_incoming`](crate::PhiInst::remove_incoming)) survives a
-    /// single [`view`](crate::IRBuilder::view).
+    /// single [`view`](crate::IrBuilder::view).
     PhiInstId [W: IntWidth => _w]
 }
 
@@ -957,7 +957,7 @@ macro_rules! impl_view_in_for_instruction_id {
 
 impl_view_in_for_instruction_id!(
     FreezeInstId => FreezeInst [Freeze],
-    VAArgInstId => VAArgInst [VAArg],
+    VaArgInstId => VaArgInst [VAArg],
     AtomicRMWInstId => AtomicRMWInst [AtomicRMW],
     AtomicCmpXchgInstId => AtomicCmpXchgInst [AtomicCmpXchg],
     OtherPhiInstId => OtherPhiInst [Phi],
@@ -1200,7 +1200,7 @@ macro_rules! impl_into_erased_value_for_instruction_id {
 
 impl_into_erased_value_for_instruction_id!(
     FreezeInstId,
-    VAArgInstId,
+    VaArgInstId,
     AtomicRMWInstId,
     AtomicCmpXchgInstId,
     PhiInstId[W: IntWidth],

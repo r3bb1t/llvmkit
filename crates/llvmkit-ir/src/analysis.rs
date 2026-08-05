@@ -54,7 +54,7 @@ pub struct AllAnalysesOnFunction;
 
 /// Marker set for analyses that only depend on function CFG shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CFGAnalyses;
+pub struct CfgAnalyses;
 
 /// Marker analysis modelling LLVM's `FunctionAnalysisManagerModuleProxy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -1349,7 +1349,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for DominatorT
         let checker = pa.checker::<DominatorTreeAnalysis>();
         Ok(!(checker.preserved()
             || checker.preserved_set::<AllAnalysesOnFunction>()
-            || checker.preserved_set::<CFGAnalyses>()))
+            || checker.preserved_set::<CfgAnalyses>()))
     }
 }
 
@@ -1763,7 +1763,7 @@ impl_module_analysis_list!(8; A0: Idx0 . 0, A1: Idx1 . 1, A2: Idx2 . 2, A3: Idx3
 mod tests {
     use super::*;
     use crate::module::DynBrand;
-    use crate::{Dyn, IRBuilder, Linkage};
+    use crate::{Dyn, IrBuilder, Linkage};
 
     /// llvmkit-specific type-machinery lock (no upstream analog): the analysis-list
     /// tuple schema prefetches, collects, and selects by type. Runtime behavior it
@@ -1775,7 +1775,7 @@ mod tests {
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(0_u32))?;
         m.verify_borrowed()?;
 
@@ -1817,9 +1817,9 @@ mod tests {
         let next_label = next.id();
 
         // entry: br next    next: ret 0
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(next.id())?;
-        let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
+        let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(next);
         b2.build_ret(i32_ty.const_int(0_u32))?;
 
         let function: FunctionView<'_, _> = m.view(f).into();
@@ -1900,7 +1900,7 @@ mod tests {
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(0_u32))?;
 
         let function: FunctionView<'_, _> = m.view(f).into();

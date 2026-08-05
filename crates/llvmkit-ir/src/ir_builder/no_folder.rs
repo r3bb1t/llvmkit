@@ -4,7 +4,7 @@
 //! instruction.
 
 use super::ModuleBrand;
-use super::folder::IRBuilderFolder;
+use super::folder::IrBuilderFolder;
 
 /// Folder that never folds: every hook keeps its default
 /// "decline to fold" body, so the builder materializes a real
@@ -12,4 +12,4 @@ use super::folder::IRBuilderFolder;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoFolder;
 
-impl<'ctx, B: ModuleBrand + 'ctx> IRBuilderFolder<'ctx, B> for NoFolder {}
+impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for NoFolder {}

@@ -9,7 +9,7 @@
 //!
 //! ## Upstream provenance
 //!
-//! `SsaBuilder` is llvmkit-specific: LLVM's `IRBuilder` has no on-the-fly
+//! `SsaBuilder` is llvmkit-specific: LLVM's `IrBuilder` has no on-the-fly
 //! SSA layer. The nearest functional relatives are `cranelift-frontend`'s
 //! `FunctionBuilder` (construction ergonomics: `declare_var`/`create_block`)
 //! and `llvm/lib/Transforms/Utils/SSAUpdater.cpp` (the completion
@@ -55,7 +55,7 @@ fn for_function_rejects_function_with_existing_body() -> Result<(), IrError> {
 
 /// llvmkit-specific: locks `SsaBuilder::with_folder_for_function` against
 /// a caller-supplied folder ([`NoFolder`]), mirroring the plain
-/// `IRBuilder::with_folder` construction path this layer builds on top of.
+/// `IrBuilder::with_folder` construction path this layer builds on top of.
 #[test]
 fn with_folder_for_function_accepts_custom_folder() -> Result<(), IrError> {
     let m = module_new!("ssa-construct-folder")?;
@@ -195,7 +195,7 @@ fn declare_var_family_covers_every_category_and_variant() -> Result<(), IrError>
 
 /// llvmkit-specific: `SsaBlock::id()` is the escape hatch back to a
 /// plain [`llvmkit_ir::BlockId`] -- e.g. for feeding a branch
-/// target built through the ordinary `IRBuilder` surface once the
+/// target built through the ordinary `IrBuilder` surface once the
 /// public def/use/terminator API lands. Locks that the id survives
 /// the round trip and names the same underlying block.
 #[test]
@@ -482,7 +482,7 @@ fn poison_variable_reads_poison_on_undef_path() -> Result<(), IrError> {
 /// instead of erroring -- or, if the naming happened to differ, the
 /// error would misname the poison variable rather than the strict one
 /// actually being read. This must instead name the STRICT variable and
-/// error, never poison. No upstream analogue: LLVM's `IRBuilder` has no
+/// error, never poison. No upstream analogue: LLVM's `IrBuilder` has no
 /// on-the-fly SSA layer and never faces this ambiguity (see the module
 /// doc's `SSAUpdater` comparison).
 #[test]
@@ -1211,7 +1211,7 @@ fn read_all_vars<'s, 'ctx, B, F, R>(
 ) -> Result<Result<Vec<IntValue<'ctx, i32, B>>, ()>, IrError>
 where
     B: llvmkit_ir::ModuleBrand + 'ctx,
-    F: llvmkit_ir::ir_builder::folder::IRBuilderFolder<'ctx, B> + Clone,
+    F: llvmkit_ir::ir_builder::folder::IrBuilderFolder<'ctx, B> + Clone,
     R: llvmkit_ir::marker::ReturnMarker,
 {
     let mut reads = Vec::with_capacity(vars.len());
@@ -1723,7 +1723,7 @@ fn sealed_single_pred_cycle_read_resolves_poison_variable() -> Result<(), IrErro
 // `ssa_finish_positioned.rs`, deleted with this cycle. Each proved a law that
 // `SsaBuilder`'s `Unpositioned`/`Positioned` type-state used to state
 // statically; the cursor model states the same laws, and each is checked here
-// against the error that took over. The plain `IRBuilder`'s own positioning
+// against the error that took over. The plain `IrBuilder`'s own positioning
 // type-state is untouched -- `position_at_end_terminated_block.rs`,
 // `retained_unterminated_block_cannot_reposition.rs` and
 // `terminated_block_cannot_start_cursor.rs` still hold it at compile time.

@@ -1,5 +1,5 @@
 //! AsmWriter coverage for parameter / return attribute slots, plus
-//! the typed `i32` IRBuilder.
+//! the typed `i32` IrBuilder.
 //!
 //! ## Upstream provenance
 //!
@@ -9,7 +9,7 @@
 //! related `test/Assembler/*-attr*.ll` fixtures. Per-test citations below.
 
 use llvmkit_ir::{
-    AttrIndex, AttrKind, Attribute, IRBuilder, IntValue, IrError, Linkage, module_new,
+    AttrIndex, AttrKind, Attribute, IntValue, IrBuilder, IrError, Linkage, module_new,
 };
 
 /// Mirrors `test/Assembler/2008-09-29-RetAttr.ll` for return-attribute
@@ -28,7 +28,7 @@ fn function_with_noundef_param_and_return() -> Result<(), IrError> {
         .param_name(0, "x")
         .build()?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     b.build_ret(x)?;
 
@@ -59,7 +59,7 @@ fn attribute_added_via_attribute_method_path() -> Result<(), IrError> {
         .param_name(0, "n")
         .build()?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     b.build_ret(n)?;
 

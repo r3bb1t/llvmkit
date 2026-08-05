@@ -3,15 +3,15 @@
 //!
 //! ## Upstream provenance
 //!
-//! Each `#[test]` exercises one `FCmpInst` predicate. The closest
+//! Each `#[test]` exercises one `FcmpInst` predicate. The closest
 //! upstream functional coverage is
 //! `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`,
-//! which uses `Builder.CreateFCmpOEQ` to build an `FCmpInst`. The
+//! which uses `Builder.CreateFCmpOEQ` to build an `FcmpInst`. The
 //! per-predicate textual print form is locked by
 //! `test/Assembler/fast-math-flags.ll` (and the LangRef).
 
 use llvmkit_ir::{
-    Constant, ConstantIntValue, Dyn, FloatPredicate, FloatValue, IRBuilder, IrError, Linkage,
+    Constant, ConstantIntValue, Dyn, FloatPredicate, FloatValue, IrBuilder, IrError, Linkage,
     Module, module_new,
 };
 
@@ -22,7 +22,7 @@ fn module_with_pred(pred: FloatPredicate, name: &str) -> Result<String, IrError>
     let fn_ty = m.fn_type(bool_ty, [f64_ty.as_type(), f64_ty.as_type()], false);
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: FloatValue<'_, f64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_fp_cmp(pred, lhs, rhs, "r")?;
@@ -98,7 +98,7 @@ fn default_constant_folder_folds_float_compare() -> Result<(), IrError> {
     let fn_ty = m.fn_type(bool_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
     let f = m.add_function_dyn("cmp", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let result = b.build_fp_cmp::<f64, _, _, _>(
         FloatPredicate::Olt,
         f64_ty.const_double(1.0),

@@ -10,7 +10,7 @@
 //! fixtures (`tests/compile_fail/vec_binop_*` / `vec_insert_wrong_element`);
 //! here we only exercise the well-typed happy path.
 
-use llvmkit_ir::{Dyn, IRBuilder, IntValue, Len, Linkage, VectorValue, module_new};
+use llvmkit_ir::{Dyn, IntValue, IrBuilder, Len, Linkage, VectorValue, module_new};
 
 /// The typed `<2 x i64>` binops emit the same element-wise IR as the erased
 /// `build_int_*_dyn` family (golden strings ported from
@@ -33,7 +33,7 @@ fn typed_vector_binops_match_dyn_golden() {
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     // Narrow the erased `<2 x i64>` params into the statically typed handle.
     let a: VectorValue<'_, i64, Len<2>, _> = m
@@ -96,7 +96,7 @@ fn typed_extract_returns_typed_element() {
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let a: VectorValue<'_, i64, Len<2>, _> = m
         .view(f)
@@ -135,7 +135,7 @@ fn typed_splat_element_from_scalar_length_free() {
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let scalar: IntValue<'_, i32, _> = m
         .view(f)

@@ -6,7 +6,7 @@
 //! `Verifier::visitBinaryOperator` shape mismatch the erased
 //! `build_int_add_dyn` would still surface at verify time.
 
-use llvmkit_ir::{Dyn, IRBuilder, Len, Linkage, Module, VectorValue};
+use llvmkit_ir::{Dyn, IrBuilder, Len, Linkage, Module, VectorValue};
 
 fn main() {
     let m = Module::dynamic("vec-len-mismatch");
@@ -17,7 +17,7 @@ fn main() {
     let fn_ty = m.fn_type(void_ty.as_type(), [v4.as_type(), v2.as_type()], false);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let a4: VectorValue<'_, i32, Len<4>, _> =
         m.view(f).param(0).unwrap().into_erased().try_into().unwrap();

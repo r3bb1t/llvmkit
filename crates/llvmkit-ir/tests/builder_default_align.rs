@@ -4,7 +4,7 @@
 //! align-less `alloca`/`load`/`store` materialises the DataLayout default and
 //! prints `, align N` with the exact values the default DataLayout yields.
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, NoFolder, PointerValue, module_new};
+use llvmkit_ir::{IrBuilder, IrError, Linkage, NoFolder, PointerValue, module_new};
 
 /// `alloca` materialises `getPrefTypeAlign`. The default DataLayout gives
 /// i32->4, i64->8, double->8, i1->1, and i128->8 (no i128 spec, so the walk
@@ -15,7 +15,7 @@ fn alloca_materialises_preferred_align() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     b.build_alloca(m.i32_type(), "a32")?;
     b.build_alloca(m.i64_type(), "a64")?;
     b.build_alloca(m.f64_type(), "af64")?;
@@ -44,7 +44,7 @@ fn load_store_materialise_abi_align() -> Result<(), IrError> {
     let fn_ty = m.fn_type(m.void_type().as_type(), [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     b.build_load(m.i64_type(), p, "l64")?;
     b.build_load(m.ptr_type(0), p, "lptr")?;
@@ -69,7 +69,7 @@ fn load_store_materialise_abi_align() -> Result<(), IrError> {
     Ok(())
 }
 
-/// `IRBuilder::CreateAlloca` uses `DL.getAllocaAddrSpace()`: with a
+/// `IrBuilder::CreateAlloca` uses `DL.getAllocaAddrSpace()`: with a
 /// DataLayout that sets alloca address space 5 (`A5`), the alloca result is
 /// `ptr addrspace(5)` and its printed form carries `, addrspace(5)` after
 /// the alignment.
@@ -80,7 +80,7 @@ fn alloca_uses_datalayout_alloca_address_space() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let p = b.build_alloca(m.i32_type(), "p")?;
     assert_eq!(b.view(p).ty().address_space(), 5);
     b.build_ret_void()?;

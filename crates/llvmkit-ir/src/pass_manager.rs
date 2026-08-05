@@ -26,7 +26,7 @@
 //!
 //! ```
 //! use llvmkit_ir::{
-//!     Analyses, DcePass, DynReadOnlyFunctionPipeline, FnCx, FnReport, FunctionPass, IRBuilder,
+//!     Analyses, DcePass, DynReadOnlyFunctionPipeline, FnCx, FnReport, FunctionPass, IrBuilder,
 //!     Inspect, InstSimplifyPass, IrError, IrResult, Linkage, Module, ModuleBrand, Unverified,
 //!     Verified, function_pipeline, module_new, run_function_pass,
 //! };
@@ -60,7 +60,7 @@
 //!     let fn_ty = m.fn_type_no_params(i32_ty, false);
 //!     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 //!     let entry = m.view(f).append_basic_block(&m, "entry");
-//!     let b = IRBuilder::at_end(entry);
+//!     let b = IrBuilder::at_end(entry);
 //!     b.build_ret(i32_ty.const_int(1_u32))?;
 //!
 //!     let verified = m.verify()?;

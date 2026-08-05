@@ -36,7 +36,7 @@
 //! `String` argument, and rustc correctly reports `IntoCallArg` itself
 //! as unsatisfied, firing its `on_unimplemented` message.
 
-use llvmkit_ir::{IRBuilder, IrStruct, Linkage, Module};
+use llvmkit_ir::{IrBuilder, IrStruct, Linkage, Module};
 
 #[derive(IrStruct)]
 struct Point {
@@ -53,7 +53,7 @@ fn main() {
         .add_typed_function::<i32, (i32,), _>("caller", Linkage::External)
         .unwrap();
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (x,) = m.view(caller).params();
     // `String` implements neither `IntoIntValue`/`IntoFloatValue`/
     // `IntoPointerValue` nor is one of the struct-schema blanket's

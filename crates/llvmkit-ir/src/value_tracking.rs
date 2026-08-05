@@ -4,7 +4,7 @@
 
 use crate::align::Align;
 use crate::analysis::{
-    AllAnalysesOnFunction, CFGAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator,
+    AllAnalysesOnFunction, CfgAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator,
     FunctionAnalysisManager, FunctionAnalysisResult, PrefetchableAnalysis, PreservedAnalyses,
 };
 use crate::assumptions::{
@@ -207,7 +207,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisResult<'ctx, B> for KnownBitsA
             let dom_checker = pa.checker::<DominatorTreeAnalysis>();
             return Ok(!(dom_checker.preserved()
                 || dom_checker.preserved_set::<AllAnalysesOnFunction>()
-                || dom_checker.preserved_set::<CFGAnalyses>()));
+                || dom_checker.preserved_set::<CfgAnalyses>()));
         }
         Ok(false)
     }

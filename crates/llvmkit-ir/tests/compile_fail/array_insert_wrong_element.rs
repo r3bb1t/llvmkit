@@ -7,7 +7,7 @@
 //! `Verifier::visitInsertValueInst` element-type mismatch the erased
 //! `build_insert_value` would still surface at verify time.
 
-use llvmkit_ir::{ArrLen, ArrayValue, FloatValue, IRBuilder, Linkage, Module};
+use llvmkit_ir::{ArrLen, ArrayValue, FloatValue, IrBuilder, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("arr-insert-wrong-elem");
@@ -21,7 +21,7 @@ fn main() {
     );
     let f = m.add_function_dyn("g", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
 
     let arr: ArrayValue<'_, i32, ArrLen<4>, _> =
         m.view(f).param(0).unwrap().into_erased().try_into().unwrap();

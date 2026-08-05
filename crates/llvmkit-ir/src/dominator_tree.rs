@@ -22,7 +22,7 @@ use super::value_id::BlockId;
 
 /// Analysis marker for caching a [`DominatorTree`] in the new-pass-manager
 /// substrate. Its invalidation rule is wired in `analysis.rs`: preserved by
-/// itself, `AllAnalysesOnFunction`, or `CFGAnalyses`, matching LLVM's
+/// itself, `AllAnalysesOnFunction`, or `CfgAnalyses`, matching LLVM's
 /// `DominatorTree::invalidate`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct DominatorTreeAnalysis;

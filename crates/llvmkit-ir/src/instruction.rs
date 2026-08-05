@@ -30,26 +30,26 @@ use super::function::FunctionValue;
 use super::instr_types::{
     AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
     CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
-    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FNegInstData,
-    FenceInstData, FreezeInstData, GepInstData, IndirectBrInstData, InsertElementInstData,
+    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FenceInstData,
+    FnegInstData, FreezeInstData, GepInstData, IndirectBrInstData, InsertElementInstData,
     InsertValueInstData, InvokeInstData, LandingPadInstData, LoadInstData, ResumeInstData,
-    SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VAArgInstData,
+    SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VaArgInstData,
 };
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
-    FCmpInstData, Opcode, PhiData, ReturnOpData, UnreachableInstData,
+    FcmpInstData, Opcode, PhiData, ReturnOpData, UnreachableInstData,
 };
 use super::instructions::{
     AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
     BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, CatchPadInst, CatchReturnInst,
     CatchSwitchInst, CleanupPadInst, CleanupReturnInst, Cmp, ExtractElementInst, ExtractValueInst,
-    FAddInst, FCmpInst, FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpExtInst,
-    FpPhiInst, FpToSIInst, FpToUIInst, FpTruncInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst,
+    FAddInst, FDivInst, FMulInst, FRemInst, FSubInst, FcmpInst, FenceInst, FnegInst, FpExtInst,
+    FpPhiInst, FpToSIInst, FpToUIInst, FpTruncInst, FreezeInst, GepInst, IcmpInst, IndirectBrInst,
     InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst,
     LoadInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
     ResumeInst, RetInst, SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst,
     ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TruncInst, UDivInst, UIToFpInst, URemInst,
-    UnreachableInst, VAArgInst, XorInst, ZExtInst,
+    UnreachableInst, VaArgInst, XorInst, ZExtInst,
 };
 use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
@@ -117,7 +117,7 @@ pub(super) enum InstructionKindData {
     FMul(BinaryOpData),
     FDiv(BinaryOpData),
     FRem(BinaryOpData),
-    FCmp(FCmpInstData),
+    FCmp(FcmpInstData),
     Alloca(AllocaInstData),
     Load(LoadInstData),
     Store(StoreInstData),
@@ -127,9 +127,9 @@ pub(super) enum InstructionKindData {
     Cast(CastOpData),
     ICmp(CmpInstData),
     Phi(PhiData),
-    FNeg(FNegInstData),
+    FNeg(FnegInstData),
     Freeze(FreezeInstData),
-    VAArg(VAArgInstData),
+    VAArg(VaArgInstData),
     ExtractValue(ExtractValueInstData),
     InsertValue(InsertValueInstData),
     ExtractElement(ExtractElementInstData),
@@ -386,7 +386,7 @@ pub mod state {
 ///
 /// The `S: InstructionState` parameter pins the lifecycle state at compile
 /// time (Doctrine D1). Defaults to [`state::Attached`] so existing call
-/// sites that build via the IRBuilder do not need to spell the state.
+/// sites that build via the IrBuilder do not need to spell the state.
 /// `Instruction` is intentionally **`!Copy` and `!Clone`** (Doctrine D2):
 /// methods that consume the lifecycle (`erase_from_parent`,
 /// `detach_from_parent`, `replace_all_uses_with`) take `self` by value,
@@ -790,7 +790,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
                 Some(InstructionKind::FRem(FRemInst::from_raw(id, module, ty)))
             }
             InstructionKindData::FCmp(_) => {
-                Some(InstructionKind::FCmp(FCmpInst::from_raw(id, module, ty)))
+                Some(InstructionKind::FCmp(FcmpInst::from_raw(id, module, ty)))
             }
             InstructionKindData::Alloca(_) => Some(InstructionKind::Alloca(AllocaInst::from_raw(
                 id, module, ty,
@@ -838,7 +838,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
                 Some(InstructionKind::Cast(cast))
             }
             InstructionKindData::ICmp(_) => {
-                Some(InstructionKind::ICmp(ICmpInst::from_raw(id, module, ty)))
+                Some(InstructionKind::ICmp(IcmpInst::from_raw(id, module, ty)))
             }
             InstructionKindData::Phi(_) => {
                 // Choose the handle from the phi's result type so the
@@ -861,13 +861,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
                 Some(InstructionKind::Phi(phi))
             }
             InstructionKindData::FNeg(_) => {
-                Some(InstructionKind::FNeg(FNegInst::from_raw(id, module, ty)))
+                Some(InstructionKind::FNeg(FnegInst::from_raw(id, module, ty)))
             }
             InstructionKindData::Freeze(_) => Some(InstructionKind::Freeze(FreezeInst::from_raw(
                 id, module, ty,
             ))),
             InstructionKindData::VAArg(_) => {
-                Some(InstructionKind::VAArg(VAArgInst::from_raw(id, module, ty)))
+                Some(InstructionKind::VAArg(VaArgInst::from_raw(id, module, ty)))
             }
             InstructionKindData::ExtractValue(_) => Some(InstructionKind::ExtractValue(
                 ExtractValueInst::from_raw(id, module, ty),
@@ -1970,7 +1970,7 @@ pub enum InstructionKind<'ctx, B: ModuleBrand> {
     FMul(FMulInst<'ctx, B>),
     FDiv(FDivInst<'ctx, B>),
     FRem(FRemInst<'ctx, B>),
-    FCmp(FCmpInst<'ctx, B>),
+    FCmp(FcmpInst<'ctx, B>),
     Alloca(AllocaInst<'ctx, B>),
     Load(LoadInst<'ctx, B>),
     Store(StoreInst<'ctx, B>),
@@ -1978,10 +1978,10 @@ pub enum InstructionKind<'ctx, B: ModuleBrand> {
     Call(CallInst<'ctx, Dyn, B>),
     Select(SelectInst<'ctx, B>),
     Cast(CastKind<'ctx, B>),
-    ICmp(ICmpInst<'ctx, B>),
-    FNeg(FNegInst<'ctx, B>),
+    ICmp(IcmpInst<'ctx, B>),
+    FNeg(FnegInst<'ctx, B>),
     Freeze(FreezeInst<'ctx, B>),
-    VAArg(VAArgInst<'ctx, B>),
+    VAArg(VaArgInst<'ctx, B>),
     ExtractValue(ExtractValueInst<'ctx, B>),
     InsertValue(InsertValueInst<'ctx, B>),
     ExtractElement(ExtractElementInst<'ctx, B>),

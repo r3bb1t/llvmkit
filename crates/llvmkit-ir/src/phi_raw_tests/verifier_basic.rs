@@ -9,7 +9,7 @@
 //! from inside the crate and are kept verbatim from their integration-test
 //! origin (only the `llvmkit_ir::` paths are rewritten to `crate::`).
 
-use crate::{Dyn, IRBuilder, IntValue, IrError, Linkage, VerifierRule};
+use crate::{Dyn, IntValue, IrBuilder, IrError, Linkage, VerifierRule};
 
 /// Mirrors `llvm/lib/IR/Verifier.cpp::visitPHINode` predecessor checks
 /// using `IR/CFG.h` switch successors: default and case edges both reach
@@ -27,14 +27,14 @@ fn verify_phi_predecessors_through_switch_passes() -> Result<(), IrError> {
     let join_label = join.id();
 
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let (_sealed, switch) = IRBuilder::new_for::<Dyn>(&m)
+    let (_sealed, switch) = IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
         .build_switch_dyn(x, join_label, "")?;
     let _closed = switch
         .add_case(i32_ty.const_int(0_i32), join_label)?
         .finish();
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_label)?
@@ -59,14 +59,14 @@ fn verify_phi_predecessors_through_switch_rejects_missing_edge() -> Result<(), I
     let join_label = join.id();
 
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let (_sealed, switch) = IRBuilder::new_for::<Dyn>(&m)
+    let (_sealed, switch) = IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
         .build_switch_dyn(x, join_label, "")?;
     let _closed = switch
         .add_case(i32_ty.const_int(0_i32), join_label)?
         .finish();
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_label)?;
@@ -107,7 +107,7 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
     let unwind_label = unwind.id();
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
         .build_invoke_dyn(
             m.view(callee),
@@ -116,11 +116,11 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
             unwind_label,
             "",
         )?;
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(unwind)
         .build_ret(x)?;
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_label)?;
@@ -150,7 +150,7 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
     let other_label = other.id();
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
         .build_invoke_dyn(
             m.view(callee),
@@ -159,14 +159,14 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
             unwind_label,
             "",
         )?;
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(unwind)
         .build_ret(x)?;
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(other)
         .build_ret(x)?;
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(x, other_label)?;
@@ -205,7 +205,7 @@ fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
     let join_label = join.id();
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
         .build_callbr(
             callee,
@@ -215,7 +215,7 @@ fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
             "",
         )?;
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_label)?
@@ -243,7 +243,7 @@ fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), I
     let join_label = join.id();
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
         .build_callbr(
             callee,
@@ -253,7 +253,7 @@ fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), I
             "",
         )?;
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_label)?;
@@ -295,16 +295,16 @@ fn verify_phi_incoming_edge_dominance_fails() -> Result<(), IrError> {
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let cond: IntValue<'_, bool, _> = m.view(f).param(1)?.try_into()?;
 
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(entry)
         .build_cond_br(cond, then_label, else_label)?;
-    let bt = IRBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
+    let bt = IrBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
     let y = bt.build_int_add(x, 1_i32, "y")?;
     bt.build_br(join_label)?;
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(else_bb)
         .build_br(join_label)?;
-    let bj = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let bj = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bj
         .view(bj.build_int_phi::<i32, _>("p")?)
         .add_incoming(x, then_label)?

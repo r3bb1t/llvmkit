@@ -124,7 +124,7 @@ return:
 
 /// A `phi` whose incoming value type does not match the phi result type is
 /// now a PARSE error, caught at the edge-add call site
-/// (`IRBuilder::phi_add_incoming_from_value`) rather than deferred to
+/// (`IrBuilder::phi_add_incoming_from_value`) rather than deferred to
 /// `verify()`. Here the incoming value `%v` is a `ptr` (from `alloca`) fed
 /// to an `i32` phi, so the result-type check rejects the edge and the
 /// parser surfaces it through `builder_err`'s `valid phi.add_incoming:`

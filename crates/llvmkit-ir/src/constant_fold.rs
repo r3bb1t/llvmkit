@@ -50,7 +50,7 @@ where
     // `isExact()` into the fold: `ConstantFoldInstOperandsImpl` (Analysis/
     // ConstantFolding.cpp) always calls `ConstantFoldBinaryOpOperands`, which
     // folds the plain value regardless of the instruction's `exact` flag. Only
-    // `IRBuilderFolder::FoldExactBinOp` (see `ir_builder/constant_folder.rs`)
+    // `IrBuilderFolder::FoldExactBinOp` (see `ir_builder/constant_folder.rs`)
     // ever looks at exactness, and only to flag a lazily-built `ConstantExpr`;
     // it too falls back to the plain fold for non-`ConstantExpr` opcodes like
     // `udiv`/`sdiv`/`lshr`/`ashr`. So `is_exact` is intentionally dropped here.
@@ -2707,9 +2707,9 @@ fn bool_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
         .map(|constant| Some(constant.as_constant()))
 }
 
-/// Mirrors `ICmpInst::isEquality`: true only for integer `eq`/`ne`.
+/// Mirrors `IcmpInst::isEquality`: true only for integer `eq`/`ne`.
 /// `ConstantFoldCompareInstruction` (ConstantFold.cpp) calls this via
-/// `ICmpInst::isEquality(Predicate)` even when `Predicate` may be an FP
+/// `IcmpInst::isEquality(Predicate)` even when `Predicate` may be an FP
 /// predicate — `ICMP_EQ`/`ICMP_NE` and `FCMP_OEQ`/`FCMP_ONE`/`FCMP_UEQ`/
 /// `FCMP_UNE` are distinct enumerators in the shared `CmpInst::Predicate`
 /// space, so the check is always false for FP predicates. An FP compare

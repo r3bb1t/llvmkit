@@ -43,10 +43,10 @@ use llvmkit_ir::{
     AtomicLoadConfig, AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, CallingConv, Constant,
     ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
     DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FpClassTest,
-    GepNoWrapFlags, IRBuilder, IntCastFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution,
+    GepNoWrapFlags, IntCastFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution, IrBuilder,
     IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
     Positioned, RoundingMode, SelectionKind, ShuffleMaskElem, StructType, SyncScope,
-    ThreadLocalMode, Type, TypeKind, UIToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord,
+    ThreadLocalMode, Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord,
     UseListOrderRecord, Visibility, constant_fold_select_instruction, derived_types::PointerType,
     resolve_intrinsic_name, shufflevector_mask_from_constant,
 };
@@ -6071,7 +6071,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let bb_value = bb.to_erased();
         // Drive the typed builder for this block.
-        let builder = IRBuilder::with_folder(self.module, NoFolder).position_at_end(bb);
+        let builder = IrBuilder::with_folder(self.module, NoFolder).position_at_end(bb);
         // Emit instructions until a terminator consumes `builder`.
         let mut builder = Some(builder);
         let mut pending_debug_records = Vec::new();
@@ -6596,9 +6596,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if is_vector_type(ty) {
             let name = result_name.as_str();
             let flags = if samesign {
-                llvmkit_ir::instr_types::ICmpFlags::new().samesign()
+                llvmkit_ir::instr_types::IcmpFlags::new().samesign()
             } else {
-                llvmkit_ir::instr_types::ICmpFlags::new()
+                llvmkit_ir::instr_types::IcmpFlags::new()
             };
             let r = b
                 .build_int_cmp_erased(pred, lhs_v, rhs_v, flags, name)
@@ -6614,9 +6614,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .map_err(|_| self.expected("integer-typed rhs"))?;
         let name = result_name.as_str();
         let flags = if samesign {
-            llvmkit_ir::instr_types::ICmpFlags::new().samesign()
+            llvmkit_ir::instr_types::IcmpFlags::new().samesign()
         } else {
-            llvmkit_ir::instr_types::ICmpFlags::new()
+            llvmkit_ir::instr_types::IcmpFlags::new()
         };
         let r = b
             .build_int_cmp_with_flags_dyn(pred, lhs, rhs, flags, name)
@@ -6691,7 +6691,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 b.build_zext_with_flags_dyn(
                     src_int,
                     dst_int,
-                    llvmkit_ir::instr_types::ZExtFlags::new().nneg(),
+                    llvmkit_ir::instr_types::ZextFlags::new().nneg(),
                     name,
                 )
             } else {
@@ -7074,8 +7074,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// form alongside it. Mirrors `LLParser::parseSelect`.
     ///
     /// Construction goes through
-    /// [`llvmkit_ir::IRBuilder::build_select_erased`] for every arm category.
-    /// The typed [`llvmkit_ir::IRBuilder::build_select`] cannot express two of
+    /// [`llvmkit_ir::IrBuilder::build_select_erased`] for every arm category.
+    /// The typed [`llvmkit_ir::IrBuilder::build_select`] cannot express two of
     /// the shapes LLVM allows — a `<N x i1>` condition, which is no
     /// `IntValue<bool>`, and a vector arm, which no `SelectArm` marker
     /// describes — and its narrowing would be discarded here anyway, since
@@ -7200,7 +7200,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     b.build_ui_to_fp_with_flags_dyn(
                         src_int,
                         dst_fp,
-                        UIToFpFlags::new().nneg(),
+                        UiToFpFlags::new().nneg(),
                         name,
                     )
                     .map_err(|e| self.builder_err("uitofp", e))?
@@ -7674,7 +7674,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             match val_ref {
                 PhiValRef::Resolved(v) => {
                     let bb = state.resolve_block_ref(self.module, &bb_ref, val_loc)?;
-                    let tmp_b = llvmkit_ir::IRBuilder::new(self.module);
+                    let tmp_b = llvmkit_ir::IrBuilder::new(self.module);
                     tmp_b
                         .phi_add_incoming_from_value(phi_val, v, bb)
                         .map_err(|e| self.builder_err("phi.add_incoming", e))?;
@@ -9508,7 +9508,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 }
             };
             let bb = self.resolve_block_ref(module, &edge.bb_ref, edge.loc)?;
-            let tmp_b = llvmkit_ir::IRBuilder::new(module);
+            let tmp_b = llvmkit_ir::IrBuilder::new(module);
             tmp_b
                 .phi_add_incoming_from_value(edge.phi_val, val, bb)
                 .map_err(|e| ParseError::Expected {
@@ -9705,11 +9705,11 @@ enum IntToFp {
     UIToFp,
 }
 
-/// Alias for the dyn-positioned, dyn-return IRBuilder we drive while
+/// Alias for the dyn-positioned, dyn-return IrBuilder we drive while
 /// emitting one block's instructions. The terminator-emitting calls
 /// (`build_ret` / `build_br` / etc.) take this by value, so the parser
 /// stores it inside an `Option<Self>` for the duration of the block.
-type ParsedBlockBuilder<'m, 'ctx, B> = IRBuilder<'m, 'ctx, B, NoFolder, Positioned, Dyn>;
+type ParsedBlockBuilder<'m, 'ctx, B> = IrBuilder<'m, 'ctx, B, NoFolder, Positioned, Dyn>;
 
 fn live_builder_error(loc: Span) -> ParseError {
     ParseError::Expected {

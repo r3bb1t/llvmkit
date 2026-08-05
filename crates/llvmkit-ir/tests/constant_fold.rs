@@ -8,15 +8,15 @@ use llvmkit_ir::instr_types::CastOpcode;
 use llvmkit_ir::{
     Align, ApFloat, ApFloatSemantics, ApFloatSign, ApInt, BinaryOpcode, CmpPredicate, Constant,
     ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
-    ConstantFloatValue, ConstantIntValue, FloatDyn, FloatPredicate, GepNoWrapFlags, IRBuilder,
-    InstructionView, IntDyn, IntPredicate, IntValue, IrError, Linkage, MaybeAlign, Module,
-    NoFolder, RoundingMode, UDivFlags, UnaryOpcode, UnnamedAddr, constant_fold_binary_instruction,
-    constant_fold_cast_instruction, constant_fold_compare_instruction,
-    constant_fold_extract_element_instruction, constant_fold_extract_value_instruction,
-    constant_fold_get_element_ptr, constant_fold_insert_element_instruction,
-    constant_fold_insert_value_instruction, constant_fold_instruction,
-    constant_fold_select_instruction, constant_fold_shuffle_vector_instruction,
-    constant_fold_unary_instruction, module_new,
+    ConstantFloatValue, ConstantIntValue, FloatDyn, FloatPredicate, GepNoWrapFlags,
+    InstructionView, IntDyn, IntPredicate, IntValue, IrBuilder, IrError, Linkage, MaybeAlign,
+    Module, NoFolder, RoundingMode, UDivFlags, UnaryOpcode, UnnamedAddr,
+    constant_fold_binary_instruction, constant_fold_cast_instruction,
+    constant_fold_compare_instruction, constant_fold_extract_element_instruction,
+    constant_fold_extract_value_instruction, constant_fold_get_element_ptr,
+    constant_fold_insert_element_instruction, constant_fold_insert_value_instruction,
+    constant_fold_instruction, constant_fold_select_instruction,
+    constant_fold_shuffle_vector_instruction, constant_fold_unary_instruction, module_new,
 };
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldBinaryInstruction` APInt `shl` path.
@@ -835,7 +835,7 @@ fn analysis_instruction_fold_uses_apint_binary_folder() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(ty, false);
     let f = m.add_function_dyn("wide", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let high = ty.const_ap_int(&ApInt::one_bit_set(257, 256))?;
     let value = b.build_int_add(high, ty.const_zero(), "sum")?;
     let instruction = InstructionView::try_from(b.view(value).into_erased())?;
@@ -858,7 +858,7 @@ fn analysis_instruction_fold_exact_udiv_inexact_matches_plain_udiv() -> Result<(
     let fn_ty = m.fn_type_no_params(ty, false);
     let f = m.add_function_dyn("exact", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let value = b.build_int_udiv_with_flags::<i32, _, _, _>(
         ty.const_int(7_i32),
         ty.const_int(2_i32),
@@ -885,7 +885,7 @@ fn analysis_instruction_fold_exact_udiv_undef_identity() -> Result<(), IrError> 
     let fn_ty = m.fn_type_no_params(ty, false);
     let f = m.add_function_dyn("exact", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let undef = IntValue::try_from(ty.as_type().get_undef().into_erased())?;
     let value = b.build_int_udiv_with_flags::<i32, _, _, _>(
         undef,
@@ -1529,7 +1529,7 @@ fn compare_undef_rules_fold_scalar_and_vector_results() -> Result<(), IrError> {
 
 /// llvmkit-specific subset of `ConstantFold.cpp::ConstantFoldCompareInstruction`
 /// lines 1116-1131: the undef-with-undef "either value could make it pass or
-/// fail" shortcut is gated on `ICmpInst::isEquality`, which is integer-only --
+/// fail" shortcut is gated on `IcmpInst::isEquality`, which is integer-only --
 /// `ICMP_EQ`/`ICMP_NE` are distinct enumerators from `FCMP_OEQ`/`FCMP_ONE`/
 /// `FCMP_UEQ`/`FCMP_UNE` in the shared `CmpInst::Predicate` space, so it is
 /// always `false` for FP predicates. An FP equality-flavored predicate with an

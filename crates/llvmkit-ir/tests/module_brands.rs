@@ -19,7 +19,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Barrier};
 
 use llvmkit_ir::{
-    Dyn, DynBrand, IRBuilder, IntValue, IrError, Linkage, Module, ModuleBrand, Unverified,
+    Dyn, DynBrand, IntValue, IrBuilder, IrError, Linkage, Module, ModuleBrand, Unverified,
     module_new,
 };
 
@@ -46,7 +46,7 @@ fn bare_brand_builds_a_module() {
         .add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)
         .expect("declare");
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
     let (lhs, rhs) = m.view(f).params();
     let sum = b.build_int_add(lhs, rhs, "sum").expect("add");
     b.build_ret(sum).expect("ret");
@@ -340,7 +340,7 @@ fn a_named_brand_emits_byte_identical_ir() -> Result<(), IrError> {
         let fn_ty = module.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = module.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = module.view(f).append_basic_block(module, "entry");
-        let builder = IRBuilder::new_for::<Dyn>(module).position_at_end(entry);
+        let builder = IrBuilder::new_for::<Dyn>(module).position_at_end(entry);
         let n: IntValue<'_, i32, _> = module.view(f).param(0)?.try_into()?;
         let sum = builder.build_int_add(n, 1_i32, "sum")?;
         builder.build_ret(sum)?;

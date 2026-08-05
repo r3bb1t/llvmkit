@@ -5,10 +5,10 @@
 //! after its terminator at runtime. llvmkit moves the rule to the
 //! type system: once a builder consumes its insertion block via a
 //! terminator-emitting build, the block is `Terminated` and cannot be
-//! re-positioned by `IRBuilder::position_at_end` (which only accepts
+//! re-positioned by `IrBuilder::position_at_end` (which only accepts
 //! `BasicBlock<R, Unterminated>`).
 
-use llvmkit_ir::{IRBuilder, Linkage, Module};
+use llvmkit_ir::{IrBuilder, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("c");
@@ -17,8 +17,8 @@ fn main() {
         .unwrap()
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
     let (terminated_bb, _term) = b.build_ret_void();
     // `terminated_bb` carries `Terminated`, which `position_at_end` does not accept.
-    let _ = IRBuilder::new_for::<()>(&m).position_at_end(terminated_bb);
+    let _ = IrBuilder::new_for::<()>(&m).position_at_end(terminated_bb);
 }

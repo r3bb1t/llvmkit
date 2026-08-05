@@ -35,9 +35,9 @@ use super::global_variable::GlobalVariable;
 use super::inline_asm::InlineAsm;
 use super::instr_types::{
     AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
-    ExtractElementInstData, ExtractValueInstData, FNegInstData, FenceInstData, FreezeInstData,
+    ExtractElementInstData, ExtractValueInstData, FenceInstData, FnegInstData, FreezeInstData,
     IndirectBrInstData, InsertElementInstData, InsertValueInstData, InvokeInstData, LoadInstData,
-    SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VAArgInstData,
+    SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VaArgInstData,
 };
 use super::instruction::{InstructionKind, TerminatorKind};
 use super::intrinsics::IntrinsicNameResolution;
@@ -52,7 +52,7 @@ use crate::dominator_tree::DominatorTree;
 use crate::error::{IrError, IrResult, VerifierRule};
 use crate::function::FunctionValue;
 use crate::instr_types::{
-    BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, FCmpInstData,
+    BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, FcmpInstData,
     GepInstData, PhiData, ReturnOpData,
 };
 use crate::instruction::{InstructionKindData, InstructionView};
@@ -969,7 +969,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        u: &FNegInstData,
+        u: &FnegInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
         if !is_fp_or_fp_vector(self.module, src_ty) {
@@ -1031,7 +1031,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         _inst: &InstructionView<'ctx, B>,
-        u: &VAArgInstData,
+        u: &VaArgInstData,
     ) -> IrResult<()> {
         let src_ty = self.value_type(u.src.get());
         if !self.module.context().type_data(src_ty).is_pointer_data() {
@@ -1551,7 +1551,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        c: &FCmpInstData,
+        c: &FcmpInstData,
     ) -> IrResult<()> {
         let lhs_ty = self.value_type(c.lhs.get());
         let rhs_ty = self.value_type(c.rhs.get());
@@ -1954,7 +1954,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ));
             }
         }
-        // Result type must be a pointer; the IRBuilder construction
+        // Result type must be a pointer; the IrBuilder construction
         // path always emits one, but assert it for parsed/foreign IR.
         if !self
             .module
@@ -2230,7 +2230,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     ) -> IrResult<()> {
         // Callee must be a function value, OR a pointer of address
         // space 0 with a separately-tracked function-type (LLVM 17+
-        // opaque-pointer model). The IRBuilder always emits a
+        // opaque-pointer model). The IrBuilder always emits a
         // function-typed callee; we accept either function or pointer
         // here so future indirect-call construction does not require
         // a verifier change.
@@ -3230,7 +3230,7 @@ impl TypeDataExt for TypeData {
 // Negative tests
 // --------------------------------------------------------------------------
 //
-// The IRBuilder is sufficiently type-safe that most invalid IR shapes
+// The IrBuilder is sufficiently type-safe that most invalid IR shapes
 // are unrepresentable through its public API. To exercise each
 // `VerifierRule` we fabricate pathological IR by reaching into the
 // crate-internal value arena directly. Each test cites the upstream
@@ -3254,7 +3254,7 @@ mod tests {
     use crate::value::{ValueData, ValueKindData, ValueSlot};
 
     /// Append a fabricated instruction to a block, bypassing the
-    /// IRBuilder's typestate. Returns the new instruction's value id.
+    /// IrBuilder's typestate. Returns the new instruction's value id.
     fn fabricate_instruction<B: crate::ModuleBrand>(
         m: &Module<B>,
         bb_id: ValueSlot,

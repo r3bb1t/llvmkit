@@ -1,6 +1,6 @@
 //! Demonstrates the capability-graded single-pass driver `llvmkit-ir` ships
 //! today:
-//! - build IR with the typed `IRBuilder`
+//! - build IR with the typed `IrBuilder`
 //! - run the mutating `InstSimplifyPass`/`DcePass` through `run_function_pass`
 //!   (each declares the `PatchBody` rung, so the driver downgrades the module to
 //!   `Module<Unverified>` and the re-verify below is required by the type system)
@@ -18,9 +18,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, IRBuilder, Inspect,
-    InstSimplifyPass, IntPredicate, IntValue, IrError, Linkage, ModCx, ModReport, Module,
-    ModuleBrand, ModulePass, module_new, run_function_pass, run_module_pass,
+    Analyses, DcePass, DominatorTreeAnalysis, FnCx, FnReport, FunctionPass, Inspect,
+    InstSimplifyPass, IntPredicate, IntValue, IrBuilder, IrError, Linkage, ModCx, ModReport,
+    Module, ModuleBrand, ModulePass, module_new, run_function_pass, run_module_pass,
 };
 
 /// Read-only module pass: reports how many functions the module holds. Declares
@@ -97,7 +97,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let else_bb = m.view(f).append_basic_block(m, "else");
     // `merge`'s single `i32` parameter is the diamond's head-phi: the `then`
     // and `else` arms carry their values in as block arguments below.
-    let bwp = IRBuilder::new_for::<i32>(m);
+    let bwp = IrBuilder::new_for::<i32>(m);
     let (merge, params) =
         bwp.append_block_with_params(m.view(f).as_function(), &[i32_ty.as_type()], "merge")?;
     let then_label = then_bb.id();
@@ -106,17 +106,17 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
 
     let (cond, x, y) = m.view(f).params();
 
-    IRBuilder::at_end(entry).build_cond_br(cond, then_label, else_label)?;
+    IrBuilder::at_end(entry).build_cond_br(cond, then_label, else_label)?;
 
-    let bt = IRBuilder::at_end(then_bb);
+    let bt = IrBuilder::at_end(then_bb);
     let add_xy = bt.build_int_add(x, y, "add_xy")?;
     bt.build_br_with_args(merge_label, &[m.view(add_xy).into_erased()])?;
 
-    let be = IRBuilder::at_end(else_bb);
+    let be = IrBuilder::at_end(else_bb);
     let sub_xy = be.build_int_sub(x, y, "sub_xy")?;
     be.build_br_with_args(merge_label, &[m.view(sub_xy).into_erased()])?;
 
-    let bm = IRBuilder::at_end(merge);
+    let bm = IrBuilder::at_end(merge);
     // `params[0]` is `merge`'s head-phi, seeded with `[ %add_xy, %then ]` and
     // `[ %sub_xy, %else ]` by the two block-argument branches above.
     let result: IntValue<'_, i32, _> = params[0].try_into()?;

@@ -778,7 +778,7 @@ pub enum IrError {
         name: String,
     },
 
-    /// `IRBuilder::build_ret` was given a value whose type does not
+    /// `IrBuilder::build_ret` was given a value whose type does not
     /// match the function's declared return type.
     #[error("return type mismatch: function returns {expected}, got {got}")]
     ReturnTypeMismatch {
@@ -994,7 +994,7 @@ pub enum IrError {
     /// on the on-the-fly SSA layer only (the crate's `_dyn` convention),
     /// because that layer's whole purpose is authoring a CFG discovered
     /// at run time — see `ssa_builder.rs`'s module docs. The plain
-    /// [`IRBuilder`](crate::IRBuilder) keeps its static positioning
+    /// [`IrBuilder`](crate::IrBuilder) keeps its static positioning
     /// type-state untouched.
     #[error("SsaBuilder has no current block; call switch_to_block first")]
     SsaUnpositioned,

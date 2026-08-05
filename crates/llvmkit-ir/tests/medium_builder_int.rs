@@ -10,7 +10,7 @@
 //! `llvmkit-specific:` (e.g. the Rust-literal coercion that has no C++ analogue).
 
 use llvmkit_ir::{
-    ApInt, Constant, ConstantIntValue, Dyn, IRBuilder, IntDyn, IntValue, IrError, Linkage,
+    ApInt, Constant, ConstantIntValue, Dyn, IntDyn, IntValue, IrBuilder, IrError, Linkage,
     NoFolder, module_new,
 };
 
@@ -26,7 +26,7 @@ fn build_int_add_accepts_int_value_and_rust_literal() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     // Rust literal as RHS.
     let next = b.build_int_add(n, 1_i32, "next")?;
@@ -48,7 +48,7 @@ fn build_int_ops_unique_duplicate_requested_names() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type()], false);
     let f = m.add_function_dyn("names", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let sp: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
 
     let first_push = b.build_int_sub::<i64, _, _, _>(sp, 8_i64, "push_sp")?;
@@ -85,7 +85,7 @@ fn build_int_sub_accepts_constant_and_argument() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("dec", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let c = i32_ty.const_int(10_i32);
     // ConstantIntValue as LHS, IntValue as RHS.
@@ -99,7 +99,7 @@ fn build_int_sub_accepts_constant_and_argument() -> Result<(), IrError> {
     Ok(())
 }
 
-/// llvmkit-specific: typed builder `IRBuilder::<i32>::build_ret` accepts a Rust
+/// llvmkit-specific: typed builder `IrBuilder::<i32>::build_ret` accepts a Rust
 /// `i32` literal directly via `IntoIntValue`. Closest upstream coverage:
 /// `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, NoFolderNames)` (a
 /// builder-driven module that round-trips through the AsmWriter).
@@ -110,7 +110,7 @@ fn build_ret_accepts_rust_literal_directly() -> Result<(), IrError> {
     let m = module_new!("r")?;
     let f = m.add_typed_function::<i32, (), _>("one", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     b.build_ret(1_i32)?;
 
     let text = format!("{m}");
@@ -129,7 +129,7 @@ fn default_constant_folder_preserves_wide_apint_add() -> Result<(), IrError> {
     let fn_ty = m.fn_type(ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
     let f = m.add_function_dyn("wide", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let high = ty.const_ap_int(&ApInt::one_bit_set(257, 256))?;
     let result = b.build_int_add(high, ty.const_zero(), "sum")?;
     let folded =
@@ -149,7 +149,7 @@ fn default_constant_folder_folds_udiv_to_constant() -> Result<(), IrError> {
     let fn_ty = m.fn_type(ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
     let f = m.add_function_dyn("quotient", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let result = b.build_int_udiv(ty.const_int(9_i32), ty.const_int(3_i32), "q")?;
     let folded =
         ConstantIntValue::<IntDyn, _>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
@@ -177,7 +177,7 @@ fn build_int_add_infers_width_from_literals_no_turbofish() -> Result<(), IrError
     let entry = m.view(f).append_basic_block(&m, "entry");
     // `NoFolder` so the all-constant add materializes as a named
     // instruction; the default folder would collapse `2 + 3` to `5`.
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
     // THE LOCK: two bare `i32` literals, no `::<i32>`, no annotation.
     let sum = b.build_int_add(2i32, 3i32, "sum")?;

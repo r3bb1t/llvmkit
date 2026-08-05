@@ -2,7 +2,7 @@
 //! (mirrors LLVM's `InlineAsm`) and the `asm "...", "..."` printer path in
 //! the asm-writer's `CallInst` arm.
 
-use llvmkit_ir::{AsmDialect, Dyn, IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{AsmDialect, Dyn, IrBuilder, IrError, Linkage, module_new};
 
 /// `%r = call i64 asm sideeffect "add $1, $0", "=r,r,r"(i64 %a, i64 %b)`.
 /// Mirrors `AsmWriter.cpp::writeAsOperandInternal(Value*)` inline-asm arm.
@@ -18,7 +18,7 @@ fn inline_asm_call_with_side_effects() -> Result<(), IrError> {
     let host_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
     let host = m.add_function_dyn("add_via_asm", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let a = m.view(host).param(0).expect("param 0");
     let bb = m.view(host).param(1).expect("param 1");
@@ -72,7 +72,7 @@ fn inline_asm_call_without_side_effects() -> Result<(), IrError> {
     let host_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let host = m.add_function_dyn("neg_via_asm", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let x = m.view(host).param(0).expect("param 0");
 
@@ -114,7 +114,7 @@ fn inline_asm_multiline_escapes_newline() -> Result<(), IrError> {
     let host_ty = m.fn_type_no_params(void_ty.as_type(), false);
     let host = m.add_function_dyn("fence_via_asm", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let asm_fn_ty = m.fn_type_no_params(void_ty.as_type(), false);
     // Two instructions separated by a newline in the template.
@@ -146,7 +146,7 @@ fn inline_asm_multiline_escapes_newline() -> Result<(), IrError> {
 }
 
 /// Indirect call return marker must match the explicit function type.
-/// Mirrors `IRBuilder::CreateCall(FunctionType*, Value*, ...)`, where the
+/// Mirrors `IrBuilder::CreateCall(FunctionType*, Value*, ...)`, where the
 /// result type is determined by `FunctionType`.
 #[test]
 fn indirect_call_rejects_wrong_return_marker() -> Result<(), IrError> {
@@ -156,7 +156,7 @@ fn indirect_call_rejects_wrong_return_marker() -> Result<(), IrError> {
     let host_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let callee_ptr =
         llvmkit_ir::PointerValue::try_from(m.view(host).param(0).expect("callee ptr"))?;
     let callee_ty = m.fn_type(
@@ -188,7 +188,7 @@ fn inline_asm_call_rejects_label_constraint() -> Result<(), IrError> {
     let host_ty = m.fn_type_no_params(void_ty.as_type(), false);
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let asm_ty = m.fn_type_no_params(void_ty.as_type(), false);
     let asm = m.inline_asm(asm_ty, "", "!i", llvmkit_ir::InlineAsmOptions::new());
     b.build_inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value<'_, _>>::new(), "")?;
@@ -215,7 +215,7 @@ fn inline_asm_intel_dialect_keyword() -> Result<(), IrError> {
     let host_ty = m.fn_type(i64_ty, [i64_ty.as_type()], false);
     let host = m.add_function_dyn("id_via_asm", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x = m.view(host).param(0).expect("param 0");
 
     let asm_fn_ty = m.fn_type(i64_ty, [i64_ty.as_type()], false);

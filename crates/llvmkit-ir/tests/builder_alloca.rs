@@ -5,7 +5,7 @@
 //! Per-test citations name the upstream `unittests/IR/IRBuilderTest.cpp`
 //! `TEST_F` or `test/Assembler/*.ll` fixture each Rust test ports.
 
-use llvmkit_ir::{Align, Dyn, IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{Align, Dyn, IrBuilder, IrError, Linkage, module_new};
 
 /// llvmkit-specific: AsmWriter byte-for-byte parity check for the
 /// no-align `alloca` print form. Closest upstream functional coverage:
@@ -23,7 +23,7 @@ fn alloca_plain() -> Result<(), IrError> {
     );
     let f = m.add_function_dyn("a", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p = b.build_alloca(i32_ty, "p")?;
     b.build_ret(p)?;
     let text = format!("{m}");
@@ -42,7 +42,7 @@ fn alloca_array_size() -> Result<(), IrError> {
     let fn_ty = m.fn_type(ptr_ty.as_type(), [i32_ty.as_type()], false);
     let f = m.add_function_dyn("a", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: llvmkit_ir::IntValue<'_, llvmkit_ir::IntDyn, _> = m.view(f).param(0)?.try_into()?;
     let p = b.build_array_alloca(i32_ty, n, "p")?;
     b.build_ret(p)?;
@@ -65,7 +65,7 @@ fn alloca_aligned() -> Result<(), IrError> {
     );
     let f = m.add_function_dyn("a", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p = b.build_alloca_with_align(i32_ty, Align::new(8)?, "p")?;
     b.build_ret(p)?;
     let text = format!("{m}");

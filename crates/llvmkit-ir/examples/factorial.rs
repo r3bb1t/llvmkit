@@ -50,7 +50,7 @@
 //! ```
 
 use llvmkit_ir::{
-    IRBuilder, IntPredicate, IntValue, IrError, Linkage, Module, ModuleBrand, module_new,
+    IntPredicate, IntValue, IrBuilder, IrError, Linkage, Module, ModuleBrand, module_new,
 };
 
 pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
@@ -70,7 +70,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     // The loop header's two parameters ARE the head-phis: `params[0]` carries
     // the accumulator (`%acc`), `params[1]` the counter (`%i`). Their incomings
     // arrive later as block arguments on the branches into `loop`.
-    let bwp = IRBuilder::new_for::<i32>(m);
+    let bwp = IrBuilder::new_for::<i32>(m);
     let (loop_bb, params) = bwp.append_block_with_named_params(
         m.view(f).as_function(),
         &[(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
@@ -86,7 +86,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     // entry: %is_zero = icmp eq i32 %n, 0; then branch to `base` with no
     // arguments, or into `loop` carrying the header-phis' initial values
     // `[ acc = 1, i = %n ]`.
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
     let is_zero = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "is_zero")?;
     b.build_cond_br_with_args(
         is_zero,
@@ -97,14 +97,14 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     )?;
 
     // base: ret i32 1
-    let b = IRBuilder::at_end(base);
+    let b = IrBuilder::at_end(base);
     b.build_ret(1_i32)?;
 
     // loop: `params[0]`/`params[1]` are the `%acc`/`%i` head-phis. Compute the
     // back-edge values from them, then re-enter `loop` carrying
     // `[ next_acc, next_i ]`. Those values are defined before the latch
     // terminator, so they dominate the branch that carries them.
-    let b = IRBuilder::at_end(loop_bb);
+    let b = IrBuilder::at_end(loop_bb);
     let acc: IntValue<'_, i32, _> = params[0].try_into()?;
     let i: IntValue<'_, i32, _> = params[1].try_into()?;
     let next_acc = b.build_int_mul(acc, i, "next_acc")?;
@@ -119,7 +119,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     )?;
 
     // exit: ret i32 %next_acc
-    let b = IRBuilder::at_end(exit);
+    let b = IrBuilder::at_end(exit);
     b.build_ret(next_acc)?;
     Ok(())
 }

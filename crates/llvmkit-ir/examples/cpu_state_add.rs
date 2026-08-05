@@ -35,7 +35,7 @@
 //! ```
 
 use llvmkit_ir::{
-    AttrKind, IRBuilder, IntValue, IrError, Linkage, Module, ModuleBrand, UnnamedAddr, module_new,
+    AttrKind, IntValue, IrBuilder, IrError, Linkage, Module, ModuleBrand, UnnamedAddr, module_new,
 };
 
 pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
@@ -64,7 +64,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
         .build()?;
 
     let entry = m.view(add_fn).append_basic_block(m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
 
     let rax: IntValue<'_, i64, _> = m.view(add_fn).param(0)?.try_into()?;
     let rbx: IntValue<'_, i64, _> = m.view(add_fn).param(1)?.try_into()?;
@@ -90,7 +90,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
         .return_attribute(AttrKind::NoUndef)
         .build()?;
     let entry = m.view(main_fn).append_basic_block(m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
     let one = i32_ty.const_int(1_i32);
     let one_v = IntValue::<i32, _>::try_from(one.into_erased())?;
     b.build_ret(one_v)?;

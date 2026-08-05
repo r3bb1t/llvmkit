@@ -14,7 +14,7 @@
 //! so a `call` through it knows the argument / return shape. This module
 //! follows that split: the [`InlineAsm`] handle's [`Value::ty`] is the
 //! module's `ptr` type, and the wrapped [`FunctionType`]
-//! id is stored in the payload for the [`IRBuilder`](crate::ir_builder::IRBuilder)
+//! id is stored in the payload for the [`IrBuilder`](crate::ir_builder::IrBuilder)
 //! to consume when it emits the call.
 //!
 //! The textual form a `call` prints is, e.g.:

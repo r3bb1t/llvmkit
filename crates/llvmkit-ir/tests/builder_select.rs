@@ -7,7 +7,7 @@
 //! `unittests/IR/IRBuilderTest.cpp` `Builder.CreateSelect` call sites
 //! (used inside `TEST_F(IRBuilderTest, FastMathFlags)` and friends).
 
-use llvmkit_ir::{Constant, ConstantIntValue, Dyn, IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{Constant, ConstantIntValue, Dyn, IrBuilder, IrError, Linkage, module_new};
 
 /// Mirrors `test/Assembler/select.ll` for `select i1, <int>, <int>`.
 #[test]
@@ -22,7 +22,7 @@ fn select_int_arms() -> Result<(), IrError> {
     );
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let cond: llvmkit_ir::IntValue<'_, bool, _> = m.view(f).param(0)?.try_into()?;
     let t: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let fl: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(2)?.try_into()?;
@@ -49,7 +49,7 @@ fn select_fp_arms() -> Result<(), IrError> {
     );
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let cond: llvmkit_ir::IntValue<'_, bool, _> = m.view(f).param(0)?.try_into()?;
     let t: llvmkit_ir::FloatValue<'_, f64, _> = m.view(f).param(1)?.try_into()?;
     let fl: llvmkit_ir::FloatValue<'_, f64, _> = m.view(f).param(2)?.try_into()?;
@@ -76,7 +76,7 @@ fn select_pointer_arms() -> Result<(), IrError> {
     );
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let cond: llvmkit_ir::IntValue<'_, bool, _> = m.view(f).param(0)?.try_into()?;
     let t: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
     let fl: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(2)?.try_into()?;
@@ -100,7 +100,7 @@ fn default_constant_folder_folds_select_to_chosen_arm() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
     let f = m.add_function_dyn("pick", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let true_arm: llvmkit_ir::IntValue<'_, i32, _> =
         i32_ty.const_int(7_i32).into_erased().try_into()?;
     let false_arm: llvmkit_ir::IntValue<'_, i32, _> =

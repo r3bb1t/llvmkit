@@ -1692,7 +1692,7 @@ decl_value_handle!(
 // IntType / FloatType already imported at top of file.
 
 /// Value whose IR type is `iN`. The `W: IntWidth` marker pins the
-/// bit-width at the type level, so the IRBuilder can reject mismatched
+/// bit-width at the type level, so the IrBuilder can reject mismatched
 /// widths at compile time.
 pub struct IntValue<'ctx, W: IntWidth, B: ModuleBrand> {
     pub(super) id: ValueSlot,
@@ -2388,7 +2388,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Value<'ctx, B> {
 }
 
 // --------------------------------------------------------------------------
-// IntoPointerValue: ergonomic operand input for the IRBuilder
+// IntoPointerValue: ergonomic operand input for the IrBuilder
 // --------------------------------------------------------------------------
 
 /// Inputs that can be lifted into a [`PointerValue<'ctx, B>`] operand

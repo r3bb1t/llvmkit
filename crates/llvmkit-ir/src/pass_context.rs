@@ -73,7 +73,7 @@ use super::instr_types::BranchKind;
 use super::instruction::InstructionKindData;
 use super::instruction::{Instruction, InstructionView, NonTerminator, TerminatorKind, state};
 use super::ir_builder::constant_folder::ConstantFolder;
-use super::ir_builder::{IRBuilder, InsertPoint, Positioned};
+use super::ir_builder::{InsertPoint, IrBuilder, Positioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_access::{
@@ -762,7 +762,7 @@ where
     /// function is preserved") does not account for. Pass authors reach types
     /// through [`Self::module`], a positioned builder through
     /// [`Self::builder_at`], and instruction construction through
-    /// [`IRBuilder::at_end`].
+    /// [`IrBuilder::at_end`].
     #[inline]
     pub(crate) fn module_mut(&self) -> &'m Module<B, Unverified> {
         self.module
@@ -770,10 +770,10 @@ where
 
     /// A builder restored at a previously saved [`InsertPoint`], anchored in
     /// this function's module. The first-class replacement for the
-    /// `IRBuilder::new(module_mut())` spelling that the now-crate-private
+    /// `IrBuilder::new(module_mut())` spelling that the now-crate-private
     /// `module_mut` used to enable: it hands back exactly a positioned
     /// builder, never the module's declaration surface. Errors the same way
-    /// [`IRBuilder::restore_insert_point`] does — an empty insert point, or a
+    /// [`IrBuilder::restore_insert_point`] does — an empty insert point, or a
     /// block that has since grown a terminator.
     ///
     /// Handing out a positioned builder over the mutable module token is
@@ -790,11 +790,11 @@ where
     pub fn builder_at<R2>(
         &self,
         ip: InsertPoint<'m, R2, B>,
-    ) -> IrResult<IRBuilder<'m, 'm, B, ConstantFolder, Positioned, R2>>
+    ) -> IrResult<IrBuilder<'m, 'm, B, ConstantFolder, Positioned, R2>>
     where
         R2: ReturnMarker,
     {
-        let builder = IRBuilder::new_for::<R2>(self.module).restore_insert_point(ip)?;
+        let builder = IrBuilder::new_for::<R2>(self.module).restore_insert_point(ip)?;
         self.dirty.set(true);
         Ok(builder)
     }
@@ -1025,7 +1025,7 @@ enum EditSlot {
 /// [`FnReshape::insert_phi`] creates a phi that is complete against `block`'s
 /// predecessors, correctly typed, free of differing duplicates, and whose every
 /// incoming value dominates its edge — all checkable because a `ReshapeCfg` pass
-/// sees the whole CFG. A general in-pass `IRBuilder` surface and fuller
+/// sees the whole CFG. A general in-pass `IrBuilder` surface and fuller
 /// terminator surgery — rewiring branches, deleting blocks — remain future work.
 pub struct FnReshape<'m, 'r, 'ctx, B, R>
 where
@@ -1131,7 +1131,7 @@ where
     pub fn builder_at<R2>(
         &self,
         ip: InsertPoint<'m, R2, B>,
-    ) -> IrResult<IRBuilder<'m, 'm, B, ConstantFolder, Positioned, R2>>
+    ) -> IrResult<IrBuilder<'m, 'm, B, ConstantFolder, Positioned, R2>>
     where
         R2: ReturnMarker,
     {
@@ -1766,7 +1766,7 @@ where
             .count();
         self.drop_incoming_from_pred(&old_block, from_id, surviving)?;
 
-        let builder = IRBuilder::new(self.patch.module_mut());
+        let builder = IrBuilder::new(self.patch.module_mut());
         for (phi_id, value) in param_phis.iter().zip(phi_values.iter()) {
             let phi_ty = ctx.value_data(*phi_id).ty;
             let phi_val = Value::from_parts(*phi_id, new_to.module, phi_ty);
@@ -2065,7 +2065,7 @@ where
     /// result `ty` explicitly instead of deriving it.
     ///
     /// Do not insert into a block whose leading phis are block parameters
-    /// (created by [`IRBuilder::append_block_with_params`](crate::IRBuilder)):
+    /// (created by [`IrBuilder::append_block_with_params`](crate::IrBuilder)):
     /// the new phi lands in that same head group, where the block-argument path
     /// would miscount it as an extra block parameter.
     ///
@@ -2215,7 +2215,7 @@ where
         // (4) All witnessed — create the phi at `block`'s phi head and record
         // every incoming. `make_phi_in_block` is cursor-independent, so an
         // Unpositioned builder is fine.
-        let builder = IRBuilder::new(self.patch.module_mut());
+        let builder = IrBuilder::new(self.patch.module_mut());
         let phi_val = builder.make_phi_in_block(target_id, ty_id, "");
         for (value, pred) in incomings {
             let pred_block =
@@ -3167,12 +3167,12 @@ impl MutatingModule for RewriteModule {
 mod tests {
     use super::{FnCx, FunctionView, ModCx};
     use crate::analysis::{
-        CFGAnalyses, FunctionAnalysisList, FunctionAnalysisManager, ModuleAnalysisManager,
+        CfgAnalyses, FunctionAnalysisList, FunctionAnalysisManager, ModuleAnalysisManager,
     };
     use crate::dominator_tree::DominatorTreeAnalysis;
     use crate::instruction::InstructionView;
     use crate::pass_access::{Inspect, PatchBody, ReshapeCfg, RewriteModule};
-    use crate::{Dyn, IRBuilder, IntValue, IrError, IsValue, Linkage, ModuleView, NoFolder};
+    use crate::{Dyn, IntValue, IrBuilder, IrError, IsValue, Linkage, ModuleView, NoFolder};
 
     /// The `Requires` list shared by these tests: a single CFG-shaped analysis
     /// so both the infallible accessor and the preservation floors have a
@@ -3191,7 +3191,7 @@ mod tests {
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(1_u32))?;
 
         let function = FunctionView::from(m.view(f));
@@ -3228,7 +3228,7 @@ mod tests {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         // `%dead` has no uses — a non-terminator we can erase.
         let dead = b.build_int_add(x, 1_i32, "dead")?;
@@ -3271,7 +3271,7 @@ mod tests {
         let pa = report.into_parts().0;
         let checker = pa.checker::<DominatorTreeAnalysis>();
         // CFG analyses survive an in-block edit; an arbitrary analysis does not.
-        assert!(checker.preserved_set::<CFGAnalyses>());
+        assert!(checker.preserved_set::<CfgAnalyses>());
         assert!(!checker.preserved());
         Ok(())
     }
@@ -3292,7 +3292,7 @@ mod tests {
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(0_u32))?;
 
         let function = FunctionView::from(m.view(f));
@@ -3339,10 +3339,10 @@ mod tests {
         // end-of-block ip whose block has since grown a terminator).
         let scratch = m.view(f).append_basic_block(&m, "scratch");
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-        IRBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(entry)
             .build_ret(x)?;
-        let ip = IRBuilder::new_for::<Dyn>(&m)
+        let ip = IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(scratch)
             .save_insert_point();
 
@@ -3377,7 +3377,7 @@ mod tests {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         b.build_ret(x)?;
 
@@ -3404,7 +3404,7 @@ mod tests {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         b.build_ret(x)?;
 
@@ -3436,7 +3436,7 @@ mod tests {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let _d1 = b.build_int_add(x, 1_i32, "d1")?;
         let _d2 = b.build_int_add(x, 2_i32, "d2")?;
@@ -3477,7 +3477,7 @@ mod tests {
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let dead = b.build_int_add::<i32, _, _, _>(
             i32_ty.const_int(1_u32),
             i32_ty.const_int(2_u32),
@@ -3504,7 +3504,7 @@ mod tests {
         let pa = report.into_parts().0;
         let checker = pa.checker::<DominatorTreeAnalysis>();
         assert!(!checker.preserved());
-        assert!(!checker.preserved_set::<CFGAnalyses>());
+        assert!(!checker.preserved_set::<CfgAnalyses>());
         Ok(())
     }
 
@@ -3518,7 +3518,7 @@ mod tests {
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(0_u32))?;
 
         let function = FunctionView::from(m.view(f));
@@ -3532,7 +3532,7 @@ mod tests {
         assert!(pa.checker::<DominatorTreeAnalysis>().preserved());
         assert!(
             pa.checker::<DominatorTreeAnalysis>()
-                .preserved_set::<CFGAnalyses>()
+                .preserved_set::<CfgAnalyses>()
         );
         Ok(())
     }
@@ -3560,12 +3560,12 @@ mod tests {
         let next_id = next.slot();
 
         // entry: %x = add 1, 2 ; br label %next
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let _x =
             b.build_int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "x")?;
         b.build_br(next.id())?;
         // next: ret 0
-        let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
+        let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(next);
         b2.build_ret(i32_ty.const_int(0_u32))?;
 
         let function = FunctionView::from(m.view(f));
@@ -3620,11 +3620,11 @@ mod tests {
         let next_label = next.id();
 
         // entry: %x = add 1, 2 ; br label %next    next: ret 0
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let _x =
             b.build_int_add::<i32, _, _, _>(i32_ty.const_int(1_u32), i32_ty.const_int(2_u32), "x")?;
         b.build_br(next.id())?;
-        let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
+        let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(next);
         b2.build_ret(i32_ty.const_int(0_u32))?;
 
         let function = FunctionView::from(m.view(f));
@@ -3671,7 +3671,7 @@ mod tests {
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(1_u32))?;
 
         let module = m.as_view();
@@ -3712,7 +3712,7 @@ mod tests {
         let fn_ty = m.fn_type_no_params(i32_ty, false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_ret(i32_ty.const_int(0_u32))?;
 
         let module = m.as_view();
@@ -3737,7 +3737,7 @@ mod tests {
         let checker = pa.checker::<DominatorTreeAnalysis>();
         // A module rewrite preserves nothing — the heaviest rung's floor.
         assert!(!checker.preserved());
-        assert!(!checker.preserved_set::<CFGAnalyses>());
+        assert!(!checker.preserved_set::<CfgAnalyses>());
         Ok(())
     }
 
@@ -3755,7 +3755,7 @@ mod tests {
         // Definition `f1` with a dead `add` we can erase.
         let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
         let e1 = m.view(f1).append_basic_block(&m, "entry");
-        let b1 = IRBuilder::new_for::<Dyn>(&m).position_at_end(e1);
+        let b1 = IrBuilder::new_for::<Dyn>(&m).position_at_end(e1);
         let x1: IntValue<'_, i32, _> = m.view(f1).param(0)?.try_into()?;
         let dead1 = b1.build_int_add(x1, 1_i32, "dead")?;
         b1.build_ret(x1)?;
@@ -3763,7 +3763,7 @@ mod tests {
         // Definition `f2`, likewise.
         let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
         let e2 = m.view(f2).append_basic_block(&m, "entry");
-        let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(e2);
+        let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(e2);
         let x2: IntValue<'_, i32, _> = m.view(f2).param(0)?.try_into()?;
         let dead2 = b2.build_int_add(x2, 1_i32, "dead")?;
         b2.build_ret(x2)?;
@@ -3836,7 +3836,7 @@ mod tests {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         // a = x+1 (used by b), b = a+1 (used by c), c = b+1 (unused/dead).
         let a = b.build_int_add(x, 1_i32, "a")?;
@@ -3878,7 +3878,7 @@ mod tests {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         // a = x+1 ; b = a+1 (so b's operand `a` IS an instruction) ; ret x.
         let a = b.build_int_add(x, 1_i32, "a")?;
@@ -3937,7 +3937,7 @@ mod tests {
             .add_function_dyn("f", fn_ty, Linkage::External)
             .expect("function");
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+        let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m
             .view(f)
             .param(0)
@@ -3989,9 +3989,9 @@ mod tests {
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let exit = m.view(f).append_basic_block(&m, "exit");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         b.build_br(&exit)?;
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(exit);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(exit);
         b.build_ret(i32_ty.const_int(0_u32))?;
 
         let function = FunctionView::from(m.view(f));
@@ -4020,7 +4020,7 @@ mod tests {
         let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
-        let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
         let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
         let sum = b.build_int_add(x, 1_i32, "sum")?;
         b.build_ret(sum)?;

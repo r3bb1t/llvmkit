@@ -3,7 +3,7 @@
 //! `SwitchInst::finish` returns a `Closed` view. Retaining the original `Open`
 //! handle must not permit more cases to be added through the same switch.
 
-use llvmkit_ir::{Dyn, IRBuilder, Linkage, Module};
+use llvmkit_ir::{Dyn, IrBuilder, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("retained-switch");
@@ -15,7 +15,7 @@ fn main() {
     let dest = m.view(f).append_basic_block(&m, "dest");
     let dest_label = dest.id();
     let cond = m.view(f).param(0).unwrap();
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let (_sealed, switch) = b.build_switch_dyn(cond, dest_label, "").unwrap();
 
     let _closed = switch.finish();

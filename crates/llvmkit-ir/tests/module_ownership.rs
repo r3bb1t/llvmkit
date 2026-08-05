@@ -26,7 +26,7 @@ use llvmkit_ir::metadata::{
     DebugMetadataOperand, DebugRecord, DebugVariableRecord, DebugVariableRecordKind,
 };
 use llvmkit_ir::{
-    BlockId, Dyn, DynBrand, FunctionId, IRBuilder, InstructionView, IntValue, IrError, Linkage,
+    BlockId, Dyn, DynBrand, FunctionId, InstructionView, IntValue, IrBuilder, IrError, Linkage,
     MetadataAttachmentKind, MetadataField, MetadataFieldValue, MetadataKind, Module, ModuleBrand,
     NoFolder, SpecializedMetadataKind, SpecializedMetadataNode, Unverified, Verified, module_new,
 };
@@ -101,7 +101,7 @@ fn a_module_under_a_not_send_brand_still_crosses_a_thread() -> Result<(), IrErro
 /// The headline: a module is **half authored** on one thread, moved to another,
 /// **finished** there, and verified there.
 ///
-/// The handoff is exactly what cycles B and C were built for. The `IRBuilder`
+/// The handoff is exactly what cycles B and C were built for. The `IrBuilder`
 /// borrows the module, so it is dropped before the move; what crosses the
 /// boundary is the owned token plus two lifetime-free ids (`FunctionId`,
 /// `BlockId`). On the far side the ids are re-resolved against the token — the
@@ -120,7 +120,7 @@ fn a_half_authored_module_is_finished_on_another_thread() -> Result<(), IrError>
     let entry: BlockId<Dyn, Handoff> = module.view(f).append_basic_block(&module, "entry").id();
 
     {
-        let builder = IRBuilder::new_for::<Dyn>(&module).position_at_end_dyn(entry)?;
+        let builder = IrBuilder::new_for::<Dyn>(&module).position_at_end_dyn(entry)?;
         let n: IntValue<'_, i32, _> = module.view(f).param(0)?.try_into()?;
         builder.build_int_add(n, 1_i32, "sum")?;
         // Deliberately no terminator yet: the module is unfinished, and an
@@ -130,7 +130,7 @@ fn a_half_authored_module_is_finished_on_another_thread() -> Result<(), IrError>
     // --- the move ---
     let printed = thread::spawn(move || -> Result<String, IrError> {
         // thread B: reopen the same block through the id and finish the body.
-        let builder = IRBuilder::new_for::<Dyn>(&module).position_at_end_dyn(entry)?;
+        let builder = IrBuilder::new_for::<Dyn>(&module).position_at_end_dyn(entry)?;
         let sum: IntValue<'_, i32, _> = module
             .view(f)
             .basic_blocks()
@@ -169,7 +169,7 @@ fn splitting_authoring_across_threads_emits_identical_ir() -> Result<(), IrError
         let fn_ty = module.fn_type(i32_ty, [i32_ty.as_type()], false);
         let f = module.add_function_dyn("split", fn_ty, Linkage::External)?;
         let entry = module.view(f).append_basic_block(module, "entry").id();
-        let builder = IRBuilder::new_for::<Dyn>(module).position_at_end_dyn(entry)?;
+        let builder = IrBuilder::new_for::<Dyn>(module).position_at_end_dyn(entry)?;
         let n: IntValue<'_, i32, _> = module.view(f).param(0)?.try_into()?;
         builder.build_int_add(n, 7_i32, "sum")?;
         Ok((f, entry))
@@ -180,7 +180,7 @@ fn splitting_authoring_across_threads_emits_identical_ir() -> Result<(), IrError
         f: FunctionId<Dyn, DynBrand>,
         entry: BlockId<Dyn, DynBrand>,
     ) -> Result<(), IrError> {
-        let builder = IRBuilder::new_for::<Dyn>(module).position_at_end_dyn(entry)?;
+        let builder = IrBuilder::new_for::<Dyn>(module).position_at_end_dyn(entry)?;
         let sum: IntValue<'_, i32, _> = module
             .view(f)
             .basic_blocks()
@@ -351,7 +351,7 @@ fn a_stale_id_from_a_dead_generation_is_refused_by_its_successor() -> Result<(),
     // The fallible id-consuming surfaces report it as a foreign id rather than
     // reopening whatever block now sits at that index.
     assert!(matches!(
-        IRBuilder::new_for::<Dyn>(&gen2).position_at_end_dyn(stale_block),
+        IrBuilder::new_for::<Dyn>(&gen2).position_at_end_dyn(stale_block),
         Err(IrError::ForeignValueId)
     ));
     Ok(())
@@ -494,7 +494,7 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     let fn_ty = b.fn_type_no_params(void_ty, false);
     let f = b.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = b.view(f).append_basic_block(&b, "entry");
-    let builder = IRBuilder::with_folder(&b, NoFolder).position_at_end(entry);
+    let builder = IrBuilder::with_folder(&b, NoFolder).position_at_end(entry);
     let sum = builder.build_int_add::<i8, _, _, _>(
         i8_ty.const_int(1_u8),
         i8_ty.const_int(2_u8),
@@ -525,7 +525,7 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     let a_fn_ty = a.fn_type_no_params(a_void_ty, false);
     let a_fn = a.add_function_dyn("a_fn", a_fn_ty, Linkage::External)?;
     let a_entry = a.view(a_fn).append_basic_block(&a, "entry");
-    let a_builder = IRBuilder::with_folder(&a, NoFolder).position_at_end(a_entry);
+    let a_builder = IrBuilder::with_folder(&a, NoFolder).position_at_end(a_entry);
     let a_i8 = a.i8_type();
     let a_sum = a_builder.build_int_add::<i8, _, _, _>(
         a_i8.const_int(1_u8),

@@ -10,7 +10,7 @@
 //! paths are rewritten to `crate::`).
 
 use crate::{
-    Analyses, BlockId, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError, IrResult,
+    Analyses, BlockId, Dyn, FnCx, FnReport, FunctionPass, IntValue, IrBuilder, IrError, IrResult,
     Linkage, Module, ModuleBrand, ReshapeCfg, ValueId, run_function_pass,
 };
 
@@ -121,7 +121,7 @@ fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
     let merge_lbl = merge.id();
 
     // entry: %e = add %a, 7 ; switch %a, default %dflt [ 0 -> merge, 1 -> other ]
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let e = b.build_int_add(a, 7_i32, "e")?;
     let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
@@ -130,17 +130,17 @@ fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
         .finish();
 
     // dflt: %d = add %a, 9 ; br merge
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(dflt);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(dflt);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let d = b.build_int_add(a, 9_i32, "d")?;
     b.build_br(merge_lbl)?;
 
     // other: ret 0
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(other);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
     // merge: %p = phi i32 [ %e, entry ], [ %d, dflt ] ; ret %p
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(merge);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(merge);
     let p = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(e, entry_lbl)?
@@ -300,7 +300,7 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
     let new_lbl = new.id();
 
     // entry: %e = add %a, 7 ; switch %a, default %shared [ 0 -> shared, 1 -> mid ]
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let e = b.build_int_add(a, 7_i32, "e")?;
     let (_sealed, sw) = b.build_switch_dyn(a, shared_lbl, "")?;
@@ -309,13 +309,13 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
         .finish();
 
     // mid: %mv = add %a, 3 ; br shared
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(mid);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(mid);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let mv = b.build_int_add(a, 3_i32, "mv")?;
     b.build_br(shared_lbl)?;
 
     // shared: %p = phi i32 [ %e, entry ] (default), [ %e, entry ] (case 0), [ %mv, mid ] ; ret %p
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(shared);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(shared);
     let p = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(e, entry_lbl)?
@@ -324,7 +324,7 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
     b.build_ret(p.as_int_value())?;
 
     // new: ret 1  (no phi — a redirect onto it seeds an empty phi_values)
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(new);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
     Ok((f, shared_lbl, new_lbl))

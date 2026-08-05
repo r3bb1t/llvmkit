@@ -7,7 +7,7 @@
 //! fixture would start compiling and trybuild would flag the regression.
 
 use llvmkit_ir::{
-    AtomicOrdering, AtomicRMWConfig, IRBuilder, IrResult, Linkage, Module, PointerValue, SyncScope,
+    AtomicOrdering, AtomicRMWConfig, IrBuilder, IrResult, Linkage, Module, PointerValue, SyncScope,
 };
 use llvmkit_ir::atomicrmw_binop::AtomicRMWBinOp;
 
@@ -19,7 +19,7 @@ fn main() -> IrResult<()> {
     let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
     let word: PointerValue<_> = m.view(f).param(0)?.try_into()?;
     let twelve = i32_ty.const_int(12_i32);
     let armw = b.build_atomicrmw(

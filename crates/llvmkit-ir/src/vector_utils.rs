@@ -78,7 +78,7 @@
 //!   `intersectAccessGroups`, `getMetadataToPropagate` and
 //!   `propagateMetadata`.
 //! - **Three need construction machinery** — `concatenateVectors` and
-//!   `createBitMaskForGaps` need an `IRBuilder`, and
+//!   `createBitMaskForGaps` need an `IrBuilder`, and
 //!   `getDeinterleavedVectorType` needs `IntrinsicInst`.
 //! - **Two are permanently out of scope, not pending.** llvmkit models no
 //!   target: code generation and target backends are excluded by charter, not

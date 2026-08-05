@@ -7,7 +7,7 @@
 //! `unittests/IR/InstructionsTest.cpp` (`GEPIndices`, `ZeroIndexGEP`)
 //! or mirrors a `test/Assembler/getelementptr*.ll` fixture.
 
-use llvmkit_ir::{Dyn, IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{Dyn, IrBuilder, IrError, Linkage, module_new};
 
 /// Port of `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, GEPIndices)`
 /// for the array-offset GEP case. Textual form mirrors
@@ -24,7 +24,7 @@ fn gep_array_offset() -> Result<(), IrError> {
     );
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let n: llvmkit_ir::IntValue<'_, llvmkit_ir::IntDyn, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_gep(i32_ty, p, [n], "p2")?;
@@ -52,7 +52,7 @@ fn gep_inbounds() -> Result<(), IrError> {
     );
     let f = m.add_function_dyn("gi", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let n: llvmkit_ir::IntValue<'_, llvmkit_ir::IntDyn, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_inbounds_gep(i32_ty, p, [n], "p2")?;
@@ -70,8 +70,8 @@ fn gep_inbounds() -> Result<(), IrError> {
 /// the `getelementptr inbounds nuw %S, ptr %x, i32 0, i32 N` struct-field
 /// access print form -- `getelementptr_struct.ll` is a NEGATIVE fixture
 /// (`RUN: not llvm-as`, invalid indices) and is not an accurate print-form
-/// anchor. The `nuw` flag matches `IRBuilder::CreateStructGEP`
-/// (`IRBuilder.h`), which passes `GEPNoWrapFlags::inBounds() |
+/// anchor. The `nuw` flag matches `IrBuilder::CreateStructGEP`
+/// (`IrBuilder.h`), which passes `GEPNoWrapFlags::inBounds() |
 /// GEPNoWrapFlags::noUnsignedWrap()`; the combined printed form is locked
 /// against `test/Assembler/flags.ll` (`gep_inbounds_nuw`, `inbounds nuw`
 /// prints in that order per `GEPNoWrapFlags`'s canonical ordering).
@@ -86,7 +86,7 @@ fn struct_gep() -> Result<(), IrError> {
     let fn_ty = m.fn_type(ptr_ty.as_type(), [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("sg", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let r = b.build_struct_gep(s_ty, p, 1, "p2")?;
     b.build_ret(r)?;
@@ -108,7 +108,7 @@ fn gep_zero_index() -> Result<(), IrError> {
     let fn_ty = m.fn_type(ptr_ty.as_type(), [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("gz", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     // Zero-index degenerate GEP: just `getelementptr i32, ptr %0` (no
     // indices). Mirrors `2009-07-24-ZeroArgGEP.ll`.

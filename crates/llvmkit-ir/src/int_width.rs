@@ -575,10 +575,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantInt<'ctx, IntDyn, B> for bool {
 /// macro. Mirrors the runtime check
 /// `IntegerType::getBitWidth() > other.getBitWidth()`
 /// (`DerivedTypes.h`). The trait is the bound used by
-/// [`IRBuilder::build_trunc`](crate::IRBuilder::build_trunc) (where
+/// [`IrBuilder::build_trunc`](crate::IrBuilder::build_trunc) (where
 /// `Src: WiderThan<Dst>`) and the inverse on
-/// [`IRBuilder::build_zext`](crate::IRBuilder::build_zext) /
-/// [`build_sext`](crate::IRBuilder::build_sext) (where
+/// [`IrBuilder::build_zext`](crate::IrBuilder::build_zext) /
+/// [`build_sext`](crate::IrBuilder::build_sext) (where
 /// `Dst: WiderThan<Src>`).
 ///
 /// Signed-only: every `WiderThan` involves two static markers.
@@ -599,7 +599,7 @@ decl_wider_than!(i64: bool, i8, i16, i32);
 decl_wider_than!(i128: bool, i8, i16, i32, i64);
 
 // --------------------------------------------------------------------------
-// IntoIntValue: ergonomic operand input for the IRBuilder
+// IntoIntValue: ergonomic operand input for the IrBuilder
 // --------------------------------------------------------------------------
 
 /// Inputs that can be lifted into an [`IntValue<'ctx, W>`] operand

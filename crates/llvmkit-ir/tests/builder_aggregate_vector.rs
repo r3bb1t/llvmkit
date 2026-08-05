@@ -4,7 +4,7 @@
 //! Every test cites its upstream source per Doctrine D11.
 
 use llvmkit_ir::ShuffleMaskElem::Lane;
-use llvmkit_ir::{Dyn, DynBrand, IRBuilder, IntValue, IrError, Linkage, module_new};
+use llvmkit_ir::{Dyn, DynBrand, IntValue, IrBuilder, IrError, Linkage, module_new};
 
 // --------------------------------------------------------------------------
 // extractvalue
@@ -23,7 +23,7 @@ fn extract_value_struct_field0() -> Result<(), IrError> {
     let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
     let f = m.add_function_dyn("instructions.aggregateops", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let up = m.view(f).param(0)?;
     let _ = b.build_extract_value(up, [0u32], "")?;
     b.build_ret_void()?;
@@ -47,7 +47,7 @@ fn extract_value_array_index() -> Result<(), IrError> {
     let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arr = m.view(f).param(0)?;
     let _ = b.build_extract_value(arr, [2u32], "")?;
     b.build_ret_void()?;
@@ -73,7 +73,7 @@ fn extract_value_nested_indices() -> Result<(), IrError> {
     let fn_ty = m.fn_type(void_ty.as_type(), [outer.as_type()], false);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n = m.view(f).param(0)?;
     let _ = b.build_extract_value(n, [1u32, 0u32], "")?;
     b.build_ret_void()?;
@@ -101,7 +101,7 @@ fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let up = m.view(f).param(0)?;
     let err = b
         .build_extract_value_dyn(up, &[], "bad")
@@ -132,7 +132,7 @@ fn extract_value_rejects_out_of_range_array_index() -> Result<(), IrError> {
     let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let undef = arr_ty.as_type().get_undef();
     let err = b
         .build_extract_value(undef, [0u32], "")
@@ -162,7 +162,7 @@ fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
     let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let undef = s_ty.as_type().get_undef();
     let err = b
         .build_extract_value(undef, [2u32], "")
@@ -192,7 +192,7 @@ fn insert_value_struct_field0() -> Result<(), IrError> {
     let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let up = m.view(f).param(0)?;
     let one = i8_ty.const_int(1_i8);
     let _ = b.build_insert_value(up, one, [0u32], "")?;
@@ -216,7 +216,7 @@ fn insert_value_array_index_zero() -> Result<(), IrError> {
     let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arr = m.view(f).param(0)?;
     let zero = i8_ty.const_int(0_i8);
     let _ = b.build_insert_value(arr, zero, [0u32], "")?;
@@ -246,7 +246,7 @@ fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let up = m.view(f).param(0)?;
     let err = b
         .build_insert_value_dyn(up, up, &[], "bad")
@@ -279,7 +279,7 @@ fn extract_element_vector_i8_index() -> Result<(), IrError> {
     let fn_ty = m.fn_type(void_ty.as_type(), [vec_ty.as_type()], false);
     let f = m.add_function_dyn("instructions.vectorops", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let vec = m.view(f).param(0)?;
     let zero = i8_ty.const_int(0_i8);
     let _ = b.build_extract_element(vec, zero, "")?;
@@ -308,7 +308,7 @@ fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
     let fn_ty = m.fn_type(void_ty.as_type(), [vec_ty.as_type()], false);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let vec = m.view(f).param(0)?;
     let three_five = f32_ty.const_float(3.5_f32);
     let zero = i8_ty.const_int(0_i8);
@@ -342,7 +342,7 @@ fn shuffle_vector_zeroinitializer_mask() -> Result<(), IrError> {
     );
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v0 = m.view(f).param(0)?;
     let v1 = m.view(f).param(1)?;
     let _ = b.build_shuffle_vector(v0, v1, &[Lane(0), Lane(0)], "")?;
@@ -375,7 +375,7 @@ fn shuffle_vector_explicit_mask_print() -> Result<(), IrError> {
     );
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v0 = m.view(f).param(0)?;
     let v1 = m.view(f).param(1)?;
     let _ = b.build_shuffle_vector(v0, v1, &[Lane(1), Lane(1), Lane(0), Lane(0)], "")?;

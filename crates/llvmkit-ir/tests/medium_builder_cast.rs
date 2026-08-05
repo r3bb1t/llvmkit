@@ -9,8 +9,8 @@
 //! for the typestate-driven coverage that has no C++ analogue.
 
 use llvmkit_ir::{
-    Constant, ConstantIntValue, Dyn, IRBuilder, IntDyn, IntType, IntValue, IrError, Linkage,
-    TruncFlags, UIToFpFlags, ZExtFlags, module_new,
+    Constant, ConstantIntValue, Dyn, IntDyn, IntType, IntValue, IrBuilder, IrError, Linkage,
+    TruncFlags, UiToFpFlags, ZextFlags, module_new,
 };
 
 /// Mirrors `unittests/IR/InstructionsTest.cpp::TEST(InstructionsTest, CastInst)`
@@ -23,7 +23,7 @@ fn build_trunc_emits_trunc_to_dst_type() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [i64_ty.as_type()], false);
     let f = m.add_function_dyn("narrow", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let truncated = b.build_trunc(arg, i32_ty, "narrow")?;
     b.build_ret(truncated)?;
@@ -59,7 +59,7 @@ fn build_trunc_dyn_runtime_check_widening_rejected() -> Result<(), IrError> {
     let fn_ty = m.fn_type(dyn_i64.as_type(), [dyn_i32.as_type()], false);
     let f = m.add_function_dyn("bad", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, IntDyn, _> = m.view(f).param(0)?.try_into()?;
     let err = b
         .build_trunc_dyn(arg, dyn_i64, "bad")
@@ -85,7 +85,7 @@ fn build_trunc_preserves_anonymous_slot_naming() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [i64_ty.as_type()], false);
     let f = m.add_function_dyn("anon", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let t = b.build_trunc(arg, i32_ty, "")?;
     b.build_ret(t)?;
@@ -105,7 +105,7 @@ fn build_zext_static_static_emits_zext() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i64_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let widened = b.build_zext(arg, i64_ty, "z")?;
     b.build_ret(widened)?;
@@ -125,7 +125,7 @@ fn build_sext_static_static_emits_sext() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i64_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let widened = b.build_sext(arg, i64_ty, "s")?;
     b.build_ret(widened)?;
@@ -146,7 +146,7 @@ fn default_constant_folder_folds_zext_to_constant() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i64_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
     let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let value: IntValue<'_, i32, _> = i32_ty.const_int(42_i32).into_erased().try_into()?;
     let result = b.build_zext(value, i64_ty, "z")?;
     let folded =
@@ -166,9 +166,9 @@ fn typed_zext_nneg_prints_flag() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i64_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("widen", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let widened = b.build_zext_with_flags(arg, i64_ty, ZExtFlags::new().nneg(), "res")?;
+    let widened = b.build_zext_with_flags(arg, i64_ty, ZextFlags::new().nneg(), "res")?;
     b.build_ret(widened)?;
     let text = format!("{m}");
     assert!(
@@ -180,7 +180,7 @@ fn typed_zext_nneg_prints_flag() -> Result<(), IrError> {
 
 /// Mirrors `test/Assembler/flags.ll:254-258` (`test_trunc_both`:
 /// `%res = trunc nuw nsw i64 %a to i32`). Typed operands, no `_dyn` erasure
-/// needed to spell `nuw`/`nsw`. Upstream `IRBuilder::CreateTrunc` returns `V`
+/// needed to spell `nuw`/`nsw`. Upstream `IrBuilder::CreateTrunc` returns `V`
 /// unchanged (silently dropping any requested nuw/nsw) when `SrcTy ==
 /// DestTy`; llvmkit's `Src: WiderThan<Dst>` bound makes that same-type trunc
 /// unspellable, so the flag-dropping case cannot arise here (D10).
@@ -192,7 +192,7 @@ fn typed_trunc_nuw_nsw_prints_flags() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [i64_ty.as_type()], false);
     let f = m.add_function_dyn("narrow", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let truncated = b.build_trunc_with_flags(arg, i32_ty, TruncFlags::new().nuw().nsw(), "res")?;
     b.build_ret(truncated)?;
@@ -215,9 +215,9 @@ fn typed_uitofp_nneg_prints_flag() -> Result<(), IrError> {
     let fn_ty = m.fn_type(f32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("to_float", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let converted = b.build_ui_to_fp_with_flags(arg, f32_ty, UIToFpFlags::new().nneg(), "res")?;
+    let converted = b.build_ui_to_fp_with_flags(arg, f32_ty, UiToFpFlags::new().nneg(), "res")?;
     b.build_ret(converted)?;
     let text = format!("{m}");
     assert!(

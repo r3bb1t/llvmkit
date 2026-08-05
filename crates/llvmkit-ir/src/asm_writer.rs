@@ -37,11 +37,11 @@ use super::inline_asm::{AsmDialect, InlineAsmData};
 use super::instr_types::{
     AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
     CatchReturnInstData, CatchSwitchInstData, CleanupReturnInstData, ExtractElementInstData,
-    ExtractValueInstData, FCmpInstData, FNegInstData, FenceInstData, FreezeInstData, GepInstData,
+    ExtractValueInstData, FcmpInstData, FenceInstData, FnegInstData, FreezeInstData, GepInstData,
     IndirectBrInstData, InsertElementInstData, InsertValueInstData, InvokeInstData,
     LandingPadClauseKind, LandingPadInstData, LoadInstData, OperandBundleData, OperandBundleTag,
     ResumeInstData, SelectInstData, ShuffleMaskElem, ShuffleVectorInstData, StoreInstData,
-    SwitchInstData, TailCallKind, VAArgInstData,
+    SwitchInstData, TailCallKind, VaArgInstData,
 };
 use super::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, PhiData,
@@ -1152,7 +1152,7 @@ fn fmt_cast(
 fn fmt_fneg(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    u: &FNegInstData,
+    u: &FnegInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `fneg [<fmf>] <ty> <src>` --- mirrors `printInstruction` /
@@ -1187,7 +1187,7 @@ fn fmt_freeze(
 fn fmt_va_arg(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    u: &VAArgInstData,
+    u: &VaArgInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `va_arg <list-ty> <list-val>, <result-ty>`
@@ -1497,7 +1497,7 @@ fn fmt_icmp(
 fn fmt_fcmp(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    c: &FCmpInstData,
+    c: &FcmpInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `fcmp [<fmf>] <pred> <ty> <lhs>, <rhs>`. The optional FMF block

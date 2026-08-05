@@ -1,4 +1,4 @@
-//! Phase C-cmp coverage. Covers `IRBuilder::build_int_cmp` with
+//! Phase C-cmp coverage. Covers `IrBuilder::build_int_cmp` with
 //! representative integer predicates and the `i1` result type.
 //!
 //! ## Upstream provenance
@@ -9,7 +9,7 @@
 //! `test/Assembler/` exercising integer predicates.
 
 use llvmkit_ir::{
-    Constant, ConstantIntValue, Dyn, ICmpFlags, IRBuilder, IntPredicate, IntValue, IntValueId,
+    Constant, ConstantIntValue, Dyn, IcmpFlags, IntPredicate, IntValue, IntValueId, IrBuilder,
     IrError, Linkage, Module, module_new,
 };
 
@@ -20,7 +20,7 @@ fn build_eq_module() -> Result<String, IrError> {
     let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("is_zero", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, n, 0_i32, "r")?;
     b.build_ret(r)?;
@@ -46,7 +46,7 @@ fn build_int_cmp_slt_emits_icmp_slt() -> Result<(), IrError> {
     let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
     let f = m.add_function_dyn("lt", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Slt, a, bv, "r")?;
@@ -71,7 +71,7 @@ fn build_int_cmp_returns_i1_for_chaining() -> Result<(), IrError> {
     let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("ne", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let r: IntValueId<bool, _> =
         b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ne, n, 1_i32, "r")?;
@@ -89,7 +89,7 @@ fn build_int_cmp_ule_emits_icmp_ule() -> Result<(), IrError> {
     let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
     let f = m.add_function_dyn("ule", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ule, a, bv, "r")?;
@@ -109,7 +109,7 @@ fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(bool_ty, false);
     let f = m.add_function_dyn("cmp", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let result = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Ugt, 9_i32, 3_i32, "is_gt")?;
     let folded =
         ConstantIntValue::<bool, _>::try_from(Constant::try_from(b.view(result).into_erased())?)?;
@@ -120,7 +120,7 @@ fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
 /// Mirrors `test/Assembler/flags.ll:290-292` (`test_icmp_samesign`):
 /// `%res = icmp samesign ult i32 %a, %b`. Typed operands need no `_dyn`
 /// erasure to spell the `samesign` flag. Upstream sets `samesign` post-hoc
-/// via `ICmpInst::setSameSign` (landed in LLVM 20, `Instructions.h`; the
+/// via `IcmpInst::setSameSign` (landed in LLVM 20, `Instructions.h`; the
 /// extracted `llvmorg-22.1.4` snapshot has no archived per-version release
 /// notes to re-derive this locally -- re-verified against the session's
 /// design doc `docs/superpowers/specs/2026-07-05-irbuilder-typed-calls-autossa-design.md:101`,
@@ -134,14 +134,14 @@ fn typed_icmp_samesign_prints_flag() -> Result<(), IrError> {
     let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
     let f = m.add_function_dyn("test_icmp_samesign", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_int_cmp_with_flags::<i32, _, _, _>(
         IntPredicate::Ult,
         a,
         bv,
-        ICmpFlags::new().samesign(),
+        IcmpFlags::new().samesign(),
         "res",
     )?;
     b.build_ret(r)?;

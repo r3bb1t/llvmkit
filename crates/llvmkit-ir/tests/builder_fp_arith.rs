@@ -7,13 +7,13 @@
 //! Each `#[test]` ports the corresponding `Builder.CreateF*` case from
 //! `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, FastMathFlags)`,
 //! which exercises `CreateFAdd` / `CreateFSub` / `CreateFMul` /
-//! `CreateFDiv` / `CreateFRem` against an `IRBuilder` and inspects the
+//! `CreateFDiv` / `CreateFRem` against an `IrBuilder` and inspects the
 //! resulting instruction. The fp arithmetic textual form is also
 //! pinned by `test/Assembler/fast-math-flags.ll`. The shared
 //! `build_f32_fn` helper above factors module setup.
 
 use llvmkit_ir::{
-    Constant, ConstantFloatValue, Dyn, FloatValue, IRBuilder, IrError, Linkage, Module, module_new,
+    Constant, ConstantFloatValue, Dyn, FloatValue, IrBuilder, IrError, Linkage, Module, module_new,
 };
 
 fn build_f32_fn(op: &str) -> Result<String, IrError> {
@@ -22,7 +22,7 @@ fn build_f32_fn(op: &str) -> Result<String, IrError> {
     let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type(), f32_ty.as_type()], false);
     let f = m.add_function_dyn(op, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
     let y: FloatValue<'_, f32, _> = m.view(f).param(1)?.try_into()?;
     let r = match op {
@@ -92,7 +92,7 @@ fn fadd_f64() -> Result<(), IrError> {
     let fn_ty = m.fn_type(f64_ty, [f64_ty.as_type(), f64_ty.as_type()], false);
     let f = m.add_function_dyn("fadd", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: FloatValue<'_, f64, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_fp_add(lhs, rhs, "z")?;
@@ -112,7 +112,7 @@ fn default_constant_folder_folds_fadd_to_constant() -> Result<(), IrError> {
     let fn_ty = m.fn_type(ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
     let f = m.add_function_dyn("sum", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let result =
         b.build_fp_add::<f64, _, _, _>(ty.const_double(1.5), ty.const_double(2.25), "sum")?;
     let folded =

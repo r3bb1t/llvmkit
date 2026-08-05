@@ -18,10 +18,10 @@
 //! signedness-irrelevant predicates (`Eq`, `Ne`) from the unsigned
 //! family (`Ult`/`Ule`/`Ugt`/`Uge`) and the signed family
 //! (`Slt`/`Sle`/`Sgt`/`Sge`). For ergonomics,
-//! [`crate::IRBuilder`] also ships per-predicate convenience methods
+//! [`crate::IrBuilder`] also ships per-predicate convenience methods
 //! (`build_icmp_eq`, `build_icmp_slt`, ...) that bake the predicate
-//! into the method name --- see `IRBuilder::CreateICmp{EQ,SLT,...}` in
-//! `IRBuilder.h` for the upstream parallel.
+//! into the method name --- see `IrBuilder::CreateICmp{EQ,SLT,...}` in
+//! `IrBuilder.h` for the upstream parallel.
 
 use core::fmt;
 
@@ -134,7 +134,7 @@ impl PredicateWithSameSign {
     /// predicate unchanged.
     ///
     /// Ports `CmpPredicate::getPreferredSignedPredicate`, whose body is
-    /// `HasSameSign ? ICmpInst::getSignedPredicate(Pred) : Pred`.
+    /// `HasSameSign ? IcmpInst::getSignedPredicate(Pred) : Pred`.
     #[inline]
     pub const fn preferred_signed_predicate(self) -> CmpPredicate {
         match self.predicate {
@@ -179,7 +179,7 @@ impl PredicateWithSameSign {
     /// Whether `first` being true forces `second` to be true, false, or neither,
     /// for two comparisons over the *same* operands.
     ///
-    /// Ports `ICmpInst::isImpliedByMatchingCmp` together with the two static
+    /// Ports `IcmpInst::isImpliedByMatchingCmp` together with the two static
     /// helpers it delegates to, `isImpliedTrueByMatchingCmp` and
     /// `isImpliedFalseByMatchingCmp` (`Instructions.cpp`) — the latter is the
     /// former against the inverse of `second`.
@@ -615,7 +615,7 @@ impl IntPredicate {
     }
 
     /// The signed reading of this predicate; `eq`/`ne` and the already-signed
-    /// predicates are returned unchanged. Mirrors `ICmpInst::getSignedPredicate`.
+    /// predicates are returned unchanged. Mirrors `IcmpInst::getSignedPredicate`.
     #[inline]
     pub const fn signed_predicate(self) -> Self {
         match self {
@@ -629,7 +629,7 @@ impl IntPredicate {
 
     /// If signed, return the unsigned counterpart (and vice versa).
     /// `eq`/`ne` are returned unchanged. Mirrors the
-    /// `getSignedPredicate` / `getUnsignedPredicate` pair on `ICmpInst`.
+    /// `getSignedPredicate` / `getUnsignedPredicate` pair on `IcmpInst`.
     #[inline]
     pub const fn flip_signedness(self) -> Self {
         match self {
@@ -658,14 +658,14 @@ impl fmt::Display for IntPredicate {
 }
 
 /// Upstream provenance: mirrors `CmpInst::Predicate` /
-/// `ICmpInst::Predicate` / `FCmpInst::Predicate` from
+/// `IcmpInst::Predicate` / `FcmpInst::Predicate` from
 /// `include/llvm/IR/InstrTypes.h` and `lib/IR/Instructions.cpp`,
 /// exercised at runtime by `unittests/IR/InstructionsTest.cpp`.
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// llvmkit-specific: enum round-trip. Mirrors `FCmpInst::Predicate`
+    /// llvmkit-specific: enum round-trip. Mirrors `FcmpInst::Predicate`
     /// numeric stability in `include/llvm/IR/InstrTypes.h`.
     #[test]
     fn float_round_trip() {
@@ -674,7 +674,7 @@ mod tests {
         }
     }
 
-    /// llvmkit-specific: enum round-trip. Mirrors `ICmpInst::Predicate`
+    /// llvmkit-specific: enum round-trip. Mirrors `IcmpInst::Predicate`
     /// numeric stability in `include/llvm/IR/InstrTypes.h`.
     #[test]
     fn int_round_trip() {

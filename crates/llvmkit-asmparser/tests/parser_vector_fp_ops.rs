@@ -3,7 +3,7 @@
 //! The FP sibling of `parser_vector_binops.rs` and `parser_vector_casts.rs`,
 //! and for the same reason: llvmkit's typed float handles carry a *scalar*
 //! `FloatKind`, so `<N x double>` has no typed handle and cannot route through
-//! `IntoFloatValue`. `IRBuilder::build_fp_binop_erased`, `build_fp_cmp_erased`
+//! `IntoFloatValue`. `IrBuilder::build_fp_binop_erased`, `build_fp_cmp_erased`
 //! and `build_fp_neg_erased` carry the shapes the typed family cannot.
 //!
 //! Upstream needs no such split: `LLParser::parseArithmetic` and

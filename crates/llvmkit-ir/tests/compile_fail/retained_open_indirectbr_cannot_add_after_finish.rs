@@ -3,7 +3,7 @@
 //! `IndirectBrInst::finish` returns a `Closed` view. Retaining the original
 //! `Open` handle must not permit more destinations to be added.
 
-use llvmkit_ir::{Dyn, IRBuilder, Linkage, Module, PointerValue};
+use llvmkit_ir::{Dyn, IrBuilder, Linkage, Module, PointerValue};
 
 fn main() {
     let m = Module::dynamic("retained-indirectbr");
@@ -19,7 +19,7 @@ fn main() {
     // subject is the retained-`Open`-handle lifecycle below, not the
     // operand typing.
     let addr: PointerValue<'_, _> = m.view(f).param(0).unwrap().try_into().unwrap();
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let (_sealed, ibr) = b.build_indirectbr(addr, "").unwrap();
 
     let _closed = ibr.finish();

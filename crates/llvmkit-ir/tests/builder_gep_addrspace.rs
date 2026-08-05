@@ -6,7 +6,7 @@
 //! the SAME address space as its base pointer, mirroring
 //! `GetElementPtrInst::getGEPReturnType` (`IR/Instructions.h`).
 
-use llvmkit_ir::{Dyn, IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{Dyn, IrBuilder, IrError, Linkage, module_new};
 
 /// Mirrors `test/Assembler/2007-12-11-AddressSpaces.ll` lines 20-26
 /// (`define ptr addrspace(11) @bar(ptr addrspace(33) %x)`): a GEP
@@ -21,7 +21,7 @@ fn gep_result_preserves_base_pointer_address_space() -> Result<(), IrError> {
     let fn_ty = m.fn_type(m.void_type().as_type(), [ptr_as33.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let one = i32_ty.const_int(1_i32).as_dyn();
     let gep = b.build_inbounds_gep(i32_ty, p, [one], "q")?;

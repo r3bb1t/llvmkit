@@ -7,7 +7,7 @@
 //! fixture) it ports.
 
 use llvmkit_ir::{
-    CallingConv, Dyn, FloatValue, IRBuilder, IntValue, IntrinsicDescriptor, IntrinsicId, IrError,
+    CallingConv, Dyn, FloatValue, IntValue, IntrinsicDescriptor, IntrinsicId, IrBuilder, IrError,
     Linkage, Ptr, module_new,
 };
 
@@ -26,7 +26,7 @@ fn call_int_returning_function() -> Result<(), IrError> {
     let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: llvmkit_ir::IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let y: llvmkit_ir::IntValue<'_, i32, _> = m.view(caller).param(1)?.try_into()?;
     let inst = b.build_call_dyn(callee, [x.into_erased(), y.into_erased()], "r")?;
@@ -67,7 +67,7 @@ fn call_void_returning_function() -> Result<(), IrError> {
     );
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let inst = b.build_call_dyn(callee, Vec::<llvmkit_ir::Value<'_, _>>::new(), "")?;
     assert!(b.view(inst).return_value().is_none());
     b.build_ret_void()?;
@@ -96,7 +96,7 @@ fn call_builder_mixed_arg_types() -> Result<(), IrError> {
     let caller_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
     // Mixed-type args: an `IntValue<i32>` and a `PointerValue` go into
     // the same call. The builder pattern accepts each via a
@@ -126,7 +126,7 @@ fn call_tail() -> Result<(), IrError> {
     let caller_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
     let caller = m.add_function_dyn("f", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let inst = b.call_builder(m.view(callee)).tail().name("r").build()?;
     let r = b.view(inst).return_int_value();
     b.build_ret(r)?;
@@ -135,7 +135,7 @@ fn call_tail() -> Result<(), IrError> {
     Ok(())
 }
 
-/// Mirrors `Intrinsic::getOrInsertDeclaration` plus `IRBuilder::CreateCall`:
+/// Mirrors `Intrinsic::getOrInsertDeclaration` plus `IrBuilder::CreateCall`:
 /// an intrinsic call helper inserts the canonical declaration and emits a
 /// direct call to it.
 #[test]
@@ -145,7 +145,7 @@ fn intrinsic_call_inserts_declaration_and_emits_direct_call() -> Result<(), IrEr
     let caller_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: FloatValue<'_, f32, _> = m.view(caller).param(0)?.try_into()?;
     let descriptor = IntrinsicDescriptor::new(
         IntrinsicId::lookup("llvm.acos.f32").expect("acos intrinsic"),
@@ -171,7 +171,7 @@ fn intrinsic_call_inserts_declaration_and_emits_direct_call() -> Result<(), IrEr
     );
     Ok(())
 }
-/// Mirrors `Intrinsic::getOrInsertDeclaration` plus `IRBuilder::CreateCall`:
+/// Mirrors `Intrinsic::getOrInsertDeclaration` plus `IrBuilder::CreateCall`:
 /// descriptor-backed intrinsic builders reject operands that do not match the
 /// generated IIT signature.
 #[test]
@@ -182,7 +182,7 @@ fn intrinsic_call_rejects_wrong_argument_type() -> Result<(), IrError> {
     let caller_ty = m.fn_type(m.void_type().as_type(), [i32_ty.as_type()], false);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let descriptor = IntrinsicDescriptor::new(
         IntrinsicId::lookup("llvm.acos.f32").expect("acos intrinsic"),
@@ -215,7 +215,7 @@ fn call_to_pointer_returning_function() -> Result<(), IrError> {
     );
     let caller = m.add_function_dyn("g", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let inst = b.build_call_dyn(callee, Vec::<llvmkit_ir::Value<'_, _>>::new(), "p")?;
     let p = b.view(inst).return_pointer_value();
     b.build_ret(p)?;
@@ -240,7 +240,7 @@ fn typed_build_call_prints_like_dyn_form() -> Result<(), IrError> {
     let callee = m.add_typed_function::<i32, (i32, i32), _>("callee", Linkage::External)?;
     let caller = m.add_typed_function::<i32, (i32, i32), _>("caller", Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (x, y) = m.view(caller).params();
     let call = b.build_call(callee, (x, y), "r")?;
     let ret_val = b.view(call).result();
@@ -265,7 +265,7 @@ fn typed_build_call_with_config_threads_calling_convention() -> Result<(), IrErr
         .set_calling_conv(&m, CallingConv::FAST);
     let caller = m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let call = b.build_call_with_config(
         callee,
         (),
@@ -286,7 +286,7 @@ fn typed_call_builder_chains_tail() -> Result<(), IrError> {
     let callee = m.add_typed_function::<i32, (), _>("g", Linkage::External)?;
     let caller = m.add_typed_function::<i32, (), _>("f", Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let call = b
         .typed_call_builder(m.view(callee), ())
         .tail()
@@ -303,7 +303,7 @@ fn typed_call_builder_chains_tail() -> Result<(), IrError> {
 /// `Sig` schema rather than spelled by hand, and the result narrows to
 /// `IntValue<i32>` without a runtime `try_into`. Closest upstream
 /// coverage: `unittests/IR/IRBuilderTest.cpp` opaque-pointer indirect
-/// call construction (`IRBuilder::CreateCall(FunctionType*, Value*,
+/// call construction (`IrBuilder::CreateCall(FunctionType*, Value*,
 /// ...)`).
 #[test]
 fn typed_build_indirect_call_derives_function_type_from_schema() -> Result<(), IrError> {
@@ -312,7 +312,7 @@ fn typed_build_indirect_call_derives_function_type_from_schema() -> Result<(), I
     let host_ty = m.fn_type(ptr_ty.as_type(), [ptr_ty.as_type()], false);
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let callee_ptr =
         llvmkit_ir::PointerValue::try_from(m.view(host).param(0).expect("callee ptr"))?;
     let x = m.i32_type().const_int(7_i32);
@@ -347,7 +347,7 @@ fn call_builder_rejects_too_few_arguments() -> Result<(), IrError> {
     let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let err = b
         .call_builder(m.view(callee))
@@ -382,7 +382,7 @@ fn call_builder_rejects_wrong_argument_type() -> Result<(), IrError> {
     let caller_ty = m.fn_type(i32_ty, [f32_ty.as_type()], false);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: FloatValue<'_, f32, _> = m.view(caller).param(0)?.try_into()?;
     let err = b
         .call_builder(m.view(callee))
@@ -416,7 +416,7 @@ fn call_builder_accepts_extra_arguments_for_vararg_callee() -> Result<(), IrErro
     let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(caller).param(0)?.try_into()?;
     let y: IntValue<'_, i32, _> = m.view(caller).param(1)?.try_into()?;
     let inst = b
@@ -448,7 +448,7 @@ fn indirect_call_rejects_too_many_arguments() -> Result<(), IrError> {
     let host_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let callee_ptr =
         llvmkit_ir::PointerValue::try_from(m.view(host).param(0).expect("callee ptr"))?;
     let callee_ty = m.fn_type(
@@ -510,7 +510,7 @@ fn varargs_facade_rejects_non_variadic_function() -> Result<(), IrError> {
 /// exactly like `build_call`, then appends the erased varargs tail
 /// unchecked -- matching LLVM's own variadic-argument contract (no
 /// static or verifier type checking on the `...` operands). Mirrors
-/// `IRBuilder::CreateCall` against a variadic `FunctionCallee`, closest
+/// `IrBuilder::CreateCall` against a variadic `FunctionCallee`, closest
 /// upstream fixture `test/Assembler/varargs.ll`-style `(...)` printing.
 #[test]
 fn build_varargs_call_lowers_fixed_prefix_and_appends_erased_tail() -> Result<(), IrError> {
@@ -520,7 +520,7 @@ fn build_varargs_call_lowers_fixed_prefix_and_appends_erased_tail() -> Result<()
         m.add_typed_varargs_function::<i32, (i32,), _>("sum_varargs", Linkage::External)?;
     let caller = m.add_typed_function::<i32, (i32,), _>("caller", Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (count,) = m.view(caller).params();
     let extra_a = i32_ty.const_int(10_i32);
     let extra_b = m.f32_type().const_float(2.5_f32);

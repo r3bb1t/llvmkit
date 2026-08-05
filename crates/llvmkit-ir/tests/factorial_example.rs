@@ -4,7 +4,7 @@
 //!
 //! example: locks output of `examples/factorial.rs`. Closest upstream
 //! functional pattern: `unittests/IR/IRBuilderTest.cpp` (recursive /
-//! looped function building via IRBuilder).
+//! looped function building via IrBuilder).
 //!
 //! Mirrors the `cpu_state_add_example.rs` pattern: `#[path]`-import the
 //! example body, build into a fresh module, assert on the format result.

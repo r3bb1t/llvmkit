@@ -16,7 +16,7 @@
 //! literal) is used so the fixture unambiguously proves `IntoPointerValue` is
 //! the gate: a bare literal is `!IsValue` and would fail under either bound.
 
-use llvmkit_ir::{IRBuilder, IntValue, Linkage, Module};
+use llvmkit_ir::{IrBuilder, IntValue, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("c");
@@ -29,7 +29,7 @@ fn main() {
     // A typed non-pointer value handle: the `i32` function parameter
     // narrowed to `IntValue<i32>`.
     let addr: IntValue<i32, _> = m.view(f).param(0).unwrap().try_into().unwrap();
-    let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
 
     // `IntValue<'_, i32, _>` does not implement `IntoPointerValue`, so it
     // cannot be an `indirectbr` address: `build_indirectbr` does not

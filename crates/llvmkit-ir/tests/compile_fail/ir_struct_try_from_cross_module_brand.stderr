@@ -13,12 +13,12 @@ help: the trait `IntoIrField<'_, Point, Right>` is not implemented for `PointVal
 11 | #[derive(IrStruct)]
    |          ^^^^^^^^
    = help: for that trait implementation, expected `Left`, found `Right`
-note: required by a bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_insert_field`
+note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::build_insert_field`
   --> src/ir_builder.rs
    |
    |     pub fn build_insert_field<S, Field, Aggregate, FieldValue, Name>(
    |            ------------------ required by a bound in this associated function
 ...
    |         Aggregate: IntoIrField<'ctx, S, B>,
-   |                    ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IRBuilder::<'m, 'ctx, B, F, Positioned, R>::build_insert_field`
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::build_insert_field`
    = note: this error originates in the derive macro `IrStruct` (in Nightly builds, run with -Z macro-backtrace for more info)

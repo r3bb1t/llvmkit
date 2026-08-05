@@ -14,7 +14,7 @@
 
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::{
-    Analyses, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError, IrResult, Linkage,
+    Analyses, Dyn, FnCx, FnReport, FunctionPass, IntValue, IrBuilder, IrError, IrResult, Linkage,
     Module, ModuleBrand, ReshapeCfg, module_new, run_function_pass,
 };
 
@@ -66,7 +66,7 @@ fn build_and_empty_phi() -> IrResult<String> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let other = m.view(f).append_basic_block(&m, "other");
     // to(%p: i32): reached ONLY from entry.
-    let (to_bb, to_params) = IRBuilder::new_for::<Dyn>(&m).append_block_with_params(
+    let (to_bb, to_params) = IrBuilder::new_for::<Dyn>(&m).append_block_with_params(
         m.view(f),
         &[i32_ty.as_type()],
         "to",
@@ -75,18 +75,18 @@ fn build_and_empty_phi() -> IrResult<String> {
     let other_lbl = other.id();
 
     // entry: %c = icmp eq %a, 0 ; br %c ? to(%a) : other()
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let c = b.build_icmp_eq(a, 0_i32, "c")?;
     b.build_cond_br_with_args(c, to_lbl, &[a.into_erased()], other_lbl, &[])?;
 
     // to: ret %p
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(to_bb);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(to_bb);
     let p: IntValue<'_, i32, _> = to_params[0].try_into()?;
     b.build_ret(p)?;
 
     // other: ret 0
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(other);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
     let verified = m.verify()?;

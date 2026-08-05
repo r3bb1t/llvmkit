@@ -1060,7 +1060,7 @@ fn gep_flags_are_inbounds(flags: &ConstantExprFlags) -> bool {
     )
 }
 
-/// `ICmpInst::compare` (`llvm/include/llvm/IR/InstrTypes.h`): evaluate a
+/// `IcmpInst::compare` (`llvm/include/llvm/IR/InstrTypes.h`): evaluate a
 /// signed/unsigned/equality integer predicate directly against two
 /// `APInt`s.
 fn compare_ap_int_with_predicate(predicate: IntPredicate, lhs: &ApInt, rhs: &ApInt) -> bool {

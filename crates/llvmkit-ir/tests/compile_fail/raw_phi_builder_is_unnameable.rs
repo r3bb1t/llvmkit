@@ -19,7 +19,7 @@
 //! later `pub` slip would silently expose it; a method compiled out cannot be
 //! reached by any visibility mistake.
 
-use llvmkit_ir::{Dyn, IRBuilder, Linkage, Module};
+use llvmkit_ir::{Dyn, IrBuilder, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("c");
@@ -27,7 +27,7 @@ fn main() {
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let bb = m.view(f).append_basic_block(&m, "bb");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
     // None of the three exist in a non-test build of the crate. The public path
     // is `append_block_with_params` for the block, then `build_br_with_args` /
     // `build_cond_br_with_args` to carry the incomings along each edge.

@@ -1,4 +1,4 @@
-//! On-the-fly SSA construction on top of the typed [`crate::IRBuilder`].
+//! On-the-fly SSA construction on top of the typed [`crate::IrBuilder`].
 //!
 //! Ports the "simple and efficient" algorithm from Braun, Buchwald,
 //! Hack, Leißa, Mehofer, Kempf, "Simple and Efficient Construction of
@@ -41,7 +41,7 @@
 //! (see `examples/lifter_session.rs`, which the old shape could not
 //! express at all).
 //!
-//! What is emphatically **not** softened: [`crate::IRBuilder`]'s own
+//! What is emphatically **not** softened: [`crate::IrBuilder`]'s own
 //! linear `BasicBlock` token and its terminator-consuming cursor stay
 //! exactly as they were. A linear capability never becomes a `Copy` id —
 //! that is why the phi `Open`/`Closed` marker was retired while the
@@ -65,7 +65,7 @@ use super::function::FunctionValue;
 use super::instruction::{Instruction, state::Attached};
 use super::int_width::{IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth};
 use super::ir_builder::constant_folder::ConstantFolder;
-use super::ir_builder::folder::IRBuilderFolder;
+use super::ir_builder::folder::IrBuilderFolder;
 use super::ir_builder::{IntoReturnValue, Positioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Invariant, Module, ModuleBrand, ModuleRef, Unverified};
@@ -285,12 +285,12 @@ impl<B: ModuleBrand> PointerVariable<B> {
 /// insertion capability -- the linear `BasicBlock` handles stay inside the
 /// `SsaBuilder`; this implements [`crate::IntoBasicBlockLabel`] as the
 /// escape hatch for feeding a `br`/successor built through the plain
-/// [`IRBuilder`] surface elsewhere.
+/// [`IrBuilder`] surface elsewhere.
 ///
 /// Wraps the storable [`BlockId`] currency with the owning builder's identity,
 /// so it is lifetime-free like the id it carries.
 ///
-/// [`IRBuilder`]: crate::IRBuilder
+/// [`IrBuilder`]: crate::IrBuilder
 pub struct SsaBlock<R: ReturnMarker, B: ModuleBrand> {
     id: BlockId<R, B>,
     owner: SsaBuilderId,
@@ -332,7 +332,7 @@ impl<R: ReturnMarker, B: ModuleBrand> core::hash::Hash for SsaBlock<R, B> {
 impl<R: ReturnMarker, B: ModuleBrand> SsaBlock<R, B> {
     /// The underlying storable [`BlockId`], usable anywhere a
     /// [`crate::IntoBasicBlockLabel`] source is accepted (e.g. a plain
-    /// `IRBuilder::build_br` target).
+    /// `IrBuilder::build_br` target).
     #[inline]
     pub fn id(&self) -> BlockId<R, B> {
         self.id
@@ -527,7 +527,7 @@ impl<B: ModuleBrand> SsaState<B> {
 }
 
 /// Cranelift-`FunctionBuilder`-style layer on top of the typed
-/// [`IRBuilder`] implementing Braun et al.'s on-the-fly SSA construction
+/// [`IrBuilder`] implementing Braun et al.'s on-the-fly SSA construction
 /// (sealed blocks, incomplete phis, trivial-phi elimination). See the
 /// module docs for the algorithm citation and for why the insertion
 /// point is *data* rather than a type-state parameter.
@@ -536,11 +536,11 @@ impl<B: ModuleBrand> SsaState<B> {
 /// and its [`SsaState`], and holds nothing that cannot be rebuilt from
 /// the two. Mint one, drive it, drop it; the session lives in the state.
 ///
-/// [`IRBuilder`]: crate::IRBuilder
+/// [`IrBuilder`]: crate::IrBuilder
 pub struct SsaBuilder<'s, 'ctx, B, F = ConstantFolder, R = Dyn>
 where
     B: ModuleBrand,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
     module: &'ctx Module<B, Unverified>,
@@ -550,7 +550,7 @@ where
     /// needs an insertion point reports [`IrError::SsaUnpositioned`] when
     /// it is empty, and every terminator empties it.
     ///
-    /// The payload is the positioned plain [`IRBuilder`] itself rather
+    /// The payload is the positioned plain [`IrBuilder`] itself rather
     /// than a bare [`BlockId`], for one reason: it is what lets
     /// [`ins`](Self::ins) hand out a **borrow**. A borrowed positioned
     /// builder cannot reach the plain builder's `self`-consuming
@@ -560,8 +560,8 @@ where
     /// any time ([`current_block`](Self::current_block)), so nothing
     /// about "the position is data" is given up.
     ///
-    /// [`IRBuilder`]: crate::IRBuilder
-    cursor: Option<super::ir_builder::IRBuilder<'ctx, 'ctx, B, F, Positioned, R>>,
+    /// [`IrBuilder`]: crate::IrBuilder
+    cursor: Option<super::ir_builder::IrBuilder<'ctx, 'ctx, B, F, Positioned, R>>,
     state: &'s mut SsaState<B>,
 }
 
@@ -585,7 +585,7 @@ impl<'s, 'ctx, B: ModuleBrand + 'ctx, R: ReturnMarker> SsaBuilder<'s, 'ctx, B, C
 impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
     /// [`for_function`](SsaBuilder::for_function) with a caller-supplied
@@ -616,7 +616,7 @@ where
 impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
     /// This session's per-module id. Exposed for diagnostics /
@@ -861,7 +861,7 @@ where
 impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
     /// Move the cursor to the end of `block`.
@@ -888,7 +888,7 @@ where
         // at every reposition rather than assumed from a token this
         // layer had been hoarding.
         self.cursor = Some(
-            super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone())
+            super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone())
                 .position_at_end_dyn(block.id)?,
         );
         Ok(())
@@ -956,14 +956,14 @@ where
 impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
     /// The full existing typed instruction surface, cranelift-style:
     /// `b.ins()?.build_int_mul(a, b, "x")?`.
     ///
     /// The `&`-return makes the plain
-    /// [`IRBuilder`](super::ir_builder::IRBuilder)'s self-consuming
+    /// [`IrBuilder`](super::ir_builder::IrBuilder)'s self-consuming
     /// methods (terminators, repositioning) structurally unreachable
     /// through this handle -- the `SsaBuilder` never surrenders its
     /// positioned builder, which keeps its CFG bookkeeping (edges/fill
@@ -974,7 +974,7 @@ where
     /// What *did* change in cycle D is only the failure mode: an
     /// unpositioned builder used to be a different type (so this was an
     /// `E0599`), and now reports [`IrError::SsaUnpositioned`].
-    pub fn ins(&self) -> IrResult<&super::ir_builder::IRBuilder<'ctx, 'ctx, B, F, Positioned, R>> {
+    pub fn ins(&self) -> IrResult<&super::ir_builder::IrBuilder<'ctx, 'ctx, B, F, Positioned, R>> {
         self.cursor.as_ref().ok_or(IrError::SsaUnpositioned)
     }
 
@@ -1148,7 +1148,7 @@ where
     // predecessors" check -- at construction time rather than at
     // `verify()` time.
 
-    /// Produce `br label %dest`. Mirrors `IRBuilder::CreateBr`.
+    /// Produce `br label %dest`. Mirrors `IrBuilder::CreateBr`.
     pub fn br(&mut self, dest: SsaBlock<R, B>) -> IrResult<()> {
         self.check_owner_block(&dest)?;
         let dest_id = dest.id.slot();
@@ -1166,7 +1166,7 @@ where
     }
 
     /// Produce `br i1 <cond>, label %then, label %else`. Mirrors
-    /// `IRBuilder::CreateCondBr`. Records the then-edge before the
+    /// `IrBuilder::CreateCondBr`. Records the then-edge before the
     /// else-edge -- a phi at a block reachable from both arms sees its
     /// incoming operands added in the same order once each predecessor
     /// is later completed.
@@ -1203,7 +1203,7 @@ where
     }
 
     /// Produce `switch <cond>, label %default [ <case> label %dest ... ]`.
-    /// Mirrors `IRBuilder::CreateSwitch` followed by the closed-form
+    /// Mirrors `IrBuilder::CreateSwitch` followed by the closed-form
     /// `SwitchInst::add_case` chain. `cases` is collected up front
     /// (closed form: every destination edge is observed by the time
     /// this method records any of them) and each `(value, target)` is
@@ -1287,7 +1287,7 @@ where
         Ok(())
     }
 
-    /// Produce `ret <value>`. Mirrors `IRBuilder::CreateRet`. Records no
+    /// Produce `ret <value>`. Mirrors `IrBuilder::CreateRet`. Records no
     /// edges -- a `ret` has no successors.
     pub fn ret<V>(&mut self, value: V) -> IrResult<()>
     where
@@ -1300,7 +1300,7 @@ where
         Ok(())
     }
 
-    /// Produce `unreachable`. Mirrors `IRBuilder::CreateUnreachable`.
+    /// Produce `unreachable`. Mirrors `IrBuilder::CreateUnreachable`.
     /// Records no edges. The inner `build_unreachable` is infallible, so
     /// the only failure here is an empty cursor.
     pub fn unreachable(&mut self) -> IrResult<()> {
@@ -1315,9 +1315,9 @@ where
 impl<'s, 'ctx, B, F> SsaBuilder<'s, 'ctx, B, F, ()>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
 {
-    /// Produce `ret void`. Mirrors `IRBuilder::CreateRetVoid`. Gated on
+    /// Produce `ret void`. Mirrors `IrBuilder::CreateRetVoid`. Gated on
     /// the builder's return marker being statically `()`, matching the
     /// inner builder's own `build_ret_void` split (a [`Dyn`]-marker
     /// builder's `ret_void` would need a runtime parent-function check;
@@ -1387,7 +1387,7 @@ impl<K: FloatKind, B: ModuleBrand> From<VarHandle<B>> for FloatVariable<K, B> {
 /// `module` resolves it back to the category-appropriate typed handle
 /// each dyn phi builder expects.
 fn build_typed_phi<'m, 'ctx, B, F, R>(
-    builder: &super::ir_builder::IRBuilder<'m, 'ctx, B, F, Positioned, R>,
+    builder: &super::ir_builder::IrBuilder<'m, 'ctx, B, F, Positioned, R>,
     category: VarCategory,
     ty: TypeSlot,
     module: ModuleRef<'ctx, B>,
@@ -1395,7 +1395,7 @@ fn build_typed_phi<'m, 'ctx, B, F, R>(
 ) -> IrResult<ValueSlot>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B>,
+    F: IrBuilderFolder<'ctx, B>,
     R: ReturnMarker,
 {
     let id = match category {
@@ -1447,7 +1447,7 @@ where
 impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
     /// Braun `writeVariable`.
@@ -1604,7 +1604,7 @@ where
         // (instruction.rs). `same` is one of this very phi's own incoming
         // operands (the loop above only ever assigns `same` from
         // `self.phi_incoming_values(phi)`). The dyn path this engine uses
-        // (`phi_add_incoming_raw` -> `IRBuilder::phi_add_incoming_from_value`,
+        // (`phi_add_incoming_raw` -> `IrBuilder::phi_add_incoming_from_value`,
         // ir_builder.rs) now performs the same result-type check the typed
         // `PhiInst::add_incoming` does, at the call site rather than only at
         // `Module::verify` (belt-and-braces: Braun reads are same-typed by
@@ -1719,8 +1719,8 @@ where
             // linear handle required. Pinned to `Dyn` -- this throwaway
             // builder never emits a terminator, so the return-marker
             // parameter carries no real invariant here.
-            let builder: super::ir_builder::IRBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
-                super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone())
+            let builder: super::ir_builder::IrBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
+                super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone())
                     .position_before(&anchor);
             build_typed_phi(&builder, var_category, var_ty, module, &var_name)?
         } else {
@@ -1729,8 +1729,8 @@ where
             // from the slot states only what the emptiness check just
             // proved.
             let open = BasicBlock::<Dyn, Unterminated, B>::from_parts(block, module, label_ty);
-            let positioned: super::ir_builder::IRBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
-                super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone())
+            let positioned: super::ir_builder::IrBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
+                super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone())
                     .position_at_end(open);
             build_typed_phi(&positioned, var_category, var_ty, module, &var_name)?
         };
@@ -1741,7 +1741,7 @@ where
 
     /// Add `(operand, pred)` to the layer-created phi named by `phi`.
     /// Thin wrapper over the same dyn phi-mutation idiom
-    /// `IRBuilder::phi_add_incoming_from_value` uses, since the engine
+    /// `IrBuilder::phi_add_incoming_from_value` uses, since the engine
     /// only ever holds category-erased `ValueSlot`s. Pinned to `Dyn`: the
     /// return-marker parameter is irrelevant to a payload-only mutation
     /// that never emits a terminator.
@@ -1756,8 +1756,8 @@ where
         let operand_value = Value::from_parts(operand, module, module.value_data(operand).ty);
         let label_ty = module.module().label_type::<B>().as_type().id();
         let pred_block = BasicBlock::<Dyn, Unterminated, B>::from_parts(pred, module, label_ty);
-        let ib: super::ir_builder::IRBuilder<'_, 'ctx, B, F, super::ir_builder::Unpositioned, Dyn> =
-            super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone());
+        let ib: super::ir_builder::IrBuilder<'_, 'ctx, B, F, super::ir_builder::Unpositioned, Dyn> =
+            super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone());
         ib.phi_add_incoming_from_value(phi_value, operand_value, pred_block)
     }
 
@@ -1889,7 +1889,7 @@ mod tests {
     use super::*;
     use crate::Linkage;
 
-    /// llvmkit-specific: no upstream C++ equivalent (LLVM's `IRBuilder`
+    /// llvmkit-specific: no upstream C++ equivalent (LLVM's `IrBuilder`
     /// has no on-the-fly SSA layer -- the closest functional relative is
     /// `SSAUpdater::Initialize`, which likewise treats the first block it
     /// sees as needing no predecessor completion). Locks that
@@ -2270,7 +2270,7 @@ mod tests {
     ///
     /// Locks [`SsaBuilder::def_int_var`] at a *static* `W` -- the half its old
     /// `W::static_bits().is_none() &&` short-circuit let through, and the same
-    /// bug class the `IRBuilder` acceptors shed in `bf57e17`/`b5cb1e5`
+    /// bug class the `IrBuilder` acceptors shed in `bf57e17`/`b5cb1e5`
     /// (`hostile_native_typed_override_wrong_width_rejected_at_static_width`,
     /// `ir_builder.rs`, is the fold-result analogue). The old doc argued the
     /// static case was safe because `IntValue<W>` proves the width -- circular,

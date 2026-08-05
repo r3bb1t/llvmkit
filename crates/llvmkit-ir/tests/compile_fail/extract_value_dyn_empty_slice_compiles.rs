@@ -20,7 +20,7 @@ fn main() -> Result<(), IrError> {
     m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let f = m.view(m.function_by_name::<()>("g")?.expect("declared above"));
     let entry = f.append_basic_block(&m, "entry");
-    let b = llvmkit_ir::IRBuilder::new_for::<()>(&m).position_at_end(entry);
+    let b = llvmkit_ir::IrBuilder::new_for::<()>(&m).position_at_end(entry);
     let up = f.param(0)?;
     // Compiles fine: the empty-slice rejection is the runtime
     // `IrError::InvalidOperation` kept by `build_extract_value_dyn`,

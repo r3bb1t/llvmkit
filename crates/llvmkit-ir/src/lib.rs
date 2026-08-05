@@ -41,7 +41,7 @@
 //!
 //! # Where to look
 //!
-//! - [`Module`] + [`IRBuilder`] — build and print IR (the crate README has a
+//! - [`Module`] + [`IrBuilder`] — build and print IR (the crate README has a
 //!   guided tour of the builder and typed-handle surface).
 //! - [`pass_manager`] — author and run passes (start here for passes).
 //! - [`pass_access`] — the capability rungs and the derived verified-state lattice.
@@ -154,7 +154,7 @@ pub mod worklist;
 pub mod unnamed_addr;
 pub use analysis::{
     AllAnalysesOnFunction, AllAnalysesOnModule, Analyses, AnalysisKeyId, AnalysisSelector,
-    AnalysisSetKeyId, CFGAnalyses, CfgIncremental, FunctionAnalysis, FunctionAnalysisInvalidator,
+    AnalysisSetKeyId, CfgAnalyses, CfgIncremental, FunctionAnalysis, FunctionAnalysisInvalidator,
     FunctionAnalysisList, FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy,
     FunctionAnalysisResult, Idx0, Idx1, Idx2, Idx3, Idx4, Idx5, Idx6, Idx7, ModuleAnalysis,
     ModuleAnalysisInvalidator, ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisResult,
@@ -245,10 +245,10 @@ pub use inline_asm::{AsmDialect, InlineAsm, InlineAsmOptions};
 pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
     AShrFlags, AddFlags, AllocaFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig,
-    AtomicRMWFlags, AtomicStoreConfig, BinaryOpcode, CallAttributeData, CmpXchgFlags, ICmpFlags,
+    AtomicRMWFlags, AtomicStoreConfig, BinaryOpcode, CallAttributeData, CmpXchgFlags, IcmpFlags,
     IntBinOpFlags, IntCastFlags, LShrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags,
     OverflowFlags, SDivFlags, ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags,
-    UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
+    UDivFlags, UiToFpFlags, UnaryOpcode, ZextFlags,
 };
 pub use instruction::{
     CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,
@@ -258,13 +258,13 @@ pub use instructions::{
     AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
     BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, Callee, CatchPadInst, CatchReturnInst,
     CatchSwitchInst, CleanupPadInst, CleanupReturnInst, Cmp, ExtractElementInst, ExtractValueInst,
-    FAddInst, FCmpInst, FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpExtInst,
-    FpPhiInst, FpToSIInst, FpToUIInst, FpTruncInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst,
+    FAddInst, FDivInst, FMulInst, FRemInst, FSubInst, FcmpInst, FenceInst, FnegInst, FpExtInst,
+    FpPhiInst, FpToSIInst, FpToUIInst, FpTruncInst, FreezeInst, GepInst, IcmpInst, IndirectBrInst,
     InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst,
     LoadInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
     ResumeInst, RetInst, SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst,
     ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TruncInst, TypedCallInst, UDivInst,
-    UIToFpInst, URemInst, UnreachableInst, VAArgInst, XorInst, ZExtInst,
+    UIToFpInst, URemInst, UnreachableInst, VaArgInst, XorInst, ZExtInst,
 };
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{
@@ -272,10 +272,10 @@ pub use intrinsics::{
     descriptor_for_callee, resolve_intrinsic_name,
 };
 pub use ir_builder::constant_folder::ConstantFolder;
-pub use ir_builder::folder::IRBuilderFolder;
+pub use ir_builder::folder::IrBuilderFolder;
 pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{
-    BuilderPositionState, CallBuilder, CallSiteConfig, IRBuilder, InsertPoint, Positioned,
+    BuilderPositionState, CallBuilder, CallSiteConfig, InsertPoint, IrBuilder, Positioned,
     SelectArm, SelectNarrow, Unpositioned,
 };
 pub use known_bits::KnownBits;
@@ -358,7 +358,7 @@ pub use value_id::{
     AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
     FreezeInstId, FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, IntValueId, IntrinsicInstId,
     OtherPhiInstId, PhiInstId, PointerPhiInstId, PointerValueId, TypedCallInstId, TypedFunctionId,
-    TypedVarArgsFunctionId, VAArgInstId, ValueId, ViewIn,
+    TypedVarArgsFunctionId, VaArgInstId, ValueId, ViewIn,
 };
 pub use worklist::Worklist;
 

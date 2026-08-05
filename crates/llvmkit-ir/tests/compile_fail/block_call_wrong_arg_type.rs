@@ -16,7 +16,7 @@
 //! versions. (`CallArgs`'s own `on_unimplemented` message only fires for a slot
 //! with zero candidate impls; see `block_call_wrong_arity.rs` for that shape.)
 
-use llvmkit_ir::{IRBuilder, Linkage, Module, Type};
+use llvmkit_ir::{IrBuilder, Linkage, Module, Type};
 
 fn main() {
     let m = Module::dynamic("c");
@@ -24,7 +24,7 @@ fn main() {
     let fn_ty = m.fn_type(i32_ty, Vec::<Type<_>>::new(), false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
 
-    let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m);
     // `head`'s single parameter schema is `i32`.
     let (head, _params) = b.append_block_typed::<(i32,), _>(m.view(f), "head").unwrap();
 

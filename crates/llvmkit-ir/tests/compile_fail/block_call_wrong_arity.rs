@@ -14,7 +14,7 @@
 //! diagnostic that does not drift across rustc versions (unlike a native
 //! `E0308`/`E0599`).
 
-use llvmkit_ir::{IRBuilder, Linkage, Module, Type};
+use llvmkit_ir::{IrBuilder, Linkage, Module, Type};
 
 fn main() {
     let m = Module::dynamic("c");
@@ -22,7 +22,7 @@ fn main() {
     let fn_ty = m.fn_type(i32_ty, Vec::<Type<_>>::new(), false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
 
-    let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m);
     // `head` carries a TWO-i32 typed parameter schema (arity 2).
     let (head, _params) = b.append_block_typed::<(i32, i32), _>(m.view(f), "head").unwrap();
 

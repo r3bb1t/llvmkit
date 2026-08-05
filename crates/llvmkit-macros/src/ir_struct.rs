@@ -131,10 +131,10 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 #[inline]
                 #vis fn #field_ident<'m, F, R>(
                     self,
-                    builder: &#ir::IRBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
+                    builder: &#ir::IrBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
                 ) -> #ir::IrResult<<#ty as #ir::IrField>::Value<'ctx, B>>
                 where
-                    F: #ir::IRBuilderFolder<'ctx, B>,
+                    F: #ir::IrBuilderFolder<'ctx, B>,
                     R: #ir::ReturnMarker,
                     #ty: #ir::IrField,
                 {
@@ -224,12 +224,12 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             #[inline]
             #vis fn build<'m, F, R, Name, #(#build_generics,)*>(
                 #module_param: #ir::ModuleView<'ctx, B>,
-                #builder_param: &#ir::IRBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
+                #builder_param: &#ir::IrBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
                 #(#build_params,)*
                 #name_param: Name,
             ) -> #ir::IrResult<Self>
             where
-                F: #ir::IRBuilderFolder<'ctx, B>,
+                F: #ir::IrBuilderFolder<'ctx, B>,
                 R: #ir::ReturnMarker,
                 Name: ::core::convert::AsRef<str>,
                 #(#build_bounds,)*

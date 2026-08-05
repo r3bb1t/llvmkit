@@ -12,8 +12,8 @@ use llvmkit_ir::{
     ApFloat, ApFloatSemantics, ApInt, AttrIndex, Attribute, BinaryIntrinsic, BinaryOpcode,
     CmpPredicate, ConstantExprFlags, ConstantExprOpcode, ConstantExprOptions, ConstantFloatValue,
     ConstantIntValue, DataLayout, DenormalMode, DenormalModeKind, DenormalModeSide, DynBrand,
-    FastMathFlags, FoldNonDeterminism, GepNoWrapFlags, IRBuilder, InstructionView, IntDyn,
-    IntPredicate, IrError, LibFunc, Linkage, NoFolder, PreservedCastFlags, RoundingMode,
+    FastMathFlags, FoldNonDeterminism, GepNoWrapFlags, InstructionView, IntDyn, IntPredicate,
+    IrBuilder, IrError, LibFunc, Linkage, NoFolder, PreservedCastFlags, RoundingMode,
     TargetLibraryInfo, UnaryOpcode, attributes::AttributeStorage, constant_fold_binary_intrinsic,
     constant_fold_binary_op_operands, constant_fold_compare_inst_operands, constant_fold_constant,
     constant_fold_extract_element_instruction, constant_fold_fp_inst_operands,
@@ -568,7 +568,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("api_fold_inst", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let add = b.build_int_add::<i32, _, _, _>(c2_i, c5_i, "sum")?;
     let instruction = InstructionView::try_from(b.view(add).into_erased())?;
     assert_eq!(
@@ -612,7 +612,7 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("freeze_fold", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
     let concrete = b.build_freeze(i32_ty.const_int(42_i32), "concrete")?;
     let undef = b.build_freeze(i32_ty.as_type().get_undef(), "undef")?;
@@ -732,7 +732,7 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
         "positive-zero,positive-zero",
     );
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let denormal = ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
     assert!(denormal.is_denormal());
     let lhs = f32_ty.const_ap_float(&denormal)?;
@@ -773,7 +773,7 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
         .function_attr_group(0)
         .build()?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let denormal = ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &ApInt::from_words(32, &[1]))?;
     let lhs = f32_ty.const_ap_float(&denormal)?;
     let rhs = f32_ty.const_ap_float(&denormal)?;
@@ -860,7 +860,7 @@ fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(f32_ty, false);
     let f = m.add_function_dyn("nsz_fadd", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let one = f32_ty.const_float(1.0);
     let two = f32_ty.const_float(2.0);
     let add =

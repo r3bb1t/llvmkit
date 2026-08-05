@@ -1,10 +1,10 @@
 //! Mirrors of upstream `.ll` fixtures that exercise specific `icmp`
 //! predicates, exercised here through the new per-predicate
-//! `build_icmp_*` convenience methods (mirror `IRBuilder::CreateICmp{EQ,
-//! SLT, ...}` in `IRBuilder.h`). Each test cites the closest upstream
+//! `build_icmp_*` convenience methods (mirror `IrBuilder::CreateICmp{EQ,
+//! SLT, ...}` in `IrBuilder.h`). Each test cites the closest upstream
 //! Assembler / unit fixture that emits the same IR shape.
 
-use llvmkit_ir::{Dyn, IRBuilder, IntValue, IrError, Linkage, module_new};
+use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, module_new};
 
 /// Mirrors `test/Assembler/2007-03-18-InvalidNumberedVar.ll` (which
 /// emits `icmp eq i32 %b, %a`).
@@ -16,7 +16,7 @@ fn build_icmp_eq_emits_icmp_eq() -> Result<(), IrError> {
     let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bv: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
     let r = b.build_icmp_eq::<i32, _, _, _>(a, bv, "r")?;
@@ -37,7 +37,7 @@ fn build_icmp_ne_emits_icmp_ne() -> Result<(), IrError> {
     let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let z: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let r = b.build_icmp_ne::<i32, _, _, _>(z, 0_i32, "r")?;
     b.build_ret(r)?;
@@ -56,7 +56,7 @@ fn build_icmp_slt_emits_icmp_slt() -> Result<(), IrError> {
     let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let r = b.build_icmp_slt::<i32, _, _, _>(n, 0_i32, "r")?;
     b.build_ret(r)?;
@@ -75,7 +75,7 @@ fn build_icmp_sge_emits_icmp_sge() -> Result<(), IrError> {
     let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let r = b.build_icmp_sge::<i32, _, _, _>(a, 0_i32, "r")?;
     b.build_ret(r)?;

@@ -14,7 +14,7 @@
 //! in-crate home.
 
 use crate::{
-    Analyses, BlockId, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, IntValue, IrError, IrResult,
+    Analyses, BlockId, Dyn, FnCx, FnReport, FunctionPass, IntValue, IrBuilder, IrError, IrResult,
     Linkage, Module, ModuleBrand, ReshapeCfg, VerifierRule, run_function_pass,
 };
 
@@ -115,14 +115,14 @@ fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     let other_lbl = other.id();
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, to, other
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.build_int_add(a, 7_i32, "x")?;
     let c = b.build_icmp_slt(a, 5_i32, "c")?;
     b.build_cond_br(c, to_lbl, other_lbl)?;
 
     // to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(to);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(to);
     let p = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_lbl)?;
@@ -130,7 +130,7 @@ fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     b.build_ret(u)?;
 
     // other: ret 0
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(other);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
     Ok((f, to_lbl))
@@ -206,14 +206,14 @@ fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     let new_to_lbl = new_to.id();
 
     // entry: %x = add %a, 7 ; %c = icmp slt %a, 5 ; cond_br %c, old_to, other
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.build_int_add(a, 7_i32, "x")?;
     let c = b.build_icmp_slt(a, 5_i32, "c")?;
     b.build_cond_br(c, old_to_lbl, other_lbl)?;
 
     // old_to: %p = phi i32 [ %x, entry ] ; %u = add %p, 1 ; ret %u
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(old_to);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(old_to);
     let p = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(x, entry_lbl)?;
@@ -221,11 +221,11 @@ fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     b.build_ret(u)?;
 
     // other: ret 0
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(other);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
     // new_to: ret 1  (no leading phi -> redirect's `phi_values` slice is empty)
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new_to);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(new_to);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
     Ok((f, old_to_lbl, new_to_lbl))
@@ -305,11 +305,11 @@ fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
     let b_label = b.id();
 
     // entry: br b   (so `b` is reachable from entry)
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     bld.build_br(b_label)?;
 
     // b: %p = phi i32   (no add_incoming) ; ret 0
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(b);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(b);
     let _p = bld.view(bld.build_int_phi::<i32, _>("p")?);
     bld.build_ret(i32_ty.const_int(0_u32))?;
 
@@ -346,11 +346,11 @@ fn zero_incoming_phi_in_unreachable_block_is_accepted() -> Result<(), IrError> {
     let u = m.view(f).append_basic_block(&m, "u");
 
     // entry: ret 0
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     bld.build_ret(i32_ty.const_int(0_u32))?;
 
     // u: %q = phi i32   (no add_incoming) ; ret 0
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(u);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(u);
     let _q = bld.view(bld.build_int_phi::<i32, _>("q")?);
     bld.build_ret(i32_ty.const_int(0_u32))?;
 

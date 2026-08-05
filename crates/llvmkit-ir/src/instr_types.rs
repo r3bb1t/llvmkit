@@ -815,12 +815,12 @@ impl core::hash::Hash for CastOpData {
 /// because every `FPMathOperator` instruction subclass may set them
 /// (`Operator.h`, `FPMathOperator`).
 #[derive(Debug)]
-pub(crate) struct FNegInstData {
+pub(crate) struct FnegInstData {
     pub(crate) src: Cell<ValueSlot>,
     pub(crate) fmf: FastMathFlags,
 }
 
-impl FNegInstData {
+impl FnegInstData {
     pub(crate) fn new(src: ValueSlot, fmf: FastMathFlags) -> Self {
         Self {
             src: Cell::new(src),
@@ -828,7 +828,7 @@ impl FNegInstData {
         }
     }
 }
-impl Clone for FNegInstData {
+impl Clone for FnegInstData {
     fn clone(&self) -> Self {
         Self {
             src: Cell::new(self.src.get()),
@@ -836,13 +836,13 @@ impl Clone for FNegInstData {
         }
     }
 }
-impl PartialEq for FNegInstData {
+impl PartialEq for FnegInstData {
     fn eq(&self, other: &Self) -> bool {
         self.src.get() == other.src.get() && self.fmf == other.fmf
     }
 }
-impl Eq for FNegInstData {}
-impl core::hash::Hash for FNegInstData {
+impl Eq for FnegInstData {}
+impl core::hash::Hash for FnegInstData {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.src.get().hash(h);
         self.fmf.bits().hash(h);
@@ -883,35 +883,35 @@ impl core::hash::Hash for FreezeInstData {
     }
 }
 
-/// Storage payload for `va_arg`. Mirrors `VAArgInst`
+/// Storage payload for `va_arg`. Mirrors `VaArgInst`
 /// (`Instructions.h`). The destination type is carried in the host
 /// `ValueData::ty`; the payload stores only the `va_list` pointer.
 #[derive(Debug)]
-pub(crate) struct VAArgInstData {
+pub(crate) struct VaArgInstData {
     pub(crate) src: Cell<ValueSlot>,
 }
 
-impl VAArgInstData {
+impl VaArgInstData {
     pub(crate) fn new(src: ValueSlot) -> Self {
         Self {
             src: Cell::new(src),
         }
     }
 }
-impl Clone for VAArgInstData {
+impl Clone for VaArgInstData {
     fn clone(&self) -> Self {
         Self {
             src: Cell::new(self.src.get()),
         }
     }
 }
-impl PartialEq for VAArgInstData {
+impl PartialEq for VaArgInstData {
     fn eq(&self, other: &Self) -> bool {
         self.src.get() == other.src.get()
     }
 }
-impl Eq for VAArgInstData {}
-impl core::hash::Hash for VAArgInstData {
+impl Eq for VaArgInstData {}
+impl core::hash::Hash for VaArgInstData {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.src.get().hash(h);
     }
@@ -923,7 +923,7 @@ impl core::hash::Hash for VAArgInstData {
 
 /// Storage payload for `icmp`. Mirrors the operand layout of
 /// `CmpInst` (`InstrTypes.h`) restricted to integer compares. Float
-/// comparisons (`fcmp`) live in their own `FCmpInstData`. Keeping the
+/// comparisons (`fcmp`) live in their own `FcmpInstData`. Keeping the
 /// two payloads separate means this one carries an [`IntPredicate`]
 /// directly — no predicate-enum envelope, so no `match` arms going
 /// stale.
@@ -936,7 +936,7 @@ pub(crate) struct CmpInstData {
     pub(crate) lhs: Cell<ValueSlot>,
     pub(crate) rhs: Cell<ValueSlot>,
     /// `samesign` flag. LLVM 20+: asserts both operands have the same sign.
-    /// Mirrors `ICmpInst::hasSameSign` / `setSameSign`.
+    /// Mirrors `IcmpInst::hasSameSign` / `setSameSign`.
     pub(crate) samesign: bool,
 }
 
@@ -983,7 +983,7 @@ impl core::hash::Hash for CmpInstData {
 /// predicate field's type pins `FloatPredicate` at the storage
 /// layer.
 #[derive(Debug)]
-pub(crate) struct FCmpInstData {
+pub(crate) struct FcmpInstData {
     pub(crate) predicate: FloatPredicate,
     pub(crate) lhs: Cell<ValueSlot>,
     pub(crate) rhs: Cell<ValueSlot>,
@@ -992,7 +992,7 @@ pub(crate) struct FCmpInstData {
     pub(crate) fmf: FastMathFlags,
 }
 
-impl FCmpInstData {
+impl FcmpInstData {
     pub(crate) fn new(predicate: FloatPredicate, lhs: ValueSlot, rhs: ValueSlot) -> Self {
         Self {
             predicate,
@@ -1002,7 +1002,7 @@ impl FCmpInstData {
         }
     }
 }
-impl Clone for FCmpInstData {
+impl Clone for FcmpInstData {
     fn clone(&self) -> Self {
         Self {
             predicate: self.predicate,
@@ -1012,7 +1012,7 @@ impl Clone for FCmpInstData {
         }
     }
 }
-impl PartialEq for FCmpInstData {
+impl PartialEq for FcmpInstData {
     fn eq(&self, other: &Self) -> bool {
         self.predicate == other.predicate
             && self.lhs.get() == other.lhs.get()
@@ -1020,8 +1020,8 @@ impl PartialEq for FCmpInstData {
             && self.fmf == other.fmf
     }
 }
-impl Eq for FCmpInstData {}
-impl core::hash::Hash for FCmpInstData {
+impl Eq for FcmpInstData {}
+impl core::hash::Hash for FcmpInstData {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.predicate.hash(h);
         self.lhs.get().hash(h);
@@ -1534,8 +1534,8 @@ impl BinaryOpcode {
 ///
 /// The counterpart of [`IntBinOpFlags`] for the erased cast path: a caller
 /// holding a *runtime* `CastOpcode` cannot pick between [`TruncFlags`] and
-/// [`ZExtFlags`] statically, so it supplies both and
-/// `IRBuilder::build_int_cast_erased` writes through whichever the opcode
+/// [`ZextFlags`] statically, so it supplies both and
+/// `IrBuilder::build_int_cast_erased` writes through whichever the opcode
 /// reads. `trunc` reads `nuw` / `nsw`, `zext` reads `nneg`, and `sext` reads
 /// none — a flag set for an opcode that does not accept it is dropped rather
 /// than rejected, matching the typed builders, which simply have no parameter
@@ -1586,10 +1586,10 @@ impl IntCastFlags {
 /// Flags for `zext`. The `nneg` flag asserts the source value is non-negative.
 /// Mirrors `PossiblyNonNegInst` in `Operator.h`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct ZExtFlags {
+pub struct ZextFlags {
     pub(crate) nneg: bool,
 }
-impl ZExtFlags {
+impl ZextFlags {
     #[inline]
     pub const fn new() -> Self {
         Self { nneg: false }
@@ -1637,10 +1637,10 @@ impl TruncFlags {
 /// Flags for `uitofp`. The `nneg` flag asserts the source is non-negative.
 /// Mirrors `PossiblyNonNegInst` in `Operator.h`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct UIToFpFlags {
+pub struct UiToFpFlags {
     pub(crate) nneg: bool,
 }
-impl UIToFpFlags {
+impl UiToFpFlags {
     #[inline]
     pub const fn new() -> Self {
         Self { nneg: false }
@@ -1659,12 +1659,12 @@ impl UIToFpFlags {
 // --------------------------------------------------------------------------
 
 /// Flags for `icmp`. The `samesign` flag asserts both operands carry the same
-/// sign. Mirrors `ICmpInst::hasSameSign` / `setSameSign` (LLVM 20+).
+/// sign. Mirrors `IcmpInst::hasSameSign` / `setSameSign` (LLVM 20+).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct ICmpFlags {
+pub struct IcmpFlags {
     pub(crate) samesign: bool,
 }
-impl ICmpFlags {
+impl IcmpFlags {
     #[inline]
     pub const fn new() -> Self {
         Self { samesign: false }
@@ -3421,7 +3421,7 @@ impl core::hash::Hash for CatchSwitchInstData {
     }
 }
 
-/// Bundled configuration for [`crate::IRBuilder::build_atomic_cmpxchg`].
+/// Bundled configuration for [`crate::IrBuilder::build_atomic_cmpxchg`].
 /// Mirrors the per-instruction state stored on `AtomicCmpXchgInst`
 /// (orderings + scope + flags + alignment).
 #[derive(Debug, Clone)]
@@ -3511,7 +3511,7 @@ impl AtomicCmpXchgConfig {
     }
 }
 
-/// Bundled configuration for [`crate::IRBuilder::build_atomicrmw`].
+/// Bundled configuration for [`crate::IrBuilder::build_atomicrmw`].
 /// Mirrors the per-instruction state stored on `AtomicRMWInst`.
 #[derive(Debug, Clone)]
 pub struct AtomicRMWConfig {
@@ -3578,7 +3578,7 @@ impl AtomicRMWConfig {
     }
 }
 
-/// Bundled configuration for atomic [`crate::IRBuilder::build_int_load_atomic`]
+/// Bundled configuration for atomic [`crate::IrBuilder::build_int_load_atomic`]
 /// / `build_load_atomic` / `build_int_load_atomic_volatile`. Mirrors the
 /// state passed to the 5-arg upstream constructor
 /// `LoadInst::LoadInst(Type*, Value*, Twine&, bool isVolatile, Align,
@@ -3646,7 +3646,7 @@ impl AtomicLoadConfig {
     }
 }
 
-/// Bundled configuration for atomic [`crate::IRBuilder::build_store_atomic`]
+/// Bundled configuration for atomic [`crate::IrBuilder::build_store_atomic`]
 /// / `build_store_atomic_volatile`. Mirrors the state passed to the 6-arg
 /// upstream constructor `StoreInst::StoreInst(Value*, Value*, bool isVolatile,
 /// Align, AtomicOrdering, SyncScope::ID)`.

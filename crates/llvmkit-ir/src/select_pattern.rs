@@ -1291,7 +1291,7 @@ pub(crate) fn int_min_max_over<'ctx, B: ModuleBrand + 'ctx>(
 /// The two operands of an integer min/max of the given `flavor`, in upstream's
 /// binding order.
 ///
-/// Ports `MaxMin_match<ICmpInst, LHS, RHS, Pred_t>` (`PatternMatch.h`), what
+/// Ports `MaxMin_match<IcmpInst, LHS, RHS, Pred_t>` (`PatternMatch.h`), what
 /// `m_SMin` / `m_SMax` / `m_UMin` / `m_UMax` expand to. It matches **two**
 /// shapes: a call to the matching `llvm.{s,u}{min,max}` intrinsic, and the
 /// structural `select(icmp PRED L, R, L, R)` — a select whose condition

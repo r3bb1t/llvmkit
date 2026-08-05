@@ -27,7 +27,7 @@
 
 #![deny(missing_docs)]
 
-use crate::analysis::{CFGAnalyses, FunctionAnalysisList, ModuleAnalysisList, PreservedAnalyses};
+use crate::analysis::{CfgAnalyses, FunctionAnalysisList, ModuleAnalysisList, PreservedAnalyses};
 use crate::module::{Module, ModuleBrand, Unverified};
 use crate::pass_context::FunctionView;
 
@@ -176,7 +176,7 @@ impl FnAccess for PatchBody {
     type Token<'m, B: ModuleBrand + 'm> = &'m Module<B, Unverified>;
 
     fn preserved_floor() -> PreservedAnalyses {
-        PreservedAnalyses::all_in_set::<CFGAnalyses>()
+        PreservedAnalyses::all_in_set::<CfgAnalyses>()
     }
 }
 
@@ -274,7 +274,7 @@ mod tests {
         RewriteModule, StaysVerified, VerdictFold,
     };
     use crate::DominatorTreeAnalysis;
-    use crate::analysis::CFGAnalyses;
+    use crate::analysis::CfgAnalyses;
 
     /// llvmkit-specific capability-lattice lock (no upstream analog: LLVM has no
     /// compile-time pass-capability/verdict distinction).
@@ -289,7 +289,7 @@ mod tests {
         // concrete non-CFG analysis is not individually preserved.
         let patch = <PatchBody as FnAccess>::preserved_floor();
         let patch_checker = patch.checker::<DominatorTreeAnalysis>();
-        assert!(patch_checker.preserved_set::<CFGAnalyses>());
+        assert!(patch_checker.preserved_set::<CfgAnalyses>());
         assert!(!patch_checker.preserved());
 
         // `ReshapeCfg` rewires control flow: nothing is preserved, not even the
@@ -297,13 +297,13 @@ mod tests {
         let reshape = <ReshapeCfg as FnAccess>::preserved_floor();
         let reshape_checker = reshape.checker::<DominatorTreeAnalysis>();
         assert!(!reshape_checker.preserved());
-        assert!(!reshape_checker.preserved_set::<CFGAnalyses>());
+        assert!(!reshape_checker.preserved_set::<CfgAnalyses>());
 
         // `RewriteModule` rewrites the module: nothing is preserved.
         let rewrite = <RewriteModule as ModAccess>::preserved_floor();
         let rewrite_checker = rewrite.checker::<DominatorTreeAnalysis>();
         assert!(!rewrite_checker.preserved());
-        assert!(!rewrite_checker.preserved_set::<CFGAnalyses>());
+        assert!(!rewrite_checker.preserved_set::<CfgAnalyses>());
     }
 
     /// llvmkit-specific capability-lattice lock (no upstream analog: LLVM has no

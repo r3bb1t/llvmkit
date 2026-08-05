@@ -14,7 +14,7 @@
 //!   record per slot), so an `Argument<'ctx, B>` can be `Copy` and
 //!   round-trip through the user/use machinery exactly like any other
 //!   value.
-//! - Basic blocks live in a `RefCell<Vec<ValueSlot>>` so the IRBuilder
+//! - Basic blocks live in a `RefCell<Vec<ValueSlot>>` so the IrBuilder
 //!   can append while holding a `&'ctx ModuleCore` borrow.
 //!
 //! ## Return-type safety
@@ -24,7 +24,7 @@
 //! `FunctionValue<'ctx, i32>`; one that returns `void` is
 //! `FunctionValue<'ctx, ()>`; parsed / runtime IR uses
 //! `FunctionValue<'ctx, Dyn>`. The marker propagates to the function's
-//! basic blocks and to any [`IRBuilder`](crate::IRBuilder) positioned
+//! basic blocks and to any [`IrBuilder`](crate::IrBuilder) positioned
 //! inside them, so the builder's `build_ret` can be statically typed.
 
 use core::cell::{Cell, RefCell};
@@ -807,7 +807,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// Crate-internal. The token on the public entry point is a *capability
     /// proof* only — it is bound to `_module` and never read. This variant
     /// exists for callers that have already discharged that proof but cannot
-    /// re-present it: [`crate::IRBuilder`] stores only `&ModuleCore` (its
+    /// re-present it: [`crate::IrBuilder`] stores only `&ModuleCore` (its
     /// `at_end` constructor is handed a block, not a token), and since a
     /// `Module` now owns its core, the ephemeral token it can reconstruct is a
     /// *local* whose region is too short to satisfy `&'ctx Module<…>`.
@@ -1084,7 +1084,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoIterator for FunctionValu
 /// caller's chosen [`ReturnMarker`].
 ///
 /// Mirrors the runtime side of LLVM's `Function::Create` invariant
-/// (the `RetTy` template parameter on the C++ IRBuilder enforces this
+/// (the `RetTy` template parameter on the C++ IrBuilder enforces this
 /// at the type level; we do the same here for static markers, with
 /// a runtime fallback for [`Dyn`] / aggregate return types).
 pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool {
@@ -1525,7 +1525,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
 //
 // `FunctionValue<'ctx, W>` and friends need integer-typed
 // return-type accessors. The relevant per-marker accessors live on
-// the type-state-aware impl blocks where the IRBuilder constructs
+// the type-state-aware impl blocks where the IrBuilder constructs
 // them; here we expose only what's universally needed.
 
 impl<'ctx, W: IntWidth + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, W, B> {

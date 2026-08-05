@@ -2,7 +2,7 @@
 //!
 //! Closest upstream behaviour: `Verifier::visitBasicBlock` in
 //! `lib/IR/Verifier.cpp` rejects a block carrying two terminators at run time.
-//! In LLVM C++ nothing stops the caller — `IRBuilder` keeps its insertion point
+//! In LLVM C++ nothing stops the caller — `IrBuilder` keeps its insertion point
 //! after `CreateRetVoid()`, so a second `CreateRetVoid()` on the same builder
 //! silently appends a second terminator and the module is malformed until the
 //! verifier is run.
@@ -15,7 +15,7 @@
 //! proves the *builder* itself no longer exists. Primary error is rustc's
 //! stable `E0382` use-of-moved-value.
 
-use llvmkit_ir::{IRBuilder, Linkage, Module};
+use llvmkit_ir::{IrBuilder, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("c");
@@ -24,7 +24,7 @@ fn main() {
         .unwrap()
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
     let (_terminated_bb, _term) = b.build_ret_void();
     // `build_ret_void` took `b` by value: there is no builder left to terminate
     // a second time.

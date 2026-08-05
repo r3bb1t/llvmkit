@@ -1,7 +1,7 @@
 //! Constant-expression, blockaddress, and token-none tests.
 
 use llvmkit_ir::{
-    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, Dyn, GepNoWrapFlags, IRBuilder,
+    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, Dyn, GepNoWrapFlags, IrBuilder,
     IrError, Linkage, Module, ModuleBrand, OverflowingConstantExprFlags, module_new,
 };
 
@@ -84,7 +84,7 @@ fn blockaddress_constant_round_trips() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let addr = m.block_address(m.view(f), &entry)?;
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let terminator = b.build_ret_void()?.1;
     assert!(terminator.is_terminator());
     m.add_global("addr", addr)?;
@@ -113,7 +113,7 @@ fn blockaddress_constant_uses_function_address_space() -> Result<(), IrError> {
         .build()?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let addr = m.block_address(m.view(f), &entry)?;
-    let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
     let terminator = b.build_ret_void().1;
     assert!(terminator.is_terminator());
     m.add_global("addr", addr)?;

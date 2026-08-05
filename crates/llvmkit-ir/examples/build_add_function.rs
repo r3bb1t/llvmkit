@@ -8,7 +8,7 @@
 //! }
 //! ```
 //!
-//! programmatically via the `IRBuilder` analog. Run with:
+//! programmatically via the `IrBuilder` analog. Run with:
 //!
 //! ```text
 //! cargo run -p llvmkit-ir --example build_add_function
@@ -17,14 +17,14 @@
 //! Prints real `.ll` thanks to the [`Display`](core::fmt::Display) impl
 //! on [`Module`].
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{IrBuilder, IrError, Linkage, module_new};
 
 fn build() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
     let (lhs, rhs) = m.view(f).params();
     let sum = b.build_int_add(lhs, rhs, "sum")?;
     b.build_ret(sum)?;

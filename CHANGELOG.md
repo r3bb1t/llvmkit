@@ -14,6 +14,26 @@ cut, entries accumulate under **Unreleased**.
 > past the 0.0.4 freeze, not two pending releases; they collapse into one entry
 > when the tag is cut.
 
+### API idiomatics program (Rust API Guidelines sweep)
+
+A coordinated set of breaking renames and reshapes bringing the whole public
+surface in line with the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
+(C-CASE, C-GETTER, C-CONV, C-CUSTOM-TYPE, C-ITER, C-BUILDER, ...). Pre-1.0,
+no users: one coherent break instead of a drip. Executed wave-by-wave; each
+bullet below names its wave.
+
+#### Changed
+
+- **Breaking (W1): strict RFC-430 acronym casing on type names.**
+  `IRBuilder` → `IrBuilder`, `IRBuilderFolder` → `IrBuilderFolder`,
+  `CFGAnalyses` → `CfgAnalyses`, `ICmpInst` → `IcmpInst`, `FCmpInst` →
+  `FcmpInst`, `FNegInst` → `FnegInst`, `VAArgInst` → `VaArgInst`, `ICmpFlags`
+  → `IcmpFlags`, `ZExtFlags` → `ZextFlags`, `UIToFpFlags` → `UiToFpFlags`,
+  and the crate-internal payload/id companions (`FcmpInstData`, `FnegInstData`,
+  `VaArgInstData`, `VaArgInstId`); asmparser's `GVarFlags` becomes
+  `GlobalVariableFlags` (casing + the full-words law). Aligns with the
+  existing `IrError` / `IrResult` / `CfgUpdate` spellings.
+
 ### `llvmkit-tablegen`: the generator becomes a crate that mirrors LLVM
 
 #### Added

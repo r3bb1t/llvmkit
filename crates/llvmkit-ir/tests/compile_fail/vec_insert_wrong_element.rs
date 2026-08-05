@@ -7,7 +7,7 @@
 //! `Verifier::visitInsertElementInst` element-type mismatch the erased
 //! `build_insert_element` would still surface at verify time.
 
-use llvmkit_ir::{FloatValue, IRBuilder, Len, Linkage, Module, VectorValue};
+use llvmkit_ir::{FloatValue, IrBuilder, Len, Linkage, Module, VectorValue};
 
 fn main() {
     let m = Module::dynamic("vec-insert-wrong-elem");
@@ -17,7 +17,7 @@ fn main() {
     let fn_ty = m.fn_type(v_i32.as_type(), [v_i32.as_type(), f32_ty.as_type()], false);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);
 
     let vec: VectorValue<'_, i32, Len<4>, _> =
         m.view(f).param(0).unwrap().into_erased().try_into().unwrap();

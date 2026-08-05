@@ -15,7 +15,7 @@
 //! definition, not a second implementation of the analysis.
 
 use llvmkit_ir::{
-    ApInt, ApIntSignedness, ApIntTruncation, Dyn, IRBuilder, IntValue, IrError, Linkage, Module,
+    ApInt, ApIntSignedness, ApIntTruncation, Dyn, IntValue, IrBuilder, IrError, Linkage, Module,
     NoFolder, Value, ValueTrackingQuery, compute_max_significant_bits, compute_num_sign_bits,
 };
 
@@ -35,7 +35,7 @@ fn in_function<F, R>(name: &str, body: F) -> Result<R, IrError>
 where
     F: for<'m> FnOnce(
         &'m Module<llvmkit_ir::DynBrand>,
-        &IRBuilder<'m, 'm, llvmkit_ir::DynBrand, NoFolder, llvmkit_ir::Positioned, Dyn>,
+        &IrBuilder<'m, 'm, llvmkit_ir::DynBrand, NoFolder, llvmkit_ir::Positioned, Dyn>,
         IntValue<'m, i32, llvmkit_ir::DynBrand>,
     ) -> Result<R, IrError>,
 {
@@ -44,7 +44,7 @@ where
     let fn_ty = m.fn_type(i32_ty.as_type(), [i32_ty.as_type()], false);
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     body(&m, &b, a)
 }
@@ -263,7 +263,7 @@ fn sext_and_trunc_arms_never_over_report() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(i32_ty.as_type(), false);
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
     // sext i8 -8 to i32 == -8; an i8 -8 has 5 sign bits, the i32 has 29.
     let narrow: IntValue<'_, i8, _> = i8_ty.const_int(-8_i8).as_constant().try_into()?;

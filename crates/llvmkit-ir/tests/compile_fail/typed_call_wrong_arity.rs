@@ -9,7 +9,7 @@
 //! callee has no `CallArgs<'ctx, (i32, i32), _>` impl, so it is a compile
 //! error, not a build-time `IrError`.
 
-use llvmkit_ir::{IRBuilder, Linkage, Module};
+use llvmkit_ir::{IrBuilder, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("c");
@@ -20,7 +20,7 @@ fn main() {
         .add_typed_function::<i32, (i32,), _>("caller", Linkage::External)
         .unwrap();
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (x,) = m.view(caller).params();
     // `(x,)` is a 1-tuple; `callee`'s schema is `(i32, i32)` (arity 2).
     // There is no `CallArgs<'_, (i32, i32), _>` impl for `(IntValue<i32>,)`.

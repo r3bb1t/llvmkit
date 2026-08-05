@@ -15,7 +15,7 @@
 //! assertions below are otherwise unchanged.
 
 use crate::{
-    Dyn, FloatDyn, FloatValue, IRBuilder, InstructionKind, IntValue, IrError, Linkage, PhiKind,
+    Dyn, FloatDyn, FloatValue, InstructionKind, IntValue, IrBuilder, IrError, Linkage, PhiKind,
 };
 
 /// The builder-id → typed-handle round-trip applies to every phi family, not
@@ -30,7 +30,7 @@ fn fp_and_pointer_phi_ids_view_back_to_typed_handles() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(f64_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let bb = m.view(f).append_basic_block(&m, "bb");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
 
     // The ids resolve to the fp and pointer handles exactly as the int id
     // resolves to `PhiInst`. No incomings are added, so both read back a
@@ -59,12 +59,12 @@ fn phi_reads_back_all_incomings() -> Result<(), IrError> {
     let entry_label = entry.id();
     let other_label = other.id();
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     b.build_br(&join)?;
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(other);
     b.build_br(&join)?;
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, entry_label)?
@@ -97,7 +97,7 @@ fn rediscovered_phi_narrows_to_result_type() -> Result<(), IrError> {
     let fn_ty = m.fn_type_no_params(i32_ty, false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let bb = m.view(f).append_basic_block(&m, "bb");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
 
     let int_phi = b.view(b.build_int_phi::<i32, _>("ip")?);
     let fp_phi = b.view(b.build_fp_phi::<f64, _>("fp")?);
@@ -140,15 +140,15 @@ fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
     let join_label = join.id();
 
     // Two predecessors so the join phi has a full incoming set.
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     b.build_br(join_label)?;
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(other);
     b.build_br(join_label)?;
 
     // In `join`, emit a NON-phi first (`%x = add`), THEN build the phi
     // while the cursor sits at the end of the block. The phi must still
     // land at the block's phi head, ahead of the add.
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let _x = b.build_int_add(a, 1_i32, "x")?;
     let i32_dyn = m.custom_width_int_type(32)?;
@@ -191,12 +191,12 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
     let other_label = other.id();
     let join_label = join.id();
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     b.build_br(join_label)?;
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(other);
     b.build_br(join_label)?;
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let _x = b.build_int_add(a, 1_i32, "x")?;
     // p1 then p2, both after the add. Head placement must not reverse
@@ -247,7 +247,7 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
     let bb = m.view(f).append_basic_block(&m, "bb");
     let bb_label = bb.id();
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(bb);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
     let p1 = b.view(b.build_int_phi::<i32, _>("phi.1")?);
     let p2 = b.view(b.build_int_phi::<i32, _>("phi.2")?);
     let p3 = b.view(b.build_int_phi::<i32, _>("phi.3")?);
@@ -290,12 +290,12 @@ fn phi_incomings_match_indexed_access() -> Result<(), IrError> {
     let entry_label = entry.id();
     let other_label = other.id();
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     b.build_br(&join)?;
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(other);
     b.build_br(&join)?;
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, entry_label)?

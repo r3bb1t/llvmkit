@@ -276,7 +276,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoConstantFloat<'ctx, FloatDyn, B> for f64 {
 }
 
 // --------------------------------------------------------------------------
-// IntoFloatValue: ergonomic operand input for the float IRBuilder
+// IntoFloatValue: ergonomic operand input for the float IrBuilder
 // --------------------------------------------------------------------------
 
 use super::module::{ModuleBrand, ModuleRef};

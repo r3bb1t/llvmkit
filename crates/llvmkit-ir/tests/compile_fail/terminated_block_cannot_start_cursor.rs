@@ -3,7 +3,7 @@
 //! A terminated block view is read-only rediscovery. It must not start a
 //! lifecycle-producing `BlockCursor`.
 
-use llvmkit_ir::{IRBuilder, Linkage, Module, iter::BlockCursor};
+use llvmkit_ir::{IrBuilder, Linkage, Module, iter::BlockCursor};
 
 fn main() {
     let m = Module::dynamic("terminated-cursor");
@@ -12,7 +12,7 @@ fn main() {
         .unwrap()
         .as_function();
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
     let (terminated, _ret) = b.build_ret_void();
 
     let _cursor = BlockCursor::at_start(terminated);

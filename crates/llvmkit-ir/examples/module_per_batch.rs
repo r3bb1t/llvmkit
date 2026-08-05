@@ -27,7 +27,7 @@
 //! cargo run -p llvmkit-ir --example module_per_batch
 //! ```
 
-use llvmkit_ir::{IRBuilder, IrError, Linkage, Module, ModuleBrand, Unverified, ValueId, Verified};
+use llvmkit_ir::{IrBuilder, IrError, Linkage, Module, ModuleBrand, Unverified, ValueId, Verified};
 
 /// The brand every batch runs under. Named, so `Module<Jit, _>` is spellable
 /// in a signature — and registry-checked, so two live batches cannot overlap.
@@ -48,7 +48,7 @@ pub fn compile_batch<B: ModuleBrand>(
     let f = module.add_function_dyn("batch", fn_ty, Linkage::External)?;
     let entry = module.view(f).append_basic_block(&module, "entry");
 
-    let b = IRBuilder::new_for::<llvmkit_ir::Dyn>(&module).position_at_end(entry);
+    let b = IrBuilder::new_for::<llvmkit_ir::Dyn>(&module).position_at_end(entry);
     let x: llvmkit_ir::IntValue<'_, i32, _> = module.view(f).param(0)?.try_into()?;
     let sum = b.build_int_add(x, n, "sum")?;
     b.build_ret(module.view(sum))?;

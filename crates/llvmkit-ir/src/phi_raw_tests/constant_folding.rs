@@ -6,7 +6,7 @@
 //! `#[cfg(test)]` tree.
 
 use crate::constant_folding::constant_fold_instruction;
-use crate::{DataLayout, Dyn, IRBuilder, InstructionView, IntValue, IrError, Linkage};
+use crate::{DataLayout, Dyn, InstructionView, IntValue, IrBuilder, IrError, Linkage};
 
 /// llvmkit-specific subset of `ConstantFolding.cpp::ConstantFoldInstOperands`:
 /// a PHI whose incoming values are the same constant folds to that constant.
@@ -19,7 +19,7 @@ fn phi_same_constant_folds() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let entry_label = entry.id();
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let phi = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(7_i32, entry_label)?
@@ -49,7 +49,7 @@ fn phi_poison_and_undef_incomings_fold_to_undef() -> Result<(), IrError> {
     let other = m.view(f).append_basic_block(&m, "other");
     let entry_label = entry.id();
     let other_label = other.id();
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let poison = IntValue::try_from(i32_ty.as_type().get_poison().into_erased())?;
     let undef = IntValue::try_from(i32_ty.as_type().get_undef().into_erased())?;
     // Distinct predecessor blocks: a phi with two *different* values from
@@ -80,7 +80,7 @@ fn phi_poison_beside_constant_folds_to_the_constant() -> Result<(), IrError> {
     let other = m.view(f).append_basic_block(&m, "other");
     let entry_label = entry.id();
     let other_label = other.id();
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let poison = IntValue::try_from(i32_ty.as_type().get_poison().into_erased())?;
     // Distinct predecessor blocks: two different values from one block is
     // ill-formed (AmbiguousPhi); the poison-skipping folder arm folds by

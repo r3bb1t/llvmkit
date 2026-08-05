@@ -49,11 +49,11 @@ use super::instr_types::TailCallKind;
 use super::instr_types::{
     AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
     CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
-    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FCmpInstData,
-    FNegInstData, FenceInstData, FreezeInstData, GepInstData, IndirectBrInstData,
+    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FcmpInstData,
+    FenceInstData, FnegInstData, FreezeInstData, GepInstData, IndirectBrInstData,
     InsertElementInstData, InsertValueInstData, InvokeInstData, LandingPadInstData, LoadInstData,
     ResumeInstData, SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData,
-    VAArgInstData,
+    VaArgInstData,
 };
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
@@ -73,7 +73,7 @@ use super::value::{
 };
 use super::value_id::{
     AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FpPhiInstId, FreezeInstId,
-    OtherPhiInstId, PhiInstId, PointerPhiInstId, TypedCallInstId, VAArgInstId,
+    OtherPhiInstId, PhiInstId, PointerPhiInstId, TypedCallInstId, VaArgInstId,
 };
 
 macro_rules! decl_binop_handle {
@@ -488,7 +488,7 @@ macro_rules! decl_instruction_id_accessors {
 
 decl_instruction_id_accessors!(
     FreezeInst => FreezeInstId,
-    VAArgInst => VAArgInstId,
+    VaArgInst => VaArgInstId,
     AtomicRMWInst => AtomicRMWInstId,
     AtomicCmpXchgInst => AtomicCmpXchgInstId,
 );
@@ -720,7 +720,7 @@ pub enum Callee<'ctx, B: ModuleBrand> {
 /// `call` instruction. Mirrors `CallInst` (`Instructions.h`).
 ///
 /// The `R: ReturnMarker` parameter (default [`crate::Dyn`]) propagates
-/// the callee's return shape, so a typed [`crate::IRBuilder::build_call_dyn`] for an `i32`
+/// the callee's return shape, so a typed [`crate::IrBuilder::build_call_dyn`] for an `i32`
 /// callee returns `CallInst<'ctx, i32>` and exposes a typed
 /// `return_int_value()` accessor without a runtime
 /// [`crate::IrError::TypeMismatch`].
@@ -927,7 +927,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> CallInst<'ctx, Ptr, B> {
 
 /// Call handle whose full return schema is carried at the type level.
 /// The marker on the inner [`CallInst`] is `Ret::Marker` — derived from
-/// the callee by [`crate::IRBuilder::build_call`], never caller-asserted.
+/// the callee by [`crate::IrBuilder::build_call`], never caller-asserted.
 pub struct TypedCallInst<'ctx, Ret, B: ModuleBrand>
 where
     Ret: FunctionReturn,
@@ -1229,25 +1229,25 @@ decl_cast_handle!(
 // Comparison instructions
 // --------------------------------------------------------------------------
 
-/// `icmp` integer comparison. Mirrors `ICmpInst` (`Instructions.h`).
+/// `icmp` integer comparison. Mirrors `IcmpInst` (`Instructions.h`).
 #[derive(Branded)]
-pub struct ICmpInst<'ctx, B: ModuleBrand> {
+pub struct IcmpInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
 }
 
-decl_handle_scaffold!(ICmpInst);
+decl_handle_scaffold!(IcmpInst);
 
-impl<'ctx, B: ModuleBrand + 'ctx> ICmpInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> IcmpInst<'ctx, B> {
     fn payload(self) -> &'ctx CmpInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
                 InstructionKindData::ICmp(c) => c,
-                _ => unreachable!("ICmpInst invariant: kind is ICmp"),
+                _ => unreachable!("IcmpInst invariant: kind is ICmp"),
             },
-            _ => unreachable!("ICmpInst invariant: kind is Instruction"),
+            _ => unreachable!("IcmpInst invariant: kind is Instruction"),
         }
     }
     /// Integer predicate (`eq`, `slt`, `ult`, ...).
@@ -1269,26 +1269,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> ICmpInst<'ctx, B> {
     }
 }
 
-/// `fcmp` floating-point comparison. Mirrors `FCmpInst`
+/// `fcmp` floating-point comparison. Mirrors `FcmpInst`
 /// (`Instructions.h`).
 #[derive(Branded)]
-pub struct FCmpInst<'ctx, B: ModuleBrand> {
+pub struct FcmpInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
 }
 
-decl_handle_scaffold!(FCmpInst);
+decl_handle_scaffold!(FcmpInst);
 
-impl<'ctx, B: ModuleBrand + 'ctx> FCmpInst<'ctx, B> {
-    fn payload(self) -> &'ctx FCmpInstData {
+impl<'ctx, B: ModuleBrand + 'ctx> FcmpInst<'ctx, B> {
+    fn payload(self) -> &'ctx FcmpInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
                 InstructionKindData::FCmp(c) => c,
-                _ => unreachable!("FCmpInst invariant: kind is FCmp"),
+                _ => unreachable!("FcmpInst invariant: kind is FCmp"),
             },
-            _ => unreachable!("FCmpInst invariant: kind is Instruction"),
+            _ => unreachable!("FcmpInst invariant: kind is Instruction"),
         }
     }
     /// Float predicate (`oeq`, `olt`, `une`, ...).
@@ -1453,7 +1453,7 @@ fn phi_remove_incoming<'ctx, B: ModuleBrand + 'ctx>(
 /// The handle is a copyable read/edit view, minted from the storable
 /// [`PhiInstId<W>`](crate::PhiInstId) the phi builders hand back. Authoring
 /// (`add_incoming`) is crate-internal — block arguments
-/// ([`IRBuilder::append_block_with_params`](crate::IRBuilder::append_block_with_params))
+/// ([`IrBuilder::append_block_with_params`](crate::IrBuilder::append_block_with_params))
 /// are the public phi-authoring surface — while
 /// [`remove_incoming`](Self::remove_incoming) is public for CFG rewriters and
 /// takes an `Unverified` module token as its mutation-capability witness.
@@ -2233,23 +2233,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
 /// `InstrTypes.h`. Carries [`crate::FastMathFlags`] like every
 /// `FPMathOperator`-class instruction (`Operator.h`).
 #[derive(Branded)]
-pub struct FNegInst<'ctx, B: ModuleBrand> {
+pub struct FnegInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
 }
 
-decl_handle_scaffold!(FNegInst);
+decl_handle_scaffold!(FnegInst);
 
-impl<'ctx, B: ModuleBrand + 'ctx> FNegInst<'ctx, B> {
-    fn payload(self) -> &'ctx FNegInstData {
+impl<'ctx, B: ModuleBrand + 'ctx> FnegInst<'ctx, B> {
+    fn payload(self) -> &'ctx FnegInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
                 InstructionKindData::FNeg(u) => u,
-                _ => unreachable!("FNegInst invariant: kind is FNeg"),
+                _ => unreachable!("FnegInst invariant: kind is FNeg"),
             },
-            _ => unreachable!("FNegInst invariant: kind is Instruction"),
+            _ => unreachable!("FnegInst invariant: kind is Instruction"),
         }
     }
     /// Source operand. Mirrors `UnaryOperator::getOperand(0)`.
@@ -2296,27 +2296,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> FreezeInst<'ctx, B> {
     }
 }
 
-/// `va_arg` instruction. Mirrors `VAArgInst` (`Instructions.h`).
+/// `va_arg` instruction. Mirrors `VaArgInst` (`Instructions.h`).
 /// Loads the next argument from a `va_list` pointer; the destination
 /// type lives on [`Self::result_type`].
 #[derive(Branded)]
-pub struct VAArgInst<'ctx, B: ModuleBrand> {
+pub struct VaArgInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
 }
 
-decl_handle_scaffold!(VAArgInst);
+decl_handle_scaffold!(VaArgInst);
 
-impl<'ctx, B: ModuleBrand + 'ctx> VAArgInst<'ctx, B> {
-    fn payload(self) -> &'ctx VAArgInstData {
+impl<'ctx, B: ModuleBrand + 'ctx> VaArgInst<'ctx, B> {
+    fn payload(self) -> &'ctx VaArgInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
                 InstructionKindData::VAArg(u) => u,
-                _ => unreachable!("VAArgInst invariant: kind is VAArg"),
+                _ => unreachable!("VaArgInst invariant: kind is VAArg"),
             },
-            _ => unreachable!("VAArgInst invariant: kind is Instruction"),
+            _ => unreachable!("VaArgInst invariant: kind is Instruction"),
         }
     }
     /// `va_list` pointer operand.
@@ -2750,7 +2750,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
 /// `W` — a wrong-width case is a *compile* error (there is no
 /// `IntoIntValue<'ctx, W, B>` impl for the mismatched value). The erased
 /// `W = IntDyn` flavour (produced by the parser / SSA builder via the
-/// width-erased [`build_switch_dyn`](crate::IRBuilder::build_switch_dyn)) keeps the
+/// width-erased [`build_switch_dyn`](crate::IrBuilder::build_switch_dyn)) keeps the
 /// runtime [`crate::IrError::TypeMismatch`] check instead. `W` is the LAST parameter
 /// and defaults to `IntDyn`, so width-agnostic `SwitchInst<'ctx, P, B>`
 /// annotations keep resolving to the erased flavour unchanged.
@@ -2884,7 +2884,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
     /// must not be a **parameterised** block — the same guard the plain
     /// terminator builders apply, reported as
     /// [`crate::IrError::PhiArgArityMismatch`]. The argument-carrying route is
-    /// [`IRBuilder::build_switch_with_args`](crate::IRBuilder::build_switch_with_args)
+    /// [`IrBuilder::build_switch_with_args`](crate::IrBuilder::build_switch_with_args)
     /// (and its erased twin), which spells every case at the call and hands
     /// back an already-[`TermClosed`] switch — so a `switch` reaching a
     /// parameterised block either carries that block's arguments or does not
@@ -2902,7 +2902,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
     /// Append a case whose target's block parameters this call's caller has
     /// **already seeded**, skipping the parameterised-target rejection
     /// `push_case_checked` applies. Crate-internal: only
-    /// [`IRBuilder::build_switch_with_args`](crate::IRBuilder::build_switch_with_args)
+    /// [`IrBuilder::build_switch_with_args`](crate::IrBuilder::build_switch_with_args)
     /// and its erased twin reach for it, after `add_block_args` has recorded
     /// each edge's incomings.
     pub(crate) fn push_case_seeded<R, Target>(
@@ -3117,7 +3117,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
     /// argument-carrying form — the address picks the destination at run time,
     /// so there is nothing to attach a per-edge argument list to. A
     /// **parameterised** destination (one from
-    /// [`IRBuilder::append_block_with_params`](crate::IRBuilder::append_block_with_params)
+    /// [`IrBuilder::append_block_with_params`](crate::IrBuilder::append_block_with_params)
     /// or its siblings) is therefore rejected outright with
     /// [`crate::IrError::PhiArgArityMismatch`], the documented restriction the
     /// block-argument design called for. A block that merely *contains* phis is
@@ -3204,8 +3204,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> InvokeInst<'ctx, R, B> {
         Value::from_parts(self.id, self.module, self.ty)
     }
     /// Re-tag the return marker. Crate-internal: both
-    /// [`crate::IRBuilder::build_invoke_dyn`] (caller-asserted `R2`) and
-    /// the typed [`crate::IRBuilder::build_invoke`] (marker derived
+    /// [`crate::IrBuilder::build_invoke_dyn`] (caller-asserted `R2`) and
+    /// the typed [`crate::IrBuilder::build_invoke`] (marker derived
     /// from the callee's `Ret::Marker`) flow through this.
     #[inline]
     pub(super) fn retag<R2: ReturnMarker>(self) -> InvokeInst<'ctx, R2, B> {
@@ -3814,7 +3814,7 @@ mod tests {
         let caller_ty = m.fn_type_no_params(m.i32_type(), false);
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
-        let b = crate::IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+        let b = crate::IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
         let call: CallInst<'_, i32, _> =
             b.view(b.build_call_dyn(callee, Vec::<Value<'_, _>>::new(), "call")?);

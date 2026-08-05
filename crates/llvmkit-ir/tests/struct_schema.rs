@@ -1,5 +1,5 @@
 use llvmkit_ir::{
-    Constant, Dyn, IRBuilder, IntValue, IntoIrField, IrError, IrField, Linkage, Module,
+    Constant, Dyn, IntValue, IntoIrField, IrBuilder, IrError, IrField, Linkage, Module,
     ModuleBrand, ModuleView, StructFields, StructSchema, StructSchemaValue, StructValue, Type,
     TypeKindLabel, ValidatedStructValue, Value, module_new,
 };
@@ -15,10 +15,10 @@ struct PointValue<'ctx, B: ModuleBrand> {
 impl<'ctx, B: ModuleBrand + 'ctx> PointValue<'ctx, B> {
     fn x<'m, F, R>(
         self,
-        b: &llvmkit_ir::IRBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
+        b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
     ) -> Result<IntValue<'ctx, i32, B>, IrError>
     where
-        F: llvmkit_ir::IRBuilderFolder<'ctx, B>,
+        F: llvmkit_ir::IrBuilderFolder<'ctx, B>,
         R: llvmkit_ir::ReturnMarker,
     {
         b.build_extract_field::<Point, i32, _, _>(self, 0, "x")
@@ -26,11 +26,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointValue<'ctx, B> {
 
     fn with_x<'m, F, R, V>(
         self,
-        b: &llvmkit_ir::IRBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
+        b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
         value: V,
     ) -> Result<Self, IrError>
     where
-        F: llvmkit_ir::IRBuilderFolder<'ctx, B>,
+        F: llvmkit_ir::IrBuilderFolder<'ctx, B>,
         R: llvmkit_ir::ReturnMarker,
         V: IntoIrField<'ctx, i32, B>,
     {
@@ -198,10 +198,10 @@ struct RectValue<'ctx, B: ModuleBrand> {
 impl<'ctx, B: ModuleBrand + 'ctx> RectValue<'ctx, B> {
     fn min<'m, F, R>(
         self,
-        b: &llvmkit_ir::IRBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
+        b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
     ) -> Result<PointValue<'ctx, B>, IrError>
     where
-        F: llvmkit_ir::IRBuilderFolder<'ctx, B>,
+        F: llvmkit_ir::IrBuilderFolder<'ctx, B>,
         R: llvmkit_ir::ReturnMarker,
     {
         b.build_extract_field::<Rect, Point, _, _>(self, 0, "min")
@@ -209,10 +209,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> RectValue<'ctx, B> {
 
     fn max<'m, F, R>(
         self,
-        b: &llvmkit_ir::IRBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
+        b: &llvmkit_ir::IrBuilder<'m, 'ctx, B, F, llvmkit_ir::Positioned, R>,
     ) -> Result<PointValue<'ctx, B>, IrError>
     where
-        F: llvmkit_ir::IRBuilderFolder<'ctx, B>,
+        F: llvmkit_ir::IrBuilderFolder<'ctx, B>,
         R: llvmkit_ir::ReturnMarker,
     {
         b.build_extract_field::<Rect, Point, _, _>(self, 1, "max")
@@ -390,7 +390,7 @@ fn struct_fields_unpacks_manual_schema_into_params() -> Result<(), IrError> {
     let f =
         m.add_typed_function::<(), StructFields<Point>, _>("take_point_fields", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<()>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<()>(&m).position_at_end(entry);
     let (x, y) = m.view(f).params();
     let _: IntValue<'_, i32, _> = x;
     let _: IntValue<'_, i32, _> = y;
@@ -413,7 +413,7 @@ fn struct_schema_extracts_and_inserts_typed_fields() -> Result<(), IrError> {
     let fn_ty = m.fn_type(m.void_type(), [point_ty.as_type()], false);
     let f = m.add_function_dyn("edit", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let point = PointValue {
         raw: StructValue::try_from(m.view(f).param(0)?)?,
     };
@@ -439,7 +439,7 @@ fn struct_schema_extract_field_mismatch_does_not_append_instruction() -> Result<
     let fn_ty = m.fn_type(m.void_type(), [point_ty.as_type()], false);
     let f = m.add_function_dyn("bad_extract", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let point = PointValue {
         raw: StructValue::try_from(m.view(f).param(0)?)?,
     };
@@ -466,7 +466,7 @@ fn struct_schema_can_be_function_return() -> Result<(), IrError> {
     let m = module_new!("schema")?;
     let f = m.add_typed_function::<Point, (), _>("origin", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new(&m).position_at_end(entry);
+    let b = IrBuilder::new(&m).position_at_end(entry);
     let point = b.build_insert_field::<Point, i32, _, _, _>(poison_point(&m)?, 1_i32, 0, "p0")?;
     let point = b.build_insert_field::<Point, i32, _, _, _>(point, 2_i32, 1, "p1")?;
     b.build_ret(point.as_struct_value())?;
@@ -489,7 +489,7 @@ fn nested_struct_schema_accessors_return_nested_wrapper() -> Result<(), IrError>
     let fn_ty = m.fn_type(m.void_type(), [rect_ty.as_type()], false);
     let f = m.add_function_dyn("read", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let rect = RectValue {
         raw: StructValue::try_from(m.view(f).param(0)?)?,
     };

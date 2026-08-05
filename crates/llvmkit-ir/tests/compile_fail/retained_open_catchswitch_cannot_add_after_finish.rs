@@ -3,7 +3,7 @@
 //! `CatchSwitchInst::finish` returns a `Closed` view. Retaining the original
 //! `Open` handle must not permit more handlers to be added.
 
-use llvmkit_ir::{Dyn, IRBuilder, Linkage, Module};
+use llvmkit_ir::{Dyn, IrBuilder, Linkage, Module};
 
 fn main() {
     let m = Module::dynamic("retained-catchswitch");
@@ -13,7 +13,7 @@ fn main() {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let handler = m.view(f).append_basic_block(&m, "handler");
     let handler_label = handler.id();
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let (_sealed, cs) = b.build_catch_switch_within_none_to_caller("cs").unwrap();
 
     let _closed = cs.finish();

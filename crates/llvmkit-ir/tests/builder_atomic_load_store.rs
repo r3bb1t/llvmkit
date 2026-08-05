@@ -8,7 +8,7 @@
 
 use llvmkit_ir::{
     Align, AtomicLoadConfig, AtomicOrdering, AtomicStoreConfig, Constant, ConstantFloatValue, Dyn,
-    IRBuilder, IntValue, IrError, Linkage, SyncScope, VerifierRule, module_new,
+    IntValue, IrBuilder, IrError, Linkage, SyncScope, VerifierRule, module_new,
 };
 
 // --- Atomic load shapes (compatibility.ll lines 902-906) ---------------
@@ -23,7 +23,7 @@ fn load_atomic_monotonic_align4() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let cfg = AtomicLoadConfig::new(
         AtomicOrdering::Monotonic,
@@ -50,7 +50,7 @@ fn load_atomic_volatile_acquire_align8() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let cfg = AtomicLoadConfig::new(
         AtomicOrdering::Acquire,
@@ -78,7 +78,7 @@ fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let cfg = AtomicLoadConfig::new(
         AtomicOrdering::SequentiallyConsistent,
@@ -110,7 +110,7 @@ fn store_atomic_monotonic_align4() -> Result<(), IrError> {
     let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(23_i32);
     let cfg = AtomicStoreConfig::new(
@@ -138,7 +138,7 @@ fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
     let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(24_i32);
     let cfg = AtomicStoreConfig::new(
@@ -167,7 +167,7 @@ fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
     let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(25_i32);
     let cfg = AtomicStoreConfig::new(
@@ -200,7 +200,7 @@ fn verifier_rejects_atomic_load_release_ordering() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let cfg = AtomicLoadConfig::new(
         AtomicOrdering::Release,
@@ -228,7 +228,7 @@ fn verifier_rejects_atomic_store_acquire_ordering() -> Result<(), IrError> {
     let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(42_i32);
     let cfg = AtomicStoreConfig::new(
@@ -260,7 +260,7 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
     let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     // i17 → bit width 17, not power-of-two.
     let cfg = AtomicLoadConfig::new(
@@ -293,7 +293,7 @@ fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
     let fn_ty = m.fn_type(m.void_type(), [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let ptr: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let cfg = AtomicLoadConfig::new(
         AtomicOrdering::Unordered,
@@ -327,7 +327,7 @@ fn bitcast_int_to_fp_emits_text() -> Result<(), IrError> {
     let fn_ty = m.fn_type(f32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let bc = b.build_bitcast_int_to_fp(n, f32_ty, "bc")?;
     b.build_ret(bc)?;
@@ -351,7 +351,7 @@ fn default_constant_folder_folds_bitcast_int_to_fp() -> Result<(), IrError> {
     let fn_ty = m.fn_type(f32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let one_bits: IntValue<'_, i32, _> =
         i32_ty.const_int(0x3f80_0000_i32).into_erased().try_into()?;
     let result = b.build_bitcast_int_to_fp(one_bits, f32_ty, "bc")?;
@@ -372,7 +372,7 @@ fn bitcast_fp_to_int_emits_text() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i64_ty, [f64_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let n: llvmkit_ir::FloatValue<'_, f64, _> = m.view(f).param(0)?.try_into()?;
     let bc = b.build_bitcast_fp_to_int(n, i64_ty, "bc")?;
     b.build_ret(bc)?;

@@ -6,7 +6,7 @@
 //!
 //! example: locks output of `examples/factorial_auto_ssa.rs`. Closest
 //! upstream functional pattern: `unittests/IR/IRBuilderTest.cpp`
-//! (recursive / looped function building via IRBuilder) -- same
+//! (recursive / looped function building via IrBuilder) -- same
 //! reference `tests/factorial_example.rs` cites, since this is the same
 //! IR built through a different construction path.
 //!

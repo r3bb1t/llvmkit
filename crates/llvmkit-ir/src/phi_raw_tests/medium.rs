@@ -8,7 +8,7 @@
 //! `unittests/IR/BasicBlockTest.cpp::TEST(BasicBlockTest, PhiRange)` for the
 //! phi-incoming-value structure under test.
 
-use crate::{Dyn, IRBuilder, IrError, Linkage};
+use crate::{Dyn, IrBuilder, IrError, Linkage};
 
 /// Mirrors `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, CreateCondBr)`
 /// (multi-block scaffolding) plus
@@ -28,15 +28,15 @@ fn build_int_phi_two_predecessors_emits_phi() -> Result<(), IrError> {
     let join_label = join.id();
 
     // entry: br label %join
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     b.build_br(join_label)?;
 
     // other: br label %join
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(other);
     b.build_br(join_label)?;
 
     // join: phi i32 [ 1, %entry ], [ 2, %other ]; ret i32 %p
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b
         .view(b.build_int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, entry_label)?
@@ -70,12 +70,12 @@ fn phi_with_post_creation_add_incoming() -> Result<(), IrError> {
     let other_label = other.id();
     let join_label = join.id();
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     b.build_br(join_label)?;
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(other);
     b.build_br(join_label)?;
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = b.view(b.build_int_phi::<i32, _>("p")?);
     let phi = phi
         .add_incoming(10_i32, entry_label)?

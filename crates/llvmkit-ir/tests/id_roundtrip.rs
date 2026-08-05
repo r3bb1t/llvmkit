@@ -13,8 +13,8 @@
 
 use llvmkit_ir::{
     BasicBlockLabel, BlockId, Dyn, FloatValue, FloatValueId, FunctionId, GlobalAliasId,
-    GlobalIFuncId, GlobalId, GlobalVariable, IRBuilder, IntValue, IntValueId, IntoCallArg,
-    IntoErasedValue, IntoFloatValue, IntoIntValue, IntoPointerValue, IrError, Linkage, Module,
+    GlobalIFuncId, GlobalId, GlobalVariable, IntValue, IntValueId, IntoCallArg, IntoErasedValue,
+    IntoFloatValue, IntoIntValue, IntoPointerValue, IrBuilder, IrError, Linkage, Module,
     ModuleBrand, ModuleRef, PointerValue, PointerValueId, TypedFunctionId, TypedVarArgsFunctionId,
     Unverified, Value, ValueId, module_new,
 };
@@ -214,7 +214,7 @@ fn view_panics_on_a_foreign_tag() {
     let _ = b.view(x.id());
 }
 
-/// B1a: [`IRBuilder::view`] / [`IRBuilder::try_view`] are the builder-side
+/// B1a: [`IrBuilder::view`] / [`IrBuilder::try_view`] are the builder-side
 /// twins of the module pair — at a build site the `Module` token is often not
 /// in scope but the builder always is, so `b.view(id)` is the canonical read.
 /// Both must agree with `Module::view` / `Module::try_view` for the same id,
@@ -232,7 +232,7 @@ fn builder_view_agrees_with_module_view() -> Result<(), IrError> {
     let p: PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
     let v: Value<'_, _> = a.into_erased();
 
-    let b = IRBuilder::new(&m);
+    let b = IrBuilder::new(&m);
 
     assert_eq!(
         b.view(a.id()),
@@ -368,7 +368,7 @@ fn operand_lifts_reject_a_foreign_tag() -> Result<(), IrError> {
     let b_fn_ty = b.fn_type(b_i32, [b_i32.as_type()], false);
     let b_f = b.add_function_dyn("f", b_fn_ty, Linkage::External)?;
     let b_entry = b.view(b_f).append_basic_block(&b, "entry");
-    let builder = IRBuilder::new_for::<Dyn>(&b).position_at_end(b_entry);
+    let builder = IrBuilder::new_for::<Dyn>(&b).position_at_end(b_entry);
 
     let err = builder
         .build_int_add(foreign, 1_i32, "bad")
@@ -453,7 +453,7 @@ fn ids_drive_erased_operand_slots_without_a_view() -> Result<(), IrError> {
     let fn_ty = m.fn_type(m.void_type().as_type(), [ptr_ty.as_type()], false);
     let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
 
     let v = b.build_int_load::<i32, _, _>(p, "v")?;

@@ -24,7 +24,7 @@
 //! `build_*_phi` builders, which are crate-internal (block arguments are the
 //! public phi-authoring surface).
 
-use crate::{Dyn, IRBuilder, InstructionKind, InstructionView, IrError, Linkage, VerifierRule};
+use crate::{Dyn, InstructionKind, InstructionView, IrBuilder, IrError, Linkage, VerifierRule};
 
 /// Three predecessors, three incomings; removing index 0 backfills it from the
 /// **end**, exactly as upstream's `removeIncomingValue` does. The printed phi
@@ -43,12 +43,12 @@ fn remove_incoming_backfills_from_the_end_like_upstream() -> Result<(), IrError>
     let (a_lbl, b_lbl, c_lbl, join_lbl) = (a.id(), b_bb.id(), c.id(), join.id());
 
     for pred in [a, b_bb, c] {
-        IRBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(pred)
             .build_br(join_lbl)?;
     }
 
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
         .view(bld.build_int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, a_lbl)?
@@ -83,13 +83,13 @@ fn remove_incoming_deregisters_one_use_of_the_removed_value() -> Result<(), IrEr
     let a = m.view(f).append_basic_block(&m, "a");
     let join = m.view(f).append_basic_block(&m, "join");
     let (a_lbl, join_lbl) = (a.id(), join.id());
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(a)
         .build_br(join_lbl)?;
 
     // `7` interns to one constant, so both edges from `%a` are the same
     // SSA value: two use-list entries for one value.
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
         .view(bld.build_int_phi::<i32, _>("p")?)
         .add_incoming(7_i32, a_lbl)?
@@ -118,11 +118,11 @@ fn remove_incoming_rejects_an_out_of_range_index() -> Result<(), IrError> {
     let a = m.view(f).append_basic_block(&m, "a");
     let join = m.view(f).append_basic_block(&m, "join");
     let (a_lbl, join_lbl) = (a.id(), join.id());
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(a)
         .build_br(join_lbl)?;
 
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
         .view(bld.build_int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, a_lbl)?;
@@ -157,12 +157,12 @@ fn remove_incoming_leaves_the_verifier_to_flag_the_missing_edge() -> Result<(), 
     let join = m.view(f).append_basic_block(&m, "join");
     let (a_lbl, b_lbl, join_lbl) = (a.id(), b_bb.id(), join.id());
     for pred in [a, b_bb] {
-        IRBuilder::new_for::<Dyn>(&m)
+        IrBuilder::new_for::<Dyn>(&m)
             .position_at_end(pred)
             .build_br(join_lbl)?;
     }
 
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
         .view(bld.build_int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, a_lbl)?
@@ -196,11 +196,11 @@ fn remove_incoming_never_deletes_an_emptied_phi() -> Result<(), IrError> {
     let a = m.view(f).append_basic_block(&m, "a");
     let join = m.view(f).append_basic_block(&m, "join");
     let (a_lbl, join_lbl) = (a.id(), join.id());
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(a)
         .build_br(join_lbl)?;
 
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let phi = bld
         .view(bld.build_int_phi::<i32, _>("p")?)
         .add_incoming(1_i32, a_lbl)?;
@@ -237,11 +237,11 @@ fn remove_incoming_through_phi_kind_covers_every_flavour() -> Result<(), IrError
     let a = m.view(f).append_basic_block(&m, "a");
     let join = m.view(f).append_basic_block(&m, "join");
     let (a_lbl, join_lbl) = (a.id(), join.id());
-    IRBuilder::new_for::<Dyn>(&m)
+    IrBuilder::new_for::<Dyn>(&m)
         .position_at_end(a)
         .build_br(join_lbl)?;
 
-    let bld = IRBuilder::new_for::<Dyn>(&m).position_at_end(join);
+    let bld = IrBuilder::new_for::<Dyn>(&m).position_at_end(join);
     let fp = bld.build_fp_phi_dyn(f64_ty.as_dyn(), "fp")?;
     let pp = bld.build_pointer_phi_in_addrspace(ptr_ty, "pp")?;
     let vp = bld.build_phi_dyn(vec_ty.as_type(), "vp")?;

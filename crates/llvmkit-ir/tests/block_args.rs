@@ -5,7 +5,7 @@
 //! test only proves the block + head-phi(s) + returned param `Value`s exist
 //! and print.
 
-use llvmkit_ir::{Dyn, IRBuilder, IntPredicate, IntValue, IrError, Linkage, module_new};
+use llvmkit_ir::{Dyn, IntPredicate, IntValue, IrBuilder, IrError, Linkage, module_new};
 
 /// A block appended with one `i32` parameter carries a single head-phi of
 /// that type at its head, and the returned params vector surfaces that phi
@@ -19,7 +19,7 @@ fn append_block_with_params_creates_head_phi() -> Result<(), IrError> {
 
     // No positioning required: the block is created against `f`, not the
     // builder's cursor.
-    let b = IRBuilder::new_for::<Dyn>(&m);
+    let b = IrBuilder::new_for::<Dyn>(&m);
     let (hdr, params) = b.append_block_with_params(m.view(f), &[i32_ty.as_type()], "hdr")?;
 
     // (a) params vector: one entry, typed i32, backed by the head-phi.
@@ -51,7 +51,7 @@ fn append_block_with_params_preserves_param_order() -> Result<(), IrError> {
     let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
-    let b = IRBuilder::new_for::<Dyn>(&m);
+    let b = IrBuilder::new_for::<Dyn>(&m);
     let (_hdr, params) =
         b.append_block_with_params(m.view(f), &[i32_ty.as_type(), i64_ty.as_type()], "hdr")?;
 
@@ -84,18 +84,18 @@ fn block_args_br_round_trips_and_verifies() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
 
     // hdr(%p: i32): a block with one i32 parameter (a head-phi).
-    let bwp = IRBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (hdr, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "hdr")?;
     let hdr_label = hdr.id();
 
     // entry: %x = add i32 %a, 1 ; br %hdr(%x)
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.build_int_add(a, 1_i32, "x")?;
     b.build_br_with_args(hdr_label, &[m.view(x).into_erased()])?;
 
     // hdr: ret %p (the head-phi param carrying the branch argument).
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(hdr);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(hdr);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
     b.build_ret(p)?;
 
@@ -129,30 +129,30 @@ fn block_args_cond_br_diamond_verifies() -> Result<(), IrError> {
     let else_bb = m.view(f).append_basic_block(&m, "else");
 
     // merge(%p: i32): one i32 parameter reached from both arms.
-    let bwp = IRBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (merge, params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "merge")?;
     let merge_label = merge.id();
 
     // entry: br (%a == 0) ? then : else
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     b.build_cond_br(cond, &then_bb, &else_bb)?;
 
     // then: %vt = add %a, 10 ; br merge(%vt)
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let vt = b.build_int_add(a, 10_i32, "vt")?;
     b.build_br_with_args(merge_label, &[m.view(vt).into_erased()])?;
 
     // else: %ve = add %a, 20 ; br merge(%ve)
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let ve = b.build_int_add(a, 20_i32, "ve")?;
     b.build_br_with_args(merge_label, &[m.view(ve).into_erased()])?;
 
     // merge: ret %p
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(merge);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(merge);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
     b.build_ret(p)?;
 
@@ -184,7 +184,7 @@ fn block_args_cond_br_with_args_carries_both_edges() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
 
     // then(%pt: i32) and else(%pe: i32): each a 1-parameter block.
-    let bwp = IRBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (then_bb, then_params) =
         bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "then")?;
     let (else_bb, else_params) =
@@ -194,7 +194,7 @@ fn block_args_cond_br_with_args_carries_both_edges() -> Result<(), IrError> {
 
     // entry: %x = add %a, 1 ; %y = add %a, 2 ;
     //        br (%a == 0) ? then(%x) : else(%y)
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let x = b.build_int_add(a, 1_i32, "x")?;
     let y = b.build_int_add(a, 2_i32, "y")?;
@@ -208,12 +208,12 @@ fn block_args_cond_br_with_args_carries_both_edges() -> Result<(), IrError> {
     )?;
 
     // then: ret %pt
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(then_bb);
     let pt: IntValue<'_, i32, _> = then_params[0].try_into()?;
     b.build_ret(pt)?;
 
     // else: ret %pe
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(else_bb);
     let pe: IntValue<'_, i32, _> = else_params[0].try_into()?;
     b.build_ret(pe)?;
 
@@ -243,11 +243,11 @@ fn block_args_br_arity_mismatch_errors() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
 
     // hdr has one param; branch with zero args → arity mismatch.
-    let bwp = IRBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (hdr, _params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "hdr")?;
     let hdr_label = hdr.id();
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let res = b.build_br_with_args(hdr_label, &[]);
     assert!(
         matches!(
@@ -274,11 +274,11 @@ fn block_args_br_type_mismatch_errors() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
 
     // hdr has one i32 param; branch carrying the f64 arg → type mismatch.
-    let bwp = IRBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (hdr, _params) = bwp.append_block_with_params(m.view(f), &[i32_ty.as_type()], "hdr")?;
     let hdr_label = hdr.id();
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let arg_f64 = m.view(f).param(1)?; // f64 argument
     let res = b.build_br_with_args(hdr_label, &[arg_f64.into_erased()]);
     assert!(
@@ -302,7 +302,7 @@ fn append_block_with_named_params_names_head_phis() -> Result<(), IrError> {
 
     // hdr(%acc: i32, %i: i32): a two-parameter block whose head-phis are
     // named, unlike the anonymous `append_block_with_params`.
-    let bwp = IRBuilder::new_for::<Dyn>(&m);
+    let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (hdr, params) = bwp.append_block_with_named_params(
         m.view(f),
         &[(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
@@ -311,7 +311,7 @@ fn append_block_with_named_params_names_head_phis() -> Result<(), IrError> {
     let hdr_label = hdr.id();
 
     // entry: br hdr(1, 2) — seed both named head-phis.
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     b.build_br_with_args(
         hdr_label,
         &[
@@ -321,7 +321,7 @@ fn append_block_with_named_params_names_head_phis() -> Result<(), IrError> {
     )?;
 
     // hdr: ret %acc.
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(hdr);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(hdr);
     let acc: IntValue<'_, i32, _> = params[0].try_into()?;
     b.build_ret(acc)?;
 

@@ -3,7 +3,7 @@
 //!
 //! Top-level container: module identity/name, source filename, data
 //! layout, target triple, and module-level asm; the full type-constructor
-//! surface required by `IRBuilder` and the `.ll` parser; and functions,
+//! surface required by `IrBuilder` and the `.ll` parser; and functions,
 //! globals, aliases, ifuncs, comdats, named metadata, and
 //! use-list-order records.
 //!
@@ -1250,7 +1250,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// [`IrError::StructBodyMismatch`] rather than rewriting anything. That is
     /// what lets [`crate::StructSchema`] and [`crate::IrField`] be declared
     /// against a `ModuleView` instead of a `&Module<Unverified>` token —
-    /// which in turn is what lets [`crate::IRBuilder`] answer schema queries
+    /// which in turn is what lets [`crate::IrBuilder`] answer schema queries
     /// without fabricating a module token it does not own.
     ///
     /// The *typestate* body setters — [`Module::set_struct_body`] and
@@ -2904,7 +2904,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// blocks).
     ///
     /// ```
-    /// use llvmkit_ir::{Dyn, IRBuilder, IntValue, Linkage, Module};
+    /// use llvmkit_ir::{Dyn, IrBuilder, IntValue, Linkage, Module};
     ///
     /// # fn main() -> Result<(), llvmkit_ir::IrError> {
     /// let m = Module::dynamic("count");
@@ -2915,7 +2915,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     /// let entry = m.view(f).append_basic_block(&m, "entry");
     ///
-    /// let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     /// let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     /// let sum = b.build_int_add(n, 1_i32, "sum")?;
     /// b.build_ret(m.view(sum))?;

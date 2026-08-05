@@ -10,7 +10,7 @@
 
 use llvmkit_ir::{
     Analyses, BlockId, DominatorTree, DominatorTreeAnalysis, Dyn, FnCx, FnReport, FunctionPass,
-    FunctionView, IRBuilder, InsertPoint, IntPredicate, IntValue, IntValueId, IrError, IrResult,
+    FunctionView, InsertPoint, IntPredicate, IntValue, IntValueId, IrBuilder, IrError, IrResult,
     Linkage, Module, ModuleBrand, ReshapeCfg, ValueId, module_new, run_function_pass,
 };
 
@@ -59,9 +59,9 @@ fn reshape_pass_preserves_and_repairs_dominator_tree() -> Result<(), IrError> {
     let next_label = next.id();
 
     // entry: br next    next: ret 0
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     b.build_br(next.id())?;
-    let b2 = IRBuilder::new_for::<Dyn>(&m).position_at_end(next);
+    let b2 = IrBuilder::new_for::<Dyn>(&m).position_at_end(next);
     b2.build_ret(i32_ty.const_int(0_u32))?;
 
     let verified = m.verify()?;
@@ -99,7 +99,7 @@ fn reshape_pass_preserves_and_repairs_dominator_tree() -> Result<(), IrError> {
 /// documented contract is that the caller wires a fresh terminator into the new
 /// block. This test does that through a public [`InsertPoint`] saved *before*
 /// the pass ran (while `entry` was genuinely open), then restored afterward —
-/// [`IRBuilder::restore_insert_point`] is the sanctioned way to reopen a block a
+/// [`IrBuilder::restore_insert_point`] is the sanctioned way to reopen a block a
 /// structural edit left unterminated, since the pass-context API never hands out
 /// an `Unterminated` handle for a block it did not just create.
 ///
@@ -121,11 +121,11 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
     // merge(%p: i32): the phi `[ %x, %entry ]` is authored as a block
     // parameter (head-phi), seeded by `entry` branching to `merge(%x)`.
     let (merge, merge_params) =
-        IRBuilder::new(&m).append_block_with_params(m.view(f), &[i32_ty.as_type()], "merge")?;
+        IrBuilder::new(&m).append_block_with_params(m.view(f), &[i32_ty.as_type()], "merge")?;
     let merge_label = merge.id();
 
     // entry: %x = add %a, 1 ; br %merge(%x)
-    let b = IRBuilder::new(&m).position_at_end(entry);
+    let b = IrBuilder::new(&m).position_at_end(entry);
     // Saved while `entry` is genuinely open (before-of-none == end of
     // block) so the pass can reopen `entry` after the split empties it.
     let ip = b.save_insert_point();
@@ -134,7 +134,7 @@ fn split_block_rewrites_successor_phi_incoming() -> Result<(), IrError> {
     b.build_br_with_args(merge_label, &[m.view(x).into_erased()])?;
 
     // merge: ret %p (the head-phi param carrying the branch argument).
-    let b2 = IRBuilder::new(&m).position_at_end(merge);
+    let b2 = IrBuilder::new(&m).position_at_end(merge);
     let p: IntValue<'_, i32, _> = merge_params[0].try_into()?;
     b2.build_ret(p)?;
 
@@ -267,25 +267,25 @@ fn build_diamond<'ctx, B: ModuleBrand + 'ctx>(
     let right_label = right.id();
 
     // entry: br (%a == 0) ? left : right
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let cond = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     b.build_cond_br(cond, &left, &right)?;
 
     // left: %lv = add %a, 10 ; br merge
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(left);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(left);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let lv = b.build_int_add(a, 10_i32, "lv")?;
     b.build_br(merge.id())?;
 
     // right: %rv = add %a, 20 ; br merge
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(right);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(right);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rv = b.build_int_add(a, 20_i32, "rv")?;
     b.build_br(merge.id())?;
 
     // merge: ret 0   (no phi yet — the pass inserts one)
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(merge);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(merge);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
     Ok((
@@ -569,7 +569,7 @@ fn build_switch_redirect<'ctx, B: ModuleBrand + 'ctx>(
     let old = m.view(f).append_basic_block(m, "old");
     // new(%np: i32): the phi `[ %nd, %dflt ]` is authored as a block parameter
     // (head-phi), seeded by `dflt` branching to `new(%nd)`.
-    let (new, new_params) = IRBuilder::new_for::<Dyn>(m).append_block_with_params(
+    let (new, new_params) = IrBuilder::new_for::<Dyn>(m).append_block_with_params(
         m.view(f),
         &[i32_ty.as_type()],
         "new",
@@ -582,24 +582,24 @@ fn build_switch_redirect<'ctx, B: ModuleBrand + 'ctx>(
     let new_dyn = new_lbl;
 
     // entry: %ev = add %a, 3 ; switch %a, default %dflt [ 0 -> old ]
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let ev = b.build_int_add(a, 3_i32, "ev")?;
     let (_sealed, sw) = b.build_switch_dyn(a, dflt_lbl, "")?;
     sw.add_case(i32_ty.const_int(0_u32), old_lbl)?.finish();
 
     // dflt: %nd = add %a, 5 ; br new(%nd)
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(dflt);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(dflt);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let nd = b.build_int_add(a, 5_i32, "nd")?;
     b.build_br_with_args(new_lbl, &[m.view(nd).into_erased()])?;
 
     // old: ret 0
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(old);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(old);
     b.build_ret(i32_ty.const_int(0_u32))?;
 
     // new: ret %np (the head-phi param carrying the dflt branch argument).
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(new);
     let np: IntValue<'_, i32, _> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
@@ -848,7 +848,7 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
     let old = m.view(f).append_basic_block(&m, "old");
     let other = m.view(f).append_basic_block(&m, "other");
     // new(%np: i32): a head-phi block param seeded by the redirect.
-    let (new, new_params) = IRBuilder::new_for::<Dyn>(&m).append_block_with_params(
+    let (new, new_params) = IrBuilder::new_for::<Dyn>(&m).append_block_with_params(
         m.view(f),
         &[i32_ty.as_type()],
         "new",
@@ -858,17 +858,17 @@ fn redirect_edge_retargets_a_cond_br_arm() -> Result<(), IrError> {
     let new_dyn = new.id();
 
     // entry: %ev = add %a, 3 ; cond_br (%a == 0) ? old : other
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let ev = b.build_int_add(a, 3_i32, "ev")?;
     let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     b.build_cond_br(c, old_lbl, other_lbl)?;
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(old);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(old);
     b.build_ret(i32_ty.const_int(0_u32))?;
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(other);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(other);
     b.build_ret(i32_ty.const_int(1_u32))?;
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(new);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(new);
     let np: IntValue<'_, i32, _> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
@@ -925,7 +925,7 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let keep = m.view(f).append_basic_block(&m, "keep");
     // drop(%dp: i32): reached from BOTH entry and keep.
-    let (drop_bb, drop_params) = IRBuilder::new_for::<Dyn>(&m).append_block_with_params(
+    let (drop_bb, drop_params) = IrBuilder::new_for::<Dyn>(&m).append_block_with_params(
         m.view(f),
         &[i32_ty.as_type()],
         "drop",
@@ -934,20 +934,20 @@ fn remove_edge_collapses_cond_br_to_br() -> Result<(), IrError> {
     let drop_lbl = drop_bb.id();
 
     // entry: %ev = add %a, 3 ; br (%a == 0) ? keep() : drop(%ev)
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let ev = b.build_int_add(a, 3_i32, "ev")?;
     let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     b.build_cond_br_with_args(c, keep_lbl, &[], drop_lbl, &[m.view(ev).into_erased()])?;
 
     // keep: %kv = add %a, 7 ; br drop(%kv)
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(keep);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(keep);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let kv = b.build_int_add(a, 7_i32, "kv")?;
     b.build_br_with_args(drop_lbl, &[m.view(kv).into_erased()])?;
 
     // drop: ret %dp
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(drop_bb);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(drop_bb);
     let dp: IntValue<'_, i32, _> = drop_params[0].try_into()?;
     b.build_ret(dp)?;
 
@@ -995,7 +995,7 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let old = m.view(f).append_basic_block(&m, "old");
-    let (new, new_params) = IRBuilder::new_for::<Dyn>(&m).append_block_with_params(
+    let (new, new_params) = IrBuilder::new_for::<Dyn>(&m).append_block_with_params(
         m.view(f),
         &[i32_ty.as_type()],
         "new",
@@ -1004,13 +1004,13 @@ fn redirect_edge_retargets_an_unconditional_br() -> Result<(), IrError> {
     let new_dyn = new.id();
 
     // entry: %ev = add %a, 3 ; br old
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let ev = b.build_int_add(a, 3_i32, "ev")?;
     b.build_br(old_lbl)?;
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(old);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(old);
     b.build_ret(i32_ty.const_int(0_u32))?;
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(new);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(new);
     let np: IntValue<'_, i32, _> = new_params[0].try_into()?;
     b.build_ret(np)?;
 
@@ -1068,7 +1068,7 @@ fn build_cond_br_pair<'ctx, B: ModuleBrand + 'ctx>(
     let old_dyn = old_lbl;
     let new_dyn = new_lbl;
 
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let c = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c")?;
     if then_is_new {
@@ -1078,9 +1078,9 @@ fn build_cond_br_pair<'ctx, B: ModuleBrand + 'ctx>(
         // entry: br %c ? old : old  — BOTH arms reach `old`.
         b.build_cond_br(c, old_lbl, old_lbl)?;
     }
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(old);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(old);
     b.build_ret(i32_ty.const_int(0_u32))?;
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(new);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
     Ok((f, old_dyn, new_dyn))
@@ -1205,7 +1205,7 @@ fn build_cond_br_both_arms_phi<'ctx, B: ModuleBrand + 'ctx>(
     let keep = m.view(f).append_basic_block(m, "keep");
     let new = m.view(f).append_basic_block(m, "new");
     // shared(%sp: i32): reached from `src` via BOTH cond_br arms and from `keep`.
-    let (shared, shared_params) = IRBuilder::new_for::<Dyn>(m).append_block_with_params(
+    let (shared, shared_params) = IrBuilder::new_for::<Dyn>(m).append_block_with_params(
         m.view(f),
         &[i32_ty.as_type()],
         "shared",
@@ -1216,13 +1216,13 @@ fn build_cond_br_both_arms_phi<'ctx, B: ModuleBrand + 'ctx>(
     let new_dyn = new.id();
 
     // entry: cond_br (%a == 0) ? src : keep
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let c0 = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 0_i32, "c0")?;
     b.build_cond_br(c0, src_lbl, keep_lbl)?;
 
     // src: %sv = add %a, 3 ; cond_br (%a == 1) ? shared(%sv) : shared(%sv)
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(src);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(src);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let sv = b.build_int_add(a, 3_i32, "sv")?;
     let c1 = b.build_int_cmp::<i32, _, _, _>(IntPredicate::Eq, a, 1_i32, "c1")?;
@@ -1235,18 +1235,18 @@ fn build_cond_br_both_arms_phi<'ctx, B: ModuleBrand + 'ctx>(
     )?;
 
     // keep: %kv = add %a, 7 ; br shared(%kv)
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(keep);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(keep);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let kv = b.build_int_add(a, 7_i32, "kv")?;
     b.build_br_with_args(shared_lbl, &[m.view(kv).into_erased()])?;
 
     // shared: ret %sp
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(shared);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(shared);
     let sp: IntValue<'_, i32, _> = shared_params[0].try_into()?;
     b.build_ret(sp)?;
 
     // new: ret 1  (no phi — a redirect onto it seeds an empty phi_values)
-    let b = IRBuilder::new_for::<Dyn>(m).position_at_end(new);
+    let b = IrBuilder::new_for::<Dyn>(m).position_at_end(new);
     b.build_ret(i32_ty.const_int(1_u32))?;
 
     Ok((f, new_dyn))
