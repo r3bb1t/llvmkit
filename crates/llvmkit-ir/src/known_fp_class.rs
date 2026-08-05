@@ -514,13 +514,20 @@ fn bitcast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// costs precision because of it.
 ///
 /// `getSplatValue` matches `shuffle(insertelement(?, Splat, 0), ?, ZeroMask)`,
-/// and `m_ZeroMask` accepts `-1` — the poison sentinel — alongside `0`. So
-/// upstream still reads `<0, poison, 0, 0>` as a splat and answers from the
-/// scalar, while the path below sees a demanded poison lane and gives up.
+/// and `m_ZeroMask` accepts poison alongside `0`. So upstream still reads
+/// `<0, poison, 0, 0>` as a splat and answers from the scalar, while the path
+/// below sees a demanded poison lane and gives up.
 ///
 /// The other two ways in cost nothing: a clean all-zero mask demands exactly
 /// the splat lane and reaches the same answer one hop later, and a constant
 /// vector never arrives here at all, because the constant leaf answers first.
+///
+/// **This is missing wiring, not a missing capability.** That match is already
+/// ported, as `value_tracking::shuffle_splat_source`, where
+/// `isGuaranteedNotToBeUndefOrPoison` calls it — poison-tolerant mask and all.
+/// This arm simply does not call it. Closing the gap is a call, not an
+/// implementation; the helper's home is wrong too, since `getSplatValue` is
+/// `VectorUtils.cpp` rather than `ValueTracking.cpp`.
 fn shuffle_vector_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     data: &ShuffleVectorInstData,

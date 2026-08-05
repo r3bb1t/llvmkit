@@ -3398,9 +3398,9 @@ where
     }
 
     /// Produce `shufflevector <ty> <v1>, <ty> <v2>, <mask>`. Mirrors
-    /// `IRBuilder::CreateShuffleVector`. The mask is a slice of `i32`s;
-    /// pass `[`[`crate::instr_types::POISON_MASK_ELEM`]`; ...]` for
-    /// poison entries.
+    /// `IRBuilder::CreateShuffleVector`. Each mask element is a
+    /// [`ShuffleMaskElem`]: `Lane(n)` selects lane `n` of the two operands
+    /// taken as one concatenated vector, and `Poison` is upstream's `-1`.
     pub fn build_shuffle_vector<L, Rhs2, Name>(
         &self,
         lhs: L,

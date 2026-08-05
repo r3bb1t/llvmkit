@@ -2531,9 +2531,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> ShuffleVectorInst<'ctx, B> {
     }
     /// Shuffle mask. Mirrors `ShuffleVectorInst::getShuffleMask`.
     ///
-    /// Upstream's `-1` poison entries are
-    /// [`ShuffleMaskElem::Poison`](crate::instr_types::ShuffleMaskElem::Poison)
-    /// here, so a consumer names the case rather than testing a sign.
+    /// Upstream's `-1` poison entries are [`ShuffleMaskElem::Poison`] here, so
+    /// a consumer names the case rather than testing a sign.
     pub fn mask(self) -> &'ctx [ShuffleMaskElem] {
         &self.payload().mask
     }
