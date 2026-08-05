@@ -33,11 +33,18 @@ cut, entries accumulate under **Unreleased**.
   rather than logic inlined in `shuffle_vector_known_bits`. The poison-lane
   rule is subtle enough that two copies would eventually disagree.
 
-Two arms are deliberately weaker than upstream, marked at their sites and in
-the module header: `shufflevector` does not take the `getSplatValue` fast path
-(no splat-value helper exists for non-constant values), and `bitcast` does not
-thread the FP recursion depth into its known-bits call. Both cost time or
-precision, never correctness.
+Two arms diverge from upstream, in opposite directions, marked at their sites
+and in the module header:
+
+- `shufflevector` is **weaker** in exactly one case. `getSplatValue`'s
+  `m_ZeroMask` accepts `-1` alongside `0`, so upstream reads
+  `<0, poison, 0, 0>` as a splat and answers from the scalar; the demanded-lane
+  path here sees a demanded poison lane and gives up. A clean all-zero mask
+  reaches the same answer either way.
+- `bitcast` can be **stronger**. Upstream calls `computeKnownBits` at
+  `Depth + 1` on the shared budget, so a bitcast reached late in an FP walk
+  learns nothing; llvmkit's known bits starts at zero and gets a full budget.
+  Sound, but a divergence upward, and it costs compile time.
 
 ### ValueTracking: `computeKnownFPClass`'s arithmetic arms, and `nofpclass`
 

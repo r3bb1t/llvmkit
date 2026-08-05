@@ -2,8 +2,7 @@
 //!
 //! Ports `llvm::computeKnownFPClass` (`llvm/lib/Analysis/ValueTracking.cpp`)
 //! over the [`KnownFpClass`] lattice. It stands to [`fp_class`](crate::fp_class)
-//! as [`compute_known_bits`](crate::compute_known_bits) stands to
-//! [`KnownBits`](crate::KnownBits).
+//! as [`compute_known_bits`] stands to [`KnownBits`].
 //!
 //! # What is not modeled, and why
 //!
@@ -20,11 +19,24 @@
 //!   `arithmetic_fence`, `vector_reverse`, `fptrunc_round`, and every
 //!   `experimental_constrained_*` / target-specific (`amdgcn_*`) variant.
 //!
-//! Two arms are here but weaker than upstream, marked at their sites:
-//! `shufflevector` does not take the `getSplatValue` fast path (llvmkit has no
-//! splat-value helper for non-constant values), and `bitcast` does not thread
-//! the FP recursion depth into the known-bits call it makes. Both cost time or
-//! precision, never correctness.
+//! Two arms diverge from upstream, in *opposite* directions, and both are
+//! marked at their sites:
+//!
+//! - `shufflevector` is **weaker**. It does not take the `getSplatValue` fast
+//!   path, and the one case that costs is a splat mask carrying poison lanes:
+//!   `m_ZeroMask` accepts `-1` alongside `0`, so upstream still recognises
+//!   `<0, poison, 0, 0>` as a splat and answers from the scalar, where the
+//!   demanded-lane path here sees a demanded poison lane and gives up. A clean
+//!   all-zero mask reaches the same answer either way, and constant vectors
+//!   never get this far — the constant leaf takes them first.
+//! - `bitcast` can be **stronger**. Upstream calls `computeKnownBits` at
+//!   `Depth + 1` on the shared budget, so a bitcast reached late in an FP walk
+//!   gets a known-bits query that is already at the recursion limit and learns
+//!   nothing; llvmkit's known bits is a separate entry point starting at zero,
+//!   so it gets a full budget. Sound — known bits is correct at any depth, and
+//!   depth only bounds discovery — but it means a deep chain can be answered
+//!   more precisely here than upstream answers it, and costs compile time to
+//!   do so.
 //!
 //! What *is* here: the constant and poison leaves, the fast-math-flag
 //! refinement, `nofpclass` on a call return or a parameter, the context arm
@@ -424,10 +436,13 @@ fn bitcast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
         return KnownFpClass::unknown();
     };
 
-    // Upstream recurses at `Depth + 1`; llvmkit's known-bits analysis is a
-    // separate entry point with its own recursion cap, so the FP depth is not
-    // threaded into it. That can only cost time on a deep chain, never
-    // correctness.
+    // Upstream recurses at `Depth + 1` on the shared budget, so a bitcast
+    // reached late in an FP walk hands known bits a query already at the
+    // recursion limit, which learns nothing. llvmkit's known bits is a
+    // separate entry point starting at zero, so it gets a full budget and can
+    // answer a deep chain *more* precisely than upstream does. That is sound —
+    // known bits is correct at any depth, and depth only bounds discovery —
+    // but it is a divergence upward, and it costs compile time.
     let _ = depth;
     let Ok(bits) = compute_known_bits(source, query) else {
         return KnownFpClass::unknown();
@@ -495,12 +510,17 @@ fn bitcast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// nothing about the result's common state, which is
 /// [`shuffle_demanded_elements`]' `None`.
 ///
-/// **Upstream's `getSplatValue` fast path is not taken.** It short-circuits a
-/// splat shuffle to its scalar source; llvmkit has no splat-value helper for
-/// non-constant values, so the demanded-lane path below runs instead. For the
-/// shuffle spelling of a splat that path demands exactly the splat lane and
-/// reaches the same answer; for the `insertelement` spellings `getSplatValue`
-/// also recognises it can be weaker, never wrong.
+/// **Upstream's `getSplatValue` fast path is not taken**, and exactly one case
+/// costs precision because of it.
+///
+/// `getSplatValue` matches `shuffle(insertelement(?, Splat, 0), ?, ZeroMask)`,
+/// and `m_ZeroMask` accepts `-1` — the poison sentinel — alongside `0`. So
+/// upstream still reads `<0, poison, 0, 0>` as a splat and answers from the
+/// scalar, while the path below sees a demanded poison lane and gives up.
+///
+/// The other two ways in cost nothing: a clean all-zero mask demands exactly
+/// the splat lane and reaches the same answer one hop later, and a constant
+/// vector never arrives here at all, because the constant leaf answers first.
 fn shuffle_vector_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     data: &ShuffleVectorInstData,
