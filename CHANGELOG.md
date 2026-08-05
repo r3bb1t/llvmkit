@@ -20,7 +20,7 @@ cut, entries accumulate under **Unreleased**.
 
 - **`llvmkit-tablegen`**, a new workspace crate holding the TableGen front end
   and intrinsic emitter, plus the vendored `.td` tree they read. It ships an
-  `llvmkit-tblgen` binary for manual regeneration and `--check`, mirroring
+  `llvmkit-tablegen` binary for manual regeneration and `--check`, mirroring
   `llvm-tblgen`.
 
 #### Changed
@@ -61,7 +61,7 @@ cut, entries accumulate under **Unreleased**.
   **byte-identical** across all 213,000 lines, before and after.
 
 - **Breaking:** `llvmkit-ir`'s `gen-intrinsics` feature and its `gen_intrinsics`
-  binary are gone. The manual entry point is the `llvmkit-tblgen` binary, whose
+  binary are gone. The manual entry point is the `llvmkit-tablegen` binary, whose
   usage text and `--check` message changed to match.
 
 ### VectorUtils: the intrinsic classifiers — a recorded blocker that was not real

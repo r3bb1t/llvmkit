@@ -12,7 +12,7 @@
 //!
 //! Upstream ships these as a library plus a `llvm-tblgen` binary. llvmkit does
 //! the same: [`table_gen_main`] is what `llvmkit-ir`'s `build.rs` calls, and
-//! the `llvmkit-tblgen` binary is the manual entry point.
+//! the `llvmkit-tablegen` binary is the manual entry point.
 //!
 //! # Why a crate and not a build script
 //!
@@ -71,11 +71,11 @@ const CUSTOM_IIT_WASM_EXNREF: u8 = 54;
 /// Mirrors `llvm/lib/TableGen/Main.cpp::TableGenMain`. Which mode it runs in is
 /// read from the environment, exactly as before this became a crate: Cargo sets
 /// `OUT_DIR` and passes no arguments when a build script runs it, so that
-/// combination selects build-script mode; the `llvmkit-tblgen` binary has
+/// combination selects build-script mode; the `llvmkit-tablegen` binary has
 /// arguments and no `OUT_DIR`, so it selects the command-line modes.
 pub fn table_gen_main() {
     if let Err(err) = real_main() {
-        eprintln!("llvmkit-tblgen: {err}");
+        eprintln!("llvmkit-tablegen: {err}");
         std::process::exit(1);
     }
 }
@@ -99,7 +99,7 @@ fn real_main() -> GenResult<()> {
         })?;
         if normalize_newlines(&existing) != normalize_newlines(&generated.text) {
             return Err(GenError::new(format!(
-                "{} is stale; regenerate with llvmkit-tblgen {} {}",
+                "{} is stale; regenerate with llvmkit-tablegen {} {}",
                 args.generated_file.display(),
                 args.llvm_root.display(),
                 args.generated_file.display()
@@ -159,7 +159,7 @@ where
         }
         _ => {
             return Err(GenError::new(
-                "usage: llvmkit-tblgen [--check] <generated-file>\n       llvmkit-tblgen [--check] <llvm-root> <generated-file>",
+                "usage: llvmkit-tablegen [--check] <generated-file>\n       llvmkit-tablegen [--check] <llvm-root> <generated-file>",
             ));
         }
     };
@@ -235,7 +235,7 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("usage: llvmkit-tblgen [--check] <generated-file>")
+                .contains("usage: llvmkit-tablegen [--check] <generated-file>")
         );
     }
 

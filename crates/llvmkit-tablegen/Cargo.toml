@@ -10,7 +10,3 @@ homepage.workspace     = true
 rust-version.workspace = true
 keywords.workspace     = true
 categories.workspace   = true
-
-[[bin]]
-name = "llvmkit-tblgen"
-path = "src/main.rs"

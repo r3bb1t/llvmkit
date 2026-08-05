@@ -26,7 +26,7 @@ thiserror = { workspace = true }
 
 # Expands the vendored TableGen tree into this crate's intrinsic tables. The
 # manual entry point that used to be this crate's `gen_intrinsics` binary is now
-# `llvmkit-tblgen`, shipped by that crate.
+# `llvmkit-tablegen`, shipped by that crate.
 [build-dependencies]
 llvmkit-tablegen = { workspace = true }
 
