@@ -13,28 +13,27 @@
 //! conservative direction, so no caller is misled. They are listed rather than
 //! silently missing so the gap is legible:
 //!
-//! - **`fma` / `fmuladd`** — the rest of the arithmetic family landed; these
-//!   two did not.
-//! - **`shufflevector`** — the demanded-lane split it needs
-//!   (`getShuffleDemandedElts`) exists only inlined inside
-//!   `value_tracking.rs`'s `shuffle_vector_known_bits`. Doing this arm means
-//!   extracting that first, so the poison-lane handling is shared rather than
-//!   written twice.
-//! - **`bitcast`** — upstream's arm runs `computeKnownBits` on an
-//!   element-wise bitcast source and transfers the sign bit, so it needs the
-//!   integer analysis threaded in rather than more FP reasoning.
-//! - **The `vector_reduce_f*` family.**
 //! - **The remaining intrinsics** — `sin`, `cos`, `powi`, `ldexp`, `frexp`,
 //!   `arithmetic_fence`, `vector_reverse`, `fptrunc_round`, and every
 //!   `experimental_constrained_*` / target-specific (`amdgcn_*`) variant.
+//! - **The remaining intrinsics** — `sin`, `cos`, `powi`, `ldexp`, `frexp`,
+//!   `arithmetic_fence`, `vector_reverse`, `fptrunc_round`, and every
+//!   `experimental_constrained_*` / target-specific (`amdgcn_*`) variant.
+//!
+//! Two arms are here but weaker than upstream, marked at their sites:
+//! `shufflevector` does not take the `getSplatValue` fast path (llvmkit has no
+//! splat-value helper for non-constant values), and `bitcast` does not thread
+//! the FP recursion depth into the known-bits call it makes. Both cost time or
+//! precision, never correctness.
 //!
 //! What *is* here: the constant and poison leaves, the fast-math-flag
 //! refinement, `nofpclass` on a call return or a parameter, the context arm
 //! (assumptions, dominating branches and an injected condition, through
 //! [`fp_predicate`](crate::fp_predicate)), `select`, `fneg`, the arithmetic
 //! arms `fadd` / `fsub` / `fmul` / `fdiv` / `frem`, the vector arms
-//! `extractelement` / `insertelement` / `extractvalue` / `phi`, the
-//! `fabs`/`copysign`/`canonicalize`/`sqrt` intrinsics, the six min/max
+//! `extractelement` / `insertelement` / `shufflevector` / `extractvalue` /
+//! `bitcast` / `phi`, the `fabs`/`copysign`/`canonicalize`/`sqrt` intrinsics,
+//! `fma`/`fmuladd`, the six min/max intrinsics, the four reducing min/max
 //! intrinsics, the seven rounding intrinsics, the `exp` and `log` families,
 //! `fpext`, `fptrunc`, `sitofp` and `uitofp`.
 //!
@@ -44,7 +43,7 @@
 //! no fixture of their own to check them against — worth knowing before
 //! trusting a subtle answer from either.
 
-use crate::ap_float::{ApFloatSemantics, BinaryExponent};
+use crate::ap_float::{ApFloatSemantics, ApFloatSign, BinaryExponent};
 use crate::assumptions::{AssumptionSource, is_valid_assume_for_context};
 use crate::attributes::AttrIndex;
 use crate::cmp_predicate::{FloatPredicate, IntPredicate};
@@ -55,16 +54,19 @@ use crate::fp_class::{FpClassTest, KnownFpClass, MinMaxKind};
 use crate::fp_predicate::{denormal_mode_of, enclosing_function_of, fcmp_implies_class};
 use crate::instr_types::{
     BranchKind, CastOpcode, ExtractElementInstData, InsertElementInstData, PhiData,
+    ShuffleVectorInstData,
 };
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::intrinsics::descriptor_for_callee;
+use crate::known_bits::KnownBits;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::{Type, TypeKind};
 use crate::r#use::Use;
 use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::value_tracking::{
-    MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, assume_argument, is_known_not_undef,
-    is_sign_bit_check, logical_op_parts, not_operand, parent_block,
+    MAX_ANALYSIS_RECURSION_DEPTH, ValueTrackingQuery, assume_argument, compute_known_bits,
+    is_known_not_undef, is_sign_bit_check, logical_op_parts, not_operand, parent_block,
+    shuffle_demanded_elements,
 };
 use crate::{ApFloat, ApInt};
 
@@ -274,6 +276,9 @@ fn dispatch<'a, 'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::InsertElement(data) => {
             insert_element_fp_class(value, data, interested_classes, query, depth)
         }
+        InstructionKindData::ShuffleVector(data) => {
+            shuffle_vector_fp_class(value, data, interested_classes, query, depth)
+        }
         InstructionKindData::ExtractValue(data) => {
             // Upstream first looks through a `frexp` result at index 0; that
             // intrinsic is not modeled, so what remains is the fallthrough,
@@ -366,6 +371,164 @@ fn insert_element_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
         let subquery = query.with_temporary_demanded_elements(&demanded_vector);
         known.union_in_place(known_fp_class(
             value_from_slot(value, data.vector.get()),
+            interested_classes,
+            &subquery,
+            depth + 1,
+        ));
+    }
+    known
+}
+
+/// Whether `semantics` is one of the IEEE-like formats upstream's
+/// `Type::isIEEELikeFPTy` accepts.
+///
+/// The exclusions matter: `x86_fp80` carries an explicit integer bit, so the
+/// "all exponent bits plus one fraction bit set means NaN" reasoning below
+/// does not hold for it, and upstream says so in a note. `ppc_fp128` is a
+/// double-double pair rather than a single IEEE field layout.
+fn is_ieee_like(semantics: ApFloatSemantics) -> bool {
+    match semantics {
+        ApFloatSemantics::IeeeHalf
+        | ApFloatSemantics::BFloat
+        | ApFloatSemantics::IeeeSingle
+        | ApFloatSemantics::IeeeDouble
+        | ApFloatSemantics::IeeeQuad => true,
+        ApFloatSemantics::X87DoubleExtended | ApFloatSemantics::PpcDoubleDouble => false,
+    }
+}
+
+/// The `BitCast` arm.
+///
+/// Ports `case Instruction::BitCast:`, which is the one arm that reasons in
+/// *integer* terms: it runs known bits over an element-wise bitcast of an
+/// integer source and reads the float's fields back out of them.
+///
+/// Upstream's `m_ElementWiseBitCast` requires the cast not to change the
+/// element count, so a `<2 x float>` to `i64` bitcast — which reinterprets
+/// lanes — is declined rather than misread.
+fn bitcast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    source: Value<'ctx, B>,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> KnownFpClass {
+    // `m_ElementWiseBitCast`: same lane count on both sides, and the source
+    // must be an integer or integer vector.
+    if vector_lanes(value) != vector_lanes(source) {
+        return KnownFpClass::unknown();
+    }
+    if !matches!(scalar_kind(source.ty()), TypeKind::Integer { .. }) {
+        return KnownFpClass::unknown();
+    }
+    let Some(semantics) = scalar_semantics(value.ty()) else {
+        return KnownFpClass::unknown();
+    };
+
+    // Upstream recurses at `Depth + 1`; llvmkit's known-bits analysis is a
+    // separate entry point with its own recursion cap, so the FP depth is not
+    // threaded into it. That can only cost time on a deep chain, never
+    // correctness.
+    let _ = depth;
+    let Ok(bits) = compute_known_bits(source, query) else {
+        return KnownFpClass::unknown();
+    };
+
+    let mut known = KnownFpClass::unknown();
+    // The sign bit transfers directly.
+    if bits.is_non_negative() {
+        known.sign_bit_must_be_zero();
+    } else if bits.is_negative() {
+        known.sign_bit_must_be_one();
+    }
+
+    if !is_ieee_like(semantics) {
+        return known;
+    }
+
+    // An IEEE float is NaN when every exponent bit and at least one fraction
+    // bit is set. So: reading the unknown bits as 0 and still getting a NaN
+    // means it is always a NaN; reading them as 1 and *not* getting a NaN
+    // means it never is.
+    if ApFloat::from_bits(semantics, bits.one_mask()).is_ok_and(|float| float.is_nan()) {
+        known = KnownFpClass::from_classes(FpClassTest::NAN);
+    } else if ApFloat::from_bits(semantics, &!bits.zero_mask()).is_ok_and(|float| !float.is_nan()) {
+        known.known_not(FpClassTest::NAN);
+    }
+
+    // Infinity and zero are single bit patterns up to sign, so comparing
+    // against them with the sign bit masked out settles both directions.
+    for (pattern, class) in [
+        (
+            ApFloat::inf(semantics, ApFloatSign::Positive).to_bits(),
+            FpClassTest::INFINITY,
+        ),
+        (
+            ApFloat::zero(semantics, ApFloatSign::Positive).to_bits(),
+            FpClassTest::ZERO,
+        ),
+    ] {
+        // `makeConstant` then `Zero.clearSignBit()`: every bit is pinned to the
+        // pattern except the sign, which is left unknown so the comparison
+        // ignores it.
+        let mut zero = !&pattern;
+        zero.clear_sign_bit();
+        let Ok(reference) = KnownBits::from_zero_one(zero, pattern) else {
+            continue;
+        };
+        match KnownBits::eq(&bits, &reference) {
+            // A definite answer here is always `false`: the sign bit was
+            // cleared from the reference's zero mask, so an exact match
+            // cannot be proven this way, only a mismatch.
+            Some(_) => known.known_not(class),
+            None if bits == reference => known = KnownFpClass::from_classes(class),
+            None => {}
+        }
+    }
+
+    known
+}
+
+/// The `ShuffleVector` arm.
+///
+/// Ports `case Instruction::ShuffleVector:`: the union of whatever lanes the
+/// mask takes from each source. A poison lane among the demanded ones says
+/// nothing about the result's common state, which is
+/// [`shuffle_demanded_elements`]' `None`.
+///
+/// **Upstream's `getSplatValue` fast path is not taken.** It short-circuits a
+/// splat shuffle to its scalar source; llvmkit has no splat-value helper for
+/// non-constant values, so the demanded-lane path below runs instead. For the
+/// shuffle spelling of a splat that path demands exactly the splat lane and
+/// reaches the same answer; for the `insertelement` spellings `getSplatValue`
+/// also recognises it can be weaker, never wrong.
+fn shuffle_vector_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    data: &ShuffleVectorInstData,
+    interested_classes: FpClassTest,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+    depth: u32,
+) -> KnownFpClass {
+    let Some((lhs, lhs_demand, rhs, rhs_demand)) = shuffle_demanded_elements(value, data, query)
+    else {
+        return KnownFpClass::unknown();
+    };
+
+    let mut known = if lhs_demand.is_zero() {
+        KnownFpClass::from_classes(FpClassTest::NONE)
+    } else {
+        let subquery = query.with_temporary_demanded_elements(&lhs_demand);
+        let left = known_fp_class(lhs, interested_classes, &subquery, depth + 1);
+        // Upstream's early out.
+        if left.is_unknown() {
+            return left;
+        }
+        left
+    };
+
+    if !rhs_demand.is_zero() {
+        let subquery = query.with_temporary_demanded_elements(&rhs_demand);
+        known.union_in_place(known_fp_class(
+            rhs,
             interested_classes,
             &subquery,
             depth + 1,
@@ -864,6 +1027,7 @@ fn cast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
             KnownFpClass::fpext(known_source, destination, from)
         }
         CastOpcode::FpTrunc => fp_trunc_class(source, interested_classes, query, depth),
+        CastOpcode::BitCast => bitcast_fp_class(value, source, query, depth),
         CastOpcode::SIToFp | CastOpcode::UIToFp => {
             let mut known = KnownFpClass::unknown();
             // An integer conversion cannot produce a NaN, and an integer is
@@ -958,6 +1122,52 @@ fn intrinsic_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let mode = denormal_mode_of(value);
 
     match name {
+        // `fma` / `fmuladd`, which only learn anything about the sign.
+        "llvm.fma" | "llvm.fmuladd" => {
+            let mut known = KnownFpClass::unknown();
+            if !interested_classes.intersects(FpClassTest::NEGATIVE) {
+                return known;
+            }
+            let (Some(lhs), Some(rhs), Some(addend)) = (argument(0), argument(1), argument(2))
+            else {
+                return known;
+            };
+            // Upstream carries a FIXME that this should check
+            // `isGuaranteedNotToBeUndef`; it does not, and neither does this.
+            if lhs != rhs {
+                return known;
+            }
+            // `x * x` cannot be `-0`, so neither can the sum.
+            known.known_not(FpClassTest::NEGATIVE_ZERO);
+            // And `x * x + y` is non-negative when `y` is.
+            if known_fp_class(addend, interested_classes, query, depth + 1)
+                .cannot_be_ordered_less_than_zero()
+            {
+                known.known_not(FpClassTest::NEGATIVE);
+            }
+            known
+        }
+        // The reducing min/max intrinsics pick one of the vector's elements,
+        // so whatever is common to every element carries to the result.
+        "llvm.vector.reduce.fmax"
+        | "llvm.vector.reduce.fmin"
+        | "llvm.vector.reduce.fmaximum"
+        | "llvm.vector.reduce.fminimum" => {
+            let Some(source) = argument(0) else {
+                return KnownFpClass::unknown();
+            };
+            let mut known = compute_known_fp_class_with_flags(
+                source,
+                fast_math_flags(kind).unwrap_or_else(FastMathFlags::empty),
+                interested_classes,
+                query,
+            );
+            // The sign only carries when the result cannot be a NaN.
+            if !known.is_known_never_nan() {
+                known.reset_sign_bit();
+            }
+            known
+        }
         "llvm.fabs" => {
             let mut known = KnownFpClass::unknown();
             // Caring only about the sign bit means the operand need not be

@@ -701,6 +701,17 @@ impl KnownFpClass {
         self.sign_bit_must_be_zero();
     }
 
+    /// Forget whatever was known about the sign bit.
+    ///
+    /// Ports `KnownFPClass::SignBit.reset()`. The reducing min/max intrinsics
+    /// need it: they may return a NaN whose sign is not the one the elements
+    /// agreed on, so a sign learned from the elements has to be dropped unless
+    /// the result is known never to be a NaN.
+    #[inline]
+    pub fn reset_sign_bit(&mut self) {
+        self.sign_bit = None;
+    }
+
     /// Assume the sign bit is clear. Ports `signBitMustBeZero`.
     #[inline]
     pub fn sign_bit_must_be_zero(&mut self) {

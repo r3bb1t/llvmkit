@@ -5342,6 +5342,58 @@ fn insert_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
+/// The lanes a `shufflevector` demands from each of its two source vectors.
+///
+/// Ports `llvm::getShuffleDemandedElts`. `None` is upstream's `false` return —
+/// a scalable or non-vector operand, a poison mask element among the demanded
+/// lanes, or a mask index outside both sources — and every caller answers
+/// "nothing known" for it.
+///
+/// Shared by [`shuffle_vector_known_bits`] and `known_fp_class.rs`'s
+/// `shufflevector` arm, because the poison-lane rule is subtle enough that
+/// two copies would eventually disagree.
+pub(crate) fn shuffle_demanded_elements<'a, 'ctx, B: ModuleBrand + 'ctx>(
+    value: Value<'ctx, B>,
+    data: &ShuffleVectorInstData,
+    query: &ValueTrackingQuery<'a, 'ctx, B>,
+) -> Option<(Value<'ctx, B>, ApInt, Value<'ctx, B>, ApInt)> {
+    let result_lanes = u32::try_from(data.mask.len()).ok()?;
+    let demanded =
+        demanded_elements_for(value, query).unwrap_or_else(|| ApInt::all_ones(result_lanes));
+    let lhs = value_from_id(value, data.lhs.get());
+    let rhs = value_from_id(value, data.rhs.get());
+    let (lhs_lanes, false) = vector_shape(lhs)? else {
+        return None;
+    };
+    let (rhs_lanes, false) = vector_shape(rhs)? else {
+        return None;
+    };
+
+    let mut lhs_demand = ApInt::zero(lhs_lanes);
+    let mut rhs_demand = ApInt::zero(rhs_lanes);
+    for (lane, mask) in data.mask.iter().enumerate() {
+        let lane = u32::try_from(lane).ok()?;
+        if !demanded.bit(lane) {
+            continue;
+        }
+        // A poison lane says nothing about the common state of the result.
+        if *mask == POISON_MASK_ELEM {
+            return None;
+        }
+        let mask = u32::try_from(*mask).ok()?;
+        if mask < lhs_lanes {
+            lhs_demand.set_bit(mask);
+        } else {
+            let rhs_lane = mask.saturating_sub(lhs_lanes);
+            if rhs_lane >= rhs_lanes {
+                return None;
+            }
+            rhs_demand.set_bit(rhs_lane);
+        }
+    }
+    Some((lhs, lhs_demand, rhs, rhs_demand))
+}
+
 fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     data: &ShuffleVectorInstData,
@@ -5349,59 +5401,11 @@ fn shuffle_vector_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
-    let Ok(result_lanes) = u32::try_from(data.mask.len()) else {
-        return Ok(KnownBits::unknown(
-            value_bit_width(value, query.data_layout()).unwrap_or(0),
-        ));
-    };
-    let demanded =
-        demanded_elements_for(value, query).unwrap_or_else(|| ApInt::all_ones(result_lanes));
-    let lhs = value_from_id(value, data.lhs.get());
-    let rhs = value_from_id(value, data.rhs.get());
-    let Some((lhs_lanes, false)) = vector_shape(lhs) else {
-        return Ok(KnownBits::unknown(
-            value_bit_width(value, query.data_layout()).unwrap_or(0),
-        ));
-    };
-    let Some((rhs_lanes, false)) = vector_shape(rhs) else {
-        return Ok(KnownBits::unknown(
-            value_bit_width(value, query.data_layout()).unwrap_or(0),
-        ));
-    };
-    let mut lhs_demand = ApInt::zero(lhs_lanes);
-    let mut rhs_demand = ApInt::zero(rhs_lanes);
-    for (lane, mask) in data.mask.iter().enumerate() {
-        let Ok(lane) = u32::try_from(lane) else {
-            return Ok(KnownBits::unknown(
-                value_bit_width(value, query.data_layout()).unwrap_or(0),
-            ));
-        };
-        if !demanded.bit(lane) {
-            continue;
-        }
-        if *mask == POISON_MASK_ELEM {
-            return Ok(KnownBits::unknown(
-                value_bit_width(value, query.data_layout()).unwrap_or(0),
-            ));
-        }
-        let Ok(mask) = u32::try_from(*mask) else {
-            return Ok(KnownBits::unknown(
-                value_bit_width(value, query.data_layout()).unwrap_or(0),
-            ));
-        };
-        if mask < lhs_lanes {
-            lhs_demand.set_bit(mask);
-        } else {
-            let rhs_lane = mask.saturating_sub(lhs_lanes);
-            if rhs_lane >= rhs_lanes {
-                return Ok(KnownBits::unknown(
-                    value_bit_width(value, query.data_layout()).unwrap_or(0),
-                ));
-            }
-            rhs_demand.set_bit(rhs_lane);
-        }
-    }
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
+    let Some((lhs, lhs_demand, rhs, rhs_demand)) = shuffle_demanded_elements(value, data, query)
+    else {
+        return Ok(KnownBits::unknown(width));
+    };
     let mut known = KnownBits::unknown(width);
     known.set_all_conflict();
     if !lhs_demand.is_zero() {

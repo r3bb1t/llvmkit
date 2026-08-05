@@ -14,6 +14,31 @@ cut, entries accumulate under **Unreleased**.
 > past the 0.0.4 freeze, not two pending releases; they collapse into one entry
 > when the tag is cut.
 
+### ValueTracking: `computeKnownFPClass`'s vector arms
+
+#### Added
+
+- `extractelement`, `insertelement`, `shufflevector`, `extractvalue`,
+  `bitcast` and `phi`, plus the `fma`/`fmuladd` pair and the four reducing
+  min/max intrinsics (`vector.reduce.fmax`/`fmin`/`fmaximum`/`fminimum`).
+  Every one of these previously answered `fcAllFlags`.
+- `KnownFpClass::reset_sign_bit`, porting `KnownFPClass::SignBit.reset()`. The
+  reducing min/max arm needs it: those may return a NaN whose sign is not the
+  one the elements agreed on, so a sign learned from the elements is dropped
+  unless the result is known never to be a NaN.
+
+#### Changed
+
+- `getShuffleDemandedElts` is now a shared `shuffle_demanded_elements` helper
+  rather than logic inlined in `shuffle_vector_known_bits`. The poison-lane
+  rule is subtle enough that two copies would eventually disagree.
+
+Two arms are deliberately weaker than upstream, marked at their sites and in
+the module header: `shufflevector` does not take the `getSplatValue` fast path
+(no splat-value helper exists for non-constant values), and `bitcast` does not
+thread the FP recursion depth into its known-bits call. Both cost time or
+precision, never correctness.
+
 ### ValueTracking: `computeKnownFPClass`'s arithmetic arms, and `nofpclass`
 
 #### Added
