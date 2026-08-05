@@ -48,6 +48,39 @@ Pinned by `a_scalable_uniform_undef_vector_prints_an_element_list_known_bug` in
 the *current* output so the bug cannot be forgotten; fixing it fails that test
 loudly.
 
+### The folders were audited and are clean (2026-08-05)
+
+Every element-wise path in `constant_fold.rs` and `constant_folding.rs` was
+checked for the neighbouring failure — reading a vector lane count and then
+building or indexing an element list without a scalability guard. **No
+violations.** All seven `fixed_vector_elements_for_rebuild` call sites bail on
+the `scalable` flag first; `constant_folding.rs`'s only element walk is gated on
+`TypeData::FixedVector`; the uniform builders (`null_constant_for_type`,
+`bool_constant_for_type`, `all_ones_constant_for_type`, `vector_splat_constant`)
+are correct by construction, since a uniform list *is* llvmkit's scalable-splat
+representation. `constant_fold_extract_element_instruction` deliberately skips
+the out-of-range→poison rule for a scalable operand, which would assert
+`vscale == 1`, and answers "don't know" instead.
+
+### Open policy question: llvmkit permits a scalable constant LLVM cannot express
+
+`VectorType::const_vector` skips its element-count check for scalable types —
+correctly, since the count carries no meaning there — but nothing requires the
+lanes to *agree*. So a non-uniform scalable constant is constructible, and the
+parser reaches it: `@g = global <vscale x 4 x i32> <i32 7, i32 8, i32 7, i32 7>`
+parses today. LLVM cannot express that constant at all (`ConstantVector::get`
+takes a fixed count), so it has no rule against it either.
+
+Requiring uniformity was tried and **reverted**: two deliberate tests depend on
+the permissive behaviour as their *premise* —
+`scalable_i1_non_splat_divrem_does_not_use_scalar_i1_shortcuts` and
+`scalable_vector_fsub_negative_zero_pattern_controls_undef_fold`, both in
+`crates/llvmkit-ir/tests/constant_fold.rs`, construct non-uniform scalable
+vectors to check that the folder declines. So this is a representation-policy
+decision, not an oversight to patch: either those tests' premise becomes
+unconstructible (and the tests unnecessary), or llvmkit keeps accepting a
+constant that has no LLVM spelling. **Decide before changing anything here.**
+
 ## ~~Parser — deferred alias/ifunc targets~~ (found and fixed 2026-07-31)
 
 ~~The printer emits aliases and ifuncs before function declarations, but the
