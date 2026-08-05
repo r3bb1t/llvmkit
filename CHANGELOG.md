@@ -36,7 +36,9 @@ cut, entries accumulate under **Unreleased**.
 **`VectorUtils.cpp` is now ported as far as llvmkit's scope allows**: 20 of its
 37 entry-point names are modeled (21 functions, counting both
 `widenShuffleMaskElts` overloads), and the module header names what blocks each
-of the other 17. Two of those are permanent rather than pending —
+of the other 17. `tests/vector_utils_parity.rs` holds that claim to account —
+the modeled column is compiler-checked, so a rename cannot quietly falsify it,
+and the two tables must sum to the upstream entry-point count. Two of those are permanent rather than pending —
 `computeMinimumValueSizes` and `processShuffleMasks`, whose callers all live in
 `lib/CodeGen/SelectionDAG` and `lib/Target/{RISCV,X86}` and which split masks
 across physical registers. llvmkit models no target.
