@@ -438,8 +438,10 @@ pub use value_tracking::{
 pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
 pub use vector_utils::{
     MaskedSlide, ShuffleSource, create_interleave_mask, create_replicated_mask,
-    create_sequential_mask, create_stride_mask, create_unary_mask, find_scalar_element,
-    get_splat_value, horizontal_demanded_elements_for_first_operand, is_splat_value,
+    create_sequential_mask, create_stride_mask, create_unary_mask, deinterleave_intrinsic_factor,
+    find_scalar_element, get_splat_value, horizontal_demanded_elements_for_first_operand,
+    interleave_intrinsic_factor, is_splat_value, is_trivially_scalarizable,
+    is_trivially_vectorizable, is_vector_intrinsic_with_struct_return_overload_at_field,
     mask_contains_all_one_or_undefined, mask_is_all_one_or_undefined,
     mask_is_all_zero_or_undefined, masked_slide_pair, narrow_shuffle_mask_elements,
     possibly_demanded_elements_in_mask, scale_shuffle_mask_elements, shuffle_demanded_elements,

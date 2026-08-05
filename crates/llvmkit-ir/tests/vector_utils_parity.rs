@@ -59,8 +59,16 @@ const MODELED: &[(&str, &str)] = &[
     ("createUnaryMask", "create_unary_mask"),
     ("findScalarElement", "find_scalar_element"),
     (
+        "getDeinterleaveIntrinsicFactor",
+        "deinterleave_intrinsic_factor",
+    ),
+    (
         "getHorizDemandedEltsForFirstOperand",
         "horizontal_demanded_elements_for_first_operand",
+    ),
+    (
+        "getInterleaveIntrinsicFactor",
+        "interleave_intrinsic_factor",
     ),
     ("getShuffleDemandedElts", "shuffle_demanded_elements"),
     (
@@ -71,6 +79,12 @@ const MODELED: &[(&str, &str)] = &[
     ("getSplatValue", "get_splat_value"),
     ("isMaskedSlidePair", "masked_slide_pair"),
     ("isSplatValue", "is_splat_value"),
+    ("isTriviallyScalarizable", "is_trivially_scalarizable"),
+    ("isTriviallyVectorizable", "is_trivially_vectorizable"),
+    (
+        "isVectorIntrinsicWithStructReturnOverloadAtField",
+        "is_vector_intrinsic_with_struct_return_overload_at_field",
+    ),
     (
         "maskContainsAllOneOrUndef",
         "mask_contains_all_one_or_undefined",
@@ -95,8 +109,14 @@ const MODELED: &[(&str, &str)] = &[
 ///
 /// Two of these are marked `[permanent]`: llvmkit models no target, and code
 /// generation and target backends are excluded by charter rather than merely
-/// unfinished. The rest are pending, and eight of them share one blocker — a
-/// public intrinsic-id type would clear all eight at once.
+/// unfinished.
+///
+/// **An earlier revision of this table recorded eight of these as blocked on
+/// "needs `Intrinsic::ID`", and that reason was wrong.** `IntrinsicId` has been
+/// public, generated-backed and whole-space throughout; what is `pub(crate)` is
+/// `IntrinsicSemantic`, a convenience enum over a 31-name *subset*, and the
+/// reason conflated the two. Five of the eight are now modeled. The three that
+/// remain are blocked on things that are actually missing, named below.
 const GAPS: &[(&str, &str)] = &[
     (
         "computeMinimumValueSizes",
@@ -104,22 +124,23 @@ const GAPS: &[(&str, &str)] = &[
     ),
     ("concatenateVectors", "needs an IRBuilder"),
     ("createBitMaskForGaps", "needs an IRBuilder"),
-    ("getDeinterleaveIntrinsicFactor", "needs Intrinsic::ID"),
     ("getDeinterleavedVectorType", "needs IntrinsicInst"),
-    ("getInterleaveIntrinsicFactor", "needs Intrinsic::ID"),
     ("getMetadataToPropagate", "needs metadata modeling"),
-    ("getVectorIntrinsicIDForCall", "needs Intrinsic::ID"),
+    (
+        "getVectorIntrinsicIDForCall",
+        "needs getIntrinsicForCallSite, whose library-function half wants \
+         TargetLibraryInfo",
+    ),
     ("intersectAccessGroups", "needs metadata modeling"),
-    ("isTriviallyScalarizable", "needs Intrinsic::ID"),
-    ("isTriviallyVectorizable", "needs Intrinsic::ID"),
     (
         "isVectorIntrinsicWithOverloadTypeAtArg",
-        "needs Intrinsic::ID",
+        "needs VPCastIntrinsic::isVPCast, which reads VPIntrinsics.def — a \
+         .def file llvmkit does not vendor",
     ),
-    ("isVectorIntrinsicWithScalarOpAtArg", "needs Intrinsic::ID"),
     (
-        "isVectorIntrinsicWithStructReturnOverloadAtField",
-        "needs Intrinsic::ID",
+        "isVectorIntrinsicWithScalarOpAtArg",
+        "needs VPIntrinsic::getVectorLengthParamPos, which reads \
+         VPIntrinsics.def — a .def file llvmkit does not vendor",
     ),
     (
         "processShuffleMasks",
@@ -139,8 +160,10 @@ const GAPS: &[(&str, &str)] = &[
 fn exercises_every_modeled_entry_point() {
     use llvmkit_ir::{
         DynBrand, create_interleave_mask, create_replicated_mask, create_sequential_mask,
-        create_stride_mask, create_unary_mask, find_scalar_element, get_splat_value,
-        horizontal_demanded_elements_for_first_operand, is_splat_value,
+        create_stride_mask, create_unary_mask, deinterleave_intrinsic_factor, find_scalar_element,
+        get_splat_value, horizontal_demanded_elements_for_first_operand,
+        interleave_intrinsic_factor, is_splat_value, is_trivially_scalarizable,
+        is_trivially_vectorizable, is_vector_intrinsic_with_struct_return_overload_at_field,
         mask_contains_all_one_or_undefined, mask_is_all_one_or_undefined,
         mask_is_all_zero_or_undefined, masked_slide_pair, narrow_shuffle_mask_elements,
         possibly_demanded_elements_in_mask, scale_shuffle_mask_elements, shuffle_demanded_elements,
@@ -172,6 +195,13 @@ fn exercises_every_modeled_entry_point() {
     let _all_one = mask_is_all_one_or_undefined::<DynBrand>;
     let _contains_one = mask_contains_all_one_or_undefined::<DynBrand>;
     let _possibly_demanded = possibly_demanded_elements_in_mask::<DynBrand>;
+
+    // Intrinsic classifiers: no brand, and no target — see the GAPS note.
+    let _vectorizable = is_trivially_vectorizable;
+    let _scalarizable = is_trivially_scalarizable;
+    let _struct_return = is_vector_intrinsic_with_struct_return_overload_at_field;
+    let _interleave_factor = interleave_intrinsic_factor;
+    let _deinterleave_factor = deinterleave_intrinsic_factor;
 }
 
 /// Both tables are sorted, duplicate-free and disjoint, and every gap carries

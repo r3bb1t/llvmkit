@@ -392,15 +392,21 @@ coverage being subsumed by the real ports.
      standing "not ported" ground. Leaving it a recorded gap is more honest
      than a port that returns the predicate and makes the caller build the
      constant, which is a different function.
-   - `getIntrinsicForCallSite` returns an `Intrinsic::ID`, and **llvmkit has no
-     public intrinsic-id type** — `IntrinsicSemantic` is `pub(crate)`, and
-     `-D warnings` makes `private_interfaces` an error. The
-     `TargetLibraryInfo` half it needs *does* exist
-     (`target_library_info.rs::LibFunc`, `lib_func_for_name`), so that is not
-     the blocker. Unlike `getInverseMinMaxIntrinsic`, whose domain was ten
-     symbols and so could be a hand-written sum, this one ranges over the whole
-     intrinsic space; the answer is exposing the intrinsic vocabulary, which is
-     its own piece of work.
+   - ~~`getIntrinsicForCallSite` returns an `Intrinsic::ID`, and **llvmkit has
+     no public intrinsic-id type** — `IntrinsicSemantic` is `pub(crate)`…~~
+     **Wrong reason; struck 2026-08-05.** `IntrinsicId` has been public,
+     generated-backed and whole-space all along (`intrinsics.rs`, re-exported
+     from `lib.rs`, with `lookup`, `all`, `from_raw` and `base_name`). The
+     `pub(crate)` type is `IntrinsicSemantic`, a convenience enum over a
+     31-name *subset*, and this entry conflated the two — as did both parity
+     ledgers, which recorded nine functions as blocked on it. Five of those are
+     now ported (`vector_utils.rs`'s intrinsic classifiers) against the public
+     type, matching on `IntrinsicId::base_name` the way
+     `speculation::intrinsic_propagates_poison` already did. What remains
+     genuinely undone here is the library-function half: upstream maps ~60
+     `LibFunc` values onto intrinsics and gates them on
+     `CallBase::onlyReadsMemory`. `target_library_info.rs::LibFunc` and
+     `lib_func_for_name` exist, so this is a porting task, not a blocker.
    - `isOverflowIntrinsicNoWrap` needs `BasicBlockEdge::isSingleEdge` and
      edge-dominance (`DT.dominates(edge, use)`), plus the with-overflow
      intrinsics as a modeled family rather than plain calls.

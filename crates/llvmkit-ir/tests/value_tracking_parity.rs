@@ -487,7 +487,7 @@ const VALUE_TRACKING_GAPS: &[(&str, &str)] = &[
     ),
     (
         "getIntrinsicForCallSite",
-        "blocked on there being no public intrinsic-id type: the TargetLibraryInfo half exists (target_library_info.rs::LibFunc, lib_func_for_name), but the return type is Intrinsic::ID over the whole intrinsic space and llvmkit's IntrinsicSemantic is pub(crate), which -D warnings makes unspellable in a public signature. Unlike getInverseMinMaxIntrinsic's ten-symbol family, this range is open-ended, so a hand-written sum type is not the answer",
+        "pending, not blocked. This row previously read 'no public intrinsic-id type', which was wrong: IntrinsicId is public, generated-backed and spans the whole intrinsic space; the pub(crate) type is IntrinsicSemantic, a 31-name subset, and the two were conflated. vector_utils.rs now ports five Intrinsic::ID functions against the public type. What is genuinely left here is the library-function half — upstream maps ~60 LibFunc values onto intrinsics and gates them on CallBase::onlyReadsMemory",
     ),
     (
         "getVScaleRange",

@@ -4,9 +4,9 @@
 //!
 //! # What is here
 //!
-//! **Everything llvmkit's scope admits.** Upstream defines 37 functions; 20 of
-//! those names are ported (21 functions, since `widenShuffleMaskElts` has two
-//! overloads), and the remaining 17 are blocked on something named below.
+//! **Everything llvmkit's scope admits.** Upstream defines 37 functions; 25 of
+//! those names are ported (26 functions, since `widenShuffleMaskElts` has two
+//! overloads), and the remaining 12 are blocked on something named below.
 //!
 //! - **The splat family** — [`get_splat_value`], [`splat_index`],
 //!   [`is_splat_value`], [`find_scalar_element`].
@@ -23,6 +23,10 @@
 //! - **The `<N x i1>` mask predicates** — [`mask_is_all_zero_or_undefined`],
 //!   [`mask_is_all_one_or_undefined`], [`mask_contains_all_one_or_undefined`].
 //! - **Slide recognition** — [`masked_slide_pair`].
+//! - **The intrinsic classifiers** — [`is_trivially_vectorizable`],
+//!   [`is_trivially_scalarizable`],
+//!   [`is_vector_intrinsic_with_struct_return_overload_at_field`],
+//!   [`interleave_intrinsic_factor`], [`deinterleave_intrinsic_factor`].
 //!
 //! [`possibly_demanded_elements_in_mask`] is **stronger** than upstream's, in
 //! a sound direction, and says so at its site.
@@ -52,18 +56,24 @@
 //! implementation alone — worth knowing before trusting a subtle answer from
 //! it. The rest are pinned by ported fixtures.
 //!
+//! **The intrinsic classifiers drop upstream's `TargetTransformInfo`**, which
+//! its own header sanctions: passing `nullptr` "is appropriate" when no target
+//! specific intrinsics will be considered, and that argument gates exactly one
+//! branch in each function. llvmkit models no target by charter, so the
+//! parameter would have nothing to consult. Each says so at its site.
+//!
 //! # What is not modeled, and why
 //!
-//! **17 of the 37 are absent**, each blocked on something named:
+//! **12 of the 37 are absent**, each blocked on something named:
 //!
-//! - **Eight take or return `Intrinsic::ID`** — `isTriviallyVectorizable`,
-//!   `isTriviallyScalarizable`, `isVectorIntrinsicWithScalarOpAtArg`,
-//!   `isVectorIntrinsicWithOverloadTypeAtArg`,
-//!   `isVectorIntrinsicWithStructReturnOverloadAtField`,
-//!   `getVectorIntrinsicIDForCall`, `getInterleaveIntrinsicFactor` and
-//!   `getDeinterleaveIntrinsicFactor`. llvmkit has no public intrinsic-id
-//!   type; the same blocker keeps `getIntrinsicForCallSite` out of the
-//!   ValueTracking ledger, so closing it would unblock nine functions at once.
+//! - **Three still turn on intrinsic modeling llvmkit lacks** —
+//!   `isVectorIntrinsicWithScalarOpAtArg` and
+//!   `isVectorIntrinsicWithOverloadTypeAtArg` consult
+//!   `VPIntrinsic::getVectorLengthParamPos` and `VPCastIntrinsic::isVPCast`,
+//!   which read `llvm/IR/VPIntrinsics.def` — a `.def` file llvmkit does not
+//!   vendor, so the vector-predication operand positions are simply unknown
+//!   here. `getVectorIntrinsicIDForCall` needs `getIntrinsicForCallSite`, whose
+//!   library-function half wants `TargetLibraryInfo`.
 //! - **Four need metadata modeling** — `uniteAccessGroups`,
 //!   `intersectAccessGroups`, `getMetadataToPropagate` and
 //!   `propagateMetadata`.
@@ -94,6 +104,7 @@ use crate::constant::{Constant, ConstantData};
 use crate::instr_types::BinaryOpcode;
 use crate::instr_types::ShuffleMaskElem;
 use crate::instruction::InstructionKindData;
+use crate::intrinsics::IntrinsicId;
 use crate::module::ModuleBrand;
 use crate::r#type::Type;
 use crate::value::{Value, ValueKindData};
@@ -1063,4 +1074,188 @@ pub fn shuffle_demanded_elements(
         }
     }
     Some((left, right))
+}
+
+// --------------------------------------------------------------------------
+// Intrinsic classification
+// --------------------------------------------------------------------------
+
+/// Whether the intrinsic is trivially vectorizable — its scalar form takes all
+/// scalars, and its vector form all vectors, bar the operands
+/// `isVectorIntrinsicWithScalarOpAtArg` names, which llvmkit does not model
+/// yet.
+///
+/// Ports `llvm::isTriviallyVectorizable`. Upstream's own note carries over:
+/// this implies [`is_trivially_scalarizable`].
+///
+/// Matched on [`IntrinsicId::base_name`] rather than on id constants, the
+/// idiom `speculation::intrinsic_propagates_poison` already uses: llvmkit mints
+/// per-intrinsic constants only for the ones its own analyses need, and the
+/// base names come from the same generated table, so they are exact.
+/// `vector_utils_intrinsics.rs` counts the ids that answer `true` against the
+/// number of labels the C++ switch lists, which is what catches a misspelling —
+/// a name matching no intrinsic would otherwise fail silently forever.
+pub fn is_trivially_vectorizable(id: IntrinsicId) -> bool {
+    matches!(
+        id.base_name(),
+        // Integer bit-manipulation.
+        "llvm.abs"
+            | "llvm.bswap"
+            | "llvm.bitreverse"
+            | "llvm.ctpop"
+            | "llvm.ctlz"
+            | "llvm.cttz"
+            | "llvm.fshl"
+            | "llvm.fshr"
+            | "llvm.smax"
+            | "llvm.smin"
+            | "llvm.umax"
+            | "llvm.umin"
+            | "llvm.sadd.sat"
+            | "llvm.ssub.sat"
+            | "llvm.uadd.sat"
+            | "llvm.usub.sat"
+            | "llvm.smul.fix"
+            | "llvm.smul.fix.sat"
+            | "llvm.umul.fix"
+            | "llvm.umul.fix.sat"
+            // Floating-point.
+            | "llvm.sqrt"
+            | "llvm.asin"
+            | "llvm.acos"
+            | "llvm.atan"
+            | "llvm.atan2"
+            | "llvm.sin"
+            | "llvm.cos"
+            | "llvm.sincos"
+            | "llvm.sincospi"
+            | "llvm.tan"
+            | "llvm.sinh"
+            | "llvm.cosh"
+            | "llvm.tanh"
+            | "llvm.exp"
+            | "llvm.exp10"
+            | "llvm.exp2"
+            | "llvm.frexp"
+            | "llvm.ldexp"
+            | "llvm.log"
+            | "llvm.log10"
+            | "llvm.log2"
+            | "llvm.fabs"
+            | "llvm.minnum"
+            | "llvm.maxnum"
+            | "llvm.minimum"
+            | "llvm.maximum"
+            | "llvm.minimumnum"
+            | "llvm.maximumnum"
+            | "llvm.modf"
+            | "llvm.copysign"
+            | "llvm.floor"
+            | "llvm.ceil"
+            | "llvm.trunc"
+            | "llvm.rint"
+            | "llvm.nearbyint"
+            | "llvm.round"
+            | "llvm.roundeven"
+            | "llvm.pow"
+            | "llvm.fma"
+            | "llvm.fmuladd"
+            | "llvm.is.fpclass"
+            | "llvm.powi"
+            | "llvm.canonicalize"
+            | "llvm.fptosi.sat"
+            | "llvm.fptoui.sat"
+            | "llvm.lround"
+            | "llvm.llround"
+            | "llvm.lrint"
+            | "llvm.llrint"
+            | "llvm.ucmp"
+            | "llvm.scmp"
+    )
+}
+
+/// Whether the intrinsic is trivially scalarizable.
+///
+/// Ports `llvm::isTriviallyScalarizable`. Upstream's note carries over: some
+/// intrinsics are worth scalarizing without being worth vectorizing, which is
+/// why this is a separate question rather than a synonym.
+///
+/// **Upstream takes a `TargetTransformInfo`; this ports the `nullptr`
+/// configuration**, which its header sanctions in as many words — "if no target
+/// specific intrinsics will be considered then it is appropriate to pass in
+/// nullptr". The argument gates exactly one branch, `TTI &&
+/// Intrinsic::isTargetIntrinsic(ID)`, so dropping it answers for the
+/// target-independent intrinsics and declines the target ones. llvmkit models
+/// no target by charter, so that branch has nothing to consult and the
+/// parameter would be a lie. [`IntrinsicId::is_target`] is the predicate a
+/// caller needs to tell the two apart.
+pub fn is_trivially_scalarizable(id: IntrinsicId) -> bool {
+    if is_trivially_vectorizable(id) {
+        return true;
+    }
+
+    // The `TTI && isTargetIntrinsic` branch is the one this port declines; see
+    // the note above.
+    matches!(
+        id.base_name(),
+        "llvm.uadd.with.overflow"
+            | "llvm.sadd.with.overflow"
+            | "llvm.ssub.with.overflow"
+            | "llvm.usub.with.overflow"
+            | "llvm.umul.with.overflow"
+            | "llvm.smul.with.overflow"
+    )
+}
+
+/// Whether the vector form of a struct-returning intrinsic is overloaded on
+/// the type of struct field `field_index`.
+///
+/// Ports `llvm::isVectorIntrinsicWithStructReturnOverloadAtField`, and ports
+/// the `nullptr` `TargetTransformInfo` configuration for the reason
+/// [`is_trivially_scalarizable`] gives at length.
+pub fn is_vector_intrinsic_with_struct_return_overload_at_field(
+    id: IntrinsicId,
+    field_index: i32,
+) -> bool {
+    match id.base_name() {
+        // `frexp` returns `{ significand, exponent }` and is overloaded on
+        // both.
+        "llvm.frexp" => field_index == 0 || field_index == 1,
+        _ => field_index == 0,
+    }
+}
+
+/// The `N` of `llvm.vector.interleaveN`.
+///
+/// Ports `llvm::getInterleaveIntrinsicFactor`. Upstream returns `0` for "not an
+/// interleave intrinsic"; `None` says the same without a factor of zero being
+/// spellable.
+pub fn interleave_intrinsic_factor(id: IntrinsicId) -> Option<u32> {
+    match id.base_name() {
+        "llvm.vector.interleave2" => Some(2),
+        "llvm.vector.interleave3" => Some(3),
+        "llvm.vector.interleave4" => Some(4),
+        "llvm.vector.interleave5" => Some(5),
+        "llvm.vector.interleave6" => Some(6),
+        "llvm.vector.interleave7" => Some(7),
+        "llvm.vector.interleave8" => Some(8),
+        _ => None,
+    }
+}
+
+/// The `N` of `llvm.vector.deinterleaveN`.
+///
+/// Ports `llvm::getDeinterleaveIntrinsicFactor`, with the same `0` to `None`
+/// spelling [`interleave_intrinsic_factor`] explains.
+pub fn deinterleave_intrinsic_factor(id: IntrinsicId) -> Option<u32> {
+    match id.base_name() {
+        "llvm.vector.deinterleave2" => Some(2),
+        "llvm.vector.deinterleave3" => Some(3),
+        "llvm.vector.deinterleave4" => Some(4),
+        "llvm.vector.deinterleave5" => Some(5),
+        "llvm.vector.deinterleave6" => Some(6),
+        "llvm.vector.deinterleave7" => Some(7),
+        "llvm.vector.deinterleave8" => Some(8),
+        _ => None,
+    }
 }

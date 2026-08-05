@@ -14,6 +14,47 @@ cut, entries accumulate under **Unreleased**.
 > past the 0.0.4 freeze, not two pending releases; they collapse into one entry
 > when the tag is cut.
 
+### VectorUtils: the intrinsic classifiers — a recorded blocker that was not real
+
+#### Added
+
+- **`is_trivially_vectorizable`** and **`is_trivially_scalarizable`**, porting
+  the same-named functions. The first is the 71-label table that decides whether
+  an intrinsic's scalar and vector forms are elementwise; the second adds the
+  six `with.overflow` intrinsics on top of it.
+- **`is_vector_intrinsic_with_struct_return_overload_at_field`**, porting
+  `isVectorIntrinsicWithStructReturnOverloadAtField` — `frexp` is overloaded on
+  both struct fields, everything else on the first only.
+- **`interleave_intrinsic_factor`** and **`deinterleave_intrinsic_factor`**,
+  porting `getInterleaveIntrinsicFactor` and `getDeinterleaveIntrinsicFactor`.
+  Upstream returns `0` for "not one of these"; these return `Option<u32>`, so a
+  factor of zero is not spellable.
+
+These take `IntrinsicId`, which has been public all along. **Both parity
+ledgers and `docs/future-work.md` recorded nine functions as blocked on
+"llvmkit has no public intrinsic-id type", and that reason was wrong** —
+`IntrinsicId` is public, generated-backed and spans the whole intrinsic space;
+the `pub(crate)` type is `IntrinsicSemantic`, a convenience enum over a 31-name
+*subset*, and the records conflated the two. All three are corrected in this
+commit rather than left for the next reader to inherit.
+
+The three VectorUtils functions still absent from that group are blocked on
+things that are actually missing, now named precisely:
+`isVectorIntrinsicWithScalarOpAtArg` and
+`isVectorIntrinsicWithOverloadTypeAtArg` read vector-predication operand
+positions out of `llvm/IR/VPIntrinsics.def`, a `.def` file llvmkit does not
+vendor, and `getVectorIntrinsicIDForCall` needs `getIntrinsicForCallSite`'s
+library-function half.
+
+#### Changed
+
+- The classifiers **drop upstream's `TargetTransformInfo` parameter**, which
+  its header sanctions — passing `nullptr` "is appropriate" when no target
+  specific intrinsics will be considered, and the argument gates exactly one
+  branch in each. llvmkit models no target by charter, so the parameter would
+  have nothing to consult. `IntrinsicId::is_target` is what a caller needs to
+  tell the two apart. Each function says this at its site.
+
 ### VectorUtils: the mask predicates and constructors — the port closes
 
 #### Added
@@ -36,7 +77,9 @@ cut, entries accumulate under **Unreleased**.
 **`VectorUtils.cpp` is now ported as far as llvmkit's scope allows**: 20 of its
 37 entry-point names are modeled (21 functions, counting both
 `widenShuffleMaskElts` overloads), and the module header names what blocks each
-of the other 17. `tests/vector_utils_parity.rs` holds that claim to account —
+of the other 17. *(Superseded within this same unreleased window — the
+intrinsic classifiers above took five more, so the current figure is 25 of 37,
+and one of the blockers recorded here turned out not to exist.)* `tests/vector_utils_parity.rs` holds that claim to account —
 the modeled column is compiler-checked, so a rename cannot quietly falsify it,
 and the two tables must sum to the upstream entry-point count. Two of those are permanent rather than pending —
 `computeMinimumValueSizes` and `processShuffleMasks`, whose callers all live in
