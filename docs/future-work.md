@@ -12,10 +12,27 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
-## Printer — a scalable vector of uniform pointers or `undef` prints an element list (found 2026-08-05)
+## ~~Printer — a scalable vector of uniform pointers or `undef` prints an element list~~ (found 2026-08-05, fixed 2026-08-05)
 
-**This is invalid IR.** A scalable vector's lane count is a minimum, not a
-count, so LLVM has no element-list constant form for one. llvmkit can print:
+**Fixed** by `asm_writer::prints_as_splat`, which lifts the int/fp restriction
+on the `splat (…)` shorthand for scalable vector types — where it is not a
+shorthand at all but the only spelling — while keeping it for fixed vectors, so
+output for every constant LLVM can also build stays byte-identical. Covered by
+`crates/llvmkit-asmparser/tests/scalable_vector_splat_printing.rs`, which round
+trips parse → verify → print → re-parse; the fixture that used to pin the buggy
+output is re-aimed at the fix. The original analysis follows, since the
+mechanism is worth keeping.
+
+A **non-uniform** scalable aggregate still reaches the element-list fallback and
+still prints text LLVM would reject — but that constant should not exist at
+all, and making it unconstructible is the open policy question recorded below,
+not a printer decision. Printing it losslessly beats collapsing it to a
+`splat (…)` it is not.
+
+---
+
+**This was invalid IR.** A scalable vector's lane count is a minimum, not a
+count, so LLVM has no element-list constant form for one. llvmkit could print:
 
 ```text
 @g = global <vscale x 4 x ptr> <ptr undef, ptr undef, ptr undef, ptr undef>
@@ -34,19 +51,27 @@ faithfully mirrors `AsmWriter.cpp`'s own `isa<ConstantInt> || isa<ConstantFP>`
 restriction — correct for a *fixed* vector, where the element list is a legal
 fallback, and wrong for a scalable one, where it is not.
 
-So the folder is not at fault and must not be "fixed": an attempt to guard
+So the folder was not at fault and must not be "fixed": an attempt to guard
 `vector_splat_constant` against scalable types broke all five tests, because
-the representation is deliberate. **The fix belongs in the printer**: for a
-scalable vector, never fall through to the element list. Emit `splat (…)` for
-any uniform element, not just int/fp — llvmkit's parser already accepts that
-via `expand_splat_constant`, so the round trip holds. Consider also a verifier
-rule rejecting a `ConstantData::Aggregate` under a scalable vector type whose
-elements are not uniform, which turns the whole class loud.
+the representation is deliberate. The fix belonged in the printer, and that is
+where it landed.
 
-Pinned by `a_scalable_uniform_undef_vector_prints_an_element_list_known_bug` in
-`crates/llvmkit-asmparser/tests/constant_expression_splat.rs`, which asserts
-the *current* output so the bug cannot be forgotten; fixing it fails that test
-loudly.
+## Parser — no vector floating-point binary operators (found 2026-08-05)
+
+`fadd <vscale x 2 x double> %b, splat (double 1.5)` does not parse: the parser
+answers "float-typed lhs", because it narrows the operands through the
+scalar-only `IntoFloatValue` exactly as it used to for integers.
+
+This is the floating-point mirror of the gap closed for integers by
+`IRBuilder::build_int_binop_erased` (see the closed section on vector integer
+binops above) — llvmkit's typed float handles carry a *scalar* `FloatKind`, so
+`<N x double>` has no typed handle and needs an erased builder. The shape of
+the fix is already established: a `build_float_binop_erased` beside its integer
+sibling, validated against `BinaryOperator::Create`'s type rule, plus the
+parser routing FP binops through it.
+
+Found while writing `scalable_vector_splat_printing.rs`, which routes around it
+with a `ret` instead of an `fadd` and says so at the site.
 
 ### The folders were audited and are clean (2026-08-05)
 

@@ -152,17 +152,38 @@ across physical registers. llvmkit models no target.
   `validate_constant_expr_data` rejects a non-empty one for `ShuffleVector` and
   all 114 construction sites pass empty. The mask is the third operand, and
   that is what the arm reads.
+#### Fixed, in follow-up
+
+- **A scalable vector of uniform pointers or `undef` printed an element list**,
+  which is not a constant form LLVM has for a scalable type — its lane count is
+  a minimum, so a list cannot describe the lanes one for one, and llvmkit was
+  also implicitly asserting `vscale == 1`. `asm_writer::prints_as_splat` now
+  answers the two vector kinds separately: a **fixed** vector keeps
+  `AsmWriter.cpp`'s `isa<ConstantInt> || isa<ConstantFP>` restriction on the
+  `splat (…)` shorthand, since its element list is an equally legal spelling;
+  a **scalable** vector uses `splat (…)` for any uniform element, because that
+  is the only spelling it has. Output for every constant LLVM can also build is
+  unchanged.
+
+  The cause was in the printer, not the folder — an earlier attempt to guard
+  `constant_fold::vector_splat_constant` broke five tests that depend on
+  llvmkit representing a scalable splat as a uniform element list, and was
+  reverted.
+
 #### Known gaps
 
-- **A scalable vector of uniform pointers or `undef` prints an element list**,
-  which is not a constant form LLVM has for a scalable type. Found while
-  writing the fixtures above, and **not** fixed here: the cause is in the
-  printer, not the folder. llvmkit represents a scalable splat as `min_len`
-  equal elements and relies on `asm_writer` collapsing it back to `splat (…)`,
-  and that collapse is restricted to integer and floating-point elements —
-  faithfully mirroring `AsmWriter.cpp`, which is correct for a fixed vector and
-  wrong for a scalable one. `docs/future-work.md` carries the mechanism and the
-  fix; the current output is pinned by a test so it cannot be forgotten.
+- **A non-uniform scalable aggregate still prints an element list**, which LLVM
+  would still reject. That constant should not be constructible at all:
+  `VectorType::const_vector` skips its element-count check for scalable types
+  (correctly — the count means nothing there) and does not require the lanes to
+  agree. Requiring it was tried and reverted, because two tests build such a
+  constant as their *premise* to check the folder declines, so it is a
+  representation-policy decision rather than a patch. See
+  `docs/future-work.md`.
+- **The parser cannot read a vector floating-point binary operator** —
+  `fadd <2 x double> …` answers "float-typed lhs". This is the FP mirror of the
+  integer gap `build_int_binop_erased` closed; the fix has the same shape.
+  Found while writing the printing fixtures.
 
 ### ValueTracking: `computeKnownFPClass`'s vector arms
 

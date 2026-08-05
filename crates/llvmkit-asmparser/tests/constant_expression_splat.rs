@@ -111,35 +111,37 @@ fn an_undef_mask_folds_to_poison_before_this_arm_is_reached() {
 /// Inserting at a lane other than 0 makes every shuffled lane `undef`, so the
 /// folder answers a uniform-`undef` vector before this arm is reached.
 ///
-/// **This case documents a printer bug it found, deliberately not fixed here.**
-/// llvmkit represents a scalable splat as `min_len` equal elements — a choice
-/// upstream cannot make, since `ConstantVector::get` needs a fixed count — and
-/// relies on `asm_writer` collapsing a uniform vector back to `splat (…)`.
-/// That collapse is restricted to integer and floating-point elements,
-/// faithfully mirroring `AsmWriter.cpp`'s own restriction, so a scalable vector
-/// of uniform *pointers* or `undef` falls through to the element-list form:
+/// **This case used to pin a printer bug, and now pins its fix.** llvmkit
+/// represents a scalable splat as `min_len` equal elements — a choice upstream
+/// cannot make, since `ConstantVector::get` needs a fixed count — and relies on
+/// `asm_writer` collapsing a uniform vector back to `splat (…)`. That collapse
+/// was restricted to integer and floating-point elements, mirroring
+/// `AsmWriter.cpp`, so a scalable vector of uniform *pointers* or `undef` fell
+/// through to the element-list form:
 ///
 /// ```text
 /// @g = global <vscale x 4 x ptr> <ptr undef, ptr undef, ptr undef, ptr undef>
 /// ```
 ///
-/// LLVM has no such constant for a scalable type and would reject that text.
-/// The assertion below pins the current output rather than the desired one, so
-/// the bug cannot be forgotten and fixing it fails here loudly. See
-/// `docs/future-work.md` for why the fix belongs in the printer.
+/// LLVM has no element-list constant for a scalable type and would reject that
+/// text. `asm_writer::prints_as_splat` now lifts the int/fp restriction for
+/// scalable types, where `splat (…)` is the only spelling there is;
+/// `scalable_vector_splat_printing.rs` covers the rule directly, with round
+/// trips through the verifier.
 #[test]
-fn a_scalable_uniform_undef_vector_prints_an_element_list_known_bug() {
+fn a_scalable_uniform_undef_vector_prints_as_a_splat() {
     let module = parse(
         "@x = global i32 7\n\
          @g = global <vscale x 4 x ptr> shufflevector (<vscale x 4 x ptr> insertelement (<vscale x 4 x ptr> undef, ptr @x, i32 1), <vscale x 4 x ptr> undef, <vscale x 4 x i32> zeroinitializer)",
     );
     let printed = format!("{module}");
     assert!(
-        printed.contains(
-            "@g = global <vscale x 4 x ptr> <ptr undef, ptr undef, ptr undef, ptr undef>"
-        ),
-        "current (invalid) output; if this now prints `splat (ptr undef)` or \
-         `undef`, the printer bug is fixed — delete this case and say so:\n{printed}"
+        printed.contains("@g = global <vscale x 4 x ptr> splat (ptr undef)"),
+        "{printed}"
+    );
+    assert!(
+        !printed.contains("ptr undef, ptr undef"),
+        "a scalable vector has no element list to write:\n{printed}"
     );
 }
 

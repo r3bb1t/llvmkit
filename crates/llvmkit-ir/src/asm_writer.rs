@@ -896,6 +896,32 @@ fn is_int_or_fp_splat_value(module: &ModuleCore, id: ValueSlot) -> bool {
     )
 }
 
+/// Whether a uniform vector constant is spelled `splat (…)` rather than as an
+/// element list.
+///
+/// **The two vector kinds answer differently, and only one of them is a
+/// choice.** For a *fixed* vector both spellings are legal, and
+/// `AsmWriter.cpp`'s `writeConstantInternal` picks the shorthand only for
+/// `ConstantInt` and `ConstantFP`; that restriction is mirrored here so printed
+/// output stays byte-identical.
+///
+/// A *scalable* vector has no element-list spelling at all — its lane count is
+/// a minimum, not a count, so a list cannot describe the lanes one for one and
+/// LLVM would reject the text. `splat (…)` is the only form it has, whatever
+/// the element category, so the int/fp restriction must not apply. Upstream
+/// never faces the question: `ConstantVector::get` takes a fixed count, so a
+/// scalable vector constant with an element list cannot exist there. llvmkit
+/// builds one deliberately — it is how a scalable splat is represented, see
+/// `constant_fold::vector_splat_constant` — which is why the printer has to
+/// know the difference.
+fn prints_as_splat<B: ModuleBrand>(module: &ModuleCore, ty: Type<'_, B>, splat: ValueSlot) -> bool {
+    match ty.data() {
+        TypeData::FixedVector { .. } => is_int_or_fp_splat_value(module, splat),
+        TypeData::ScalableVector { .. } => true,
+        _ => false,
+    }
+}
+
 fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     host: Value<'ctx, B>,
@@ -917,11 +943,8 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
     {
         return f.write_str("zeroinitializer");
     }
-    if matches!(
-        ty.data(),
-        TypeData::FixedVector { .. } | TypeData::ScalableVector { .. }
-    ) && let Some(splat) = aggregate_splat_id(elem_ids)
-        && is_int_or_fp_splat_value(module.core_ref(), splat)
+    if let Some(splat) = aggregate_splat_id(elem_ids)
+        && prints_as_splat(module.core_ref(), ty, splat)
     {
         let data = module.context().value_data(splat);
         let value = Value::from_parts(splat, module, data.ty);
@@ -929,6 +952,15 @@ fn fmt_aggregate_constant<'ctx, B: ModuleBrand + 'ctx>(
         fmt_operand(f, value, None)?;
         return f.write_str(")");
     }
+    // The element-list fallback. A *scalable* vector reaches it only when its
+    // lanes disagree, and that shape has no LLVM spelling at all — so what is
+    // printed here is invalid IR whatever it says. It is printed losslessly
+    // rather than collapsed to a `splat (…)` of the first lane, because
+    // claiming a splat the constant is not would corrupt silently where this
+    // merely fails to re-parse. The real answer is to stop the constant being
+    // constructible; `VectorType::const_vector` deliberately does not require
+    // uniformity today and two tests depend on that, so it is a representation
+    // decision rather than a printer one. See `docs/future-work.md`.
     let (open, close) = match ty.data() {
         TypeData::Array { .. } => ("[", "]"),
         TypeData::Struct(s) => {
