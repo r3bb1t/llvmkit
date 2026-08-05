@@ -22,7 +22,7 @@ use super::pass_manager::FunctionPass;
 use super::r#type::{Type, TypeKind};
 use super::value::{IntValue, Value, ValueKindData, ValueSlot, ValueUse};
 use super::value_id::IntValueId;
-use super::value_tracking::{ValueTrackingQuery, compute_known_bits};
+use super::value_tracking::{ValueTrackingQuery, compute_known_bits, value_from_slot};
 use super::{ApInt, IrError, IrResult, KnownBits};
 use core::ops::Not;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -167,7 +167,7 @@ impl DemandedBits {
         if let Some(bits) = self.operand_bits.get(&(user.slot(), operand_index)) {
             return Ok(bits.clone());
         }
-        let operand = value_from_id(user, operand_id);
+        let operand = value_from_slot(user, operand_id);
         let Some(width) = int_scalar_bit_width(operand.ty()) else {
             return Ok(ApInt::low_bits_set(
                 value_scalar_size_in_bits(operand, &self.data_layout),
@@ -200,7 +200,7 @@ impl DemandedBits {
                 message: "operand index out of range",
             });
         };
-        let operand = value_from_id(user, operand_id);
+        let operand = value_from_slot(user, operand_id);
         if int_scalar_bit_width(operand.ty()).is_none() {
             return Ok(false);
         }
@@ -267,7 +267,7 @@ impl DemandedBits {
                     continue;
                 }
                 for operand_id in data.kind.operand_ids() {
-                    let operand = value_from_id(anchor, operand_id);
+                    let operand = value_from_slot(anchor, operand_id);
                     if is_instruction_value(operand) {
                         if let Some(width) = int_scalar_bit_width(operand.ty()) {
                             self.alive_bits
@@ -283,7 +283,7 @@ impl DemandedBits {
 
         while let Some(user_id) = worklist.pop_back() {
             queued.remove(&user_id);
-            let user = value_from_id(anchor, user_id);
+            let user = value_from_slot(anchor, user_id);
             let ValueKindData::Instruction(user_data) = &user.data().kind else {
                 continue;
             };
@@ -297,7 +297,7 @@ impl DemandedBits {
 
             for (operand_index, operand_id) in user_data.kind.operand_ids().into_iter().enumerate()
             {
-                let operand = value_from_id(anchor, operand_id);
+                let operand = value_from_slot(anchor, operand_id);
                 if let Some(width) = int_scalar_bit_width(operand.ty()) {
                     let alive = if input_known_dead {
                         ApInt::zero(width)
@@ -452,8 +452,8 @@ impl DemandedBits {
         bin: &BinaryOpData,
     ) -> IrResult<(KnownBits, KnownBits)> {
         let query = ValueTrackingQuery::new(&self.data_layout);
-        let lhs = compute_known_bits(value_from_id(user, bin.lhs.get()), &query)?;
-        let rhs = compute_known_bits(value_from_id(user, bin.rhs.get()), &query)?;
+        let lhs = compute_known_bits(value_from_slot(user, bin.lhs.get()), &query)?;
+        let rhs = compute_known_bits(value_from_slot(user, bin.rhs.get()), &query)?;
         Ok((lhs, rhs))
     }
 
@@ -463,7 +463,7 @@ impl DemandedBits {
         bin: &BinaryOpData,
         width: u32,
     ) -> IrResult<(u32, u32)> {
-        let rhs = value_from_id(user, bin.rhs.get());
+        let rhs = value_from_slot(user, bin.rhs.get());
         let query = ValueTrackingQuery::new(&self.data_layout);
         let known = compute_known_bits(rhs, &query)?;
         let limit = u64::from(width.saturating_sub(1));
@@ -482,12 +482,12 @@ impl DemandedBits {
         let width = alive_out.bit_width();
         if operand_index != 0 {
             return Ok(ApInt::low_bits_set(
-                int_scalar_bit_width(value_from_id(user, bin.rhs.get()).ty()).unwrap_or(width),
+                int_scalar_bit_width(value_from_slot(user, bin.rhs.get()).ty()).unwrap_or(width),
                 u32::MAX,
             ));
         }
         let shift =
-            constant_ap_int(value_from_id(user, bin.rhs.get())).map(|v| limited_shift(&v, width));
+            constant_ap_int(value_from_slot(user, bin.rhs.get())).map(|v| limited_shift(&v, width));
         if let Some(amount) = shift {
             let mut bits = lshr_or_zero(alive_out, amount);
             if bin.no_signed_wrap {
@@ -518,12 +518,12 @@ impl DemandedBits {
         let width = alive_out.bit_width();
         if operand_index != 0 {
             return Ok(ApInt::low_bits_set(
-                int_scalar_bit_width(value_from_id(user, bin.rhs.get()).ty()).unwrap_or(width),
+                int_scalar_bit_width(value_from_slot(user, bin.rhs.get()).ty()).unwrap_or(width),
                 u32::MAX,
             ));
         }
         let shift =
-            constant_ap_int(value_from_id(user, bin.rhs.get())).map(|v| limited_shift(&v, width));
+            constant_ap_int(value_from_slot(user, bin.rhs.get())).map(|v| limited_shift(&v, width));
         if let Some(amount) = shift {
             let mut bits = shl_or_zero(alive_out, amount);
             if bin.is_exact {
@@ -550,12 +550,12 @@ impl DemandedBits {
         let width = alive_out.bit_width();
         if operand_index != 0 {
             return Ok(ApInt::low_bits_set(
-                int_scalar_bit_width(value_from_id(user, bin.rhs.get()).ty()).unwrap_or(width),
+                int_scalar_bit_width(value_from_slot(user, bin.rhs.get()).ty()).unwrap_or(width),
                 u32::MAX,
             ));
         }
         let shift =
-            constant_ap_int(value_from_id(user, bin.rhs.get())).map(|v| limited_shift(&v, width));
+            constant_ap_int(value_from_slot(user, bin.rhs.get())).map(|v| limited_shift(&v, width));
         if let Some(amount) = shift {
             let mut bits = shl_or_zero(alive_out, amount);
             if alive_out.intersects(&ApInt::high_bits_set(width, amount)) && width != 0 {
@@ -608,7 +608,7 @@ impl DemandedBits {
         let Some(arg_index) = operand_index.checked_sub(1) else {
             return Ok(None);
         };
-        let Some(semantic) = intrinsic_semantic_for_callee(value_from_id(user, callee_id)) else {
+        let Some(semantic) = intrinsic_semantic_for_callee(value_from_slot(user, callee_id)) else {
             return Ok(None);
         };
         let width = alive_out.bit_width();
@@ -672,7 +672,7 @@ impl DemandedBits {
         let Some(shift_value_id) = operands.get(3).copied() else {
             return Ok(None);
         };
-        let Some(shift) = constant_ap_int(value_from_id(user, shift_value_id)) else {
+        let Some(shift) = constant_ap_int(value_from_slot(user, shift_value_id)) else {
             return Ok(None);
         };
         let mut shift = apint_unsigned_rem_u32(&shift, width);
@@ -951,7 +951,7 @@ fn operand_value<'ctx, B: ModuleBrand + 'ctx>(
             message: "operand index out of range",
         });
     };
-    Ok(value_from_id(user, id))
+    Ok(value_from_slot(user, id))
 }
 
 fn simplify_demanded_bits_iteration<'ctx, B: ModuleBrand + 'ctx>(
@@ -1029,7 +1029,7 @@ fn simplify_demanded_operands<'a, 'ctx, B: ModuleBrand + 'ctx>(
     };
     match &inst.kind {
         InstructionKindData::And(bin) => {
-            let lhs = value_from_id(value, bin.lhs.get());
+            let lhs = value_from_slot(value, bin.lhs.get());
             let lhs_known = compute_known_bits(lhs, query)?;
             let mask = demanded.bitand(&lhs_known.zero_mask().not());
             shrink_demanded_constant_operand(value, &bin.rhs, &mask)
@@ -1061,8 +1061,8 @@ fn demanded_value_replacement<'a, 'ctx, B: ModuleBrand + 'ctx>(
     };
     let replacement = match &inst.kind {
         InstructionKindData::And(bin) => {
-            let lhs = value_from_id(value, bin.lhs.get());
-            let rhs = value_from_id(value, bin.rhs.get());
+            let lhs = value_from_slot(value, bin.lhs.get());
+            let rhs = value_from_slot(value, bin.rhs.get());
             let lhs_known = compute_known_bits(lhs, query)?;
             let rhs_known = compute_known_bits(rhs, query)?;
             if is_subset_of(
@@ -1080,8 +1080,8 @@ fn demanded_value_replacement<'a, 'ctx, B: ModuleBrand + 'ctx>(
             }
         }
         InstructionKindData::Or(bin) => {
-            let lhs = value_from_id(value, bin.lhs.get());
-            let rhs = value_from_id(value, bin.rhs.get());
+            let lhs = value_from_slot(value, bin.lhs.get());
+            let rhs = value_from_slot(value, bin.rhs.get());
             let lhs_known = compute_known_bits(lhs, query)?;
             let rhs_known = compute_known_bits(rhs, query)?;
             if is_subset_of(
@@ -1099,8 +1099,8 @@ fn demanded_value_replacement<'a, 'ctx, B: ModuleBrand + 'ctx>(
             }
         }
         InstructionKindData::Xor(bin) => {
-            let lhs = value_from_id(value, bin.lhs.get());
-            let rhs = value_from_id(value, bin.rhs.get());
+            let lhs = value_from_slot(value, bin.lhs.get());
+            let rhs = value_from_slot(value, bin.rhs.get());
             let lhs_known = compute_known_bits(lhs, query)?;
             let rhs_known = compute_known_bits(rhs, query)?;
             if is_subset_of(&demanded, rhs_known.zero_mask()) {
@@ -1167,7 +1167,7 @@ fn mark_non_negative_zext<'a, 'ctx, B: ModuleBrand + 'ctx>(
     if cast.kind != CastOpcode::ZExt || cast.nneg.get() {
         return Ok(false);
     }
-    let src = value_from_id(value, cast.src.get());
+    let src = value_from_slot(value, cast.src.get());
     let known = compute_known_bits(src, query)?;
     if !known.is_non_negative() {
         return Ok(false);
@@ -1201,7 +1201,7 @@ fn simplify_xor_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
     bin: &BinaryOpData,
     demanded: &ApInt,
 ) -> IrResult<bool> {
-    let rhs = value_from_id(value, bin.rhs.get());
+    let rhs = value_from_slot(value, bin.rhs.get());
     let Some(rhs_bits) = constant_ap_int(rhs) else {
         return Ok(false);
     };
@@ -1221,7 +1221,7 @@ fn shrink_demanded_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
     operand: &core::cell::Cell<ValueSlot>,
     demanded: &ApInt,
 ) -> IrResult<bool> {
-    let current = value_from_id(user, operand.get());
+    let current = value_from_slot(user, operand.get());
     let Some(current_bits) = constant_ap_int(current) else {
         return Ok(false);
     };
@@ -1245,7 +1245,7 @@ fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
     if old_id == new_id {
         return Ok(false);
     }
-    let old = value_from_id(user, old_id);
+    let old = value_from_slot(user, old_id);
     if old.ty().id() != replacement.ty().id() {
         return Err(IrError::TypeMismatch {
             expected: old.ty().kind_label(),
@@ -1353,19 +1353,6 @@ fn enqueue(id: ValueSlot, worklist: &mut VecDeque<ValueSlot>, queued: &mut HashS
 
 fn is_instruction_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
     matches!(value.data().kind, ValueKindData::Instruction(_))
-}
-
-fn value_from_id<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
-    id: ValueSlot,
-) -> Value<'ctx, B> {
-    let module = module_ref(anchor);
-    let data = module.value_data(id);
-    Value::from_parts(id, module, data.ty)
-}
-
-fn module_ref<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> ModuleRef<'ctx, B> {
-    ModuleRef::new(value.module().core_ref())
 }
 
 fn module_ref_from_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> ModuleRef<'ctx, B> {

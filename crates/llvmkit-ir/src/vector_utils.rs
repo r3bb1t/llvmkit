@@ -98,7 +98,7 @@ use crate::module::ModuleBrand;
 use crate::r#type::Type;
 use crate::value::{Value, ValueKindData};
 use crate::value_tracking::{
-    MAX_ANALYSIS_RECURSION_DEPTH, binary_operator_parts, instruction_kind, value_from_id,
+    MAX_ANALYSIS_RECURSION_DEPTH, binary_operator_parts, instruction_kind, value_from_slot,
 };
 
 /// The one source lane a shuffle mask selects, when every defined element
@@ -178,12 +178,12 @@ pub fn get_splat_value<'ctx, B: ModuleBrand + 'ctx>(
     }
     // `m_InsertElt(m_Value(), m_Value(Splat), m_ZeroInt())` on operand 0. The
     // shuffle's second operand is `m_Value()` — anything at all.
-    let inserted = value_from_id(value, shuffle.lhs.get());
+    let inserted = value_from_slot(value, shuffle.lhs.get());
     let InstructionKindData::InsertElement(insert) = instruction_kind(inserted)? else {
         return None;
     };
-    let index = value_from_id(inserted, insert.index.get());
-    is_zero_constant(index).then(|| value_from_id(inserted, insert.value.get()))
+    let index = value_from_slot(inserted, insert.index.get());
+    is_zero_constant(index).then(|| value_from_slot(inserted, insert.value.get()))
 }
 
 /// Whether every lane of `value` is poison or equal to every other non-poison
@@ -268,15 +268,23 @@ fn is_splat_value_at_depth<'ctx, B: ModuleBrand + 'ctx>(
 
     // If both operands of a binop are splats, the result is a splat.
     if let Some((_, binary)) = binary_operator_parts(kind) {
-        return is_splat_value_at_depth(value_from_id(value, binary.lhs.get()), index, depth)
-            && is_splat_value_at_depth(value_from_id(value, binary.rhs.get()), index, depth);
+        return is_splat_value_at_depth(value_from_slot(value, binary.lhs.get()), index, depth)
+            && is_splat_value_at_depth(value_from_slot(value, binary.rhs.get()), index, depth);
     }
 
     // If all operands of a select are splats, the result is a splat.
     if let InstructionKindData::Select(select) = kind {
-        return is_splat_value_at_depth(value_from_id(value, select.cond.get()), index, depth)
-            && is_splat_value_at_depth(value_from_id(value, select.true_val.get()), index, depth)
-            && is_splat_value_at_depth(value_from_id(value, select.false_val.get()), index, depth);
+        return is_splat_value_at_depth(value_from_slot(value, select.cond.get()), index, depth)
+            && is_splat_value_at_depth(
+                value_from_slot(value, select.true_val.get()),
+                index,
+                depth,
+            )
+            && is_splat_value_at_depth(
+                value_from_slot(value, select.false_val.get()),
+                index,
+                depth,
+            );
     }
 
     // TODO (upstream's): unary ops (fneg), casts, intrinsics (overflow ops).
@@ -321,13 +329,13 @@ pub fn find_scalar_element<'ctx, B: ModuleBrand + 'ctx>(
     if let Some(InstructionKindData::InsertElement(insert)) = instruction_kind(value) {
         // If this is an insert to a variable element, we don't know what it
         // is.
-        let index = value_from_id(value, insert.index.get());
+        let index = value_from_slot(value, insert.index.get());
         let index = constant_lane(index)?;
 
         // If this is an insert to the element we are looking for, return the
         // inserted value.
         if element == index {
-            return Some(value_from_id(value, insert.value.get()));
+            return Some(value_from_slot(value, insert.value.get()));
         }
 
         // Guard against infinite loop on malformed, unreachable IR.
@@ -337,13 +345,13 @@ pub fn find_scalar_element<'ctx, B: ModuleBrand + 'ctx>(
 
         // Otherwise, the insertelement doesn't modify the value, recurse on
         // its vector input.
-        return find_scalar_element(value_from_id(value, insert.vector.get()), element);
+        return find_scalar_element(value_from_slot(value, insert.vector.get()), element);
     }
 
     if let Some(InstructionKindData::ShuffleVector(shuffle)) = instruction_kind(value) {
         // Restrict the following transformation to fixed-length vector.
         if !scalable {
-            let source = value_from_id(value, shuffle.lhs.get());
+            let source = value_from_slot(value, shuffle.lhs.get());
             let (_, source_lanes, _) = source.ty().data().as_vector()?;
             let position = usize::try_from(element).ok()?;
             let Some(&ShuffleMaskElem::Lane(selected)) = shuffle.mask.get(position) else {
@@ -353,7 +361,7 @@ pub fn find_scalar_element<'ctx, B: ModuleBrand + 'ctx>(
                 find_scalar_element(source, selected)
             } else {
                 find_scalar_element(
-                    value_from_id(value, shuffle.rhs.get()),
+                    value_from_slot(value, shuffle.rhs.get()),
                     selected.checked_sub(source_lanes)?,
                 )
             };
@@ -364,12 +372,12 @@ pub fn find_scalar_element<'ctx, B: ModuleBrand + 'ctx>(
     // TODO (upstream's): use `getBinOpIdentity` to generalize this.
     if let Some((BinaryOpcode::Add, add)) = instruction_kind(value).and_then(binary_operator_parts)
     {
-        let addend = value_from_id(value, add.rhs.get());
+        let addend = value_from_slot(value, add.rhs.get());
         if let ValueKindData::Constant(_) = &addend.data().kind
             && let Some(lane) = Constant::from_parts(addend).aggregate_element(element)
             && lane.is_null_value()
         {
-            return find_scalar_element(value_from_id(value, add.lhs.get()), element);
+            return find_scalar_element(value_from_slot(value, add.lhs.get()), element);
         }
     }
 

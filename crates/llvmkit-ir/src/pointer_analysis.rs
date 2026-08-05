@@ -43,6 +43,7 @@ use crate::intrinsics::descriptor_for_callee;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
 use crate::value::{Value, ValueKindData, ValueSlot};
+use crate::value_tracking::value_from_slot;
 use std::collections::HashSet;
 
 /// How many layers [`get_underlying_object`] peels before giving up.
@@ -1535,15 +1536,6 @@ fn instruction_kind<'ctx, B: ModuleBrand + 'ctx>(
         ValueKindData::Instruction(instruction) => Some(&instruction.kind),
         _ => None,
     }
-}
-
-fn value_from_slot<'ctx, B: ModuleBrand + 'ctx>(
-    anchor: Value<'ctx, B>,
-    slot: ValueSlot,
-) -> Value<'ctx, B> {
-    let module = module_ref(anchor);
-    let data = module.value_data(slot);
-    Value::from_parts(slot, module, data.ty)
 }
 
 fn module_ref<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> ModuleRef<'ctx, B> {

@@ -543,7 +543,7 @@ fn compute_constant_expr_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         expr.operands
             .get(idx)
             .copied()
-            .map(|id| value_from_id(anchor, id))
+            .map(|id| value_from_slot(anchor, id))
     };
     let Some(lhs) = operand(0) else {
         return Ok(KnownBits::unknown(width));
@@ -595,7 +595,7 @@ fn compute_constant_expr_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 .iter()
                 .skip(1)
                 .copied()
-                .map(|id| value_from_id(anchor, id));
+                .map(|id| value_from_slot(anchor, id));
             gep_known_bits_from_values(
                 GepKnownBitsInput {
                     anchor,
@@ -704,9 +704,9 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         }
         InstructionKindData::Cast(data) => cast_known(value, data, query, depth, stack),
         InstructionKindData::Select(data) => {
-            let cond = value_from_id(value, data.cond.get());
-            let true_val = value_from_id(value, data.true_val.get());
-            let false_val = value_from_id(value, data.false_val.get());
+            let cond = value_from_slot(value, data.cond.get());
+            let true_val = value_from_slot(value, data.true_val.get());
+            let false_val = value_from_slot(value, data.false_val.get());
             let cond_bits = compute_known_bits_inner(cond, query, depth + 1, stack)?;
             if cond_bits.constant().is_some_and(|c| c.is_one()) {
                 compute_known_bits_inner(true_val, query, depth + 1, stack)
@@ -720,7 +720,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         }
         InstructionKindData::Phi(data) => phi_known_bits(value, data, query, depth, stack),
         InstructionKindData::Freeze(data) => {
-            let src = value_from_id(value, data.src.get());
+            let src = value_from_slot(value, data.src.get());
             if is_guaranteed_not_to_be_undef_or_poison(
                 src,
                 query,
@@ -929,7 +929,7 @@ fn returned_arg_operand<'ctx, B: ModuleBrand + 'ctx>(
 ) -> Option<Value<'ctx, B>> {
     arg_attrs.iter().enumerate().find_map(|(idx, attrs)| {
         returned_attr(attrs, idx)
-            .then(|| args.get(idx).map(|arg| value_from_id(anchor, arg.get())))?
+            .then(|| args.get(idx).map(|arg| value_from_slot(anchor, arg.get())))?
     })
 }
 
@@ -958,7 +958,7 @@ fn intrinsic_semantic_for_callee<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     callee_id: ValueSlot,
 ) -> Option<IntrinsicSemantic> {
-    semantic_for_callee(value_from_id(anchor, callee_id))
+    semantic_for_callee(value_from_slot(anchor, callee_id))
 }
 
 fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
@@ -970,7 +970,10 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(anchor, query.data_layout()).unwrap_or(0);
-    let arg = |idx: usize| args.get(idx).map(|cell| value_from_id(anchor, cell.get()));
+    let arg = |idx: usize| {
+        args.get(idx)
+            .map(|cell| value_from_slot(anchor, cell.get()))
+    };
     let arg_bits = |idx: usize, stack: &mut HashSet<ValueSlot>| -> IrResult<KnownBits> {
         let Some(value) = arg(idx) else {
             return Ok(KnownBits::unknown(width));
@@ -1181,13 +1184,13 @@ fn binary_operand_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<(KnownBits, KnownBits)> {
     let lhs = compute_known_bits_inner(
-        value_from_id(anchor, data.lhs.get()),
+        value_from_slot(anchor, data.lhs.get()),
         query,
         depth + 1,
         stack,
     )?;
     let rhs = compute_known_bits_inner(
-        value_from_id(anchor, data.rhs.get()),
+        value_from_slot(anchor, data.rhs.get()),
         query,
         depth + 1,
         stack,
@@ -1214,8 +1217,8 @@ fn mul_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
-    let lhs_value = value_from_id(anchor, data.lhs.get());
-    let rhs_value = value_from_id(anchor, data.rhs.get());
+    let lhs_value = value_from_slot(anchor, data.lhs.get());
+    let rhs_value = value_from_slot(anchor, data.rhs.get());
     let lhs = compute_known_bits_inner(lhs_value, query, depth + 1, stack)?;
     let rhs = compute_known_bits_inner(rhs_value, query, depth + 1, stack)?;
     let mut known = KnownBits::mul(&lhs, &rhs);
@@ -1352,8 +1355,8 @@ fn is_negation_pair<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     data: &BinaryOpData,
 ) -> bool {
-    let lhs = value_from_id(anchor, data.lhs.get());
-    let rhs = value_from_id(anchor, data.rhs.get());
+    let lhs = value_from_slot(anchor, data.lhs.get());
+    let rhs = value_from_slot(anchor, data.rhs.get());
     is_negation_of_operand(rhs, lhs) || is_negation_of_operand(lhs, rhs)
 }
 
@@ -1380,13 +1383,13 @@ fn is_add_of_all_ones<'ctx, B: ModuleBrand + 'ctx>(
     candidate: ValueSlot,
     base: ValueSlot,
 ) -> bool {
-    let candidate = value_from_id(anchor, candidate);
+    let candidate = value_from_slot(anchor, candidate);
     let Some(InstructionKindData::Add(data)) = instruction_kind(candidate) else {
         return false;
     };
     let (lhs, rhs) = (data.lhs.get(), data.rhs.get());
-    (lhs == base && is_all_ones_constant(value_from_id(candidate, rhs)))
-        || (rhs == base && is_all_ones_constant(value_from_id(candidate, lhs)))
+    (lhs == base && is_all_ones_constant(value_from_slot(candidate, rhs)))
+        || (rhs == base && is_all_ones_constant(value_from_slot(candidate, lhs)))
 }
 
 fn bitwise_self_plus_odd_operand<'ctx, B: ModuleBrand + 'ctx>(
@@ -1404,7 +1407,7 @@ fn self_plus_odd_operand<'ctx, B: ModuleBrand + 'ctx>(
     base_id: ValueSlot,
     expr_id: ValueSlot,
 ) -> Option<Value<'ctx, B>> {
-    let expr = value_from_id(anchor, expr_id);
+    let expr = value_from_slot(anchor, expr_id);
     let ValueKindData::Instruction(inst) = &expr.data().kind else {
         return None;
     };
@@ -1412,9 +1415,9 @@ fn self_plus_odd_operand<'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Add(data) => odd_operand_from_commutative(base_id, data, anchor),
         InstructionKindData::Sub(data) => {
             if data.lhs.get() == base_id {
-                Some(value_from_id(anchor, data.rhs.get()))
+                Some(value_from_slot(anchor, data.rhs.get()))
             } else if data.rhs.get() == base_id {
-                Some(value_from_id(anchor, data.lhs.get()))
+                Some(value_from_slot(anchor, data.lhs.get()))
             } else {
                 None
             }
@@ -1429,9 +1432,9 @@ fn odd_operand_from_commutative<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
 ) -> Option<Value<'ctx, B>> {
     if data.lhs.get() == base_id {
-        Some(value_from_id(anchor, data.rhs.get()))
+        Some(value_from_slot(anchor, data.rhs.get()))
     } else if data.rhs.get() == base_id {
-        Some(value_from_id(anchor, data.lhs.get()))
+        Some(value_from_slot(anchor, data.lhs.get()))
     } else {
         None
     }
@@ -1445,7 +1448,7 @@ fn cast_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(anchor, query.data_layout()).unwrap_or(0);
-    let src = value_from_id(anchor, data.src.get());
+    let src = value_from_slot(anchor, data.src.get());
     let src_bits = compute_known_bits_inner(src, query, depth + 1, stack)?;
     Ok(match data.kind {
         CastOpcode::Trunc => src_bits.trunc(width),
@@ -1473,13 +1476,13 @@ fn icmp_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let lhs = compute_known_bits_inner(
-        value_from_id(anchor, data.lhs.get()),
+        value_from_slot(anchor, data.lhs.get()),
         query,
         depth + 1,
         stack,
     )?;
     let rhs = compute_known_bits_inner(
-        value_from_id(anchor, data.rhs.get()),
+        value_from_slot(anchor, data.rhs.get()),
         query,
         depth + 1,
         stack,
@@ -1626,7 +1629,7 @@ fn match_simple_recurrence<'ctx, B: ModuleBrand + 'ctx>(
         return None;
     }
     for index in 0..2 {
-        let candidate = value_from_id(phi, incoming[index].0.get());
+        let candidate = value_from_slot(phi, incoming[index].0.get());
         let ValueKindData::Instruction(inst) = &candidate.data().kind else {
             continue;
         };
@@ -1718,7 +1721,7 @@ fn phi_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             continue;
         }
         let next = compute_known_bits_inner(
-            value_from_id(value, incoming_value.get()),
+            value_from_slot(value, incoming_value.get()),
             query,
             depth + 1,
             stack,
@@ -1746,7 +1749,7 @@ fn recurrence_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(phi, query.data_layout()).unwrap_or(0);
     let mut known = KnownBits::unknown(width);
-    let start = value_from_id(phi, recurrence.start);
+    let start = value_from_slot(phi, recurrence.start);
 
     match recurrence.opcode {
         // A shift or udiv recurrence tells us what is shifted in, which
@@ -1791,7 +1794,7 @@ fn recurrence_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         | BinaryOpcode::And
         | BinaryOpcode::Or
         | BinaryOpcode::Mul => {
-            let step = value_from_id(phi, recurrence.step);
+            let step = value_from_slot(phi, recurrence.step);
             let start_bits = compute_known_bits_inner(start, query, depth + 1, stack)?;
             let step_bits = compute_known_bits_inner(step, query, depth + 1, stack)?;
             known.mark_low_bits_zero(
@@ -1983,7 +1986,7 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
     match &inst.kind {
         InstructionKindData::Cast(data) => {
-            let src = value_from_id(value, data.src.get());
+            let src = value_from_slot(value, data.src.get());
             let src_bits = value_bit_width(src, query.data_layout()).unwrap_or(0);
             match data.kind {
                 // sext adds exactly the widened bits to the source's count.
@@ -2009,7 +2012,7 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
         // sdiv X, C adds floor(log2 C) sign bits for a strictly positive C.
         InstructionKindData::SDiv(data) => {
-            let rhs = value_from_id(value, data.rhs.get());
+            let rhs = value_from_slot(value, data.rhs.get());
             let Some(denominator) = argument_constant(Some(rhs)) else {
                 return Ok(SignBitsFromOperator::fall_through());
             };
@@ -2017,7 +2020,7 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
             if !denominator.is_strictly_positive() {
                 return Ok(SignBitsFromOperator::fall_through());
             }
-            let lhs = value_from_id(value, data.lhs.get());
+            let lhs = value_from_slot(value, data.lhs.get());
             let num_bits = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
             let added = denominator.log_base2().unwrap_or(0);
             Ok(SignBitsFromOperator::exact(
@@ -2028,9 +2031,9 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
         // srem X, C lands in (-C, C) for a strictly positive C, which bounds
         // the leading sign bits below by `ty_bits - ceilLogBase2(C)`.
         InstructionKindData::SRem(data) => {
-            let lhs = value_from_id(value, data.lhs.get());
+            let lhs = value_from_slot(value, data.lhs.get());
             let mut tmp = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
-            let rhs = value_from_id(value, data.rhs.get());
+            let rhs = value_from_slot(value, data.rhs.get());
             if let Some(denominator) = argument_constant(Some(rhs))
                 && denominator.is_strictly_positive()
             {
@@ -2041,9 +2044,9 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
         // ashr X, C adds C sign bits.
         InstructionKindData::AShr(data) => {
-            let lhs = value_from_id(value, data.lhs.get());
+            let lhs = value_from_slot(value, data.lhs.get());
             let tmp = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
-            let rhs = value_from_id(value, data.rhs.get());
+            let rhs = value_from_slot(value, data.rhs.get());
             let Some(shift_amount) = argument_constant(Some(rhs)) else {
                 return Ok(SignBitsFromOperator::exact(tmp));
             };
@@ -2060,7 +2063,7 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
         // shl destroys sign bits.
         InstructionKindData::Shl(data) => {
-            let rhs = value_from_id(value, data.rhs.get());
+            let rhs = value_from_slot(value, data.rhs.get());
             let Some(shift_amount) = argument_constant(Some(rhs)) else {
                 return Ok(SignBitsFromOperator::fall_through());
             };
@@ -2074,7 +2077,7 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
             // are all shifted out, treating it as a `sext`. That arm needs the
             // matcher DSL against the shift amount; without it this falls
             // through to the known-bits tail, which is weaker, never wrong.
-            let lhs = value_from_id(value, data.lhs.get());
+            let lhs = value_from_slot(value, data.lhs.get());
             let tmp = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
             if amount >= tmp {
                 // Shifted all sign bits out.
@@ -2089,12 +2092,12 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::And(data)
         | InstructionKindData::Or(data)
         | InstructionKindData::Xor(data) => {
-            let lhs = value_from_id(value, data.lhs.get());
+            let lhs = value_from_slot(value, data.lhs.get());
             let tmp = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
             if tmp == 1 {
                 return Ok(SignBitsFromOperator::fall_through());
             }
-            let rhs = value_from_id(value, data.rhs.get());
+            let rhs = value_from_slot(value, data.rhs.get());
             let tmp2 = compute_num_sign_bits_inner(rhs, query, depth + 1, stack)?;
             Ok(SignBitsFromOperator::floor(tmp.min(tmp2)))
         }
@@ -2103,25 +2106,25 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
         // recognition (`isSignedMinMaxClamp`) needs the matcher DSL and is not
         // ported, so this is the plain two-arm minimum.
         InstructionKindData::Select(data) => {
-            let true_val = value_from_id(value, data.true_val.get());
+            let true_val = value_from_slot(value, data.true_val.get());
             let tmp = compute_num_sign_bits_inner(true_val, query, depth + 1, stack)?;
             if tmp == 1 {
                 return Ok(SignBitsFromOperator::fall_through());
             }
-            let false_val = value_from_id(value, data.false_val.get());
+            let false_val = value_from_slot(value, data.false_val.get());
             let tmp2 = compute_num_sign_bits_inner(false_val, query, depth + 1, stack)?;
             Ok(SignBitsFromOperator::exact(tmp.min(tmp2)))
         }
 
         // add carries at most one bit, so at worst one more than its inputs.
         InstructionKindData::Add(data) => {
-            let lhs = value_from_id(value, data.lhs.get());
+            let lhs = value_from_slot(value, data.lhs.get());
             let tmp = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
             if tmp == 1 {
                 return Ok(SignBitsFromOperator::fall_through());
             }
             // Special case decrementing a value (add X, -1).
-            let rhs = value_from_id(value, data.rhs.get());
+            let rhs = value_from_slot(value, data.rhs.get());
             if argument_constant(Some(rhs)).is_some_and(|c| c.is_all_ones()) {
                 let known = compute_known_bits_inner(lhs, query, depth + 1, stack)?;
                 // A 0-or-1 input gives 0/-1 out, which is all sign bits set.
@@ -2145,13 +2148,13 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
         }
 
         InstructionKindData::Sub(data) => {
-            let rhs = value_from_id(value, data.rhs.get());
+            let rhs = value_from_slot(value, data.rhs.get());
             let tmp2 = compute_num_sign_bits_inner(rhs, query, depth + 1, stack)?;
             if tmp2 == 1 {
                 return Ok(SignBitsFromOperator::fall_through());
             }
             // Handle negation (sub 0, X).
-            let lhs = value_from_id(value, data.lhs.get());
+            let lhs = value_from_slot(value, data.lhs.get());
             if argument_constant(Some(lhs)).is_some_and(|c| c.is_zero()) {
                 let known = compute_known_bits_inner(rhs, query, depth + 1, stack)?;
                 // A 0-or-1 input gives 0/-1 out, which is all sign bits set.
@@ -2177,12 +2180,12 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
         // A mul's output has at most the sum of its inputs' valid bits.
         InstructionKindData::Mul(data) => {
-            let lhs = value_from_id(value, data.lhs.get());
+            let lhs = value_from_slot(value, data.lhs.get());
             let lhs_bits = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
             if lhs_bits == 1 {
                 return Ok(SignBitsFromOperator::fall_through());
             }
-            let rhs = value_from_id(value, data.rhs.get());
+            let rhs = value_from_slot(value, data.rhs.get());
             let rhs_bits = compute_num_sign_bits_inner(rhs, query, depth + 1, stack)?;
             if rhs_bits == 1 {
                 return Ok(SignBitsFromOperator::fall_through());
@@ -2209,7 +2212,7 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 if tmp == 1 {
                     return Ok(SignBitsFromOperator::exact(1));
                 }
-                let operand = value_from_id(value, incoming_value.get());
+                let operand = value_from_slot(value, incoming_value.get());
                 tmp = tmp.min(compute_num_sign_bits_inner(
                     operand,
                     query,
@@ -2343,7 +2346,7 @@ fn zero_int_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Opti
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
             let mut all_null = true;
             for element in elements.iter() {
-                match zero_int_constant(value_from_id(value, *element)) {
+                match zero_int_constant(value_from_slot(value, *element)) {
                     Some(true) => {}
                     Some(false) => all_null = false,
                     None => return None,
@@ -2376,7 +2379,7 @@ pub fn is_known_negation<'ctx, B: ModuleBrand + 'ctx>(
         if data.rhs.get() != y.slot() {
             return false;
         }
-        let Some(zero_is_null) = zero_int_constant(value_from_id(x, data.lhs.get())) else {
+        let Some(zero_is_null) = zero_int_constant(value_from_slot(x, data.lhs.get())) else {
             return false;
         };
         if need_nsw && !data.no_signed_wrap {
@@ -2439,8 +2442,8 @@ pub fn is_known_inversion<'ctx, B: ModuleBrand + 'ctx>(
 
     // Otherwise infer the relationship from the two constant right-hand sides.
     let (Some(rhs1), Some(rhs2)) = (
-        argument_constant(Some(value_from_id(x, b))),
-        argument_constant(Some(value_from_id(y, c))),
+        argument_constant(Some(value_from_slot(x, b))),
+        argument_constant(Some(value_from_slot(y, c))),
     ) else {
         return false;
     };
@@ -2498,7 +2501,7 @@ where
             return false;
         }
         // `m_ICmp(m_Value(), m_Zero())` puts the zero on the right.
-        argument_constant(Some(value_from_id(user, cmp.rhs.get())))
+        argument_constant(Some(value_from_slot(user, cmp.rhs.get())))
             .is_some_and(|constant| constant.is_zero())
     })
 }
@@ -2551,13 +2554,13 @@ fn is_known_to_be_a_power_of_two_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // `1 << X` is a power of two unless the one is shifted off the end, in
     // which case the result is poison rather than wrong.
     if let InstructionKindData::Shl(data) = kind
-        && argument_is_const_one(Some(value_from_id(value, data.lhs.get())))
+        && argument_is_const_one(Some(value_from_slot(value, data.lhs.get())))
     {
         return Ok(true);
     }
     // `(signmask) >>l X` likewise.
     if let InstructionKindData::LShr(data) = kind
-        && argument_constant(Some(value_from_id(value, data.lhs.get())))
+        && argument_constant(Some(value_from_slot(value, data.lhs.get())))
             .is_some_and(|constant| constant.is_sign_mask())
     {
         return Ok(true);
@@ -2568,16 +2571,16 @@ fn is_known_to_be_a_power_of_two_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
         return Ok(false);
     }
     let depth = depth + 1;
-    let operand = |slot: &Cell<ValueSlot>| value_from_id(value, slot.get());
+    let operand = |slot: &Cell<ValueSlot>| value_from_slot(value, slot.get());
     let recurse = |operand: Value<'ctx, B>, or_zero: bool| {
         is_known_to_be_a_power_of_two_inner(operand, or_zero, query, depth)
     };
 
     match kind {
         InstructionKindData::Cast(data) => match data.kind {
-            CastOpcode::ZExt => recurse(value_from_id(value, data.src.get()), or_zero),
+            CastOpcode::ZExt => recurse(value_from_slot(value, data.src.get()), or_zero),
             CastOpcode::Trunc => {
-                Ok(or_zero && recurse(value_from_id(value, data.src.get()), or_zero)?)
+                Ok(or_zero && recurse(value_from_slot(value, data.src.get()), or_zero)?)
             }
             _ => Ok(false),
         },
@@ -2642,7 +2645,7 @@ fn is_negation_of_operand<'ctx, B: ModuleBrand + 'ctx>(
         return false;
     };
     data.rhs.get() == other.slot()
-        && zero_int_constant(value_from_id(candidate, data.lhs.get())).is_some()
+        && zero_int_constant(value_from_slot(candidate, data.lhs.get())).is_some()
 }
 
 /// The `Instruction::Add` arm of `isKnownToBeAPowerOfTwo`.
@@ -2653,8 +2656,8 @@ fn power_of_two_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     depth: u32,
 ) -> IrResult<bool> {
-    let lhs = value_from_id(value, data.lhs.get());
-    let rhs = value_from_id(value, data.rhs.get());
+    let lhs = value_from_slot(value, data.lhs.get());
+    let rhs = value_from_slot(value, data.rhs.get());
 
     let no_wrap = query.uses_instruction_info() && (data.no_unsigned_wrap || data.no_signed_wrap);
 
@@ -2695,7 +2698,7 @@ fn power_of_two_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
     if or_zero || (query.uses_instruction_info() && data.no_unsigned_wrap) {
         let is_all_ones_lshr = |candidate: Value<'ctx, B>| {
             matches!(instruction_kind(candidate), Some(InstructionKindData::LShr(shift))
-                if argument_constant(Some(value_from_id(candidate, shift.lhs.get())))
+                if argument_constant(Some(value_from_slot(candidate, shift.lhs.get())))
                     .is_some_and(|constant| constant.is_all_ones()))
         };
         if is_all_ones_lshr(lhs) && argument_is_const_one(Some(rhs)) {
@@ -2742,7 +2745,7 @@ fn power_of_two_phi<'a, 'ctx, B: ModuleBrand + 'ctx>(
             continue;
         }
         if !is_known_to_be_a_power_of_two_inner(
-            value_from_id(value, operand.get()),
+            value_from_slot(value, operand.get()),
             or_zero,
             query,
             new_depth,
@@ -2765,8 +2768,8 @@ fn is_power_of_two_recurrence<'a, 'ctx, B: ModuleBrand + 'ctx>(
     else {
         return Ok(false);
     };
-    let start = value_from_id(value, recurrence.start);
-    let step = value_from_id(value, recurrence.step);
+    let start = value_from_slot(value, recurrence.start);
+    let step = value_from_slot(value, recurrence.step);
 
     // The initial value must be a power of two.
     if !is_known_to_be_a_power_of_two_inner(start, or_zero, query, depth)? {
@@ -2820,7 +2823,7 @@ fn power_of_two_intrinsic<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let argument = |index: usize| {
         arguments
             .get(index)
-            .map(|slot| value_from_id(value, slot.get()))
+            .map(|slot| value_from_slot(value, slot.get()))
     };
 
     match semantic {
@@ -2866,8 +2869,8 @@ fn binary_operands_of<'ctx, B: ModuleBrand + 'ctx>(
     let (found, data) = instruction_kind(value).and_then(binary_operator_parts)?;
     (found == opcode).then(|| {
         (
-            value_from_id(value, data.lhs.get()),
-            value_from_id(value, data.rhs.get()),
+            value_from_slot(value, data.lhs.get()),
+            value_from_slot(value, data.rhs.get()),
         )
     })
 }
@@ -2885,7 +2888,7 @@ fn is_all_ones_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> b
             !elements.is_empty()
                 && elements
                     .iter()
-                    .all(|element| is_all_ones_constant(value_from_id(value, *element)))
+                    .all(|element| is_all_ones_constant(value_from_slot(value, *element)))
         }
         _ => false,
     }
@@ -2945,8 +2948,8 @@ pub fn collect_possible_values<'a, 'ctx, B: ModuleBrand + 'ctx>(
     while let Some(current) = state.worklist.pop() {
         match instruction_kind(current) {
             Some(InstructionKindData::Select(data)) => {
-                let true_value = value_from_id(current, data.true_val.get());
-                let false_value = value_from_id(current, data.false_val.get());
+                let true_value = value_from_slot(current, data.true_val.get());
+                let false_value = value_from_slot(current, data.false_val.get());
                 if !state.push(true_value, query)? || !state.push(false_value, query)? {
                     return Ok(None);
                 }
@@ -2962,7 +2965,7 @@ pub fn collect_possible_values<'a, 'ctx, B: ModuleBrand + 'ctx>(
                     .map(|(incoming, _)| incoming.get())
                     .collect();
                 for incoming in incomings {
-                    let incoming = value_from_id(current, incoming);
+                    let incoming = value_from_slot(current, incoming);
                     // Upstream's fast path for a recurrence phi: an operand
                     // that is the phi itself adds nothing.
                     if incoming == current {
@@ -3040,7 +3043,7 @@ fn is_immediate_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> 
         ConstantData::Expr(_) => false,
         ConstantData::Aggregate(elements) => elements
             .iter()
-            .all(|element| is_immediate_constant(value_from_id(value, *element))),
+            .all(|element| is_immediate_constant(value_from_slot(value, *element))),
         _ => true,
     }
 }
@@ -3069,8 +3072,8 @@ pub fn strip_null_test<'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Add(data) | InstructionKindData::Or(data) => data,
         _ => return None,
     };
-    let lhs = value_from_id(value, data.lhs.get());
-    let rhs = value_from_id(value, data.rhs.get());
+    let lhs = value_from_slot(value, data.lhs.get());
+    let rhs = value_from_slot(value, data.rhs.get());
     // `m_c_BinOp` matches either operand order.
     null_test_operands(lhs, rhs).or_else(|| null_test_operands(rhs, lhs))
 }
@@ -3093,8 +3096,8 @@ fn null_test_operands<'ctx, B: ModuleBrand + 'ctx>(
     if compare_data.predicate != IntPredicate::Ne {
         return None;
     }
-    let masked = value_from_id(compare, compare_data.lhs.get());
-    let zero = value_from_id(compare, compare_data.rhs.get());
+    let masked = value_from_slot(compare, compare_data.lhs.get());
+    let zero = value_from_slot(compare, compare_data.rhs.get());
     if !splat_or_scalar_constant(zero).is_some_and(|constant| constant.is_zero()) {
         return None;
     }
@@ -3129,7 +3132,7 @@ fn splat_or_scalar_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) 
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => {
             let mut splat: Option<ApInt> = None;
             for element in elements.iter() {
-                let element = value_from_id(value, *element);
+                let element = value_from_slot(value, *element);
                 if matches!(
                     element.data().kind,
                     ValueKindData::Constant(ConstantData::Poison)
@@ -3153,7 +3156,7 @@ fn splat_or_scalar_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) 
 fn zext_source<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
     match instruction_kind(value)? {
         InstructionKindData::Cast(data) if data.kind == CastOpcode::ZExt => {
-            Some(value_from_id(value, data.src.get()))
+            Some(value_from_slot(value, data.src.get()))
         }
         _ => None,
     }
@@ -3167,7 +3170,7 @@ fn zext_or_sext_source<'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::Cast(data)
             if matches!(data.kind, CastOpcode::ZExt | CastOpcode::SExt) =>
         {
-            Some(value_from_id(value, data.src.get()))
+            Some(value_from_slot(value, data.src.get()))
         }
         _ => None,
     }
@@ -3415,7 +3418,7 @@ fn invertible_operands<'ctx, B: ModuleBrand + 'ctx>(
 ) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
     let kind1 = instruction_kind(v1)?;
     let kind2 = instruction_kind(v2)?;
-    let operand = |value: Value<'ctx, B>, slot: ValueSlot| value_from_id(value, slot);
+    let operand = |value: Value<'ctx, B>, slot: ValueSlot| value_from_slot(value, slot);
 
     match (kind1, kind2) {
         // `or disjoint` behaves as `add`; a plain `or` is not invertible.
@@ -3488,10 +3491,10 @@ fn invertible_commutative<'ctx, B: ModuleBrand + 'ctx>(
 ) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
     for (pinned, other) in [(a.lhs.get(), a.rhs.get()), (a.rhs.get(), a.lhs.get())] {
         if b.lhs.get() == pinned {
-            return Some((value_from_id(v1, other), value_from_id(v2, b.rhs.get())));
+            return Some((value_from_slot(v1, other), value_from_slot(v2, b.rhs.get())));
         }
         if b.rhs.get() == pinned {
-            return Some((value_from_id(v1, other), value_from_id(v2, b.lhs.get())));
+            return Some((value_from_slot(v1, other), value_from_slot(v2, b.lhs.get())));
         }
     }
     None
@@ -3517,8 +3520,8 @@ fn invertible_recurrences<'ctx, B: ModuleBrand + 'ctx>(
     let recurrence1 = match_simple_recurrence(v1, p1, true)?;
     let recurrence2 = match_simple_recurrence(v2, p2, true)?;
     let (first, second) = invertible_operands(
-        value_from_id(v1, recurrence1.increment),
-        value_from_id(v2, recurrence2.increment),
+        value_from_slot(v1, recurrence1.increment),
+        value_from_slot(v2, recurrence2.increment),
     )?;
 
     // Mutually defined recurrences are not reasoned about: the pair the
@@ -3527,8 +3530,8 @@ fn invertible_recurrences<'ctx, B: ModuleBrand + 'ctx>(
         return None;
     }
     Some((
-        value_from_id(v1, recurrence1.start),
-        value_from_id(v2, recurrence2.start),
+        value_from_slot(v1, recurrence1.start),
+        value_from_slot(v2, recurrence2.start),
     ))
 }
 
@@ -3566,8 +3569,8 @@ fn non_equal_phis<'a, 'ctx, B: ModuleBrand + 'ctx>(
         let Some((operand2, _)) = incoming2.iter().find(|(_, other)| other == block) else {
             return Ok(false);
         };
-        let value1 = value_from_id(v1, operand1.get());
-        let value2 = value_from_id(v2, operand2.get());
+        let value1 = value_from_slot(v1, operand1.get());
+        let value2 = value_from_slot(v2, operand2.get());
         if let (Some(c1), Some(c2)) = (
             argument_constant(Some(value1)),
             argument_constant(Some(value2)),
@@ -3615,7 +3618,7 @@ fn modifying_binop_of_non_zero<'a, 'ctx, B: ModuleBrand + 'ctx>(
     } else {
         return Ok(false);
     };
-    is_known_non_zero(value_from_id(v1, other), query)
+    is_known_non_zero(value_from_slot(v1, other), query)
 }
 
 /// Ports `isNonEqualMul` and `isNonEqualShl`, which differ only in opcode and
@@ -3638,7 +3641,7 @@ fn non_equal_scaled<'a, 'ctx, B: ModuleBrand + 'ctx>(
     if !(data.no_unsigned_wrap || data.no_signed_wrap) {
         return Ok(false);
     }
-    let Some(constant) = argument_constant(Some(value_from_id(v2, data.rhs.get()))) else {
+    let Some(constant) = argument_constant(Some(value_from_slot(v2, data.rhs.get()))) else {
         return Ok(false);
     };
     // A shift by zero is the identity, and so is a multiply by one.
@@ -3658,20 +3661,20 @@ fn non_equal_select<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let Some(InstructionKindData::Select(s1)) = instruction_kind(v1) else {
         return Ok(false);
     };
-    let true1 = value_from_id(v1, s1.true_val.get());
-    let false1 = value_from_id(v1, s1.false_val.get());
+    let true1 = value_from_slot(v1, s1.true_val.get());
+    let false1 = value_from_slot(v1, s1.false_val.get());
 
     if let Some(InstructionKindData::Select(s2)) = instruction_kind(v2)
         && s1.cond.get() == s2.cond.get()
     {
         return Ok(is_known_non_equal_inner(
             true1,
-            value_from_id(v2, s2.true_val.get()),
+            value_from_slot(v2, s2.true_val.get()),
             query,
             depth + 1,
         )? && is_known_non_equal_inner(
             false1,
-            value_from_id(v2, s2.false_val.get()),
+            value_from_slot(v2, s2.false_val.get()),
             query,
             depth + 1,
         )?);
@@ -3692,7 +3695,7 @@ fn ptr_to_int_same_size<'a, 'ctx, B: ModuleBrand + 'ctx>(
     if data.kind != CastOpcode::PtrToInt {
         return None;
     }
-    let pointer = value_from_id(value, data.src.get());
+    let pointer = value_from_slot(value, data.src.get());
     let address_space = pointer_addr_space(pointer.ty())?;
     let result_width = value_bit_width(value, query.data_layout())?;
     (result_width == query.data_layout().pointer_size_in_bits(address_space)).then_some(pointer)
@@ -3826,7 +3829,7 @@ fn known_bits_from_context<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let Some(branch_block) = parent_block(branch) else {
                 continue;
             };
-            let condition = value_from_id(branch, condition);
+            let condition = value_from_slot(branch, condition);
             for (successor, invert) in [(then_block, false), (else_block, true)] {
                 if dominator_tree.dominates_edge_slots(branch_block, successor, context_block) {
                     known = known_bits_from_cond(value, condition, known, query, invert, depth);
@@ -4043,8 +4046,8 @@ fn known_bits_from_int_compare_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
     } else {
         data.predicate
     };
-    let lhs = value_from_id(compare, data.lhs.get());
-    let rhs = value_from_id(compare, data.rhs.get());
+    let lhs = value_from_slot(compare, data.lhs.get());
+    let rhs = value_from_slot(compare, data.rhs.get());
 
     // Handle `icmp pred (trunc V), C`.
     if let Some((source, no_unsigned_wrap)) = trunc_source_and_no_unsigned_wrap(lhs)
@@ -4142,8 +4145,8 @@ fn known_bits_from_compare<'a, 'ctx, B: ModuleBrand + 'ctx>(
             // `m_And`, not `m_c_And`, so V must be the left operand.
             if constant.is_zero()
                 && let Some(InstructionKindData::And(data)) = instruction_kind(lhs)
-                && is_v(value_from_id(lhs, data.lhs.get()))
-                && let Some(mask) = argument_constant(Some(value_from_id(lhs, data.rhs.get())))
+                && is_v(value_from_slot(lhs, data.lhs.get()))
+                && let Some(mask) = argument_constant(Some(value_from_slot(lhs, data.rhs.get())))
                 && mask.is_power_of_2()
             {
                 known.add_known_one_bits(&mask);
@@ -4229,8 +4232,8 @@ where
         (InstructionKindData::Or(data), BitwiseOp::Or) => data,
         _ => return None,
     };
-    let lhs = value_from_id(value, data.lhs.get());
-    let rhs = value_from_id(value, data.rhs.get());
+    let lhs = value_from_slot(value, data.lhs.get());
+    let rhs = value_from_slot(value, data.rhs.get());
     if is_wanted(lhs) {
         return Some(rhs);
     }
@@ -4256,10 +4259,10 @@ where
         ) => data,
         _ => return None,
     };
-    if !is_wanted(value_from_id(value, data.lhs.get())) {
+    if !is_wanted(value_from_slot(value, data.lhs.get())) {
         return None;
     }
-    let amount = argument_constant(Some(value_from_id(value, data.rhs.get())))?;
+    let amount = argument_constant(Some(value_from_slot(value, data.rhs.get())))?;
     // Upstream's `m_ConstantInt(ShAmt)` binds a `uint64_t`; the callers compare
     // it against the bit width, so saturating at `u32::MAX` cannot flip an arm.
     u32::try_from(amount.limited_value(u64::from(u32::MAX))).ok()
@@ -4278,8 +4281,8 @@ where
         InstructionKindData::Or(data) if data.disjoint => data,
         _ => return None,
     };
-    is_wanted(value_from_id(value, data.lhs.get()))
-        .then(|| argument_constant(Some(value_from_id(value, data.rhs.get()))))?
+    is_wanted(value_from_slot(value, data.lhs.get()))
+        .then(|| argument_constant(Some(value_from_slot(value, data.rhs.get()))))?
 }
 
 /// Whether `value` is `sub nuw` with an operand accepted by `is_wanted` on the
@@ -4295,7 +4298,7 @@ where
     let flagged = match wrap {
         WrapKind::NoUnsignedWrap => data.no_unsigned_wrap,
     };
-    flagged && is_wanted(value_from_id(value, data.lhs.get()))
+    flagged && is_wanted(value_from_slot(value, data.lhs.get()))
 }
 
 /// Whether `value` is `add nuw` with an operand accepted by `is_wanted` on
@@ -4309,8 +4312,8 @@ where
         return false;
     };
     data.no_unsigned_wrap
-        && (is_wanted(value_from_id(value, data.lhs.get()))
-            || is_wanted(value_from_id(value, data.rhs.get())))
+        && (is_wanted(value_from_slot(value, data.lhs.get()))
+            || is_wanted(value_from_slot(value, data.rhs.get())))
 }
 
 /// The two operands of a logical `and`/`or`, and which of the two it is.
@@ -4325,23 +4328,23 @@ pub(crate) fn logical_op_parts<'ctx, B: ModuleBrand + 'ctx>(
     }
     match instruction_kind(value)? {
         InstructionKindData::And(data) => Some((
-            value_from_id(value, data.lhs.get()),
-            value_from_id(value, data.rhs.get()),
+            value_from_slot(value, data.lhs.get()),
+            value_from_slot(value, data.rhs.get()),
             true,
         )),
         InstructionKindData::Or(data) => Some((
-            value_from_id(value, data.lhs.get()),
-            value_from_id(value, data.rhs.get()),
+            value_from_slot(value, data.lhs.get()),
+            value_from_slot(value, data.rhs.get()),
             false,
         )),
         InstructionKindData::Select(data) => {
-            let condition = value_from_id(value, data.cond.get());
+            let condition = value_from_slot(value, data.cond.get());
             // Don't match a scalar select of bool vectors.
             if condition.ty().id() != value.ty().id() {
                 return None;
             }
-            let true_value = value_from_id(value, data.true_val.get());
-            let false_value = value_from_id(value, data.false_val.get());
+            let true_value = value_from_slot(value, data.true_val.get());
+            let false_value = value_from_slot(value, data.false_val.get());
             if argument_constant(Some(false_value)).is_some_and(|c| c.is_zero()) {
                 return Some((condition, true_value, true));
             }
@@ -4361,7 +4364,8 @@ fn trunc_source_and_no_unsigned_wrap<'ctx, B: ModuleBrand + 'ctx>(
     let InstructionKindData::Cast(data) = instruction_kind(value)? else {
         return None;
     };
-    (data.kind == CastOpcode::Trunc).then(|| (value_from_id(value, data.src.get()), data.nuw.get()))
+    (data.kind == CastOpcode::Trunc)
+        .then(|| (value_from_slot(value, data.src.get()), data.nuw.get()))
 }
 
 /// The condition operand of an `@llvm.assume`.
@@ -4371,7 +4375,7 @@ pub(crate) fn assume_argument<'ctx, B: ModuleBrand + 'ctx>(
     let InstructionKindData::Call(data) = instruction_kind(assume)? else {
         return None;
     };
-    Some(value_from_id(assume, data.args.first()?.get()))
+    Some(value_from_slot(assume, data.args.first()?.get()))
 }
 
 /// Whether `value` is the null pointer constant. Ports `m_Zero` at pointer type.
@@ -4478,7 +4482,7 @@ fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx>(
         | InstructionKindData::AShr(data)
         | InstructionKindData::LShr(data) => {
             kind.includes_poison()
-                && !shift_amount_known_in_range(value_from_id(value, data.rhs.get()))
+                && !shift_amount_known_in_range(value_from_slot(value, data.rhs.get()))
         }
 
         // fptosi/fptoui yield poison when the value does not fit the
@@ -4506,15 +4510,15 @@ fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::ExtractElement(data) => {
             kind.includes_poison()
                 && !lane_index_known_in_range(
-                    value_from_id(value, data.vector.get()),
-                    value_from_id(value, data.index.get()),
+                    value_from_slot(value, data.vector.get()),
+                    value_from_slot(value, data.index.get()),
                 )
         }
         InstructionKindData::InsertElement(data) => {
             kind.includes_poison()
                 && !lane_index_known_in_range(
-                    value_from_id(value, data.vector.get()),
-                    value_from_id(value, data.index.get()),
+                    value_from_slot(value, data.vector.get()),
+                    value_from_slot(value, data.index.get()),
                 )
         }
 
@@ -4752,7 +4756,7 @@ fn operands_of<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Vec<Value<
             .kind
             .operand_ids()
             .into_iter()
-            .map(|slot| value_from_id(value, slot))
+            .map(|slot| value_from_slot(value, slot))
             .collect(),
         _ => Vec::new(),
     }
@@ -4848,13 +4852,13 @@ fn compute_constant_range_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
             // select-pattern matcher of tranche 4.
             InstructionKindData::Select(data) => {
                 let true_range = compute_constant_range_inner(
-                    value_from_id(value, data.true_val.get()),
+                    value_from_slot(value, data.true_val.get()),
                     for_signed,
                     query,
                     depth + 1,
                 )?;
                 let false_range = compute_constant_range_inner(
-                    value_from_id(value, data.false_val.get()),
+                    value_from_slot(value, data.false_val.get()),
                     for_signed,
                     query,
                     depth + 1,
@@ -5043,12 +5047,12 @@ fn gep_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
     let width = value_bit_width(value, query.data_layout()).unwrap_or(0);
-    let ptr = value_from_id(value, data.ptr.get());
+    let ptr = value_from_slot(value, data.ptr.get());
     let ptr_known = compute_known_bits_inner(ptr, query, depth + 1, stack)?;
     let indices = data
         .indices
         .iter()
-        .map(|index| value_from_id(value, index.get()));
+        .map(|index| value_from_slot(value, index.get()));
     gep_known_bits_from_values(
         GepKnownBitsInput {
             anchor: value,
@@ -5271,13 +5275,13 @@ fn extract_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     depth: u32,
     stack: &mut HashSet<ValueSlot>,
 ) -> IrResult<KnownBits> {
-    let vector = value_from_id(value, data.vector.get());
+    let vector = value_from_slot(value, data.vector.get());
     let Some((lanes, false)) = vector_shape(vector) else {
         return Ok(KnownBits::unknown(
             value_bit_width(value, query.data_layout()).unwrap_or(0),
         ));
     };
-    let index = value_from_id(value, data.index.get());
+    let index = value_from_slot(value, data.index.get());
     let demanded = argument_constant(Some(index))
         .and_then(|idx| idx.try_zext_u64())
         .and_then(|idx| u32::try_from(idx).ok())
@@ -5303,7 +5307,7 @@ fn insert_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     };
     let demanded = demanded_elements_for(value, query).unwrap_or_else(|| ApInt::all_ones(lanes));
     let mut demanded_vec = demanded.clone();
-    let index = value_from_id(value, data.index.get());
+    let index = value_from_slot(value, data.index.get());
     let mut needs_element = true;
     if let Some(idx) = argument_constant(Some(index))
         .and_then(|idx| idx.try_zext_u64())
@@ -5317,7 +5321,7 @@ fn insert_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     known.set_all_conflict();
     if needs_element {
         known = compute_known_bits_inner(
-            value_from_id(value, data.value.get()),
+            value_from_slot(value, data.value.get()),
             query,
             depth + 1,
             stack,
@@ -5328,7 +5332,7 @@ fn insert_element_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     }
     if !demanded_vec.is_zero() {
         let vec_known = compute_known_bits_for_demanded(
-            value_from_id(value, data.vector.get()),
+            value_from_slot(value, data.vector.get()),
             &demanded_vec,
             query,
             depth + 1,
@@ -5364,8 +5368,8 @@ pub(crate) fn shuffle_source_demands<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let result_lanes = u32::try_from(data.mask.len()).ok()?;
     let demanded =
         demanded_elements_for(value, query).unwrap_or_else(|| ApInt::all_ones(result_lanes));
-    let lhs = value_from_id(value, data.lhs.get());
-    let rhs = value_from_id(value, data.rhs.get());
+    let lhs = value_from_slot(value, data.lhs.get());
+    let rhs = value_from_slot(value, data.rhs.get());
     // Both operands share a type, so one width describes each of them.
     let (source_width, false) = vector_shape(lhs)? else {
         return None;
@@ -5453,7 +5457,7 @@ fn aggregate_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             continue;
         }
         let element_known =
-            compute_known_bits_inner(value_from_id(value, *element), query, depth + 1, stack)?;
+            compute_known_bits_inner(value_from_slot(value, *element), query, depth + 1, stack)?;
         known = known.intersect_with(&element_known);
         if known.is_unknown() {
             break;
@@ -5594,7 +5598,7 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
                     continue;
                 }
                 if !is_guaranteed_not_to_be_undef_or_poison(
-                    value_from_id(value, operand.get()),
+                    value_from_slot(value, operand.get()),
                     query,
                     depth + 1,
                     stack,
@@ -5660,8 +5664,8 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
         {
             return Ok(false);
         }
-        let lhs = value_from_id(value, data.lhs.get());
-        let rhs = value_from_id(value, data.rhs.get());
+        let lhs = value_from_slot(value, data.lhs.get());
+        let rhs = value_from_slot(value, data.rhs.get());
         if !is_guaranteed_not_to_be_undef_or_poison(lhs, query, depth + 1, stack, kind)?
             || !is_guaranteed_not_to_be_undef_or_poison(rhs, query, depth + 1, stack, kind)?
         {
@@ -5754,7 +5758,7 @@ fn dominating_condition_proves_well_defined<'a, 'ctx, B: ModuleBrand + 'ctx>(
         if kind.includes_undef() {
             continue;
         }
-        let condition = value_from_id(value, condition);
+        let condition = value_from_slot(value, condition);
         let Some(condition_kind) = instruction_kind(condition) else {
             continue;
         };
@@ -5782,7 +5786,7 @@ fn block_terminator<'ctx, B: ModuleBrand + 'ctx>(
         return None;
     };
     let terminator = *data.instructions.borrow().last()?;
-    Some(value_from_id(anchor, terminator))
+    Some(value_from_slot(anchor, terminator))
 }
 
 /// The condition of a conditional `br` or a `switch`. Ports the
@@ -5808,7 +5812,7 @@ fn argument_is_well_defined<'ctx, B: ModuleBrand + 'ctx>(
     parent_fn: ValueSlot,
     slot: u32,
 ) -> bool {
-    let function = value_from_id(anchor, parent_fn);
+    let function = value_from_slot(anchor, parent_fn);
     let ValueKindData::Function(data) = &function.data().kind else {
         return false;
     };
@@ -5852,7 +5856,7 @@ fn constant_is_well_defined<'ctx, B: ModuleBrand + 'ctx>(
             ) =>
         {
             for element in elements.iter() {
-                let element = value_from_id(value, *element);
+                let element = value_from_slot(value, *element);
                 match &element.data().kind {
                     ValueKindData::Constant(ConstantData::Undef) if kind.includes_undef() => {
                         return Some(false);
@@ -5906,7 +5910,20 @@ fn type_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>, dl: &DataLayou
     }
 }
 
-pub(crate) fn value_from_id<'ctx, B: ModuleBrand + 'ctx>(
+/// The value handle for `slot`, borrowing `anchor`'s module.
+///
+/// The analysis modules all walk operands as bare arena slots and need a
+/// handle back; this is the one place that conversion lives. `anchor` supplies
+/// the `ModuleRef`, so `slot` must belong to the same module — every caller
+/// reads it out of `anchor`'s own instruction payload, which makes that true
+/// by construction.
+///
+/// **Named for what it takes.** A `ValueSlot` is a crate-internal arena index,
+/// not a public tagged `*Id`, and the repo's naming law keeps the two apart.
+/// This was `value_from_id` while `pointer_analysis` and `demanded_bits` each
+/// kept a byte-identical private copy under the correct name; all three are
+/// now this one function.
+pub(crate) fn value_from_slot<'ctx, B: ModuleBrand + 'ctx>(
     anchor: Value<'ctx, B>,
     id: ValueSlot,
 ) -> Value<'ctx, B> {
