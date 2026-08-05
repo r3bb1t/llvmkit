@@ -152,16 +152,17 @@ across physical registers. llvmkit models no target.
   `validate_constant_expr_data` rejects a non-empty one for `ShuffleVector` and
   all 114 construction sites pass empty. The mask is the third operand, and
   that is what the arm reads.
-- **The constant folder emitted invalid IR for scalable vectors.**
-  `vector_splat_constant` wrote `min_len` elements with no scalability guard,
-  so a scalable splat of `undef` became
-  `<vscale x 4 x ptr> <ptr undef, ptr undef, ptr undef, ptr undef>` — an
-  element list for a vector whose lane count is a *minimum*. LLVM has no such
-  constant form and would reject the printed IR; llvmkit was also quietly
-  asserting `vscale == 1`. The scalable arm now answers with the whole-vector
-  spelling (`undef` / `poison` / `zeroinitializer`) and declines anything else,
-  llvmkit having no `splat (...)` constant. Found by a fixture written for the
-  splat arm above.
+#### Known gaps
+
+- **A scalable vector of uniform pointers or `undef` prints an element list**,
+  which is not a constant form LLVM has for a scalable type. Found while
+  writing the fixtures above, and **not** fixed here: the cause is in the
+  printer, not the folder. llvmkit represents a scalable splat as `min_len`
+  equal elements and relies on `asm_writer` collapsing it back to `splat (…)`,
+  and that collapse is restricted to integer and floating-point elements —
+  faithfully mirroring `AsmWriter.cpp`, which is correct for a fixed vector and
+  wrong for a scalable one. `docs/future-work.md` carries the mechanism and the
+  fix; the current output is pinned by a test so it cannot be forgotten.
 
 ### ValueTracking: `computeKnownFPClass`'s vector arms
 

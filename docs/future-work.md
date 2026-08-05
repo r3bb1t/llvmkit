@@ -12,6 +12,42 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## Printer — a scalable vector of uniform pointers or `undef` prints an element list (found 2026-08-05)
+
+**This is invalid IR.** A scalable vector's lane count is a minimum, not a
+count, so LLVM has no element-list constant form for one. llvmkit can print:
+
+```text
+@g = global <vscale x 4 x ptr> <ptr undef, ptr undef, ptr undef, ptr undef>
+```
+
+which LLVM would reject, and which quietly asserts `vscale == 1`.
+
+**The mechanism, which is not where it first looks.** llvmkit represents a
+scalable splat as `min_len` equal elements — a representation upstream cannot
+have, because `ConstantVector::get` requires a fixed count. Five tests in
+`crates/llvmkit-ir/tests/constant_fold.rs` depend on it
+(`scalable_vector_trunc_splat_folds` and neighbours), and it round-trips
+because `asm_writer::fmt_aggregate_constant` collapses a uniform vector back to
+`splat (…)`. That collapse is gated on `is_int_or_fp_splat_value`, which
+faithfully mirrors `AsmWriter.cpp`'s own `isa<ConstantInt> || isa<ConstantFP>`
+restriction — correct for a *fixed* vector, where the element list is a legal
+fallback, and wrong for a scalable one, where it is not.
+
+So the folder is not at fault and must not be "fixed": an attempt to guard
+`vector_splat_constant` against scalable types broke all five tests, because
+the representation is deliberate. **The fix belongs in the printer**: for a
+scalable vector, never fall through to the element list. Emit `splat (…)` for
+any uniform element, not just int/fp — llvmkit's parser already accepts that
+via `expand_splat_constant`, so the round trip holds. Consider also a verifier
+rule rejecting a `ConstantData::Aggregate` under a scalable vector type whose
+elements are not uniform, which turns the whole class loud.
+
+Pinned by `a_scalable_uniform_undef_vector_prints_an_element_list_known_bug` in
+`crates/llvmkit-asmparser/tests/constant_expression_splat.rs`, which asserts
+the *current* output so the bug cannot be forgotten; fixing it fails that test
+loudly.
+
 ## ~~Parser — deferred alias/ifunc targets~~ (found and fixed 2026-07-31)
 
 ~~The printer emits aliases and ifuncs before function declarations, but the
