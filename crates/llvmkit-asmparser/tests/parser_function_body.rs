@@ -6,17 +6,17 @@
 use llvmkit_asmparser::parser;
 
 fn parse_and_print(src: &str) -> String {
-    parser::parse_assembly_string(src, |module, _parsed| format!("{module}")).expect("parse")
+    parser::parse_assembly(src, |module, _parsed| format!("{module}")).expect("parse")
 }
 
 fn parse_and_verify(src: &str) {
-    let verify = parser::parse_assembly_string(src, |module, _parsed| module.verify_borrowed())
-        .expect("parse");
+    let verify =
+        parser::parse_assembly(src, |module, _parsed| module.verify_borrowed()).expect("parse");
     verify.expect("verify");
 }
 
 fn parse_expect_error(src: &str) -> String {
-    match parser::parse_assembly_string(src, |_module, _parsed| ()) {
+    match parser::parse_assembly(src, |_module, _parsed| ()) {
         Ok(()) => panic!("expected parse to fail, but it succeeded"),
         Err(e) => format!("{e}"),
     }
@@ -201,7 +201,7 @@ fn parses_sub_and_mul() {
 /// Uses `store` (no result) with an LHS `%x =` to trigger the `_` arm.
 #[test]
 fn unsupported_opcode_is_typed_error() {
-    let err = parser::parse_assembly_string(
+    let err = parser::parse_assembly(
         "define i32 @f(i32 %a) {\nentry:\n  %x = store i32 %a, ptr null\n  ret i32 %a\n}\n",
         |_module, _parsed| (),
     )
@@ -544,7 +544,7 @@ fn parses_select_over_struct_and_array_arms() {
 /// accept a non-`i1` condition before the select condition type is validated.
 #[test]
 fn select_constant_non_i1_condition_is_rejected_before_fold() {
-    let err = parser::parse_assembly_string(
+    let err = parser::parse_assembly(
         "define i32 @bad() {\nentry:\n  %r = select i32 0, i32 5, i32 5\n  ret i32 %r\n}\n",
         |_module, _parsed| (),
     )
@@ -558,7 +558,7 @@ fn select_constant_non_i1_condition_is_rejected_before_fold() {
 /// either equal arm.
 #[test]
 fn select_constant_token_arms_are_rejected_before_fold() {
-    let err = parser::parse_assembly_string(
+    let err = parser::parse_assembly(
         "define void @bad() {\nentry:\n  %r = select i1 true, token none, token none\n  ret void\n}\n",
         |_module, _parsed| (),
     )

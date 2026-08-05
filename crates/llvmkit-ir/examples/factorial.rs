@@ -73,7 +73,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let bwp = IrBuilder::new_for::<i32>(m);
     let (loop_bb, params) = bwp.append_block_with_named_params(
         m.view(f).as_function(),
-        &[(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
+        [(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
         "loop",
     )?;
     let exit = m.view(f).append_basic_block(m, "exit");

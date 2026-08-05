@@ -24,6 +24,25 @@ bullet below names its wave.
 
 #### Changed
 
+- **Breaking (W4): signature generics tell the truth about ownership
+  (C-GENERIC).** Names that are stored take `Into<String>` — the
+  `add_global` family (was `AsRef<str>` + a hidden copy), the chainable
+  call-builders' `.name(..)`, `PassPipelineTextName::try_new`; conditional
+  get-or-insert keys stay borrow-generic (`get_or_insert_comdat` is now
+  `AsRef<str>`). `get_or_insert_intrinsic_declaration_by_id` threads
+  `Into<Box<[Type]>>` through (no forced `.to_vec()`);
+  `append_block_with_named_params` takes any
+  `IntoIterator<Item = (Type, impl Into<String>)>` instead of a
+  `&[(Type, &str)]` borrow sandwich; `StructLayoutInfo::new` and
+  `PassPipelineElement::new` accept `Into<Vec<u64>>` / `IntoIterator`.
+  `Module::global_builder` accepts `impl Into<Type>` like its siblings.
+  asmparser: `parse_type`, `parse_type_at_beginning`,
+  `parse_constant_value`, `parse_summary_index_assembly` now take
+  `impl AsRef<[u8]>` like the rest of the entry points; the
+  `slots: Option<&SlotMapping>` mode parameters split into explicit
+  `*_with_slots` twins; the redundant `parse_assembly_string` is gone
+  (`parse_assembly` already accepts `&str`).
+
 - **Breaking (W3): lookups are bare nouns; `get_` is reserved for
   get-or-insert.** `Module::get_global` → `global`, `get_alias` → `alias`,
   `get_ifunc` → `ifunc`, `get_comdat` → `comdat`, `function_by_name::<R>` →

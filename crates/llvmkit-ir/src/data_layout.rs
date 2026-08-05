@@ -962,12 +962,16 @@ pub struct StructLayoutInfo {
 
 impl StructLayoutInfo {
     /// Construct computed struct-layout information.
-    pub fn new(
+    pub fn new<Offsets>(
         size_bytes: u64,
         alignment: Align,
         is_padded: bool,
-        member_offsets: Vec<u64>,
-    ) -> Self {
+        member_offsets: Offsets,
+    ) -> Self
+    where
+        Offsets: Into<Vec<u64>>,
+    {
+        let member_offsets = member_offsets.into();
         Self {
             size_bytes,
             alignment,

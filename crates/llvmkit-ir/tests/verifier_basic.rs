@@ -111,7 +111,7 @@ fn verify_represented_intrinsic_declarations() -> Result<(), IrError> {
 fn verify_all_fixed_signature_intrinsic_declarations() -> Result<(), IrError> {
     let m = module_new!("all-fixed-intrinsics")?;
     for id in IntrinsicId::all().filter(|id| !id.is_overloaded()) {
-        m.get_or_insert_intrinsic_declaration_by_id(id, &[])
+        m.get_or_insert_intrinsic_declaration_by_id(id, [])
             .unwrap_or_else(|err| {
                 panic!(
                     "{}#{} declaration failed verifier setup: {err}",
@@ -153,7 +153,7 @@ fn intrinsic_declaration_missing_generated_function_attrs_is_rejected() -> Resul
 fn intrinsic_declaration_missing_generated_argument_attr_is_rejected() -> Result<(), IrError> {
     let m = module_new!("intrinsic-missing-argument-attrs")?;
     let abs =
-        m.get_or_insert_intrinsic_declaration_by_id(IntrinsicId::ABS, &[m.i32_type().as_type()])?;
+        m.get_or_insert_intrinsic_declaration_by_id(IntrinsicId::ABS, [m.i32_type().as_type()])?;
     m.view(abs)
         .set_attributes(&m, abs_function_attrs_without_immarg());
 

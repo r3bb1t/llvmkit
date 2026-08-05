@@ -3803,12 +3803,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Ok(function.id())
     }
 
-    pub fn get_or_insert_intrinsic_declaration_by_id(
+    pub fn get_or_insert_intrinsic_declaration_by_id<Overloads>(
         &'ctx self,
         id: IntrinsicId,
-        overloads: &[Type<'ctx, B>],
-    ) -> IrResult<FunctionId<Dyn, B>> {
-        let descriptor = IntrinsicDescriptor::new(id, overloads.to_vec())?;
+        overloads: Overloads,
+    ) -> IrResult<FunctionId<Dyn, B>>
+    where
+        Overloads: Into<Box<[Type<'ctx, B>]>>,
+    {
+        let descriptor = IntrinsicDescriptor::new(id, overloads)?;
         self.get_or_insert_intrinsic_declaration(&descriptor)
     }
 
@@ -3838,11 +3841,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// [`GlobalVariable`] with [`view`](Self::view).
     pub fn add_global<N, C>(&'ctx self, name: N, initializer: C) -> IrResult<GlobalId<B>>
     where
-        N: AsRef<str>,
+        N: Into<String>,
         C: IntoConstantValue<'ctx, B>,
     {
         let constant = initializer.into_constant(self.module_ref());
-        GlobalBuilder::<B>::new(self.module_ref(), name.as_ref().to_owned(), constant.ty())
+        GlobalBuilder::<B>::new(self.module_ref(), name, constant.ty())
             .initializer(constant)
             .build()
     }
@@ -3853,11 +3856,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// `constant` rather than mutable.
     pub fn add_global_constant<N, C>(&'ctx self, name: N, initializer: C) -> IrResult<GlobalId<B>>
     where
-        N: AsRef<str>,
+        N: Into<String>,
         C: IntoConstantValue<'ctx, B>,
     {
         let constant = initializer.into_constant(self.module_ref());
-        GlobalBuilder::<B>::new(self.module_ref(), name.as_ref().to_owned(), constant.ty())
+        GlobalBuilder::<B>::new(self.module_ref(), name, constant.ty())
             .constant(true)
             .initializer(constant)
             .build()
@@ -3876,40 +3879,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         value_type: T,
     ) -> IrResult<GlobalId<B>>
     where
-        N: AsRef<str>,
+        N: Into<String>,
         T: Into<Type<'ctx, B>>,
     {
-        GlobalBuilder::<B>::new(
-            self.module_ref(),
-            name.as_ref().to_owned(),
-            value_type.into(),
-        )
-        .build()
+        GlobalBuilder::<B>::new(self.module_ref(), name, value_type.into()).build()
     }
 
     pub fn add_external_global<N, T>(&'ctx self, name: N, value_type: T) -> IrResult<GlobalId<B>>
     where
-        N: AsRef<str>,
+        N: Into<String>,
         T: Into<Type<'ctx, B>>,
     {
-        GlobalBuilder::<B>::new(
-            self.module_ref(),
-            name.as_ref().to_owned(),
-            value_type.into(),
-        )
-        .linkage(Linkage::External)
-        .build()
+        GlobalBuilder::<B>::new(self.module_ref(), name, value_type.into())
+            .linkage(Linkage::External)
+            .build()
     }
 
-    pub fn global_builder<N>(
-        &'ctx self,
-        name: N,
-        value_type: Type<'ctx, B>,
-    ) -> GlobalBuilder<'ctx, B>
+    pub fn global_builder<N, T>(&'ctx self, name: N, value_type: T) -> GlobalBuilder<'ctx, B>
     where
         N: Into<String>,
+        T: Into<Type<'ctx, B>>,
     {
-        GlobalBuilder::new(self.module_ref(), name, value_type)
+        GlobalBuilder::new(self.module_ref(), name, value_type.into())
     }
 
     pub fn alias_builder<C, Name>(
@@ -3993,7 +3984,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().append_module_asm(line);
     }
 
-    pub fn get_or_insert_comdat(&'ctx self, name: &str) -> ComdatRef<'ctx, B> {
+    pub fn get_or_insert_comdat<Name: AsRef<str>>(&'ctx self, name: Name) -> ComdatRef<'ctx, B> {
         self.core().get_or_insert_comdat::<B, _>(name)
     }
 

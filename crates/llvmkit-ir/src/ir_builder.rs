@@ -1004,22 +1004,25 @@ where
     /// `params[i]` is the `Value` for `params[i].0`, in order, and the block is
     /// returned still [`Unterminated`] without becoming the builder's insertion
     /// point.
-    pub fn append_block_with_named_params<Name>(
+    pub fn append_block_with_named_params<Params, ParamName, Name>(
         &self,
         function: FunctionValue<'ctx, R, B>,
-        params: &[(Type<'ctx, B>, &str)],
+        params: Params,
         name: Name,
     ) -> IrResult<BlockWithParams<'ctx, R, B>>
     where
+        Params: IntoIterator<Item = (Type<'ctx, B>, ParamName)>,
+        ParamName: Into<String>,
         Name: Into<String>,
     {
         let bb = function.append_basic_block_unchecked(name);
         let bb_id = bb.slot();
-        let mut out = Vec::with_capacity(params.len());
+        let mut out = Vec::new();
         for (ty, param_name) in params {
-            out.push(self.make_phi_in_block(bb_id, ty.id(), param_name));
+            let param_name = param_name.into();
+            out.push(self.make_phi_in_block(bb_id, ty.id(), &param_name));
         }
-        bb.set_parameter_count(params.len());
+        bb.set_parameter_count(out.len());
         Ok((bb, out))
     }
 
@@ -5312,7 +5315,7 @@ where
         Callee: IntoCallee<'ctx, R2, B>,
     {
         let callee = callee.into_callee(ModuleRef::<B>::new(self.module))?;
-        let mut builder = self.call_builder(callee).name(name);
+        let mut builder = self.call_builder(callee).name(name.as_ref());
         for arg in args {
             builder = builder.arg(arg);
         }
@@ -5329,7 +5332,7 @@ where
     where
         Name: AsRef<str>,
     {
-        let mut builder = self.intrinsic_call_builder(descriptor)?.name(name);
+        let mut builder = self.intrinsic_call_builder(descriptor)?.name(name.as_ref());
         for arg in args.iter().copied() {
             builder = builder.arg(arg);
         }
@@ -5365,7 +5368,7 @@ where
     {
         let mut builder = self
             .intrinsic_call_builder_by_id(id, intrinsic_name)?
-            .name(result_name);
+            .name(result_name.as_ref());
         for arg in args {
             builder = builder.arg(arg);
         }
@@ -9417,9 +9420,9 @@ where
 
     pub fn name<Name>(mut self, name: Name) -> Self
     where
-        Name: AsRef<str>,
+        Name: Into<String>,
     {
-        self.name = name.as_ref().to_owned();
+        self.name = name.into();
         self
     }
 
@@ -9580,9 +9583,9 @@ where
 
     pub fn name<Name>(mut self, name: Name) -> Self
     where
-        Name: AsRef<str>,
+        Name: Into<String>,
     {
-        self.name = name.as_ref().to_owned();
+        self.name = name.into();
         self
     }
 
@@ -9664,7 +9667,7 @@ where
 
     pub fn name<Name>(mut self, name: Name) -> Self
     where
-        Name: AsRef<str>,
+        Name: Into<String>,
     {
         self.inner = self.inner.name(name);
         self

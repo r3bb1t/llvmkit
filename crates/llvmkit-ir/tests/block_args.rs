@@ -305,7 +305,7 @@ fn append_block_with_named_params_names_head_phis() -> Result<(), IrError> {
     let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (hdr, params) = bwp.append_block_with_named_params(
         m.view(f),
-        &[(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
+        [(i32_ty.as_type(), "acc"), (i32_ty.as_type(), "i")],
         "hdr",
     )?;
     let hdr_label = hdr.id();

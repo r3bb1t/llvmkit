@@ -19,9 +19,8 @@ fn parse_err(src: &str) -> ParseError {
 #[test]
 fn standalone_constant_rejects_trailing_token() {
     let module = module_new!("parser_val_id_constant").expect("fresh module");
-    let err =
-        parser::parse_constant_value(b"42 trailing", &module, module.i32_type().as_type(), None)
-            .expect_err("parser rejects trailing token after standalone constant");
+    let err = parser::parse_constant_value(b"42 trailing", &module, module.i32_type().as_type())
+        .expect_err("parser rejects trailing token after standalone constant");
     match err {
         ParseError::Expected { expected, .. } => assert_eq!(expected, "end of string"),
         other => panic!("unexpected error variant: {other:?}"),

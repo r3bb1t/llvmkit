@@ -403,11 +403,11 @@ fn switch_with_args_authors_a_sil_style_loop() -> Result<(), IrError> {
     let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (loop_bb, loop_params) = bwp.append_block_with_named_params(
         m.view(f),
-        &[(i32_ty.as_type(), "i"), (i32_ty.as_type(), "acc")],
+        [(i32_ty.as_type(), "i"), (i32_ty.as_type(), "acc")],
         "loop",
     )?;
     let (exit_bb, exit_params) =
-        bwp.append_block_with_named_params(m.view(f), &[(i32_ty.as_type(), "r")], "exit")?;
+        bwp.append_block_with_named_params(m.view(f), [(i32_ty.as_type(), "r")], "exit")?;
     let loop_label = loop_bb.id();
     let exit_label = exit_bb.id();
 
@@ -558,9 +558,9 @@ fn switch_dyn_with_args_seeds_default_and_case() -> Result<(), IrError> {
 
     let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (dflt, dflt_params) =
-        bwp.append_block_with_named_params(m.view(f), &[(i32_ty.as_type(), "dp")], "dflt")?;
+        bwp.append_block_with_named_params(m.view(f), [(i32_ty.as_type(), "dp")], "dflt")?;
     let (case_bb, case_params) =
-        bwp.append_block_with_named_params(m.view(f), &[(i32_ty.as_type(), "cp")], "case")?;
+        bwp.append_block_with_named_params(m.view(f), [(i32_ty.as_type(), "cp")], "case")?;
     let dflt_label = dflt.id();
     let case_label = case_bb.id();
 
@@ -613,9 +613,9 @@ fn invoke_with_args_seeds_both_edges() -> Result<(), IrError> {
 
     let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (normal, normal_params) =
-        bwp.append_block_with_named_params(m.view(f), &[(i32_ty.as_type(), "np")], "normal")?;
+        bwp.append_block_with_named_params(m.view(f), [(i32_ty.as_type(), "np")], "normal")?;
     let (unwind, unwind_params) =
-        bwp.append_block_with_named_params(m.view(f), &[(i32_ty.as_type(), "up")], "unwind")?;
+        bwp.append_block_with_named_params(m.view(f), [(i32_ty.as_type(), "up")], "unwind")?;
     let normal_label = normal.id();
     let unwind_label = unwind.id();
 
@@ -673,7 +673,7 @@ fn invoke_dyn_with_args_seeds_edges_and_checks_arity() -> Result<(), IrError> {
 
     let bwp = IrBuilder::new_for::<Dyn>(&m);
     let (normal, normal_params) =
-        bwp.append_block_with_named_params(m.view(f), &[(i32_ty.as_type(), "np")], "normal")?;
+        bwp.append_block_with_named_params(m.view(f), [(i32_ty.as_type(), "np")], "normal")?;
     let normal_label = normal.id();
 
     // Happy path: the normal edge carries the parameter, the unwind edge is an

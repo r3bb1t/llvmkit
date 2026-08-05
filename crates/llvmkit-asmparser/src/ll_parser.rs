@@ -1079,14 +1079,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         .src
                         .get(start..end)
                         .ok_or_else(|| self.expected("constant initializer"))?;
-                    crate::parser::parse_constant_value(bytes, self.module, ty, Some(&slots))
+                    crate::parser::parse_constant_value_with_slots(bytes, self.module, ty, &slots)
                         .map_err(|err| match err {
-                            ParseError::Expected { expected, .. } => ParseError::Expected {
-                                expected,
-                                loc: DiagLoc::span(span),
-                            },
-                            other => other,
-                        })?
+                        ParseError::Expected { expected, .. } => ParseError::Expected {
+                            expected,
+                            loc: DiagLoc::span(span),
+                        },
+                        other => other,
+                    })?
                 }
             };
             item.global
