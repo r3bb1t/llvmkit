@@ -785,9 +785,9 @@ sweep for an upstream fixture that exercises them.
   stopgap.** Upstream LLVM's answer to drift-prone repetitive definitions is
   build-time generation (its lexer and parser both `#include` the
   TableGen-generated `Attributes.inc` — `LLLexer.cpp:701-704`,
-  `LLParser.cpp:1547-1551` in the vendored 22.1.4 tree); `gen_intrinsics` in
-  `build.rs` and the macros crate are this project's two arms of the same
-  philosophy. The ecosystem norm agrees (`serde_derive`, `thiserror-impl` are
+  `LLParser.cpp:1547-1551` in the vendored 22.1.4 tree); the
+  `llvmkit-tablegen` crate and the macros crate are this project's two arms of
+  the same philosophy. The ecosystem norm agrees (`serde_derive`, `thiserror-impl` are
   permanent companion crates).
 - **Optional simplification, not planned work:** RFC 3698 (`macro_derive`,
   rust-lang/rust#143549) would let the derive live inside `llvmkit-ir` as a
