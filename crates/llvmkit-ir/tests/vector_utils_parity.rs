@@ -76,7 +76,7 @@ const MODELED: &[(&str, &str)] = &[
         "shuffle_mask_with_widest_elements",
     ),
     ("getSplatIndex", "splat_index"),
-    ("getSplatValue", "get_splat_value"),
+    ("getSplatValue", "splat_value"),
     ("isMaskedSlidePair", "masked_slide_pair"),
     ("isSplatValue", "is_splat_value"),
     ("isTriviallyScalarizable", "is_trivially_scalarizable"),

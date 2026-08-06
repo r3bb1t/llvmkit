@@ -268,7 +268,7 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "GetPointerBaseWithConstantOffset",
         "pointer_base_with_constant_offset",
     ),
-    ("GetStringLength", "get_string_length"),
+    ("GetStringLength", "string_length"),
     ("MaskedValueIsZero", "masked_value_is_zero"),
     ("OverflowResult", "OverflowResult"),
     ("SelectPatternFlavor", "SelectPatternFlavor"),
@@ -345,8 +345,8 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
         "getArgumentAliasingToReturnedPointer",
         "argument_aliasing_to_returned_pointer",
     ),
-    ("getConstantDataArrayInfo", "get_constant_data_array_info"),
-    ("getConstantStringInfo", "get_constant_string_info"),
+    ("getConstantDataArrayInfo", "constant_data_array_info"),
+    ("getConstantStringInfo", "constant_string_info"),
     (
         "getInverseMinMaxFlavor",
         "SelectPatternFlavor::inverse_min_max",
@@ -361,16 +361,16 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ),
     ("getMinMaxLimit", "SelectPatternFlavor::min_max_limit"),
     ("getMinMaxPred", "SelectPatternFlavor::min_max_predicate"),
-    ("getSelectPattern", "get_select_pattern"),
-    ("getUnderlyingObject", "get_underlying_object"),
+    ("getSelectPattern", "select_pattern"),
+    ("getUnderlyingObject", "underlying_object"),
     (
         "getUnderlyingObjectAggressive",
-        "get_underlying_object_aggressive",
+        "underlying_object_aggressive",
     ),
-    ("getUnderlyingObjects", "get_underlying_objects"),
+    ("getUnderlyingObjects", "underlying_objects"),
     (
         "getUnderlyingObjectsForCodeGen",
-        "get_underlying_objects_for_code_gen",
+        "underlying_objects_for_code_gen",
     ),
     ("haveNoCommonBitsSet", "have_no_common_bits_set"),
     ("impliesPoison", "implies_poison"),
@@ -818,7 +818,9 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _intrinsic_propagates_poison = intrinsic_propagates_poison;
     // The options record `isSafeToSpeculativelyExecute`'s two defaulted `bool`
     // parameters; `Default` is upstream's no-argument call.
-    let _speculation_options = SpeculationOptions::new().without_variable_info();
+    let _speculation_options = SpeculationOptions::new()
+        .without_variable_info()
+        .ignoring_ub_implying_attrs();
     let _default_transfer_scan_limit = llvmkit_ir::DEFAULT_TRANSFER_SCAN_LIMIT;
 
     // Pointer and object analysis (tranche 5).
