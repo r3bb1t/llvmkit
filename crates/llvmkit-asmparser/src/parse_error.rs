@@ -198,6 +198,40 @@ pub enum ParseError {
     #[error("integer width {width} out of range (1..={max})")]
     IntegerWidthOutOfRange { width: u64, max: u32, loc: DiagLoc },
 
+    /// A specialized `DI*` node named a field its class does not declare.
+    /// Mirrors the fall-through arm of `LLParser`'s `PARSE_MD_FIELDS` macro
+    /// (`LLParser.cpp`), which reports `invalid field '...'` once every
+    /// `PARSE_MD_FIELD` in the class's `VISIT_MD_FIELDS` block has failed to
+    /// match. The accepted set is
+    /// [`llvmkit_ir::metadata::SpecializedMetadataKind::fields`].
+    #[error("invalid field '{field}'")]
+    InvalidMetadataField {
+        kind: &'static str,
+        field: String,
+        loc: DiagLoc,
+    },
+
+    /// A specialized `DI*` node repeated a field. Mirrors
+    /// `LLParser::parseMDField`'s `Result.Seen` guard (`LLParser.cpp`).
+    #[error("field '{field}' cannot be specified more than once")]
+    DuplicateMetadataField {
+        kind: &'static str,
+        field: String,
+        loc: DiagLoc,
+    },
+
+    /// A specialized `DI*` node omitted a field its class declares `REQUIRED`.
+    /// Mirrors the `REQUIRE_FIELD` expansion in `LLParser`'s `PARSE_MD_FIELDS`
+    /// macro (`LLParser.cpp`), which — like this — reports against the closing
+    /// `)` rather than the node's opening token. The required set is
+    /// [`llvmkit_ir::metadata::SpecializedMetadataKind::required_fields`].
+    #[error("missing required field '{field}'")]
+    MissingRequiredMetadataField {
+        kind: &'static str,
+        field: &'static str,
+        loc: DiagLoc,
+    },
+
     /// I/O failure pulling source bytes. The lexer itself does not perform
     /// I/O; this is for the file-reading entry points and callers using
     /// [`crate::read_to_owned`]-style helpers. `message` is the `Display`
@@ -247,7 +281,10 @@ impl ParseError {
             | ParseError::Redefinition { loc, .. }
             | ParseError::UndefinedSymbol { loc, .. }
             | ParseError::InvalidSlotId { loc, .. }
-            | ParseError::IntegerWidthOutOfRange { loc, .. } => Some(*loc),
+            | ParseError::IntegerWidthOutOfRange { loc, .. }
+            | ParseError::InvalidMetadataField { loc, .. }
+            | ParseError::DuplicateMetadataField { loc, .. }
+            | ParseError::MissingRequiredMetadataField { loc, .. } => Some(*loc),
             ParseError::Io { .. }
             | ParseError::BrandInUse { .. }
             | ParseError::BrandRetired { .. } => None,

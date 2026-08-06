@@ -19,6 +19,38 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Specialized `DI*` metadata: fields are validated against their node class
+
+- **Breaking (parser): `!DILocation(lien: 3)` no longer parses.** The
+  specialized-node loop accepted *any* `LabelStr` as a field key, so llvmkit
+  parsed debug metadata that `llvm-as` rejects. It now makes all three
+  rejections `LLParser`'s `PARSE_MD_FIELDS` macro makes (`LLParser.cpp`):
+  `invalid field '<name>'` for a key the class does not declare, `field
+  '<name>' cannot be specified more than once` (from `LLParser::parseMDField`'s
+  `Result.Seen` guard), and `missing required field '<name>'` (`REQUIRE_FIELD`,
+  reported against the closing `)` exactly as upstream does). Three new
+  `ParseError` variants carry the node kind, the field, and the location;
+  `ParseError` is `#[non_exhaustive]`, so the additions are not themselves a
+  break.
+
+- **Added: `SpecializedMetadataKind::fields` / `required_fields` /
+  `accepts_field` / `ALL`.** Each row ports the matching
+  `LLParser::parseDI*`'s `VISIT_MD_FIELDS` block. `DiExpression`'s table is
+  deliberately empty — `LLParser::parseDIExpression` uses no `VISIT_MD_FIELDS`
+  at all, because a `DIExpression` body is a positional `DW_OP_*` list rather
+  than `name: value` pairs.
+
+- **Fixed: `flags:` / `spFlags:` accept a `|`-joined disjunction.**
+  `flags: DIFlagPublic | DIFlagStaticMember` previously failed to parse
+  outright. It is kept as the joined source text, which is byte-for-byte what
+  `AsmWriter.cpp`'s `printDIFlags` emits (`ListSeparator(" | ")`); modelling
+  `DINode::DIFlags` as an actual bitmask stays deferred.
+
+- Four llvmkit-authored test fixtures were invalid IR that only the lax parser
+  had accepted — a `DICompileUnit` without `file:` (three of them, one being a
+  deviation from the upstream fixture it claims to derive from) and two
+  `DIDerivedType` / `DICompositeType` nodes without `tag:`. All corrected.
+
 ### API idiomatics program (Rust API Guidelines sweep)
 
 A coordinated set of breaking renames and reshapes bringing the whole public

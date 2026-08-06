@@ -443,6 +443,31 @@ pub enum SpecializedMetadataKind {
 }
 
 impl SpecializedMetadataKind {
+    /// Every modelled kind, in declaration order.
+    ///
+    /// The modelled subset of upstream's `HANDLE_SPECIALIZED_MDNODE_LEAF`
+    /// entries in `llvm/IR/Metadata.def`.
+    pub const ALL: [Self; 18] = [
+        Self::DiFile,
+        Self::DiCompileUnit,
+        Self::DiSubprogram,
+        Self::DiLocation,
+        Self::DiLocalVariable,
+        Self::DiBasicType,
+        Self::DiDerivedType,
+        Self::DiCompositeType,
+        Self::DiSubrange,
+        Self::DiNamespace,
+        Self::DiExpression,
+        Self::DiGlobalVariable,
+        Self::DiGlobalVariableExpression,
+        Self::DiSubroutineType,
+        Self::DiEnumerator,
+        Self::DiModule,
+        Self::DiTemplateTypeParameter,
+        Self::DiTemplateValueParameter,
+    ];
+
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "DIFile" => Self::DiFile,
@@ -488,6 +513,223 @@ impl SpecializedMetadataKind {
             Self::DiTemplateTypeParameter => "DITemplateTypeParameter",
             Self::DiTemplateValueParameter => "DITemplateValueParameter",
         }
+    }
+
+    /// Every field name this node family accepts, in upstream's declaration
+    /// order.
+    ///
+    /// Each row mirrors the `VISIT_MD_FIELDS` block of the matching
+    /// `LLParser::parseDI*` (`LLParser.cpp`), which is what upstream's
+    /// `PARSE_MD_FIELD` macro dispatches on before falling through to
+    /// `invalid field '...'`.
+    ///
+    /// [`Self::DiExpression`] is deliberately empty: `LLParser::parseDIExpression`
+    /// does not use `VISIT_MD_FIELDS` at all — a `DIExpression` body is a
+    /// positional list of `DW_OP_*` operations, not `name: value` pairs.
+    pub const fn fields(self) -> &'static [&'static str] {
+        match self {
+            Self::DiFile => &[
+                "filename",
+                "directory",
+                "checksumkind",
+                "checksum",
+                "source",
+            ],
+            Self::DiCompileUnit => &[
+                "file",
+                "language",
+                "sourceLanguageName",
+                "sourceLanguageVersion",
+                "producer",
+                "isOptimized",
+                "flags",
+                "runtimeVersion",
+                "splitDebugFilename",
+                "emissionKind",
+                "enums",
+                "retainedTypes",
+                "globals",
+                "imports",
+                "macros",
+                "dwoId",
+                "splitDebugInlining",
+                "debugInfoForProfiling",
+                "nameTableKind",
+                "rangesBaseAddress",
+                "sysroot",
+                "sdk",
+            ],
+            Self::DiSubprogram => &[
+                "scope",
+                "name",
+                "linkageName",
+                "file",
+                "line",
+                "type",
+                "isLocal",
+                "isDefinition",
+                "scopeLine",
+                "containingType",
+                "virtuality",
+                "virtualIndex",
+                "thisAdjustment",
+                "flags",
+                "spFlags",
+                "isOptimized",
+                "unit",
+                "templateParams",
+                "declaration",
+                "retainedNodes",
+                "thrownTypes",
+                "annotations",
+                "targetFuncName",
+                "keyInstructions",
+            ],
+            Self::DiLocation => &[
+                "line",
+                "column",
+                "scope",
+                "inlinedAt",
+                "isImplicitCode",
+                "atomGroup",
+                "atomRank",
+            ],
+            Self::DiLocalVariable => &[
+                "scope",
+                "name",
+                "arg",
+                "file",
+                "line",
+                "type",
+                "flags",
+                "align",
+                "annotations",
+            ],
+            Self::DiBasicType => &[
+                "tag",
+                "name",
+                "size",
+                "align",
+                "dataSize",
+                "encoding",
+                "num_extra_inhabitants",
+                "flags",
+            ],
+            Self::DiDerivedType => &[
+                "tag",
+                "name",
+                "file",
+                "line",
+                "scope",
+                "baseType",
+                "size",
+                "align",
+                "offset",
+                "flags",
+                "extraData",
+                "dwarfAddressSpace",
+                "annotations",
+                "ptrAuthKey",
+                "ptrAuthIsAddressDiscriminated",
+                "ptrAuthExtraDiscriminator",
+                "ptrAuthIsaPointer",
+                "ptrAuthAuthenticatesNullValues",
+            ],
+            Self::DiCompositeType => &[
+                "tag",
+                "name",
+                "file",
+                "line",
+                "scope",
+                "baseType",
+                "size",
+                "align",
+                "offset",
+                "flags",
+                "elements",
+                "runtimeLang",
+                "enumKind",
+                "vtableHolder",
+                "templateParams",
+                "identifier",
+                "discriminator",
+                "dataLocation",
+                "associated",
+                "allocated",
+                "rank",
+                "annotations",
+                "num_extra_inhabitants",
+                "specification",
+                "bitStride",
+            ],
+            Self::DiSubrange => &["count", "lowerBound", "upperBound", "stride"],
+            Self::DiNamespace => &["scope", "name", "exportSymbols"],
+            Self::DiExpression => &[],
+            Self::DiGlobalVariable => &[
+                "name",
+                "scope",
+                "linkageName",
+                "file",
+                "line",
+                "type",
+                "isLocal",
+                "isDefinition",
+                "templateParams",
+                "declaration",
+                "align",
+                "annotations",
+            ],
+            Self::DiGlobalVariableExpression => &["var", "expr"],
+            Self::DiSubroutineType => &["flags", "cc", "types"],
+            Self::DiEnumerator => &["name", "value", "isUnsigned"],
+            Self::DiModule => &[
+                "scope",
+                "name",
+                "configMacros",
+                "includePath",
+                "apinotes",
+                "file",
+                "line",
+                "isDecl",
+            ],
+            Self::DiTemplateTypeParameter => &["name", "type", "defaulted"],
+            Self::DiTemplateValueParameter => &["tag", "name", "type", "defaulted", "value"],
+        }
+    }
+
+    /// The subset of [`Self::fields`] upstream declares with `REQUIRED` rather
+    /// than `OPTIONAL`.
+    ///
+    /// `LLParser`'s `PARSE_MD_FIELDS` macro checks these once the closing `)`
+    /// is reached, via `REQUIRE_FIELD`, and reports
+    /// `missing required field '...'` against that location.
+    pub const fn required_fields(self) -> &'static [&'static str] {
+        match self {
+            Self::DiFile => &["filename", "directory"],
+            Self::DiCompileUnit => &["file"],
+            Self::DiLocation => &["scope"],
+            Self::DiLocalVariable => &["scope"],
+            Self::DiDerivedType => &["tag", "baseType"],
+            Self::DiCompositeType => &["tag"],
+            Self::DiNamespace => &["scope"],
+            Self::DiGlobalVariableExpression => &["var", "expr"],
+            Self::DiSubroutineType => &["types"],
+            Self::DiEnumerator => &["name", "value"],
+            Self::DiModule => &["scope", "name"],
+            Self::DiTemplateTypeParameter => &["type"],
+            Self::DiTemplateValueParameter => &["value"],
+            // Upstream declares every field of these `OPTIONAL`.
+            Self::DiSubprogram
+            | Self::DiBasicType
+            | Self::DiSubrange
+            | Self::DiExpression
+            | Self::DiGlobalVariable => &[],
+        }
+    }
+
+    /// Whether `name` is one of [`Self::fields`].
+    pub fn accepts_field(self, name: &str) -> bool {
+        self.fields().contains(&name)
     }
 }
 

@@ -882,22 +882,44 @@ says that too rather than inventing one.
 - **`DIFlags` / `DISPFlags` are not bitflags.** Upstream spells them as two
   `uint32_t` bitfields with `getFlag` / `getFlagString` / `splitFlags`
   (`DINode::DIFlags` and `DISubprogram::DISPFlags`, `DebugInfoMetadata.h`);
-  llvmkit keeps each written flag as a separate `Enum(String)` field value, so
+  llvmkit keeps the written disjunction as one `Enum(String)` field value, so
   `DIFlagPublic | DIFlagPrototyped` round-trips as text without ever becoming a
   set. Same milestone as the DWARF tables, and the same reason — the bitflag
   type is only worth its keep once something reads it.
-- **`MetadataField::name` is a `String`, and nothing validates it.** The
-  specialized-node loop in `ll_parser.rs` takes *any* `Token::LabelStr` as a
-  field key and pushes it straight into `MetadataField::new`, so
-  `!DILocation(lien: 3)` parses. Upstream validates per node class:
-  `PARSE_MD_FIELD` matches the key against that class's own `VISIT_MD_FIELDS`
-  list and otherwise reports `invalid field '<name>'`, and `REQUIRE_FIELD`
-  reports `missing required field '<name>'` (`LLParser.cpp`). llvmkit has
-  neither check. The typed form is a per-node `MetadataFieldName` enum —
-  roughly one per `DI*` node — which is worth writing only alongside the
-  per-node modeling it would key, so it lands with the same milestone. **Note
-  this one is a real divergence, not only an ergonomics gap**: llvmkit accepts
-  specialized metadata that `llvm-as` rejects.
+
+  The *parsing* half landed 2026-08-07: `ll_parser.rs` reads the `|`-joined
+  form (upstream's repeated `lltok::bar` loop for `MDFieldImpl<DIFlags>` /
+  `<DISPFlags>`) and stores the joined source text, which is byte-for-byte what
+  `AsmWriter.cpp`'s `printDIFlags` emits — its separator is
+  `ListSeparator(" | ")`. Before that, `flags: DIFlagPublic | DIFlagStaticMember`
+  did not parse at all, which is what blocked porting
+  `test/Assembler/invalid-disubroutinetype-missing-types.ll` verbatim.
+- **`MetadataField::name` is a `String` — validated, but still stringly typed.**
+  ~~Nothing validates it~~ — **the divergence half is closed (2026-08-07).**
+  `SpecializedMetadataKind::fields` / `required_fields` port each class's
+  `VISIT_MD_FIELDS` block from `LLParser.cpp`, and the specialized-node loop in
+  `ll_parser.rs` now makes all three of upstream's rejections: `invalid field
+  '<name>'` (the `PARSE_MD_FIELD` fall-through), `field '<name>' cannot be
+  specified more than once` (`LLParser::parseMDField`'s `Result.Seen` guard),
+  and `missing required field '<name>'` (`REQUIRE_FIELD`, reported against the
+  closing `)`). `!DILocation(lien: 3)` no longer parses. Ported from the
+  `test/Assembler/invalid-di*.ll` family.
+
+  What remains is the ergonomics half: the field name is still a `String`
+  checked against a `&'static [&'static str]` table, not a per-node
+  `MetadataFieldName` enum. That enum is worth writing only alongside the
+  per-node modeling it would key, so it stays with the same milestone. The
+  table also cannot be drift-tested the way `attribute_td_drift.rs` tests
+  `Attributes.td`, for two reasons worth recording so nobody re-derives them:
+  that `.td` is **vendored and tracked** under
+  `crates/llvmkit-asmparser/tablegen/`, whereas the field lists live in
+  `LLParser.cpp` under the **gitignored** `orig_cpp/`, so a test reading it
+  would pass locally and fail in CI; and even vendored, the lists are
+  `VISIT_MD_FIELDS` preprocessor macro blocks rather than a re-readable `.def`.
+  Vendoring an 8k-line C++ file to scrape macro text is a far larger commitment
+  than vendoring a `.td`. The two halves are pinned against each other instead
+  (`required_fields ⊆ fields`, per kind), which catches a typo'd or dropped
+  required field but not upstream adding one.
 - **`Module::target_triple` returns `Option<String>`.** The triple is stored
   and printed verbatim, never decoded, so nothing can ask for the architecture,
   vendor, OS or environment without re-splitting the string. A structured

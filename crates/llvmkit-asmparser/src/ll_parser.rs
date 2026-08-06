@@ -2119,66 +2119,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::SpecializedMetadata(name) => {
                 let kind = llvmkit_ir::metadata::SpecializedMetadataKind::from_name(name)
                     .ok_or_else(|| self.expected("specialized metadata kind"))?;
-                self.bump()?;
-                self.expect_punct(PunctKind::LParen, "'(' in specialized metadata")?;
-                let mut fields = Vec::new();
-                if !matches!(self.peek(), Token::RParen) {
-                    loop {
-                        let field_name = match self.peek() {
-                            Token::LabelStr(bytes) => std::str::from_utf8(bytes.as_ref())
-                                .map_err(|_| self.expected("valid UTF-8 metadata field name"))?
-                                .to_owned(),
-                            _ => return Err(self.expected("metadata field name")),
-                        };
-                        self.bump()?;
-                        let value = self.parse_metadata_field_value()?;
-                        fields.push(llvmkit_ir::metadata::MetadataField::new(field_name, value));
-                        if !self.eat_punct(PunctKind::Comma)? {
-                            break;
-                        }
-                    }
-                }
-                self.expect_punct(PunctKind::RParen, "')' closing specialized metadata")?;
-                Ok(llvmkit_ir::metadata::MetadataKind::Specialized({
-                    let mut node = llvmkit_ir::metadata::SpecializedMetadataNode::new(kind);
-                    if distinct {
-                        node = node.distinct();
-                    }
-                    node.with_fields(fields)
-                }))
+                self.parse_specialized_metadata_body(kind, distinct)
             }
             Token::MetadataVar(bytes) => {
                 let name = std::str::from_utf8(bytes.as_ref())
                     .map_err(|_| self.expected("specialized metadata kind"))?;
                 let kind = llvmkit_ir::metadata::SpecializedMetadataKind::from_name(name)
                     .ok_or_else(|| self.expected("specialized metadata kind"))?;
-                self.bump()?;
-                self.expect_punct(PunctKind::LParen, "'(' in specialized metadata")?;
-                let mut fields = Vec::new();
-                if !matches!(self.peek(), Token::RParen) {
-                    loop {
-                        let field_name = match self.peek() {
-                            Token::LabelStr(bytes) => std::str::from_utf8(bytes.as_ref())
-                                .map_err(|_| self.expected("valid UTF-8 metadata field name"))?
-                                .to_owned(),
-                            _ => return Err(self.expected("metadata field name")),
-                        };
-                        self.bump()?;
-                        let value = self.parse_metadata_field_value()?;
-                        fields.push(llvmkit_ir::metadata::MetadataField::new(field_name, value));
-                        if !self.eat_punct(PunctKind::Comma)? {
-                            break;
-                        }
-                    }
-                }
-                self.expect_punct(PunctKind::RParen, "')' closing specialized metadata")?;
-                Ok(llvmkit_ir::metadata::MetadataKind::Specialized({
-                    let mut node = llvmkit_ir::metadata::SpecializedMetadataNode::new(kind);
-                    if distinct {
-                        node = node.distinct();
-                    }
-                    node.with_fields(fields)
-                }))
+                self.parse_specialized_metadata_body(kind, distinct)
             }
             Token::StringConstant(_) => {
                 let s = self.parse_string_constant("metadata string")?;
@@ -2186,6 +2134,75 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             _ => Err(self.expected("metadata node")),
         }
+    }
+
+    /// Parse `(field: value, ...)` for a specialized `DI*` node whose class is
+    /// already resolved, with the node's leading token still current.
+    ///
+    /// Mirrors `LLParser::parseMDFieldsImpl` and the `PARSE_MD_FIELDS` macro
+    /// (`LLParser.cpp`), including all three of its rejections: a field the
+    /// class does not declare (`invalid field '...'`), a field given twice
+    /// (`field '...' cannot be specified more than once`, from
+    /// `LLParser::parseMDField`'s `Result.Seen` guard), and a `REQUIRED` field
+    /// left out (`missing required field '...'`, reported against the closing
+    /// `)` exactly as `REQUIRE_FIELD` does).
+    fn parse_specialized_metadata_body(
+        &mut self,
+        kind: llvmkit_ir::metadata::SpecializedMetadataKind,
+        distinct: bool,
+    ) -> ParseResult<llvmkit_ir::metadata::MetadataKind<B>> {
+        self.bump()?;
+        self.expect_punct(PunctKind::LParen, "'(' in specialized metadata")?;
+        let mut fields: Vec<llvmkit_ir::metadata::MetadataField<B>> = Vec::new();
+        if !matches!(self.peek(), Token::RParen) {
+            loop {
+                let field_loc = DiagLoc::span(self.loc());
+                let field_name = match self.peek() {
+                    Token::LabelStr(bytes) => std::str::from_utf8(bytes.as_ref())
+                        .map_err(|_| self.expected("valid UTF-8 metadata field name"))?
+                        .to_owned(),
+                    _ => return Err(self.expected("metadata field name")),
+                };
+                if !kind.accepts_field(&field_name) {
+                    return Err(ParseError::InvalidMetadataField {
+                        kind: kind.name(),
+                        field: field_name,
+                        loc: field_loc,
+                    });
+                }
+                if fields.iter().any(|f| f.name() == field_name) {
+                    return Err(ParseError::DuplicateMetadataField {
+                        kind: kind.name(),
+                        field: field_name,
+                        loc: field_loc,
+                    });
+                }
+                self.bump()?;
+                let value = self.parse_metadata_field_value()?;
+                fields.push(llvmkit_ir::metadata::MetadataField::new(field_name, value));
+                if !self.eat_punct(PunctKind::Comma)? {
+                    break;
+                }
+            }
+        }
+        let closing_loc = DiagLoc::span(self.loc());
+        self.expect_punct(PunctKind::RParen, "')' closing specialized metadata")?;
+        for required in kind.required_fields() {
+            if !fields.iter().any(|f| f.name() == *required) {
+                return Err(ParseError::MissingRequiredMetadataField {
+                    kind: kind.name(),
+                    field: required,
+                    loc: closing_loc,
+                });
+            }
+        }
+        Ok(llvmkit_ir::metadata::MetadataKind::Specialized({
+            let mut node = llvmkit_ir::metadata::SpecializedMetadataNode::new(kind);
+            if distinct {
+                node = node.distinct();
+            }
+            node.with_fields(fields)
+        }))
     }
 
     fn parse_metadata_field_value(&mut self) -> ParseResult<MetadataFieldValue<B>> {
@@ -2263,14 +2280,35 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             | Token::DwarfOp(s)
             | Token::DwarfMacinfo(s)
             | Token::DwarfEnumKind(s)
-            | Token::DiFlag(s)
-            | Token::DiSpFlag(s)
             | Token::ChecksumKind(s)
             | Token::EmissionKind(s)
             | Token::NameTableKind(s)
             | Token::FixedPointKind(s) => {
                 let value = (*s).to_owned();
                 self.bump()?;
+                Ok(MetadataFieldValue::Enum(value))
+            }
+            // `flags:` and `spFlags:` take a `|`-joined disjunction, which
+            // upstream reads with a repeated `lltok::bar` loop in
+            // `LLParser::parseMDField` for `MDFieldImpl<DIFlags>` /
+            // `<DISPFlags>`. Kept here as the joined source text rather than a
+            // bitmask: modelling `DINode::DIFlags` / `DISubprogram::DISPFlags`
+            // as bitflags is deferred (see `docs/future-work.md`), and the
+            // joined form is byte-for-byte what `AsmWriter.cpp`'s
+            // `printDIFlags` emits, whose separator is `ListSeparator(" | ")`.
+            Token::DiFlag(s) | Token::DiSpFlag(s) => {
+                let mut value = (*s).to_owned();
+                self.bump()?;
+                while matches!(self.peek(), Token::Bar) {
+                    self.bump()?;
+                    let next = match self.peek() {
+                        Token::DiFlag(s) | Token::DiSpFlag(s) => (*s).to_owned(),
+                        _ => return Err(self.expected("debug info flag after '|'")),
+                    };
+                    self.bump()?;
+                    value.push_str(" | ");
+                    value.push_str(&next);
+                }
                 Ok(MetadataFieldValue::Enum(value))
             }
             _ => Err(self.expected("metadata field value")),

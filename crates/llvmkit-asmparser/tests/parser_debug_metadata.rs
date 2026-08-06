@@ -1,7 +1,9 @@
 //! Specialized debug metadata parser tests.
 
+use llvmkit_asmparser::ParseError;
 use llvmkit_asmparser::ll_parser::Parser;
 use llvmkit_ir::Module;
+use llvmkit_ir::metadata::SpecializedMetadataKind;
 
 fn parse_and_render(src: &str) -> String {
     let module = Module::dynamic("parser_debug_metadata");
@@ -28,9 +30,9 @@ entry:
 !5 = !DILocalVariable(name: "x", file: !0, type: !7, scope: !3)
 !6 = !DIExpression()
 !7 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
-!8 = !DIDerivedType(name: "ptr", baseType: !7, size: 64)
+!8 = !DIDerivedType(tag: DW_TAG_pointer_type, name: "ptr", baseType: !7, size: 64)
 !9 = !DISubrange(count: 4)
-!10 = !DICompositeType(name: "arr", baseType: !7, elements: !{!9})
+!10 = !DICompositeType(tag: DW_TAG_array_type, name: "arr", baseType: !7, elements: !{!9})
 !11 = !DINamespace(name: "ns", scope: !3)
 !12 = !DIEnumerator(name: "A", value: 1)
 !13 = !DIModule(name: "m", scope: !11)
@@ -96,8 +98,9 @@ entry:
 !1 = !DILocalVariable(name: "x", scope: !0, type: !5)
 !2 = !DILocation(line: 1, column: 17, scope: !0)
 !3 = !DISubroutineType(types: !{null, !5})
-!4 = !DICompileUnit(language: DW_LANG_C11, producer: "llvmkit")
+!4 = !DICompileUnit(language: DW_LANG_C11, file: !6, producer: "llvmkit")
 !5 = !DIBasicType(name: "double", size: 64, encoding: DW_ATE_float)
+!6 = !DIFile(filename: "test.c", directory: "/tmp")
 "#,
     );
     assert!(
@@ -129,5 +132,197 @@ entry:
     assert!(
         printed.contains("%p = alloca i32, align 4, !dbg !"),
         "{printed}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Specialized `DI*` field validation
+//
+// Ports `llvm/test/Assembler/invalid-di*.ll`. Each fixture is a `not llvm-as`
+// FileCheck case whose CHECK line pins the diagnostic text, so these assert on
+// the same three messages `LLParser`'s `PARSE_MD_FIELDS` macro emits.
+// ---------------------------------------------------------------------------
+
+/// Parse `src` expecting failure, returning the error.
+fn parse_err(src: &str) -> ParseError {
+    let module = Module::dynamic("parser_debug_metadata_invalid");
+    Parser::new(src.as_bytes(), &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("parse must fail")
+}
+
+/// Ports `test/Assembler/invalid-dilocation-field-bad.ll`, whose CHECK line is
+/// `error: invalid field 'bad'`.
+#[test]
+fn dilocation_rejects_a_field_its_class_does_not_declare() {
+    let err = parse_err("!0 = !DILocation(bad: 0)\n");
+    assert!(
+        matches!(
+            &err,
+            ParseError::InvalidMetadataField { kind, field, .. }
+                if *kind == "DILocation" && field == "bad"
+        ),
+        "expected invalid-field error, got: {err:?}"
+    );
+    assert_eq!(err.to_string(), "invalid field 'bad'");
+}
+
+/// Ports `test/Assembler/invalid-dilocation-field-twice.ll`, whose CHECK line
+/// is `error: field 'line' cannot be specified more than once`.
+#[test]
+fn dilocation_rejects_a_field_specified_twice() {
+    let err = parse_err("!0 = !{}\n!1 = !DILocation(line: 3, scope: !0, line: 3)\n");
+    assert!(
+        matches!(
+            &err,
+            ParseError::DuplicateMetadataField { kind, field, .. }
+                if *kind == "DILocation" && field == "line"
+        ),
+        "expected duplicate-field error, got: {err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "field 'line' cannot be specified more than once"
+    );
+}
+
+/// Ports the `missing required field` family from `test/Assembler/`:
+/// `invalid-dilocation-missing-scope.ll`, `-missing-scope-2.ll`,
+/// `invalid-difile-missing-filename.ll`, `-missing-directory.ll`,
+/// `invalid-dienumerator-missing-name.ll`, `-missing-value.ll`,
+/// `invalid-disubroutinetype-missing-types.ll`,
+/// `invalid-ditemplatetypeparameter-missing-type.ll`,
+/// `invalid-ditemplatevalueparameter-missing-value.ll`,
+/// `invalid-dicompositetype-missing-tag.ll`,
+/// `invalid-diderivedtype-missing-tag.ll`, `-missing-basetype.ll`,
+/// `invalid-dilocalvariable-missing-scope.ll` and
+/// `invalid-dinamespace-missing-namespace.ll` — each fixture's source line with
+/// the field its CHECK line names.
+#[test]
+fn required_specialized_metadata_fields_are_enforced() {
+    for (src, kind, field) in [
+        ("!0 = !DILocation()\n", "DILocation", "scope"),
+        ("!0 = !DILocation(line: 7)\n", "DILocation", "scope"),
+        ("!0 = !DIFile(directory: \"dir\")\n", "DIFile", "filename"),
+        ("!0 = !DIFile(filename: \"file\")\n", "DIFile", "directory"),
+        ("!0 = !DIEnumerator(value: 7)\n", "DIEnumerator", "name"),
+        (
+            "!0 = !DIEnumerator(name: \"name\")\n",
+            "DIEnumerator",
+            "value",
+        ),
+        (
+            "!29 = !DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember)\n",
+            "DISubroutineType",
+            "types",
+        ),
+        (
+            "!0 = !DITemplateTypeParameter(name: \"param\")\n",
+            "DITemplateTypeParameter",
+            "type",
+        ),
+        (
+            "!0 = !DITemplateValueParameter(tag: DW_TAG_template_value_parameter,\n                               type: !{})\n",
+            "DITemplateValueParameter",
+            "value",
+        ),
+        (
+            "!25 = !DICompositeType(name: \"Type\")\n",
+            "DICompositeType",
+            "tag",
+        ),
+        (
+            "!0 = !DIDerivedType(baseType: !{})\n",
+            "DIDerivedType",
+            "tag",
+        ),
+        (
+            "!0 = !DIDerivedType(tag: DW_TAG_pointer_type)\n",
+            "DIDerivedType",
+            "baseType",
+        ),
+        ("!0 = !DILocalVariable()\n", "DILocalVariable", "scope"),
+        (
+            "!0 = !DINamespace(name: \"Namespace\")\n",
+            "DINamespace",
+            "scope",
+        ),
+    ] {
+        let err = parse_err(src);
+        assert!(
+            matches!(
+                &err,
+                ParseError::MissingRequiredMetadataField { kind: k, field: f, .. }
+                    if *k == kind && *f == field
+            ),
+            "expected missing required field '{field}' for !{kind}, got: {err:?}"
+        );
+        assert_eq!(err.to_string(), format!("missing required field '{field}'"));
+    }
+}
+
+/// llvmkit-specific: no upstream counterpart. `LLParser::parseDIExpression`
+/// does not use `VISIT_MD_FIELDS` at all — a `DIExpression` body is a
+/// positional `DW_OP_*` list — so its accepted-field set is empty and any
+/// `name:` pair inside one is invalid. Locks that the empty table is a real
+/// rejection rather than an unmodelled hole.
+#[test]
+fn diexpression_declares_no_named_fields() {
+    assert!(SpecializedMetadataKind::DiExpression.fields().is_empty());
+    assert!(
+        SpecializedMetadataKind::DiExpression
+            .required_fields()
+            .is_empty()
+    );
+    let err = parse_err("!0 = !DIExpression(line: 1)\n");
+    assert!(
+        matches!(&err, ParseError::InvalidMetadataField { kind, .. } if *kind == "DIExpression"),
+        "expected invalid-field error, got: {err:?}"
+    );
+}
+
+/// llvmkit-specific: no upstream counterpart. This is the weak half of a drift
+/// check, and it is worth saying why the strong half is missing.
+///
+/// `attribute_td_drift.rs` can re-read `Attributes.td` because that `.td` is
+/// **vendored and tracked** under `crates/llvmkit-asmparser/tablegen/`. The
+/// specialized-`DI*` field lists have no such input: they are per-class
+/// `VISIT_MD_FIELDS` macro blocks inside `LLParser.cpp`, which lives only in
+/// `orig_cpp/` — a **gitignored** reference tree, so a test that read it would
+/// pass locally and fail in CI. Vendoring the file to fix that would mean
+/// tracking an 8k-line C++ source to scrape preprocessor text out of, which is
+/// a far larger commitment than a `.td`.
+///
+/// So the tables are hand-ported, and this pins the two halves against each
+/// other instead: every name in `required_fields` must also appear in `fields`,
+/// for every modelled kind. It catches a typo'd or dropped required field; it
+/// cannot catch upstream adding a field.
+#[test]
+fn required_fields_are_a_subset_of_accepted_fields() {
+    for kind in SpecializedMetadataKind::ALL {
+        for required in kind.required_fields() {
+            assert!(
+                kind.fields().contains(required),
+                "!{} lists '{required}' as required but not as an accepted field",
+                kind.name()
+            );
+        }
+    }
+}
+
+/// Ports `test/Assembler/debug-info.ll`'s `DISubroutineType` flags case, whose
+/// `CHECK-NEXT` line pins the round-tripped text as byte-identical to the
+/// input: `!DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types:
+/// !25)`. `AsmWriter.cpp::printDIFlags` joins with `ListSeparator(" | ")`, so
+/// the joined source text llvmkit stores prints back unchanged.
+#[test]
+fn debug_info_flag_disjunction_round_trips() {
+    let text = parse_and_render(
+        "!0 = !{}\n!1 = !DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types: !0)\n",
+    );
+    assert!(
+        text.contains("!DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types: !0)"),
+        "output:\n{text}"
     );
 }

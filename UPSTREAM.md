@@ -19,11 +19,17 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2204. Recounted on 2026-08-06 at the
-`feature-70/api-idioms` Wave 12 point via the documented attribute-anchored
-grep below (`crates/llvmkit-ir` 1527 + `crates/llvmkit-asmparser` 655 +
-`crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
-`crates/llvmkit-macros` has none). Waves 1b and 12 added no `#[test]`
+Total `#[test]` functions: 2210. Recounted on 2026-08-07 via the documented
+attribute-anchored grep below (`crates/llvmkit-ir` 1527 +
+`crates/llvmkit-asmparser` 661 + `crates/llvmkit-support` 12 +
+`crates/llvmkit-tablegen` 9 + `llvmkit` 1; `crates/llvmkit-macros` has none).
+The +6 over the 2204 Wave 12 point below is the specialized-`DI*` field
+validation port in `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs`
+(three `test/Assembler/invalid-di*.ll` mirrors, a `debug-info.ll` flags
+round-trip, plus two llvmkit-specific table locks).
+
+The paragraph below describes the 2204 Wave 12 point it superseded.
+Waves 1b and 12 added no `#[test]`
 functions — 1b renamed enum variants only, and 12 is the docs-reconciliation
 wave: its `AllocaInst::is_inalloca` / `is_swifterror` readers are asserted
 from the existing `tests/builder_alloca_flags.rs` tests (bodies extended, names
@@ -1163,6 +1169,12 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::function_and_global_debug_attachments_round_trip` | `llvm/lib/IR/AsmWriter.cpp::SlotTracker::CreateMetadataSlot`; `llvm/lib/AsmParser/LLParser.cpp` function/global metadata attachment parsing | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::dbg_declare_value_record_round_trip` | `test/Assembler/dbg_declare_value.ll` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::alloca_with_trailing_dbg_metadata_parses` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseAlloc` (the array-size operand is optional; a trailing `, !dbg` attachment is not a size) -- broad-review regression lock for the align-less-alloca metadata comma | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::dilocation_rejects_a_field_its_class_does_not_declare` | `test/Assembler/invalid-dilocation-field-bad.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::dilocation_rejects_a_field_specified_twice` | `test/Assembler/invalid-dilocation-field-twice.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::required_specialized_metadata_fields_are_enforced` | `test/Assembler/invalid-dilocation-missing-scope.ll`; `invalid-dilocation-missing-scope-2.ll`; `invalid-difile-missing-filename.ll`; `invalid-difile-missing-directory.ll`; `invalid-dienumerator-missing-name.ll`; `invalid-dienumerator-missing-value.ll`; `invalid-disubroutinetype-missing-types.ll`; `invalid-ditemplatetypeparameter-missing-type.ll`; `invalid-ditemplatevalueparameter-missing-value.ll`; `invalid-dicompositetype-missing-tag.ll`; `invalid-diderivedtype-missing-tag.ll`; `invalid-diderivedtype-missing-basetype.ll`; `invalid-dilocalvariable-missing-scope.ll`; `invalid-dinamespace-missing-namespace.ll` (all under `test/Assembler/`) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diexpression_declares_no_named_fields` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIExpression` (no `VISIT_MD_FIELDS` block: a `DIExpression` body is a positional `DW_OP_*` list) | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::required_fields_are_a_subset_of_accepted_fields` | `llvm/lib/AsmParser/LLParser.cpp` `PARSE_MD_FIELDS` / `REQUIRE_FIELD` macros (upstream's per-class field tables are preprocessor text, not a re-readable `.def`, so the two halves are pinned against each other instead) | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::debug_info_flag_disjunction_round_trips` | `test/Assembler/debug-info.ll` (the `DISubroutineType` flags `CHECK-NEXT`); `llvm/lib/IR/AsmWriter.cpp::printDIFlags` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::attribute_group_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseUnnamedAttrGroup` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_full_header_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseFunctionHeader` | mirror |
 | `crates/llvmkit-ir/tests/ap_int.rs::construction_normalizes_top_word_and_counts_bits` | `llvm/unittests/ADT/APIntTest.cpp` construction and bit-count cases | port |
