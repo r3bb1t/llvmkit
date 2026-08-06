@@ -1690,7 +1690,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     }
 
     /// Parse optional `syncscope("...")`. Returns `SyncScope::System` if absent.
-    /// Mirrors `LLParser::parseOptionalScope` (LLParser.cpp ~2826).
+    /// Mirrors `LLParser::parseOptionalScope` (LLParser.cpp).
+    ///
+    /// Only `"singlethread"` and the absent default map to the two well-known
+    /// scopes: `LLVMContext::LLVMContext` seeds `getOrInsertSyncScopeID` with
+    /// `"singlethread"` and the *empty* string (the canonical `System` name),
+    /// so a source-level `syncscope("system")` is an ordinary named scope
+    /// distinct from the default and must round-trip as text.
     fn parse_optional_syncscope(&mut self) -> ParseResult<SyncScope> {
         if !matches!(self.peek(), Token::Kw(Keyword::Syncscope)) {
             return Ok(SyncScope::System);
@@ -1700,7 +1706,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let name = self.parse_string_constant("sync scope name")?;
         self.expect_punct(PunctKind::RParen, "')' after sync scope")?;
         Ok(match name.as_str() {
-            "system" => SyncScope::System,
             "singlethread" => SyncScope::SingleThread,
             _ => SyncScope::Named(name),
         })
@@ -5447,6 +5452,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok((storage, groups))
     }
 
+    /// Mirrors `knownBundleName` (`lib/IR/LLVMContext.cpp`), the spelling
+    /// table `LLVMContext::LLVMContext` registers for the `OB_*` tags.
     fn operand_bundle_tag_from_name(name: String) -> llvmkit_ir::instr_types::OperandBundleTag {
         match name.as_str() {
             "deopt" => llvmkit_ir::instr_types::OperandBundleTag::Deopt,
@@ -5462,7 +5469,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             "kcfi" => llvmkit_ir::instr_types::OperandBundleTag::Kcfi,
             "convergencectrl" => llvmkit_ir::instr_types::OperandBundleTag::ConvergenceCtrl,
             "align" => llvmkit_ir::instr_types::OperandBundleTag::Align,
-            "deactivation" => llvmkit_ir::instr_types::OperandBundleTag::DeactivationSymbol,
+            "deactivation-symbol" => llvmkit_ir::instr_types::OperandBundleTag::DeactivationSymbol,
             _ => llvmkit_ir::instr_types::OperandBundleTag::Custom(name),
         }
     }

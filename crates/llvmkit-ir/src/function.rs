@@ -36,7 +36,7 @@ use super::DebugLoc;
 use super::align::MaybeAlign;
 use super::ap_float::ApFloatSemantics;
 use super::argument::Argument;
-use super::attributes::{AttrKind, Attribute, AttributeStorage, AttributeStored};
+use super::attributes::{AttrKind, Attribute, AttributeStorage, AttributeStored, StrBoolAttrKind};
 use super::basic_block::{BasicBlock, BasicBlockData};
 use super::block_state::{BlockTerminationState, Terminated, Unterminated};
 use super::calling_conv::CallingConv;
@@ -668,6 +668,20 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
                 } if attr_key == key => Some(value.clone()),
                 _ => None,
             })
+    }
+
+    /// The parsed value of the boolean string attribute `kind`, or `None`
+    /// when the function (and its referenced attribute groups) do not carry
+    /// it.
+    ///
+    /// Mirrors `Attribute::getValueAsBool` (`lib/IR/Attributes.cpp`): the
+    /// attribute is `true` exactly when its value text is `"true"` (upstream
+    /// asserts the stored text is `""`, `"false"`, or `"true"`). Upstream
+    /// folds an absent attribute into `false`; the `Option` keeps absence
+    /// distinguishable from an explicit `"false"`.
+    pub fn str_bool_attribute(self, kind: StrBoolAttrKind) -> Option<bool> {
+        self.function_string_attribute(kind.key())
+            .map(|value| value == "true")
     }
 
     fn function_string_attribute(self, key: &str) -> Option<String> {

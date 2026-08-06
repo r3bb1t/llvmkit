@@ -511,6 +511,93 @@ impl fmt::Display for AttrKind {
 }
 
 // --------------------------------------------------------------------------
+// StrBoolAttrKind
+// --------------------------------------------------------------------------
+
+/// The string attributes `Attributes.td` declares as `StrBoolAttr`: string
+/// attributes whose value is a boolean spelled `"true"` / `"false"`.
+///
+/// This is a *reader* layer. Construction stays `Attribute::String { key,
+/// value }` — the string-attribute namespace is genuinely open (target
+/// dependent keys like `"target-features"` live alongside these), so only
+/// reading gains the typed spelling:
+/// [`FunctionValue::str_bool_attribute`](crate::function::FunctionValue::str_bool_attribute).
+/// Variants follow the `.td`'s declaration order. The two `ComplexStrAttr`
+/// declarations (`"denormal-fp-math"`, `"denormal-fp-math-f32"`) are not
+/// here — they are already typed via [`DenormalMode`](crate::DenormalMode)
+/// readers.
+///
+/// Marked `#[non_exhaustive]` so future upstream additions are non-breaking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum StrBoolAttrKind {
+    /// `"marked_for_windows_hot_patching"` (`MarkedForWindowsSecureHotPatching`).
+    MarkedForWindowsHotPatching,
+    /// `"allow_direct_access_in_hot_patch_function"`.
+    AllowDirectAccessInHotPatchFunction,
+    /// `"less-precise-fpmad"`.
+    LessPreciseFpmad,
+    /// `"no-infs-fp-math"`.
+    NoInfsFpMath,
+    /// `"no-nans-fp-math"`.
+    NoNansFpMath,
+    /// `"no-signed-zeros-fp-math"`.
+    NoSignedZerosFpMath,
+    /// `"no-jump-tables"`.
+    NoJumpTables,
+    /// `"no-inline-line-tables"`.
+    NoInlineLineTables,
+    /// `"profile-sample-accurate"`.
+    ProfileSampleAccurate,
+    /// `"use-sample-profile"`.
+    UseSampleProfile,
+    /// `"loader-replaceable"`.
+    LoaderReplaceable,
+}
+
+impl StrBoolAttrKind {
+    /// The attribute key exactly as `Attributes.td` spells it.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::MarkedForWindowsHotPatching => "marked_for_windows_hot_patching",
+            Self::AllowDirectAccessInHotPatchFunction => {
+                "allow_direct_access_in_hot_patch_function"
+            }
+            Self::LessPreciseFpmad => "less-precise-fpmad",
+            Self::NoInfsFpMath => "no-infs-fp-math",
+            Self::NoNansFpMath => "no-nans-fp-math",
+            Self::NoSignedZerosFpMath => "no-signed-zeros-fp-math",
+            Self::NoJumpTables => "no-jump-tables",
+            Self::NoInlineLineTables => "no-inline-line-tables",
+            Self::ProfileSampleAccurate => "profile-sample-accurate",
+            Self::UseSampleProfile => "use-sample-profile",
+            Self::LoaderReplaceable => "loader-replaceable",
+        }
+    }
+
+    /// The kind whose [`key`](Self::key) is `key`, or `None` when `key` is
+    /// not a `StrBoolAttr` declaration.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "marked_for_windows_hot_patching" => Self::MarkedForWindowsHotPatching,
+            "allow_direct_access_in_hot_patch_function" => {
+                Self::AllowDirectAccessInHotPatchFunction
+            }
+            "less-precise-fpmad" => Self::LessPreciseFpmad,
+            "no-infs-fp-math" => Self::NoInfsFpMath,
+            "no-nans-fp-math" => Self::NoNansFpMath,
+            "no-signed-zeros-fp-math" => Self::NoSignedZerosFpMath,
+            "no-jump-tables" => Self::NoJumpTables,
+            "no-inline-line-tables" => Self::NoInlineLineTables,
+            "profile-sample-accurate" => Self::ProfileSampleAccurate,
+            "use-sample-profile" => Self::UseSampleProfile,
+            "loader-replaceable" => Self::LoaderReplaceable,
+            _ => return None,
+        })
+    }
+}
+
+// --------------------------------------------------------------------------
 // Attribute
 // --------------------------------------------------------------------------
 

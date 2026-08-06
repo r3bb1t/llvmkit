@@ -1870,6 +1870,8 @@ fn constant_int_zext_u128<B: ModuleBrand>(value: Value<'_, B>) -> Option<u128> {
     ApInt::from_words(*bits, words).try_zext_u128()
 }
 
+/// Mirrors `knownBundleName` (`lib/IR/LLVMContext.cpp`), the spelling table
+/// `LLVMContext::LLVMContext` registers for the `OB_*` operand-bundle tags.
 fn operand_bundle_tag_name(tag: &OperandBundleTag) -> &str {
     match tag {
         OperandBundleTag::Deopt => "deopt",
@@ -1883,7 +1885,7 @@ fn operand_bundle_tag_name(tag: &OperandBundleTag) -> &str {
         OperandBundleTag::Kcfi => "kcfi",
         OperandBundleTag::ConvergenceCtrl => "convergencectrl",
         OperandBundleTag::Align => "align",
-        OperandBundleTag::DeactivationSymbol => "deactivation",
+        OperandBundleTag::DeactivationSymbol => "deactivation-symbol",
         OperandBundleTag::Custom(name) => name.as_str(),
     }
 }

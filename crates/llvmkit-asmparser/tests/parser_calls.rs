@@ -247,6 +247,26 @@ fn operand_bundles_round_trip() {
     );
 }
 
+/// llvmkit-specific subset of
+/// `test/Transforms/PreISelIntrinsicLowering/protected-field-pointer.ll`
+/// (the `NOPAUTH`-lowered call shape): the `"deactivation-symbol"` operand
+/// bundle keeps upstream's tag spelling through a parse/print round trip.
+/// The tag is registered as `LLVMContext::OB_deactivation_symbol` and
+/// spelled by `knownBundleName` in `lib/IR/LLVMContext.cpp` — llvmkit
+/// printed it as `"deactivation"` until this test.
+#[test]
+fn deactivation_symbol_bundle_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/deactivation-symbol/deactivation_symbol_bundle_round_trip.ll"
+    );
+
+    let text = parse_and_render_bytes("deactivation_symbol_bundle_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["call i64 @__emupac_autda(i64 %val, i64 1) [\"deactivation-symbol\"(ptr @ds1)]"],
+    );
+}
+
 fn assert_fixture_rejected(module_name: &str, src: &[u8], expected_message: &str) {
     let err = parse_fixture_err(module_name, src);
     match err {

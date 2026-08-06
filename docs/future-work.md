@@ -12,6 +12,21 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## ~~Parser — `syncscope("system")` collapsed to the default scope~~ (decided and fixed 2026-08-06, W8)
+
+The API-idioms plan left this as an implementer decision: preserve the
+spelling, or pin the collapse as a recorded divergence. **Decided: preserve.**
+`parse_optional_syncscope` (`crates/llvmkit-asmparser/src/ll_parser.rs`) used
+to map a source-level `syncscope("system")` to `SyncScope::System`, so the
+printer dropped the qualifier. Upstream disagrees: `LLVMContext::LLVMContext`
+(`lib/IR/LLVMContext.cpp`) seeds `getOrInsertSyncScopeID` with only
+`"singlethread"` and the **empty** string — the empty string is `System`'s
+canonical name — so `"system"` registers as an ordinary named scope with a
+fresh ID and round-trips as text. No corpus fixture or byte-lock covered the
+spelling (checked before deciding), so the parser now yields
+`SyncScope::Named("system")`, locked by
+`crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fence_syncscope_system_round_trips`.
+
 ## ~~Printer — a scalable vector of uniform pointers or `undef` prints an element list~~ (found 2026-08-05, fixed 2026-08-05)
 
 **Fixed** by `asm_writer::prints_as_splat`, which lifts the int/fp restriction

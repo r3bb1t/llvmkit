@@ -191,7 +191,15 @@ impl<B: ModuleBrand> core::fmt::Debug for MetadataId<B> {
 
 /// LLVM metadata attachment names with the upstream fixed set represented as
 /// enum variants. Unknown `!name` attachments are valid IR and stay custom.
+///
+/// The fixed variants mirror the `LLVM_FIXED_MD_KIND` entries of
+/// `llvm/include/llvm/IR/FixedMetadataKinds.def` (which
+/// `LLVMContext::LLVMContext` includes to register the fixed kinds), listed
+/// here in the `.def`'s own order. Marked `#[non_exhaustive]` so future
+/// upstream additions are non-breaking; [`Custom`](Self::Custom) carries the
+/// open remainder of the namespace.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum MetadataAttachmentKind {
     Dbg,
     Tbaa,
@@ -217,12 +225,29 @@ pub enum MetadataAttachmentKind {
     AbsoluteSymbol,
     Associated,
     Callees,
+    IrrLoop,
+    AccessGroup,
     Callback,
+    PreserveAccessIndex,
+    VcallVisibility,
+    NoUndef,
+    Annotation,
+    NoSanitize,
+    FuncSanitize,
+    Exclude,
+    Memprof,
+    Callsite,
     KcfiType,
     PcSections,
     DIAssignID,
     CoroOutsideFrame,
-    NoUndef,
+    Mmra,
+    NoAliasAddrspace,
+    CalleeType,
+    NoFree,
+    Captures,
+    AllocToken,
+    ImplicitRef,
     Custom(String),
 }
 
@@ -253,12 +278,29 @@ impl MetadataAttachmentKind {
             "absolute_symbol" => Self::AbsoluteSymbol,
             "associated" => Self::Associated,
             "callees" => Self::Callees,
+            "irr_loop" => Self::IrrLoop,
+            "llvm.access.group" => Self::AccessGroup,
             "callback" => Self::Callback,
+            "llvm.preserve.access.index" => Self::PreserveAccessIndex,
+            "vcall_visibility" => Self::VcallVisibility,
+            "noundef" => Self::NoUndef,
+            "annotation" => Self::Annotation,
+            "nosanitize" => Self::NoSanitize,
+            "func_sanitize" => Self::FuncSanitize,
+            "exclude" => Self::Exclude,
+            "memprof" => Self::Memprof,
+            "callsite" => Self::Callsite,
             "kcfi_type" => Self::KcfiType,
             "pcsections" => Self::PcSections,
             "DIAssignID" => Self::DIAssignID,
             "coro.outside.frame" => Self::CoroOutsideFrame,
-            "noundef" => Self::NoUndef,
+            "mmra" => Self::Mmra,
+            "noalias.addrspace" => Self::NoAliasAddrspace,
+            "callee_type" => Self::CalleeType,
+            "nofree" => Self::NoFree,
+            "captures" => Self::Captures,
+            "alloc_token" => Self::AllocToken,
+            "implicit.ref" => Self::ImplicitRef,
             other => Self::Custom(other.to_owned()),
         }
     }
@@ -289,13 +331,89 @@ impl MetadataAttachmentKind {
             Self::AbsoluteSymbol => "absolute_symbol",
             Self::Associated => "associated",
             Self::Callees => "callees",
+            Self::IrrLoop => "irr_loop",
+            Self::AccessGroup => "llvm.access.group",
             Self::Callback => "callback",
+            Self::PreserveAccessIndex => "llvm.preserve.access.index",
+            Self::VcallVisibility => "vcall_visibility",
+            Self::NoUndef => "noundef",
+            Self::Annotation => "annotation",
+            Self::NoSanitize => "nosanitize",
+            Self::FuncSanitize => "func_sanitize",
+            Self::Exclude => "exclude",
+            Self::Memprof => "memprof",
+            Self::Callsite => "callsite",
             Self::KcfiType => "kcfi_type",
             Self::PcSections => "pcsections",
             Self::DIAssignID => "DIAssignID",
             Self::CoroOutsideFrame => "coro.outside.frame",
-            Self::NoUndef => "noundef",
+            Self::Mmra => "mmra",
+            Self::NoAliasAddrspace => "noalias.addrspace",
+            Self::CalleeType => "callee_type",
+            Self::NoFree => "nofree",
+            Self::Captures => "captures",
+            Self::AllocToken => "alloc_token",
+            Self::ImplicitRef => "implicit.ref",
             Self::Custom(s) => s.as_str(),
+        }
+    }
+
+    /// The fixed metadata-kind ID upstream assigns this attachment name, or
+    /// `None` for a [`Custom`](Self::Custom) attachment (those receive
+    /// context-dependent IDs past the fixed range at runtime).
+    ///
+    /// Values mirror the `LLVM_FIXED_MD_KIND(EnumID, Name, Value)` entries in
+    /// `llvm/include/llvm/IR/FixedMetadataKinds.def`.
+    pub const fn fixed_id(&self) -> Option<u32> {
+        match self {
+            Self::Dbg => Some(0),
+            Self::Tbaa => Some(1),
+            Self::Prof => Some(2),
+            Self::Fpmath => Some(3),
+            Self::Range => Some(4),
+            Self::TbaaStruct => Some(5),
+            Self::InvariantLoad => Some(6),
+            Self::AliasScope => Some(7),
+            Self::NoAlias => Some(8),
+            Self::NonTemporal => Some(9),
+            Self::MemParallelLoopAccess => Some(10),
+            Self::NonNull => Some(11),
+            Self::Dereferenceable => Some(12),
+            Self::DereferenceableOrNull => Some(13),
+            Self::MakeImplicit => Some(14),
+            Self::Unpredictable => Some(15),
+            Self::InvariantGroup => Some(16),
+            Self::Align => Some(17),
+            Self::Loop => Some(18),
+            Self::Type => Some(19),
+            Self::SectionPrefix => Some(20),
+            Self::AbsoluteSymbol => Some(21),
+            Self::Associated => Some(22),
+            Self::Callees => Some(23),
+            Self::IrrLoop => Some(24),
+            Self::AccessGroup => Some(25),
+            Self::Callback => Some(26),
+            Self::PreserveAccessIndex => Some(27),
+            Self::VcallVisibility => Some(28),
+            Self::NoUndef => Some(29),
+            Self::Annotation => Some(30),
+            Self::NoSanitize => Some(31),
+            Self::FuncSanitize => Some(32),
+            Self::Exclude => Some(33),
+            Self::Memprof => Some(34),
+            Self::Callsite => Some(35),
+            Self::KcfiType => Some(36),
+            Self::PcSections => Some(37),
+            Self::DIAssignID => Some(38),
+            Self::CoroOutsideFrame => Some(39),
+            Self::Mmra => Some(40),
+            Self::NoAliasAddrspace => Some(41),
+            Self::CalleeType => Some(42),
+            Self::NoFree => Some(43),
+            Self::Captures => Some(44),
+            Self::AllocToken => Some(45),
+            Self::ImplicitRef => Some(46),
+            Self::Custom(_) => None,
         }
     }
 }

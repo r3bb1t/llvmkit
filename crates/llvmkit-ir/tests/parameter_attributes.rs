@@ -9,8 +9,53 @@
 //! related `test/Assembler/*-attr*.ll` fixtures. Per-test citations below.
 
 use llvmkit_ir::{
-    AttrIndex, AttrKind, Attribute, IntValue, IrBuilder, IrError, Linkage, module_new,
+    AttrIndex, AttrKind, Attribute, IntValue, IrBuilder, IrError, Linkage, StrBoolAttrKind,
+    module_new,
 };
+
+/// llvmkit-specific reader-layer check with `Attribute::getValueAsBool`
+/// (`lib/IR/Attributes.cpp`) as the functional reference: a `StrBoolAttr`
+/// string attribute reads `Some(true)` exactly when its value text is
+/// `"true"` (upstream asserts the stored text is `""`, `"false"`, or
+/// `"true"`), and an absent attribute reads `None` (upstream folds absence
+/// into `false`; the `Option` keeps it distinguishable). No upstream
+/// unittest drives `getValueAsBool` directly.
+#[test]
+fn str_bool_attribute_reads_true_false_and_absent() -> Result<(), IrError> {
+    let m = module_new!("p")?;
+    let fn_ty = m.function_type_no_parameters(m.void_type());
+    let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
+
+    assert_eq!(
+        m.view(f).str_bool_attribute(StrBoolAttrKind::NoNansFpMath),
+        None,
+        "absent attribute must read None, not false"
+    );
+
+    m.view(f)
+        .set_string_attribute(&m, AttrIndex::Function, "no-nans-fp-math", "true");
+    m.view(f)
+        .set_string_attribute(&m, AttrIndex::Function, "no-jump-tables", "false");
+    // Empty text is one of the three states upstream's assert admits; it is
+    // not `"true"`, so it reads `false`.
+    m.view(f)
+        .set_string_attribute(&m, AttrIndex::Function, "use-sample-profile", "");
+
+    assert_eq!(
+        m.view(f).str_bool_attribute(StrBoolAttrKind::NoNansFpMath),
+        Some(true)
+    );
+    assert_eq!(
+        m.view(f).str_bool_attribute(StrBoolAttrKind::NoJumpTables),
+        Some(false)
+    );
+    assert_eq!(
+        m.view(f)
+            .str_bool_attribute(StrBoolAttrKind::UseSampleProfile),
+        Some(false)
+    );
+    Ok(())
+}
 
 /// Mirrors `test/Assembler/2008-09-29-RetAttr.ll` for return-attribute
 /// print form, with the AttrKind plumbing from

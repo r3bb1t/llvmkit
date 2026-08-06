@@ -94,6 +94,7 @@ pub mod fp_class;
 pub mod fp_predicate;
 pub mod function;
 pub mod function_signature;
+pub mod gc_strategy;
 pub mod gep_no_wrap_flags;
 pub mod global_alias;
 pub mod global_ifunc;
@@ -172,7 +173,7 @@ pub use atomicrmw_binop::AtomicRMWBinOp;
 pub use attribute_mask::AttributeMask;
 pub use attributes::{
     AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet, AttributeStorage, MemoryEffects,
-    MemoryLocation, ModRefInfo,
+    MemoryLocation, ModRefInfo, StrBoolAttrKind,
 };
 pub use basic_block::{BasicBlock, BasicBlockLabel, BlockCall, IntoBasicBlockLabel};
 pub use block_params::{BlockParams, BlockParamsDyn};

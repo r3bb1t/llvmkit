@@ -9,12 +9,15 @@ use core::fmt;
 /// any other named scope (`workgroup`, `wavefront`, target-specific
 /// scopes, ...) is carried as a [`Named`](Self::Named) variant.
 ///
-/// The IR text form omits the `syncscope("system")` qualifier when the
-/// scope is the default ([`System`](Self::System)) and prints
-/// `syncscope("<name>")` otherwise. The bare keyword `singlethread`
-/// has no `syncscope(...)` wrapping --- it is an alias spelled
-/// `syncscope("singlethread")` in canonical IR text. Mirrors the
-/// printer in `lib/IR/AsmWriter.cpp::writeAtomic`.
+/// [`System`](Self::System)'s canonical *name* is the empty string:
+/// `LLVMContext::LLVMContext` seeds `getOrInsertSyncScopeID` with
+/// `"singlethread"` and `""`, so its IR text form is the *absence* of a
+/// `syncscope(...)` qualifier, and the literal spelling
+/// `syncscope("system")` denotes an ordinary named scope distinct from
+/// the default ([`Named`](Self::Named)`("system")`). The bare keyword
+/// `singlethread` has no `syncscope(...)` wrapping --- it is an alias
+/// spelled `syncscope("singlethread")` in canonical IR text. Mirrors
+/// the printer in `lib/IR/AsmWriter.cpp::writeAtomic`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SyncScope {
     /// Synchronized only with respect to signal handlers in the same

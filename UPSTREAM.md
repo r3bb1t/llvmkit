@@ -19,9 +19,21 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2117. Recounted on 2026-08-06 at the
-`feature-70/api-idioms` Wave 6 point via the documented attribute-anchored
-grep below (`crates/llvmkit-ir` 1454 + `crates/llvmkit-asmparser` 645 +
+Total `#[test]` functions: 2124. Recounted on 2026-08-06 at the
+`feature-70/api-idioms` Wave 8 point via the documented attribute-anchored
+grep below (`crates/llvmkit-ir` 1455 + `crates/llvmkit-asmparser` 651 +
+`crates/llvmkit-support` 8 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1). Wave
+8's own contribution is the +7 over the 2117 Wave 6 point: the two
+`fixed_metadata_kinds_drift.rs` guards, `attribute_td_drift.rs`'s
+`str_bool_attributes_have_typed_readers` and
+`complex_str_attributes_are_typed`,
+`parser_calls.rs::deactivation_symbol_bundle_round_trips`,
+`parser_remaining_opcodes.rs::fence_syncscope_system_round_trips`, and
+`crates/llvmkit-ir/tests/parameter_attributes.rs::
+str_bool_attribute_reads_true_false_and_absent` (rows below; Wave 8 also
+back-fills the missing rows for `attribute_td_drift.rs`'s three pre-existing
+guards, which moved no count). The 2117 point was recounted on 2026-08-06 at
+the Wave 6 point (`crates/llvmkit-ir` 1454 + `crates/llvmkit-asmparser` 645 +
 `crates/llvmkit-support` 8 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1). Wave
 6's own contribution: `tests/module_ownership.rs::
 a_named_metadata_id_from_another_module_is_refused` (its compile-fail sibling
@@ -1837,3 +1849,10 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/constant_expression_splat.rs` (six) | the closing `dyn_cast<ConstantExpr>` block of `llvm/lib/IR/Constants.cpp::Constant::getSplatValue`. `ConstantsTest.cpp` has no `getSplatValue` case at all, so the expectations are read off that block. Two of the six pin llvmkit-side facts instead: that a fixed-width expression folds before the arm is reached, and that a scalable splat of `undef` keeps its whole-vector spelling | llvmkit-specific (rules from the named function) |
 | `crates/llvmkit-asmparser/tests/scalable_vector_splat_printing.rs` (six) | `llvm/lib/IR/AsmParser/../AsmWriter.cpp::writeConstantInternal`'s `splat (…)` shorthand and its `isa<ConstantInt> \|\| isa<ConstantFP>` guard. No upstream counterpart for the scalable half: `ConstantVector::get` takes a fixed element count, so LLVM cannot build a scalable vector constant from an element list and never has to decide how to print one. The two fixed-vector cases pin that upstream's restriction is unchanged there | llvmkit-specific (upstream rule kept for fixed vectors, extended where LLVM has no case) |
 | `crates/llvmkit-asmparser/tests/parser_vector_fp_ops.rs` (nine) | `llvm/lib/AsmParser/LLParser.cpp::parseArithmetic` and `parseCompare`, which delegate to `BinaryOperator::Create` / `CmpInst::Create` and so accept a float vector wherever they accept a float; the two rejections come from `BinaryOperator::Create`'s same-type assertion and the verifier's `FloatOpNonFloatOperand` rule. No upstream unit test spans the five FP binary operators over vectors — the round-trip half (parse → verify → print) is llvmkit's parser/printer contract | llvmkit-specific (rules from the named functions) |
+| `crates/llvmkit-asmparser/tests/attribute_td_drift.rs` (the three pre-existing guards: `vendored_attributes_td_is_parseable`, `no_unmodeled_attribute_is_silently_missing`, `not_yet_modeled_list_has_no_stale_entries`) | no upstream counterpart — upstream's lexer and parser `#include` the TableGen-generated `Attributes.inc` (`LLLexer.cpp`, `LLParser.cpp`), so their keyword table structurally cannot drift; the vendored `llvm/include/llvm/IR/Attributes.td` is the anchor. Rows back-filled at the Wave 8 point — the tests predate them | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/attribute_td_drift.rs::str_bool_attributes_have_typed_readers` | no upstream counterpart — upstream reads these via `getFnAttribute(...).getValueAsBool()` on raw strings (`llvm/lib/IR/Attributes.cpp::Attribute::getValueAsBool`); the `StrBoolAttr` declarations of the vendored `llvm/include/llvm/IR/Attributes.td` are the anchor, locked against llvmkit's `StrBoolAttrKind` reader enum both ways | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/attribute_td_drift.rs::complex_str_attributes_are_typed` | no upstream counterpart — pins the `ComplexStrAttr` set of the vendored `llvm/include/llvm/IR/Attributes.td` to the two keys llvmkit types via `DenormalMode` (`llvm/lib/IR/Function.cpp::Function::getDenormalModeRaw` / `getDenormalModeF32Raw`), so a new upstream `ComplexStrAttr` demands a typed reader | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/fixed_metadata_kinds_drift.rs` (both: `vendored_fixed_metadata_kinds_def_is_parseable`, `every_fixed_metadata_kind_has_a_matching_variant`) | no upstream counterpart — `LLVMContext::LLVMContext` (`llvm/lib/IR/LLVMContext.cpp`) registers the fixed kinds by `#include`-ing `llvm/include/llvm/IR/FixedMetadataKinds.def`, so upstream structurally cannot drift; the vendored `.def` is the anchor, checked entry-by-entry against `MetadataAttachmentKind::{from_name, name, fixed_id}` | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::deactivation_symbol_bundle_round_trips` | `test/Transforms/PreISelIntrinsicLowering/protected-field-pointer.ll`, the `NOPAUTH`-lowered call shape (checked-in fixture excerpt; the source-level `@llvm.protected.field.ptr` callee is not modeled, the plain lowered call carries the identical bundle); tag spelling from `knownBundleName` / `LLVMContext::OB_deactivation_symbol` (`llvm/lib/IR/LLVMContext.cpp`) | llvmkit-specific subset |
+| `crates/llvmkit-asmparser/tests/parser_remaining_opcodes.rs::fence_syncscope_system_round_trips` | no upstream `.ll` fixture locks the spelling — the anchor is `LLVMContext::LLVMContext`'s sync-scope seeding (`llvm/lib/IR/LLVMContext.cpp`): only `"singlethread"` and `""` map to the well-known IDs, so `syncscope("system")` is an ordinary named scope and must round-trip as text | llvmkit-specific |
+| `crates/llvmkit-ir/tests/parameter_attributes.rs::str_bool_attribute_reads_true_false_and_absent` | no upstream unittest drives it directly — functional reference `llvm/lib/IR/Attributes.cpp::Attribute::getValueAsBool` (`true` iff the value text is `"true"`; upstream asserts the stored text is `""`, `"false"`, or `"true"`, and folds absence into `false`, which llvmkit keeps distinguishable as `None`) | llvmkit-specific |

@@ -24,6 +24,35 @@ bullet below names its wave.
 
 #### Changed
 
+- **W8: ADT leftovers — the fixed metadata kinds close their drift, the
+  `deactivation-symbol` bundle tag is spelled right, and string-attribute
+  reading gets typed (C-CUSTOM-TYPE).** `MetadataAttachmentKind` gains the 17
+  fixed kinds it was missing (`IrrLoop` through `ImplicitRef`, values 24–46 of
+  `FixedMetadataKinds.def`), a `fixed_id()` accessor returning the upstream
+  kind ID, and `#[non_exhaustive]` (like `AttrKind`) so future upstream kinds
+  are additive; a new drift test parses the now-vendored
+  `FixedMetadataKinds.def` so the enum can never silently lag again. The
+  `OB_deactivation_symbol` operand-bundle tag now parses **and prints** as
+  `"deactivation-symbol"` (upstream's `knownBundleName` spelling,
+  `lib/IR/LLVMContext.cpp`) — printed IR changes for that tag, which llvmkit
+  previously misspelled `"deactivation"`. A source-level `syncscope("system")`
+  is preserved as `SyncScope::Named("system")` instead of collapsing to the
+  default: upstream seeds only `"singlethread"` and the empty string (the
+  canonical `System` name), so `"system"` is an ordinary named scope and now
+  round-trips as text. New `gc_strategy` module spells the five built-in GC
+  strategy names from `BuiltinGCs.cpp` as `&str` constants (`ERLANG`, `OCAML`,
+  `SHADOW_STACK`, `STATEPOINT_EXAMPLE`, `CORECLR`) — constants, not an enum,
+  because the upstream registry is designed for out-of-tree collectors;
+  `set_gc` still takes any string. New `#[non_exhaustive]` `StrBoolAttrKind`
+  enum (the 11 `StrBoolAttr` declarations of `Attributes.td`, with
+  `key()`/`from_key()`) and reader
+  `FunctionValue::str_bool_attribute(kind) -> Option<bool>` with upstream's
+  `getValueAsBool` semantics (`Some(value == "true")`, `None` when absent);
+  `Attribute::String { key, value }` construction is unchanged — the
+  string-attribute namespace stays open. The attribute drift test now also
+  locks the `StrBoolAttr` set against the reader enum and pins the
+  `ComplexStrAttr` set to the two `DenormalMode`-typed keys.
+
 - **Breaking (W6): `NamedMetadataId<B>` + `NamedMetadataName` replace the raw
   `usize`/`String` named-metadata surface (D7).**
   `Module::get_or_insert_named_metadata` mints a module-tagged, branded
