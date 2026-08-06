@@ -70,12 +70,14 @@ claim in §4 becomes true rather than documented-around.
 2. **Scope: the root fix only** (census rows 1-4). The other known gaps stay queued:
    `OperandWidthMismatch`'s two-shape overload, the 6 pre-existing
    `#[allow(clippy::type_complexity)]` on dev, literal-widening (task #72), and the strict
-   cut (Cycle 2). *(The `clippy::type_complexity` allows are gone; `#[allow(...)]`
-   is now banned outright repo-wide. The `clippy::type_complexity` allows are gone, and so are the six
-  `#[cfg_attr(not(test), allow(dead_code))]` on the crate-internal raw-phi
-  items — those became `#[cfg(test)]` in 0.0.4, since their only
-  callers were ever `src/phi_raw_tests/`. No `#[allow(...)]` in any form
-  remains in the crate sources.
+   cut (Cycle 2).
+
+   > **Since shipped** (recorded 2026-08-06, 0.0.4). The `#[allow(...)]` half of that
+   > queue is closed: `#[allow(...)]` is banned outright repo-wide, so the six
+   > `#[allow(clippy::type_complexity)]` are gone, and so are the six
+   > `#[cfg_attr(not(test), allow(dead_code))]` on the crate-internal raw-phi items —
+   > those became `#[cfg(test)]` in 0.0.4, since their only callers were ever
+   > `src/phi_raw_tests/`. No `#[allow(...)]` in any form remains in the crate sources.
 
 ## Architecture
 
@@ -187,7 +189,9 @@ obligation spelled out in the constructor's own doc comment.
   written — is still caught. If the hard seal makes that folder *unwritable*, the test must
   be retired with its `UPSTREAM.md` row, not deleted silently.
 - Per-slice: the CI gates, run on the pinned toolchain. The trybuild baseline is
-  **0 failures of 83 registered fixtures** (82 `t.compile_fail` + 1 `t.pass`). This
+  **0 failures across every registered fixture** — 83 when this note was written,
+  87 at 0.0.4 (86 `t.compile_fail` + 1 `t.pass`); the count grows with every new
+  type-level law, so the zero is the invariant, not the total. This
   document once recorded a `2 of 78` baseline as expected; that was an artifact of
   running the suite on a newer rustc than the pin, not of the fixtures. There is no
   "environmental fixture drift" — the claim was investigated and disproved. Gate on
@@ -223,3 +227,9 @@ obligation spelled out in the constructor's own doc comment.
   `E0786`/`STATUS_STACK_BUFFER_OVERRUN` (rustc aborting on its own truncated artifacts —
   not a code fault). Use `CARGO_INCREMENTAL=0`, and `cargo clean` when `df` drops under
   ~10G.
+
+  > **Superseded** (recorded 2026-08-06, 0.0.4). Do **not** follow the
+  > `CARGO_INCREMENTAL=0` advice today — `CLAUDE.md` now forbids it, because
+  > discarding the shared incremental cache penalises other work running on the
+  > same machine. Reclaim space by deleting stale build artifacts instead. The
+  > disk-exhaustion failure mode itself is real and still worth recognising.

@@ -24,10 +24,14 @@ nothing to the built artifact.
   adds nothing, which is what lets a brand be a bare `struct LiftedBin;`.
 
   The default set is `Clone, Copy, Debug, PartialEq, Eq, Hash`;
-  `#[branded(…)]` names an explicit subset and may add `Default`. `PartialEq`
-  and `Hash` are generated from one shared field walk, so their contract cannot
-  drift; `Debug` skips phantom fields; a `Copy` request on a type with a
-  non-`Copy` field is still rejected by the compiler (`E0204`).
+  `#[branded(…)]` names an explicit subset and may add `Default` (structs only)
+  or the opt-in ordering pair `PartialOrd` / `Ord`. `PartialEq`, `Hash`,
+  `PartialOrd` and `Ord` all come from one shared field walk, so the
+  `Hash` / `Eq` / `Ord` contracts cannot drift; `Debug` skips phantom fields;
+  asking for `Ord` without `Eq` and `PartialOrd` is refused by the derive itself
+  rather than by whichever `a < b` would have discovered it later; and a `Copy`
+  request on a type with a non-`Copy` field is still rejected by the compiler
+  (`E0204`).
 
 - **`#[derive(IrStruct)]`** — maps a non-generic named-field Rust struct to an
   llvmkit named-struct schema and generates the matching `<Struct>Value`

@@ -15,7 +15,7 @@ Out of scope: code generation, target backends, linking. In scope and merely unf
 Every gate runs on the pinned toolchain. CI installs rustc 1.96.0; an unpinned run rewords trybuild `.stderr` diagnostics and produces mismatches that look like regressions and are not. If you see a `.stderr` diff, re-run on `+1.96.0` before touching a fixture.
 
 ```bash
-cargo +1.96.0 test --workspace --all-targets --all-features    # full suite (~1700 tests)
+cargo +1.96.0 test --workspace --all-targets --all-features    # full suite (~2200 tests)
 cargo +1.96.0 test -p llvmkit-ir --test ap_float               # one integration file
 cargo +1.96.0 test <substring>                                 # one test by name
 cargo +1.96.0 clippy --workspace --all-targets --all-features -- -D warnings
@@ -25,7 +25,7 @@ cargo +1.96.0 test --workspace --doc --all-features            # doctests
 cargo audit
 ```
 
-The CI gate is exactly that list plus a per-package license check. Baseline on the pin: **0 trybuild failures of 85 registered fixtures** (84 `compile_fail` + 1 `pass`).
+The CI gate is exactly that list plus a per-package license check. Baseline on the pin: **0 trybuild failures of 87 registered fixtures** (86 `compile_fail` + 1 `pass`). All fixtures live in `crates/llvmkit-ir/tests/compile_fail/` and are registered in `tests/typestate_compile_fail.rs`; a fixture that is not registered there does not run.
 
 - **Do not set `CARGO_INCREMENTAL=0`.** Leave the cache alone; other work may be running on this machine.
 - `llvmkit-ir` has a `build.rs` — it expands the vendored `crates/llvmkit-tablegen/tablegen/` `.td` files into intrinsic tables (~2 s). Keep it; the `.td` input is 6× smaller than its output.
@@ -50,7 +50,11 @@ A brand is a bare unit struct (`pub trait ModuleBrand: 'static {}`). Two modules
 
 ### Crate graph
 
-`llvmkit-support` (spans) → `llvmkit-ir` (the bulk: data model, builder, verifier, AsmWriter, analyses, passes) → `llvmkit-asmparser` (lexer + `.ll` parser) → `llvmkit` (umbrella re-exports). `llvmkit-macros` is a **required** build-time dependency of `llvmkit-ir` and `llvmkit-asmparser` (proc-macro crates contribute nothing to the artifact); its `macros` feature gates only the user-facing re-exports.
+`llvmkit-ir` is the bulk (data model, builder, verifier, AsmWriter, analyses, passes) and `llvmkit-asmparser` (lexer + `.ll` parser) sits on top of it; `llvmkit` re-exports both plus `llvmkit-support` as the umbrella.
+
+Note the edge that is **not** there: `llvmkit-ir` does **not** depend on `llvmkit-support` — it names no `llvmkit_support` path anywhere. Support (spans, `SourceMap`) enters at `llvmkit-asmparser`, which needs it for token spans and diagnostics, and at the umbrella. Do not draw the graph as a single support→ir→asmparser chain.
+
+`llvmkit-macros` is a **required** dependency of `llvmkit-ir` and `llvmkit-asmparser` (proc-macro crates run in `rustc` and contribute nothing to the artifact). The `macros` feature is `llvmkit-ir`'s, forwarded by `llvmkit`'s own `macros` feature; both default on, and both gate only the user-facing re-exports, never whether the proc-macro crate is built. `llvmkit-tablegen` is a **build**-dependency of `llvmkit-ir` (via `build.rs`) and is absent from the runtime graph.
 
 ### Parser ↔ printer contract
 
@@ -99,7 +103,7 @@ Conventional Commits — `type(scope): summary`, `!` after the scope for a break
 - `ROADMAP.md` — milestones, release sequence, the crates.io checklist.
 - `docs/future-work.md` — the live backlog: what is known-missing, what was deferred, and **why** in each case. Read before proposing work that looks unfinished; it is often deliberate.
 - `UPSTREAM.md` — per-test provenance registry.
-- `INKWELL_MIGRATION.md` — per-API delta against inkwell.
+- `docs/inkwell-migration.md` — per-API delta against inkwell.
 
 ## Before you start
 

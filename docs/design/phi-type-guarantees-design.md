@@ -27,6 +27,8 @@ Doctrine: unrepresentable > witnessed > tested, never trusted.
 ### Slice 2 — Placement unrepresentable at build time
 
 - All six `*_phi` builders (`ir_builder.rs`) insert at the block's **phi head** (after existing phis, before first non-phi) via a new crate-private `insert_phi_at_head`. Cursor position becomes irrelevant to phi placement. (`ssa_builder::emit_operandless_phi` already head-inserts — converges.)
+
+> **Shipped as** (recorded 2026-08-06, 0.0.4). The helper is `BasicBlock::insert_instruction_at_phi_head` (`basic_block.rs`, `pub(crate)`), not a free `insert_phi_at_head`; every phi-emitting path in `ir_builder.rs` routes through it, so placement is correct-by-construction exactly as designed.
 - **Parser duty:** auto-hoisting builders would silently reorder ill-formed `.ll`; the parser (`ll_parser.rs::parse_phi`) must instead track "seen non-phi in current block" and reject with a parse error. Fixture test.
 - Verifier `PhiNotAtTop` stays (defense in depth).
 
@@ -100,7 +102,7 @@ Doctrine: unrepresentable > witnessed > tested, never trusted.
 
 ## Testing / gates
 
-- TDD per slice; the CI gates per slice commit (fmt, `check --examples`, clippy `-D warnings`, rustdoc `-D warnings`, `test --workspace --all-targets --all-features`, doctests, audit), run on the pinned toolchain. Bless touched `.stderr` fixtures on `cargo +1.96.0` and nowhere else; the baseline is **0 failures of 83 registered fixtures** (82 `compile_fail` + 1 `pass`). There is no "environmental" `.stderr` drift — that claim was investigated and disproved.
+- TDD per slice; the CI gates per slice commit (fmt, `check --examples`, clippy `-D warnings`, rustdoc `-D warnings`, `test --workspace --all-targets --all-features`, doctests, audit), run on the pinned toolchain. Bless touched `.stderr` fixtures on `cargo +1.96.0` and nowhere else; the baseline is **0 failures across every registered fixture** (83 while this wave was in flight; 87 at 0.0.4 — 86 `compile_fail` + 1 `pass`, since the count grows with every new type-level law). There is no "environmental" `.stderr` drift — that claim was investigated and disproved.
 - Wave 1: split-over-phi-successor verify-pass; parser phi-after-non-phi rejection; parser forward-ref type mismatch fails at resolution; differing-duplicate rejection on all paths; parse-time completeness errors (bad `.ll` phi → parse error, source-located); uniform-phi fold incl. self-ref; ssa_builder full regression.
 - Wave 2: SIL-style loop (header params, back-edge via `br_with_args`) builds + verifies clean; arity/type mismatch at branch site (`block_args_br_arity_mismatch_errors`, `block_args_br_type_mismatch_errors`); `int_phi` unnameable publicly (`raw_phi_builder_is_unnameable`); `insert_phi` dominance rejection (value defined below its edge); edge-removal entry-drop + `CfgUpdate` recording; vector/aggregate phi round-trip. The designed "`redirect_edge` without values doesn't typecheck" fixture became the five edit-handle fixtures instead (`uncond_br_edit_has_no_remove`, `cond_br_edit_remove_consumes`, `switch_edit_has_no_remove_default`, `invoke_edit_has_no_remove`, `callbr_edit_has_no_remove`) — phi values are a required argument of every `redirect_*`, so omitting them is an arity error rather than something a fixture needs to pin.
 

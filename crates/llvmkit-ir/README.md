@@ -37,9 +37,11 @@ change threads, and resume.
 What you store are **ids**: `Copy + Send + 'static` values carrying a module tag
 and an arena slot (`ValueId<B>`, `IntValueId<W, B>`, `FunctionId<R, B>`,
 `GlobalId<B>`, `BlockId<R, B, Params>`, …). Declarations and value-producing
-builders hand them back, and each `get_*` lookup returns the same currency its
-`add_*` twin does. Resolve one into a short-lived borrowing **view** with
-`m.view(id)`, or `m.try_view(id)` for the fallible form.
+builders hand them back, and each lookup returns the same currency its `add_*`
+twin does — lookups are bare nouns (`m.global(name)`, `m.function::<R>(name)`),
+with `get_` reserved for the `get_or_insert_*` entry points. Resolve an id into a
+short-lived borrowing **view** with `m.view(id)`, or `m.try_view(id)` for the
+fallible form.
 
 Not everything is an id, by design. Appending a block gives you a linear,
 non-`Copy` `BasicBlock` insertion token (call `.id()` for the storable
@@ -80,9 +82,9 @@ share a brand (every `Module::dynamic` module is `DynBrand`, and a named brand
 is re-issued once the previous module drops), the compile-time half cannot
 apply, and the runtime module tag every id carries is the backstop:
 `IrError::ForeignValueId`, `None` from `try_view`, or a deterministic panic from
-`view`. Metadata is the one currency this does not cover — a metadata slot is a
-bare arena index with neither brand nor tag, so an in-range slot from another
-module still mis-resolves. Tracked in the workspace's `docs/future-work.md`.
+`view`. Metadata is covered on the same terms: `MetadataId<B>` and
+`NamedMetadataId<B>` each carry a brand and a `ModuleId` tag, so mixing two
+named brands is a type error and the same-brand case is caught at runtime.
 
 Advanced extension APIs, such as generic pass or folder helpers, may name
 `B: ModuleBrand` when they intentionally abstract over any module brand.
@@ -92,5 +94,4 @@ the textual IR parser and shared support utilities.
 
 ## License
 
-Apache-2.0 WITH LLVM-exception. See the workspace
-[`LICENSE`](https://github.com/r3bb1t/llvmkit/blob/main/LICENSE).
+Apache-2.0 WITH LLVM-exception. See [`LICENSE`](LICENSE).

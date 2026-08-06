@@ -99,5 +99,5 @@ to llvmkit's current expected output.
 
 ## License
 
-Apache-2.0 WITH LLVM-exception (same as upstream LLVM). See the workspace
-[`LICENSE`](https://github.com/r3bb1t/llvmkit/blob/main/LICENSE).
+Apache-2.0 WITH LLVM-exception (same as upstream LLVM). See
+[`LICENSE`](LICENSE).

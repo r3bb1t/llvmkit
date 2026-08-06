@@ -16,7 +16,7 @@ Tracking **LLVM 22.1.4** (`llvmorg-22.1.4`, released 2026-04-21).
 > release. The list below describes 0.0.4, which is unreleased** — so
 > `cargo add llvmkit` today gets the older closure-scoped API
 > (`Module::with_new`), not the owned modules and storable ids described here.
-> Track `main` for the 0.0.4 surface. The project is pre-1.0 and, under
+> Track `master` for the 0.0.4 surface. The project is pre-1.0 and, under
 > Cargo's pre-1.0 rules, every `0.0.x` is mutually incompatible; see
 > [ROADMAP.md](ROADMAP.md) for the release sequence.
 
@@ -59,8 +59,8 @@ Shipped today:
   `tests/parser_attribute_matrix.rs`. A companion guard parses the vendored
   `Attributes.td` and fails CI if an upstream attribute is neither accepted nor
   listed as deliberately unmodeled, so the keyword table cannot silently drift
-  from LLVM again. Not yet modeled: bitcode, and the 43 attributes named in
-  that guard's list.
+  from LLVM again. Not yet modeled: bitcode, and the 42 attributes named in
+  that guard's `NOT_YET_MODELED` list.
 - **Typed IR data model** — done. `llvmkit-ir` ships interned types, typed
   values, typed constants, functions, basic blocks, globals, comdats, data
   layout, target triple, module asm directives, and LLVM-style function-local
@@ -148,7 +148,7 @@ Not shipped yet:
   `absolute_symbol`, debug/use-list, and `returned` facts**
 - **Bitcode reader / writer**
 - **Full ValueTracking / DemandedBits / SimplifyDemandedBits parity** — the
-  ledger is closed for `KnownBits.h` and open for the eleven remaining
+  ledger is closed for `KnownBits.h` and open for the eight remaining
   `ValueTracking.h` entry points, some `ValueTracking.cpp` operator arms
   (notably `computeKnownFPClass`'s dispatch), demanded-bit rules, and
   `InstCombineSimplifyDemanded` transforms.
@@ -156,7 +156,9 @@ Not shipped yet:
   and facts** — new IDs and verifier signatures must land before analysis facts
   are added.
 - **Full built-in optimization transform library and pipeline builders**
-  (`PassBuilder`, loop PM, CGSCC PM, legacy PM, textual pipelines)
+  (`PassBuilder`, loop PM, CGSCC PM, legacy PM, *runnable* textual pipelines —
+  `pass_pipeline.rs` parses a pipeline string into typed, data-only recipe
+  values, but there is no NAME → constructor registry, so nothing can run one)
 
 Out of scope:
 
@@ -344,9 +346,9 @@ fn typed_vec() -> Result<(), IrError> {
     let b = IrBuilder::at_end(entry);
 
     // `try_into` checks element (i32) AND lane count (4) before stamping the markers.
-    let a: VectorValue<'_, i32, Len<4>> =
+    let a: VectorValue<'_, i32, Len<4>, _> =
         m.view(f).param(0).unwrap().as_erased().try_into().unwrap();
-    let c: VectorValue<'_, i32, Len<4>> =
+    let c: VectorValue<'_, i32, Len<4>, _> =
         m.view(f).param(1).unwrap().as_erased().try_into().unwrap();
 
     // Both operands are pinned to `<4 x i32>`; a length/element mismatch would not compile.
@@ -468,7 +470,7 @@ reach codegen through upstream LLVM, and `llvmkit` when the task is IR
 construction / analysis and compile-time misuse safety matters more than
 having `libLLVM`'s full backend behind it.
 
-Migrating an existing inkwell codebase? [INKWELL_MIGRATION.md](INKWELL_MIGRATION.md)
+Migrating an existing inkwell codebase? [docs/inkwell-migration.md](docs/inkwell-migration.md)
 is a side-by-side guide: the API mapping table, the three structural differences
 to read first (no `Context` lifetime, owned modules, ids rather than handles),
 and the ledger of what each migration buys you at compile time.
@@ -512,7 +514,7 @@ and no runtime check to reach. Upstream accepts each of these as `Value *` and
 reports them from `Verifier.cpp`, later, if verification runs at all. The
 mapping from each upstream verifier message to the llvmkit type that forecloses
 it is tabulated in [Type Safety: llvmkit vs. LLVM C++](docs/type-safety-vs-llvm.md),
-and 84 compile-fail fixtures lock the guarantees.
+and 86 compile-fail fixtures lock the guarantees.
 
 **3. Verification is a typestate, not a function you must remember to call.**
 `Module::verify(self)` consumes `Module<B, Unverified>` and returns
@@ -623,7 +625,7 @@ what keeps the deliberately-erased case sound instead of undefined.
 
 ### Instruction lifecycle safety
 
-`Instruction<'ctx, state::Attached>` is the lifecycle authority for erase,
+`Instruction<'ctx, state::Attached, B>` is the lifecycle authority for erase,
 detach, move, and RAUW operations. Those methods consume the handle, so a used
 lifecycle capability cannot be reused. Copyable discovery APIs return
 `InstructionView` instead: blocks, value use-lists, and per-opcode handles expose
@@ -640,14 +642,16 @@ cargo run -p llvmkit-asmparser --example lex_file -- crates/llvmkit-asmparser/ex
 cargo run -p llvmkit-ir --example build_add_function
 cargo run -p llvmkit-ir --example cpu_state_add
 cargo run -p llvmkit-ir --example factorial
+cargo run -p llvmkit-ir --example factorial_auto_ssa
 cargo run -p llvmkit-ir --example concurrent_counter
 cargo run -p llvmkit-ir --example derived_struct_function
 
 # Typed vectors and arrays: length/element mismatches become compile errors
 cargo run -p llvmkit-ir --example typed_vector_array
 
-# Build IR, run a built-in analysis, and register custom passes
+# Build IR, run a built-in analysis, and drive custom passes
 cargo run -p llvmkit-ir --example pass_manager_demo
+cargo run -p llvmkit-ir --example authored_pass
 ```
 
 ## Built-in Analyses and Custom Passes
@@ -788,19 +792,24 @@ impl EntryReachable {
 }
 ```
 
-expands to exactly this hand-written impl — the `<'ctx, B>` header, the
-associated-item block, and the `run` lifetimes are all supplied for you:
+expands to exactly this hand-written impl — the `<B>` header, the
+associated-item block, and `run`'s higher-ranked `'m` / `'ctx` regions and their
+where-clause are all supplied for you:
 
 ```rust
-impl<'ctx, B: ModuleBrand + 'ctx> FunctionPass<'ctx, B> for EntryReachable {
+impl<B: ModuleBrand> FunctionPass<B> for EntryReachable {
     type Access = Inspect;
     type Requires = (DominatorTreeAnalysis,);
     const NAME: &'static str = "entry-reachable";
 
-    fn run(
+    fn run<'m, 'ctx>(
         &mut self,
-        cx: FnCx<'_, '_, 'ctx, B, Inspect, (DominatorTreeAnalysis,)>,
-    ) -> IrResult<FnReport> { /* body */ }
+        cx: FnCx<'m, '_, 'ctx, B, Inspect, (DominatorTreeAnalysis,)>,
+    ) -> IrResult<FnReport>
+    where
+        'ctx: 'm,
+        Self: 'ctx,
+    { /* body */ }
 }
 ```
 
@@ -891,6 +900,7 @@ section) for the scoped-out items.
     ├── llvmkit-support/             # Span, Spanned<T>, SourceMap
     ├── llvmkit-asmparser/           # Lexer + .ll parser
     ├── llvmkit-macros/              # IrStruct derive, #[function_pass]/#[module_pass]
+    ├── llvmkit-tablegen/            # TableGen front end + intrinsic emitter
     └── llvmkit-ir/                  # Typed IR model, builder, verifier, passes
 ```
 
@@ -980,7 +990,7 @@ locks.
 - [LLVM Project](https://llvm.org/)
 - [LLVM Language Reference](https://llvm.org/docs/LangRef.html)
 - [Using the New Pass Manager](https://llvm.org/docs/NewPassManager.html)
-- [Writing an LLVM New PM Pass](https://releases.llvm.org/21.1.0/docs/WritingAnLLVMNewPMPass.html)
+- [Writing an LLVM New PM Pass](https://releases.llvm.org/22.1.0/docs/WritingAnLLVMNewPMPass.html)
 - [LLVM 22.1.4 release](https://github.com/llvm/llvm-project/releases/tag/llvmorg-22.1.4)
 
 ## License

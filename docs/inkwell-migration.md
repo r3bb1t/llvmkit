@@ -15,7 +15,7 @@ small set of built-in analyses (`DominatorTreeAnalysis`, `KnownBitsAnalysis`,
 `SimplifyDemandedBitsPass`) ship, but a broad transform library,
 `PassBuilder`-style runnable pipelines, bitcode, and code generation do not.
 
-The API described here is the one frozen for **0.0.4** (2026-07-26).
+The API described here is the unreleased **0.0.4** surface, tracking LLVM 22.1.4.
 
 ## Three structural differences to read first
 
@@ -49,7 +49,10 @@ Not every builder returns an id, and the exceptions are deliberate.
 `FunctionValue::append_basic_block` returns `BasicBlock<'ctx, R, Unterminated, B>`
 and `IrBuilder::append_block_with_params` returns a
 `(BasicBlock<..>, Vec<Value<..>>)` pair — and `.id()` on the handle gives the
-storable `BlockId`. No API hands back a `BlockId` directly. **Terminator**
+storable `BlockId`. No *appender* hands back a `BlockId` directly; discovery
+reads do (CFG successors / predecessors, a terminator's destinations,
+`Instruction::parent`), because those name an existing block rather than
+minting insertion authority. **Terminator**
 builders consume the builder by value and return borrowing handles, not ids:
 `br` / `cond_br` / `ret` return `TerminatedBlockInst<'ctx, R, B>`
 (a `(BasicBlock<'ctx, R, Terminated, B>, Instruction<'ctx, Attached, B>)` pair)
@@ -63,13 +66,16 @@ consuming it is what makes "append past a terminator" unrepresentable.
 - use inkwell::context::Context;
 - use inkwell::module::Module;
 - use inkwell::types::IntType;
-+ use llvmkit_ir::{Module, IntType};
++ use llvmkit::ir::{Module, IntType};
 ```
 
-There is no umbrella `llvmkit` crate: the IR data model is the
-`llvmkit_ir` crate directly (the `IrStruct` derive rides along behind its
-`macros` feature), and the `.ll` lexer / parser layers live in
-`llvmkit_asmparser`.
+`llvmkit` is a thin umbrella that re-exports the implementation crates under
+stable module names: `llvmkit::ir` is the IR data model, `llvmkit::asmparser`
+the `.ll` lexer / parser, `llvmkit::support` the shared span utilities.
+Depending on an implementation crate directly works just as well, and is the
+spelling the snippets below use — `use llvmkit_ir::{Module, IntType};`. The
+`IrStruct` derive rides along behind the `macros` feature, which both
+`llvmkit` and `llvmkit-ir` enable by default.
 
 ## Context vs Module
 
@@ -212,19 +218,19 @@ takes the typed route, which is why its call reads
 |`context.i32_type()`|`m.i32_type()`|on the module (or its `ModuleView`), not on a context|
 |`context.custom_width_int_type(n)`|`m.custom_width_int_type(n)?`|fallible (returns `IrResult<IntType<'ctx, IntDyn, B>>`)|
 |`context.struct_type(&fields, packed)`|`m.struct_type(fields)` / `m.packed_struct_type(fields)`|takes any `IntoIterator<Item = impl Into<Type<'ctx, B>>>`; packed-ness is the method, not a trailing `bool`|
-|`context.opaque_struct_type(n)`|`m.get_or_insert_named_struct(n)`|get-or-create, name preserved; the bare noun `m.named_struct(n)` is the lookup (`Option`), and `m.opaque_struct(n)?` is the typestate form (`StructType<'ctx, Opaque, B>`, `Err` if the name is taken)|
+|`context.opaque_struct_type(n)`|`m.get_or_insert_named_struct(n)`|get-or-create, name preserved; the bare noun `m.named_struct(n)` is the lookup (`Option`), and `m.opaque_struct(n)?` is the typestate form (`StructType<'ctx, Opaque, B>`, `Err(IrError::StructBodyAlreadySet)` if that name already has a body)|
 |`StructType::set_body(...)`|`m.set_struct_body(opaque, fields, packed)?`|on `Module`; upgrades `Opaque` → `BodySet` in the type system. `set_struct_body_dyn(st, fields, packed)?` is the runtime-checked erased path (returns `Err` on second-set or non-named struct)|
 |`fn_type(&params, var_args)`|`m.function_type(ret, params)` / `m.variadic_function_type(ret, params)`|return type explicit; variadic-ness is the method, not a trailing `bool` (`*_no_parameters` twins cover the empty parameter list)|
 ||`m.add_typed_function::<Ret, Params, _>(name, linkage)?`|builds the function signature from Rust marker types and returns `IrResult<TypedFunctionId<Ret, Params, B>>`; `m.view(id)` gives the `TypedFunctionValue` facade|
 ||`m.add_typed_function_of::<fn(i32) -> i32, _>(name, linkage)?`|builds the same typed facade from a Rust function-pointer alias; `unsafe` / `extern "C"` / `extern "system"` aliases are accepted|
-||`#[derive(IrStruct)] struct Point { x: i32, y: i32 }`|derive-backed named struct schemas (the `macros` feature, on by default); generated `PointValue<'ctx, B>` wrappers expose typed field accessors and builders over `extractvalue` / `insertvalue`. See [`docs/ir-struct-derive.md`](docs/ir-struct-derive.md).|
+||`#[derive(IrStruct)] struct Point { x: i32, y: i32 }`|derive-backed named struct schemas (the `macros` feature, on by default); generated `PointValue<'ctx, B>` wrappers expose typed field accessors and builders over `extractvalue` / `insertvalue`. See [`ir-struct-derive.md`](ir-struct-derive.md).|
 ||`WindowPlacementValue::try_from(raw)?`|validates an existing raw `StructValue`, `Value`, `Argument`, `Constant`, or attached `Instruction` against the derived schema before returning the generated wrapper.|
 ||`StructFields<WindowPlacement>`|typed-function parameter schema that emits one LLVM parameter per top-level field while keeping nested struct fields as generated wrappers.|
 |`int_type.const_array(&values)`|`array_type.const_array(elements)?`|on the array type; takes any `IntoIterator<Item: IntoConstantValue<'ctx, B>>` and validates element type + length|
-|`int_type.const_int(v, sign_extend)`|`int_type.const_int(v_rust)`|infallible when the Rust input fits losslessly — sign-vs-zero extend is driven by the Rust input type's signedness via `IntoConstantInt<'ctx, W, B>`; `const_int_checked` / `const_int_raw(v: u64, sign_extend: bool)` are the fallible / raw paths|
+|`int_type.const_int(v, sign_extend)`|`int_type.const_int(v_rust)`|infallible when the Rust input fits losslessly — sign-vs-zero extend is driven by the Rust input type's signedness via `IntoConstantInt<'ctx, W, B>`; `const_int_checked` / `const_int_raw(v: u64, signedness: Signedness)` are the fallible / raw paths|
 |`float_type.const_float(d)` (f64)|`f64_ty.const_double(value)` / `f32_ty.const_float(value)`|infallible; `const_from_bits(u128)` covers the half / bfloat / fp128 / x86_fp80 / ppc_fp128 kinds|
 |`pointer_type.const_null()`|`pointer_type.const_null()`|same; also `const_zero()`|
-|`type.get_undef()` / `get_poison()`|`ty.undef()` / `ty.poison()`|bare-noun lookups — shorter than inkwell's spelling|
+|`type.get_undef()` / `get_poison()`|`ty.undef()` / `ty.poison()`|bare nouns, no `get_` prefix — shorter than inkwell's spelling|
 |`module.add_function(name, fn_ty, linkage)`|`m.add_function_dyn(name, fn_ty, linkage)?`|fallible (`Err(DuplicateFunctionName)`); returns `IrResult<FunctionId<Dyn, B>>` — the runtime-checked shape. Re-type later with the checked `m.function::<R>(name)?`|
 |`module.get_function(name)`|`m.function_dyn(name)`|`Option<FunctionId<Dyn, B>>` — an id, symmetric with `add_function_dyn`. `m.function::<R>(name)?` is the narrowing form: `IrResult<Option<FunctionId<R, B>>>`, where a signature that does not match `R` is `IrError::ReturnTypeMismatch` rather than a silently widened id|
 |`module.get_global(name)`|`m.global(name)`|`Option<GlobalId<B>>`; `alias` / `ifunc` follow the same bare-noun shape — llvmkit's lookup is shorter than inkwell's. All of these take `&self` and work on a `Verified` module too|
@@ -260,7 +266,7 @@ takes the typed route, which is why its call reads
 |`Builder::build_unreachable()`|`b.unreachable()`|infallible (no operands); returns the (`Terminated` block, instruction) pair directly|
 |`Builder::build_phi(ty, name)` + `phi.add_incoming(&[...])`|`b.append_block_with_named_params(m.view(f), [(i32_ty.as_type(), "acc")], "loop")?` returns the block plus its head-phi parameter values; each edge then supplies them, e.g. `b.cond_br_with_args(cond, other_id, &[], loop_id, &[init.as_erased()])?`|**Replaced, not renamed.** The marker-typed phi builders and `PhiInst::add_incoming` are crate-internal; block arguments are the public phi-authoring surface. A block declares its head-phis as *parameters* and each incoming edge supplies *block arguments*, so an edge and its phi operands are written together instead of being patched afterwards. `append_block_with_params` is the unnamed form; `IrBuilder::append_block_typed::<Params>` is the compile-time-checked form, whose `label.call(args)` edge — consumed by `br_call` / `cond_br_call` — makes a wrong-arity or wrong-typed block argument a compile error. `crates/llvmkit-ir/examples/factorial.rs` builds a loop this way end to end.|
 |—|`b.phi_dyn(ty, name)?` / `int_phi_dyn` / `fp_phi_dyn` / `pointer_phi_in_addrspace`|the erased phi builders that remain public for parser- and pass-shaped code that must materialise a bare phi. They return a phi id; `m.view(id).remove_incoming(&m, index)?` mirrors `PHINode::removeIncomingValue`. Prefer block arguments in new construction code|
-|manual `builder.build_phi` + `phi.add_incoming` for loop-carried values|`SsaState::for_function(&m, m.view(f))?` then `SsaBuilder::for_function(&m, m.view(f), &mut state)?`, plus `declare_int_var::<W, _>` / `declare_float_var` / `declare_pointer_var` and `def_*_var` / `use_*_var`|no direct inkwell counterpart. Braun et al. on-the-fly SSA construction: declare a typed variable once, then read/write it like a mutable local. The engine inserts, completes, and trivial-phi-eliminates the phis itself as blocks are sealed (`seal_block` / `finish`); no manual phi pre-declaration or incoming-edge patching. `SsaState<B>` is owned, `'static`, `Send` and `Clone`, so a lifter can park it in a struct field between steps. See the README's "Auto-SSA" section and `examples/factorial_auto_ssa.rs`.|
+|manual `builder.build_phi` + `phi.add_incoming` for loop-carried values|`SsaState::for_function(&m, m.view(f))?` then `SsaBuilder::for_function(&m, m.view(f), &mut state)?`, plus `declare_int_var::<W, _>` / `declare_float_var` / `declare_pointer_var` and `def_*_var` / `use_*_var`|no direct inkwell counterpart. Braun et al. on-the-fly SSA construction: declare a typed variable once, then read/write it like a mutable local. The engine inserts, completes, and trivial-phi-eliminates the phis itself as blocks are sealed (`seal_block` / `finish`); no manual phi pre-declaration or incoming-edge patching. `SsaState<B>` is owned, `'static`, `Send` and `Clone`, so a lifter can park it in a struct field between steps. See the README's "Auto-SSA" section and `crates/llvmkit-ir/examples/factorial_auto_ssa.rs`.|
 |`value.into_pointer_value()` narrowing plus manual bookkeeping of "what this pointer points to"|`ptr.with_pointee::<T>()` → `TypedPointerValue<'ctx, T, B>`|no direct inkwell counterpart. Rust-side-only pointee-schema overlay on an opaque pointer; `typed_alloca::<T, _>(name)` / `typed_load` / `typed_store` / `field_gep::<S, I, _>` skip the runtime type-narrow the erased path needs. These four return the `TypedPointerValue` handle (or the loaded value) rather than an id, since the pointee schema is a Rust-side overlay. Printed IR is byte-identical to the erased path — this is a compile-time ergonomics layer, not a new IR construct.|
 
 ## Error model
@@ -354,7 +360,7 @@ instruction results), matching the upstream `SlotTracker`.
 
 llvmkit promotes LLVM runtime checks into Rust types where the modeled surface
 can make invalid states unrepresentable. The current ledger of bugs that
-compile down to a Rust type error rather than a runtime `IrError` — 82
+compile down to a Rust type error rather than a runtime `IrError` — 86
 compile-fail fixtures in `crates/llvmkit-ir/tests/compile_fail/` lock these:
 
 - The IrBuilder must be positioned (`Unpositioned` has no emitter methods).

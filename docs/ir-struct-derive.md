@@ -137,7 +137,7 @@ Rejected shapes:
 - generic structs or structs with a `where` clause;
 - field-level `#[llvmkit(...)]` attributes.
 
-This slice intentionally keeps the Rust struct layout visible. Field rename,
+The derive intentionally keeps the Rust struct layout visible. Field rename,
 skip, default, and method-generation helpers are not supported because LLVM
 struct layout is positional; hiding a Rust field change would obscure an ABI or
 IR layout change.

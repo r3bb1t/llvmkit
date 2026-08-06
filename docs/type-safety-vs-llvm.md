@@ -32,7 +32,7 @@ on user-visible API failure modes; D11's test-provenance rule is tracked in
 | Read a typed result from a `void` call | D3, D4 | Caller must inspect the call/function type | `CallInst<'ctx, ()>` exposes no typed result accessor |
 | Use an instruction handle after erase | D2 | Raw pointer discipline | Lifecycle methods consume a non-`Copy`, non-`Clone` `Instruction` handle |
 | Recover lifecycle authority from a copyable value, block, or use-list | D2, D9 | Any retained `Instruction *` can be reused for mutation | Copyable rediscovery APIs return `InstructionView`; only builder output, `BlockCursor`, and detached reinsertion produce `Instruction<Attached>` |
-| Add more incoming edges or destinations after a variable-arity instruction is finalized | D1, D2 | Caller discipline plus verifier | `PhiInst<Open>` / `SwitchInst<Open>` / `IndirectBrInst<Open>` / `LandingPadInst<Open>` / `CatchSwitchInst<Open>` are linear; `finish()` returns closed views without mutators |
+| Add more incoming edges or destinations after a variable-arity instruction is finalized | D1, D2 | Caller discipline plus verifier | `SwitchInst<Open>` / `IndirectBrInst<Open>` / `LandingPadInst<Open>` / `CatchSwitchInst<Open>` are linear; `finish()` returns closed views without mutators. Phis carry no such marker — theirs was retired in cycle B (§9); their seal is the `pub(crate)` raw builders instead |
 | Misplace a phi, mistype a phi incoming, or give one predecessor two different incoming values | D1, D4 | Builder accepts all three; the verifier later reports `PhiNotAtTop` or the type / predecessor mismatch | `*_phi` always insert at the block's PHI head (placement correct by construction); `add_incoming` — the typed path *and* the untyped parser/SSA-builder path — type-checks the incoming and rejects a differing duplicate for one predecessor as `IrError::AmbiguousPhiIncoming`; whole-graph incoming-vs-predecessor completeness stays in `Module::verify()` |
 | Branch carries the wrong number of, or wrong-typed, values for its successor's block parameters | D1, D4 | The successor's head-phis are filled `PHINode`-by-`PHINode`; a miscounted or mistyped incoming is an `assert` / verifier concern | A typed successor label carries a `Params` schema; `head.call(args)` (a `BlockCall`) requires `args: CallArgs<Params>`, so a wrong arity or a wrong-typed block-argument position is a compile error, reusing the typed-`call` machinery. The erased `append_block_with_params` / `*_with_args` path stays call-site-checked (`IrError::PhiArgArityMismatch` / type mismatch). **The plain-`br` door is shut at run time, not at compile time**: `br`/`cond_br` still take any `IntoBasicBlockLabel`, whose `BlockId` impl erases `Params`, so a plain branch to a parameterised block still *compiles* — but every plain terminator edge (`br`, `cond_br`, `switch` default and cases, both `invoke` edges, `callbr`, `indirectbr`) now rejects a parameterised target with `IrError::PhiArgArityMismatch` before the terminator is emitted, so the incomplete phi is no longer reachable (§9) |
 | Add a wrong-width case value to a `switch` | D4 | Builder accepts any `ConstantInt *`; a case whose integer width ≠ the condition is caught later by `Verifier::visitSwitchInst` (`"Switch constants must all be same type as switch value!"`) | `switch::<W>` pins the condition width `W`, and `SwitchInst::add_case` then carries an `IntoIntValue<'ctx, W, B>` bound, so a wrong-width case is a compile error; the erased `switch_dyn` (`IntDyn`) keeps the same rule as a runtime `IrError::TypeMismatch` check for parsed / SSA-builder input |
@@ -63,8 +63,8 @@ is a checked rejection, not a type error. Read every "wrong module is a compile
 error" row below as "wrong *brand* is a compile error; wrong module under the
 same brand is a checked run-time rejection".
 
-**(b) Metadata carries both halves as of the 0.0.4 polish freeze.** Through
-0.0.4 it carried neither: `metadata.rs::MetadataSlot` was a bare `usize`
+**(b) Metadata carries both halves as of the 0.0.4 polish freeze.** Before that
+freeze it carried neither: `metadata.rs::MetadataSlot` was a bare `usize`
 arena index, and the `ValueSlot` inside `DebugMetadataOperand::Value` was
 likewise bare, so there was no `B` for two modules' handles to differ in and no
 tag for an arena boundary to check. An in-range handle minted by module A and
@@ -158,13 +158,21 @@ pub trait ModuleBrand: 'static {}
 
 impl Module<DynBrand, Unverified> {
     // At most one live module per brand; the brand is freed on drop.
-    pub fn branded<B: ModuleBrand>(name: impl Into<String>) -> IrResult<Module<B, Unverified>>;
+    pub fn branded<B, N>(name: N) -> IrResult<Module<B, Unverified>>
+    where B: ModuleBrand, N: Into<String>;
     // ...or retired permanently on drop, so no successor can ever claim it.
-    pub fn branded_once<B: ModuleBrand>(name: impl Into<String>) -> IrResult<Module<B, Unverified>>;
+    pub fn branded_once<B, N>(name: N) -> IrResult<Module<B, Unverified>>
+    where B: ModuleBrand, N: Into<String>;
     // Registry-exempt: arbitrarily many live at once, separated by the runtime tag alone.
-    pub fn dynamic(name: impl Into<String>) -> Module<DynBrand, Unverified>;
+    pub fn dynamic<N>(name: N) -> Module<DynBrand, Unverified>
+    where N: Into<String>;
 }
 ```
+
+The name parameter is a named generic rather than an `impl Into<String>` argument
+precisely so the brand stays turbofish-able: every call site below spells
+`Module::branded::<Left, _>("left")`, which argument-position `impl Trait` would
+forbid.
 
 `module_new!("name")` wraps `branded` with a brand declared at the macro's
 expansion site, so the brand is unnameable from anywhere else — the ergonomic
@@ -304,7 +312,7 @@ where
 
 `IntoBasicBlockLabel<'ctx, R, B>` (`basic_block.rs::IntoBasicBlockLabel`) is the
 *accepting* bound at every branch-target position, and it follows the same
-id/view split as the rest of 2.0:
+id/view split as the rest of the handle model:
 
 - `BlockId<R, B, Params>` is the **storable** currency — `Copy + Send +
   'static`, what a producer hands back and what a struct keeps. Its impl
@@ -396,7 +404,7 @@ wiring.
 ```rust
 pub fn add_global<N, C>(&'ctx self, name: N, initializer: C) -> IrResult<GlobalId<B>>
 where
-    N: AsRef<str>,
+    N: Into<String>,
     C: IntoConstantValue<'ctx, B>,
 ```
 
@@ -826,7 +834,8 @@ Underneath, the incremental editing window still exists — the `PhiInst` handle
 `PhiInstId`, which views back into one, and rediscovery yields it), but
 *authoring through it* is off the supported surface: the marker-form
 `*_phi` builders and the `add_incoming` mutator are `pub(crate)` — a hard
-`E0624` — and the few entry points the separate parser crate needs are
+compiler seal, and the `E0599` above is what an outside caller naming one
+actually gets — and the few entry points the separate parser crate needs are
 `#[doc(hidden)] pub` "internal contract" items. Be exact about the difference:
 `pub(crate)` is a compiler-enforced seal, `#[doc(hidden)] pub` is a convention
 an external caller can ignore. So the visibility keeps a phi unobservable
@@ -877,10 +886,10 @@ view. Rediscovery through `InstructionKind` / `TerminatorKind` also returns clos
 variants, so it cannot reopen a finalized variable-arity instruction.
 
 The closed views are still fully inspectable: each variable-arity terminator
-exposes a reader for its entries — `SwitchInst::cases()` yields
+exposes an iterator over its entries — `SwitchInst::cases()` yields
 `(case_value, target)` pairs, and `IndirectBrInst::destinations()`,
 `LandingPadInst::clauses()`, and `CatchSwitchInst::handlers()` yield their
-respective lists. Reading the entries never risks reopening the instruction.
+respective entries. Reading the entries never risks reopening the instruction.
 
 ## 10. Verification state is part of module type
 
@@ -1237,9 +1246,10 @@ narrowing accessor is always sound and there is no integer-flavored handle whose
 
 Where a single-opcode `match` is too fine, grouped views recover the C++
 `dyn_cast<BinaryOperator>` / `dyn_cast<CmpInst>` ergonomics without losing the
-opcode: `InstructionKind::as_binary_op()` exposes `lhs`/`rhs`/`opcode`/`nuw`/
-`nsw`/`exact`/`is_commutative` across all eighteen arithmetic opcodes, and
-`as_cmp()` exposes `lhs`/`rhs` and a unified `CmpPredicate` over `icmp`/`fcmp`.
+opcode: `InstructionKind::as_binary_op()` exposes `lhs` / `rhs` / `opcode` /
+`has_no_unsigned_wrap` / `has_no_signed_wrap` / `is_exact` / `is_commutative`
+across all eighteen arithmetic opcodes, and `as_cmp()` exposes `lhs` / `rhs`
+and a unified `CmpPredicate` over `icmp` / `fcmp`.
 The flag overlays `OverflowingBinaryOperator` (add/sub/mul/shl) and
 `PossiblyExactOperator` (udiv/sdiv/lshr/ashr) mirror LLVM's `Operator.h` split.
 
@@ -1259,16 +1269,18 @@ type system. Runtime verification still owns:
   against the variable's, for every marker;
 - dominance and cross-block SSA use checks;
 - phi-incoming completeness against the *complete* CFG predecessor set — the
-  whole-graph check, and **not only for parsed input**. Wave 1 moved the *local*
-  phi facts earlier (placement is correct by construction; `add_incoming` checks
+  whole-graph check, and **not only for parsed input**. The *local* phi facts
+  moved earlier (placement is correct by construction; `add_incoming` checks
   the incoming value's type and rejects a differing duplicate for one
   predecessor; the `.ll` parser runs `check_function_phi_coherence` at
   end-of-function parse once all predecessors are known; and `split_block`
-  maintains its successors' phi incomings itself). But a plain `br` /
-  `cond_br` into a block that has parameters seeds nothing and is not
-  arity-checked, so builder-constructed IR reaches `verifier.rs::check_phi` the
-  same way parsed IR does. `Module::verify()` is the gate here, not a backstop —
-  see §9;
+  maintains its successors' phi incomings itself), and the polish freeze shut
+  the plain-branch door as well: every plain terminator edge now rejects a
+  *parameterised* target with `IrError::PhiArgArityMismatch` before emitting.
+  What is left for `Module::verify()` is the whole-graph coherence itself — a
+  phi authored through the `#[doc(hidden)]` parser contract, or emptied /
+  desynced by the public `remove_incoming`, still reaches
+  `verifier.rs::check_phi` the same way parsed IR does — see §9;
 - complete terminator and reachability invariants after parser/pass mutation;
 - data-layout-dependent size/alignment rules;
 - verifier rules for attributes, globals, atomics, calls, EH pads, and metadata
@@ -1308,7 +1320,7 @@ emits, so they are documented here rather than left to surprise a diff:
 ## Proof in the repository
 
 The compile-fail suite locks these guarantees with `trybuild`. As of 0.0.4 it
-registers **85 fixtures — 84 `t.compile_fail` plus 1 `t.pass` — and the baseline
+registers **87 fixtures — 86 `t.compile_fail` plus 1 `t.pass` — and the baseline
 is 0 failures** on the pinned toolchain (`cargo +1.96.0`; a newer rustc rewords
 diagnostics and produces `.stderr` mismatches that are not regressions). All of
 them live in `crates/llvmkit-ir/tests/compile_fail/` and are registered in
@@ -1352,7 +1364,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/raw_phi_builder_is_unnameable.rs");
     t.compile_fail("tests/compile_fail/block_call_wrong_arity.rs");
     t.compile_fail("tests/compile_fail/block_call_wrong_arg_type.rs");
-    /* 60-odd further fixtures omitted; see the file for the full list */
+    /* 67 further fixtures omitted; see the file for the full list */
 }
 ```
 

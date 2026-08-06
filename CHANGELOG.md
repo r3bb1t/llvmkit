@@ -13,6 +13,11 @@ cut, entries accumulate under **Unreleased**.
 > everything since. Two "unreleased" headings is an artifact of work continuing
 > past the 0.0.4 freeze, not two pending releases; they collapse into one entry
 > when the tag is cut.
+>
+> Every entry *below* the API idiomatics program predates its renames and keeps
+> the spellings those cycles actually shipped (`IRBuilder`,
+> `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
+> mapping to today's names; no earlier entry was rewritten to hide the change.
 
 ### API idiomatics program (Rust API Guidelines sweep)
 
@@ -62,7 +67,10 @@ wave so a commit can be traced back to it.
   `ZextInst`, `FAddInst` → `FaddInst`, `UDivFlags` → `UdivFlags`,
   `AtomicRMWInst` / `Data` / `Id` / `Config` / `Flags` / `BinOp` →
   `AtomicRmw*`, `GlobalIFunc*` → `GlobalIfunc*`, the `BFloat` float-kind marker
-  → `Bfloat`). Two names also shed an abbreviation, exactly as `GVarFlags` did
+  → `Bfloat`), plus the two analysis-side carriers `EquivalentICmp` →
+  `EquivalentIcmp` (`constant_range.rs`) and `SelectPatternNaNBehavior` →
+  `SelectPatternNanBehavior` (`select_pattern.rs`).
+  Two names also shed an abbreviation, exactly as `GVarFlags` did
   in W1: `NamedMDNode` → `NamedMetadataNode` (its three sibling types already
   spell `NamedMetadata` in full) and `UseListOrderBBRecord` →
   `UseListOrderBbRecord` (matching asmparser's existing `Keyword::UselistorderBb`).
@@ -117,7 +125,9 @@ wave so a commit can be traced back to it.
   twin rename `into_erased` → `as_erased`, joining the `as_dyn`/`as_view`
   family (the operand-lift trait method `into_erased_value` is unchanged);
   `BlockCursor::next` → `step` (it is deliberately not an `Iterator`; the
-  old name invited `for`-loop attempts that failed confusingly).
+  old name invited `for`-loop attempts that failed confusingly), and
+  `WorklistScope::next` → `step` follows it for the same reason (that one
+  rode along with W5).
   `set_data_layout` is now the single, infallible setter taking a parsed
   `DataLayout`; the string-parsing overload is gone — parse explicitly with
   `DataLayout::parse(...)` (fallibility lives where the failure is).
@@ -181,13 +191,14 @@ wave so a commit can be traced back to it.
   used to be undetectable in principle; the tag makes it impossible). New
   bare-noun lookup `Module::named_metadata(&NamedMetadataName) ->
   Option<NamedMetadataId<B>>` and clone-out reader
-  `Module::named_metadata_get(id) -> Option<NamedMDNode<B>>` (`None` only for
-  a foreign id). Node names are the new `#[non_exhaustive]`
+  `Module::named_metadata_get(id) -> Option<NamedMetadataNode<B>>` (`None`
+  only for a foreign id; the node type is spelled with W1b's full-word name
+  here and below). Node names are the new `#[non_exhaustive]`
   `NamedMetadataName` enum spelling the well-known upstream set
   (`llvm.module.flags`, `llvm.dbg.cu`, `llvm.ident`, `llvm.linker.options`,
   ...) as variants with `Custom(String)` for the open rest;
   `From<&str>`/`From<String>` keep call sites one-liners.
-  `NamedMDNode::new` takes `impl Into<NamedMetadataName>`, `name()` returns
+  `NamedMetadataNode::new` takes `impl Into<NamedMetadataName>`, `name()` returns
   `&NamedMetadataName`, and the printed spelling moves to `name_str()`.
   Printed `.ll` output is unchanged.
 
@@ -204,8 +215,9 @@ wave so a commit can be traced back to it.
   `setSDKVersion`→`Warning`, ...; `None` where `Module.cpp` has no setter).
   `Module` gains `add_module_flag` / `set_module_flag` (append vs
   replace-in-place, mirroring `addModuleFlag`/`setModuleFlag`),
-  `module_flag(&ModuleFlagKey)`, and `module_flags() ->
-  Vec<ModuleFlagEntry>` — all backed by the `llvm.module.flags` named node
+  `module_flag(&ModuleFlagKey)`, and `module_flags()` (which shipped here
+  returning `Vec<ModuleFlagEntry>` and became an iterator under W9, below,
+  before any of this was released) — all backed by the `llvm.module.flags` named node
   as ordinary `!{i32 behavior, !"key", value}` tuples, so printed IR and
   the round-trip contract are untouched. The breaking half is the verifier:
   `Verifier::visitModuleFlags` / `visitModuleFlag` /
@@ -220,10 +232,14 @@ wave so a commit can be traced back to it.
   comparison is uniqued-pointer identity; llvmkit compares structurally
   because tuples and integer constants are not yet uniqued.
 
-- **W8: ADT leftovers — the fixed metadata kinds close their drift, the
-  `deactivation-symbol` bundle tag is spelled right, and string-attribute
-  reading gets typed (C-CUSTOM-TYPE).** `MetadataAttachmentKind` gains the 17
-  fixed kinds it was missing (`IrrLoop` through `ImplicitRef`, values 24–46 of
+- **Breaking (W8): ADT leftovers — the fixed metadata kinds close their drift,
+  the `deactivation-symbol` bundle tag is spelled right, and string-attribute
+  reading gets typed (C-CUSTOM-TYPE).** Breaking on two counts, both easy to
+  miss in an otherwise additive wave: `MetadataAttachmentKind` becomes
+  `#[non_exhaustive]`, so an exhaustive downstream `match` on it stops
+  compiling, and one operand-bundle tag's printed spelling changes.
+  `MetadataAttachmentKind` gains the 17 fixed kinds it was missing
+  (`IrrLoop` through `ImplicitRef`, values 24–46 of
   `FixedMetadataKinds.def`), a `fixed_id()` accessor returning the upstream
   kind ID, and `#[non_exhaustive]` (like `AttrKind`) so future upstream kinds
   are additive; a new drift test parses the now-vendored
@@ -304,8 +320,10 @@ wave so a commit can be traced back to it.
   `.int::<i32>("n")` needs no placeholder turbofish — which is why the terminals
   take `name: &str` rather than the `impl AsRef<str>` the flat forms take
   (explicit generic arguments and `impl Trait` arguments cannot coexist).
-  `StoreBuilder` and `AllocaBuilder` have a single `.build()`, and
-  `AllocaBuilder` takes its name through `.name(..)`. All three builder types
+  `StoreBuilder` and `AllocaBuilder` have a single `.build()`;
+  `AllocaBuilder` takes its name through `.name(..)` and carries the
+  `.inalloca()` / `.swifterror()` toggles that were `AllocaFlags`'s job
+  (see W12). All three builder types
   are `#[must_use]`, which covers the entry method *and* every setter: a chain
   that forgets its terminal is a warning, not a silent no-op.
 
@@ -515,6 +533,37 @@ wave so a commit can be traced back to it.
   drop `parse_assembly_string`, `BlockCursor::next`, `build_*_phi` and
   `build_{br,cond_br}_with_args`, and `UPSTREAM.md`'s row prose picks up the
   W2/W3 renames (its *test* names, as always, are frozen).
+
+#### Removed
+
+Everything in the bullets above that **stopped existing**, rather than being
+renamed — collected here because a rename can be followed mechanically and a
+deletion cannot. Each names the wave that removed it and what replaces it.
+
+- **Breaking:** `parse_assembly_string` (W4). `parse_assembly` already accepts
+  `&str` through its `impl AsRef<[u8]>` parameter.
+- **Breaking:** the `&str`-taking `set_data_layout` overload, and the
+  `set_data_layout_value` name beside it (W3). `set_data_layout` is now the
+  single, infallible setter over a parsed `DataLayout`; parse explicitly with
+  `DataLayout::parse`.
+- **Breaking:** `InlineAsmOptions::with_can_unwind(bool)` and
+  `SpeculationOptions::with_variable_info(bool)` (W5) — replaced by the
+  zero-arg `unwind()` and `without_variable_info()`.
+- **Breaking:** the atomic and volatile memory emitters `load_volatile`,
+  `load_volatile_with_align`, `store_volatile`, `store_volatile_with_align`,
+  `int_load_atomic`, `load_atomic`, `store_atomic` and `alloca_dyn`, together
+  with the `AtomicLoadConfig` / `AtomicStoreConfig` bags they took (W10). All
+  of it is reachable through `load_from` / `store_to` / `alloca_builder`.
+  `AtomicCmpXchgConfig` / `AtomicRmwConfig` are **not** affected.
+- **Breaking:** `AllocaFlags` is `pub(crate)` and no longer re-exported from
+  the crate root (W12), which also removes its `with_inalloca` /
+  `with_swifterror` setters from the public surface. Reading the flags is now
+  `AllocaInst::is_inalloca()` / `is_swifterror()`; setting them is the
+  `AllocaBuilder`.
+- **Breaking:** `ll_parser::describe` (W11b), replaced by `Display for Token`
+  with the same wording.
+- `table_gen_main()`'s empty-argv `OUT_DIR` inference mode (W11c). It was a
+  build-script entry point; build scripts call `generate` directly now.
 
 ### `llvmkit-tablegen`: the generator becomes a crate that mirrors LLVM
 

@@ -395,7 +395,7 @@ coverage being subsumed by the real ports.
 `nofpclass` on a parameter or call return is still unmodeled, which is why two of
 `SqrtNszSignBit`'s four blocks are not ported.
 
-### Order for the remaining 11 (recorded 2026-08-04)
+### Order for the remaining 8 (recorded 2026-08-04)
 
 1. **Residue (3 left of 5).** `stripNullTest` and `collectPossibleValues`
    landed 2026-08-04 — both were pure pattern/worklist code with no missing
@@ -557,7 +557,8 @@ is recorded on `VALUE_TRACKING_SURFACE_AUDITED` in
 header (`ConstantDataArraySlice`, `OverflowResult`, `SelectPatternFlavor`,
 `SelectPatternNaNBehavior`, `SelectPatternResult`). **At the time of the audit**
 32 were modeled and 69 were not; the running count lives at the top of this
-section (90 / 11 as of 2026-08-04). The 101 is the part that does not move.
+section (93 / 8 as of 2026-08-04 — the eight rows of `VALUE_TRACKING_GAPS`).
+The 101 is the part that does not move.
 
 The audit's real finding was about the ledger, not the port. The gap table was
 keyed by *family* — seven prose rows, on the reasoning that "enumerating ~76
@@ -587,12 +588,12 @@ what the sizing looked like going in, with each row re-measured 2026-08-04.
 
 | Prerequisite | Upstream size | llvmkit now | Status |
 |---|---|---|---|
-| `ConstantRange` | 632 (`.h`) + 2314 (`.cpp`) | `constant_range.rs`, 3033 lines, 95 public methods | **done 2026-08-02** — all but `castOp`, `shlWithNoWrap` and the signedness-flipping helpers, each recorded in slice 3 below |
+| `ConstantRange` | 632 (`.h`) + 2314 (`.cpp`) | `constant_range.rs`, 3038 lines, 95 public methods | **done 2026-08-02** — all but `castOp`, `shlWithNoWrap` and the signedness-flipping helpers, each recorded in slice 3 below |
 | `KnownFPClass` / `FPClassTest` | `FloatingPointMode.h` 290 + `KnownFPClass.h` 324, plus ~1500 lines of `computeKnownFPClass` | `fp_class.rs` (lattice + every operation), `known_fp_class.rs` (`computeKnownFPClass` + predicates), `fp_predicate.rs` (`fcmpImpliesClass`) | **done 2026-08-04**; the dispatch is partial and its module header names each missing arm |
 | `AssumptionCache` | 280 + 310 | `assumptions.rs`, with `DomConditionCache` alongside | **done 2026-08-04** (tranche 8) |
 | `SelectPatternResult` | declared in `ValueTracking.h` | `select_pattern.rs` | **done 2026-08-03** (tranches 4a/4b) |
 | `TargetLibraryInfo` | 664 | `target_library_info.rs`, 427 lines | partial; check what it already answers before recording `getIntrinsicForCallSite` as blocked on it |
-| `ValueTracking.cpp` itself | 10535 | `value_tracking.rs`, 5761 | the remaining 8 gaps are listed above, not a line-count gap |
+| `ValueTracking.cpp` itself | 10535 | `value_tracking.rs`, 6062 | the remaining 8 gaps are listed above, not a line-count gap |
 
 The original estimate — roughly 12–14k lines of ported logic plus D11-compliant
 tests, comparable to the whole ApFloat/ApInt sweep — held. It was delivered as
@@ -851,6 +852,79 @@ supertrait drop above), three resolved by record — reality wins:
    instead) is folded into the Milestone 0 parser cycle, which reworks that
    crate anyway.
 
+## Stringly-typed surfaces the 0.0.4 API-idioms sweep did not close (2026-08-06)
+
+C-CUSTOM-TYPE ("do not use raw types where a bespoke one carries the
+invariant") drove the 0.0.4 renames — `Signedness` for the signedness bools,
+the per-opcode flag structs, `ModuleFlagBehavior` / `ModuleFlagKey` for module
+flags, `NamedMetadataName` for named-metadata keys. Six surfaces are still raw
+`String` or bare tuple where a type belongs. They are listed here so the next
+sweep does not re-derive the list — and because five of the six are **not**
+rename work: they need a port, a generated table, or a consumer that does not
+exist yet. Each bullet says which. Where no reason is on record, the bullet
+says that too rather than inventing one.
+
+- **Debug-info enumerations are strings end to end.** Every `DW_TAG_*`,
+  `DW_ATE_*`, `DW_VIRTUALITY_*`, `DW_LANG_*`, `DW_LNAME_*`, `DW_CC_*`,
+  `DW_OP_*`, `DW_MACINFO_*` and `DW_APPLE_ENUM_KIND_*` word is lexed to its own
+  `Token::Dwarf*` variant carrying the **full keyword text**
+  (`crates/llvmkit-asmparser/src/ll_token.rs`), and the parser then collapses
+  all nine — plus `DIFlag*`, `DISPFlag*`, `CSK_*`, and the emission-,
+  name-table- and fixed-point-kind keywords — into a single
+  `MetadataFieldValue::Enum(String)` (`parse_metadata_field_value`,
+  `ll_parser.rs`). Nothing validates the spelling, and a consumer that wants
+  the tag has to string-match. The typed form is the `Dwarf.def` tables
+  (`llvm/BinaryFormat/Dwarf.def`, surfaced as `llvm::dwarf::Tag` and friends in
+  `Dwarf.h`) — several hundred constants across nine families, which is
+  generation work for `llvmkit-tablegen`'s sibling arm rather than a hand-typed
+  enum. **Deferred to the debug-info/metadata round-trip work**
+  (`ROADMAP.md`, Milestone 12), where a consumer that needs the values exists.
+- **`DIFlags` / `DISPFlags` are not bitflags.** Upstream spells them as two
+  `uint32_t` bitfields with `getFlag` / `getFlagString` / `splitFlags`
+  (`DINode::DIFlags` and `DISubprogram::DISPFlags`, `DebugInfoMetadata.h`);
+  llvmkit keeps each written flag as a separate `Enum(String)` field value, so
+  `DIFlagPublic | DIFlagPrototyped` round-trips as text without ever becoming a
+  set. Same milestone as the DWARF tables, and the same reason — the bitflag
+  type is only worth its keep once something reads it.
+- **`MetadataField::name` is a `String`, and nothing validates it.** The
+  specialized-node loop in `ll_parser.rs` takes *any* `Token::LabelStr` as a
+  field key and pushes it straight into `MetadataField::new`, so
+  `!DILocation(lien: 3)` parses. Upstream validates per node class:
+  `PARSE_MD_FIELD` matches the key against that class's own `VISIT_MD_FIELDS`
+  list and otherwise reports `invalid field '<name>'`, and `REQUIRE_FIELD`
+  reports `missing required field '<name>'` (`LLParser.cpp`). llvmkit has
+  neither check. The typed form is a per-node `MetadataFieldName` enum —
+  roughly one per `DI*` node — which is worth writing only alongside the
+  per-node modeling it would key, so it lands with the same milestone. **Note
+  this one is a real divergence, not only an ergonomics gap**: llvmkit accepts
+  specialized metadata that `llvm-as` rejects.
+- **`Module::target_triple` returns `Option<String>`.** The triple is stored
+  and printed verbatim, never decoded, so nothing can ask for the architecture,
+  vendor, OS or environment without re-splitting the string. A structured
+  `Triple` needs a port of `llvm::Triple` (`llvm/TargetParser/Triple.h`) with
+  its normalization rules and its several hundred enumerator spellings.
+  **Deliberately not started**: target parsing sits next to the code-generation
+  and target-backend work that is permanently out of scope, so the port would
+  have to justify itself on IR-level consumers alone (DataLayout consistency
+  checks are the only candidate today).
+- **`SourceMap::line_col` returns a bare `(u32, u32)`** (`llvmkit-support`), so
+  a caller can transpose line and column with no complaint from the compiler —
+  exactly the shape C-CUSTOM-TYPE exists to prevent. A `LineCol { line, column }`
+  struct is a contained change with one in-tree consumer (the parser's own
+  diagnostics) and no dependency on anything else — it is the smallest item in
+  this list. No reason for the 0.0.4 sweep passing it over is recorded, so do
+  not assume one; take it whenever `llvmkit-support` is next touched.
+- **Inline-asm constraints are never parsed.** `InlineAsm::constraint_string`
+  hands back the raw `"=r,r,r"`, and the one derived answer,
+  `label_constraint_count`, is computed by splitting on `,` and counting `!`
+  (`constraint_summary`, `inline_asm.rs`) with `arg_constraints` hardcoded to
+  `0`. Upstream models this properly: `InlineAsm::ConstraintInfo` /
+  `ParseConstraints` / `InlineAsm::verify` (`llvm/IR/InlineAsm.h`) decompose
+  the string into typed constraint records and check them against the asm's
+  `FunctionType`. Porting it would let the verifier reject a constraint list
+  that does not match the call, which llvmkit currently accepts. Blocked on
+  nothing but effort; it is a self-contained port with an obvious oracle.
+
 ## Killer-feature designs (deferred)
 
 - **Inline IR macro DSL** -- a `ir!{ %sum = add i32 %a, %b }` proc-macro
@@ -869,6 +943,15 @@ supertrait drop above), three resolved by record — reality wins:
   errors gain an optional pretty-print path that quotes the offending
   instruction line from AsmWriter output. Candidate crate: keep in
   `llvmkit-support` as a `diagnostics` module.
+
+  **The crate graph is the real constraint, and this sketch skips it.**
+  `llvmkit-ir` does not depend on `llvmkit-support` — its only intra-workspace
+  dependency is `llvmkit-macros` (`crates/llvmkit-ir/Cargo.toml`), and no file
+  under `crates/llvmkit-ir/src/` names `llvmkit_support`. Support enters the
+  graph one level up, at `llvmkit-asmparser`. So the verifier half of this
+  design needs a **new** `llvmkit-ir → llvmkit-support` edge, or the renderer
+  has to live above both. Decide that before writing any of it; the parser half
+  is unaffected and could ship alone.
 
 ## Upstream IRBuilder coverage gaps (from the comparison audit)
 
@@ -904,7 +987,9 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
 
 ## Ergonomics backlog (from the core audit)
 
-- `Display` for the ~25 typed instruction handles (`LoadInst`, `CallInst`, …).
+- `Display` for the 39 typed instruction handles (`LoadInst`, `CallInst`, …;
+  every `pub struct *Inst` under `crates/llvmkit-ir/src/`, all 39 re-exported.
+  This read "~25" until it was re-counted 2026-08-06).
   Cycle C gave `Display` to every public *value* handle, which prints the
   operand form, but deliberately stopped at the instruction handles: their
   natural rendering is a full instruction line, not an operand, so they need
@@ -953,8 +1038,8 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   exploring e-graph-based optimization ([SIGPLAN
   blog](https://blog.sigplan.org/2021/04/06/equality-saturation-with-egg/)).
   llvmkit's typed constant-fold kernels + pass infrastructure give it a
-  natural home as a `PatchBody`/`ReshapeCfg`-rung pass family. Would be a genuine "LLVM 2.0"
-  differentiator: phase-ordering-free peepholes.
+  natural home as a `PatchBody`/`ReshapeCfg`-rung pass family. Would be a
+  genuine next-generation differentiator: phase-ordering-free peepholes.
 - **Alive2-style refinement checking** (L, future, visionary):
   [Alive2](https://github.com/AliveToolkit/alive2) does bounded translation
   validation of LLVM transforms via SMT (found 47 bugs in LLVM's own test
@@ -1054,10 +1139,12 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   method compiled out cannot be reached at all. Fixture doc comment rewritten
   and `.stderr` regenerated on 1.96.0.
 
-- ~~**Metadata is the one currency 2.0 did not tag**~~ — **done (2026-07-27, at
-  the 0.0.4 freeze).** Found during the cycle E freeze sweep and pre-existing
-  rather than a 2.0 regression: 2.0 tagged the *value* currency and left this
-  one behind. `MetadataSlot` was a bare `usize` arena index and the `ValueSlot`
+- ~~**Metadata is the one currency the id-first redesign did not tag**~~ —
+  **done (2026-07-27, at the 0.0.4 freeze).** Found during the cycle E freeze
+  sweep and pre-existing rather than a regression: the id-first handle redesign
+  (cycles A–E, once informally called "2.0" — an internal codename, never a
+  version) tagged the *value* currency and left this one behind.
+  `MetadataSlot` was a bare `usize` arena index and the `ValueSlot`
   inside `DebugMetadataOperand::Value` was likewise bare, so **neither half of
   D7 reached metadata** — no `B` for two modules' handles to differ in, and no
   tag for the arena boundary to check. An *in-range* slot minted in module A and
@@ -1141,7 +1228,7 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   - `vector_splat` can't infer its element from the scalar (a Rust
     associated-type-projection limitation), so its callers annotate / turbofish
     the result.
-- **A proof token that *carries* the validated `TypeId`** (residual after the
+- **A proof token that *carries* the validated `TypeSlot`** (residual after the
   unforgeable-markers cycle). The crate has five capability tokens -- `WrapWitness`
   (`element.rs`), `ValidatedFunctionParams` / `ValidatedCallResult`
   (`function_signature.rs`), `SelectNarrow` (`ir_builder.rs`), `ValidatedStructValue`
@@ -1149,22 +1236,24 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   marker that proves "a check happened", not *which* type. The unforgeable-markers
   cycle made the builder's **int / float / pointer append surface** structural instead:
   a marker is attached to a freshly-appended instruction only through the typed-append
-  constructor family (`append_int_like` / `_at` / `_load`, `append_fp_*`, `append_ptr`
-  / `append_ptr_load`), each of which appends AT a typed handle so the marker matches
+  constructor family (`append_int_{like,at,load}`, `append_fp_{like,at,load}`,
+  `append_ptr` / `append_ptr_load`), each of which appends AT a typed handle so the marker matches
   the runtime type *by construction* — those ~40 sites no longer carry an implicit proof.
   What remains implicit is the smaller residual the family does not cover: the `CallInst`
   / `PhiInst` result accessors in `instructions.rs`, the arena / parameter lifts in
   `ssa_builder.rs` (`use_*_var`) and `function_signature.rs`, the vector / array append
   wraps (no `append_vec` / `append_arr` constructor yet), and the `IntoIntValue` /
   `IntoFloatValue` const-lifts in `int_width.rs` / `float_kind.rs`. A witness carrying the
-  validated `TypeId` would let those *state* their proof instead of implying it. Note the
+  validated `TypeSlot` would let those *state* their proof instead of implying it —
+  llvmkit has no `TypeId`, so the slot is the only thing there is to carry (types
+  are reached as `Type<'ctx, B>` views, never as tagged ids). Note the
   confinement of `from_value_unchecked` is **audited, not compiler-enforced**: it stays
   `pub(crate)` because a hard seal is impossible (`value` and `ir_builder` are sibling
   modules and the constructors need `ir_builder`-private helpers), so the builder's fold
   re-checks remain the runtime backstop.
 - `Width<M>`/`Width<N>` `WiderThan` relations blocked on stable
-  const-generics (documented at `int_width.rs` ~105-116); revisit when
-  `generic_const_exprs` stabilizes.
+  const-generics (documented under "Limitations on stable Rust" on `Width`'s
+  own rustdoc, `int_width.rs`); revisit when `generic_const_exprs` stabilizes.
 - Aggregate variable categories for auto-SSA (currently ships int/float/pointer
   only).
 - Address-space-typed pointers (`PointerValue` currently erases address
@@ -1227,10 +1316,16 @@ deferred it.
   module token to call `S::ir_type(...)` — `Module::from_core` is gone with it.
   Type construction is preservation-neutral, which is why the view already
   carried the constructor surface.
-- **`proptest` `undef_var` index randomization** -- the auto-SSA property
+- ~~**`proptest` `undef_var` index randomization** -- the auto-SSA property
   test suite's undefined-variable-read fixture hardcodes `Some(0)` as the
   undefined variable index instead of drawing from `0..var_count`; a one-line
-  improvement to widen coverage (noted during Task 19's review).
+  improvement to widen coverage (noted during Task 19's review).~~ **Done
+  (2026-07-06, `6d2fb24`) — struck 2026-08-06 after re-reading the fixture.**
+  `generated_case_strategy` in `crates/llvmkit-ir/tests/ssa_builder.rs` draws
+  the index with `proptest::option::of(0_usize..var_count)`, and its own
+  comment states why: the emitters advertise a randomised which-variable
+  schedule, so every declared variable has to be exercised as the undefined
+  one, not just the first. The entry outlived the fix by a month.
 - **`accept_folded/narrow_folded` helper-family factoring -- done**
   (`feature-22/generic-narrowing`, the "no silent erasure" cycle). The four
   near-identical bodies were folded into a single compare-and-report core,
@@ -1361,7 +1456,7 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   that authors fresh, statically-shaped merge blocks *and* redirects existing
   edges into them -- a shape none of the four surveyed systems exhibits.
 - **First-class `ModRewrite` runtime-symbol/global/ctor triple** -- the
-  `RewriteModule` mutator (`ModRewrite`, `pass_context.rs` ~1247) exposes only the raw
+  `RewriteModule` mutator (`ModRewrite`, `pass_context.rs`) exposes only the raw
   `module_mut()` token today; a sanitizer reaches the
   function/global/constructor "triple" through it by hand. The author sugar for
   that pattern -- `declare_runtime_fn` / `append_ctor` / `add_global` helpers
@@ -1370,10 +1465,10 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
 - ~~**`Module::scratch_unverified` footgun**~~ -- **done (2026-07-26, cycle
   cycle C1)**. `scratch_unverified` doesn't exist anymore. `feat(cycle C1): Module
   owns its ModuleCore` replaced it with `Module<B, Unverified>::assume_verified`
-  (`module.rs` ~4090, still `pub(crate)`), called from the read-only `Dyn`
+  (`module.rs`, still `pub(crate)`), called from the read-only `Dyn`
   pipelines' `run` methods (`DynReadOnlyFunctionPipeline::run` /
-  `DynReadOnlyModulePipeline::run`, `pass_manager.rs` ~1819-1825 and
-  ~1968-1976): `module.unverify()` hands out the token, every queued pass is
+  `DynReadOnlyModulePipeline::run`, `pass_manager.rs`):
+  `module.unverify()` hands out the token, every queued pass is
   `Inspect` so it projects to `()` and never reaches a mutator, and
   `unverified.assume_verified()` re-stamps that same token `Verified` with no
   re-verification. The original footgun doesn't apply anymore: a `Module` now
@@ -1550,8 +1645,12 @@ than pending:
   module constructor, so `build_body` would reintroduce the one shape the
   redesign removed; and block targets are now storable `BlockId<R, B, Params>`
   ids rather than borrowed labels, so a per-function *lifetime* has nothing to
-  attach to. A 2.0-shaped revival would need a per-function marker on `BlockId`
-  itself. Until then the rule stays a `Module::verify()` check — see the "br
+  attach to. A revival in the id-first shape would need a per-function marker
+  on `BlockId` itself. The proposed name would also need rethinking: the 0.0.4
+  API-idioms sweep dropped the `build_` prefix from every `IrBuilder` emitter,
+  so `build_body` no longer fits the naming law it was written against.
+
+  Until then the rule stays a `Module::verify()` check — see the "br
   target is not a basic block of the parent function" family in `verifier.rs`.
   Revisit only as its own opt-in cycle if a concrete authoring need appears.
 - **Whole-graph verifier territory** — phi-incoming completeness against the
@@ -1583,8 +1682,10 @@ items below are the deferred / known-remaining points.
   `isEliminableCastPair` case-11 *declined* sub-case (`MidSize < SrcSize &&
   MidSize < DstSize`), llvmkit's `fold_ptr_to_int_pair` always two-steps through
   the case-11 mid (`ptrtoint`→pointer size, `ptrtoaddr`→index/address size),
-  whereas upstream falls to its switch path (`ConstantFolding.cpp` ~1508:
-  `PtrToInt`→address type, `PtrToAddr`→int-ptr type — the inverse). Example on
+  whereas upstream falls to its switch path (`ConstantFoldCastOperand`'s
+  `PtrToInt`/`PtrToAddr` case, `ConstantFolding.cpp`: `PtrToInt` takes
+  `DL.getAddressType`, `PtrToAddr` takes `DL.getIntPtrType` — the inverse).
+  Example on
   `p:128:128:128:64`: `ptrtoaddr(inttoptr(i128 x)):i128` → llvmkit `x mod 2^64`
   (the semantically-correct address extraction), upstream `x`. llvmkit's value is
   arguably the *more correct* side; matching upstream would introduce a wrong
@@ -1599,9 +1700,14 @@ items below are the deferred / known-remaining points.
   GEPs of globals" (needs a dereferenceable-bytes query). Each produces weaker /
   fewer folds than upstream, never a wrong one.
 
-- **Proactive ApFloat bit-exactness audit (deferred to its own cycle).** No
+- ~~**Proactive ApFloat bit-exactness audit (deferred to its own cycle).** No
   constant-folder fix in this cycle touched ApFloat arithmetic, and the folding
   audit found `ap_float` structurally faithful and test-backed. A full
   bit-for-bit verification across all seven float semantics (incl. PPC
   double-double, every rounding/denormal/NaN-payload path) against known IEEE /
-  LLVM `APFloat` values is a large, standalone effort worth its own cycle.
+  LLVM `APFloat` values is a large, standalone effort worth its own cycle.~~
+  **Done (2026-08-01) — struck 2026-08-06.** The cycle this entry asked for
+  ran: see "ApFloat / `ApInt` bit-exactness audit — closed (2026-08-01)" at the
+  top of this file, which records the fourteen defects it found and the
+  `APIntTest.cpp` families deliberately not ported. This entry sat open for
+  five days after its own successor closed it.
