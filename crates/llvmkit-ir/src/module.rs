@@ -138,7 +138,11 @@ fn reject_reserved_intrinsic_name(name: &str) -> IrResult<()> {
 /// index, and a 64-bit tag can never be re-issued within a process (a
 /// `u32` counter could in principle wrap after `u32::MAX` module
 /// creations and hand a live successor the tag of a dropped module).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Ordered by allocation: the counter is monotone, so `a < b` means `a`'s
+/// module was constructed first. That is what makes the id family's
+/// `(tag, slot)` ordering deterministic enough to key a `BTreeMap`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ModuleId(NonZeroU64);
 
 impl ModuleId {
@@ -1698,6 +1702,62 @@ pub struct Module<B: ModuleBrand, S = Unverified> {
     registration: Option<BrandGuard<B>>,
     _brand: Invariant<B>,
     _state: PhantomData<S>,
+}
+
+/// A **summary**, deliberately not the module's IR.
+///
+/// [`Display`](core::fmt::Display) already prints the whole `.ll` file; a `Debug`
+/// that forwarded to it would splice thousands of lines into every `dbg!`,
+/// every `assert_eq!` failure on a struct that happens to hold a module, and
+/// every `{:?}` on a `Result<Module<B>, _>`. So this prints the identity and
+/// the shape — name, id, counts, verification state — and nothing that grows
+/// with the IR.
+///
+/// The `S: 'static` bound is what lets the typestate be *named*: both
+/// typestate markers are `'static` uninhabited enums, so a [`TypeId`]
+/// comparison recovers which one is in play without a new trait or an `as`
+/// cast.
+///
+/// [`TypeId`]: core::any::TypeId
+impl<B: ModuleBrand, S: 'static> core::fmt::Debug for Module<B, S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use core::any::TypeId;
+
+        let state = if TypeId::of::<S>() == TypeId::of::<Verified>() {
+            "Verified"
+        } else if TypeId::of::<S>() == TypeId::of::<Unverified>() {
+            "Unverified"
+        } else {
+            // Unreachable in practice — no constructor mints a module in any
+            // other typestate — but a `Debug` impl must never panic, so name
+            // the type rather than assert about it.
+            core::any::type_name::<S>()
+        };
+
+        // `try_borrow`, not `borrow`: printing a module from inside a mutator
+        // that is holding one of these lists open must degrade to a marker,
+        // never panic. `Debug` is what a user reaches for *while* debugging.
+        struct Count(Option<usize>);
+        impl core::fmt::Debug for Count {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self.0 {
+                    Some(n) => core::fmt::Debug::fmt(&n, f),
+                    None => f.write_str("<borrowed>"),
+                }
+            }
+        }
+        fn count<T>(cell: &core::cell::RefCell<Vec<T>>) -> Count {
+            Count(cell.try_borrow().ok().map(|list| list.len()))
+        }
+
+        f.debug_struct("Module")
+            .field("name", &self.core.name())
+            .field("id", &self.core.id())
+            .field("functions", &count(&self.core.functions))
+            .field("globals", &count(&self.core.globals))
+            .field("state", &state)
+            .finish()
+    }
 }
 
 impl<'ctx> ModuleCore {

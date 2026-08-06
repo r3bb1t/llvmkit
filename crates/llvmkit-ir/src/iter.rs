@@ -24,6 +24,7 @@ use super::instruction::{Instruction, state};
 use super::marker::ReturnMarker;
 use super::module::ModuleBrand;
 use super::value::ValueSlot;
+use crate::Branded;
 
 /// Single-pass cursor over an instruction list. Each [`Self::step`]
 /// call yields the instruction at the current position together with a
@@ -33,6 +34,8 @@ use super::value::ValueSlot;
 /// invalidate the cursor.
 ///
 /// Mirrors LLVM's `auto Next = std::next(I);` idiom.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct BlockCursor<'ctx, R: ReturnMarker, S: BlockTerminationState, B: ModuleBrand> {
     block: BasicBlock<'ctx, R, S, B>,
     /// Snapshot of the block's instruction list at cursor creation.

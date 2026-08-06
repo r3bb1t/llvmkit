@@ -37,18 +37,22 @@ mod access_sealed {
 
 /// Read-only rung. Valid at both function and module level; the only rung whose
 /// [`PipelineVerdict`] is [`StaysVerified`].
+#[derive(Debug)]
 pub enum Inspect {}
 
 /// Function rung: edit instructions within existing blocks. No terminator or
 /// control-flow-graph change, so CFG-shaped analyses survive.
+#[derive(Debug)]
 pub enum PatchBody {}
 
 /// Function rung: rewire branches, add/remove/split blocks, introduce new PHIs.
 /// Reshapes the CFG, so nothing is preserved by default.
+#[derive(Debug)]
 pub enum ReshapeCfg {}
 
 /// Module rung: rewrite globals, functions, and per-function bodies.
 /// Nothing is preserved by default.
+#[derive(Debug)]
 pub enum RewriteModule {}
 
 impl access_sealed::Sealed for Inspect {}
@@ -72,10 +76,12 @@ pub trait PipelineVerdict: verdict_sealed::Sealed + 'static {
 }
 
 /// Verdict of an all-read-only pipeline: the module stays `Module<Verified>`.
+#[derive(Debug)]
 pub enum StaysVerified {}
 
 /// Verdict once any member mutates: the module becomes `Module<Unverified>` and
 /// must be re-verified before the next verified-only stage (D8).
+#[derive(Debug)]
 pub enum Downgrades {}
 
 impl verdict_sealed::Sealed for StaysVerified {}

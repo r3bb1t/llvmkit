@@ -34,6 +34,7 @@ use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, V
 use super::value_id::BlockId;
 use super::value_id::ViewIn;
 use super::{DebugLoc, IrError, IrResult, Type};
+use crate::Branded;
 use core::cell::{Cell, RefCell};
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
@@ -444,6 +445,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoBasicBlockLabel<'ctx, R, 
 /// [`IrBuilder::br_call`](crate::IrBuilder::br_call) /
 /// [`IrBuilder::cond_br_call`](crate::IrBuilder::cond_br_call),
 /// where a `?` is already expected.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct BlockCall<R: ReturnMarker, B: ModuleBrand, Params: BlockParams = BlockParamsDyn> {
     target: BlockId<R, B, Params>,
     /// The edge's block-arguments lowered to arena value-ids in declaration

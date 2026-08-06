@@ -958,11 +958,13 @@ impl<'ctx, B: ModuleBrand> ConstantExprOptions<'ctx, B> {
         Self::default()
     }
 
+    #[must_use]
     pub fn source_ty(mut self, ty: Type<'ctx, B>) -> Self {
         self.source_ty = Some(ty);
         self
     }
 
+    #[must_use]
     pub fn flags(mut self, flags: ConstantExprFlags) -> Self {
         self.flags = flags;
         self

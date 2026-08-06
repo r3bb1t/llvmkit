@@ -15,10 +15,23 @@
 /// (Multi-byte UTF-8 characters count as multiple columns. LLVM IR is ASCII in
 /// the syntax that matters; non-ASCII only appears inside string constants
 /// and quoted identifiers, where character columns aren't a useful unit.)
+#[derive(Clone)]
 pub struct SourceMap<'src> {
     src: &'src [u8],
     /// Offset of the first byte of each line. `line_starts[0] == 0` always.
     line_starts: Vec<u32>,
+}
+
+/// Prints the *shape* of the map — source length and line count — never the
+/// buffer. A `#[derive(Debug)]` would splice a whole `.ll` file into every
+/// `dbg!` and every `Debug`-formatted struct that holds one.
+impl core::fmt::Debug for SourceMap<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SourceMap")
+            .field("bytes", &self.src.len())
+            .field("lines", &self.line_starts.len())
+            .finish()
+    }
 }
 
 impl<'src> SourceMap<'src> {
@@ -142,5 +155,19 @@ mod tests {
         let sm = SourceMap::from("");
         assert_eq!(sm.line_col(0), (1, 1));
         assert_eq!(sm.line_text(1), Some(&b""[..]));
+    }
+
+    /// llvmkit-specific: the `Debug` impl summarises rather than dumping the
+    /// buffer. Closest upstream: none — `llvm::SourceMgr` has no `print`.
+    #[test]
+    fn debug_summarises_without_the_buffer() {
+        let sm = SourceMap::from("abc\ndef\n");
+        let rendered = format!("{sm:?}");
+        assert_eq!(rendered, "SourceMap { bytes: 8, lines: 3 }");
+        assert!(!rendered.contains("abc"));
+        // Cloning is a plain copy of the same view + table.
+        let cloned = sm.clone();
+        assert_eq!(format!("{cloned:?}"), rendered);
+        assert_eq!(cloned.line_text(2), Some(&b"def"[..]));
     }
 }

@@ -2,6 +2,7 @@
 //!
 //! Mirrors the `computeKnownBits` slice of `llvm/lib/Analysis/ValueTracking.cpp`.
 
+use crate::Branded;
 use crate::align::Align;
 use crate::analysis::{
     AllAnalysesOnFunction, CfgAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator,
@@ -106,6 +107,7 @@ impl<'a> QueryCache<'a> {
 }
 
 /// Cached result for [`KnownBitsAnalysis`].
+#[derive(Debug)]
 pub struct KnownBitsAnalysisResult {
     data_layout: DataLayout,
     max_depth: u32,
@@ -229,6 +231,28 @@ pub struct ValueTrackingQuery<'a, 'ctx, B: ModuleBrand> {
     _brand: PhantomData<(&'ctx (), B)>,
 }
 
+/// Prints the query's *configuration* — the knobs a caller set — not the
+/// caches behind them. An `AssumptionCache` or a `DominatorTree` is a whole
+/// function's worth of derived data; what a caller debugging a wrong answer
+/// wants to see is which facts the query was allowed to use.
+impl<B: ModuleBrand> core::fmt::Debug for ValueTrackingQuery<'_, '_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ValueTrackingQuery")
+            .field("max_depth", &self.max_depth)
+            .field("use_instr_info", &self.use_instr_info)
+            .field("dominator_tree", &self.dominator_tree.is_some())
+            .field("assumptions", &self.assumptions.is_some())
+            .field(
+                "dominating_conditions",
+                &self.dominating_conditions.is_some(),
+            )
+            .field("condition_context", &self.condition_context.is_some())
+            .field("demanded_elements", &self.demanded_elements)
+            .field("context_instruction", &self.context_instruction)
+            .finish()
+    }
+}
+
 impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
     #[inline]
     pub fn new(data_layout: &'a DataLayout) -> Self {
@@ -252,6 +276,7 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
     /// Only consulted together with a context instruction — an assumption is a
     /// fact at a *place*, and without one there is nowhere to check validity.
     #[inline]
+    #[must_use]
     pub fn with_assumptions(mut self, assumptions: &'a AssumptionCache) -> Self {
         self.assumptions = Some(assumptions);
         self
@@ -262,6 +287,7 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
     ///
     /// Only consulted together with a context instruction and a dominator tree.
     #[inline]
+    #[must_use]
     pub fn with_dominating_conditions(mut self, conditions: &'a DomConditionCache) -> Self {
         self.dominating_conditions = Some(conditions);
         self
@@ -270,42 +296,49 @@ impl<'a, 'ctx, B: ModuleBrand + 'ctx> ValueTrackingQuery<'a, 'ctx, B> {
     /// Assume `context`'s condition holds for the duration of the query. Ports
     /// `SimplifyQuery::CC`.
     #[inline]
+    #[must_use]
     pub fn with_condition_context(mut self, context: &'a CondContext<'ctx, B>) -> Self {
         self.condition_context = Some(context);
         self
     }
 
     #[inline]
+    #[must_use]
     pub fn with_max_depth(mut self, max_depth: u32) -> Self {
         self.max_depth = max_depth;
         self
     }
 
     #[inline]
+    #[must_use]
     pub fn with_dominator_tree(mut self, dominator_tree: &'a DominatorTree) -> Self {
         self.dominator_tree = Some(dominator_tree);
         self
     }
 
     #[inline]
+    #[must_use]
     pub fn with_context_instruction(mut self, instruction: &InstructionView<'ctx, B>) -> Self {
         self.context_instruction = Some(instruction.to_erased());
         self
     }
 
     #[inline]
+    #[must_use]
     pub fn with_demanded_elements(mut self, demanded_elements: &'a ApInt) -> Self {
         self.demanded_elements = Some(demanded_elements);
         self
     }
 
     #[inline]
+    #[must_use]
     pub fn without_instruction_info(mut self) -> Self {
         self.use_instr_info = false;
         self
     }
 
     #[inline]
+    #[must_use]
     pub fn with_instruction_info(mut self) -> Self {
         self.use_instr_info = true;
         self
@@ -3719,6 +3752,8 @@ fn ptr_to_int_same_size<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `AffectedValues` for the caller to fill; [`Self::new`] fills it by running
 /// [`find_values_affected_by_condition`], which is what upstream's callers do
 /// immediately after constructing one.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct CondContext<'ctx, B: ModuleBrand> {
     condition: Value<'ctx, B>,
     invert: bool,

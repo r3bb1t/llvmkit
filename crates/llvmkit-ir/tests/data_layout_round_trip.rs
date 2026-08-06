@@ -735,3 +735,55 @@ fn value_or_abi_type_align() {
         Align::new(4).expect("a")
     );
 }
+
+/// `llvmkit-specific`: `FromStr` is `DataLayout::parse` under the trait, so
+/// `"…".parse()` and the named entry point agree — including on the error,
+/// which stays [`IrError::InvalidDataLayout`] with its specific reason rather
+/// than a generic keyword rejection. No upstream counterpart: C++ has no
+/// `FromStr`; the functional reference is
+/// `static Expected<DataLayout> DataLayout::parse(StringRef)`
+/// (`lib/IR/DataLayout.cpp`).
+#[test]
+fn from_str_agrees_with_parse() {
+    let text = "e-p:64:64:64-i64:64:64-n8:16:32:64-S128";
+    let via_trait: DataLayout = text.parse().expect("layout parses");
+    assert_eq!(via_trait, parse(text));
+    assert_eq!(via_trait.to_string(), text);
+
+    match "e-p:0:64".parse::<DataLayout>() {
+        Err(IrError::InvalidDataLayout { reason }) => {
+            assert_eq!(reason, parse_err("e-p:0:64"));
+        }
+        other => panic!("expected InvalidDataLayout, got {other:?}"),
+    }
+}
+
+/// `llvmkit-specific`: a layout is a natural cache key, so `Hash` must agree
+/// with the `Eq` it ships beside — equal layouts hash equal, and the parsed
+/// and default forms of the same string are the same key. No upstream
+/// counterpart: `llvm::DataLayout` has no hash; the functional reference is
+/// its `operator==` (`include/llvm/IR/DataLayout.h`).
+#[test]
+fn equal_layouts_hash_equal() {
+    use std::collections::HashMap;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn hash_of(dl: &DataLayout) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        dl.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    let a = parse("e-p:64:64:64-i64:64:64");
+    let b = parse("e-p:64:64:64-i64:64:64");
+    let other = parse("E-p:64:64:64-i64:64:64");
+    assert_eq!(a, b);
+    assert_eq!(hash_of(&a), hash_of(&b));
+    assert_ne!(a, other);
+
+    let mut cache: HashMap<DataLayout, u32> = HashMap::new();
+    cache.insert(a.clone(), 1);
+    assert_eq!(cache.get(&b), Some(&1));
+    assert_eq!(cache.get(&other), None);
+}

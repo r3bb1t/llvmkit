@@ -200,8 +200,7 @@ fn edit_switch_rejects_non_switch_from() -> Result<(), IrError> {
         to: merge_dyn,
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("edit_switch must reject a non-switch `from`");
+        .expect_err("edit_switch must reject a non-switch `from`");
     assert!(
         matches!(err, IrError::InvalidOperation { .. }),
         "expected InvalidOperation for a non-switch `from`, got: {err:?}"
@@ -224,8 +223,7 @@ fn remove_edge_rejects_default_edge() -> Result<(), IrError> {
         to: dflt_dyn,
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("remove_successor must reject dropping the switch default edge");
+        .expect_err("remove_successor must reject dropping the switch default edge");
     assert!(
         matches!(err, IrError::InvalidOperation { .. }),
         "expected InvalidOperation for the switch default edge, got: {err:?}"
@@ -254,8 +252,7 @@ fn redirect_edge_rejects_already_reaches_new() -> Result<(), IrError> {
         phi_values: vec![],
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("redirect_successor must reject a `new_to` already reached by `from`");
+        .expect_err("redirect_successor must reject a `new_to` already reached by `from`");
     assert!(
         matches!(err, IrError::InvalidOperation { .. }),
         "expected InvalidOperation when `from` already reaches `new_to`, got: {err:?}"

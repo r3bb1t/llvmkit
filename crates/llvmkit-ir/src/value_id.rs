@@ -48,6 +48,7 @@
 
 use core::marker::PhantomData;
 
+use crate::Branded;
 use crate::basic_block::BasicBlockLabel;
 use crate::block_params::{BlockParams, BlockParamsDyn};
 use crate::error::{IrError, IrResult};
@@ -80,10 +81,20 @@ use crate::value::{
 
 /// Declare a minimal, `Copy` value id with an optional list of leading type
 /// markers (before the always-present brand `B`). Generates the struct plus
-/// manual `Copy`/`Clone`/`Eq`/`PartialEq`/`Hash`/`Debug` impls — manual
-/// because a `derive` would propagate a `Marker: Trait` bound onto the impl
-/// that callers should never have to spell (the `FunctionValue` precedent),
-/// and because `Debug` must print `tag`/`slot` only, never the phantoms.
+/// manual `Copy`/`Clone`/`Eq`/`PartialEq`/`Hash`/`Ord`/`PartialOrd`/`Debug`
+/// impls — manual because a `derive` would propagate a `Marker: Trait` bound
+/// onto the impl that callers should never have to spell (the `FunctionValue`
+/// precedent), and because `Debug` must print `tag`/`slot` only, never the
+/// phantoms.
+///
+/// The ordering is lexicographic over `(tag, slot)` — the same two fields
+/// `PartialEq` and `Hash` walk, so `cmp` returns `Equal` exactly when `eq` is
+/// true. It exists so an id can key a `BTreeMap`/`BTreeSet`: a pass that
+/// wants deterministic output needs a total order that does not vary run to
+/// run, which a `HashMap` iteration order does not give. `ModuleId`s are
+/// allocated in creation order and slots are arena indices, so the order is
+/// meaningful within one module and merely deterministic across modules — it
+/// is **not** a claim about position in the instruction stream.
 macro_rules! decl_value_id {
     (
         $(#[$attr:meta])*
@@ -131,6 +142,20 @@ macro_rules! decl_value_id {
             fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
                 self.tag.hash(state);
                 self.slot.hash(state);
+            }
+        }
+        impl<$($($mk: $mkb,)+)? B: ModuleBrand> Ord for $name<$($($mk,)+)? B> {
+            #[inline]
+            fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+                self.tag
+                    .cmp(&other.tag)
+                    .then_with(|| self.slot.cmp(&other.slot))
+            }
+        }
+        impl<$($($mk: $mkb,)+)? B: ModuleBrand> PartialOrd for $name<$($($mk,)+)? B> {
+            #[inline]
+            fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+                Some(self.cmp(other))
             }
         }
         impl<$($($mk: $mkb,)+)? B: ModuleBrand> core::fmt::Debug for $name<$($($mk,)+)? B> {
@@ -246,10 +271,18 @@ decl_value_id! {
 /// [`BasicBlockLabel<R, B, Params>`](crate::BasicBlockLabel) (never the linear
 /// [`BasicBlock`](crate::BasicBlock)).
 ///
-/// Hand-written rather than macro-generated because — unlike the other ids —
-/// its parameter marker `Params` follows the brand `B` in the generic list (to
-/// carry the `= BlockParamsDyn` default in trailing position), matching the
-/// handle it resolves to.
+/// Outside `decl_value_id!` because — unlike the other ids — its parameter
+/// marker `Params` follows the brand `B` in the generic list (to carry the
+/// `= BlockParamsDyn` default in trailing position), matching the handle it
+/// resolves to. The trait impls still come from [`Branded`], which copies the
+/// generics verbatim and adds no bounds, and whose `Debug` skips phantoms —
+/// the same output the macro's hand-written impls produced.
+///
+/// The ordering is the id family's: lexicographic over `(tag, slot)`, so
+/// block ids can key a `BTreeMap` and give a pass deterministic iteration
+/// order. It is *not* a claim about layout order inside the function.
+#[derive(Branded)]
+#[branded(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockId<R: ReturnMarker, B: ModuleBrand, Params: BlockParams = BlockParamsDyn> {
     tag: ModuleId,
     slot: ValueSlot,
@@ -291,40 +324,6 @@ impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> BlockId<R, B, Params>
     #[inline]
     pub(crate) fn erase_params(self) -> BlockId<R, B> {
         BlockId::from_raw(self.tag, self.slot)
-    }
-}
-
-impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> Clone for BlockId<R, B, Params> {
-    #[inline]
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> Copy for BlockId<R, B, Params> {}
-impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> PartialEq for BlockId<R, B, Params> {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        self.tag == other.tag && self.slot == other.slot
-    }
-}
-impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> Eq for BlockId<R, B, Params> {}
-impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> core::hash::Hash
-    for BlockId<R, B, Params>
-{
-    #[inline]
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.tag.hash(state);
-        self.slot.hash(state);
-    }
-}
-impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> core::fmt::Debug
-    for BlockId<R, B, Params>
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("BlockId")
-            .field("tag", &self.tag)
-            .field("slot", &self.slot)
-            .finish()
     }
 }
 

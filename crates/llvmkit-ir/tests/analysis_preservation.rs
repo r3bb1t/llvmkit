@@ -418,8 +418,7 @@ fn insert_phi_typed_rejects_empty_incomings() -> Result<(), IrError> {
         incomings: Vec::new(),
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("typed insert_phi must reject empty incomings");
+        .expect_err("typed insert_phi must reject empty incomings");
     assert!(
         matches!(err, IrError::InvalidOperation { .. }),
         "expected InvalidOperation for empty incomings, got: {err:?}"
@@ -446,8 +445,7 @@ fn insert_phi_rejects_non_dominating_incoming() -> Result<(), IrError> {
         incomings: vec![(lv, left_label), (lv, right_label)],
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("insert_phi must reject a non-dominating incoming");
+        .expect_err("insert_phi must reject a non-dominating incoming");
     assert!(
         matches!(err, IrError::PhiIncomingNotDominating { .. }),
         "expected PhiIncomingNotDominating, got: {err:?}"
@@ -473,8 +471,7 @@ fn insert_phi_rejects_incomplete_incomings() -> Result<(), IrError> {
         incomings: vec![(lv, left_label)],
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("insert_phi must reject an incomplete incoming set");
+        .expect_err("insert_phi must reject an incomplete incoming set");
     // Assert on the rendered message rather than the exact variant so the
     // test survives a future refinement of the coherence-error mapping.
     let msg = err.to_string();
@@ -660,8 +657,7 @@ fn redirect_edge_rejects_wrong_arity() -> Result<(), IrError> {
         phi_values: vec![ev, ev],
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("redirect_successor must reject a wrong-arity phi_values");
+        .expect_err("redirect_successor must reject a wrong-arity phi_values");
     assert!(
         matches!(
             err,
@@ -695,8 +691,7 @@ fn redirect_edge_rejects_wrong_type() -> Result<(), IrError> {
         phi_values: vec![wrong],
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("redirect_successor must reject a mistyped phi_values");
+        .expect_err("redirect_successor must reject a mistyped phi_values");
     assert!(
         matches!(err, IrError::TypeMismatch { .. }),
         "expected TypeMismatch, got: {err:?}"
@@ -1156,8 +1151,7 @@ fn redirect_edge_rejects_cond_br_already_reaching_new() -> Result<(), IrError> {
         phi_values: vec![],
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("an already-reached new_to must be rejected");
+        .expect_err("an already-reached new_to must be rejected");
     assert!(
         matches!(err, IrError::InvalidOperation { message } if message.contains("already reaches")),
         "expected InvalidOperation about already reaching new_to, got: {err:?}"

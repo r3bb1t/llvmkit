@@ -1,0 +1,5 @@
+error: `Ord` requires `Eq` and `PartialOrd`; add them to `#[branded(…)]`
+  --> tests/compile_fail/branded_ord_needs_eq_and_partial_ord.rs:11:1
+   |
+11 | #[branded(Clone, Copy, PartialEq, Ord)]
+   | ^

@@ -565,6 +565,25 @@ where
     state: &'s mut SsaState<B>,
 }
 
+/// Prints the session's *position*, not its contents: which function is being
+/// built, and whether the cursor is currently parked in a block. The Braun
+/// state (`SsaState`) is the algorithm's incremental bookkeeping — printing
+/// it would dump every variable definition in every block — and the folder is
+/// a caller-supplied type with no `Debug` bound.
+impl<B, F, R> core::fmt::Debug for SsaBuilder<'_, '_, B, F, R>
+where
+    B: ModuleBrand,
+    F: for<'any> IrBuilderFolder<'any, B> + Clone,
+    R: ReturnMarker,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SsaBuilder")
+            .field("function", &self.function.name())
+            .field("positioned", &self.cursor.is_some())
+            .finish()
+    }
+}
+
 impl<'s, 'ctx, B: ModuleBrand + 'ctx, R: ReturnMarker> SsaBuilder<'s, 'ctx, B, ConstantFolder, R> {
     /// Mint a working builder over `state` using the default
     /// [`ConstantFolder`].

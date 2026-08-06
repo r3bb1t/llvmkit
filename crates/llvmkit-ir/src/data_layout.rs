@@ -27,6 +27,7 @@
 
 use core::fmt;
 use core::iter::FusedIterator;
+use core::str::FromStr;
 
 use crate::align::{Align, MaybeAlign};
 use crate::error::{IrError, IrResult};
@@ -274,7 +275,11 @@ impl ManglingMode {
 /// The layout is cheap to clone and round-trips through
 /// [`Display`](fmt::Display): every parsed [`DataLayout`] re-emits a
 /// canonical (deterministically-ordered) version of its specs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Hash` alongside `Eq` because a layout is a natural cache key — target
+/// size/alignment queries are pure functions of it, and every spec list is
+/// stored in a canonical order, so two layouts that compare equal hash equal.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DataLayout {
     big_endian: bool,
     alloca_addr_space: u32,
@@ -1065,6 +1070,21 @@ impl StructLayoutInfo {
 impl fmt::Display for DataLayout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.string_representation)
+    }
+}
+
+impl FromStr for DataLayout {
+    type Err = IrError;
+
+    /// Delegates to [`DataLayout::parse`], which stays the named entry point
+    /// (it is the mirror of `static Expected<DataLayout>
+    /// DataLayout::parse(StringRef)`, and it takes `impl AsRef<str>`).
+    /// `FromStr` exists so `"e-p:64:64".parse()` and `str::parse` in generic
+    /// code work; the error is still [`IrError::InvalidDataLayout`], naming
+    /// the specific parse failure rather than a bare "invalid keyword".
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 

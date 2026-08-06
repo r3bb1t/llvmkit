@@ -209,6 +209,10 @@ fn typestate_compile_fail() {
     // a non-`Copy` field under the default full-six request is `E0204`,
     // never a silently wrong `Copy`.
     t.compile_fail("tests/compile_fail/branded_copy_needs_copy_fields.rs");
+    // W11a: the ordering pair is opt-in, and `Ord: Eq + PartialOrd` is a
+    // supertrait chain the derive checks in the attribute rather than leaving
+    // for the first `a < b` to discover somewhere else entirely.
+    t.compile_fail("tests/compile_fail/branded_ord_needs_eq_and_partial_ord.rs");
     // Cycle E: a module is an owned value that can be dropped, so a borrowing
     // handle minted from it cannot outlive it (`E0597`). The compile-time law
     // that makes the storable id family necessary rather than merely

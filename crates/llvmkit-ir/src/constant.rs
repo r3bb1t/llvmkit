@@ -407,6 +407,8 @@ impl ConstantData {
 ///
 /// The erased [`Constant`] view may be embedded in parsed constants and
 /// instructions, but only this parser-only handle can resolve the placeholder.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct BlockAddressPlaceholder<'ctx, B: ModuleBrand> {
     constant: Constant<'ctx, B>,
 }

@@ -775,9 +775,11 @@ impl FnMemberExec for ReshapeCfg {
 /// though nothing stops a downstream type from being both. The tag pattern is
 /// coherence-safe.
 #[doc(hidden)]
+#[derive(Debug)]
 pub struct LeafMember(());
 /// Dispatch tag for a nested pipeline member. See [`LeafMember`].
 #[doc(hidden)]
+#[derive(Debug)]
 pub struct NestedMember(());
 
 /// One member of a typed function pipeline: either a [`FunctionPass`] (via the
@@ -912,6 +914,7 @@ impl_function_pass_list!(
 /// Statically-composed function pipeline. Built with [`function_pipeline`]; its
 /// `run` output typestate (`Module<Verified>` vs `Module<Unverified>`) is derived
 /// from the members' rungs via [`VerdictFold`], never declared (D8).
+#[derive(Debug)]
 pub struct FunctionPipeline<P> {
     passes: P,
 }
@@ -1182,6 +1185,7 @@ where
 /// [`crate::pass_context::ModRewrite::patch_functions`] and its
 /// [`reshape_functions`](crate::pass_context::ModRewrite::reshape_functions)
 /// twin, which are mutator methods for hand-written module passes.
+#[derive(Debug)]
 pub struct ForEachFunction<P> {
     pipeline: FunctionPipeline<P>,
 }
@@ -1328,6 +1332,7 @@ impl_module_pass_list!(
 /// Statically-composed module pipeline. Built with [`module_pipeline`]; its `run`
 /// output typestate is derived from the members' rungs via [`VerdictFold`], never
 /// declared (D8). Mirrors [`FunctionPipeline`] at module scope.
+#[derive(Debug)]
 pub struct ModulePipeline<P> {
     passes: P,
 }
@@ -1680,6 +1685,17 @@ pub struct DynFunctionPipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<Box<dyn ErasedFunctionPass<'ctx, B> + 'ctx>>,
 }
 
+/// Prints the member count, not the members: an erased pipeline holds
+/// `Box<dyn Erased…Pass>`, which carries no `Debug`. Hand-written also
+/// because a `derive` would put a spurious `B: Debug` bound on the brand.
+impl<B: ModuleBrand> core::fmt::Debug for DynFunctionPipeline<'_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DynFunctionPipeline")
+            .field("passes", &self.passes.len())
+            .finish()
+    }
+}
+
 impl<'ctx, B: ModuleBrand + 'ctx> DynFunctionPipeline<'ctx, B> {
     /// A new, empty transform pipeline. Add passes with [`Self::push`].
     pub fn new() -> Self {
@@ -1759,6 +1775,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for DynFunctionPipeline<'ctx, B> {
 /// the verified output.
 pub struct DynReadOnlyFunctionPipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<Box<dyn ErasedFunctionPass<'ctx, B> + 'ctx>>,
+}
+
+/// Prints the member count, not the members: an erased pipeline holds
+/// `Box<dyn Erased…Pass>`, which carries no `Debug`. Hand-written also
+/// because a `derive` would put a spurious `B: Debug` bound on the brand.
+impl<B: ModuleBrand> core::fmt::Debug for DynReadOnlyFunctionPipeline<'_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DynReadOnlyFunctionPipeline")
+            .field("passes", &self.passes.len())
+            .finish()
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> DynReadOnlyFunctionPipeline<'ctx, B> {
@@ -1844,6 +1871,17 @@ pub struct DynModulePipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<Box<dyn ErasedModulePass<'ctx, B> + 'ctx>>,
 }
 
+/// Prints the member count, not the members: an erased pipeline holds
+/// `Box<dyn Erased…Pass>`, which carries no `Debug`. Hand-written also
+/// because a `derive` would put a spurious `B: Debug` bound on the brand.
+impl<B: ModuleBrand> core::fmt::Debug for DynModulePipeline<'_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DynModulePipeline")
+            .field("passes", &self.passes.len())
+            .finish()
+    }
+}
+
 impl<'ctx, B: ModuleBrand + 'ctx> DynModulePipeline<'ctx, B> {
     /// A new, empty transform module pipeline. Add passes with [`Self::push`].
     pub fn new() -> Self {
@@ -1914,6 +1952,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for DynModulePipeline<'ctx, B> {
 /// untouched (D8).
 pub struct DynReadOnlyModulePipeline<'ctx, B: ModuleBrand + 'ctx> {
     passes: Vec<Box<dyn ErasedModulePass<'ctx, B> + 'ctx>>,
+}
+
+/// Prints the member count, not the members: an erased pipeline holds
+/// `Box<dyn Erased…Pass>`, which carries no `Debug`. Hand-written also
+/// because a `derive` would put a spurious `B: Debug` bound on the brand.
+impl<B: ModuleBrand> core::fmt::Debug for DynReadOnlyModulePipeline<'_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DynReadOnlyModulePipeline")
+            .field("passes", &self.passes.len())
+            .finish()
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> DynReadOnlyModulePipeline<'ctx, B> {

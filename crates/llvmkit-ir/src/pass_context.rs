@@ -180,6 +180,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> BasicBlockView<'ctx, B> {
 /// by [`BasicBlockView`]'s `IntoIterator`: it snapshots the block's
 /// instruction ids up front, so IR mutation during the walk does not disturb
 /// it.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct BlockInstructionViews<'ctx, B: ModuleBrand> {
     ids: std::vec::IntoIter<ValueSlot>,
     module: ModuleRef<'ctx, B>,
@@ -292,6 +294,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FunctionView<'ctx, B> {
 /// Iterator over read-only basic-block views of one function, in insertion
 /// order. The named form of [`FunctionView::basic_blocks`]'s walk, returned
 /// by [`FunctionView`]'s `IntoIterator`.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct FunctionBasicBlockViews<'ctx, B: ModuleBrand> {
     inner: FunctionBasicBlocks<'ctx, Dyn, B>,
 }
@@ -457,6 +461,17 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleFunctionViews<'ctx, B> {
     }
 }
 
+/// Prints how many views are left, not the views. The iterator is a
+/// `Box<dyn ExactSizeIterator>`, which has no `Debug`; the remaining length
+/// is the only thing about it that is both knowable and stable.
+impl<B: ModuleBrand> core::fmt::Debug for ModuleFunctionViews<'_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ModuleFunctionViews")
+            .field("remaining", &self.inner.len())
+            .finish()
+    }
+}
+
 impl<'ctx, B: ModuleBrand + 'ctx> Iterator for ModuleFunctionViews<'ctx, B> {
     type Item = FunctionView<'ctx, B>;
 
@@ -500,6 +515,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> FusedIterator for ModuleFunctionViews<'ctx, B>
 /// transition ([`FnCx::mutate`] discards the "all preserved" shortcut), not from
 /// a type tag. It is a distinct type from the module report ([`ModReport`]), so a
 /// function pass cannot return a module report by mistake.
+#[derive(Debug)]
 pub struct FnReport {
     pa: PreservedAnalyses,
     /// The reshape mutator's witnessed [`CfgUpdate`] log, carried out to the
@@ -576,6 +592,25 @@ where
     token: A::Token<'m, B>,
     function: FunctionView<'m, B>,
     results: R::ResultRefs<'r>,
+}
+
+/// Names the pass's subject and its rung, which is all a context *is* —
+/// everything else it holds is either the caller's mutation token or the
+/// prefetched analysis results, an associated type carrying no `Debug` bound.
+impl<'m, 'r, 'ctx, B, A, R> core::fmt::Debug for FnCx<'m, 'r, 'ctx, B, A, R>
+where
+    B: ModuleBrand + 'ctx,
+    A: FnAccess,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FnCx")
+            .field("function", &self.function.name())
+            .field("access", &core::any::type_name::<A>())
+            .finish()
+    }
 }
 
 impl<'m, 'r, 'ctx, B, A, R> FnCx<'m, 'r, 'ctx, B, A, R>
@@ -687,6 +722,63 @@ where
     /// worklist pass reaches a fixpoint without a restart-scan. `None` (the
     /// default) is exactly today's behavior — no overhead, no behavior change.
     worklist: core::cell::RefCell<Option<Worklist<B>>>,
+}
+
+/// Prints the mutator's *state*, not its contents: which function it is
+/// patching, whether it has witnessed a mutation, and whether the optional
+/// worklist is disabled, drained, or still pending. The prefetched analysis
+/// results
+/// (`R::ResultRefs`) are an associated type with no `Debug` bound, and the
+/// worklist is behind a `RefCell` a mutating method may be holding open —
+/// hence `try_borrow`, so `Debug` degrades to a marker rather than panicking
+/// mid-debug-session.
+impl<'m, 'r, 'ctx, B, R> core::fmt::Debug for FnPatch<'m, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: FunctionAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FnPatch")
+            .field("function", &self.function.name())
+            .field("dirty", &self.dirty.get())
+            .field("worklist", &worklist_summary(&self.worklist))
+            .finish()
+    }
+}
+
+/// The optional worklist's state for [`FnPatch`]'s `Debug`, without printing
+/// the ids themselves (a fixpoint pass's worklist is arbitrarily long).
+fn worklist_summary<B: ModuleBrand>(
+    cell: &core::cell::RefCell<Option<Worklist<B>>>,
+) -> WorklistSummary {
+    match cell.try_borrow() {
+        Ok(slot) => match slot.as_ref() {
+            None => WorklistSummary::Disabled,
+            Some(list) if list.is_empty() => WorklistSummary::Drained,
+            Some(_) => WorklistSummary::Pending,
+        },
+        Err(_) => WorklistSummary::Borrowed,
+    }
+}
+
+enum WorklistSummary {
+    Disabled,
+    Drained,
+    Pending,
+    Borrowed,
+}
+
+impl core::fmt::Debug for WorklistSummary {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Disabled => "disabled",
+            Self::Drained => "drained",
+            Self::Pending => "pending",
+            Self::Borrowed => "<borrowed>",
+        })
+    }
 }
 
 impl<'m, 'r, 'ctx, B, R> FnPatch<'m, 'r, 'ctx, B, R>
@@ -935,6 +1027,8 @@ where
 /// deactivates it. [`Self::step`] pops the next instruction to process; the
 /// pass mutates through the `FnPatch` directly, and those mutations maintain
 /// the worklist (push cascade, self-remove) automatically.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct WorklistScope<'p, 'm, 'r, 'ctx, B, R>
 where
     B: ModuleBrand + 'ctx,
@@ -1027,6 +1121,8 @@ enum EditSlot {
 /// incoming value dominates its edge — all checkable because a `ReshapeCfg` pass
 /// sees the whole CFG. A general in-pass `IrBuilder` surface and fuller
 /// terminator surgery — rewiring branches, deleting blocks — remain future work.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct FnReshape<'m, 'r, 'ctx, B, R>
 where
     B: ModuleBrand + 'ctx,
@@ -2294,6 +2390,8 @@ where
 /// Typed edit handle for an unconditional `br` terminator. Its sole edge cannot
 /// be removed (the block would be left with no successor), so this handle offers
 /// only [`redirect`](Self::redirect).
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct BrEdit<'e, 'm, 'r, 'ctx, B, R>
 where
     B: ModuleBrand + 'ctx,
@@ -2333,6 +2431,8 @@ where
 /// redirected; removing an arm collapses the `cond_br` to an unconditional `br`
 /// to the survivor, so the `remove_*` methods consume `self` — a `cond_br` has
 /// exactly one collapse, and a second would be a use-after-move.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct CondBrEdit<'e, 'm, 'r, 'ctx, B, R>
 where
     B: ModuleBrand + 'ctx,
@@ -2413,6 +2513,8 @@ where
 /// or the default edge may be redirected; a case edge may be removed, but the
 /// default may not — a `switch` must keep its default — so there is no
 /// `remove_default`.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct SwitchEdit<'e, 'm, 'r, 'ctx, B, R>
 where
     B: ModuleBrand + 'ctx,
@@ -2552,6 +2654,8 @@ where
 /// Typed edit handle for an `invoke`. Both destinations (normal and unwind) may
 /// be redirected; neither may be removed — an `invoke` always has exactly two
 /// edges — so this handle carries only `redirect_*`.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct InvokeEdit<'e, 'm, 'r, 'ctx, B, R>
 where
     B: ModuleBrand + 'ctx,
@@ -2611,6 +2715,8 @@ where
 /// Typed edit handle for a `callbr`. The default (fallthrough) edge and each
 /// indirect edge may be redirected; none may be removed, so this handle carries
 /// only `redirect_*`.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct CallBrEdit<'e, 'm, 'r, 'ctx, B, R>
 where
     B: ModuleBrand + 'ctx,
@@ -2675,6 +2781,8 @@ where
 /// note on the typed edit handles). Terminators with no editable edges here
 /// (`ret`, `unreachable`, `indirectbr`, and the exception-handling terminators)
 /// come back as [`Self::Uneditable`].
+#[derive(Branded)]
+#[branded(Debug)]
 pub enum TermEdit<'e, 'm, 'r, 'ctx, B, R>
 where
     B: ModuleBrand + 'ctx,
@@ -2763,6 +2871,7 @@ impl MutatingFn for ReshapeCfg {
 ///
 /// A distinct type from [`FnReport`], so a module pass cannot return a function
 /// report by mistake and vice versa.
+#[derive(Debug)]
 pub struct ModReport {
     pa: PreservedAnalyses,
 }
@@ -2826,6 +2935,25 @@ where
     results: R::ResultRefs<'r>,
     mam: &'r ModuleAnalysisManager<'ctx, B>,
     fam: &'f mut FunctionAnalysisManager<'ctx, B>,
+}
+
+/// Names the pass's subject and its rung. See [`FnCx`]'s `Debug` for why the
+/// analysis results and the two managers are summarised out.
+impl<'m, 'r, 'f, 'ctx, B, A, R> core::fmt::Debug for ModCx<'m, 'r, 'f, 'ctx, B, A, R>
+where
+    B: ModuleBrand + 'ctx,
+    A: ModAccess,
+    R: ModuleAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+    'ctx: 'f,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ModCx")
+            .field("module", &self.module.name())
+            .field("access", &core::any::type_name::<A>())
+            .finish()
+    }
 }
 
 impl<'m, 'r, 'f, 'ctx, B, A, R> ModCx<'m, 'r, 'f, 'ctx, B, A, R>
@@ -2960,6 +3088,22 @@ where
     results: R::ResultRefs<'r>,
 }
 
+/// Names the module being rewritten. The prefetched analysis results are an
+/// associated type with no `Debug` bound — see [`FnCx`]'s `Debug`.
+impl<'m, 'r, 'ctx, B, R> core::fmt::Debug for ModRewrite<'m, 'r, 'ctx, B, R>
+where
+    B: ModuleBrand + 'ctx,
+    R: ModuleAnalysisList<'ctx, B>,
+    'ctx: 'm,
+    'ctx: 'r,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ModRewrite")
+            .field("module", &self.token.name())
+            .finish()
+    }
+}
+
 impl<'m, 'r, 'ctx, B, R> ModRewrite<'m, 'r, 'ctx, B, R>
 where
     B: ModuleBrand + 'ctx,
@@ -3082,6 +3226,8 @@ where
 /// Dropping a yielded mutator without calling its `done()` discards that
 /// function's report. Sound by construction: [`ModRewrite::done`]'s floor is
 /// `none()`, so the module report already claims nothing.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct PatchFunctions<'m, 'ctx, B: ModuleBrand + 'ctx>
 where
     'ctx: 'm,
@@ -3119,6 +3265,8 @@ impl<'m, 'ctx, B: ModuleBrand + 'ctx> FusedIterator for PatchFunctions<'m, 'ctx,
 /// *definition* in module order. Returned by
 /// [`ModRewrite::reshape_functions`]; the CFG-editing twin of
 /// [`PatchFunctions`], with the same soundness argument.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct ReshapeFunctions<'m, 'ctx, B: ModuleBrand + 'ctx>
 where
     'ctx: 'm,

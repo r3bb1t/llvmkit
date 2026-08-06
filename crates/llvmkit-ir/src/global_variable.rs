@@ -626,6 +626,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalVariable<'ct
 ///
 /// Constructed by
 /// [`Module::global_builder`](Module::global_builder).
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct GlobalBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
@@ -675,18 +677,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// Mark as `constant` (vs `global`). Mirrors
     /// `GlobalVariable::setConstant`. Default is a mutable `global`.
+    #[must_use]
     pub fn constant(mut self) -> Self {
         self.is_constant = true;
         self
     }
 
     /// Address space. Mirrors the `AddressSpace` ctor argument.
+    #[must_use]
     pub fn address_space(mut self, addrspace: u32) -> Self {
         self.address_space = addrspace;
         self
     }
 
     /// Linkage. Mirrors the `Linkage` ctor argument.
+    #[must_use]
     pub fn linkage(mut self, linkage: Linkage) -> Self {
         self.linkage = linkage;
         self
@@ -694,12 +699,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// DSO locality (`dso_local` / `dso_preemptable`). Mirrors
     /// `GlobalValue::setDSOLocal`.
+    #[must_use]
     pub fn dso_locality(mut self, dso: DsoLocality) -> Self {
         self.dso_locality = dso;
         self
     }
 
     /// Visibility. Mirrors `GlobalValue::setVisibility`.
+    #[must_use]
     pub fn visibility(mut self, vis: Visibility) -> Self {
         self.visibility = vis;
         self
@@ -707,6 +714,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// DLL storage class. Mirrors
     /// `GlobalValue::setDLLStorageClass`.
+    #[must_use]
     pub fn dll_storage_class(mut self, cls: DllStorageClass) -> Self {
         self.dll_storage_class = cls;
         self
@@ -714,6 +722,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// Thread-local mode. Mirrors
     /// `GlobalVariable::setThreadLocalMode`.
+    #[must_use]
     pub fn thread_local_mode(mut self, tlm: ThreadLocalMode) -> Self {
         self.thread_local_mode = tlm;
         self
@@ -721,12 +730,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// Unnamed-addr marker. Mirrors
     /// `GlobalValue::setUnnamedAddr`.
+    #[must_use]
     pub fn unnamed_addr(mut self, value: UnnamedAddr) -> Self {
         self.unnamed_addr = value;
         self
     }
 
     /// Alignment. Mirrors `GlobalValue::setAlignment`.
+    #[must_use]
     pub fn align(mut self, align: MaybeAlign) -> Self {
         self.align = align;
         self
@@ -752,6 +763,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// Attach a comdat. The branded [`ComdatRef`] parameter statically ties the
     /// comdat to the builder's module.
+    #[must_use]
     pub fn comdat(mut self, comdat: ComdatRef<'ctx, B>) -> Self {
         self.comdat = Some(comdat.name().to_owned());
         self
@@ -759,6 +771,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
 
     /// Mark as `externally_initialized`. Mirrors
     /// `GlobalVariable::setExternallyInitialized`. Default off.
+    #[must_use]
     pub fn externally_initialized(mut self) -> Self {
         self.externally_initialized = true;
         self

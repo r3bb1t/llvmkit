@@ -69,6 +69,7 @@ use super::value::{
 use super::value_id::ViewIn;
 use super::value_id::{FunctionId, TypedFunctionId};
 use super::value_symbol_table::ValueSymbolTable;
+use crate::Branded;
 
 // --------------------------------------------------------------------------
 // Storage payload
@@ -1022,6 +1023,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 /// named form of [`FunctionValue::basic_blocks`]'s walk, returned by
 /// [`FunctionValue`]'s `IntoIterator`: it snapshots the function's block ids
 /// up front, so IR mutation during the walk does not disturb it.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct FunctionBasicBlocks<'ctx, R: ReturnMarker, B: ModuleBrand> {
     ids: std::vec::IntoIter<ValueSlot>,
     module: ModuleRef<'ctx, B>,
@@ -1270,6 +1273,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B> for Fu
 ///     .return_attribute(AttrKind::NoUndef)
 ///     .build()?;
 /// ```
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
@@ -1335,38 +1340,45 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     }
 
     /// Override the linkage.
+    #[must_use]
     pub fn linkage(mut self, linkage: Linkage) -> Self {
         self.linkage = linkage;
         self
     }
 
+    #[must_use]
     pub fn visibility(mut self, visibility: Visibility) -> Self {
         self.visibility = visibility;
         self
     }
 
+    #[must_use]
     pub fn dll_storage_class(mut self, cls: DllStorageClass) -> Self {
         self.dll_storage_class = cls;
         self
     }
 
+    #[must_use]
     pub fn dso_locality(mut self, locality: DsoLocality) -> Self {
         self.dso_locality = locality;
         self
     }
 
     /// Override the calling convention.
+    #[must_use]
     pub fn calling_conv(mut self, cc: CallingConv) -> Self {
         self.calling_conv = cc;
         self
     }
 
     /// Set the unnamed-address marker. Default is [`UnnamedAddr::None`].
+    #[must_use]
     pub fn unnamed_addr(mut self, value: UnnamedAddr) -> Self {
         self.unnamed_addr = value;
         self
     }
 
+    #[must_use]
     pub fn address_space(mut self, address_space: u32) -> Self {
         self.address_space = address_space;
         self
@@ -1388,6 +1400,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         self
     }
 
+    #[must_use]
     pub fn align(mut self, align: MaybeAlign) -> Self {
         self.align = align;
         self
@@ -1424,21 +1437,25 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         self
     }
 
+    #[must_use]
     pub fn comdat(mut self, comdat: ComdatRef<'ctx, B>) -> Self {
         self.comdat = Some(comdat);
         self
     }
 
+    #[must_use]
     pub fn attribute(mut self, index: AttrIndex, attr: Attribute<'ctx, B>) -> Self {
         self.attributes.add(index, attr);
         self
     }
 
+    #[must_use]
     pub fn attribute_storage(mut self, attributes: AttributeStorage) -> Self {
         self.attributes = attributes;
         self
     }
 
+    #[must_use]
     pub fn function_attr_group(mut self, group: u32) -> Self {
         if !self.function_attr_groups.contains(&group) {
             self.function_attr_groups.push(group);
@@ -1448,6 +1465,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
 
     /// Convenience: add an enum-flavored attribute on the function's
     /// return slot. Mirrors `Function::addRetAttr(AttrKind)`.
+    #[must_use]
     pub fn return_attribute(self, kind: AttrKind) -> Self {
         let attr = crate::Attribute::enum_attr(kind)
             .unwrap_or_else(|| unreachable!("return_attribute called with non-enum kind"));
@@ -1456,6 +1474,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
 
     /// Convenience: add an enum-flavored attribute on parameter
     /// `slot`. Mirrors `Function::addParamAttr(slot, AttrKind)`.
+    #[must_use]
     pub fn param_attribute(self, slot: u32, kind: AttrKind) -> Self {
         let attr = crate::Attribute::enum_attr(kind)
             .unwrap_or_else(|| unreachable!("param_attribute called with non-enum kind"));

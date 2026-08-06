@@ -69,7 +69,11 @@ use super::vec_len::{Len, LenDyn, VecLen};
 
 /// Stable index into the value arena. The numeric contents are opaque; callers
 /// may store and pass the handle back to this crate, but cannot construct one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Ordered by arena position, so within one module the order is creation
+/// order. Opaque numerically, but a total order is what lets an id key a
+/// `BTreeMap` and give a pass deterministic iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ValueSlot(NonZeroUsize);
 
 impl ValueSlot {
@@ -465,6 +469,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     }
 }
 
+/// Which `Value` subclass a handle names. Mirrors the `dyn_cast` ladder
+/// `lib/IR/AsmWriter.cpp` and `Verifier.cpp` walk over `Value`'s subclasses;
+/// llvmkit answers it as data rather than a chain of casts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueCategory {
     Constant,
     Argument,

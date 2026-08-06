@@ -64,6 +64,7 @@ impl VecElem for ElemDyn {}
 /// `extract` builders) already hold a `Value` whose element type provably
 /// matches `E`; every other external `Value` → typed-handle path is the
 /// *checked* `TryFrom`.
+#[derive(Debug)]
 pub struct WrapWitness(());
 
 impl WrapWitness {

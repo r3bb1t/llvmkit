@@ -2,6 +2,9 @@
 //! `llvm/include/llvm/IR/LLVMContext.h::SyncScope`.
 
 use core::fmt;
+use core::str::FromStr;
+
+use crate::error::IrError;
 
 /// Synchronization scope for atomic ops. Mirrors
 /// `namespace SyncScope` in `IR/LLVMContext.h`. The two well-known
@@ -51,5 +54,75 @@ impl fmt::Display for SyncScope {
             Self::SingleThread => f.write_str("syncscope(\"singlethread\")"),
             Self::Named(s) => write!(f, "syncscope({s:?})"),
         }
+    }
+}
+
+impl FromStr for SyncScope {
+    type Err = IrError;
+
+    /// Resolve a **bare scope name** — the string inside `syncscope("…")`,
+    /// not the wrapper. Inverse of `LLVMContext::getOrInsertSyncScopeID`
+    /// (`lib/IR/LLVMContext.cpp`), which seeds `"singlethread"` and `""` as
+    /// the two well-known IDs and interns everything else as a fresh named
+    /// scope.
+    ///
+    /// This is deliberately **not** the inverse of
+    /// [`Display`](fmt::Display), which prints the `syncscope("…")` wrapper
+    /// (and nothing at all for [`System`](Self::System)) because that is what
+    /// `AsmWriter::writeAtomic` emits at a use site. Feeding a printed scope
+    /// back through `parse` would therefore not round-trip, and the
+    /// drift-lock tests exclude this type for that reason.
+    ///
+    /// Never fails: any name that is not one of the two well-known ones is a
+    /// legitimate target-specific scope. `Err = IrError` only because the
+    /// trait demands an error type; [`Infallible`](core::convert::Infallible)
+    /// would make the family's error types inconsistent for no gain.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "singlethread" => Self::SingleThread,
+            // `""` is `System`'s canonical name upstream; `"system"` is an
+            // ordinary named scope and stays one (see the type docs).
+            "" => Self::System,
+            name => Self::Named(name.to_string()),
+        })
+    }
+}
+
+/// Upstream provenance: mirrors `namespace SyncScope` in
+/// `include/llvm/IR/LLVMContext.h` and the seeding in
+/// `LLVMContext::LLVMContext` / `getOrInsertSyncScopeID`
+/// (`lib/IR/LLVMContext.cpp`).
+///
+/// The test below is **llvmkit-specific**: no upstream unit test drives
+/// `getOrInsertSyncScopeID`'s well-known-name partition directly.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// llvmkit-specific: `FromStr` is the bare-name inverse of
+    /// `LLVMContext::getOrInsertSyncScopeID`, not of `Display`. Only
+    /// `"singlethread"` and `""` reach the well-known IDs; `"system"` is an
+    /// ordinary named scope, exactly as upstream registers it.
+    #[test]
+    fn from_str_resolves_the_well_known_scope_names() {
+        assert_eq!(
+            "singlethread".parse::<SyncScope>(),
+            Ok(SyncScope::SingleThread)
+        );
+        assert_eq!("".parse::<SyncScope>(), Ok(SyncScope::System));
+        assert_eq!(
+            "system".parse::<SyncScope>(),
+            Ok(SyncScope::Named("system".to_string()))
+        );
+        assert_eq!(
+            "workgroup".parse::<SyncScope>(),
+            Ok(SyncScope::Named("workgroup".to_string()))
+        );
+        // The printed form is the wrapper, so it is *not* a scope name — this
+        // is why `SyncScope` is excluded from the Display round-trip locks.
+        assert_eq!(
+            "syncscope(\"singlethread\")".parse::<SyncScope>(),
+            Ok(SyncScope::Named("syncscope(\"singlethread\")".to_string()))
+        );
     }
 }

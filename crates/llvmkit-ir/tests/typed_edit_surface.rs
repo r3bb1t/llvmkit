@@ -633,8 +633,7 @@ fn switch_redirect_successor_rejects_non_case_target() -> Result<(), IrError> {
         phi_values: vec![ev],
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("a non-case `old_to` must be rejected");
+        .expect_err("a non-case `old_to` must be rejected");
     assert!(
         matches!(err, IrError::InvalidOperation { message } if message.contains("not a case successor")),
         "expected InvalidOperation about a non-case successor, got: {err:?}"
@@ -658,8 +657,7 @@ fn switch_remove_successor_rejects_non_case_target() -> Result<(), IrError> {
         new_to: new_dyn,
     };
     let err = run_function_pass(pass, verified, f, &mut analyses)
-        .err()
-        .expect("a non-case `old_to` must be rejected");
+        .expect_err("a non-case `old_to` must be rejected");
     assert!(
         matches!(err, IrError::InvalidOperation { message } if message.contains("not a case successor")),
         "expected InvalidOperation about a non-case successor, got: {err:?}"

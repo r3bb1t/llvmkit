@@ -580,7 +580,13 @@ impl fmt::Display for VerifierRule {
 ///
 /// Variants are added incrementally as new subsystems land. Marked
 /// `#[non_exhaustive]` so future additions are non-breaking.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+///
+/// `Hash` alongside `Eq` so an error can be de-duplicated: a verifier or a
+/// pass driver that collects failures across a whole module wants a
+/// `HashSet<IrError>`, not a `Vec` it has to scan. Every payload is a plain
+/// `String`, `&'static str`, or integer, so the derive is total. The sibling
+/// `llvmkit_asmparser::ParseError` already carried `Hash` for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum IrError {
     /// Integer width outside `[`[`MIN_INT_BITS`]`, `[`MAX_INT_BITS`]`]`.
@@ -873,6 +879,39 @@ pub enum IrError {
     InvalidDataLayout {
         /// Why the `target datalayout` string could not be parsed.
         reason: String,
+    },
+    /// A `.ll` keyword did not name any variant of the enum it was parsed
+    /// into — the error of the [`FromStr`](core::str::FromStr) family
+    /// ([`Linkage`](crate::Linkage), [`Visibility`](crate::Visibility),
+    /// [`AtomicOrdering`](crate::AtomicOrdering),
+    /// [`CallingConv`](crate::CallingConv), …).
+    ///
+    /// `target` names the type that rejected it, so one message serves the
+    /// whole family without each enum inventing its own error. Mirrors the
+    /// shape of `LLParser`'s `error(Loc, "invalid ... keyword")` diagnostics —
+    /// upstream's parser reaches the same dead end from its generated keyword
+    /// tables.
+    #[error("invalid {target} keyword '{keyword}'")]
+    InvalidKeyword {
+        /// The type that rejected the keyword, e.g. `"linkage"`.
+        target: &'static str,
+        /// The unrecognized keyword text.
+        keyword: String,
+    },
+    /// A raw numeric discriminant did not name any variant of the enum it was
+    /// converted into — the error of the [`TryFrom`] family that pairs with
+    /// each enum's `from_raw` const constructor
+    /// ([`IntPredicate`](crate::IntPredicate),
+    /// [`FloatPredicate`](crate::FloatPredicate)). `from_raw` stays the
+    /// `const fn` path and returns [`Option`]; `TryFrom` is the `?`-friendly
+    /// one and says which value was rejected.
+    #[error("invalid {target} discriminant {value}")]
+    InvalidDiscriminant {
+        /// The type that rejected the value, e.g. `"icmp predicate"`.
+        target: &'static str,
+        /// The rejected raw discriminant, widened to the largest raw width in
+        /// the family so one variant serves them all.
+        value: u64,
     },
     /// A textual optimization level did not match LLVM's built-in aliases.
     #[error("invalid optimization level '{level}'")]

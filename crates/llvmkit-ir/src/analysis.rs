@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use super::module::{Module, Verified};
+use crate::Branded;
 use crate::cfg_update::CfgUpdate;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::module::{ModuleBrand, ModuleId, ModuleView};
@@ -658,12 +659,12 @@ struct CachedModuleResult<'ctx, B: ModuleBrand + 'ctx> {
     ops: ModuleOps<'ctx, B>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct FunctionAnalysisSnapshot {
     cached: HashSet<(ModuleId, TypeId, ValueSlot)>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct ModuleAnalysisSnapshot {
     cached: HashSet<(TypeId, ModuleId)>,
 }
@@ -675,6 +676,8 @@ struct ModuleAnalysisSnapshot {
 /// [`FunctionAnalysisResult::invalidate`] lives at the caller-chosen `'v` (which
 /// an owned module mints at its borrow), while this invalidator stays at the
 /// manager's `'ctx`.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct FunctionAnalysisInvalidator<'a, 'ctx, B: ModuleBrand> {
     module_id: ModuleId,
     function_slot: ValueSlot,
@@ -707,6 +710,8 @@ impl<'a, 'ctx, B: ModuleBrand> FunctionAnalysisInvalidator<'a, 'ctx, B> {
 /// Invalidator passed to module-analysis results. Holds the module *key* rather
 /// than a [`ModuleView`], for the same reason as
 /// [`FunctionAnalysisInvalidator`].
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct ModuleAnalysisInvalidator<'a, 'ctx, B: ModuleBrand> {
     module_id: ModuleId,
     pa: &'a PreservedAnalyses,
@@ -741,6 +746,22 @@ pub struct FunctionAnalysisManager<'ctx, B: ModuleBrand> {
     results: HashMap<(ModuleId, TypeId, ValueSlot), CachedFunctionResult<'ctx, B>>,
     instrumentation: Option<PassInstrumentationCallbacks>,
     _brand: PhantomData<fn(B) -> B>,
+}
+
+/// Prints the cache's *shape* — how many analyses are registered, how many
+/// results are live, whether instrumentation is attached. The registered
+/// analyses are closures (`FunctionOps` holds boxed run/invalidate function
+/// pointers) and the results are erased `Any` payloads, so neither can print
+/// itself; counts are the part that is both knowable and useful when
+/// debugging a pipeline.
+impl<B: ModuleBrand> core::fmt::Debug for FunctionAnalysisManager<'_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FunctionAnalysisManager")
+            .field("registered", &self.analyses.len())
+            .field("cached", &self.results.len())
+            .field("instrumented", &self.instrumentation.is_some())
+            .finish()
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> FunctionAnalysisManager<'ctx, B> {
@@ -1002,6 +1023,18 @@ pub struct ModuleAnalysisManager<'ctx, B: ModuleBrand> {
     _brand: PhantomData<fn(B) -> B>,
 }
 
+/// The module-level twin of [`FunctionAnalysisManager`]'s `Debug`; same
+/// reasoning, same three counts.
+impl<B: ModuleBrand> core::fmt::Debug for ModuleAnalysisManager<'_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ModuleAnalysisManager")
+            .field("registered", &self.analyses.len())
+            .field("cached", &self.results.len())
+            .field("instrumented", &self.instrumentation.is_some())
+            .finish()
+    }
+}
+
 impl<'ctx, B: ModuleBrand + 'ctx> ModuleAnalysisManager<'ctx, B> {
     /// Create an empty manager: no analyses registered and no cached results.
     pub fn new() -> Self {
@@ -1161,6 +1194,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for ModuleAnalysisManager<'ctx, B> {
 pub struct Analyses<'ctx, B: ModuleBrand> {
     module: ModuleAnalysisManager<'ctx, B>,
     function: FunctionAnalysisManager<'ctx, B>,
+}
+
+/// Delegates to the two managers' own summaries. Hand-written rather than
+/// derived only because a `derive` would put a spurious `B: Debug` bound on
+/// the brand phantom.
+impl<B: ModuleBrand> core::fmt::Debug for Analyses<'_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Analyses")
+            .field("module", &self.module)
+            .field("function", &self.function)
+            .finish()
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Analyses<'ctx, B> {

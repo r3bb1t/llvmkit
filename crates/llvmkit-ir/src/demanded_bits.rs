@@ -24,6 +24,7 @@ use super::value::{IntValue, Value, ValueKindData, ValueSlot, ValueUse};
 use super::value_id::IntValueId;
 use super::value_tracking::{ValueTrackingQuery, compute_known_bits, value_from_slot};
 use super::{ApInt, IrError, IrResult, KnownBits};
+use crate::Branded;
 use core::ops::Not;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -41,6 +42,8 @@ pub struct SimplifyDemandedBitsPass;
 /// Lifetime-free: the replacement it carries is a storable
 /// [`IntValueId`], not a borrowing constant handle, so a
 /// pass can hold the whole result across the mutation that consumes it.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct SimplifyDemandedBitsResult<B: ModuleBrand> {
     known: KnownBits,
     demanded: ApInt,
@@ -120,6 +123,7 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Cached demanded-bits result for one function.
+#[derive(Debug)]
 pub struct DemandedBits {
     data_layout: DataLayout,
     alive_bits: HashMap<ValueSlot, ApInt>,

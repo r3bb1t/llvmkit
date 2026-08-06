@@ -24,6 +24,91 @@ bullet below names its wave.
 
 #### Changed
 
+- **Breaking (W11a): the std-trait floor — `Debug` everywhere, `Hash`,
+  `FromStr`, `#[must_use]` (C-COMMON-TRAITS).** `Module<B, S>` had no `Debug`
+  at all, so `dbg!(&module)` did not compile and no user struct holding a
+  module could derive `Debug`. It has one now, hand-written as a **summary** —
+  `Module { name, id, functions: N, globals: N, state }` — deliberately *not*
+  forwarding to `Display`, which prints the entire `.ll` file. The typestate
+  is named (`"Verified"` / `"Unverified"`) through a `TypeId` comparison,
+  which is why the impl carries an `S: 'static` bound.
+
+  Seventy more public types across `llvmkit-ir`, `llvmkit-support` and
+  `llvmkit-macros` gained `Debug`, taking a scripted sweep of every
+  `pub struct` / `pub enum` in those crates from 70 missing to **0 of 387**.
+  Derived where it derives cleanly (through `#[derive(Branded)]` wherever a
+  brand or marker parameter is involved, so no spurious `B: Debug` bound
+  appears); hand-written where a field is a closure, a `dyn` trait object, or
+  an associated type with no `Debug` bound — the analysis managers print
+  registered/cached counts, `PassInstrumentationCallbacks` prints per-hook
+  callback counts, the erased pipelines print member counts, `SsaBuilder`
+  prints its function and whether the cursor is positioned,
+  `ValueTrackingQuery` prints which facts the query may use. Every impl that
+  reaches through a `RefCell` uses `try_borrow`, so printing a structure a
+  mutator is holding open degrades to a marker rather than panicking — a
+  `Debug` is what a caller reaches for *while* debugging. `ValueCategory`
+  gained the full `Debug, Clone, Copy, PartialEq, Eq, Hash` set; it had no
+  derives at all.
+
+  `#[must_use]` on the 58 remaining consuming builder methods
+  (`FunctionBuilder` 14, `GlobalBuilder` 11, `ValueTrackingQuery` 9,
+  `GlobalAliasBuilder` 6, the metadata builders 5, `InlineAsmOptions` 4,
+  `GlobalIFuncBuilder` 3, `ConstantExprOptions` 2, plus the pure combinators
+  in `fp_class.rs`, `gep_no_wrap_flags.rs` and `instructions.rs`). The
+  convention already existed on ~50 siblings and was unevenly applied, so
+  `builder.align(a);` used to compile and silently do nothing.
+
+  `IrError` and `DataLayout` gain `Hash` beside the `Eq` they already had:
+  errors de-duplicate in a `HashSet`, and a layout is a natural cache key.
+  New conversions, with each type's `from_raw` / `as_raw` `const fn` kept as
+  the const path: `TryFrom<u8>` for `IntPredicate` / `FloatPredicate`,
+  `From<IntPredicate>` and `From<FloatPredicate>` for `u8`, and
+  `From<CallingConv>` for `u32`. `TryFrom` reports a new
+  `IrError::InvalidDiscriminant { target, value }`.
+
+  **`FromStr` for the keyword types** — thirteen new impls where the crate had
+  two, all with `Err = IrError` and a new
+  `IrError::InvalidKeyword { target, keyword }` (both variants are additive:
+  `IrError` is `#[non_exhaustive]`): `Linkage`, `Visibility`,
+  `DllStorageClass`, `DsoLocality`, `ThreadLocalMode`, `UnnamedAddr`,
+  `SelectionKind`, `AtomicOrdering`, `CallingConv`, `IntPredicate`,
+  `FloatPredicate`, `SyncScope`, and `DataLayout` (which delegates to
+  `DataLayout::parse`, so its error stays the specific `InvalidDataLayout`).
+  Each `from_str` **inverts the type's own spelling table** — searching a new
+  `pub const VARIANTS`, the existing `all()`, or, for `CallingConv`, the whole
+  `0..=MAX` id space — rather than carrying a second table that could drift
+  from `Display`. For the keyword-optional enums, `""` resolves to the default
+  variant, so `parse(display(v)) == v` holds for *every* variant; that
+  identity is locked by a per-type in-file drift-lock test (the
+  `attribute_td_drift.rs` analogue) whose exhaustive `match` makes a new
+  variant a compile error. `SyncScope` is the documented exception: its
+  `Display` prints the `syncscope("…")` wrapper, so its `FromStr` takes a bare
+  scope *name* and is the inverse of `LLVMContext::getOrInsertSyncScopeID`,
+  not of `Display`.
+
+  `llvmkit-support`: `SourceMap` gains `Clone` and a hand-written `Debug` that
+  prints byte and line counts rather than the buffer. `Spanned<T>`'s `Ord` /
+  `PartialOrd` are now **hand-written span-first**; the derived versions
+  compared `value` before `span` (field order), so sorting spanned tokens gave
+  token order rather than source order. `Span` gains `contains(u32)` and
+  `join(Span)`, both `const fn` — the parsers were hand-rolling both.
+
+  `llvmkit-macros`: `#[derive(Branded)]` accepts opt-in `PartialOrd` and `Ord`
+  (field-order lexicographic for structs, declaration-order-then-payload for
+  enums, with the variant rank spelled as a `match` rather than an `as` cast,
+  and the `Ord: Eq + PartialOrd` supertrait chain checked at the attribute).
+  `BlockId` now takes its impls from that derive instead of ~35 lines of
+  hand-written ones, and the `decl_value_id!` family — `ValueId` and its typed
+  siblings — gains the same lexicographic `(ModuleId, slot)` order, with
+  `ModuleId` and `ValueSlot` gaining `PartialOrd`/`Ord` to support it. The
+  point is `BTreeMap` / `BTreeSet` keys: a pass that wants deterministic
+  output needs a total order that does not vary run to run, which a `HashMap`
+  does not give.
+
+  **Also breaking for `.err().expect(…)` callers**: giving the
+  terminator-edit handles a `Debug` newly enables `clippy::err_expect` at such
+  sites, which are now spelled `.expect_err(…)`.
+
 - **Breaking (W10): `LoadBuilder` / `StoreBuilder` / `AllocaBuilder` — one
   spelling per memory op (C-BUILDER).** `load`, `store` and `alloca` each carry
   several *orthogonal* optional knobs, and the flat surface had grown one method

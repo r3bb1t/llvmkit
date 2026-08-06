@@ -22,6 +22,7 @@
 //! a composite concatenates its children's bindings via [`Combine`]. Flat
 //! tuples are provided for up to four bound values.
 
+use crate::Branded;
 use crate::ap_int::ApInt;
 use crate::instr_types::BinaryOpcode;
 use crate::instruction::{InstructionKind, InstructionView, PhiKind};
@@ -181,6 +182,8 @@ pub fn m_value<B: ModuleBrand>() -> MValue<B> {
 }
 
 /// Matcher returned by [`m_value`].
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct MValue<B>(core::marker::PhantomData<fn() -> B>);
 
 impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MValue<B> {
@@ -197,6 +200,8 @@ pub fn m_specific<'ctx, B: ModuleBrand>(expected: Value<'ctx, B>) -> MSpecific<'
 }
 
 /// Matcher returned by [`m_specific`].
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct MSpecific<'ctx, B: ModuleBrand>(Value<'ctx, B>);
 
 impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MSpecific<'ctx, B> {
@@ -213,6 +218,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MSpecific<'ctx, B> {
 
 /// A constant-integer predicate matcher; binds nothing. Backs `m_zero`,
 /// `m_one`, `m_all_ones`, ... Scalar only (vector splats are not unwrapped).
+#[derive(Debug)]
 pub struct MConstIntPred {
     pred: fn(&ApInt) -> bool,
 }
@@ -269,6 +275,7 @@ pub fn m_ap_int() -> MApInt {
 }
 
 /// Matcher returned by [`m_ap_int`].
+#[derive(Debug)]
 pub struct MApInt;
 
 impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MApInt {
@@ -286,6 +293,7 @@ pub fn m_specific_int(n: i128) -> MSpecificInt {
 }
 
 /// Matcher returned by [`m_specific_int`].
+#[derive(Debug)]
 pub struct MSpecificInt(i128);
 
 impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MSpecificInt {
@@ -309,6 +317,7 @@ pub fn m_one_use<M>(inner: M) -> MOneUse<M> {
 }
 
 /// Matcher returned by [`m_one_use`].
+#[derive(Debug)]
 pub struct MOneUse<M>(M);
 
 impl<'ctx, B, M> Matcher<'ctx, B> for MOneUse<M>
@@ -333,6 +342,7 @@ where
 /// A binary-operator matcher over a fixed opcode with sub-matchers for the
 /// two operands. When `commutative` is set, the swapped operand order is
 /// tried too (built by the `m_c_*` factories).
+#[derive(Debug)]
 pub struct MBinOp<L, R> {
     opcode: BinaryOpcode,
     lhs: L,
@@ -515,6 +525,7 @@ pub fn m_combine_or<A, C>(a: A, b: C) -> MCombineOr<A, C> {
 }
 
 /// Matcher returned by [`m_combine_or`].
+#[derive(Debug)]
 pub struct MCombineOr<A, C>(A, C);
 
 impl<'ctx, B, A, C> Matcher<'ctx, B> for MCombineOr<A, C>
@@ -537,6 +548,7 @@ pub fn m_combine_and<A, C>(a: A, b: C) -> MCombineAnd<A, C> {
 }
 
 /// Matcher returned by [`m_combine_and`].
+#[derive(Debug)]
 pub struct MCombineAnd<A, C>(A, C);
 
 impl<'ctx, B, A, C> Matcher<'ctx, B> for MCombineAnd<A, C>
@@ -566,6 +578,7 @@ pub fn m_load<P>(ptr: P) -> MLoad<P> {
 }
 
 /// Matcher returned by [`m_load`].
+#[derive(Debug)]
 pub struct MLoad<P>(P);
 
 impl<'ctx, B, P> Matcher<'ctx, B> for MLoad<P>
@@ -593,6 +606,7 @@ pub fn m_phi() -> MPhi {
 }
 
 /// Matcher returned by [`m_phi`].
+#[derive(Debug)]
 pub struct MPhi;
 
 impl<'ctx, B> Matcher<'ctx, B> for MPhi
@@ -617,6 +631,7 @@ pub fn m_gep<P>(ptr: P) -> MGep<P> {
 }
 
 /// Matcher returned by [`m_gep`].
+#[derive(Debug)]
 pub struct MGep<P>(P);
 
 impl<'ctx, B, P> Matcher<'ctx, B> for MGep<P>

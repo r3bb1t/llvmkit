@@ -11,14 +11,24 @@
 //!
 //! Trait selection: without a helper attribute the set is `Clone`, `Copy`,
 //! `Debug`, `PartialEq`, `Eq`, `Hash`; `#[branded(…)]` names an explicit
-//! subset (which may add `Default`, structs only). `Debug` skips phantom
-//! fields — any field whose type's last path segment is `PhantomData` or
-//! `Invariant` — matching the hand-written `decl_value_id!` convention that
-//! phantoms never print. `PartialEq` and `Hash` are generated from one shared
-//! field walk over *all* fields, so the `Hash`/`Eq` contract cannot drift; a
-//! `PhantomData` compares equal and hashes to nothing, which keeps that walk
-//! total. `Copy` stays honest through the compiler: a non-`Copy` field in a
+//! subset (which may add `Default`, structs only, and `PartialOrd` / `Ord`).
+//! `Debug` skips phantom fields — any field whose type's last path segment is
+//! `PhantomData` or `Invariant` — matching the hand-written `decl_value_id!`
+//! convention that phantoms never print. `PartialEq`, `Hash`, `PartialOrd`
+//! and `Ord` are generated from one shared field walk over *all* fields, so
+//! the `Hash`/`Eq`/`Ord` contracts cannot drift; a `PhantomData` compares
+//! equal, hashes to nothing and orders `Equal`, which keeps that walk total.
+//! `Copy` stays honest through the compiler: a non-`Copy` field in a
 //! `Copy`-requesting type is still `E0204`.
+//!
+//! Ordering is opt-in rather than default because most branded types are
+//! views whose fields are arena indices with no meaningful order. Where it
+//! *is* meaningful — an id that is `(ModuleId, slot)` — a lexicographic order
+//! is deterministic across runs, which is what makes a `BTreeMap` keyed by
+//! one safe to iterate for pass output. Enum ordering is by declaration
+//! order first, then fields, exactly like the std derive; the variant rank is
+//! spelled as a `match` returning `usize` rather than a discriminant cast,
+//! since llvmkit forbids `as`.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -35,6 +45,8 @@ enum Trait {
     PartialEq,
     Eq,
     Hash,
+    PartialOrd,
+    Ord,
     Default,
 }
 
@@ -47,6 +59,8 @@ impl Trait {
             "PartialEq" => Some(Self::PartialEq),
             "Eq" => Some(Self::Eq),
             "Hash" => Some(Self::Hash),
+            "PartialOrd" => Some(Self::PartialOrd),
+            "Ord" => Some(Self::Ord),
             "Default" => Some(Self::Default),
             _ => None,
         }
@@ -88,6 +102,8 @@ fn expand(input: &DeriveInput) -> Result<TokenStream, Error> {
             Trait::PartialEq => partial_eq_impl(input),
             Trait::Eq => quote! {},
             Trait::Hash => hash_impl(input),
+            Trait::PartialOrd => partial_ord_impl(input),
+            Trait::Ord => ord_impl(input),
             Trait::Default => default_impl(input),
         };
         let header = match tr {
@@ -97,6 +113,8 @@ fn expand(input: &DeriveInput) -> Result<TokenStream, Error> {
             Trait::PartialEq => quote! { ::core::cmp::PartialEq },
             Trait::Eq => quote! { ::core::cmp::Eq },
             Trait::Hash => quote! { ::core::hash::Hash },
+            Trait::PartialOrd => quote! { ::core::cmp::PartialOrd },
+            Trait::Ord => quote! { ::core::cmp::Ord },
             Trait::Default => quote! { ::core::default::Default },
         };
         out.extend(quote! {
@@ -148,7 +166,7 @@ fn requested_traits(input: &DeriveInput) -> Result<Vec<Trait>, Error> {
             Error::new(
                 ident.span(),
                 "unrecognized trait; `Branded` derives Clone, Copy, Debug, PartialEq, Eq, Hash, \
-                 and Default",
+                 PartialOrd, Ord, and Default",
             )
         })?;
         if traits.contains(&tr) {
@@ -169,6 +187,20 @@ fn requested_traits(input: &DeriveInput) -> Result<Vec<Trait>, Error> {
         return Err(Error::new(
             attr.span(),
             "`Eq` requires `PartialEq`; add it to `#[branded(…)]`",
+        ));
+    }
+    if traits.contains(&Trait::PartialOrd) && !traits.contains(&Trait::PartialEq) {
+        return Err(Error::new(
+            attr.span(),
+            "`PartialOrd` requires `PartialEq`; add it to `#[branded(…)]`",
+        ));
+    }
+    if traits.contains(&Trait::Ord)
+        && !(traits.contains(&Trait::Eq) && traits.contains(&Trait::PartialOrd))
+    {
+        return Err(Error::new(
+            attr.span(),
+            "`Ord` requires `Eq` and `PartialOrd`; add them to `#[branded(…)]`",
         ));
     }
     Ok(traits)
@@ -337,6 +369,166 @@ fn hash_impl(input: &DeriveInput) -> TokenStream {
     quote! {
         #[inline]
         fn hash<__H: ::core::hash::Hasher>(&self, state: &mut __H) {
+            #body
+        }
+    }
+}
+
+/// A `match` mapping each variant to its declaration rank, used as the
+/// leading comparison key for enum ordering. Spelled as a match rather than
+/// `discriminant as usize` because llvmkit forbids `as` casts, and a
+/// `#[repr]`-less enum has no stable numeric discriminant to cast anyway.
+fn variant_rank(data: &syn::DataEnum) -> TokenStream {
+    let arms = data.variants.iter().enumerate().map(|(rank, v)| {
+        let vname = &v.ident;
+        let pattern = match &v.fields {
+            Fields::Named(_) => quote! { Self::#vname { .. } },
+            Fields::Unnamed(_) => quote! { Self::#vname ( .. ) },
+            Fields::Unit => quote! { Self::#vname },
+        };
+        quote! { #pattern => #rank }
+    });
+    quote! {
+        |__v: &Self| -> usize {
+            match __v {
+                #( #arms, )*
+            }
+        }
+    }
+}
+
+/// Fold a field-pair list into the nested `match` chain both orderings use:
+/// compare the first pair, and only fall through to the rest when it ties.
+/// `equal` is the all-tied result, `compare` builds one pair's comparison,
+/// and `tie` is the pattern that means "keep going".
+fn ordering_chain<F>(
+    lhs: &[Ident],
+    rhs: &[Ident],
+    equal: TokenStream,
+    tie: TokenStream,
+    compare: F,
+) -> TokenStream
+where
+    F: Fn(&Ident, &Ident) -> TokenStream,
+{
+    let mut chain = equal;
+    for (l, r) in lhs.iter().zip(rhs).rev() {
+        let step = compare(l, r);
+        chain = quote! {
+            match #step {
+                #tie => { #chain }
+                __ordering => __ordering,
+            }
+        };
+    }
+    chain
+}
+
+fn ord_impl(input: &DeriveInput) -> TokenStream {
+    let equal = quote! { ::core::cmp::Ordering::Equal };
+    let compare = |l: &Ident, r: &Ident| quote! { ::core::cmp::Ord::cmp(#l, #r) };
+    let body = match &input.data {
+        Data::Struct(data) => {
+            let l = bind_idents(&data.fields, "l");
+            let r = bind_idents(&data.fields, "r");
+            let lpat = variant_pattern(quote! { Self }, &data.fields, &l);
+            let rpat = variant_pattern(quote! { Self }, &data.fields, &r);
+            let chain = ordering_chain(&l, &r, equal.clone(), equal, compare);
+            quote! {
+                let #lpat = self;
+                let #rpat = other;
+                #chain
+            }
+        }
+        Data::Enum(data) => {
+            let arms = data.variants.iter().map(|v| {
+                let vname = &v.ident;
+                let l = bind_idents(&v.fields, "l");
+                let r = bind_idents(&v.fields, "r");
+                let lpat = variant_pattern(quote! { Self::#vname }, &v.fields, &l);
+                let rpat = variant_pattern(quote! { Self::#vname }, &v.fields, &r);
+                let chain = ordering_chain(&l, &r, equal.clone(), equal.clone(), compare);
+                quote! { (#lpat, #rpat) => { #chain } }
+            });
+            if data.variants.len() > 1 {
+                let rank = variant_rank(data);
+                quote! {
+                    match (self, other) {
+                        #( #arms, )*
+                        _ => {
+                            let __rank = #rank;
+                            ::core::cmp::Ord::cmp(&__rank(self), &__rank(other))
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    match (self, other) {
+                        #( #arms, )*
+                    }
+                }
+            }
+        }
+        Data::Union(_) => unreachable!("rejected in expand"),
+    };
+    quote! {
+        #[inline]
+        fn cmp(&self, other: &Self) -> ::core::cmp::Ordering {
+            #body
+        }
+    }
+}
+
+fn partial_ord_impl(input: &DeriveInput) -> TokenStream {
+    let equal = quote! { ::core::option::Option::Some(::core::cmp::Ordering::Equal) };
+    let compare = |l: &Ident, r: &Ident| quote! { ::core::cmp::PartialOrd::partial_cmp(#l, #r) };
+    let body = match &input.data {
+        Data::Struct(data) => {
+            let l = bind_idents(&data.fields, "l");
+            let r = bind_idents(&data.fields, "r");
+            let lpat = variant_pattern(quote! { Self }, &data.fields, &l);
+            let rpat = variant_pattern(quote! { Self }, &data.fields, &r);
+            let chain = ordering_chain(&l, &r, equal.clone(), equal, compare);
+            quote! {
+                let #lpat = self;
+                let #rpat = other;
+                #chain
+            }
+        }
+        Data::Enum(data) => {
+            let arms = data.variants.iter().map(|v| {
+                let vname = &v.ident;
+                let l = bind_idents(&v.fields, "l");
+                let r = bind_idents(&v.fields, "r");
+                let lpat = variant_pattern(quote! { Self::#vname }, &v.fields, &l);
+                let rpat = variant_pattern(quote! { Self::#vname }, &v.fields, &r);
+                let chain = ordering_chain(&l, &r, equal.clone(), equal.clone(), compare);
+                quote! { (#lpat, #rpat) => { #chain } }
+            });
+            if data.variants.len() > 1 {
+                let rank = variant_rank(data);
+                quote! {
+                    match (self, other) {
+                        #( #arms, )*
+                        _ => {
+                            let __rank = #rank;
+                            ::core::cmp::PartialOrd::partial_cmp(&__rank(self), &__rank(other))
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    match (self, other) {
+                        #( #arms, )*
+                    }
+                }
+            }
+        }
+        Data::Union(_) => unreachable!("rejected in expand"),
+    };
+    quote! {
+        #[inline]
+        fn partial_cmp(&self, other: &Self) -> ::core::option::Option<::core::cmp::Ordering> {
             #body
         }
     }

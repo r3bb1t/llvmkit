@@ -3437,6 +3437,7 @@ impl<'ctx, P: TermOpenState, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, P, B> {
 
 impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
     /// Mark this landingpad as a cleanup. Mirrors `LandingPadInst::setCleanup(true)`.
+    #[must_use]
     pub fn set_cleanup(self) -> Self {
         self.payload().cleanup.set(true);
         self

@@ -606,11 +606,13 @@ impl<B: ModuleBrand> SpecializedMetadataNode<B> {
     }
 
     /// Mark the node `distinct`. Default off.
+    #[must_use]
     pub fn distinct(mut self) -> Self {
         self.distinct = true;
         self
     }
 
+    #[must_use]
     pub fn field(mut self, field: MetadataField<B>) -> Self {
         self.fields.push(field);
         self
@@ -779,16 +781,19 @@ impl<B: ModuleBrand> DebugVariableRecord<B> {
         }
     }
 
+    #[must_use]
     pub fn with_assign_id(mut self, assign_id: MetadataId<B>) -> Self {
         self.assign_id = Some(assign_id);
         self
     }
 
+    #[must_use]
     pub fn with_address_location(mut self, address_location: DebugMetadataOperand<B>) -> Self {
         self.address_location = Some(address_location);
         self
     }
 
+    #[must_use]
     pub fn with_address_expression(mut self, address_expression: MetadataId<B>) -> Self {
         self.address_expression = Some(address_expression);
         self

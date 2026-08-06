@@ -65,17 +65,20 @@ impl InlineAsmOptions {
     }
 
     /// Mark the asm as having side effects. Default off.
+    #[must_use]
     pub fn side_effects(mut self) -> Self {
         self.has_side_effects = true;
         self
     }
 
     /// Mark the asm as stack-aligning. Default off.
+    #[must_use]
     pub fn align_stack(mut self) -> Self {
         self.is_align_stack = true;
         self
     }
 
+    #[must_use]
     pub fn with_dialect(mut self, value: AsmDialect) -> Self {
         self.dialect = value;
         self
@@ -83,6 +86,7 @@ impl InlineAsmOptions {
 
     /// Mark the asm as able to unwind (the `.ll` `unwind` keyword).
     /// Default off. Accessor twin: [`Self::can_unwind`].
+    #[must_use]
     pub fn unwind(mut self) -> Self {
         self.can_unwind = true;
         self

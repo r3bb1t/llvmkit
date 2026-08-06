@@ -320,6 +320,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for GlobalAlias<'ctx, 
     }
 }
 
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct GlobalAliasBuilder<'ctx, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
@@ -363,6 +365,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
         }
     }
 
+    #[must_use]
     pub fn linkage(mut self, linkage: Linkage) -> Self {
         self.linkage = linkage;
         self
@@ -370,26 +373,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasBuilder<'ctx, B> {
 
     /// DSO locality (`dso_local` / `dso_preemptable`). Mirrors
     /// `GlobalValue::setDSOLocal`.
+    #[must_use]
     pub fn dso_locality(mut self, dso: DsoLocality) -> Self {
         self.dso_locality = dso;
         self
     }
 
+    #[must_use]
     pub fn visibility(mut self, visibility: Visibility) -> Self {
         self.visibility = visibility;
         self
     }
 
+    #[must_use]
     pub fn dll_storage_class(mut self, cls: DllStorageClass) -> Self {
         self.dll_storage_class = cls;
         self
     }
 
+    #[must_use]
     pub fn thread_local_mode(mut self, tlm: ThreadLocalMode) -> Self {
         self.thread_local_mode = tlm;
         self
     }
 
+    #[must_use]
     pub fn unnamed_addr(mut self, value: UnnamedAddr) -> Self {
         self.unnamed_addr = value;
         self
