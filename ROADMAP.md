@@ -1074,10 +1074,11 @@ through 0.0.3. What is left:
       carries a verbatim copy, and CI compares all six against the root.
 - [x] Add a `README.md` for `llvmkit-macros`, the one member without one; its
       crates.io page is otherwise blank. **Done 2026-07-31.**
-- [ ] Add a `README.md` for `llvmkit-tablegen`. Splitting it out of
-      `llvmkit-ir` re-opened the problem the item above closed: it is now the
-      one member with no `README.md`, so its crates.io page would be blank on
-      the very release that first publishes it.
+- [x] Add a `README.md` for `llvmkit-tablegen`. Splitting it out of
+      `llvmkit-ir` re-opened the problem the item above closed: it was the one
+      member with no `README.md`, so its crates.io page would have been blank on
+      the very release that first publishes it. **Done 2026-08-07** — every
+      workspace member now ships one.
 - [ ] Add `[package.metadata.docs.rs]` so docs.rs builds are pinned and
       deterministic rather than default-feature guesses. `llvmkit` and
       `llvmkit-ir` both declare a `default = ["macros"]` feature now, so
