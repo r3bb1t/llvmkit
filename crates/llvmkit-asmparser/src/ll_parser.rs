@@ -42,13 +42,13 @@ use llvmkit_ir::metadata::{
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    Align, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, AtomicOrdering, AtomicRMWBinOp,
+    Align, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, AtomicOrdering, AtomicRmwBinOp,
     CallingConv, Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode,
     ConstantExprOptions, DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType,
     FpClassTest, GepNoWrapFlags, IntCastFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution,
     IrBuilder, IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
     Positioned, RoundingMode, SelectionKind, ShuffleMaskElem, Signedness, StructType, SyncScope,
-    ThreadLocalMode, Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord,
+    ThreadLocalMode, Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, UseListOrderBbRecord,
     UseListOrderRecord, Visibility, constant_fold_select_instruction, derived_types::PointerType,
     resolve_intrinsic_name, shufflevector_mask_from_constant,
 };
@@ -252,7 +252,7 @@ struct DeferredAliasTarget<'ctx, B: ModuleBrand> {
 
 enum DeferredAliasObject<'ctx, B: ModuleBrand> {
     Alias(llvmkit_ir::GlobalAlias<'ctx, B>),
-    IFunc(llvmkit_ir::GlobalIFunc<'ctx, B>),
+    Ifunc(llvmkit_ir::GlobalIfunc<'ctx, B>),
 }
 
 struct DeferredIntrinsicAttributeCheck {
@@ -409,9 +409,9 @@ fn linkage_keyword(keyword: Keyword) -> Option<Linkage> {
         Keyword::External => Linkage::External,
         Keyword::AvailableExternally => Linkage::AvailableExternally,
         Keyword::Linkonce => Linkage::LinkOnceAny,
-        Keyword::LinkonceOdr => Linkage::LinkOnceODR,
+        Keyword::LinkonceOdr => Linkage::LinkOnceOdr,
         Keyword::Weak => Linkage::WeakAny,
-        Keyword::WeakOdr => Linkage::WeakODR,
+        Keyword::WeakOdr => Linkage::WeakOdr,
         Keyword::Appending => Linkage::Appending,
         Keyword::Internal => Linkage::Internal,
         Keyword::Private => Linkage::Private,
@@ -1079,7 +1079,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 DeferredAliasObject::Alias(a) => a
                     .set_aliasee(self.module, target)
                     .map_err(|e| self.builder_err("deferred alias target", e))?,
-                DeferredAliasObject::IFunc(i) => i
+                DeferredAliasObject::Ifunc(i) => i
                     .set_resolver(self.module, target)
                     .map_err(|e| self.builder_err("deferred ifunc resolver", e))?,
             }
@@ -1863,7 +1863,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         self.expect_punct(PunctKind::Comma, "',' before uselistorder_bb indexes")?;
         let indexes = self.parse_use_list_order_indexes()?;
-        let record = UseListOrderBBRecord::new(
+        let record = UseListOrderBbRecord::new(
             function.as_erased().slot(),
             block.to_erased().slot(),
             indexes,
@@ -2259,7 +2259,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             | Token::DwarfVirtuality(s)
             | Token::DwarfLang(s)
             | Token::DwarfSourceLangName(s)
-            | Token::DwarfCC(s)
+            | Token::DwarfCc(s)
             | Token::DwarfOp(s)
             | Token::DwarfMacinfo(s)
             | Token::DwarfEnumKind(s)
@@ -2957,7 +2957,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             PrimitiveTy::X86Amx => Ok(m.x86_amx_type()),
             PrimitiveTy::WasmExnRef => Ok(m.wasm_exnref_type()),
             PrimitiveTy::Half => Ok(m.half_type().as_type()),
-            PrimitiveTy::BFloat => Ok(m.bfloat_type().as_type()),
+            PrimitiveTy::Bfloat => Ok(m.bfloat_type().as_type()),
             PrimitiveTy::Float => Ok(m.f32_type().as_type()),
             PrimitiveTy::Double => Ok(m.f64_type().as_type()),
             PrimitiveTy::X86Fp80 => Ok(m.x86_fp80_type().as_type()),
@@ -3386,7 +3386,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let i_view = self.module.view(i);
             if let Some(name) = forward_target {
                 self.deferred_alias_targets.push(DeferredAliasTarget {
-                    object: DeferredAliasObject::IFunc(i_view),
+                    object: DeferredAliasObject::Ifunc(i_view),
                     name,
                     loc: target_loc,
                 });
@@ -3394,7 +3394,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             if let NameOrId::Id(id) = name_id {
                 let i = i_view;
                 self.numbered_globals
-                    .add(id, GlobalRef::IFunc(i))
+                    .add(id, GlobalRef::Ifunc(i))
                     .map_err(|source| ParseError::InvalidSlotId {
                         source,
                         loc: DiagLoc::span(decl_loc),
@@ -3551,33 +3551,33 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let opcode = match op {
             Opcode::ExtractValue => "extractvalue",
             Opcode::InsertValue => "insertvalue",
-            Opcode::UDiv => "udiv",
-            Opcode::SDiv => "sdiv",
-            Opcode::URem => "urem",
-            Opcode::SRem => "srem",
-            Opcode::FAdd => "fadd",
-            Opcode::FSub => "fsub",
-            Opcode::FMul => "fmul",
-            Opcode::FDiv => "fdiv",
-            Opcode::FRem => "frem",
+            Opcode::Udiv => "udiv",
+            Opcode::Sdiv => "sdiv",
+            Opcode::Urem => "urem",
+            Opcode::Srem => "srem",
+            Opcode::Fadd => "fadd",
+            Opcode::Fsub => "fsub",
+            Opcode::Fmul => "fmul",
+            Opcode::Fdiv => "fdiv",
+            Opcode::Frem => "frem",
             Opcode::And => "and",
             Opcode::Or => "or",
-            Opcode::LShr => "lshr",
-            Opcode::AShr => "ashr",
+            Opcode::Lshr => "lshr",
+            Opcode::Ashr => "ashr",
             Opcode::Shl => "shl",
             Opcode::Mul => "mul",
-            Opcode::FNeg => "fneg",
+            Opcode::Fneg => "fneg",
             Opcode::Select => "select",
-            Opcode::ZExt => "zext",
-            Opcode::SExt => "sext",
-            Opcode::FPTrunc => "fptrunc",
-            Opcode::FPExt => "fpext",
-            Opcode::UIToFP => "uitofp",
-            Opcode::SIToFP => "sitofp",
-            Opcode::FPToUI => "fptoui",
-            Opcode::FPToSI => "fptosi",
-            Opcode::ICmp => "icmp",
-            Opcode::FCmp => "fcmp",
+            Opcode::Zext => "zext",
+            Opcode::Sext => "sext",
+            Opcode::FpTrunc => "fptrunc",
+            Opcode::FpExt => "fpext",
+            Opcode::UiToFp => "uitofp",
+            Opcode::SiToFp => "sitofp",
+            Opcode::FpToUi => "fptoui",
+            Opcode::FpToSi => "fptosi",
+            Opcode::Icmp => "icmp",
+            Opcode::Fcmp => "fcmp",
             _ => return self.unsupported_constant_value_form_at(loc),
         };
         ParseError::Expected {
@@ -4129,7 +4129,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 GlobalRef::Function(f) => f.as_erased(),
                 GlobalRef::Variable(g) => g.as_erased(),
                 GlobalRef::Alias(a) => a.as_erased(),
-                GlobalRef::IFunc(i) => i.as_erased(),
+                GlobalRef::Ifunc(i) => i.as_erased(),
             })
             .ok_or_else(|| ParseError::UndefinedSymbol {
                 kind: SymbolKind::Global,
@@ -4185,7 +4185,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             GlobalRef::Function(f) => f.as_global_constant_ptr(),
             GlobalRef::Variable(g) => g.as_global_constant_ptr(),
             GlobalRef::Alias(a) => a.as_global_constant_ptr(),
-            GlobalRef::IFunc(i) => i.as_global_constant_ptr(),
+            GlobalRef::Ifunc(i) => i.as_global_constant_ptr(),
         }
     }
     fn resolve_global_name_as_ref(&self, name: String) -> ParseResult<GlobalRef<'ctx, B>> {
@@ -4196,7 +4196,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else if let Some(id) = self.module.alias(&name) {
             Ok(GlobalRef::Alias(self.module.view(id)))
         } else if let Some(id) = self.module.ifunc(&name) {
-            Ok(GlobalRef::IFunc(self.module.view(id)))
+            Ok(GlobalRef::Ifunc(self.module.view(id)))
         } else {
             Err(ParseError::UndefinedSymbol {
                 kind: SymbolKind::Global,
@@ -4776,9 +4776,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             | Linkage::Internal
             | Linkage::AvailableExternally
             | Linkage::LinkOnceAny
-            | Linkage::LinkOnceODR
+            | Linkage::LinkOnceOdr
             | Linkage::WeakAny
-            | Linkage::WeakODR
+            | Linkage::WeakOdr
                 if !is_define =>
             {
                 Err(ParseError::Expected {
@@ -4873,8 +4873,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn attr_kind_for_keyword(keyword: Keyword) -> Option<AttrKind> {
         Some(match keyword {
-            Keyword::Zeroext => AttrKind::ZExt,
-            Keyword::Signext => AttrKind::SExt,
+            Keyword::Zeroext => AttrKind::Zext,
+            Keyword::Signext => AttrKind::Sext,
             Keyword::Noundef => AttrKind::NoUndef,
             Keyword::Nonnull => AttrKind::NonNull,
             Keyword::Noalias => AttrKind::NoAlias,
@@ -4885,7 +4885,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Keyword::Nomerge => AttrKind::NoMerge,
             Keyword::Convergent => AttrKind::Convergent,
             Keyword::Cold => AttrKind::Cold,
-            Keyword::Strictfp => AttrKind::StrictFP,
+            Keyword::Strictfp => AttrKind::StrictFp,
             Keyword::Immarg => AttrKind::ImmArg,
             Keyword::Readnone => AttrKind::ReadNone,
             Keyword::Readonly => AttrKind::ReadOnly,
@@ -5107,7 +5107,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     } else {
                         2
                     };
-                    let attr = Attribute::<B>::int(AttrKind::UWTable, kind)
+                    let attr = Attribute::<B>::int(AttrKind::UwTable, kind)
                         .ok_or_else(|| self.expected("attribute"))?;
                     out.add(index, attr);
                 }
@@ -6192,49 +6192,49 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Opcode::Add => self.parse_int_binop(state, b_ref, IntBinOp::Add, &result_name)?,
                 Opcode::Sub => self.parse_int_binop(state, b_ref, IntBinOp::Sub, &result_name)?,
                 Opcode::Mul => self.parse_int_binop(state, b_ref, IntBinOp::Mul, &result_name)?,
-                Opcode::UDiv => self.parse_int_binop(state, b_ref, IntBinOp::UDiv, &result_name)?,
-                Opcode::SDiv => self.parse_int_binop(state, b_ref, IntBinOp::SDiv, &result_name)?,
-                Opcode::URem => self.parse_int_binop(state, b_ref, IntBinOp::URem, &result_name)?,
-                Opcode::SRem => self.parse_int_binop(state, b_ref, IntBinOp::SRem, &result_name)?,
+                Opcode::Udiv => self.parse_int_binop(state, b_ref, IntBinOp::Udiv, &result_name)?,
+                Opcode::Sdiv => self.parse_int_binop(state, b_ref, IntBinOp::Sdiv, &result_name)?,
+                Opcode::Urem => self.parse_int_binop(state, b_ref, IntBinOp::Urem, &result_name)?,
+                Opcode::Srem => self.parse_int_binop(state, b_ref, IntBinOp::Srem, &result_name)?,
                 Opcode::Shl => self.parse_int_binop(state, b_ref, IntBinOp::Shl, &result_name)?,
-                Opcode::LShr => self.parse_int_binop(state, b_ref, IntBinOp::LShr, &result_name)?,
-                Opcode::AShr => self.parse_int_binop(state, b_ref, IntBinOp::AShr, &result_name)?,
+                Opcode::Lshr => self.parse_int_binop(state, b_ref, IntBinOp::Lshr, &result_name)?,
+                Opcode::Ashr => self.parse_int_binop(state, b_ref, IntBinOp::Ashr, &result_name)?,
                 Opcode::And => self.parse_int_binop(state, b_ref, IntBinOp::And, &result_name)?,
                 Opcode::Or => self.parse_int_binop(state, b_ref, IntBinOp::Or, &result_name)?,
                 Opcode::Xor => self.parse_int_binop(state, b_ref, IntBinOp::Xor, &result_name)?,
-                Opcode::ICmp => self.parse_icmp(state, b_ref, &result_name)?,
+                Opcode::Icmp => self.parse_icmp(state, b_ref, &result_name)?,
                 Opcode::Trunc => self.parse_int_cast(state, b_ref, IntCast::Trunc, &result_name)?,
-                Opcode::ZExt => self.parse_int_cast(state, b_ref, IntCast::ZExt, &result_name)?,
-                Opcode::SExt => self.parse_int_cast(state, b_ref, IntCast::SExt, &result_name)?,
+                Opcode::Zext => self.parse_int_cast(state, b_ref, IntCast::Zext, &result_name)?,
+                Opcode::Sext => self.parse_int_cast(state, b_ref, IntCast::Sext, &result_name)?,
                 Opcode::PtrToInt => self.parse_ptr_to_int(state, b_ref, &result_name)?,
                 Opcode::IntToPtr => self.parse_int_to_ptr(state, b_ref, &result_name)?,
-                Opcode::FNeg => self.parse_fneg(state, b_ref, &result_name)?,
-                Opcode::FAdd => self.parse_fp_binop(state, b_ref, FpBinOp::Add, &result_name)?,
-                Opcode::FSub => self.parse_fp_binop(state, b_ref, FpBinOp::Sub, &result_name)?,
-                Opcode::FMul => self.parse_fp_binop(state, b_ref, FpBinOp::Mul, &result_name)?,
-                Opcode::FDiv => self.parse_fp_binop(state, b_ref, FpBinOp::Div, &result_name)?,
-                Opcode::FRem => self.parse_fp_binop(state, b_ref, FpBinOp::Rem, &result_name)?,
-                Opcode::FCmp => self.parse_fcmp(state, b_ref, &result_name)?,
+                Opcode::Fneg => self.parse_fneg(state, b_ref, &result_name)?,
+                Opcode::Fadd => self.parse_fp_binop(state, b_ref, FpBinOp::Add, &result_name)?,
+                Opcode::Fsub => self.parse_fp_binop(state, b_ref, FpBinOp::Sub, &result_name)?,
+                Opcode::Fmul => self.parse_fp_binop(state, b_ref, FpBinOp::Mul, &result_name)?,
+                Opcode::Fdiv => self.parse_fp_binop(state, b_ref, FpBinOp::Div, &result_name)?,
+                Opcode::Frem => self.parse_fp_binop(state, b_ref, FpBinOp::Rem, &result_name)?,
+                Opcode::Fcmp => self.parse_fcmp(state, b_ref, &result_name)?,
                 Opcode::Alloca => self.parse_alloca(state, b_ref, &result_name)?,
                 Opcode::Load => self.parse_load(state, b_ref, &result_name)?,
                 Opcode::GetElementPtr => self.parse_gep(state, b_ref, &result_name)?,
                 Opcode::Select => self.parse_select(state, b_ref, &result_name)?,
-                Opcode::FPToUI => {
-                    self.parse_fp_to_int(state, b_ref, FpToInt::FpToUI, &result_name)?
+                Opcode::FpToUi => {
+                    self.parse_fp_to_int(state, b_ref, FpToInt::FpToUi, &result_name)?
                 }
-                Opcode::FPToSI => {
-                    self.parse_fp_to_int(state, b_ref, FpToInt::FpToSI, &result_name)?
+                Opcode::FpToSi => {
+                    self.parse_fp_to_int(state, b_ref, FpToInt::FpToSi, &result_name)?
                 }
-                Opcode::UIToFP => {
-                    self.parse_int_to_fp(state, b_ref, IntToFp::UIToFp, &result_name)?
+                Opcode::UiToFp => {
+                    self.parse_int_to_fp(state, b_ref, IntToFp::UiToFp, &result_name)?
                 }
-                Opcode::SIToFP => {
-                    self.parse_int_to_fp(state, b_ref, IntToFp::SIToFp, &result_name)?
+                Opcode::SiToFp => {
+                    self.parse_int_to_fp(state, b_ref, IntToFp::SiToFp, &result_name)?
                 }
                 Opcode::AddrSpaceCast => self.parse_addrspace_cast(state, b_ref, &result_name)?,
                 Opcode::BitCast => self.parse_bitcast(state, b_ref, &result_name)?,
-                Opcode::FPTrunc => self.parse_fptrunc(state, b_ref, &result_name)?,
-                Opcode::FPExt => self.parse_fpext(state, b_ref, &result_name)?,
+                Opcode::FpTrunc => self.parse_fptrunc(state, b_ref, &result_name)?,
+                Opcode::FpExt => self.parse_fpext(state, b_ref, &result_name)?,
                 Opcode::PtrToAddr => self.parse_ptrtoaddr(state, b_ref, &result_name)?,
                 Opcode::ExtractElement => self.parse_extractelement(state, b_ref, &result_name)?,
                 Opcode::InsertElement => self.parse_insertelement(state, b_ref, &result_name)?,
@@ -6243,10 +6243,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Opcode::InsertValue => self.parse_insertvalue(state, b_ref, &result_name)?,
                 Opcode::Phi => self.parse_phi(state, b_ref, &result_name)?,
                 Opcode::Call => self.parse_call(state, b_ref, &result_name)?,
-                Opcode::VAArg => self.parse_vaarg(state, b_ref, &result_name)?,
+                Opcode::VaArg => self.parse_vaarg(state, b_ref, &result_name)?,
                 Opcode::Freeze => self.parse_freeze(state, b_ref, &result_name)?,
                 Opcode::AtomicCmpXchg => self.parse_cmpxchg(state, b_ref, &result_name)?,
-                Opcode::AtomicRMW => self.parse_atomicrmw(state, b_ref, &result_name)?,
+                Opcode::AtomicRmw => self.parse_atomicrmw(state, b_ref, &result_name)?,
                 Opcode::LandingPad => self.parse_landingpad(state, b_ref, &result_name)?,
                 Opcode::CleanupPad => self.parse_cleanuppad(state, b_ref, &result_name)?,
                 Opcode::CatchPad => self.parse_catchpad(state, b_ref, &result_name)?,
@@ -6369,8 +6369,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         use llvmkit_ir::instr_types::{
-            AShrFlags, AddFlags, LShrFlags, MulFlags, OrFlags, SDivFlags, ShlFlags, SubFlags,
-            UDivFlags,
+            AddFlags, AshrFlags, LshrFlags, MulFlags, OrFlags, SdivFlags, ShlFlags, SubFlags,
+            UdivFlags,
         };
         // Parse optional flags before the type: upstream grammar accepts
         //   add/sub/mul/shl [nuw] [nsw] TYPE LHS, RHS   (nuw/nsw in either order)
@@ -6390,7 +6390,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let exact = matches!(
             op,
-            IntBinOp::UDiv | IntBinOp::SDiv | IntBinOp::LShr | IntBinOp::AShr
+            IntBinOp::Udiv | IntBinOp::Sdiv | IntBinOp::Lshr | IntBinOp::Ashr
         ) && self.eat_keyword(Keyword::Exact)?;
         let disjoint_or = matches!(op, IntBinOp::Or) && self.eat_keyword(Keyword::Disjoint)?;
 
@@ -6466,42 +6466,42 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 b.int_shl_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("shl", e))?
             }
-            IntBinOp::UDiv => {
-                let mut flags = UDivFlags::new();
+            IntBinOp::Udiv => {
+                let mut flags = UdivFlags::new();
                 if exact {
                     flags = flags.exact();
                 }
                 b.int_udiv_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("udiv", e))?
             }
-            IntBinOp::SDiv => {
-                let mut flags = SDivFlags::new();
+            IntBinOp::Sdiv => {
+                let mut flags = SdivFlags::new();
                 if exact {
                     flags = flags.exact();
                 }
                 b.int_sdiv_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("sdiv", e))?
             }
-            IntBinOp::LShr => {
-                let mut flags = LShrFlags::new();
+            IntBinOp::Lshr => {
+                let mut flags = LshrFlags::new();
                 if exact {
                     flags = flags.exact();
                 }
                 b.int_lshr_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("lshr", e))?
             }
-            IntBinOp::AShr => {
-                let mut flags = AShrFlags::new();
+            IntBinOp::Ashr => {
+                let mut flags = AshrFlags::new();
                 if exact {
                     flags = flags.exact();
                 }
                 b.int_ashr_with_flags::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, flags, name)
                     .map_err(|e| self.builder_err("ashr", e))?
             }
-            IntBinOp::URem => b
+            IntBinOp::Urem => b
                 .int_urem::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
                 .map_err(|e| self.builder_err("urem", e))?,
-            IntBinOp::SRem => b
+            IntBinOp::Srem => b
                 .int_srem::<llvmkit_ir::IntDyn, _, _, _>(lhs, rhs, name)
                 .map_err(|e| self.builder_err("srem", e))?,
             IntBinOp::And => b
@@ -6600,7 +6600,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if !trunc_nuw {
             trunc_nuw = is_trunc && self.eat_keyword(Keyword::Nuw)?;
         }
-        let zext_nneg = matches!(op, IntCast::ZExt) && self.eat_keyword(Keyword::Nneg)?;
+        let zext_nneg = matches!(op, IntCast::Zext) && self.eat_keyword(Keyword::Nneg)?;
         let src_ty = self.parse_type(false)?;
         let src_v = self.parse_value(state, src_ty)?;
         self.expect_keyword(
@@ -6646,7 +6646,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 .map_err(|e| self.builder_err("trunc", e))?
             }
-            IntCast::ZExt => if zext_nneg {
+            IntCast::Zext => if zext_nneg {
                 b.zext_with_flags_dyn(
                     src_int,
                     dst_int,
@@ -6657,7 +6657,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 b.zext_dyn(src_int, dst_int, name)
             }
             .map_err(|e| self.builder_err("zext", e))?,
-            IntCast::SExt => b
+            IntCast::Sext => b
                 .sext_dyn(src_int, dst_int, name)
                 .map_err(|e| self.builder_err("sext", e))?,
         };
@@ -6752,11 +6752,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `LLParser::parseArithmetic` hands the operands to
         // `BinaryOperator::Create`.
         let (opcode, what) = match op {
-            FpBinOp::Add => (llvmkit_ir::BinaryOpcode::FAdd, "fadd"),
-            FpBinOp::Sub => (llvmkit_ir::BinaryOpcode::FSub, "fsub"),
-            FpBinOp::Mul => (llvmkit_ir::BinaryOpcode::FMul, "fmul"),
-            FpBinOp::Div => (llvmkit_ir::BinaryOpcode::FDiv, "fdiv"),
-            FpBinOp::Rem => (llvmkit_ir::BinaryOpcode::FRem, "frem"),
+            FpBinOp::Add => (llvmkit_ir::BinaryOpcode::Fadd, "fadd"),
+            FpBinOp::Sub => (llvmkit_ir::BinaryOpcode::Fsub, "fsub"),
+            FpBinOp::Mul => (llvmkit_ir::BinaryOpcode::Fmul, "fmul"),
+            FpBinOp::Div => (llvmkit_ir::BinaryOpcode::Fdiv, "fdiv"),
+            FpBinOp::Rem => (llvmkit_ir::BinaryOpcode::Frem, "frem"),
         };
         let v = b
             .fp_binop_erased(opcode, lhs_v, rhs_v, fmf, result_name.as_str())
@@ -7124,10 +7124,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let name = result_name.as_str();
         let v = match op {
-            FpToInt::FpToSI => b
+            FpToInt::FpToSi => b
                 .fp_to_si(src_fp, dst_int, name)
                 .map_err(|e| self.builder_err("fptosi", e))?,
-            FpToInt::FpToUI => b
+            FpToInt::FpToUi => b
                 .fp_to_ui(src_fp, dst_int, name)
                 .map_err(|e| self.builder_err("fptoui", e))?,
         };
@@ -7143,7 +7143,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         op: IntToFp,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        let nneg = matches!(op, IntToFp::UIToFp) && self.eat_keyword(Keyword::Nneg)?;
+        let nneg = matches!(op, IntToFp::UiToFp) && self.eat_keyword(Keyword::Nneg)?;
         let src_ty = self.parse_type(false)?;
         let src_v = self.parse_value(state, src_ty)?;
         self.expect_keyword(Keyword::To, "'to' in int->fp cast")?;
@@ -7157,10 +7157,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let name = result_name.as_str();
         let v = match op {
-            IntToFp::SIToFp => b
+            IntToFp::SiToFp => b
                 .si_to_fp(src_int, dst_fp, name)
                 .map_err(|e| self.builder_err("sitofp", e))?,
-            IntToFp::UIToFp => {
+            IntToFp::UiToFp => {
                 if nneg {
                     b.ui_to_fp_with_flags_dyn(src_int, dst_fp, UiToFpFlags::new().nneg(), name)
                         .map_err(|e| self.builder_err("uitofp", e))?
@@ -7908,7 +7908,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let dialect = if self.eat_keyword(Keyword::Inteldialect)? {
                     llvmkit_ir::AsmDialect::Intel
                 } else {
-                    llvmkit_ir::AsmDialect::ATT
+                    llvmkit_ir::AsmDialect::Att
                 };
                 let can_unwind = self.eat_keyword(Keyword::Unwind)?;
                 let asm = self.parse_string_constant("inline asm string")?;
@@ -8283,7 +8283,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             None => llvmkit_ir::align::MaybeAlign::NONE,
         };
         let mut config =
-            llvmkit_ir::instr_types::AtomicRMWConfig::new(ordering, sync_scope).align(align);
+            llvmkit_ir::instr_types::AtomicRmwConfig::new(ordering, sync_scope).align(align);
         if volatile {
             config = config.volatile();
         }
@@ -8304,8 +8304,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     }
 
     /// Parse an `atomicrmw` operation keyword.
-    fn parse_atomicrmw_op(&mut self) -> ParseResult<AtomicRMWBinOp> {
-        use AtomicRMWBinOp as Op;
+    fn parse_atomicrmw_op(&mut self) -> ParseResult<AtomicRmwBinOp> {
+        use AtomicRmwBinOp as Op;
         let op = match self.peek() {
             Token::Kw(Keyword::Xchg) => Op::Xchg,
             Token::Instruction(Opcode::Add) => Op::Add,
@@ -8316,18 +8316,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::Instruction(Opcode::Xor) => Op::Xor,
             Token::Kw(Keyword::Max) => Op::Max,
             Token::Kw(Keyword::Min) => Op::Min,
-            Token::Kw(Keyword::Umax) => Op::UMax,
-            Token::Kw(Keyword::Umin) => Op::UMin,
-            Token::Instruction(Opcode::FAdd) => Op::FAdd,
-            Token::Instruction(Opcode::FSub) => Op::FSub,
-            Token::Kw(Keyword::Fmax) => Op::FMax,
-            Token::Kw(Keyword::Fmin) => Op::FMin,
-            Token::Kw(Keyword::Fmaximum) => Op::FMaximum,
-            Token::Kw(Keyword::Fminimum) => Op::FMinimum,
-            Token::Kw(Keyword::UincWrap) => Op::UIncWrap,
-            Token::Kw(Keyword::UdecWrap) => Op::UDecWrap,
-            Token::Kw(Keyword::UsubCond) => Op::USubCond,
-            Token::Kw(Keyword::UsubSat) => Op::USubSat,
+            Token::Kw(Keyword::Umax) => Op::Umax,
+            Token::Kw(Keyword::Umin) => Op::Umin,
+            Token::Instruction(Opcode::Fadd) => Op::Fadd,
+            Token::Instruction(Opcode::Fsub) => Op::Fsub,
+            Token::Kw(Keyword::Fmax) => Op::Fmax,
+            Token::Kw(Keyword::Fmin) => Op::Fmin,
+            Token::Kw(Keyword::Fmaximum) => Op::Fmaximum,
+            Token::Kw(Keyword::Fminimum) => Op::Fminimum,
+            Token::Kw(Keyword::UincWrap) => Op::UincWrap,
+            Token::Kw(Keyword::UdecWrap) => Op::UdecWrap,
+            Token::Kw(Keyword::UsubCond) => Op::UsubCond,
+            Token::Kw(Keyword::UsubSat) => Op::UsubSat,
             _ => return Err(self.expected("atomicrmw operation keyword")),
         };
         self.bump()?;
@@ -8942,7 +8942,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 FpLit::HexHalf(s) => parse_hex_apfloat(ApFloatSemantics::IeeeHalf, s)
                     .map_err(|_| self.expected("valid hex half literal"))?,
-                FpLit::HexBFloat(s) => parse_hex_apfloat(ApFloatSemantics::BFloat, s)
+                FpLit::HexBfloat(s) => parse_hex_apfloat(ApFloatSemantics::Bfloat, s)
                     .map_err(|_| self.expected("valid hex bfloat literal"))?,
                 FpLit::HexX87(s) => parse_hex_apfloat(ApFloatSemantics::X87DoubleExtended, s)
                     .map_err(|_| self.expected("valid hex x87 literal"))?,
@@ -9073,7 +9073,7 @@ enum DeferredLocalValueRef {
 }
 
 struct DeferredAtomicRmwValue<'ctx, B: ModuleBrand> {
-    inst: llvmkit_ir::AtomicRMWInst<'ctx, B>,
+    inst: llvmkit_ir::AtomicRmwInst<'ctx, B>,
     val_ref: DeferredLocalValueRef,
     loc: Span,
 }
@@ -9540,13 +9540,13 @@ enum IntBinOp {
     Add,
     Sub,
     Mul,
-    UDiv,
-    SDiv,
-    URem,
-    SRem,
+    Udiv,
+    Sdiv,
+    Urem,
+    Srem,
     Shl,
-    LShr,
-    AShr,
+    Lshr,
+    Ashr,
     And,
     Or,
     Xor,
@@ -9560,13 +9560,13 @@ impl IntBinOp {
             Self::Add => Op::Add,
             Self::Sub => Op::Sub,
             Self::Mul => Op::Mul,
-            Self::UDiv => Op::UDiv,
-            Self::SDiv => Op::SDiv,
-            Self::URem => Op::URem,
-            Self::SRem => Op::SRem,
+            Self::Udiv => Op::Udiv,
+            Self::Sdiv => Op::Sdiv,
+            Self::Urem => Op::Urem,
+            Self::Srem => Op::Srem,
             Self::Shl => Op::Shl,
-            Self::LShr => Op::LShr,
-            Self::AShr => Op::AShr,
+            Self::Lshr => Op::Lshr,
+            Self::Ashr => Op::Ashr,
             Self::And => Op::And,
             Self::Or => Op::Or,
             Self::Xor => Op::Xor,
@@ -9579,13 +9579,13 @@ impl IntBinOp {
             Self::Add => "add",
             Self::Sub => "sub",
             Self::Mul => "mul",
-            Self::UDiv => "udiv",
-            Self::SDiv => "sdiv",
-            Self::URem => "urem",
-            Self::SRem => "srem",
+            Self::Udiv => "udiv",
+            Self::Sdiv => "sdiv",
+            Self::Urem => "urem",
+            Self::Srem => "srem",
             Self::Shl => "shl",
-            Self::LShr => "lshr",
-            Self::AShr => "ashr",
+            Self::Lshr => "lshr",
+            Self::Ashr => "ashr",
             Self::And => "and",
             Self::Or => "or",
             Self::Xor => "xor",
@@ -9625,8 +9625,8 @@ fn int_binop_flags(nuw: bool, nsw: bool, exact: bool, disjoint: bool) -> llvmkit
 
 enum IntCast {
     Trunc,
-    ZExt,
-    SExt,
+    Zext,
+    Sext,
 }
 
 impl IntCast {
@@ -9635,8 +9635,8 @@ impl IntCast {
         use llvmkit_ir::instr_types::CastOpcode;
         match self {
             Self::Trunc => CastOpcode::Trunc,
-            Self::ZExt => CastOpcode::ZExt,
-            Self::SExt => CastOpcode::SExt,
+            Self::Zext => CastOpcode::Zext,
+            Self::Sext => CastOpcode::Sext,
         }
     }
 
@@ -9644,8 +9644,8 @@ impl IntCast {
     fn mnemonic(&self) -> &'static str {
         match self {
             Self::Trunc => "trunc",
-            Self::ZExt => "zext",
-            Self::SExt => "sext",
+            Self::Zext => "zext",
+            Self::Sext => "sext",
         }
     }
 }
@@ -9659,13 +9659,13 @@ enum FpBinOp {
 }
 
 enum FpToInt {
-    FpToSI,
-    FpToUI,
+    FpToSi,
+    FpToUi,
 }
 
 enum IntToFp {
-    SIToFp,
-    UIToFp,
+    SiToFp,
+    UiToFp,
 }
 
 /// Alias for the dyn-positioned, dyn-return IrBuilder we drive while

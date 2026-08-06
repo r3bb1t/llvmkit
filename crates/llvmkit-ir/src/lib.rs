@@ -170,7 +170,7 @@ pub use ap_float::{
 pub use ap_int::{ApInt, ApIntDivRem, ApIntRounding, ApIntTruncation, Signedness};
 pub use argument::Argument;
 pub use atomic_ordering::AtomicOrdering;
-pub use atomicrmw_binop::AtomicRMWBinOp;
+pub use atomicrmw_binop::AtomicRmwBinOp;
 pub use attribute_mask::AttributeMask;
 pub use attributes::{
     AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet, AttributeStorage, MemoryEffects,
@@ -209,7 +209,7 @@ pub use constant_folding::{
     lossless_unsigned_trunc,
 };
 pub use constant_range::{
-    ConstantRange, EquivalentICmp, NoWrapKind, OverflowResult, PreferredRangeType, RangeIntrinsic,
+    ConstantRange, EquivalentIcmp, NoWrapKind, OverflowResult, PreferredRangeType, RangeIntrinsic,
 };
 pub use constants::{
     ConstantAggregate, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
@@ -240,16 +240,16 @@ pub use function_signature::{
 };
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
-pub use global_ifunc::{GlobalIFunc, GlobalIFuncBuilder};
+pub use global_ifunc::{GlobalIfunc, GlobalIfuncBuilder};
 pub use global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 pub use global_variable::{GlobalBuilder, GlobalVariable};
 pub use inline_asm::{AsmDialect, InlineAsm, InlineAsmOptions};
 pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
-    AShrFlags, AddFlags, AllocaFlags, AtomicCmpXchgConfig, AtomicRMWConfig, AtomicRMWFlags,
+    AddFlags, AllocaFlags, AshrFlags, AtomicCmpXchgConfig, AtomicRmwConfig, AtomicRmwFlags,
     BinaryOpcode, CallAttributeData, CmpXchgFlags, IcmpFlags, IntBinOpFlags, IntCastFlags,
-    LShrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SDivFlags,
-    ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags, UDivFlags, UiToFpFlags,
+    LshrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SdivFlags,
+    ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags, UdivFlags, UiToFpFlags,
     UnaryOpcode, ZextFlags,
 };
 pub use instruction::{
@@ -257,16 +257,16 @@ pub use instruction::{
     TerminatorKind,
 };
 pub use instructions::{
-    AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
+    AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AshrInst, AtomicCmpXchgInst, AtomicRmwInst,
     BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, Callee, CatchPadInst, CatchReturnInst,
     CatchSwitchInst, CleanupPadInst, CleanupReturnInst, Cmp, ExtractElementInst, ExtractValueInst,
-    FAddInst, FDivInst, FMulInst, FRemInst, FSubInst, FcmpInst, FenceInst, FnegInst, FpExtInst,
-    FpPhiInst, FpToSIInst, FpToUIInst, FpTruncInst, FreezeInst, GepInst, IcmpInst, IndirectBrInst,
-    InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst,
-    LoadInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
-    ResumeInst, RetInst, SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst,
-    ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TruncInst, TypedCallInst, UDivInst,
-    UIToFpInst, URemInst, UnreachableInst, VaArgInst, XorInst, ZExtInst,
+    FaddInst, FcmpInst, FdivInst, FenceInst, FmulInst, FnegInst, FpExtInst, FpPhiInst, FpToSiInst,
+    FpToUiInst, FpTruncInst, FreezeInst, FremInst, FsubInst, GepInst, IcmpInst, IndirectBrInst,
+    InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LandingPadInst, LoadInst,
+    LshrInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
+    ResumeInst, RetInst, SdivInst, SelectInst, SextInst, ShlInst, ShuffleVectorInst, SiToFpInst,
+    SremInst, StoreInst, SubInst, SwitchInst, TruncInst, TypedCallInst, UdivInst, UiToFpInst,
+    UnreachableInst, UremInst, VaArgInst, XorInst, ZextInst,
 };
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{
@@ -287,8 +287,8 @@ pub use metadata::{
     MetadataKind, SpecializedMetadataKind, SpecializedMetadataNode,
 };
 pub use module::{
-    ComdatView, DynBrand, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module,
-    ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord,
+    ComdatView, DynBrand, GlobalAliasView, GlobalIfuncView, GlobalVariableView, Module,
+    ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBbRecord,
     UseListOrderRecord, Verified,
 };
 pub use module_flags::{ModuleFlagBehavior, ModuleFlagEntry, ModuleFlagKey};
@@ -359,8 +359,8 @@ pub use value::{
     VectorValue,
 };
 pub use value_id::{
-    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
-    FreezeInstId, FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, IntValueId, IntrinsicInstId,
+    AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
+    FreezeInstId, FunctionId, GlobalAliasId, GlobalId, GlobalIfuncId, IntValueId, IntrinsicInstId,
     OtherPhiInstId, PhiInstId, PointerPhiInstId, PointerValueId, TypedCallInstId, TypedFunctionId,
     TypedVarArgsFunctionId, VaArgInstId, ValueId, ViewIn,
 };
@@ -368,7 +368,7 @@ pub use worklist::Worklist;
 
 pub use align::{Align, MaybeAlign};
 pub use float_kind::{
-    BFloat, FloatDyn, FloatKind, FloatWiderThan, Fp128, Half, IntoConstantFloat, IntoFloatValue,
+    Bfloat, FloatDyn, FloatKind, FloatWiderThan, Fp128, Half, IntoConstantFloat, IntoFloatValue,
     PpcFp128, StaticFloatKind, X86Fp80,
 };
 // `f32`/`f64` are std types — no re-export needed.
@@ -409,7 +409,7 @@ pub use pointer_analysis::{
 };
 pub use select_pattern::{
     MinMaxIntrinsic, MinMaxOperation, SelectPatternFlavor, SelectPatternMatch,
-    SelectPatternNaNBehavior, SelectPatternResult, can_convert_to_min_or_max_intrinsic,
+    SelectPatternNanBehavior, SelectPatternResult, can_convert_to_min_or_max_intrinsic,
     match_decomposed_select_pattern, match_select_pattern, select_pattern,
 };
 pub use speculation::{

@@ -22,9 +22,9 @@ use crate::constant_range::{
 use crate::data_layout::DataLayout;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::instr_types::{
-    AShrFlags, AddFlags, AllocaInstData, BinaryOpData, BinaryOpcode, BranchKind, CastOpData,
-    CastOpcode, CmpInstData, ExtractElementInstData, GepInstData, InsertElementInstData, LShrFlags,
-    PhiData, SDivFlags, ShlFlags, ShuffleMaskElem, ShuffleVectorInstData, SubFlags, UDivFlags,
+    AddFlags, AllocaInstData, AshrFlags, BinaryOpData, BinaryOpcode, BranchKind, CastOpData,
+    CastOpcode, CmpInstData, ExtractElementInstData, GepInstData, InsertElementInstData, LshrFlags,
+    PhiData, SdivFlags, ShlFlags, ShuffleMaskElem, ShuffleVectorInstData, SubFlags, UdivFlags,
 };
 use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicSemantic, semantic_for_callee};
@@ -517,7 +517,7 @@ fn compute_known_bits_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
         | ValueKindData::BasicBlock(_)
         | ValueKindData::Function(_)
         | ValueKindData::GlobalAlias(_)
-        | ValueKindData::GlobalIFunc(_)
+        | ValueKindData::GlobalIfunc(_)
         | ValueKindData::GlobalVariable(_)
         | ValueKindData::MetadataAsValue(_)
         | ValueKindData::InlineAsm(_) => KnownBits::unknown(width),
@@ -557,7 +557,7 @@ fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         | ConstantData::SymbolDelta { .. }
         | ConstantData::SymbolDeltaPlus { .. }
         | ConstantData::BlockAddress { .. }
-        | ConstantData::DSOLocalEquivalent { .. }
+        | ConstantData::DsoLocalEquivalent { .. }
         | ConstantData::NoCfi { .. }
         | ConstantData::PtrAuth { .. }
         | ConstantData::TokenNone
@@ -681,26 +681,26 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             ))
         }
         InstructionKindData::Mul(data) => mul_known(value, data, query, depth, stack),
-        InstructionKindData::UDiv(data) => {
+        InstructionKindData::Udiv(data) => {
             let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::udiv_with_exact(
                 &lhs,
                 &rhs,
-                UDivFlags::from_parts(query.uses_instruction_info() && data.is_exact),
+                UdivFlags::from_parts(query.uses_instruction_info() && data.is_exact),
             ))
         }
-        InstructionKindData::SDiv(data) => {
+        InstructionKindData::Sdiv(data) => {
             let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::sdiv_with_exact(
                 &lhs,
                 &rhs,
-                SDivFlags::from_parts(query.uses_instruction_info() && data.is_exact),
+                SdivFlags::from_parts(query.uses_instruction_info() && data.is_exact),
             ))
         }
-        InstructionKindData::URem(data) => {
+        InstructionKindData::Urem(data) => {
             binary_known(value, data, query, depth, stack, KnownBits::urem)
         }
-        InstructionKindData::SRem(data) => {
+        InstructionKindData::Srem(data) => {
             binary_known(value, data, query, depth, stack, KnownBits::srem)
         }
         InstructionKindData::Shl(data) => {
@@ -715,21 +715,21 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 ShiftAmountKnowledge::MaybeZero,
             ))
         }
-        InstructionKindData::LShr(data) => {
+        InstructionKindData::Lshr(data) => {
             let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::lshr_with_flags(
                 &lhs,
                 &rhs,
-                LShrFlags::from_parts(query.uses_instruction_info() && data.is_exact),
+                LshrFlags::from_parts(query.uses_instruction_info() && data.is_exact),
                 ShiftAmountKnowledge::MaybeZero,
             ))
         }
-        InstructionKindData::AShr(data) => {
+        InstructionKindData::Ashr(data) => {
             let (lhs, rhs) = binary_operand_known_bits(value, data, query, depth, stack)?;
             Ok(KnownBits::ashr_with_flags(
                 &lhs,
                 &rhs,
-                AShrFlags::from_parts(query.uses_instruction_info() && data.is_exact),
+                AshrFlags::from_parts(query.uses_instruction_info() && data.is_exact),
                 ShiftAmountKnowledge::MaybeZero,
             ))
         }
@@ -773,7 +773,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 Ok(KnownBits::unknown(width))
             }
         }
-        InstructionKindData::ICmp(data) => icmp_known(value, data, query, depth, stack),
+        InstructionKindData::Icmp(data) => icmp_known(value, data, query, depth, stack),
         InstructionKindData::Alloca(data) => Ok(alloca_known_bits(value, data, query)),
         InstructionKindData::Call(data) => call_known_bits(
             value,
@@ -799,12 +799,12 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             depth,
             stack,
         ),
-        InstructionKindData::FAdd(_)
-        | InstructionKindData::FSub(_)
-        | InstructionKindData::FMul(_)
-        | InstructionKindData::FDiv(_)
-        | InstructionKindData::FRem(_)
-        | InstructionKindData::FCmp(_)
+        InstructionKindData::Fadd(_)
+        | InstructionKindData::Fsub(_)
+        | InstructionKindData::Fmul(_)
+        | InstructionKindData::Fdiv(_)
+        | InstructionKindData::Frem(_)
+        | InstructionKindData::Fcmp(_)
         | InstructionKindData::Load(_)
         | InstructionKindData::Store(_) => Ok(KnownBits::unknown(width)),
         InstructionKindData::Gep(data) => gep_known_bits(value, data, query, depth, stack),
@@ -817,13 +817,13 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         InstructionKindData::ShuffleVector(data) => {
             shuffle_vector_known_bits(value, data, query, depth, stack)
         }
-        InstructionKindData::FNeg(_)
-        | InstructionKindData::VAArg(_)
+        InstructionKindData::Fneg(_)
+        | InstructionKindData::VaArg(_)
         | InstructionKindData::ExtractValue(_)
         | InstructionKindData::InsertValue(_)
         | InstructionKindData::Fence(_)
         | InstructionKindData::AtomicCmpXchg(_)
-        | InstructionKindData::AtomicRMW(_)
+        | InstructionKindData::AtomicRmw(_)
         | InstructionKindData::Switch(_)
         | InstructionKindData::IndirectBr(_)
         | InstructionKindData::CallBr(_)
@@ -1026,7 +1026,7 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             Ok(input.abs_with_int_min_poison(argument_is_const_one(arg(1))))
         }
         IntrinsicSemantic::BitReverse => Ok(arg_bits(0, stack)?.reverse_bits()),
-        IntrinsicSemantic::BSwap => Ok(arg_bits(0, stack)?.byte_swap()),
+        IntrinsicSemantic::Bswap => Ok(arg_bits(0, stack)?.byte_swap()),
         IntrinsicSemantic::Ctlz => {
             let input = arg_bits(0, stack)?;
             let mut possible = input.count_max_leading_zeros();
@@ -1053,7 +1053,7 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             known.set_known_zero_bits_from(bit_width_u32(input.count_max_population()));
             Ok(known)
         }
-        IntrinsicSemantic::FShl | IntrinsicSemantic::FShr => {
+        IntrinsicSemantic::Fshl | IntrinsicSemantic::Fshr => {
             let Some(shift) = argument_constant(arg(2)) else {
                 return Ok(KnownBits::unknown(width));
             };
@@ -1062,7 +1062,7 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             }
             let raw_shift = shift.try_zext_u64().unwrap_or(0);
             let shift = u32::try_from(raw_shift % u64::from(width)).unwrap_or(0);
-            let left_shift = if semantic == IntrinsicSemantic::FShr {
+            let left_shift = if semantic == IntrinsicSemantic::Fshr {
                 width - shift
             } else {
                 shift
@@ -1079,42 +1079,42 @@ fn intrinsic_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 &KnownBits::lshr(&rhs, &right_shift_bits),
             ))
         }
-        IntrinsicSemantic::UAddSat => {
+        IntrinsicSemantic::UaddSat => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::uadd_sat(&lhs, &rhs))
         }
-        IntrinsicSemantic::USubSat => {
+        IntrinsicSemantic::UsubSat => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::usub_sat(&lhs, &rhs))
         }
-        IntrinsicSemantic::SAddSat => {
+        IntrinsicSemantic::SaddSat => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::sadd_sat(&lhs, &rhs))
         }
-        IntrinsicSemantic::SSubSat => {
+        IntrinsicSemantic::SsubSat => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::ssub_sat(&lhs, &rhs))
         }
-        IntrinsicSemantic::UMin => {
+        IntrinsicSemantic::Umin => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::umin(&lhs, &rhs))
         }
-        IntrinsicSemantic::UMax => {
+        IntrinsicSemantic::Umax => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::umax(&lhs, &rhs))
         }
-        IntrinsicSemantic::SMin => {
+        IntrinsicSemantic::Smin => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::smin(&lhs, &rhs))
         }
-        IntrinsicSemantic::SMax => {
+        IntrinsicSemantic::Smax => {
             let lhs = arg_bits(0, stack)?;
             let rhs = arg_bits(1, stack)?;
             Ok(KnownBits::smax(&lhs, &rhs))
@@ -1492,8 +1492,8 @@ fn cast_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let src_bits = compute_known_bits_inner(src, query, depth + 1, stack)?;
     Ok(match data.kind {
         CastOpcode::Trunc => src_bits.trunc(width),
-        CastOpcode::ZExt => src_bits.zext(width),
-        CastOpcode::SExt => src_bits.sext(width),
+        CastOpcode::Zext => src_bits.zext(width),
+        CastOpcode::Sext => src_bits.sext(width),
         CastOpcode::BitCast
         | CastOpcode::PtrToAddr
         | CastOpcode::PtrToInt
@@ -1501,10 +1501,10 @@ fn cast_known<'a, 'ctx, B: ModuleBrand + 'ctx>(
         CastOpcode::AddrSpaceCast => KnownBits::unknown(width),
         CastOpcode::FpTrunc
         | CastOpcode::FpExt
-        | CastOpcode::FpToUI
-        | CastOpcode::FpToSI
-        | CastOpcode::UIToFp
-        | CastOpcode::SIToFp => KnownBits::unknown(width),
+        | CastOpcode::FpToUi
+        | CastOpcode::FpToSi
+        | CastOpcode::UiToFp
+        | CastOpcode::SiToFp => KnownBits::unknown(width),
     })
 }
 
@@ -1635,21 +1635,21 @@ pub(crate) fn binary_operator_parts(
         InstructionKindData::Add(b) => (BinaryOpcode::Add, b),
         InstructionKindData::Sub(b) => (BinaryOpcode::Sub, b),
         InstructionKindData::Mul(b) => (BinaryOpcode::Mul, b),
-        InstructionKindData::UDiv(b) => (BinaryOpcode::UDiv, b),
-        InstructionKindData::SDiv(b) => (BinaryOpcode::SDiv, b),
-        InstructionKindData::URem(b) => (BinaryOpcode::URem, b),
-        InstructionKindData::SRem(b) => (BinaryOpcode::SRem, b),
+        InstructionKindData::Udiv(b) => (BinaryOpcode::Udiv, b),
+        InstructionKindData::Sdiv(b) => (BinaryOpcode::Sdiv, b),
+        InstructionKindData::Urem(b) => (BinaryOpcode::Urem, b),
+        InstructionKindData::Srem(b) => (BinaryOpcode::Srem, b),
         InstructionKindData::Shl(b) => (BinaryOpcode::Shl, b),
-        InstructionKindData::LShr(b) => (BinaryOpcode::LShr, b),
-        InstructionKindData::AShr(b) => (BinaryOpcode::AShr, b),
+        InstructionKindData::Lshr(b) => (BinaryOpcode::Lshr, b),
+        InstructionKindData::Ashr(b) => (BinaryOpcode::Ashr, b),
         InstructionKindData::And(b) => (BinaryOpcode::And, b),
         InstructionKindData::Or(b) => (BinaryOpcode::Or, b),
         InstructionKindData::Xor(b) => (BinaryOpcode::Xor, b),
-        InstructionKindData::FAdd(b) => (BinaryOpcode::FAdd, b),
-        InstructionKindData::FSub(b) => (BinaryOpcode::FSub, b),
-        InstructionKindData::FMul(b) => (BinaryOpcode::FMul, b),
-        InstructionKindData::FDiv(b) => (BinaryOpcode::FDiv, b),
-        InstructionKindData::FRem(b) => (BinaryOpcode::FRem, b),
+        InstructionKindData::Fadd(b) => (BinaryOpcode::Fadd, b),
+        InstructionKindData::Fsub(b) => (BinaryOpcode::Fsub, b),
+        InstructionKindData::Fmul(b) => (BinaryOpcode::Fmul, b),
+        InstructionKindData::Fdiv(b) => (BinaryOpcode::Fdiv, b),
+        InstructionKindData::Frem(b) => (BinaryOpcode::Frem, b),
         _ => return None,
     })
 }
@@ -1798,11 +1798,11 @@ fn recurrence_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         // operand — so unlike the others it does not require the phi on the
         // left.
         BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::URem => {
-            if !recurrence.phi_is_left_operand && recurrence.opcode != BinaryOpcode::URem {
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Urem => {
+            if !recurrence.phi_is_left_operand && recurrence.opcode != BinaryOpcode::Urem {
                 return Ok(known);
             }
             let start_bits = compute_known_bits_inner(start, query, depth + 1, stack)?;
@@ -1813,11 +1813,11 @@ fn recurrence_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 }
                 // lshr, udiv, and urem recurrences preserve the leading zeros
                 // of the start value.
-                BinaryOpcode::LShr | BinaryOpcode::UDiv | BinaryOpcode::URem => {
+                BinaryOpcode::Lshr | BinaryOpcode::Udiv | BinaryOpcode::Urem => {
                     known.mark_high_bits_zero(start_bits.count_min_leading_zeros());
                 }
                 // An ashr recurrence extends the initial sign bit.
-                BinaryOpcode::AShr => {
+                BinaryOpcode::Ashr => {
                     known.mark_high_bits_zero(start_bits.count_min_leading_zeros());
                     known.mark_high_bits_one(start_bits.count_min_leading_ones());
                 }
@@ -1889,14 +1889,14 @@ fn recurrence_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
         // Every other binary opcode: upstream's `default: break` — the
         // recurrence contributes nothing.
-        BinaryOpcode::SDiv
-        | BinaryOpcode::SRem
+        BinaryOpcode::Sdiv
+        | BinaryOpcode::Srem
         | BinaryOpcode::Xor
-        | BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => {}
+        | BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => {}
     }
     Ok(known)
 }
@@ -2030,7 +2030,7 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
             let src_bits = value_bit_width(src, query.data_layout()).unwrap_or(0);
             match data.kind {
                 // sext adds exactly the widened bits to the source's count.
-                CastOpcode::SExt => {
+                CastOpcode::Sext => {
                     let tmp = compute_num_sign_bits_inner(src, query, depth + 1, stack)?;
                     Ok(SignBitsFromOperator::exact(
                         tmp.saturating_add(ty_bits.saturating_sub(src_bits)),
@@ -2051,7 +2051,7 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
         }
 
         // sdiv X, C adds floor(log2 C) sign bits for a strictly positive C.
-        InstructionKindData::SDiv(data) => {
+        InstructionKindData::Sdiv(data) => {
             let rhs = value_from_slot(value, data.rhs.get());
             let Some(denominator) = argument_constant(Some(rhs)) else {
                 return Ok(SignBitsFromOperator::fall_through());
@@ -2070,7 +2070,7 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
         // srem X, C lands in (-C, C) for a strictly positive C, which bounds
         // the leading sign bits below by `ty_bits - ceilLogBase2(C)`.
-        InstructionKindData::SRem(data) => {
+        InstructionKindData::Srem(data) => {
             let lhs = value_from_slot(value, data.lhs.get());
             let mut tmp = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
             let rhs = value_from_slot(value, data.rhs.get());
@@ -2083,7 +2083,7 @@ fn compute_num_sign_bits_operator<'a, 'ctx, B: ModuleBrand + 'ctx>(
         }
 
         // ashr X, C adds C sign bits.
-        InstructionKindData::AShr(data) => {
+        InstructionKindData::Ashr(data) => {
             let lhs = value_from_slot(value, data.lhs.get());
             let tmp = compute_num_sign_bits_inner(lhs, query, depth + 1, stack)?;
             let rhs = value_from_slot(value, data.rhs.get());
@@ -2454,10 +2454,10 @@ pub fn is_known_inversion<'ctx, B: ModuleBrand + 'ctx>(
 ) -> bool {
     // X = icmp pred1 A, B and Y = icmp pred2 A, C — the second commutatively,
     // which swaps its predicate when A is on the right.
-    let Some(InstructionKindData::ICmp(x_cmp)) = instruction_kind(x) else {
+    let Some(InstructionKindData::Icmp(x_cmp)) = instruction_kind(x) else {
         return false;
     };
-    let Some(InstructionKindData::ICmp(y_cmp)) = instruction_kind(y) else {
+    let Some(InstructionKindData::Icmp(y_cmp)) = instruction_kind(y) else {
         return false;
     };
     let a = x_cmp.lhs.get();
@@ -2534,7 +2534,7 @@ where
     }
     users.all(|user| {
         let user = user.to_erased();
-        let Some(InstructionKindData::ICmp(cmp)) = instruction_kind(user) else {
+        let Some(InstructionKindData::Icmp(cmp)) = instruction_kind(user) else {
             return false;
         };
         if !predicate_ok(cmp.predicate) {
@@ -2599,7 +2599,7 @@ fn is_known_to_be_a_power_of_two_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
         return Ok(true);
     }
     // `(signmask) >>l X` likewise.
-    if let InstructionKindData::LShr(data) = kind
+    if let InstructionKindData::Lshr(data) = kind
         && argument_constant(Some(value_from_slot(value, data.lhs.get())))
             .is_some_and(|constant| constant.is_sign_mask())
     {
@@ -2618,7 +2618,7 @@ fn is_known_to_be_a_power_of_two_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
     match kind {
         InstructionKindData::Cast(data) => match data.kind {
-            CastOpcode::ZExt => recurse(value_from_slot(value, data.src.get()), or_zero),
+            CastOpcode::Zext => recurse(value_from_slot(value, data.src.get()), or_zero),
             CastOpcode::Trunc => {
                 Ok(or_zero && recurse(value_from_slot(value, data.src.get()), or_zero)?)
             }
@@ -2633,14 +2633,14 @@ fn is_known_to_be_a_power_of_two_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 Ok(false)
             }
         }
-        InstructionKindData::LShr(data) => {
+        InstructionKindData::Lshr(data) => {
             if or_zero || (query.uses_instruction_info() && data.is_exact) {
                 recurse(operand(&data.lhs), or_zero)
             } else {
                 Ok(false)
             }
         }
-        InstructionKindData::UDiv(data) => {
+        InstructionKindData::Udiv(data) => {
             if query.uses_instruction_info() && data.is_exact {
                 recurse(operand(&data.lhs), or_zero)
             } else {
@@ -2737,7 +2737,7 @@ fn power_of_two_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // `lshr(UINT_MAX, Y) + 1` is a power of two (when the add is `nuw`) or zero.
     if or_zero || (query.uses_instruction_info() && data.no_unsigned_wrap) {
         let is_all_ones_lshr = |candidate: Value<'ctx, B>| {
-            matches!(instruction_kind(candidate), Some(InstructionKindData::LShr(shift))
+            matches!(instruction_kind(candidate), Some(InstructionKindData::Lshr(shift))
                 if argument_constant(Some(value_from_slot(candidate, shift.lhs.get())))
                     .is_some_and(|constant| constant.is_all_ones()))
         };
@@ -2832,14 +2832,14 @@ fn is_power_of_two_recurrence<'a, 'ctx, B: ModuleBrand + 'ctx>(
             && is_known_to_be_a_power_of_two_inner(step, or_zero, query, depth)?),
         // A signed division's start must not be the sign mask, so being a
         // power of two is not enough — it has to be a constant one.
-        BinaryOpcode::SDiv if !start_is_power_of_two_constant => Ok(false),
+        BinaryOpcode::Sdiv if !start_is_power_of_two_constant => Ok(false),
         // The divisor must be a power of two. Without `or_zero` the induction
         // variable is only guaranteed non-zero when the division is exact.
-        BinaryOpcode::SDiv | BinaryOpcode::UDiv => Ok((or_zero || recurrence.is_exact)
+        BinaryOpcode::Sdiv | BinaryOpcode::Udiv => Ok((or_zero || recurrence.is_exact)
             && is_known_to_be_a_power_of_two_inner(step, false, query, depth)?),
         BinaryOpcode::Shl => Ok(or_zero || no_wrap),
-        BinaryOpcode::AShr if !start_is_power_of_two_constant => Ok(false),
-        BinaryOpcode::AShr | BinaryOpcode::LShr => Ok(or_zero || recurrence.is_exact),
+        BinaryOpcode::Ashr if !start_is_power_of_two_constant => Ok(false),
+        BinaryOpcode::Ashr | BinaryOpcode::Lshr => Ok(or_zero || recurrence.is_exact),
         _ => Ok(false),
     }
 }
@@ -2867,10 +2867,10 @@ fn power_of_two_intrinsic<'a, 'ctx, B: ModuleBrand + 'ctx>(
     };
 
     match semantic {
-        IntrinsicSemantic::UMax
-        | IntrinsicSemantic::SMax
-        | IntrinsicSemantic::UMin
-        | IntrinsicSemantic::SMin => {
+        IntrinsicSemantic::Umax
+        | IntrinsicSemantic::Smax
+        | IntrinsicSemantic::Umin
+        | IntrinsicSemantic::Smin => {
             let (Some(first), Some(second)) = (argument(0), argument(1)) else {
                 return Ok(false);
             };
@@ -2880,7 +2880,7 @@ fn power_of_two_intrinsic<'a, 'ctx, B: ModuleBrand + 'ctx>(
             )
         }
         // bswap/bitreverse move bits around without changing how many are set.
-        IntrinsicSemantic::BSwap | IntrinsicSemantic::BitReverse => {
+        IntrinsicSemantic::Bswap | IntrinsicSemantic::BitReverse => {
             let Some(first) = argument(0) else {
                 return Ok(false);
             };
@@ -2888,7 +2888,7 @@ fn power_of_two_intrinsic<'a, 'ctx, B: ModuleBrand + 'ctx>(
         }
         // When both inputs are the same value this is a rotate, and
         // `is_pow2(rotate(x, y)) == is_pow2(x)`.
-        IntrinsicSemantic::FShl | IntrinsicSemantic::FShr => {
+        IntrinsicSemantic::Fshl | IntrinsicSemantic::Fshr => {
             let (Some(first), Some(second)) = (argument(0), argument(1)) else {
                 return Ok(false);
             };
@@ -3125,12 +3125,12 @@ fn null_test_operands<'ctx, B: ModuleBrand + 'ctx>(
     flag: Value<'ctx, B>,
 ) -> Option<Value<'ctx, B>> {
     // m_LShr(m_Value(X), m_APInt(C1))
-    let (base, shift_amount) = binary_operands_of(shifted, BinaryOpcode::LShr)?;
+    let (base, shift_amount) = binary_operands_of(shifted, BinaryOpcode::Lshr)?;
     let shift_amount = splat_or_scalar_constant(shift_amount)?;
 
     // m_ZExt(m_SpecificICmp(ICMP_NE, .., m_Zero()))
     let compare = zext_source(flag)?;
-    let InstructionKindData::ICmp(compare_data) = instruction_kind(compare)? else {
+    let InstructionKindData::Icmp(compare_data) = instruction_kind(compare)? else {
         return None;
     };
     if compare_data.predicate != IntPredicate::Ne {
@@ -3195,7 +3195,7 @@ fn splat_or_scalar_constant<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) 
 /// The source of a `zext`, matching upstream's `m_ZExt`.
 fn zext_source<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
     match instruction_kind(value)? {
-        InstructionKindData::Cast(data) if data.kind == CastOpcode::ZExt => {
+        InstructionKindData::Cast(data) if data.kind == CastOpcode::Zext => {
             Some(value_from_slot(value, data.src.get()))
         }
         _ => None,
@@ -3208,7 +3208,7 @@ fn zext_or_sext_source<'ctx, B: ModuleBrand + 'ctx>(
 ) -> Option<Value<'ctx, B>> {
     match instruction_kind(value)? {
         InstructionKindData::Cast(data)
-            if matches!(data.kind, CastOpcode::ZExt | CastOpcode::SExt) =>
+            if matches!(data.kind, CastOpcode::Zext | CastOpcode::Sext) =>
         {
             Some(value_from_slot(value, data.src.get()))
         }
@@ -3320,8 +3320,8 @@ fn have_no_common_bits_set_special_cases<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // Look for: (X << V) op (Y >> (BitWidth - V)), or the same with the two
     // shift directions exchanged.
     Ok(
-        complementary_shift_pair(lhs, rhs, BinaryOpcode::LShr, BinaryOpcode::Shl, query)
-            || complementary_shift_pair(lhs, rhs, BinaryOpcode::Shl, BinaryOpcode::LShr, query),
+        complementary_shift_pair(lhs, rhs, BinaryOpcode::Lshr, BinaryOpcode::Shl, query)
+            || complementary_shift_pair(lhs, rhs, BinaryOpcode::Shl, BinaryOpcode::Lshr, query),
     )
 }
 
@@ -3499,8 +3499,8 @@ fn invertible_operands<'ctx, B: ModuleBrand + 'ctx>(
             (a.rhs.get() == b.rhs.get())
                 .then(|| (operand(v1, a.lhs.get()), operand(v2, b.lhs.get())))
         }
-        (InstructionKindData::AShr(a), InstructionKindData::AShr(b))
-        | (InstructionKindData::LShr(a), InstructionKindData::LShr(b)) => {
+        (InstructionKindData::Ashr(a), InstructionKindData::Ashr(b))
+        | (InstructionKindData::Lshr(a), InstructionKindData::Lshr(b)) => {
             if !(a.is_exact && b.is_exact) {
                 return None;
             }
@@ -3508,7 +3508,7 @@ fn invertible_operands<'ctx, B: ModuleBrand + 'ctx>(
                 .then(|| (operand(v1, a.lhs.get()), operand(v2, b.lhs.get())))
         }
         (InstructionKindData::Cast(a), InstructionKindData::Cast(b))
-            if a.kind == b.kind && matches!(a.kind, CastOpcode::SExt | CastOpcode::ZExt) =>
+            if a.kind == b.kind && matches!(a.kind, CastOpcode::Sext | CastOpcode::Zext) =>
         {
             let source1 = operand(v1, a.src.get());
             let source2 = operand(v2, b.src.get());
@@ -3937,7 +3937,7 @@ fn known_bits_from_context<'a, 'ctx, B: ModuleBrand + 'ctx>(
         }
         if !matches!(
             instruction_kind(argument),
-            Some(InstructionKindData::ICmp(_))
+            Some(InstructionKindData::Icmp(_))
         ) {
             continue;
         }
@@ -4042,7 +4042,7 @@ fn known_bits_from_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
 
     if matches!(
         instruction_kind(condition),
-        Some(InstructionKindData::ICmp(_))
+        Some(InstructionKindData::Icmp(_))
     ) {
         return known_bits_from_int_compare_cond(value, condition, known, query, invert);
     }
@@ -4080,7 +4080,7 @@ fn known_bits_from_int_compare_cond<'a, 'ctx, B: ModuleBrand + 'ctx>(
     query: &ValueTrackingQuery<'a, 'ctx, B>,
     invert: bool,
 ) -> KnownBits {
-    let Some(InstructionKindData::ICmp(data)) = instruction_kind(compare) else {
+    let Some(InstructionKindData::Icmp(data)) = instruction_kind(compare) else {
         return known;
     };
     let predicate = if invert {
@@ -4296,7 +4296,7 @@ where
     let data = match (instruction_kind(value)?, direction) {
         (InstructionKindData::Shl(data), ShiftDirection::Left) => data,
         (
-            InstructionKindData::LShr(data) | InstructionKindData::AShr(data),
+            InstructionKindData::Lshr(data) | InstructionKindData::Ashr(data),
             ShiftDirection::Right,
         ) => data,
         _ => return None,
@@ -4521,8 +4521,8 @@ fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx>(
     match &inst.kind {
         // Shifts are poison when the amount is out of range.
         InstructionKindData::Shl(data)
-        | InstructionKindData::AShr(data)
-        | InstructionKindData::LShr(data) => {
+        | InstructionKindData::Ashr(data)
+        | InstructionKindData::Lshr(data) => {
             kind.includes_poison()
                 && !shift_amount_known_in_range(value_from_slot(value, data.rhs.get()))
         }
@@ -4530,7 +4530,7 @@ fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx>(
         // fptosi/fptoui yield poison when the value does not fit the
         // destination type.
         InstructionKindData::Cast(data)
-            if matches!(data.kind, CastOpcode::FpToSI | CastOpcode::FpToUI) =>
+            if matches!(data.kind, CastOpcode::FpToSi | CastOpcode::FpToUi) =>
         {
             true
         }
@@ -4570,14 +4570,14 @@ fn can_create_undef_or_poison_kind<'ctx, B: ModuleBrand + 'ctx>(
         }
 
         // These never create undef or poison of their own.
-        InstructionKindData::FNeg(_)
+        InstructionKindData::Fneg(_)
         | InstructionKindData::Phi(_)
         | InstructionKindData::Select(_)
         | InstructionKindData::ExtractValue(_)
         | InstructionKindData::InsertValue(_)
         | InstructionKindData::Freeze(_)
-        | InstructionKindData::ICmp(_)
-        | InstructionKindData::FCmp(_)
+        | InstructionKindData::Icmp(_)
+        | InstructionKindData::Fcmp(_)
         | InstructionKindData::Gep(_) => false,
 
         // Upstream's `default`: a binary operator cannot create undef or
@@ -4597,10 +4597,10 @@ fn has_poison_generating_annotations(kind: &InstructionKindData) -> bool {
         | InstructionKindData::Sub(data)
         | InstructionKindData::Mul(data)
         | InstructionKindData::Shl(data) => data.no_signed_wrap || data.no_unsigned_wrap,
-        InstructionKindData::UDiv(data)
-        | InstructionKindData::SDiv(data)
-        | InstructionKindData::LShr(data)
-        | InstructionKindData::AShr(data) => data.is_exact,
+        InstructionKindData::Udiv(data)
+        | InstructionKindData::Sdiv(data)
+        | InstructionKindData::Lshr(data)
+        | InstructionKindData::Ashr(data) => data.is_exact,
         InstructionKindData::Or(data) => data.disjoint,
         InstructionKindData::Gep(data) => !data.flags.is_empty(),
         InstructionKindData::Cast(data) => data.nneg.get() || data.nuw.get(),
@@ -4690,15 +4690,15 @@ pub fn propagates_poison<'ctx, B: ModuleBrand + 'ctx>(
         // Only the condition propagates; an unselected arm's poison does not.
         InstructionKindData::Select(_) => operand_index == 0,
         InstructionKindData::Call(_) => false,
-        InstructionKindData::ICmp(_)
-        | InstructionKindData::FCmp(_)
+        InstructionKindData::Icmp(_)
+        | InstructionKindData::Fcmp(_)
         | InstructionKindData::Gep(_) => true,
         // Upstream's `default`: binary, unary and cast operators propagate.
         other => {
             is_binary_operator_kind(other)
                 || matches!(
                     other,
-                    InstructionKindData::FNeg(_) | InstructionKindData::Cast(_)
+                    InstructionKindData::Fneg(_) | InstructionKindData::Cast(_)
                 )
         }
     }
@@ -5699,8 +5699,8 @@ fn is_guaranteed_not_to_be_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // provably is not poison.
     if kind.includes_poison()
         && let InstructionKindData::Shl(data)
-        | InstructionKindData::LShr(data)
-        | InstructionKindData::AShr(data) = operator
+        | InstructionKindData::Lshr(data)
+        | InstructionKindData::Ashr(data) = operator
     {
         if query.uses_instruction_info()
             && (data.no_unsigned_wrap || data.no_signed_wrap || data.is_exact)
@@ -5935,7 +5935,7 @@ fn type_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>, dl: &DataLayou
         }
         TypeKind::Void
         | TypeKind::Half
-        | TypeKind::BFloat
+        | TypeKind::Bfloat
         | TypeKind::Float
         | TypeKind::Double
         | TypeKind::X86Fp80

@@ -71,7 +71,7 @@ where
             };
             constant_fold_cast_instruction(cast.kind, src, value.ty())
         }
-        InstructionKindData::ICmp(cmp) => {
+        InstructionKindData::Icmp(cmp) => {
             let Some(lhs) = constant_from_id(module, cmp.lhs.get()) else {
                 return Ok(None);
             };
@@ -80,7 +80,7 @@ where
             };
             constant_fold_compare_instruction(CmpPredicate::Int(cmp.predicate), lhs, rhs)
         }
-        InstructionKindData::FCmp(cmp) => {
+        InstructionKindData::Fcmp(cmp) => {
             let Some(lhs) = constant_from_id(module, cmp.lhs.get()) else {
                 return Ok(None);
             };
@@ -89,11 +89,11 @@ where
             };
             constant_fold_compare_instruction(CmpPredicate::Float(cmp.predicate), lhs, rhs)
         }
-        InstructionKindData::FNeg(fneg) => {
+        InstructionKindData::Fneg(fneg) => {
             let Some(src) = constant_from_id(module, fneg.src.get()) else {
                 return Ok(None);
             };
-            constant_fold_unary_instruction(UnaryOpcode::FNeg, src)
+            constant_fold_unary_instruction(UnaryOpcode::Fneg, src)
         }
         InstructionKindData::Select(select) => {
             let Some(cond) = constant_from_id(module, select.cond.get()) else {
@@ -165,31 +165,31 @@ where
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
         | InstructionKindData::Mul(_)
-        | InstructionKindData::UDiv(_)
-        | InstructionKindData::SDiv(_)
-        | InstructionKindData::URem(_)
-        | InstructionKindData::SRem(_)
+        | InstructionKindData::Udiv(_)
+        | InstructionKindData::Sdiv(_)
+        | InstructionKindData::Urem(_)
+        | InstructionKindData::Srem(_)
         | InstructionKindData::Shl(_)
-        | InstructionKindData::LShr(_)
-        | InstructionKindData::AShr(_)
+        | InstructionKindData::Lshr(_)
+        | InstructionKindData::Ashr(_)
         | InstructionKindData::And(_)
         | InstructionKindData::Or(_)
         | InstructionKindData::Xor(_)
-        | InstructionKindData::FAdd(_)
-        | InstructionKindData::FSub(_)
-        | InstructionKindData::FMul(_)
-        | InstructionKindData::FDiv(_)
-        | InstructionKindData::FRem(_)
+        | InstructionKindData::Fadd(_)
+        | InstructionKindData::Fsub(_)
+        | InstructionKindData::Fmul(_)
+        | InstructionKindData::Fdiv(_)
+        | InstructionKindData::Frem(_)
         | InstructionKindData::Alloca(_)
         | InstructionKindData::Load(_)
         | InstructionKindData::Store(_)
         | InstructionKindData::Call(_)
         | InstructionKindData::Phi(_)
         | InstructionKindData::Freeze(_)
-        | InstructionKindData::VAArg(_)
+        | InstructionKindData::VaArg(_)
         | InstructionKindData::Fence(_)
         | InstructionKindData::AtomicCmpXchg(_)
-        | InstructionKindData::AtomicRMW(_)
+        | InstructionKindData::AtomicRmw(_)
         | InstructionKindData::Switch(_)
         | InstructionKindData::IndirectBr(_)
         | InstructionKindData::Invoke(_)
@@ -214,22 +214,22 @@ fn binary_instruction_parts(
         InstructionKindData::Add(data) => (BinaryOpcode::Add, data),
         InstructionKindData::Sub(data) => (BinaryOpcode::Sub, data),
         InstructionKindData::Mul(data) => (BinaryOpcode::Mul, data),
-        InstructionKindData::UDiv(data) => (BinaryOpcode::UDiv, data),
-        InstructionKindData::SDiv(data) => (BinaryOpcode::SDiv, data),
-        InstructionKindData::URem(data) => (BinaryOpcode::URem, data),
-        InstructionKindData::SRem(data) => (BinaryOpcode::SRem, data),
+        InstructionKindData::Udiv(data) => (BinaryOpcode::Udiv, data),
+        InstructionKindData::Sdiv(data) => (BinaryOpcode::Sdiv, data),
+        InstructionKindData::Urem(data) => (BinaryOpcode::Urem, data),
+        InstructionKindData::Srem(data) => (BinaryOpcode::Srem, data),
         InstructionKindData::Shl(data) => (BinaryOpcode::Shl, data),
-        InstructionKindData::LShr(data) => (BinaryOpcode::LShr, data),
-        InstructionKindData::AShr(data) => (BinaryOpcode::AShr, data),
+        InstructionKindData::Lshr(data) => (BinaryOpcode::Lshr, data),
+        InstructionKindData::Ashr(data) => (BinaryOpcode::Ashr, data),
         InstructionKindData::And(data) => (BinaryOpcode::And, data),
         InstructionKindData::Or(data) => (BinaryOpcode::Or, data),
         InstructionKindData::Xor(data) => (BinaryOpcode::Xor, data),
-        InstructionKindData::FAdd(data) => (BinaryOpcode::FAdd, data),
-        InstructionKindData::FSub(data) => (BinaryOpcode::FSub, data),
-        InstructionKindData::FMul(data) => (BinaryOpcode::FMul, data),
-        InstructionKindData::FDiv(data) => (BinaryOpcode::FDiv, data),
-        InstructionKindData::FRem(data) => (BinaryOpcode::FRem, data),
-        InstructionKindData::FCmp(_)
+        InstructionKindData::Fadd(data) => (BinaryOpcode::Fadd, data),
+        InstructionKindData::Fsub(data) => (BinaryOpcode::Fsub, data),
+        InstructionKindData::Fmul(data) => (BinaryOpcode::Fmul, data),
+        InstructionKindData::Fdiv(data) => (BinaryOpcode::Fdiv, data),
+        InstructionKindData::Frem(data) => (BinaryOpcode::Frem, data),
+        InstructionKindData::Fcmp(_)
         | InstructionKindData::Alloca(_)
         | InstructionKindData::Load(_)
         | InstructionKindData::Store(_)
@@ -237,11 +237,11 @@ fn binary_instruction_parts(
         | InstructionKindData::Call(_)
         | InstructionKindData::Select(_)
         | InstructionKindData::Cast(_)
-        | InstructionKindData::ICmp(_)
+        | InstructionKindData::Icmp(_)
         | InstructionKindData::Phi(_)
-        | InstructionKindData::FNeg(_)
+        | InstructionKindData::Fneg(_)
         | InstructionKindData::Freeze(_)
-        | InstructionKindData::VAArg(_)
+        | InstructionKindData::VaArg(_)
         | InstructionKindData::ExtractValue(_)
         | InstructionKindData::InsertValue(_)
         | InstructionKindData::ExtractElement(_)
@@ -249,7 +249,7 @@ fn binary_instruction_parts(
         | InstructionKindData::ShuffleVector(_)
         | InstructionKindData::Fence(_)
         | InstructionKindData::AtomicCmpXchg(_)
-        | InstructionKindData::AtomicRMW(_)
+        | InstructionKindData::AtomicRmw(_)
         | InstructionKindData::Switch(_)
         | InstructionKindData::IndirectBr(_)
         | InstructionKindData::Invoke(_)
@@ -282,7 +282,7 @@ fn constant_from_id<'ctx, B: ModuleBrand + 'ctx>(
         | ValueKindData::Function(_)
         | ValueKindData::Instruction(_)
         | ValueKindData::GlobalAlias(_)
-        | ValueKindData::GlobalIFunc(_)
+        | ValueKindData::GlobalIfunc(_)
         | ValueKindData::GlobalVariable(_)
         | ValueKindData::MetadataAsValue(_)
         | ValueKindData::InlineAsm(_) => None,
@@ -314,7 +314,7 @@ pub fn constant_fold_unary_instruction<'ctx, B: ModuleBrand + 'ctx>(
     }
 
     match opcode {
-        UnaryOpcode::FNeg => {
+        UnaryOpcode::Fneg => {
             if is_undef(operand) && !matches!(operand.ty().data(), TypeData::FixedVector { .. }) {
                 return Ok(Some(operand));
             }
@@ -373,7 +373,7 @@ pub fn constant_fold_binary_instruction<'ctx, B: ModuleBrand + 'ctx>(
     }
     if matches!(
         opcode,
-        BinaryOpcode::UDiv | BinaryOpcode::SDiv | BinaryOpcode::URem | BinaryOpcode::SRem
+        BinaryOpcode::Udiv | BinaryOpcode::Sdiv | BinaryOpcode::Urem | BinaryOpcode::Srem
     ) && constant_is_null_value(rhs)
     {
         return Ok(Some(poison_for(lhs.ty())));
@@ -402,7 +402,7 @@ pub fn constant_fold_binary_instruction<'ctx, B: ModuleBrand + 'ctx>(
         return Ok(Some(folded));
     }
 
-    if matches!(opcode, BinaryOpcode::URem | BinaryOpcode::SRem)
+    if matches!(opcode, BinaryOpcode::Urem | BinaryOpcode::Srem)
         && let Some(folded) = fold_i1_binary(opcode, lhs, rhs)?
     {
         return Ok(Some(folded));
@@ -412,21 +412,21 @@ pub fn constant_fold_binary_instruction<'ctx, B: ModuleBrand + 'ctx>(
         BinaryOpcode::Add
         | BinaryOpcode::Sub
         | BinaryOpcode::Mul
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::SDiv
-        | BinaryOpcode::URem
-        | BinaryOpcode::SRem
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Sdiv
+        | BinaryOpcode::Urem
+        | BinaryOpcode::Srem
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
         | BinaryOpcode::And
         | BinaryOpcode::Or
         | BinaryOpcode::Xor => fold_int_binary(opcode, lhs, rhs)?,
-        BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => fold_float_binary(opcode, lhs, rhs)?,
+        BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => fold_float_binary(opcode, lhs, rhs)?,
     };
     if folded.is_some() {
         return Ok(folded);
@@ -581,20 +581,20 @@ fn binary_constant_expr_opcode(opcode: BinaryOpcode) -> Option<ConstantExprOpcod
         BinaryOpcode::Sub => Some(ConstantExprOpcode::Sub),
         BinaryOpcode::Xor => Some(ConstantExprOpcode::Xor),
         BinaryOpcode::Mul
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::SDiv
-        | BinaryOpcode::URem
-        | BinaryOpcode::SRem
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Sdiv
+        | BinaryOpcode::Urem
+        | BinaryOpcode::Srem
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
         | BinaryOpcode::And
         | BinaryOpcode::Or
-        | BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => None,
+        | BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => None,
     }
 }
 
@@ -609,14 +609,14 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
     }
     if is_undef(operand) {
         return match opcode {
-            CastOpcode::ZExt | CastOpcode::SExt | CastOpcode::UIToFp | CastOpcode::SIToFp => {
+            CastOpcode::Zext | CastOpcode::Sext | CastOpcode::UiToFp | CastOpcode::SiToFp => {
                 null_constant_for_type(dest_ty)
             }
             CastOpcode::Trunc
             | CastOpcode::FpTrunc
             | CastOpcode::FpExt
-            | CastOpcode::FpToUI
-            | CastOpcode::FpToSI
+            | CastOpcode::FpToUi
+            | CastOpcode::FpToSi
             | CastOpcode::BitCast
             | CastOpcode::PtrToAddr
             | CastOpcode::PtrToInt
@@ -635,7 +635,7 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
     }
 
     match opcode {
-        CastOpcode::Trunc | CastOpcode::ZExt | CastOpcode::SExt => {
+        CastOpcode::Trunc | CastOpcode::Zext | CastOpcode::Sext => {
             let Ok(src) = ConstantIntValue::<IntDyn, B>::try_from(operand) else {
                 return Ok(None);
             };
@@ -646,8 +646,8 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
             let dst_bits = dst_ty.bit_width();
             let result = match opcode {
                 CastOpcode::Trunc => src_ap.trunc(dst_bits),
-                CastOpcode::ZExt => src_ap.zext(dst_bits),
-                CastOpcode::SExt => src_ap.sext(dst_bits),
+                CastOpcode::Zext => src_ap.zext(dst_bits),
+                CastOpcode::Sext => src_ap.sext(dst_bits),
                 _ => None,
             };
             let Some(result) = result else {
@@ -667,7 +667,7 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
                 .convert(dst_ty.semantics(), RoundingMode::NearestTiesToEven);
             Ok(Some(dst_ty.const_ap_float(&result)?.as_constant()))
         }
-        CastOpcode::FpToUI | CastOpcode::FpToSI => {
+        CastOpcode::FpToUi | CastOpcode::FpToSi => {
             let Ok(src) = ConstantFloatValue::<FloatDyn, B>::try_from(operand) else {
                 return Ok(None);
             };
@@ -675,7 +675,7 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
                 return Ok(None);
             };
             let signedness = match opcode {
-                CastOpcode::FpToSI => Signedness::Signed,
+                CastOpcode::FpToSi => Signedness::Signed,
                 _ => Signedness::Unsigned,
             };
             let (result, status, _) = src.ap_float().convert_to_integer(
@@ -688,7 +688,7 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
             }
             Ok(Some(dst_ty.const_ap_int(&result)?.as_constant()))
         }
-        CastOpcode::UIToFp | CastOpcode::SIToFp => {
+        CastOpcode::UiToFp | CastOpcode::SiToFp => {
             let Ok(src) = ConstantIntValue::<IntDyn, B>::try_from(operand) else {
                 return Ok(None);
             };
@@ -696,7 +696,7 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
                 return Ok(None);
             };
             let signedness = match opcode {
-                CastOpcode::SIToFp => Signedness::Signed,
+                CastOpcode::SiToFp => Signedness::Signed,
                 _ => Signedness::Unsigned,
             };
             let (result, _) = crate::ApFloat::convert_from_ap_int(
@@ -865,14 +865,14 @@ fn constant_expr_opcode_from_cast(opcode: CastOpcode) -> Option<ConstantExprOpco
         CastOpcode::IntToPtr => Some(ConstantExprOpcode::IntToPtr),
         CastOpcode::BitCast => Some(ConstantExprOpcode::BitCast),
         CastOpcode::AddrSpaceCast => Some(ConstantExprOpcode::AddrSpaceCast),
-        CastOpcode::ZExt
-        | CastOpcode::SExt
+        CastOpcode::Zext
+        | CastOpcode::Sext
         | CastOpcode::FpTrunc
         | CastOpcode::FpExt
-        | CastOpcode::FpToUI
-        | CastOpcode::FpToSI
-        | CastOpcode::UIToFp
-        | CastOpcode::SIToFp => None,
+        | CastOpcode::FpToUi
+        | CastOpcode::FpToSi
+        | CastOpcode::UiToFp
+        | CastOpcode::SiToFp => None,
     }
 }
 
@@ -1239,7 +1239,7 @@ fn constant_relation_complexity<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<
         ValueKindData::Constant(ConstantData::GlobalValueRef { .. })
         | ValueKindData::Function(_)
         | ValueKindData::GlobalAlias(_)
-        | ValueKindData::GlobalIFunc(_)
+        | ValueKindData::GlobalIfunc(_)
         | ValueKindData::GlobalVariable(_) => 2,
         ValueKindData::Constant(ConstantData::BlockAddress { .. }) => 1,
         _ => 0,
@@ -1258,7 +1258,7 @@ fn global_value_ref_from_id<B: ModuleBrand>(
         ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => Some(*value),
         ValueKindData::Function(_)
         | ValueKindData::GlobalAlias(_)
-        | ValueKindData::GlobalIFunc(_)
+        | ValueKindData::GlobalIfunc(_)
         | ValueKindData::GlobalVariable(_) => Some(id),
         _ => None,
     }
@@ -1326,9 +1326,9 @@ fn linkage_is_weak_for_linker(linkage: Linkage) -> bool {
     matches!(
         linkage,
         Linkage::WeakAny
-            | Linkage::WeakODR
+            | Linkage::WeakOdr
             | Linkage::LinkOnceAny
-            | Linkage::LinkOnceODR
+            | Linkage::LinkOnceOdr
             | Linkage::Common
             | Linkage::ExternalWeak
     )
@@ -1346,7 +1346,7 @@ fn global_linkage<B: ModuleBrand>(module: ModuleView<'_, B>, id: ValueSlot) -> O
         ValueKindData::GlobalVariable(data) => Some(data.linkage.get()),
         ValueKindData::Function(data) => Some(*data.linkage.borrow()),
         ValueKindData::GlobalAlias(data) => Some(data.linkage.get()),
-        ValueKindData::GlobalIFunc(data) => Some(data.linkage.get()),
+        ValueKindData::GlobalIfunc(data) => Some(data.linkage.get()),
         _ => None,
     }
 }
@@ -2013,21 +2013,21 @@ fn fold_undef_int_binary<'ctx, B: ModuleBrand + 'ctx>(
                 zero()
             }
         }
-        BinaryOpcode::UDiv | BinaryOpcode::SDiv | BinaryOpcode::URem | BinaryOpcode::SRem
+        BinaryOpcode::Udiv | BinaryOpcode::Sdiv | BinaryOpcode::Urem | BinaryOpcode::Srem
             if rhs_undef || is_zero_int_constant(rhs) =>
         {
             poison()
         }
-        BinaryOpcode::UDiv | BinaryOpcode::SDiv | BinaryOpcode::URem | BinaryOpcode::SRem => zero(),
+        BinaryOpcode::Udiv | BinaryOpcode::Sdiv | BinaryOpcode::Urem | BinaryOpcode::Srem => zero(),
         BinaryOpcode::Or if lhs_undef && rhs_undef => undef(),
         BinaryOpcode::Or => all_ones(),
-        BinaryOpcode::LShr | BinaryOpcode::AShr | BinaryOpcode::Shl if rhs_undef => poison(),
-        BinaryOpcode::LShr | BinaryOpcode::AShr | BinaryOpcode::Shl => zero(),
-        BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => return Ok(None),
+        BinaryOpcode::Lshr | BinaryOpcode::Ashr | BinaryOpcode::Shl if rhs_undef => poison(),
+        BinaryOpcode::Lshr | BinaryOpcode::Ashr | BinaryOpcode::Shl => zero(),
+        BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => return Ok(None),
     };
     Ok(Some(folded))
 }
@@ -2089,20 +2089,20 @@ fn fold_i1_binary<'ctx, B: ModuleBrand + 'ctx>(
             build_binary_constant_or_expr(BinaryOpcode::Xor, lhs, rhs)
         }
         BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::SDiv => Ok(Some(lhs)),
-        BinaryOpcode::URem | BinaryOpcode::SRem => null_constant_for_type(lhs.ty()),
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Sdiv => Ok(Some(lhs)),
+        BinaryOpcode::Urem | BinaryOpcode::Srem => null_constant_for_type(lhs.ty()),
         BinaryOpcode::Mul
         | BinaryOpcode::And
         | BinaryOpcode::Or
         | BinaryOpcode::Xor
-        | BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => Ok(None),
+        | BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => Ok(None),
     }
 }
 
@@ -2240,21 +2240,21 @@ fn fold_int_binary<'ctx, B: ModuleBrand + 'ctx>(
         BinaryOpcode::Shl => {
             fold_shift(&lhs_ap, &rhs_ap, |value, amount| value.checked_shl(amount))
         }
-        BinaryOpcode::LShr => {
+        BinaryOpcode::Lshr => {
             fold_shift(&lhs_ap, &rhs_ap, |value, amount| value.checked_lshr(amount))
         }
-        BinaryOpcode::AShr => {
+        BinaryOpcode::Ashr => {
             fold_shift(&lhs_ap, &rhs_ap, |value, amount| value.checked_ashr(amount))
         }
-        BinaryOpcode::UDiv => lhs_ap.checked_udiv(&rhs_ap),
-        BinaryOpcode::SDiv => lhs_ap.checked_sdiv(&rhs_ap),
-        BinaryOpcode::URem => lhs_ap.checked_urem(&rhs_ap),
-        BinaryOpcode::SRem => lhs_ap.checked_srem(&rhs_ap),
-        BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => return Ok(None),
+        BinaryOpcode::Udiv => lhs_ap.checked_udiv(&rhs_ap),
+        BinaryOpcode::Sdiv => lhs_ap.checked_sdiv(&rhs_ap),
+        BinaryOpcode::Urem => lhs_ap.checked_urem(&rhs_ap),
+        BinaryOpcode::Srem => lhs_ap.checked_srem(&rhs_ap),
+        BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => return Ok(None),
     };
 
     let Some(result) = result else {
@@ -2290,21 +2290,21 @@ fn fold_float_binary<'ctx, B: ModuleBrand + 'ctx>(
     }
 
     let (result, _) = match opcode {
-        BinaryOpcode::FAdd => lhs_ap.add(&rhs_ap, RoundingMode::NearestTiesToEven),
-        BinaryOpcode::FSub => lhs_ap.subtract(&rhs_ap, RoundingMode::NearestTiesToEven),
-        BinaryOpcode::FMul => lhs_ap.multiply(&rhs_ap, RoundingMode::NearestTiesToEven),
-        BinaryOpcode::FDiv => lhs_ap.divide(&rhs_ap, RoundingMode::NearestTiesToEven),
-        BinaryOpcode::FRem => lhs_ap.modulo(&rhs_ap),
+        BinaryOpcode::Fadd => lhs_ap.add(&rhs_ap, RoundingMode::NearestTiesToEven),
+        BinaryOpcode::Fsub => lhs_ap.subtract(&rhs_ap, RoundingMode::NearestTiesToEven),
+        BinaryOpcode::Fmul => lhs_ap.multiply(&rhs_ap, RoundingMode::NearestTiesToEven),
+        BinaryOpcode::Fdiv => lhs_ap.divide(&rhs_ap, RoundingMode::NearestTiesToEven),
+        BinaryOpcode::Frem => lhs_ap.modulo(&rhs_ap),
         BinaryOpcode::Add
         | BinaryOpcode::Sub
         | BinaryOpcode::Mul
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::SDiv
-        | BinaryOpcode::URem
-        | BinaryOpcode::SRem
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Sdiv
+        | BinaryOpcode::Urem
+        | BinaryOpcode::Srem
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
         | BinaryOpcode::And
         | BinaryOpcode::Or
         | BinaryOpcode::Xor => return Ok(None),
@@ -2602,33 +2602,33 @@ fn fold_undef_float_binary<'ctx, B: ModuleBrand + 'ctx>(
     };
 
     let folded = match opcode {
-        BinaryOpcode::FSub if rhs_undef && constant_matches_negative_zero_fp_pattern(lhs) => {
+        BinaryOpcode::Fsub if rhs_undef && constant_matches_negative_zero_fp_pattern(lhs) => {
             undef()
         }
-        BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem
+        BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem
             if lhs_undef && rhs_undef =>
         {
             undef()
         }
-        BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => nan()?,
+        BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => nan()?,
         BinaryOpcode::Add
         | BinaryOpcode::Sub
         | BinaryOpcode::Mul
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::SDiv
-        | BinaryOpcode::URem
-        | BinaryOpcode::SRem
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Sdiv
+        | BinaryOpcode::Urem
+        | BinaryOpcode::Srem
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
         | BinaryOpcode::And
         | BinaryOpcode::Or
         | BinaryOpcode::Xor => return Ok(None),
@@ -2997,7 +2997,7 @@ fn binop_identity<'ctx, B: ModuleBrand + 'ctx>(
                 None
             }
         }
-        BinaryOpcode::FAdd => {
+        BinaryOpcode::Fadd => {
             if constant_is_float_negative_zero(lhs) {
                 Some(rhs)
             } else if constant_is_float_negative_zero(rhs) {
@@ -3006,7 +3006,7 @@ fn binop_identity<'ctx, B: ModuleBrand + 'ctx>(
                 None
             }
         }
-        BinaryOpcode::FMul => {
+        BinaryOpcode::Fmul => {
             if constant_is_one_value(lhs)? {
                 Some(rhs)
             } else if constant_is_one_value(rhs)? {
@@ -3017,27 +3017,27 @@ fn binop_identity<'ctx, B: ModuleBrand + 'ctx>(
         }
         BinaryOpcode::Sub
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
-        | BinaryOpcode::FSub
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
+        | BinaryOpcode::Fsub
             if constant_is_null_value(rhs) =>
         {
             Some(lhs)
         }
-        BinaryOpcode::UDiv | BinaryOpcode::SDiv | BinaryOpcode::FDiv
+        BinaryOpcode::Udiv | BinaryOpcode::Sdiv | BinaryOpcode::Fdiv
             if constant_is_one_value(rhs)? =>
         {
             Some(lhs)
         }
-        BinaryOpcode::URem | BinaryOpcode::SRem | BinaryOpcode::FRem => None,
+        BinaryOpcode::Urem | BinaryOpcode::Srem | BinaryOpcode::Frem => None,
         BinaryOpcode::Sub
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
-        | BinaryOpcode::FSub
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::SDiv
-        | BinaryOpcode::FDiv => None,
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Sdiv
+        | BinaryOpcode::Fdiv => None,
     };
     Ok(folded)
 }
@@ -3069,12 +3069,12 @@ fn binop_lhs_absorber<'ctx, B: ModuleBrand + 'ctx>(
         BinaryOpcode::And
         | BinaryOpcode::Mul
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
-        | BinaryOpcode::SDiv
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::URem
-        | BinaryOpcode::SRem
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
+        | BinaryOpcode::Sdiv
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Urem
+        | BinaryOpcode::Srem
             if constant_is_null_value(lhs) =>
         {
             Some(lhs)

@@ -25,7 +25,7 @@
 //!
 //! Two shapes of id live here: the **value ids** ([`ValueId`], [`IntValueId`],
 //! ...), which name a value and nothing more, and the **instruction ids**
-//! ([`CallInstId`], [`AtomicRMWInstId`], ...), whose [`ViewIn::View`] is an
+//! ([`CallInstId`], [`AtomicRmwInstId`], ...), whose [`ViewIn::View`] is an
 //! opcode handle so that a builder returning one keeps the opcode's typed API
 //! reachable through a single view.
 //!
@@ -58,11 +58,11 @@ use crate::function_signature::{
     FunctionParamList, FunctionReturn, TypedFunctionValue, TypedVarArgsFunctionValue,
 };
 use crate::global_alias::GlobalAlias;
-use crate::global_ifunc::GlobalIFunc;
+use crate::global_ifunc::GlobalIfunc;
 use crate::global_variable::GlobalVariable;
 use crate::instruction::InstructionKindData;
 use crate::instructions::{
-    AtomicCmpXchgInst, AtomicRMWInst, CallInst, FpPhiInst, FreezeInst, OtherPhiInst, PhiInst,
+    AtomicCmpXchgInst, AtomicRmwInst, CallInst, FpPhiInst, FreezeInst, OtherPhiInst, PhiInst,
     PointerPhiInst, TypedCallInst, VaArgInst,
 };
 use crate::int_width::{IntDyn, IntWidth, IntoIntValue, into_int_value_sealed};
@@ -263,8 +263,8 @@ decl_value_id! {
 
 decl_value_id! {
     /// Storable, module-tagged id for a module-level `ifunc`, resolved into a
-    /// [`GlobalIFunc`].
-    GlobalIFuncId
+    /// [`GlobalIfunc`].
+    GlobalIfuncId
 }
 
 /// Storable, module-tagged id for a basic block, resolved into a copyable
@@ -334,7 +334,7 @@ impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> BlockId<R, B, Params>
 // Most builders hand back a *value*, and the ids above say everything there is
 // to say about one. A few builders instead hand back an **opcode handle** that
 // carries its own typed API — [`CallInst::classify_callee`] /
-// `return_int_value`, [`TypedCallInst::result`], [`AtomicRMWInst::operation`],
+// `return_int_value`, [`TypedCallInst::result`], [`AtomicRmwInst::operation`],
 // ... Collapsing those to the erased [`ValueId`] would throw that API away *at
 // the return position*, and recovering it would cost a view plus an
 // [`InstructionView`](crate::InstructionView) narrowing plus a `kind()` match.
@@ -397,8 +397,8 @@ decl_value_id! {
 
 decl_value_id! {
     /// Storable, module-tagged id for an `atomicrmw` instruction, resolved into
-    /// an [`AtomicRMWInst`].
-    AtomicRMWInstId
+    /// an [`AtomicRmwInst`].
+    AtomicRmwInstId
 }
 
 decl_value_id! {
@@ -635,7 +635,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FloatValueId
             matches!(
                 module.type_data(ty),
                 TypeData::Half
-                    | TypeData::BFloat
+                    | TypeData::Bfloat
                     | TypeData::Float
                     | TypeData::Double
                     | TypeData::X86Fp80
@@ -795,7 +795,7 @@ macro_rules! impl_view_in_for_global_id {
 impl_view_in_for_global_id!(
     GlobalId => GlobalVariable [GlobalVariable],
     GlobalAliasId => GlobalAlias [GlobalAlias],
-    GlobalIFuncId => GlobalIFunc [GlobalIFunc],
+    GlobalIfuncId => GlobalIfunc [GlobalIfunc],
 );
 
 impl<R: ReturnMarker, B: ModuleBrand, Params: BlockParams> sealed::Sealed
@@ -956,8 +956,8 @@ macro_rules! impl_view_in_for_instruction_id {
 
 impl_view_in_for_instruction_id!(
     FreezeInstId => FreezeInst [Freeze],
-    VaArgInstId => VaArgInst [VAArg],
-    AtomicRMWInstId => AtomicRMWInst [AtomicRMW],
+    VaArgInstId => VaArgInst [VaArg],
+    AtomicRmwInstId => AtomicRmwInst [AtomicRmw],
     AtomicCmpXchgInstId => AtomicCmpXchgInst [AtomicCmpXchg],
     OtherPhiInstId => OtherPhiInst [Phi],
 );
@@ -1024,7 +1024,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> ViewIn<'ctx, B> for FpPhiInstId<
             matches!(
                 module.type_data(ty),
                 TypeData::Half
-                    | TypeData::BFloat
+                    | TypeData::Bfloat
                     | TypeData::Float
                     | TypeData::Double
                     | TypeData::X86Fp80
@@ -1163,7 +1163,7 @@ impl_into_erased_value_for_id!(
     FunctionId[R: ReturnMarker],
     GlobalId,
     GlobalAliasId,
-    GlobalIFuncId,
+    GlobalIfuncId,
 );
 
 /// Implement [`IntoErasedValue`] for an instruction id whose opcode handle is
@@ -1200,7 +1200,7 @@ macro_rules! impl_into_erased_value_for_instruction_id {
 impl_into_erased_value_for_instruction_id!(
     FreezeInstId,
     VaArgInstId,
-    AtomicRMWInstId,
+    AtomicRmwInstId,
     AtomicCmpXchgInstId,
     PhiInstId[W: IntWidth],
     FpPhiInstId[K: FloatKind],

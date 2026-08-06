@@ -427,6 +427,42 @@ bullet below names its wave.
   `GlobalVariableFlags` (casing + the full-words law). Aligns with the
   existing `IrError` / `IrResult` / `CfgUpdate` spellings.
 
+- **Breaking (W1b): the same RFC-430 casing, now on enum variants and
+  macro-declared types.** W1 found its targets by grepping declaration
+  keywords, which sees neither `enum` bodies nor types minted inside
+  `decl_binop_handle!` / `decl_cast_handle!` / `decl_value_id!` /
+  `decl_struct_kind!` / `decl_exact_flags!` — so two whole categories survived
+  it. Both are converted now: **258 symbols, 2459 edits.** The opcode and
+  instruction-kind variants (`Opcode::ICmp` → `Icmp`, `CastOpcode::ZExt` →
+  `Zext`, `InstructionKind::AShr` → `Ashr`, `BinaryOpcode::UDiv` → `Udiv`,
+  `FAdd` → `Fadd`, `VAArg` → `VaArg`, `AtomicRMW` → `AtomicRmw`, asmparser's
+  `FPToSI` / `UIToFP` / `FPExt` → `FpToSi` / `UiToFp` / `FpExt`); the intrinsic
+  and `atomicrmw` mnemonics (`SMax` → `Smax`, `USubSat` → `UsubSat`, `BSwap` →
+  `Bswap`, `VScale` → `Vscale`, `FMaximum` → `Fmaximum`, `UIncWrap` →
+  `UincWrap`); attribute, linkage and layout variants (`StrictFP` → `StrictFp`,
+  `UWTable` → `UwTable`, `VScaleRange` → `VscaleRange`, `WeakODR` → `WeakOdr`,
+  `LinkOnceODR` → `LinkOnceOdr`, `XCoff` → `Xcoff`, `ATT` → `Att`);
+  `ConstantData::DSOLocalEquivalent` → `DsoLocalEquivalent`; the 18
+  `SpecializedMetadataKind::DI*` node kinds → `Di*`; and the macro-declared
+  handles, flag structs and markers (`AShrInst` → `AshrInst`, `ZExtInst` →
+  `ZextInst`, `FAddInst` → `FaddInst`, `UDivFlags` → `UdivFlags`,
+  `AtomicRMWInst` / `Data` / `Id` / `Config` / `Flags` / `BinOp` →
+  `AtomicRmw*`, `GlobalIFunc*` → `GlobalIfunc*`, the `BFloat` float-kind marker
+  → `Bfloat`). Two names also shed an abbreviation, exactly as `GVarFlags` did
+  in W1: `NamedMDNode` → `NamedMetadataNode` (its three sibling types already
+  spell `NamedMetadata` in full) and `UseListOrderBBRecord` →
+  `UseListOrderBbRecord` (matching asmparser's existing `Keyword::UselistorderBb`).
+
+  **Printed IR is byte-identical.** Every `.ll` spelling lives in a string
+  literal, not in a variant name — `SpecializedMetadataKind::DiLocation` still
+  prints `DILocation`, `AtomicRmwBinOp::UincWrap` still prints `uinc_wrap` — so
+  the round-trip corpus and the byte-lock examples are untouched. Deliberately
+  left alone: upstream C++ citations in comments (`AtomicRMWInst`,
+  `Instruction::FPToSI`, `NamedMDNode *`), `.ll` keyword strings,
+  `PunctKind::LBrace`-style Left/Right punctuation names, and
+  `PhiViolation::NotAPredecessor` — in those the second capital opens an
+  ordinary word, not an acronym.
+
 ### `llvmkit-tablegen`: the generator becomes a crate that mirrors LLVM
 
 #### Added

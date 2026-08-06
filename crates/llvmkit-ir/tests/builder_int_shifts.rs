@@ -8,7 +8,7 @@
 //! path of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, WrapFlags)`.
 
 use llvmkit_ir::{
-    AShrFlags, Dyn, IntValue, IrBuilder, IrError, LShrFlags, Linkage, ShlFlags, module_new,
+    AshrFlags, Dyn, IntValue, IrBuilder, IrError, Linkage, LshrFlags, ShlFlags, module_new,
 };
 
 /// Mirrors `test/Assembler/flags.ll` for `shl` print form.
@@ -95,7 +95,7 @@ fn lshr_exact() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
-    let r = b.int_lshr_with_flags(lhs, rhs, LShrFlags::new().exact(), "z")?;
+    let r = b.int_lshr_with_flags(lhs, rhs, LshrFlags::new().exact(), "z")?;
     b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%z = lshr exact i64 %0, %1"), "got:\n{text}");
@@ -113,7 +113,7 @@ fn ashr_exact() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
-    let r = b.int_ashr_with_flags(lhs, rhs, AShrFlags::new().exact(), "z")?;
+    let r = b.int_ashr_with_flags(lhs, rhs, AshrFlags::new().exact(), "z")?;
     b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%z = ashr exact i64 %0, %1"), "got:\n{text}");

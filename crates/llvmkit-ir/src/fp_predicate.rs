@@ -781,7 +781,7 @@ fn scalar_semantics<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<Ap
     };
     Some(match kind {
         TypeKind::Half => ApFloatSemantics::IeeeHalf,
-        TypeKind::BFloat => ApFloatSemantics::BFloat,
+        TypeKind::Bfloat => ApFloatSemantics::Bfloat,
         TypeKind::Float => ApFloatSemantics::IeeeSingle,
         TypeKind::Double => ApFloatSemantics::IeeeDouble,
         TypeKind::Fp128 => ApFloatSemantics::IeeeQuad,

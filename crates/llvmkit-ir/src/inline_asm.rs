@@ -40,13 +40,13 @@ use crate::value::{Value, ValueSlot};
 /// `InlineAsm::AsmDialect` in `llvm/include/llvm/IR/InlineAsm.h`.
 ///
 /// In the textual IR, [`AsmDialect::Intel`] adds the `inteldialect`
-/// keyword after the `asm` token; [`AsmDialect::ATT`] (the default) adds
+/// keyword after the `asm` token; [`AsmDialect::Att`] (the default) adds
 /// nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AsmDialect {
     /// AT&T syntax (`$0`, `$1`, …; LLVM's default).
     #[default]
-    ATT,
+    Att,
     /// Intel syntax; prints the `inteldialect` keyword.
     Intel,
 }

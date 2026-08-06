@@ -3,7 +3,7 @@ use llvmkit_ir::{
     Align, ApInt, AttrIndex, AttrKind, Attribute, AttributeStorage, CallAttributeData, CfgAnalyses,
     ConstantExprOpcode, ConstantExprOptions, DominatorTreeAnalysis, Dyn, DynBrand,
     FunctionAnalysisManager, InstructionView, IntValue, IrBuilder, IrError, KnownBits,
-    KnownBitsAnalysis, LShrFlags, Linkage, MetadataAttachmentKind, ModuleBrand, MulFlags, NoFolder,
+    KnownBitsAnalysis, Linkage, LshrFlags, MetadataAttachmentKind, ModuleBrand, MulFlags, NoFolder,
     PointerValue, PreservedAnalyses, ShuffleMaskElem, Value, ValueTrackingQuery, Width,
     compute_known_bits, is_known_non_zero, is_known_one, is_known_zero, module_new,
 };
@@ -774,7 +774,7 @@ fn freeze_of_exact_shift_that_can_poison_is_unknown() -> Result<(), IrError> {
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let one = i4_ty.const_ap_int(&ApInt::from_words(4, &[1]))?;
     let lshr =
-        b.int_lshr_with_flags::<Width<4>, _, _, _>(one, one, LShrFlags::new().exact(), "lshr")?;
+        b.int_lshr_with_flags::<Width<4>, _, _, _>(one, one, LshrFlags::new().exact(), "lshr")?;
     let frozen = b.freeze(lshr, "fr")?;
 
     let dl = m.data_layout();

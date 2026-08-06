@@ -183,7 +183,7 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: FloatValue<'_, f32, _> = m.view(f).param(0)?.try_into()?;
     let n0 = b.fp_neg::<f32, _, _>(p, "n0")?;
-    let Some(InstructionKind::FNeg(n0_inst)) =
+    let Some(InstructionKind::Fneg(n0_inst)) =
         InstructionView::try_from(b.view(n0).as_erased())?.kind()
     else {
         panic!("expected n0 to be fneg");
@@ -191,7 +191,7 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
     assert!(n0_inst.fast_math_flags().is_empty());
     let fmf = FastMathFlags::NO_NANS | FastMathFlags::NO_SIGNED_ZEROS;
     let n1 = b.fp_neg_fmf::<f32, _, _>(n0, fmf, "n1")?;
-    let Some(InstructionKind::FNeg(n1_inst)) =
+    let Some(InstructionKind::Fneg(n1_inst)) =
         InstructionView::try_from(b.view(n1).as_erased())?.kind()
     else {
         panic!("expected n1 to be fneg");

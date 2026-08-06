@@ -333,7 +333,7 @@ pub(crate) enum ConstantData {
         block: ValueSlot,
     },
     /// `dso_local_equivalent @function`.
-    DSOLocalEquivalent { function: ValueSlot },
+    DsoLocalEquivalent { function: ValueSlot },
     /// `no_cfi @function`.
     NoCfi { function: ValueSlot },
     /// `token none`.
@@ -393,7 +393,7 @@ impl ConstantData {
             | Self::SymbolDelta { .. }
             | Self::SymbolDeltaPlus { .. }
             | Self::BlockAddress { .. }
-            | Self::DSOLocalEquivalent { .. }
+            | Self::DsoLocalEquivalent { .. }
             | Self::NoCfi { .. }
             | Self::TokenNone
             | Self::TargetExtNone
@@ -794,7 +794,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
 /// direction for an "is this all ones" test.
 fn float_format_bit_width(kind: TypeKind) -> Option<u32> {
     match kind {
-        TypeKind::Half | TypeKind::BFloat => Some(16),
+        TypeKind::Half | TypeKind::Bfloat => Some(16),
         TypeKind::Float => Some(32),
         TypeKind::Double => Some(64),
         TypeKind::Fp128 => Some(128),

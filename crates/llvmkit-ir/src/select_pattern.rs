@@ -25,21 +25,21 @@ pub enum SelectPatternFlavor {
     /// Not a recognised pattern.
     Unknown,
     /// Signed minimum.
-    SMin,
+    Smin,
     /// Unsigned minimum.
-    UMin,
+    Umin,
     /// Signed maximum.
-    SMax,
+    Smax,
     /// Unsigned maximum.
-    UMax,
+    Umax,
     /// Floating-point `minnum`.
-    FMinNum,
+    FminNum,
     /// Floating-point `maxnum`.
-    FMaxNum,
+    FmaxNum,
     /// Absolute value.
     Abs,
     /// Negated absolute value.
-    NAbs,
+    Nabs,
 }
 
 impl SelectPatternFlavor {
@@ -49,7 +49,7 @@ impl SelectPatternFlavor {
     /// upstream but reads only the flavour.
     #[inline]
     pub const fn is_min_or_max(self) -> bool {
-        !matches!(self, Self::Unknown | Self::Abs | Self::NAbs)
+        !matches!(self, Self::Unknown | Self::Abs | Self::Nabs)
     }
 
     /// The canonical comparison predicate for this minimum/maximum.
@@ -63,21 +63,21 @@ impl SelectPatternFlavor {
     #[inline]
     pub const fn min_max_predicate(self, ordered: bool) -> Option<CmpPredicate> {
         Some(match self {
-            Self::SMin => CmpPredicate::Int(IntPredicate::Slt),
-            Self::UMin => CmpPredicate::Int(IntPredicate::Ult),
-            Self::SMax => CmpPredicate::Int(IntPredicate::Sgt),
-            Self::UMax => CmpPredicate::Int(IntPredicate::Ugt),
-            Self::FMinNum => CmpPredicate::Float(if ordered {
+            Self::Smin => CmpPredicate::Int(IntPredicate::Slt),
+            Self::Umin => CmpPredicate::Int(IntPredicate::Ult),
+            Self::Smax => CmpPredicate::Int(IntPredicate::Sgt),
+            Self::Umax => CmpPredicate::Int(IntPredicate::Ugt),
+            Self::FminNum => CmpPredicate::Float(if ordered {
                 FloatPredicate::Olt
             } else {
                 FloatPredicate::Ult
             }),
-            Self::FMaxNum => CmpPredicate::Float(if ordered {
+            Self::FmaxNum => CmpPredicate::Float(if ordered {
                 FloatPredicate::Ogt
             } else {
                 FloatPredicate::Ugt
             }),
-            Self::Unknown | Self::Abs | Self::NAbs => return None,
+            Self::Unknown | Self::Abs | Self::Nabs => return None,
         })
     }
 
@@ -89,10 +89,10 @@ impl SelectPatternFlavor {
     #[inline]
     pub const fn min_max_intrinsic(self) -> Option<MinMaxIntrinsic> {
         Some(match self {
-            Self::SMin => MinMaxIntrinsic::SMin,
-            Self::SMax => MinMaxIntrinsic::SMax,
-            Self::UMin => MinMaxIntrinsic::UMin,
-            Self::UMax => MinMaxIntrinsic::UMax,
+            Self::Smin => MinMaxIntrinsic::Smin,
+            Self::Smax => MinMaxIntrinsic::Smax,
+            Self::Umin => MinMaxIntrinsic::Umin,
+            Self::Umax => MinMaxIntrinsic::Umax,
             _ => return None,
         })
     }
@@ -106,10 +106,10 @@ impl SelectPatternFlavor {
     #[inline]
     pub const fn inverse_min_max(self) -> Option<Self> {
         Some(match self {
-            Self::SMin => Self::SMax,
-            Self::SMax => Self::SMin,
-            Self::UMin => Self::UMax,
-            Self::UMax => Self::UMin,
+            Self::Smin => Self::Smax,
+            Self::Smax => Self::Smin,
+            Self::Umin => Self::Umax,
+            Self::Umax => Self::Umin,
             _ => return None,
         })
     }
@@ -124,10 +124,10 @@ impl SelectPatternFlavor {
     #[inline]
     pub fn min_max_limit(self, bit_width: u32) -> Option<ApInt> {
         Some(match self {
-            Self::SMax => ApInt::signed_max_value(bit_width),
-            Self::SMin => ApInt::signed_min_value(bit_width),
-            Self::UMax => ApInt::all_ones(bit_width),
-            Self::UMin => ApInt::zero(bit_width),
+            Self::Smax => ApInt::signed_max_value(bit_width),
+            Self::Smin => ApInt::signed_min_value(bit_width),
+            Self::Umax => ApInt::all_ones(bit_width),
+            Self::Umin => ApInt::zero(bit_width),
             _ => return None,
         })
     }
@@ -142,13 +142,13 @@ impl SelectPatternFlavor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MinMaxIntrinsic {
     /// `llvm.smin`.
-    SMin,
+    Smin,
     /// `llvm.smax`.
-    SMax,
+    Smax,
     /// `llvm.umin`.
-    UMin,
+    Umin,
     /// `llvm.umax`.
-    UMax,
+    Umax,
 }
 
 impl MinMaxIntrinsic {
@@ -160,10 +160,10 @@ impl MinMaxIntrinsic {
     #[inline]
     pub const fn inverse(self) -> Self {
         match self {
-            Self::SMin => Self::SMax,
-            Self::SMax => Self::SMin,
-            Self::UMin => Self::UMax,
-            Self::UMax => Self::UMin,
+            Self::Smin => Self::Smax,
+            Self::Smax => Self::Smin,
+            Self::Umin => Self::Umax,
+            Self::Umax => Self::Umin,
         }
     }
 
@@ -171,10 +171,10 @@ impl MinMaxIntrinsic {
     #[inline]
     pub const fn flavor(self) -> SelectPatternFlavor {
         match self {
-            Self::SMin => SelectPatternFlavor::SMin,
-            Self::SMax => SelectPatternFlavor::SMax,
-            Self::UMin => SelectPatternFlavor::UMin,
-            Self::UMax => SelectPatternFlavor::UMax,
+            Self::Smin => SelectPatternFlavor::Smin,
+            Self::Smax => SelectPatternFlavor::Smax,
+            Self::Umin => SelectPatternFlavor::Umin,
+            Self::Umax => SelectPatternFlavor::Umax,
         }
     }
 
@@ -182,10 +182,10 @@ impl MinMaxIntrinsic {
     #[inline]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::SMin => "llvm.smin",
-            Self::SMax => "llvm.smax",
-            Self::UMin => "llvm.umin",
-            Self::UMax => "llvm.umax",
+            Self::Smin => "llvm.smin",
+            Self::Smax => "llvm.smax",
+            Self::Umin => "llvm.umin",
+            Self::Umax => "llvm.umax",
         }
     }
 }
@@ -243,9 +243,9 @@ impl MinMaxOperation {
 /// What a floating-point min/max does when given one NaN and one non-NaN.
 ///
 /// Ports `llvm::SelectPatternNaNBehavior`. Only meaningful when the flavour is
-/// [`SelectPatternFlavor::FMinNum`] or [`SelectPatternFlavor::FMaxNum`].
+/// [`SelectPatternFlavor::FminNum`] or [`SelectPatternFlavor::FmaxNum`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SelectPatternNaNBehavior {
+pub enum SelectPatternNanBehavior {
     /// NaN behaviour does not apply — upstream's `SPNB_NA`.
     NotApplicable,
     /// Given one NaN input, returns the NaN.
@@ -264,7 +264,7 @@ pub struct SelectPatternResult {
     /// Which idiom was recognised.
     pub flavor: SelectPatternFlavor,
     /// NaN behaviour; only applicable to the two float flavours.
-    pub nan_behavior: SelectPatternNaNBehavior,
+    pub nan_behavior: SelectPatternNanBehavior,
     /// Whether implementing this min/max as `fcmp; select` needs the `fcmp`
     /// to be ordered.
     pub ordered: bool,
@@ -276,7 +276,7 @@ impl SelectPatternResult {
     pub const fn unknown() -> Self {
         Self {
             flavor: SelectPatternFlavor::Unknown,
-            nan_behavior: SelectPatternNaNBehavior::NotApplicable,
+            nan_behavior: SelectPatternNanBehavior::NotApplicable,
             ordered: false,
         }
     }
@@ -299,38 +299,38 @@ impl SelectPatternResult {
 /// `default` arm, commented "Equality".
 pub fn select_pattern(
     predicate: CmpPredicate,
-    nan_behavior: SelectPatternNaNBehavior,
+    nan_behavior: SelectPatternNanBehavior,
     ordered: bool,
 ) -> SelectPatternResult {
     let integer = |flavor| SelectPatternResult {
         flavor,
-        nan_behavior: SelectPatternNaNBehavior::NotApplicable,
+        nan_behavior: SelectPatternNanBehavior::NotApplicable,
         ordered: false,
     };
     match predicate {
         CmpPredicate::Int(IntPredicate::Ugt | IntPredicate::Uge) => {
-            integer(SelectPatternFlavor::UMax)
+            integer(SelectPatternFlavor::Umax)
         }
         CmpPredicate::Int(IntPredicate::Sgt | IntPredicate::Sge) => {
-            integer(SelectPatternFlavor::SMax)
+            integer(SelectPatternFlavor::Smax)
         }
         CmpPredicate::Int(IntPredicate::Ult | IntPredicate::Ule) => {
-            integer(SelectPatternFlavor::UMin)
+            integer(SelectPatternFlavor::Umin)
         }
         CmpPredicate::Int(IntPredicate::Slt | IntPredicate::Sle) => {
-            integer(SelectPatternFlavor::SMin)
+            integer(SelectPatternFlavor::Smin)
         }
         CmpPredicate::Float(
             FloatPredicate::Ugt | FloatPredicate::Uge | FloatPredicate::Ogt | FloatPredicate::Oge,
         ) => SelectPatternResult {
-            flavor: SelectPatternFlavor::FMaxNum,
+            flavor: SelectPatternFlavor::FmaxNum,
             nan_behavior,
             ordered,
         },
         CmpPredicate::Float(
             FloatPredicate::Ult | FloatPredicate::Ule | FloatPredicate::Olt | FloatPredicate::Ole,
         ) => SelectPatternResult {
-            flavor: SelectPatternFlavor::FMinNum,
+            flavor: SelectPatternFlavor::FminNum,
             nan_behavior,
             ordered,
         },
@@ -410,7 +410,7 @@ pub fn match_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx>(
     };
     if !matches!(
         instruction_kind(condition.to_erased()),
-        Some(InstructionKindData::ICmp(_) | InstructionKindData::FCmp(_))
+        Some(InstructionKindData::Icmp(_) | InstructionKindData::Fcmp(_))
     ) {
         return Ok(None);
     }
@@ -446,7 +446,7 @@ pub fn match_decomposed_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx>(
         return Ok(None);
     };
     let mut fast_math_flags = fast_math_flags;
-    if let Some(InstructionKindData::FCmp(data)) = instruction_kind(anchor)
+    if let Some(InstructionKindData::Fcmp(data)) = instruction_kind(anchor)
         && data.fmf.contains(FastMathFlags::NO_NANS)
     {
         fast_math_flags |= FastMathFlags::NO_NANS;
@@ -478,7 +478,7 @@ pub fn match_decomposed_select_pattern<'a, 'ctx, B: ModuleBrand + 'ctx>(
             // A potential fmin/fmax with a cast to integer has no -0.0 to
             // preserve, so signed zeros stop mattering.
             let mut fast_math_flags = fast_math_flags;
-            if matches!(cast_opcode, CastOpcode::FpToSI | CastOpcode::FpToUI) {
+            if matches!(cast_opcode, CastOpcode::FpToSi | CastOpcode::FpToUi) {
                 fast_math_flags |= FastMathFlags::NO_SIGNED_ZEROS;
             }
             let (true_value, false_value) = if cast_is_true_arm {
@@ -591,7 +591,7 @@ fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
         }
     }
 
-    let mut nan_behavior = SelectPatternNaNBehavior::NotApplicable;
+    let mut nan_behavior = SelectPatternNanBehavior::NotApplicable;
     let mut ordered = false;
 
     // Given one NaN and one non-NaN input:
@@ -603,15 +603,15 @@ fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
         let lhs_safe = is_known_non_nan(compare_lhs, fast_math_flags);
         let rhs_safe = is_known_non_nan(compare_rhs, fast_math_flags);
         if lhs_safe && rhs_safe {
-            nan_behavior = SelectPatternNaNBehavior::ReturnsAny;
+            nan_behavior = SelectPatternNanBehavior::ReturnsAny;
             ordered = float_predicate.is_ordered();
         } else if float_predicate.is_ordered() {
             // An ordered comparison is false given a NaN, so it returns the RHS.
             ordered = true;
             nan_behavior = if lhs_safe {
-                SelectPatternNaNBehavior::ReturnsNaN
+                SelectPatternNanBehavior::ReturnsNaN
             } else if rhs_safe {
-                SelectPatternNaNBehavior::ReturnsOther
+                SelectPatternNanBehavior::ReturnsOther
             } else {
                 return Ok(None);
             };
@@ -619,9 +619,9 @@ fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
             // An unordered comparison is true given a NaN, so it returns the LHS.
             ordered = false;
             nan_behavior = if lhs_safe {
-                SelectPatternNaNBehavior::ReturnsOther
+                SelectPatternNanBehavior::ReturnsOther
             } else if rhs_safe {
-                SelectPatternNaNBehavior::ReturnsNaN
+                SelectPatternNanBehavior::ReturnsNaN
             } else {
                 return Ok(None);
             };
@@ -632,8 +632,8 @@ fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
         core::mem::swap(&mut compare_lhs, &mut compare_rhs);
         predicate = swapped_predicate(predicate);
         nan_behavior = match nan_behavior {
-            SelectPatternNaNBehavior::ReturnsNaN => SelectPatternNaNBehavior::ReturnsOther,
-            SelectPatternNaNBehavior::ReturnsOther => SelectPatternNaNBehavior::ReturnsNaN,
+            SelectPatternNanBehavior::ReturnsNaN => SelectPatternNanBehavior::ReturnsOther,
+            SelectPatternNanBehavior::ReturnsOther => SelectPatternNanBehavior::ReturnsNaN,
             other => other,
         };
         ordered = !ordered;
@@ -668,7 +668,7 @@ fn match_select_pattern_core<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // Per IEEE 754-2008 5.3.1, `minNum(0.0, -0.0)` and friends may return
     // either sign of zero, so an `fcmp`/`select` pair has stricter semantics
     // than `minnum`. Be conservative.
-    if nan_behavior != SelectPatternNaNBehavior::ReturnsAny
+    if nan_behavior != SelectPatternNanBehavior::ReturnsAny
         || (!fast_math_flags.contains(FastMathFlags::NO_SIGNED_ZEROS)
             && !is_known_non_zero(compare_lhs, query)?
             && !is_known_non_zero(compare_rhs, query)?)
@@ -721,13 +721,13 @@ fn match_abs<'ctx, B: ModuleBrand + 'ctx>(
             // (X >=s 0) ? X : -X  /  (X >=s 1) ? X : -X   --> ABS(X)
             IntPredicate::Sge if zero_or_one => SelectPatternFlavor::Abs,
             // (X <s 0) ? X : -X   /  (X <s 1) ? X : -X    --> NABS(X)
-            IntPredicate::Slt if zero_or_one => SelectPatternFlavor::NAbs,
+            IntPredicate::Slt if zero_or_one => SelectPatternFlavor::Nabs,
             _ => return None,
         };
         return matched(
             SelectPatternResult {
                 flavor,
-                nan_behavior: SelectPatternNaNBehavior::NotApplicable,
+                nan_behavior: SelectPatternNanBehavior::NotApplicable,
                 ordered: false,
             },
             lhs,
@@ -744,7 +744,7 @@ fn match_abs<'ctx, B: ModuleBrand + 'ctx>(
         };
         let flavor = match predicate {
             // (X >s 0) ? -X : X   /  (X >s -1) ? -X : X   --> NABS(X)
-            IntPredicate::Sgt if zero_or_all_ones => SelectPatternFlavor::NAbs,
+            IntPredicate::Sgt if zero_or_all_ones => SelectPatternFlavor::Nabs,
             // (X <s 0) ? -X : X   /  (X <s 1) ? -X : X    --> ABS(X)
             IntPredicate::Slt if zero_or_one => SelectPatternFlavor::Abs,
             _ => return None,
@@ -752,7 +752,7 @@ fn match_abs<'ctx, B: ModuleBrand + 'ctx>(
         return matched(
             SelectPatternResult {
                 flavor,
-                nan_behavior: SelectPatternNaNBehavior::NotApplicable,
+                nan_behavior: SelectPatternNanBehavior::NotApplicable,
                 ordered: false,
             },
             lhs,
@@ -780,7 +780,7 @@ fn match_min_max<'a, 'ctx, B: ModuleBrand + 'ctx>(
         matched(
             SelectPatternResult {
                 flavor,
-                nan_behavior: SelectPatternNaNBehavior::NotApplicable,
+                nan_behavior: SelectPatternNanBehavior::NotApplicable,
                 ordered: false,
             },
             true_value,
@@ -812,10 +812,10 @@ fn match_min_max<'a, 'ctx, B: ModuleBrand + 'ctx>(
         && not_value(false_value).is_some_and(|not| not == compare_rhs)
     {
         let flavor = match predicate {
-            IntPredicate::Sgt => Some(SelectPatternFlavor::SMin),
-            IntPredicate::Slt => Some(SelectPatternFlavor::SMax),
-            IntPredicate::Ugt => Some(SelectPatternFlavor::UMin),
-            IntPredicate::Ult => Some(SelectPatternFlavor::UMax),
+            IntPredicate::Sgt => Some(SelectPatternFlavor::Smin),
+            IntPredicate::Slt => Some(SelectPatternFlavor::Smax),
+            IntPredicate::Ugt => Some(SelectPatternFlavor::Umin),
+            IntPredicate::Ult => Some(SelectPatternFlavor::Umax),
             _ => None,
         };
         if let Some(flavor) = flavor {
@@ -829,10 +829,10 @@ fn match_min_max<'a, 'ctx, B: ModuleBrand + 'ctx>(
         && not_value(true_value).is_some_and(|not| not == compare_rhs)
     {
         let flavor = match predicate {
-            IntPredicate::Sgt => Some(SelectPatternFlavor::SMax),
-            IntPredicate::Slt => Some(SelectPatternFlavor::SMin),
-            IntPredicate::Ugt => Some(SelectPatternFlavor::UMax),
-            IntPredicate::Ult => Some(SelectPatternFlavor::UMin),
+            IntPredicate::Sgt => Some(SelectPatternFlavor::Smax),
+            IntPredicate::Slt => Some(SelectPatternFlavor::Smin),
+            IntPredicate::Ugt => Some(SelectPatternFlavor::Umax),
+            IntPredicate::Ult => Some(SelectPatternFlavor::Umin),
             _ => None,
         };
         if let Some(flavor) = flavor {
@@ -864,9 +864,9 @@ fn match_min_max<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // (X <s 0) ? MAXVAL : X ==> (X >u MAXVAL) ? MAXVAL : X ==> UMIN
     if predicate == IntPredicate::Slt && c1.is_zero() && c2.is_max_signed_value() {
         return Ok(report(if arm_is_true_value {
-            SelectPatternFlavor::UMax
+            SelectPatternFlavor::Umax
         } else {
-            SelectPatternFlavor::UMin
+            SelectPatternFlavor::Umin
         }));
     }
 
@@ -875,9 +875,9 @@ fn match_min_max<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // (X >s -1) ? X : MINVAL ==> (X <u MINVAL) ? X : MINVAL ==> UMIN
     if predicate == IntPredicate::Sgt && c1.is_all_ones() && c2.is_min_signed_value() {
         return Ok(report(if arm_is_true_value {
-            SelectPatternFlavor::UMin
+            SelectPatternFlavor::Umin
         } else {
-            SelectPatternFlavor::UMax
+            SelectPatternFlavor::Umax
         }));
     }
 
@@ -908,29 +908,29 @@ fn match_clamp<'ctx, B: ModuleBrand + 'ctx>(
         // (X <s C1) ? C1 : SMIN(X, C2) ==> SMAX(SMIN(X, C2), C1)
         (
             IntPredicate::Slt,
-            SelectPatternFlavor::SMin,
-            SelectPatternFlavor::SMax,
+            SelectPatternFlavor::Smin,
+            SelectPatternFlavor::Smax,
             Signedness::Signed,
         ),
         // (X >s C1) ? C1 : SMAX(X, C2) ==> SMIN(SMAX(X, C2), C1)
         (
             IntPredicate::Sgt,
-            SelectPatternFlavor::SMax,
-            SelectPatternFlavor::SMin,
+            SelectPatternFlavor::Smax,
+            SelectPatternFlavor::Smin,
             Signedness::Signed,
         ),
         // (X <u C1) ? C1 : UMIN(X, C2) ==> UMAX(UMIN(X, C2), C1)
         (
             IntPredicate::Ult,
-            SelectPatternFlavor::UMin,
-            SelectPatternFlavor::UMax,
+            SelectPatternFlavor::Umin,
+            SelectPatternFlavor::Umax,
             Signedness::Unsigned,
         ),
         // (X >u C1) ? C1 : UMAX(X, C2) ==> UMIN(UMAX(X, C2), C1)
         (
             IntPredicate::Ugt,
-            SelectPatternFlavor::UMax,
-            SelectPatternFlavor::UMin,
+            SelectPatternFlavor::Umax,
+            SelectPatternFlavor::Umin,
             Signedness::Unsigned,
         ),
     ] {
@@ -988,19 +988,19 @@ fn match_min_max_of_min_max<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // the compare operands if it is the mirror image.
     let (wanted_swapped, wanted_direct): ([IntPredicate; 2], [IntPredicate; 2]) =
         match left.result.flavor {
-            SelectPatternFlavor::SMin => (
+            SelectPatternFlavor::Smin => (
                 [IntPredicate::Sgt, IntPredicate::Sge],
                 [IntPredicate::Slt, IntPredicate::Sle],
             ),
-            SelectPatternFlavor::SMax => (
+            SelectPatternFlavor::Smax => (
                 [IntPredicate::Slt, IntPredicate::Sle],
                 [IntPredicate::Sgt, IntPredicate::Sge],
             ),
-            SelectPatternFlavor::UMin => (
+            SelectPatternFlavor::Umin => (
                 [IntPredicate::Ugt, IntPredicate::Uge],
                 [IntPredicate::Ult, IntPredicate::Ule],
             ),
-            SelectPatternFlavor::UMax => (
+            SelectPatternFlavor::Umax => (
                 [IntPredicate::Ult, IntPredicate::Ule],
                 [IntPredicate::Ugt, IntPredicate::Uge],
             ),
@@ -1067,10 +1067,10 @@ fn match_fast_float_clamp<'ctx, B: ModuleBrand + 'ctx>(
 
     let (wanted_flavor, result_flavor) = match predicate {
         FloatPredicate::Olt | FloatPredicate::Ole | FloatPredicate::Ult | FloatPredicate::Ule => {
-            (SelectPatternFlavor::FMinNum, SelectPatternFlavor::FMaxNum)
+            (SelectPatternFlavor::FminNum, SelectPatternFlavor::FmaxNum)
         }
         FloatPredicate::Ogt | FloatPredicate::Oge | FloatPredicate::Ugt | FloatPredicate::Uge => {
-            (SelectPatternFlavor::FMaxNum, SelectPatternFlavor::FMinNum)
+            (SelectPatternFlavor::FmaxNum, SelectPatternFlavor::FminNum)
         }
         _ => return None,
     };
@@ -1078,7 +1078,7 @@ fn match_fast_float_clamp<'ctx, B: ModuleBrand + 'ctx>(
     let c2 = float_min_max_against_constant(false_value, compare_lhs, wanted_flavor)?;
     let ordering = c1.compare(&c2);
     let inside = match wanted_flavor {
-        SelectPatternFlavor::FMinNum => ordering == ApFloatCmpResult::LessThan,
+        SelectPatternFlavor::FminNum => ordering == ApFloatCmpResult::LessThan,
         _ => ordering == ApFloatCmpResult::GreaterThan,
     };
     if !inside {
@@ -1087,7 +1087,7 @@ fn match_fast_float_clamp<'ctx, B: ModuleBrand + 'ctx>(
     matched(
         SelectPatternResult {
             flavor: result_flavor,
-            nan_behavior: SelectPatternNaNBehavior::ReturnsAny,
+            nan_behavior: SelectPatternNanBehavior::ReturnsAny,
             ordered: false,
         },
         true_value,
@@ -1146,13 +1146,13 @@ where
 /// type rather than by the caller remembering to look.
 fn min_max_operation(flavor: SelectPatternFlavor) -> Option<MinMaxOperation> {
     Some(match flavor {
-        SelectPatternFlavor::SMin => MinMaxOperation::Integer(MinMaxIntrinsic::SMin),
-        SelectPatternFlavor::SMax => MinMaxOperation::Integer(MinMaxIntrinsic::SMax),
-        SelectPatternFlavor::UMin => MinMaxOperation::Integer(MinMaxIntrinsic::UMin),
-        SelectPatternFlavor::UMax => MinMaxOperation::Integer(MinMaxIntrinsic::UMax),
-        SelectPatternFlavor::FMinNum => MinMaxOperation::Float(MinMaxKind::MinNum),
-        SelectPatternFlavor::FMaxNum => MinMaxOperation::Float(MinMaxKind::MaxNum),
-        SelectPatternFlavor::Unknown | SelectPatternFlavor::Abs | SelectPatternFlavor::NAbs => {
+        SelectPatternFlavor::Smin => MinMaxOperation::Integer(MinMaxIntrinsic::Smin),
+        SelectPatternFlavor::Smax => MinMaxOperation::Integer(MinMaxIntrinsic::Smax),
+        SelectPatternFlavor::Umin => MinMaxOperation::Integer(MinMaxIntrinsic::Umin),
+        SelectPatternFlavor::Umax => MinMaxOperation::Integer(MinMaxIntrinsic::Umax),
+        SelectPatternFlavor::FminNum => MinMaxOperation::Float(MinMaxKind::MinNum),
+        SelectPatternFlavor::FmaxNum => MinMaxOperation::Float(MinMaxKind::MaxNum),
+        SelectPatternFlavor::Unknown | SelectPatternFlavor::Abs | SelectPatternFlavor::Nabs => {
             return None;
         }
     })
@@ -1251,7 +1251,7 @@ fn is_compare_lhs_or_its_sext<'ctx, B: ModuleBrand + 'ctx>(
     matches!(
         instruction_kind(arm),
         Some(InstructionKindData::Cast(data))
-            if data.kind == CastOpcode::SExt && data.src.get() == compare_lhs.slot()
+            if data.kind == CastOpcode::Sext && data.src.get() == compare_lhs.slot()
     )
 }
 
@@ -1323,10 +1323,10 @@ fn min_max_intrinsic_operands<'ctx, B: ModuleBrand + 'ctx>(
     let callee = value_from_slot(value, call.callee.get());
     let descriptor = descriptor_for_callee(callee)?;
     let wanted = match flavor {
-        SelectPatternFlavor::SMin => MinMaxIntrinsic::SMin,
-        SelectPatternFlavor::SMax => MinMaxIntrinsic::SMax,
-        SelectPatternFlavor::UMin => MinMaxIntrinsic::UMin,
-        SelectPatternFlavor::UMax => MinMaxIntrinsic::UMax,
+        SelectPatternFlavor::Smin => MinMaxIntrinsic::Smin,
+        SelectPatternFlavor::Smax => MinMaxIntrinsic::Smax,
+        SelectPatternFlavor::Umin => MinMaxIntrinsic::Umin,
+        SelectPatternFlavor::Umax => MinMaxIntrinsic::Umax,
         _ => return None,
     };
     if descriptor.id().base_name() != wanted.name() {
@@ -1345,16 +1345,16 @@ fn min_max_predicate_matches(flavor: SelectPatternFlavor, predicate: IntPredicat
     matches!(
         (flavor, predicate),
         (
-            SelectPatternFlavor::SMin,
+            SelectPatternFlavor::Smin,
             IntPredicate::Slt | IntPredicate::Sle
         ) | (
-            SelectPatternFlavor::SMax,
+            SelectPatternFlavor::Smax,
             IntPredicate::Sgt | IntPredicate::Sge
         ) | (
-            SelectPatternFlavor::UMin,
+            SelectPatternFlavor::Umin,
             IntPredicate::Ult | IntPredicate::Ule
         ) | (
-            SelectPatternFlavor::UMax,
+            SelectPatternFlavor::Umax,
             IntPredicate::Ugt | IntPredicate::Uge
         )
     )
@@ -1374,7 +1374,7 @@ fn select_over_icmp_of_its_own_arms<'ctx, B: ModuleBrand + 'ctx>(
         return None;
     };
     let condition = value_from_slot(value, select.cond.get());
-    let Some(InstructionKindData::ICmp(compare)) = instruction_kind(condition) else {
+    let Some(InstructionKindData::Icmp(compare)) = instruction_kind(condition) else {
         return None;
     };
     let compare_lhs = value_from_slot(condition, compare.lhs.get());
@@ -1406,7 +1406,7 @@ fn float_min_max_against_constant<'ctx, B: ModuleBrand + 'ctx>(
         return None;
     };
     let condition = value_from_slot(value, select.cond.get());
-    let Some(InstructionKindData::FCmp(compare)) = instruction_kind(condition) else {
+    let Some(InstructionKindData::Fcmp(compare)) = instruction_kind(condition) else {
         return None;
     };
     let compare_lhs = value_from_slot(condition, compare.lhs.get());
@@ -1432,8 +1432,8 @@ fn float_min_max_against_constant<'ctx, B: ModuleBrand + 'ctx>(
         FloatPredicate::Ogt | FloatPredicate::Oge | FloatPredicate::Ugt | FloatPredicate::Uge
     );
     let wanted = match flavor {
-        SelectPatternFlavor::FMinNum if is_min => true,
-        SelectPatternFlavor::FMaxNum if is_max => true,
+        SelectPatternFlavor::FminNum if is_min => true,
+        SelectPatternFlavor::FmaxNum if is_max => true,
         _ => false,
     };
     if !wanted {
@@ -1484,7 +1484,7 @@ fn look_through_cast_arm<'ctx, B: ModuleBrand + 'ctx>(
     let Some(InstructionKindData::Cast(widened)) = instruction_kind(compare_rhs) else {
         return None;
     };
-    if !matches!(widened.kind, CastOpcode::SExt | CastOpcode::ZExt)
+    if !matches!(widened.kind, CastOpcode::Sext | CastOpcode::Zext)
         || widened.src.get() != second.slot()
     {
         return None;
@@ -1505,12 +1505,12 @@ fn compare_parts<'ctx, B: ModuleBrand + 'ctx>(
     compare: Value<'ctx, B>,
 ) -> Option<(CmpPredicate, Value<'ctx, B>, Value<'ctx, B>)> {
     match instruction_kind(compare)? {
-        InstructionKindData::ICmp(data) => Some((
+        InstructionKindData::Icmp(data) => Some((
             CmpPredicate::Int(data.predicate),
             value_from_slot(compare, data.lhs.get()),
             value_from_slot(compare, data.rhs.get()),
         )),
-        InstructionKindData::FCmp(data) => Some((
+        InstructionKindData::Fcmp(data) => Some((
             CmpPredicate::Float(data.predicate),
             value_from_slot(compare, data.lhs.get()),
             value_from_slot(compare, data.rhs.get()),

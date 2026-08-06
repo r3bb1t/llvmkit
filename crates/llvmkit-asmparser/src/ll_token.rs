@@ -95,7 +95,7 @@ pub enum Token<'src> {
     /// `DW_LNAME_*`
     DwarfSourceLangName(&'src str),
     /// `DW_CC_*`
-    DwarfCC(&'src str),
+    DwarfCc(&'src str),
     /// `DW_OP_*`
     DwarfOp(&'src str),
     /// `DW_MACINFO_*`
@@ -185,7 +185,7 @@ impl core::fmt::Display for Token<'_> {
             Token::DwarfVirtuality(_) => "DWARF virtuality",
             Token::DwarfLang(_) => "DWARF language",
             Token::DwarfSourceLangName(_) => "DWARF source language name",
-            Token::DwarfCC(_) => "DWARF calling convention",
+            Token::DwarfCc(_) => "DWARF calling convention",
             Token::DwarfOp(_) => "DWARF operation",
             Token::DwarfMacinfo(_) => "DWARF macinfo",
             Token::DwarfEnumKind(_) => "DWARF enum kind",
@@ -254,7 +254,7 @@ pub enum PrimitiveTy {
     X86Amx,
     WasmExnRef,
     Half,
-    BFloat,
+    Bfloat,
     Float,
     Double,
     X86Fp80,
@@ -321,7 +321,7 @@ pub enum FpLit<'src> {
     /// `0xH[0-9A-Fa-f]+` — IEEE half (16-bit).
     HexHalf(&'src str),
     /// `0xR[0-9A-Fa-f]+` — bfloat16.
-    HexBFloat(&'src str),
+    HexBfloat(&'src str),
 }
 
 /// Which 16-bit hex floating-point lexeme overflowed. Used in
@@ -329,7 +329,7 @@ pub enum FpLit<'src> {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum HexFpKind {
     Half,
-    BFloat,
+    Bfloat,
 }
 
 /// Which quoted-name token kind is currently being lexed. Used in
@@ -348,40 +348,40 @@ pub enum QuotedNameKind {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Opcode {
     // Unary
-    FNeg,
+    Fneg,
     // Binary integer
     Add,
     Sub,
     Mul,
-    UDiv,
-    SDiv,
-    URem,
-    SRem,
+    Udiv,
+    Sdiv,
+    Urem,
+    Srem,
     Shl,
-    LShr,
-    AShr,
+    Lshr,
+    Ashr,
     And,
     Or,
     Xor,
     // Binary float
-    FAdd,
-    FSub,
-    FMul,
-    FDiv,
-    FRem,
+    Fadd,
+    Fsub,
+    Fmul,
+    Fdiv,
+    Frem,
     // Compare
-    ICmp,
-    FCmp,
+    Icmp,
+    Fcmp,
     // Casts
     Trunc,
-    ZExt,
-    SExt,
-    FPTrunc,
-    FPExt,
-    UIToFP,
-    SIToFP,
-    FPToUI,
-    FPToSI,
+    Zext,
+    Sext,
+    FpTrunc,
+    FpExt,
+    UiToFp,
+    SiToFp,
+    FpToUi,
+    FpToSi,
     IntToPtr,
     PtrToAddr,
     PtrToInt,
@@ -391,7 +391,7 @@ pub enum Opcode {
     Phi,
     Call,
     Select,
-    VAArg,
+    VaArg,
     LandingPad,
     // Terminators
     Ret,
@@ -412,7 +412,7 @@ pub enum Opcode {
     Load,
     Store,
     AtomicCmpXchg,
-    AtomicRMW,
+    AtomicRmw,
     Fence,
     GetElementPtr,
     // Vector / aggregate
@@ -858,21 +858,21 @@ pub enum Keyword {
     Critical,
     Relbf,
     Variable,
-    VTableFuncs,
+    VtableFuncs,
     VirtFunc,
     Aliasee,
     Refs,
     TypeIdInfo,
     TypeTests,
-    TypeTestAssumeVCalls,
-    TypeCheckedLoadVCalls,
-    TypeTestAssumeConstVCalls,
-    TypeCheckedLoadConstVCalls,
-    VFuncId,
+    TypeTestAssumeVcalls,
+    TypeCheckedLoadVcalls,
+    TypeTestAssumeConstVcalls,
+    TypeCheckedLoadConstVcalls,
+    VfuncId,
     Offset,
     Args,
     Typeid,
-    TypeidCompatibleVTable,
+    TypeidCompatibleVtable,
     Summary,
     TypeTestRes,
     Kind,

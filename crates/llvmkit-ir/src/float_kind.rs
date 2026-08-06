@@ -12,7 +12,7 @@
 //! Whenever LLVM has a kind with a Rust-scalar counterpart, the
 //! marker is the Rust type itself: `f32` (binary32) and `f64`
 //! (binary64). The exotic kinds without a Rust counterpart use
-//! struct markers ([`Half`], [`BFloat`], [`Fp128`], [`X86Fp80`],
+//! struct markers ([`Half`], [`Bfloat`], [`Fp128`], [`X86Fp80`],
 //! [`PpcFp128`]).
 //!
 //! [`FloatDyn`] is the runtime-checked escape hatch for parsed IR and
@@ -112,7 +112,7 @@ decl_struct_kind!(
 );
 decl_struct_kind!(
     /// Brain-float (1 sign / 8 exp / 7 frac). Mirrors `Type::BFloatTyID`.
-    BFloat,
+    Bfloat,
     "bfloat"
 );
 decl_struct_kind!(
@@ -184,13 +184,13 @@ macro_rules! decl_float_wider_than {
         $( impl FloatWiderThan<$narrow> for $wide {} )+
     };
 }
-decl_float_wider_than!(f32: Half, BFloat);
-decl_float_wider_than!(f64: Half, BFloat, f32);
-decl_float_wider_than!(X86Fp80: Half, BFloat, f32, f64);
-decl_float_wider_than!(Fp128: Half, BFloat, f32, f64, X86Fp80);
-decl_float_wider_than!(PpcFp128: Half, BFloat, f32, f64, X86Fp80);
+decl_float_wider_than!(f32: Half, Bfloat);
+decl_float_wider_than!(f64: Half, Bfloat, f32);
+decl_float_wider_than!(X86Fp80: Half, Bfloat, f32, f64);
+decl_float_wider_than!(Fp128: Half, Bfloat, f32, f64, X86Fp80);
+decl_float_wider_than!(PpcFp128: Half, Bfloat, f32, f64, X86Fp80);
 // Deliberately absent: Fp128 <-> PpcFp128 (both 128 bits) and
-// Half <-> BFloat (both 16 bits) -- `castIsValid` requires a STRICT
+// Half <-> Bfloat (both 16 bits) -- `castIsValid` requires a STRICT
 // `getScalarSizeInBits` inequality (lib/IR/Instructions.cpp,
 // `CastInst::castIsValid`'s FPExt/FPTrunc arms), so neither direction
 // is a valid fpext/fptrunc for an equal-width pair.
@@ -409,7 +409,7 @@ macro_rules! impl_static_float_kind {
 impl_static_float_kind!(f32, f32_type, 32);
 impl_static_float_kind!(f64, f64_type, 64);
 impl_static_float_kind!(Half, half_type, 16);
-impl_static_float_kind!(BFloat, bfloat_type, 16);
+impl_static_float_kind!(Bfloat, bfloat_type, 16);
 impl_static_float_kind!(Fp128, fp128_type, 128);
 impl_static_float_kind!(X86Fp80, x86_fp80_type, 80);
 impl_static_float_kind!(PpcFp128, ppc_fp128_type, 128);

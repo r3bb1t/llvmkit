@@ -12,8 +12,8 @@
 //! runtime check is unreachable.
 
 use llvmkit_ir::{
-    BasicBlockLabel, BlockId, Dyn, FloatValue, FloatValueId, FunctionId, GlobalAliasId,
-    GlobalIFuncId, GlobalId, GlobalVariable, IntValue, IntValueId, IntoCallArg, IntoErasedValue,
+    BasicBlockLabel, BlockId, Dyn, FloatValue, FloatValueId, FunctionId, GlobalAliasId, GlobalId,
+    GlobalIfuncId, GlobalVariable, IntValue, IntValueId, IntoCallArg, IntoErasedValue,
     IntoFloatValue, IntoIntValue, IntoPointerValue, IrBuilder, IrError, Linkage, Module,
     ModuleBrand, ModuleRef, PointerValue, PointerValueId, TypedFunctionId, TypedVarArgsFunctionId,
     Unverified, Value, ValueId, module_new,
@@ -534,13 +534,13 @@ fn declaration_ids_round_trip_through_view_and_id() -> Result<(), IrError> {
         "GlobalAliasId did not survive view/id"
     );
 
-    let ifunc: GlobalIFuncId<_> = m
+    let ifunc: GlobalIfuncId<_> = m
         .ifunc_builder("ifunc", i32_ty.as_type(), m.view(g))
         .build()?;
     assert_eq!(
         m.view(ifunc).id(),
         ifunc,
-        "GlobalIFuncId did not survive view/id"
+        "GlobalIfuncId did not survive view/id"
     );
 
     Ok(())

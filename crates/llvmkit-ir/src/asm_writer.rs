@@ -30,12 +30,12 @@ use super::comdat::ComdatRef;
 use super::constant::{ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode};
 use super::function::FunctionValue;
 use super::global_alias::GlobalAlias;
-use super::global_ifunc::GlobalIFunc;
+use super::global_ifunc::GlobalIfunc;
 use super::global_value::Linkage;
 use super::global_variable::GlobalVariable;
 use super::inline_asm::{AsmDialect, InlineAsmData};
 use super::instr_types::{
-    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
     CatchReturnInstData, CatchSwitchInstData, CleanupReturnInstData, ExtractElementInstData,
     ExtractValueInstData, FcmpInstData, FenceInstData, FnegInstData, FreezeInstData, GepInstData,
     IndirectBrInstData, InsertElementInstData, InsertValueInstData, InvokeInstData,
@@ -55,7 +55,7 @@ use super::metadata::{
     MetadataStore, SpecializedMetadataKind, SpecializedMetadataNode, StoredBrand,
 };
 use super::module::{
-    DynBrand, ModuleBrand, ModuleCore, ModuleView, UseListOrderBBRecord, UseListOrderRecord,
+    DynBrand, ModuleBrand, ModuleCore, ModuleView, UseListOrderBbRecord, UseListOrderRecord,
 };
 use super::sync_scope::SyncScope;
 use super::r#type::{StructBody, Type, TypeData, TypeSlot};
@@ -134,38 +134,38 @@ fn produces_named_result(inst: &InstructionView<'_, impl ModuleBrand>) -> bool {
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
         | InstructionKindData::Mul(_)
-        | InstructionKindData::UDiv(_)
-        | InstructionKindData::SDiv(_)
-        | InstructionKindData::URem(_)
-        | InstructionKindData::SRem(_)
+        | InstructionKindData::Udiv(_)
+        | InstructionKindData::Sdiv(_)
+        | InstructionKindData::Urem(_)
+        | InstructionKindData::Srem(_)
         | InstructionKindData::Shl(_)
-        | InstructionKindData::LShr(_)
-        | InstructionKindData::AShr(_)
+        | InstructionKindData::Lshr(_)
+        | InstructionKindData::Ashr(_)
         | InstructionKindData::And(_)
         | InstructionKindData::Or(_)
         | InstructionKindData::Xor(_)
-        | InstructionKindData::FAdd(_)
-        | InstructionKindData::FSub(_)
-        | InstructionKindData::FMul(_)
-        | InstructionKindData::FDiv(_)
-        | InstructionKindData::FRem(_)
-        | InstructionKindData::FCmp(_)
+        | InstructionKindData::Fadd(_)
+        | InstructionKindData::Fsub(_)
+        | InstructionKindData::Fmul(_)
+        | InstructionKindData::Fdiv(_)
+        | InstructionKindData::Frem(_)
+        | InstructionKindData::Fcmp(_)
         | InstructionKindData::Alloca(_)
         | InstructionKindData::Load(_)
         | InstructionKindData::Gep(_)
         | InstructionKindData::Select(_)
         | InstructionKindData::Cast(_)
-        | InstructionKindData::ICmp(_)
-        | InstructionKindData::FNeg(_)
+        | InstructionKindData::Icmp(_)
+        | InstructionKindData::Fneg(_)
         | InstructionKindData::Freeze(_)
-        | InstructionKindData::VAArg(_)
+        | InstructionKindData::VaArg(_)
         | InstructionKindData::ExtractValue(_)
         | InstructionKindData::InsertValue(_)
         | InstructionKindData::ExtractElement(_)
         | InstructionKindData::InsertElement(_)
         | InstructionKindData::ShuffleVector(_)
         | InstructionKindData::AtomicCmpXchg(_)
-        | InstructionKindData::AtomicRMW(_)
+        | InstructionKindData::AtomicRmw(_)
         | InstructionKindData::Phi(_) => true,
         InstructionKindData::Fence(_) => false,
         InstructionKindData::Ret(_)
@@ -237,7 +237,7 @@ pub(super) fn fmt_operand_ref<'ctx, B: ModuleBrand + 'ctx>(
         },
         ValueKindData::GlobalVariable(_)
         | ValueKindData::GlobalAlias(_)
-        | ValueKindData::GlobalIFunc(_) => fmt_global_value_ref(f, v),
+        | ValueKindData::GlobalIfunc(_) => fmt_global_value_ref(f, v),
         ValueKindData::Constant(c) => fmt_constant(f, v, c),
         // `MetadataAsValue` delegates to the metadata printer. MDStrings
         // print inline as `!"..."`; MDNodes print as their numbered slot.
@@ -283,7 +283,7 @@ fn fmt_use_list_order(
 fn fmt_use_list_order_bb(
     f: &mut fmt::Formatter<'_>,
     m: &ModuleCore,
-    record: &UseListOrderBBRecord,
+    record: &UseListOrderBbRecord,
 ) -> fmt::Result {
     let function_id = record.function();
     let function_data = m.context().value_data(function_id);
@@ -371,7 +371,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
             fmt_operand_ref(f, bval, None)?;
             f.write_str(")")
         }
-        ConstantData::DSOLocalEquivalent { function } => {
+        ConstantData::DsoLocalEquivalent { function } => {
             let module = host.module.module();
             let fval = Value::<B>::from_parts(
                 *function,
@@ -583,7 +583,7 @@ fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> TypeSlot
 fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Type<'ctx, B> {
     match &value.data().kind {
         ValueKindData::Function(_) => value.module().ptr_type(0).as_type(),
-        ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIFunc(_) => value.ty(),
+        ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIfunc(_) => value.ty(),
         _ => value.ty(),
     }
 }
@@ -708,7 +708,7 @@ fn fmt_float_constant<B: ModuleBrand>(
 ) -> fmt::Result {
     match ty.data() {
         TypeData::Half => write!(f, "0xH{:04X}", low_u16(bits)),
-        TypeData::BFloat => write!(f, "0xR{:04X}", low_u16(bits)),
+        TypeData::Bfloat => write!(f, "0xR{:04X}", low_u16(bits)),
         TypeData::Float => {
             let value = f32::from_bits(low_u32(bits));
             if value.is_finite() && try_write_finite_float_decimal(f, f64::from(value))? {
@@ -1014,22 +1014,22 @@ pub(super) fn fmt_instruction(
         InstructionKindData::Add(b) => fmt_binop(f, "add", inst, b, slots),
         InstructionKindData::Sub(b) => fmt_binop(f, "sub", inst, b, slots),
         InstructionKindData::Mul(b) => fmt_binop(f, "mul", inst, b, slots),
-        InstructionKindData::UDiv(b) => fmt_binop(f, "udiv", inst, b, slots),
-        InstructionKindData::SDiv(b) => fmt_binop(f, "sdiv", inst, b, slots),
-        InstructionKindData::URem(b) => fmt_binop(f, "urem", inst, b, slots),
-        InstructionKindData::SRem(b) => fmt_binop(f, "srem", inst, b, slots),
+        InstructionKindData::Udiv(b) => fmt_binop(f, "udiv", inst, b, slots),
+        InstructionKindData::Sdiv(b) => fmt_binop(f, "sdiv", inst, b, slots),
+        InstructionKindData::Urem(b) => fmt_binop(f, "urem", inst, b, slots),
+        InstructionKindData::Srem(b) => fmt_binop(f, "srem", inst, b, slots),
         InstructionKindData::Shl(b) => fmt_binop(f, "shl", inst, b, slots),
-        InstructionKindData::LShr(b) => fmt_binop(f, "lshr", inst, b, slots),
-        InstructionKindData::AShr(b) => fmt_binop(f, "ashr", inst, b, slots),
+        InstructionKindData::Lshr(b) => fmt_binop(f, "lshr", inst, b, slots),
+        InstructionKindData::Ashr(b) => fmt_binop(f, "ashr", inst, b, slots),
         InstructionKindData::And(b) => fmt_binop(f, "and", inst, b, slots),
         InstructionKindData::Or(b) => fmt_binop(f, "or", inst, b, slots),
         InstructionKindData::Xor(b) => fmt_binop(f, "xor", inst, b, slots),
-        InstructionKindData::FAdd(b) => fmt_binop(f, "fadd", inst, b, slots),
-        InstructionKindData::FSub(b) => fmt_binop(f, "fsub", inst, b, slots),
-        InstructionKindData::FMul(b) => fmt_binop(f, "fmul", inst, b, slots),
-        InstructionKindData::FDiv(b) => fmt_binop(f, "fdiv", inst, b, slots),
-        InstructionKindData::FRem(b) => fmt_binop(f, "frem", inst, b, slots),
-        InstructionKindData::FCmp(c) => fmt_fcmp(f, inst, c, slots),
+        InstructionKindData::Fadd(b) => fmt_binop(f, "fadd", inst, b, slots),
+        InstructionKindData::Fsub(b) => fmt_binop(f, "fsub", inst, b, slots),
+        InstructionKindData::Fmul(b) => fmt_binop(f, "fmul", inst, b, slots),
+        InstructionKindData::Fdiv(b) => fmt_binop(f, "fdiv", inst, b, slots),
+        InstructionKindData::Frem(b) => fmt_binop(f, "frem", inst, b, slots),
+        InstructionKindData::Fcmp(c) => fmt_fcmp(f, inst, c, slots),
         InstructionKindData::Alloca(a) => fmt_alloca(f, inst, a, slots),
         InstructionKindData::Load(l) => fmt_load(f, inst, l, slots),
         InstructionKindData::Store(s) => fmt_store(f, inst, s, slots),
@@ -1037,7 +1037,7 @@ pub(super) fn fmt_instruction(
         InstructionKindData::Call(c) => fmt_call(f, inst, c, slots),
         InstructionKindData::Select(s) => fmt_select(f, inst, s, slots),
         InstructionKindData::Cast(c) => fmt_cast(f, inst, c, slots),
-        InstructionKindData::ICmp(c) => fmt_icmp(f, inst, c, slots),
+        InstructionKindData::Icmp(c) => fmt_icmp(f, inst, c, slots),
         InstructionKindData::Phi(p) => fmt_phi(f, inst, p, slots),
         InstructionKindData::Switch(d) => fmt_switch(f, inst, d, slots),
         InstructionKindData::IndirectBr(d) => fmt_indirectbr(f, inst, d, slots),
@@ -1055,9 +1055,9 @@ pub(super) fn fmt_instruction(
         InstructionKindData::CleanupReturn(d) => fmt_cleanupret(f, inst, d, slots),
         InstructionKindData::CatchSwitch(d) => fmt_catchswitch(f, inst, d, slots),
         InstructionKindData::Br(b) => fmt_br(f, inst, b, slots),
-        InstructionKindData::FNeg(u) => fmt_fneg(f, inst, u, slots),
+        InstructionKindData::Fneg(u) => fmt_fneg(f, inst, u, slots),
         InstructionKindData::Freeze(u) => fmt_freeze(f, inst, u, slots),
-        InstructionKindData::VAArg(u) => fmt_va_arg(f, inst, u, slots),
+        InstructionKindData::VaArg(u) => fmt_va_arg(f, inst, u, slots),
         InstructionKindData::ExtractValue(d) => fmt_extract_value(f, inst, d, slots),
         InstructionKindData::InsertValue(d) => fmt_insert_value(f, inst, d, slots),
         InstructionKindData::ExtractElement(d) => fmt_extract_element(f, inst, d, slots),
@@ -1065,7 +1065,7 @@ pub(super) fn fmt_instruction(
         InstructionKindData::ShuffleVector(d) => fmt_shuffle_vector(f, inst, d, slots),
         InstructionKindData::Fence(d) => fmt_fence(f, d),
         InstructionKindData::AtomicCmpXchg(d) => fmt_cmpxchg(f, inst, d, slots),
-        InstructionKindData::AtomicRMW(d) => fmt_atomicrmw(f, inst, d, slots),
+        InstructionKindData::AtomicRmw(d) => fmt_atomicrmw(f, inst, d, slots),
         InstructionKindData::Unreachable(_) => f.write_str("unreachable"),
         InstructionKindData::Ret(r) => fmt_ret(f, inst, r, slots),
     }?;
@@ -1135,7 +1135,7 @@ fn fmt_cast(
                 f.write_str(" nsw")?;
             }
         }
-        CastOpcode::ZExt | CastOpcode::UIToFp if c.nneg.get() => {
+        CastOpcode::Zext | CastOpcode::UiToFp if c.nneg.get() => {
             f.write_str(" nneg")?;
         }
         _ => {}
@@ -1427,7 +1427,7 @@ fn fmt_cmpxchg(
 fn fmt_atomicrmw(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &AtomicRMWInstData,
+    d: &AtomicRmwInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `atomicrmw [volatile] <op> <ptr-ty> <ptr>, <val-ty> <val>
@@ -2436,8 +2436,8 @@ fn fmt_attribute_stored<'ctx, B: ModuleBrand + 'ctx>(
     match attr {
         AttributeStored::Enum(k) => f.write_str(k.name()),
         AttributeStored::Int(AttrKind::Alignment, v) => write!(f, "align {v}"),
-        AttributeStored::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
-        AttributeStored::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
+        AttributeStored::Int(AttrKind::UwTable, 2) => f.write_str("uwtable"),
+        AttributeStored::Int(AttrKind::UwTable, 1) => f.write_str("uwtable(sync)"),
         AttributeStored::Int(k, v) => write!(f, "{}({v})", k.name()),
         AttributeStored::Type(k, ty_id) => write!(f, "{}({})", k.name(), Type::new(*ty_id, module)),
         AttributeStored::Range { ty, lower, upper } => write!(
@@ -3060,7 +3060,7 @@ fn is_inline_metadata_node(node: &MetadataKind<StoredBrand>) -> bool {
         || matches!(
             node,
             MetadataKind::Specialized(s)
-                if s.kind() == SpecializedMetadataKind::DIExpression
+                if s.kind() == SpecializedMetadataKind::DiExpression
         )
 }
 
@@ -3244,7 +3244,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
 
 pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
-    i: GlobalIFunc<'ctx, B>,
+    i: GlobalIfunc<'ctx, B>,
 ) -> fmt::Result {
     fmt_global_value_ref(f, i.as_erased())?;
     f.write_str(" = ")?;

@@ -28,7 +28,7 @@ pub enum TypeKindLabel {
     /// The 16-bit IEEE half-precision float (`half`).
     Half,
     /// The 16-bit brain-float (`bfloat`).
-    BFloat,
+    Bfloat,
     /// The 32-bit IEEE single-precision float (`float`).
     Float,
     /// The 64-bit IEEE double-precision float (`double`).
@@ -75,7 +75,7 @@ impl fmt::Display for TypeKindLabel {
         let s = match self {
             TypeKindLabel::Void => "void",
             TypeKindLabel::Half => "half",
-            TypeKindLabel::BFloat => "bfloat",
+            TypeKindLabel::Bfloat => "bfloat",
             TypeKindLabel::Float => "float",
             TypeKindLabel::Double => "double",
             TypeKindLabel::X86Fp80 => "x86_fp80",
@@ -120,7 +120,7 @@ pub enum ValueCategoryLabel {
     /// A global alias.
     GlobalAlias,
     /// A global indirect function (`ifunc`).
-    GlobalIFunc,
+    GlobalIfunc,
     /// Metadata wrapped as a value.
     MetadataAsValue,
     /// An inline-assembly value.
@@ -137,7 +137,7 @@ impl fmt::Display for ValueCategoryLabel {
             ValueCategoryLabel::Instruction => "instruction",
             ValueCategoryLabel::GlobalVariable => "global-variable",
             ValueCategoryLabel::GlobalAlias => "global-alias",
-            ValueCategoryLabel::GlobalIFunc => "global-ifunc",
+            ValueCategoryLabel::GlobalIfunc => "global-ifunc",
             ValueCategoryLabel::MetadataAsValue => "metadata-as-value",
             ValueCategoryLabel::InlineAsm => "inline-asm",
         };
@@ -319,14 +319,14 @@ pub enum VerifierRule {
     SelfReference,
     /// `fneg` operand or result is not floating-point, or result type
     /// does not match operand type. Mirrors `Verifier::visitFNeg`.
-    FNegTypeMismatch,
+    FnegTypeMismatch,
     /// `freeze` result type differs from operand type. Mirrors
     /// `Verifier::visitFreeze` ("Freeze should produce its operand's
     /// type").
     FreezeTypeMismatch,
     /// `va_arg` source operand is not a pointer. Mirrors
     /// `Verifier::visitVAArgInst`.
-    VAArgNonPointerOperand,
+    VaArgNonPointerOperand,
     /// `extractvalue` / `insertvalue` aggregate operand is not
     /// struct- or array-typed. Mirrors `Verifier::visitExtractValueInst`
     /// / `Verifier::visitInsertValueInst`.
@@ -356,7 +356,7 @@ pub enum VerifierRule {
     /// `atomicrmw` operand value type does not match the operation's
     /// expected element type, or the FP-only ops were given a non-FP
     /// operand.
-    AtomicRMWOperandTypeMismatch,
+    AtomicRmwOperandTypeMismatch,
     /// `switch` condition is not integer-typed, or a case value type
     /// disagrees with the condition. Mirrors `Verifier::visitSwitchInst`.
     SwitchOperandTypeMismatch,
@@ -512,9 +512,9 @@ impl fmt::Display for VerifierRule {
             Self::CastTypeMismatch => "cast source/destination kind constraint failed",
             Self::CastWidthMismatch => "cast width relationship is invalid",
             Self::SelfReference => "only PHI nodes may reference their own value",
-            Self::FNegTypeMismatch => "fneg operand/result is not floating-point or types differ",
+            Self::FnegTypeMismatch => "fneg operand/result is not floating-point or types differ",
             Self::FreezeTypeMismatch => "freeze result type does not match operand type",
-            Self::VAArgNonPointerOperand => "va_arg source operand is not a pointer",
+            Self::VaArgNonPointerOperand => "va_arg source operand is not a pointer",
             Self::AggregateOpNonAggregate => {
                 "extractvalue/insertvalue aggregate is not struct- or array-typed"
             }
@@ -532,7 +532,7 @@ impl fmt::Display for VerifierRule {
             }
             Self::AtomicInvalidOrdering => "atomic op given an invalid memory ordering",
             Self::AtomicNonPointerOperand => "atomic op pointer operand is not a pointer",
-            Self::AtomicRMWOperandTypeMismatch => "atomicrmw operand type does not match operation",
+            Self::AtomicRmwOperandTypeMismatch => "atomicrmw operand type does not match operation",
             Self::SwitchOperandTypeMismatch => "switch operand types disagree",
             Self::IndirectBrNonPointerAddress => "indirectbr address operand is not a pointer",
             Self::GlobalInitializerTypeMismatch => {

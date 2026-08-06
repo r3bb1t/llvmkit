@@ -62,9 +62,9 @@ pub(crate) fn is_trivially_dead<'ctx, B: ModuleBrand + 'ctx>(
             InstructionKind::Store(_)
             | InstructionKind::Fence(_)
             | InstructionKind::AtomicCmpXchg(_)
-            | InstructionKind::AtomicRMW(_)
+            | InstructionKind::AtomicRmw(_)
             | InstructionKind::Call(_)
-            | InstructionKind::VAArg(_)
+            | InstructionKind::VaArg(_)
             | InstructionKind::LandingPad(_)
             | InstructionKind::CleanupPad(_)
             | InstructionKind::CatchPad(_),

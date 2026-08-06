@@ -369,10 +369,10 @@ impl DemandedBits {
             InstructionKindData::Shl(bin) => {
                 self.shift_left_operand_bits(user, bin, operand_index, alive_out)?
             }
-            InstructionKindData::LShr(bin) => {
+            InstructionKindData::Lshr(bin) => {
                 self.logical_shift_right_operand_bits(user, bin, operand_index, alive_out)?
             }
-            InstructionKindData::AShr(bin) => {
+            InstructionKindData::Ashr(bin) => {
                 self.arithmetic_shift_right_operand_bits(user, bin, operand_index, alive_out)?
             }
             InstructionKindData::And(bin) => {
@@ -412,30 +412,30 @@ impl DemandedBits {
             InstructionKindData::Invoke(invoke) => self
                 .intrinsic_invoke_operand_bits(user, invoke, operand_index, alive_out)?
                 .unwrap_or(all),
-            InstructionKindData::UDiv(_)
-            | InstructionKindData::SDiv(_)
-            | InstructionKindData::URem(_)
-            | InstructionKindData::SRem(_)
-            | InstructionKindData::FAdd(_)
-            | InstructionKindData::FSub(_)
-            | InstructionKindData::FMul(_)
-            | InstructionKindData::FDiv(_)
-            | InstructionKindData::FRem(_)
-            | InstructionKindData::ICmp(_)
-            | InstructionKindData::FCmp(_)
+            InstructionKindData::Udiv(_)
+            | InstructionKindData::Sdiv(_)
+            | InstructionKindData::Urem(_)
+            | InstructionKindData::Srem(_)
+            | InstructionKindData::Fadd(_)
+            | InstructionKindData::Fsub(_)
+            | InstructionKindData::Fmul(_)
+            | InstructionKindData::Fdiv(_)
+            | InstructionKindData::Frem(_)
+            | InstructionKindData::Icmp(_)
+            | InstructionKindData::Fcmp(_)
             | InstructionKindData::Alloca(_)
             | InstructionKindData::Load(_)
             | InstructionKindData::Store(_)
             | InstructionKindData::Gep(_)
             | InstructionKindData::Ret(_)
             | InstructionKindData::Br(_)
-            | InstructionKindData::FNeg(_)
-            | InstructionKindData::VAArg(_)
+            | InstructionKindData::Fneg(_)
+            | InstructionKindData::VaArg(_)
             | InstructionKindData::ExtractValue(_)
             | InstructionKindData::InsertValue(_)
             | InstructionKindData::Fence(_)
             | InstructionKindData::AtomicCmpXchg(_)
-            | InstructionKindData::AtomicRMW(_)
+            | InstructionKindData::AtomicRmw(_)
             | InstructionKindData::Switch(_)
             | InstructionKindData::IndirectBr(_)
             | InstructionKindData::CallBr(_)
@@ -617,7 +617,7 @@ impl DemandedBits {
         };
         let width = alive_out.bit_width();
         Ok(match semantic {
-            IntrinsicSemantic::BSwap if arg_index == 0 => Some(alive_out.byte_swap()),
+            IntrinsicSemantic::Bswap if arg_index == 0 => Some(alive_out.byte_swap()),
             IntrinsicSemantic::BitReverse if arg_index == 0 => Some(alive_out.reverse_bits()),
             IntrinsicSemantic::Ctlz if arg_index == 0 => {
                 let known = compute_known_bits(
@@ -642,13 +642,13 @@ impl DemandedBits {
                         .min(width),
                 ))
             }
-            IntrinsicSemantic::FShl | IntrinsicSemantic::FShr => {
+            IntrinsicSemantic::Fshl | IntrinsicSemantic::Fshr => {
                 self.funnel_shift_operand_bits(user, semantic, arg_index, alive_out)?
             }
-            IntrinsicSemantic::UMax
-            | IntrinsicSemantic::UMin
-            | IntrinsicSemantic::SMax
-            | IntrinsicSemantic::SMin
+            IntrinsicSemantic::Umax
+            | IntrinsicSemantic::Umin
+            | IntrinsicSemantic::Smax
+            | IntrinsicSemantic::Smin
                 if arg_index == 0 || arg_index == 1 =>
             {
                 Some(ApInt::bits_set_from(
@@ -680,7 +680,7 @@ impl DemandedBits {
             return Ok(None);
         };
         let mut shift = apint_unsigned_rem_u32(&shift, width);
-        if semantic == IntrinsicSemantic::FShr && shift != 0 {
+        if semantic == IntrinsicSemantic::Fshr && shift != 0 {
             shift = width.saturating_sub(shift);
         }
         Ok(match arg_index {
@@ -845,10 +845,10 @@ fn determine_live_operand_bits_add_carry(
 fn cast_operand_bits(cast: &CastOpData, src_width: u32, alive_out: &ApInt) -> ApInt {
     match cast.kind {
         CastOpcode::Trunc => alive_out.zext_or_trunc(src_width),
-        CastOpcode::ZExt => alive_out
+        CastOpcode::Zext => alive_out
             .trunc(src_width)
             .unwrap_or_else(|| ApInt::low_bits_set(src_width, u32::MAX)),
-        CastOpcode::SExt => {
+        CastOpcode::Sext => {
             let mut bits = alive_out
                 .trunc(src_width)
                 .unwrap_or_else(|| ApInt::low_bits_set(src_width, u32::MAX));
@@ -867,10 +867,10 @@ fn cast_operand_bits(cast: &CastOpData, src_width: u32, alive_out: &ApInt) -> Ap
         | CastOpcode::AddrSpaceCast => alive_out.zext_or_trunc(src_width),
         CastOpcode::FpTrunc
         | CastOpcode::FpExt
-        | CastOpcode::FpToUI
-        | CastOpcode::FpToSI
-        | CastOpcode::UIToFp
-        | CastOpcode::SIToFp => ApInt::low_bits_set(src_width, u32::MAX),
+        | CastOpcode::FpToUi
+        | CastOpcode::FpToSi
+        | CastOpcode::UiToFp
+        | CastOpcode::SiToFp => ApInt::low_bits_set(src_width, u32::MAX),
     }
 }
 
@@ -1153,7 +1153,7 @@ fn drop_zext_nneg_for_replaced_operand<'ctx, B: ModuleBrand + 'ctx>(
     let InstructionKindData::Cast(cast) = &inst.kind else {
         return;
     };
-    if cast.kind == CastOpcode::ZExt && cast.src.get() == old_operand && cast.nneg.get() {
+    if cast.kind == CastOpcode::Zext && cast.src.get() == old_operand && cast.nneg.get() {
         cast.nneg.set(false);
     }
 }
@@ -1168,7 +1168,7 @@ fn mark_non_negative_zext<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let InstructionKindData::Cast(cast) = &inst.kind else {
         return Ok(false);
     };
-    if cast.kind != CastOpcode::ZExt || cast.nneg.get() {
+    if cast.kind != CastOpcode::Zext || cast.nneg.get() {
         return Ok(false);
     }
     let src = value_from_slot(value, cast.src.get());
@@ -1312,11 +1312,11 @@ fn is_always_live(inst: &InstructionData) -> bool {
             InstructionKindData::Store(_)
                 | InstructionKindData::Fence(_)
                 | InstructionKindData::AtomicCmpXchg(_)
-                | InstructionKindData::AtomicRMW(_)
+                | InstructionKindData::AtomicRmw(_)
                 | InstructionKindData::Call(_)
                 | InstructionKindData::Invoke(_)
                 | InstructionKindData::CallBr(_)
-                | InstructionKindData::VAArg(_)
+                | InstructionKindData::VaArg(_)
         )
 }
 
@@ -1336,8 +1336,8 @@ fn is_simplify_candidate<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> 
             | InstructionKindData::Sub(_)
             | InstructionKindData::Mul(_)
             | InstructionKindData::Shl(_)
-            | InstructionKindData::LShr(_)
-            | InstructionKindData::AShr(_)
+            | InstructionKindData::Lshr(_)
+            | InstructionKindData::Ashr(_)
             | InstructionKindData::And(_)
             | InstructionKindData::Or(_)
             | InstructionKindData::Xor(_)
@@ -1345,7 +1345,7 @@ fn is_simplify_candidate<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> 
             | InstructionKindData::Select(_)
             | InstructionKindData::Phi(_)
             | InstructionKindData::Freeze(_)
-            | InstructionKindData::ICmp(_)
+            | InstructionKindData::Icmp(_)
     )
 }
 
@@ -1372,7 +1372,7 @@ fn int_scalar_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Optio
         }
         TypeKind::Void
         | TypeKind::Half
-        | TypeKind::BFloat
+        | TypeKind::Bfloat
         | TypeKind::Float
         | TypeKind::Double
         | TypeKind::X86Fp80

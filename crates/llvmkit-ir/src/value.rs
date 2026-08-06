@@ -52,10 +52,10 @@ use super::ap_int::ApInt;
 use super::array_len::{ArrLen, ArrLenDyn, ArrayLen};
 use super::constants::ConstantIntValue;
 use super::element::{ElemDyn, StaticVecElem, VecElem};
-use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
+use super::float_kind::{Bfloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
 use super::function::FunctionValue;
 use super::global_alias::GlobalAliasData;
-use super::global_ifunc::GlobalIFuncData;
+use super::global_ifunc::GlobalIfuncData;
 use super::global_variable::GlobalVariableData;
 use super::inline_asm::InlineAsmData;
 use super::int_width::{IntDyn, IntWidth, Width};
@@ -156,7 +156,7 @@ pub(super) enum ValueKindData {
     Function(Box<FunctionData>),
     Instruction(InstructionData),
     GlobalAlias(GlobalAliasData),
-    GlobalIFunc(GlobalIFuncData),
+    GlobalIfunc(GlobalIfuncData),
     GlobalVariable(GlobalVariableData),
     /// A metadata node used in a value context. Mirrors LLVM's
     /// `MetadataAsValue` (`llvm/include/llvm/IR/Metadata.h`): it lets a
@@ -365,7 +365,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
             ValueKindData::Constant(_)
             | ValueKindData::Function(_)
             | ValueKindData::GlobalAlias(_)
-            | ValueKindData::GlobalIFunc(_)
+            | ValueKindData::GlobalIfunc(_)
             | ValueKindData::GlobalVariable(_)
             | ValueKindData::MetadataAsValue(_)
             | ValueKindData::InlineAsm(_) => None,
@@ -397,7 +397,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
             ValueKindData::Instruction(_) => ValueCategory::Instruction,
             ValueKindData::GlobalVariable(_) => ValueCategory::GlobalVariable,
             ValueKindData::GlobalAlias(_) => ValueCategory::GlobalAlias,
-            ValueKindData::GlobalIFunc(_) => ValueCategory::GlobalIFunc,
+            ValueKindData::GlobalIfunc(_) => ValueCategory::GlobalIfunc,
             ValueKindData::MetadataAsValue(_) => ValueCategory::MetadataAsValue,
             ValueKindData::InlineAsm(_) => ValueCategory::InlineAsm,
         }
@@ -481,7 +481,7 @@ pub enum ValueCategory {
     Instruction,
     GlobalVariable,
     GlobalAlias,
-    GlobalIFunc,
+    GlobalIfunc,
     MetadataAsValue,
     InlineAsm,
 }
@@ -496,7 +496,7 @@ impl From<ValueCategory> for ValueCategoryLabel {
             ValueCategory::Instruction => Self::Instruction,
             ValueCategory::GlobalVariable => Self::GlobalVariable,
             ValueCategory::GlobalAlias => Self::GlobalAlias,
-            ValueCategory::GlobalIFunc => Self::GlobalIFunc,
+            ValueCategory::GlobalIfunc => Self::GlobalIfunc,
             ValueCategory::MetadataAsValue => Self::MetadataAsValue,
             ValueCategory::InlineAsm => Self::InlineAsm,
         }
@@ -512,7 +512,7 @@ pub(super) fn category_label_for_kind(kind: &ValueKindData) -> ValueCategoryLabe
         ValueKindData::Instruction(_) => ValueCategoryLabel::Instruction,
         ValueKindData::GlobalVariable(_) => ValueCategoryLabel::GlobalVariable,
         ValueKindData::GlobalAlias(_) => ValueCategoryLabel::GlobalAlias,
-        ValueKindData::GlobalIFunc(_) => ValueCategoryLabel::GlobalIFunc,
+        ValueKindData::GlobalIfunc(_) => ValueCategoryLabel::GlobalIfunc,
         ValueKindData::MetadataAsValue(_) => ValueCategoryLabel::MetadataAsValue,
         ValueKindData::InlineAsm(_) => ValueCategoryLabel::InlineAsm,
     }
@@ -2276,7 +2276,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Value<'ctx, B>> for FloatValue<'ctx, F
         if matches!(
             ty.data(),
             TypeData::Half
-                | TypeData::BFloat
+                | TypeData::Bfloat
                 | TypeData::Float
                 | TypeData::Double
                 | TypeData::X86Fp80
@@ -2381,7 +2381,7 @@ macro_rules! impl_float_value_static_try_from {
     };
 }
 impl_float_value_static_try_from!(Half, Half, Half);
-impl_float_value_static_try_from!(BFloat, BFloat, BFloat);
+impl_float_value_static_try_from!(Bfloat, Bfloat, Bfloat);
 impl_float_value_static_try_from!(f32, Float, Float);
 impl_float_value_static_try_from!(f64, Double, Double);
 impl_float_value_static_try_from!(Fp128, Fp128, Fp128);

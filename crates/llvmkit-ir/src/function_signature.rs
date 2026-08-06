@@ -16,7 +16,7 @@ use crate::argument::Argument;
 use crate::basic_block::BasicBlock;
 use crate::block_state::Unterminated;
 use crate::error::{IrError, IrResult, TypeKindLabel};
-use crate::float_kind::{BFloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
+use crate::float_kind::{Bfloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
 use crate::function::FunctionValue;
 use crate::int_width::{IntoIntValue, Width};
 use crate::ir_builder::{IrBuilder, Unpositioned, constant_folder::ConstantFolder};
@@ -1074,7 +1074,7 @@ macro_rules! impl_float_signature_marker {
 impl_float_signature_marker!(f32, f32_type, TypeKind::Float, Float);
 impl_float_signature_marker!(f64, f64_type, TypeKind::Double, Double);
 impl_float_signature_marker!(Half, half_type, TypeKind::Half, Half);
-impl_float_signature_marker!(BFloat, bfloat_type, TypeKind::BFloat, BFloat);
+impl_float_signature_marker!(Bfloat, bfloat_type, TypeKind::Bfloat, Bfloat);
 impl_float_signature_marker!(Fp128, fp128_type, TypeKind::Fp128, Fp128);
 impl_float_signature_marker!(X86Fp80, x86_fp80_type, TypeKind::X86Fp80, X86Fp80);
 impl_float_signature_marker!(PpcFp128, ppc_fp128_type, TypeKind::PpcFp128, PpcFp128);
@@ -1373,7 +1373,7 @@ macro_rules! impl_into_call_arg_float {
         }
     )+};
 }
-impl_into_call_arg_float!(f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128);
+impl_into_call_arg_float!(f32, f64, Half, Bfloat, Fp128, X86Fp80, PpcFp128);
 
 impl<'ctx, B, V> IntoCallArg<'ctx, Ptr, B> for V
 where

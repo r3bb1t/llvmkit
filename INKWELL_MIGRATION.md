@@ -180,7 +180,7 @@ check at runtime:
 Width markers are **Rust scalar types**: `bool`, `i8`, `i16`, `i32`,
 `i64`, `i128` for static widths, plus `IntDyn` for parsed-IR / runtime
 integer widths. Float kinds follow the same shape: `f32`, `f64` for the
-binary32 / binary64 IEEE kinds; `Half`, `BFloat`, `Fp128`, `X86Fp80`,
+binary32 / binary64 IEEE kinds; `Half`, `Bfloat`, `Fp128`, `X86Fp80`,
 `PpcFp128` for kinds without a Rust scalar counterpart; `FloatDyn` for the
 runtime-checked float path. The top-level `Dyn` marks fully-erased return
 shapes and is distinct from `IntDyn` / `FloatDyn`.

@@ -42,8 +42,8 @@
 use std::collections::BTreeSet;
 
 use llvmkit_ir::{
-    AShrFlags, AddFlags, AddSubOperation, ApInt, KnownBits, LShrFlags, OverflowFlags, SDivFlags,
-    ShiftAmountKnowledge, ShlFlags, SubFlags, UDivFlags,
+    AddFlags, AddSubOperation, ApInt, AshrFlags, KnownBits, LshrFlags, OverflowFlags, SdivFlags,
+    ShiftAmountKnowledge, ShlFlags, SubFlags, UdivFlags,
 };
 
 /// The LLVM release the gap lists below were derived from. Bump it in the same
@@ -272,7 +272,7 @@ const MODELED_VALUE_TRACKING: &[(&str, &str)] = &[
     ("MaskedValueIsZero", "masked_value_is_zero"),
     ("OverflowResult", "OverflowResult"),
     ("SelectPatternFlavor", "SelectPatternFlavor"),
-    ("SelectPatternNaNBehavior", "SelectPatternNaNBehavior"),
+    ("SelectPatternNaNBehavior", "SelectPatternNanBehavior"),
     ("SelectPatternResult", "SelectPatternResult"),
     (
         "adjustKnownBitsForSelectArm",
@@ -640,13 +640,13 @@ fn exercises_every_modeled_known_bits_operation() {
     let _ = KnownBits::shl(&a, &b);
     let _ = KnownBits::shl_with_flags(&a, &b, ShlFlags::new(), ShiftAmountKnowledge::MaybeZero);
     let _ = KnownBits::lshr(&a, &b);
-    let _ = KnownBits::lshr_with_flags(&a, &b, LShrFlags::new(), ShiftAmountKnowledge::MaybeZero);
+    let _ = KnownBits::lshr_with_flags(&a, &b, LshrFlags::new(), ShiftAmountKnowledge::MaybeZero);
     let _ = KnownBits::ashr(&a, &b);
-    let _ = KnownBits::ashr_with_flags(&a, &b, AShrFlags::new(), ShiftAmountKnowledge::MaybeZero);
+    let _ = KnownBits::ashr_with_flags(&a, &b, AshrFlags::new(), ShiftAmountKnowledge::MaybeZero);
     let _ = KnownBits::udiv(&a, &b);
-    let _ = KnownBits::udiv_with_exact(&a, &b, UDivFlags::new());
+    let _ = KnownBits::udiv_with_exact(&a, &b, UdivFlags::new());
     let _ = KnownBits::sdiv(&a, &b);
-    let _ = KnownBits::sdiv_with_exact(&a, &b, SDivFlags::new());
+    let _ = KnownBits::sdiv_with_exact(&a, &b, SdivFlags::new());
     let _ = KnownBits::urem(&a, &b);
     let _ = KnownBits::srem(&a, &b);
 
@@ -716,7 +716,7 @@ fn exercises_every_modeled_known_bits_operation() {
 fn exercises_every_modeled_value_tracking_entry_point() {
     use llvmkit_ir::{
         BytewiseValue, ConstantDataArraySlice, MinMaxIntrinsic, MinMaxKind, MinMaxOperation,
-        SelectPatternFlavor, SelectPatternMatch, SelectPatternNaNBehavior, SelectPatternResult,
+        SelectPatternFlavor, SelectPatternMatch, SelectPatternNanBehavior, SelectPatternResult,
         argument_aliasing_to_returned_pointer, can_convert_to_min_or_max_intrinsic,
         collect_possible_values, constant_data_array_info, constant_string_info,
         find_alloca_for_value, find_inserted_value, is_bytewise_value,
@@ -926,7 +926,7 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     );
 
     // The flavour classification and the record it answers with (tranche 4a).
-    let _get_select_pattern: fn(_, SelectPatternNaNBehavior, bool) -> SelectPatternResult =
+    let _get_select_pattern: fn(_, SelectPatternNanBehavior, bool) -> SelectPatternResult =
         select_pattern;
     let _select_pattern_result = SelectPatternResult::unknown;
 

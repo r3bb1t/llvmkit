@@ -56,7 +56,7 @@ use core::convert::Infallible;
 use core::fmt;
 use core::marker::PhantomData;
 
-use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
+use super::float_kind::{Bfloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
 use super::int_width::IntoConstantInt;
 use super::int_width::{IntDyn, IntWidth};
 use super::struct_body_state::StructBodyState;
@@ -522,7 +522,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
         match (ty.data(), &c.as_erased().data().kind) {
             (
                 TypeData::Half
-                | TypeData::BFloat
+                | TypeData::Bfloat
                 | TypeData::Float
                 | TypeData::Double
                 | TypeData::X86Fp80
@@ -532,7 +532,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Constant<'ctx, B>>
             ) => Ok(Self::from_parts_typed(c)),
             (
                 TypeData::Half
-                | TypeData::BFloat
+                | TypeData::Bfloat
                 | TypeData::Float
                 | TypeData::Double
                 | TypeData::X86Fp80
@@ -583,7 +583,7 @@ macro_rules! impl_constant_float_static_try_from {
     };
 }
 impl_constant_float_static_try_from!(Half, Half, Half);
-impl_constant_float_static_try_from!(BFloat, BFloat, BFloat);
+impl_constant_float_static_try_from!(Bfloat, Bfloat, Bfloat);
 impl_constant_float_static_try_from!(f32, Float, Float);
 impl_constant_float_static_try_from!(f64, Double, Double);
 impl_constant_float_static_try_from!(Fp128, Fp128, Fp128);
@@ -749,7 +749,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FloatType<'ctx, K, B> {
     pub fn semantics(self) -> ApFloatSemantics {
         match self.as_type().data() {
             TypeData::Half => ApFloatSemantics::IeeeHalf,
-            TypeData::BFloat => ApFloatSemantics::BFloat,
+            TypeData::Bfloat => ApFloatSemantics::Bfloat,
             TypeData::Float => ApFloatSemantics::IeeeSingle,
             TypeData::Double => ApFloatSemantics::IeeeDouble,
             TypeData::Fp128 => ApFloatSemantics::IeeeQuad,
@@ -1131,7 +1131,7 @@ impl<'ctx> ModuleCore {
             ValueKindData::GlobalAlias(_) => crate::GlobalAlias::try_from(value)?
                 .value_type()
                 .is_function(),
-            ValueKindData::GlobalIFunc(_) => crate::GlobalIFunc::try_from(value)?
+            ValueKindData::GlobalIfunc(_) => crate::GlobalIfunc::try_from(value)?
                 .value_type()
                 .is_function(),
             _ => false,
@@ -1175,7 +1175,7 @@ impl<'ctx> ModuleCore {
             ValueKindData::Function(_)
             | ValueKindData::GlobalVariable(_)
             | ValueKindData::GlobalAlias(_)
-            | ValueKindData::GlobalIFunc(_) => {}
+            | ValueKindData::GlobalIfunc(_) => {}
             _ => {
                 return Err(IrError::InvalidOperation {
                     message: "no_cfi expects a global value",
@@ -1763,7 +1763,7 @@ fn constant_with_replaced_operand(
         | ConstantData::SymbolDelta { .. }
         | ConstantData::SymbolDeltaPlus { .. }
         | ConstantData::BlockAddress { .. }
-        | ConstantData::DSOLocalEquivalent { .. }
+        | ConstantData::DsoLocalEquivalent { .. }
         | ConstantData::NoCfi { .. }
         | ConstantData::TokenNone
         | ConstantData::TargetExtNone
@@ -2371,7 +2371,7 @@ pub(crate) fn is_constant_int_one(module: &ModuleCore, id: ValueSlot) -> bool {
 
 fn type_bit_width(module: &ModuleCore, id: TypeSlot) -> Option<u32> {
     match module.context().type_data(id) {
-        TypeData::Half | TypeData::BFloat => Some(16),
+        TypeData::Half | TypeData::Bfloat => Some(16),
         TypeData::Float => Some(32),
         TypeData::Double => Some(64),
         TypeData::X86Fp80 => Some(80),

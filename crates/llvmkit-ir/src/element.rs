@@ -14,7 +14,7 @@
 //! `FloatValue<f64>`). The marker set is therefore exactly the int-width
 //! scalar markers (`bool`, `i8`, `i16`, `i32`, `i64`, `i128`) plus the
 //! float-kind markers (`f32`, `f64`, [`Half`],
-//! [`BFloat`], [`Fp128`],
+//! [`Bfloat`], [`Fp128`],
 //! [`X86Fp80`], [`PpcFp128`]). Only
 //! [`ElemDyn`] needs a dedicated struct, since "element unknown at compile
 //! time" has no Rust counterpart.
@@ -30,7 +30,7 @@
 //! The base trait is **sealed** — the set of leaf element markers is closed,
 //! not an extension point.
 
-use crate::float_kind::{BFloat, Fp128, Half, PpcFp128, StaticFloatKind, X86Fp80};
+use crate::float_kind::{Bfloat, Fp128, Half, PpcFp128, StaticFloatKind, X86Fp80};
 use crate::int_width::StaticIntWidth;
 use crate::module::{ModuleBrand, ModuleRef};
 use crate::r#type::Type;
@@ -145,7 +145,7 @@ macro_rules! impl_vec_elem_float {
         }
     )+ };
 }
-impl_vec_elem_float!(f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128);
+impl_vec_elem_float!(f32, f64, Half, Bfloat, Fp128, X86Fp80, PpcFp128);
 
 mod sealed {
     pub trait Sealed {}

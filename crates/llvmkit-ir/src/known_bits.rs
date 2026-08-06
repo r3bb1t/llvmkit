@@ -5,7 +5,7 @@
 use crate::ap_int::ApInt;
 use crate::constants::ConstantIntValue;
 use crate::instr_types::{
-    AShrFlags, AddFlags, LShrFlags, OverflowFlags, SDivFlags, ShlFlags, SubFlags, UDivFlags,
+    AddFlags, AshrFlags, LshrFlags, OverflowFlags, SdivFlags, ShlFlags, SubFlags, UdivFlags,
 };
 use crate::int_width::IntWidth;
 use crate::module::ModuleBrand;
@@ -24,7 +24,7 @@ pub enum AddSubOperation {
 /// Whether the caller has independently proven a shift amount non-zero.
 /// Ports the `ShAmtNonZero` parameter of `KnownBits::shl` / `lshr` / `ashr`
 /// (`KnownBits.h`). Deliberately not part of [`ShlFlags`] /
-/// [`LShrFlags`] / [`AShrFlags`]: no `.ll` keyword spells it — it is an
+/// [`LshrFlags`] / [`AshrFlags`]: no `.ll` keyword spells it — it is an
 /// analysis-side fact, not an IR flag.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ShiftAmountKnowledge {
@@ -726,13 +726,13 @@ impl KnownBits {
     /// Logical-shift-right transfer.
     #[inline]
     pub fn lshr(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::lshr_with_flags(lhs, rhs, LShrFlags::new(), ShiftAmountKnowledge::MaybeZero)
+        Self::lshr_with_flags(lhs, rhs, LshrFlags::new(), ShiftAmountKnowledge::MaybeZero)
     }
 
     pub fn lshr_with_flags(
         lhs: &KnownBits,
         rhs: &KnownBits,
-        flags: LShrFlags,
+        flags: LshrFlags,
         shift_amount: ShiftAmountKnowledge,
     ) -> KnownBits {
         compute_for_lshr(
@@ -746,13 +746,13 @@ impl KnownBits {
     /// Arithmetic-shift-right transfer.
     #[inline]
     pub fn ashr(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::ashr_with_flags(lhs, rhs, AShrFlags::new(), ShiftAmountKnowledge::MaybeZero)
+        Self::ashr_with_flags(lhs, rhs, AshrFlags::new(), ShiftAmountKnowledge::MaybeZero)
     }
 
     pub fn ashr_with_flags(
         lhs: &KnownBits,
         rhs: &KnownBits,
-        flags: AShrFlags,
+        flags: AshrFlags,
         shift_amount: ShiftAmountKnowledge,
     ) -> KnownBits {
         compute_for_ashr(
@@ -766,10 +766,10 @@ impl KnownBits {
     /// Unsigned division transfer.
     #[inline]
     pub fn udiv(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::udiv_with_exact(lhs, rhs, UDivFlags::new())
+        Self::udiv_with_exact(lhs, rhs, UdivFlags::new())
     }
 
-    pub fn udiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, flags: UDivFlags) -> KnownBits {
+    pub fn udiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, flags: UdivFlags) -> KnownBits {
         compute_for_udiv(lhs, rhs, flags.exact)
     }
 
@@ -778,10 +778,10 @@ impl KnownBits {
     /// so it matches [`Self::udiv`] / [`Self::udiv_with_exact`].
     #[inline]
     pub fn sdiv(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::sdiv_with_exact(lhs, rhs, SDivFlags::new())
+        Self::sdiv_with_exact(lhs, rhs, SdivFlags::new())
     }
 
-    pub fn sdiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, flags: SDivFlags) -> KnownBits {
+    pub fn sdiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, flags: SdivFlags) -> KnownBits {
         compute_for_sdiv(lhs, rhs, flags.exact)
     }
 

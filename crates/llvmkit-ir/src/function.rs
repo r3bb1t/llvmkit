@@ -1114,7 +1114,7 @@ pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
         ExpectedRetKind::IntDyn => matches!(ret, TypeData::Integer { .. }),
         ExpectedRetKind::FloatStatic(label) => match label {
             "half" => matches!(ret, TypeData::Half),
-            "bfloat" => matches!(ret, TypeData::BFloat),
+            "bfloat" => matches!(ret, TypeData::Bfloat),
             "float" => matches!(ret, TypeData::Float),
             "double" => matches!(ret, TypeData::Double),
             "fp128" => matches!(ret, TypeData::Fp128),
@@ -1125,7 +1125,7 @@ pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
         ExpectedRetKind::FloatDyn => matches!(
             ret,
             TypeData::Half
-                | TypeData::BFloat
+                | TypeData::Bfloat
                 | TypeData::Float
                 | TypeData::Double
                 | TypeData::Fp128

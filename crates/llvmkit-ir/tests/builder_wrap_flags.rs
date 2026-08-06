@@ -11,8 +11,8 @@
 //! / `lshr` / `ashr` follow the same shape against `isExact()`.
 
 use llvmkit_ir::{
-    AShrFlags, AddFlags, Dyn, InstructionKind, InstructionView, IntValue, IrBuilder, IrError,
-    LShrFlags, Linkage, MulFlags, SDivFlags, ShlFlags, SubFlags, UDivFlags, module_new,
+    AddFlags, AshrFlags, Dyn, InstructionKind, InstructionView, IntValue, IrBuilder, IrError,
+    Linkage, LshrFlags, MulFlags, SdivFlags, ShlFlags, SubFlags, UdivFlags, module_new,
 };
 
 /// Port of `unittests/IR/IRBuilderTest.cpp::TEST_F(IRBuilderTest, WrapFlags)`
@@ -113,12 +113,12 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(udiv_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(udiv_fn).param(1)?.try_into()?;
-    let r = b.int_udiv_with_flags(lhs, rhs, UDivFlags::new().exact(), "r")?;
+    let r = b.int_udiv_with_flags(lhs, rhs, UdivFlags::new().exact(), "r")?;
     let inst = InstructionView::try_from(b.view(r).as_erased())?;
-    if let Some(InstructionKind::UDiv(s)) = inst.kind() {
+    if let Some(InstructionKind::Udiv(s)) = inst.kind() {
         assert!(s.is_exact());
     } else {
-        panic!("expected UDiv");
+        panic!("expected Udiv");
     }
     b.ret(r)?;
 
@@ -127,12 +127,12 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(sdiv_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(sdiv_fn).param(1)?.try_into()?;
-    let r = b.int_sdiv_with_flags(lhs, rhs, SDivFlags::new().exact(), "r")?;
+    let r = b.int_sdiv_with_flags(lhs, rhs, SdivFlags::new().exact(), "r")?;
     let inst = InstructionView::try_from(b.view(r).as_erased())?;
-    if let Some(InstructionKind::SDiv(s)) = inst.kind() {
+    if let Some(InstructionKind::Sdiv(s)) = inst.kind() {
         assert!(s.is_exact());
     } else {
-        panic!("expected SDiv");
+        panic!("expected Sdiv");
     }
     b.ret(r)?;
 
@@ -141,12 +141,12 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(lshr_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(lshr_fn).param(1)?.try_into()?;
-    let r = b.int_lshr_with_flags(lhs, rhs, LShrFlags::new().exact(), "r")?;
+    let r = b.int_lshr_with_flags(lhs, rhs, LshrFlags::new().exact(), "r")?;
     let inst = InstructionView::try_from(b.view(r).as_erased())?;
-    if let Some(InstructionKind::LShr(s)) = inst.kind() {
+    if let Some(InstructionKind::Lshr(s)) = inst.kind() {
         assert!(s.is_exact());
     } else {
-        panic!("expected LShr");
+        panic!("expected Lshr");
     }
     b.ret(r)?;
 
@@ -155,12 +155,12 @@ fn div_shr_exact_round_trip() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(ashr_fn).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(ashr_fn).param(1)?.try_into()?;
-    let r = b.int_ashr_with_flags(lhs, rhs, AShrFlags::new().exact(), "r")?;
+    let r = b.int_ashr_with_flags(lhs, rhs, AshrFlags::new().exact(), "r")?;
     let inst = InstructionView::try_from(b.view(r).as_erased())?;
-    if let Some(InstructionKind::AShr(s)) = inst.kind() {
+    if let Some(InstructionKind::Ashr(s)) = inst.kind() {
         assert!(s.is_exact());
     } else {
-        panic!("expected AShr");
+        panic!("expected Ashr");
     }
     b.ret(r)?;
     Ok(())

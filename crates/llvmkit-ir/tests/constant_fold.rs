@@ -11,7 +11,7 @@ use llvmkit_ir::{
     ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
     ConstantFloatValue, ConstantIntValue, FloatDyn, FloatPredicate, GepNoWrapFlags,
     InstructionView, IntDyn, IntPredicate, IntValue, IrBuilder, IrError, Linkage, MaybeAlign,
-    Module, NoFolder, RoundingMode, UDivFlags, UnaryOpcode, UnnamedAddr,
+    Module, NoFolder, RoundingMode, UdivFlags, UnaryOpcode, UnnamedAddr,
     constant_fold_binary_instruction, constant_fold_cast_instruction,
     constant_fold_compare_instruction, constant_fold_extract_element_instruction,
     constant_fold_extract_value_instruction, constant_fold_get_element_ptr,
@@ -61,7 +61,7 @@ fn udiv_by_zero_returns_poison() -> Result<(), IrError> {
     let ty = m.i32_type();
     let lhs = ty.const_int(42_i32).as_constant();
     let zero = ty.const_zero().as_constant();
-    let folded = constant_fold_binary_instruction(BinaryOpcode::UDiv, lhs, zero)?
+    let folded = constant_fold_binary_instruction(BinaryOpcode::Udiv, lhs, zero)?
         .expect("invalid constant division folds to poison");
     assert_eq!(folded, ty.as_type().poison().as_constant());
     Ok(())
@@ -74,7 +74,7 @@ fn sdiv_signed_min_by_minus_one_returns_poison() -> Result<(), IrError> {
     let ty = m.i32_type();
     let lhs = ty.const_int(i32::MIN).as_constant();
     let minus_one = ty.const_int(-1_i32).as_constant();
-    let folded = constant_fold_binary_instruction(BinaryOpcode::SDiv, lhs, minus_one)?
+    let folded = constant_fold_binary_instruction(BinaryOpcode::Sdiv, lhs, minus_one)?
         .expect("overflowing constant sdiv folds to poison");
     assert_eq!(folded, ty.as_type().poison().as_constant());
     Ok(())
@@ -88,7 +88,7 @@ fn fptoui_negative_constant_returns_poison() -> Result<(), IrError> {
     let f64_ty = m.f64_type();
     let i32_ty = m.i32_type();
     let folded = constant_fold_cast_instruction(
-        CastOpcode::FpToUI,
+        CastOpcode::FpToUi,
         f64_ty.const_double(-1.0).as_constant(),
         i32_ty.as_type(),
     )?
@@ -110,7 +110,7 @@ fn fptosi_fp128_integer_keeps_low_bits() -> Result<(), IrError> {
         &ApInt::from_words(128, &[0x1000, 0x4063_0000_0000_0000]),
     )?;
     let folded = constant_fold_cast_instruction(
-        CastOpcode::FpToSI,
+        CastOpcode::FpToSi,
         fp128_ty.const_ap_float(&fp)?.as_constant(),
         i128_ty.as_type(),
     )?
@@ -224,7 +224,7 @@ fn vector_div_by_zero_splat_folds_to_vector_poison() -> Result<(), IrError> {
         i32_ty.const_zero(),
     ])?;
     let folded =
-        constant_fold_binary_instruction(BinaryOpcode::UDiv, lhs.as_constant(), rhs.as_constant())?
+        constant_fold_binary_instruction(BinaryOpcode::Udiv, lhs.as_constant(), rhs.as_constant())?
             .expect("vector udiv by zero folds");
     assert_eq!(folded, vec_ty.as_type().poison().as_constant());
     Ok(())
@@ -406,11 +406,11 @@ fn scalable_i1_non_splat_divrem_does_not_use_scalar_i1_shortcuts() -> Result<(),
         .as_constant();
 
     assert_eq!(
-        constant_fold_binary_instruction(BinaryOpcode::UDiv, lhs, rhs)?,
+        constant_fold_binary_instruction(BinaryOpcode::Udiv, lhs, rhs)?,
         None
     );
     assert_eq!(
-        constant_fold_binary_instruction(BinaryOpcode::URem, lhs, rhs)?,
+        constant_fold_binary_instruction(BinaryOpcode::Urem, lhs, rhs)?,
         None
     );
     Ok(())
@@ -533,12 +533,12 @@ fn undef_integer_binary_rules_fold_to_llvm_constants() -> Result<(), IrError> {
         undef
     );
     assert_eq!(
-        constant_fold_binary_instruction(BinaryOpcode::LShr, undef, zero)?
+        constant_fold_binary_instruction(BinaryOpcode::Lshr, undef, zero)?
             .expect("undef lshr zero folds to identity operand"),
         undef
     );
     assert_eq!(
-        constant_fold_binary_instruction(BinaryOpcode::AShr, undef, zero)?
+        constant_fold_binary_instruction(BinaryOpcode::Ashr, undef, zero)?
             .expect("undef ashr zero folds to identity operand"),
         undef
     );
@@ -562,7 +562,7 @@ fn undef_integer_binary_rules_fold_to_llvm_constants() -> Result<(), IrError> {
         .expect("X << undef folds");
     assert_eq!(shl, ty.as_type().poison().as_constant());
 
-    let udiv_zero = constant_fold_binary_instruction(BinaryOpcode::UDiv, undef, zero)?
+    let udiv_zero = constant_fold_binary_instruction(BinaryOpcode::Udiv, undef, zero)?
         .expect("undef / zero folds");
     assert_eq!(udiv_zero, ty.as_type().poison().as_constant());
     Ok(())
@@ -856,7 +856,7 @@ fn analysis_instruction_fold_exact_udiv_inexact_matches_plain_udiv() -> Result<(
     let value = b.int_udiv_with_flags::<i32, _, _, _>(
         ty.const_int(7_i32),
         ty.const_int(2_i32),
-        UDivFlags::new().exact(),
+        UdivFlags::new().exact(),
         "q",
     )?;
     let instruction = InstructionView::try_from(b.view(value).as_erased())?;
@@ -884,7 +884,7 @@ fn analysis_instruction_fold_exact_udiv_undef_identity() -> Result<(), IrError> 
     let value = b.int_udiv_with_flags::<i32, _, _, _>(
         undef,
         ty.const_int(1_i32),
-        UDivFlags::new().exact(),
+        UdivFlags::new().exact(),
         "q",
     )?;
     let instruction = InstructionView::try_from(b.view(value).as_erased())?;
@@ -1263,7 +1263,7 @@ fn frem_uses_modulo_not_ieee_remainder() -> Result<(), IrError> {
         )?
         .as_constant();
 
-    let folded = constant_fold_binary_instruction(BinaryOpcode::FRem, lhs, rhs)?
+    let folded = constant_fold_binary_instruction(BinaryOpcode::Frem, lhs, rhs)?
         .expect("all-constant frem folds");
     let folded = ConstantFloatValue::<FloatDyn, _>::try_from(folded)?;
 
@@ -1362,20 +1362,20 @@ fn undef_cast_rules_fold_to_zero_or_undef() -> Result<(), IrError> {
     let undef_i8 = i8_ty.as_type().undef().as_constant();
     let undef_i32 = i32_ty.as_type().undef().as_constant();
 
-    let zext = constant_fold_cast_instruction(CastOpcode::ZExt, undef_i8, i32_ty.as_type())?
+    let zext = constant_fold_cast_instruction(CastOpcode::Zext, undef_i8, i32_ty.as_type())?
         .expect("zext undef folds to zero");
     assert_eq!(zext, i32_ty.const_zero().as_constant());
 
-    let sext = constant_fold_cast_instruction(CastOpcode::SExt, undef_i8, i32_ty.as_type())?
+    let sext = constant_fold_cast_instruction(CastOpcode::Sext, undef_i8, i32_ty.as_type())?
         .expect("sext undef folds to zero");
     assert_eq!(sext, i32_ty.const_zero().as_constant());
 
-    let uitofp = constant_fold_cast_instruction(CastOpcode::UIToFp, undef_i32, f64_ty.as_type())?
+    let uitofp = constant_fold_cast_instruction(CastOpcode::UiToFp, undef_i32, f64_ty.as_type())?
         .expect("uitofp undef folds to zero");
     let uitofp = ConstantFloatValue::<FloatDyn, _>::try_from(uitofp)?;
     assert!(uitofp.ap_float().is_zero());
 
-    let sitofp = constant_fold_cast_instruction(CastOpcode::SIToFp, undef_i32, f64_ty.as_type())?
+    let sitofp = constant_fold_cast_instruction(CastOpcode::SiToFp, undef_i32, f64_ty.as_type())?
         .expect("sitofp undef folds to zero");
     let sitofp = ConstantFloatValue::<FloatDyn, _>::try_from(sitofp)?;
     assert!(sitofp.ap_float().is_zero());
@@ -1396,12 +1396,12 @@ fn fp_undef_binary_rules_fold_to_undef_or_nan() -> Result<(), IrError> {
     let f64_ty = m.f64_type();
     let undef = f64_ty.as_type().undef().as_constant();
 
-    let fadd = constant_fold_binary_instruction(BinaryOpcode::FAdd, undef, undef)?
+    let fadd = constant_fold_binary_instruction(BinaryOpcode::Fadd, undef, undef)?
         .expect("undef fadd undef folds");
     assert_eq!(fadd, undef);
 
     let fsub = constant_fold_binary_instruction(
-        BinaryOpcode::FSub,
+        BinaryOpcode::Fsub,
         f64_ty.const_double(-0.0).as_constant(),
         undef,
     )?
@@ -1409,7 +1409,7 @@ fn fp_undef_binary_rules_fold_to_undef_or_nan() -> Result<(), IrError> {
     assert_eq!(fsub, undef);
 
     let fmul = constant_fold_binary_instruction(
-        BinaryOpcode::FMul,
+        BinaryOpcode::Fmul,
         f64_ty.const_double(3.0).as_constant(),
         undef,
     )?
@@ -1442,7 +1442,7 @@ fn scalable_vector_fsub_negative_zero_pattern_controls_undef_fold() -> Result<()
             .const_vector::<Constant<'_, _>, _>([neg_zero, poison_lane])?
             .as_constant(),
     ] {
-        let folded = constant_fold_binary_instruction(BinaryOpcode::FSub, lhs, rhs)?
+        let folded = constant_fold_binary_instruction(BinaryOpcode::Fsub, lhs, rhs)?
             .expect("scalable -0.0 - undef folds");
         assert_eq!(folded, rhs);
     }
@@ -1455,7 +1455,7 @@ fn scalable_vector_fsub_negative_zero_pattern_controls_undef_fold() -> Result<()
             .const_vector::<Constant<'_, _>, _>([poison_lane, poison_lane])?
             .as_constant(),
     ] {
-        let folded = constant_fold_binary_instruction(BinaryOpcode::FSub, lhs, rhs)?
+        let folded = constant_fold_binary_instruction(BinaryOpcode::Fsub, lhs, rhs)?
             .expect("non-matching scalable fsub undef folds to NaN");
         let lane_zero = constant_fold_extract_element_instruction(
             folded,
@@ -2408,10 +2408,10 @@ fn constants_test_integer_i1_binary_folds() -> Result<(), IrError> {
         one
     );
     for (opcode, lhs, rhs) in [
-        (BinaryOpcode::SDiv, neg_one, one),
-        (BinaryOpcode::SDiv, one, neg_one),
-        (BinaryOpcode::UDiv, neg_one, one),
-        (BinaryOpcode::UDiv, one, neg_one),
+        (BinaryOpcode::Sdiv, neg_one, one),
+        (BinaryOpcode::Sdiv, one, neg_one),
+        (BinaryOpcode::Udiv, neg_one, one),
+        (BinaryOpcode::Udiv, one, neg_one),
     ] {
         assert_eq!(
             constant_fold_binary_instruction(opcode, lhs, rhs)?.expect("i1 div folds"),
@@ -2421,7 +2421,7 @@ fn constants_test_integer_i1_binary_folds() -> Result<(), IrError> {
     }
     for (lhs, rhs) in [(neg_one, one), (one, neg_one)] {
         assert_eq!(
-            constant_fold_binary_instruction(BinaryOpcode::SRem, lhs, rhs)?.expect("i1 srem folds"),
+            constant_fold_binary_instruction(BinaryOpcode::Srem, lhs, rhs)?.expect("i1 srem folds"),
             zero
         );
     }
@@ -2459,7 +2459,7 @@ fn i1_constant_expr_binary_special_cases_fold() -> Result<(), IrError> {
     )?;
     assert_eq!(add, expected_add);
 
-    let sdiv = constant_fold_binary_instruction(BinaryOpcode::SDiv, ptr_as_i1, one)?
+    let sdiv = constant_fold_binary_instruction(BinaryOpcode::Sdiv, ptr_as_i1, one)?
         .expect("i1 constexpr sdiv by one folds to lhs");
     assert_eq!(sdiv, ptr_as_i1);
     Ok(())
@@ -2514,7 +2514,7 @@ fn scalable_vector_fp_undef_binary_folds_to_nan_splat() -> Result<(), IrError> {
     let zero = f32_ty.const_float(0.0).as_constant();
     let rhs = vec_ty.const_vector::<Constant<'_, _>, _>([zero, zero])?;
 
-    let folded = constant_fold_binary_instruction(BinaryOpcode::FAdd, undef, rhs.as_constant())?
+    let folded = constant_fold_binary_instruction(BinaryOpcode::Fadd, undef, rhs.as_constant())?
         .expect("scalable vector fp undef binop folds");
     let lane_zero =
         constant_fold_extract_element_instruction(folded, m.i32_type().const_zero().as_constant())?
@@ -2536,18 +2536,18 @@ fn constant_fold_unary_fneg_undef_and_vector_elements() -> Result<(), IrError> {
     let neg_one = f32_ty.const_float(-1.0).as_constant();
     let undef = f32_ty.as_type().undef().as_constant();
 
-    let scalar = constant_fold_unary_instruction(UnaryOpcode::FNeg, undef)?
+    let scalar = constant_fold_unary_instruction(UnaryOpcode::Fneg, undef)?
         .expect("scalar fneg undef folds");
     assert_eq!(scalar, undef);
 
     let vector_undef = vec_ty.as_type().undef().as_constant();
-    let folded = constant_fold_unary_instruction(UnaryOpcode::FNeg, vector_undef)?
+    let folded = constant_fold_unary_instruction(UnaryOpcode::Fneg, vector_undef)?
         .expect("fixed-vector fneg undef folds lane-wise");
     let expected = vec_ty.const_vector::<Constant<'_, _>, _>([undef, undef])?;
     assert_eq!(folded, expected.as_constant());
 
     let vector = vec_ty.const_vector::<Constant<'_, _>, _>([one, undef])?;
-    let folded = constant_fold_unary_instruction(UnaryOpcode::FNeg, vector.as_constant())?
+    let folded = constant_fold_unary_instruction(UnaryOpcode::Fneg, vector.as_constant())?
         .expect("fixed-vector fneg folds");
     let lane_zero = constant_fold_extract_element_instruction(
         folded,
@@ -2563,19 +2563,19 @@ fn constant_fold_unary_fneg_undef_and_vector_elements() -> Result<(), IrError> {
     assert_eq!(lane_one, undef);
 
     let splat = vec_ty.const_vector::<Constant<'_, _>, _>([one, one])?;
-    let folded = constant_fold_unary_instruction(UnaryOpcode::FNeg, splat.as_constant())?
+    let folded = constant_fold_unary_instruction(UnaryOpcode::Fneg, splat.as_constant())?
         .expect("splat fneg folds");
     let expected = vec_ty.const_vector::<Constant<'_, _>, _>([neg_one, neg_one])?;
     assert_eq!(folded, expected.as_constant());
 
     let scalable_ty = m.scalable_vector_type(f32_ty.as_type(), 2);
     let scalable_splat = scalable_ty.const_vector::<Constant<'_, _>, _>([one, one])?;
-    let folded = constant_fold_unary_instruction(UnaryOpcode::FNeg, scalable_splat.as_constant())?
+    let folded = constant_fold_unary_instruction(UnaryOpcode::Fneg, scalable_splat.as_constant())?
         .expect("scalable splat fneg folds");
     let expected = scalable_ty.const_vector::<Constant<'_, _>, _>([neg_one, neg_one])?;
     assert_eq!(folded, expected.as_constant());
     let scalable_undef = scalable_ty.as_type().undef().as_constant();
-    let folded = constant_fold_unary_instruction(UnaryOpcode::FNeg, scalable_undef)?
+    let folded = constant_fold_unary_instruction(UnaryOpcode::Fneg, scalable_undef)?
         .expect("scalable undef fneg folds");
     assert_eq!(folded, scalable_undef);
     Ok(())

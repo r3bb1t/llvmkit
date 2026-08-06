@@ -461,7 +461,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         value: FloatValue<'ctx, K, B>,
         fmf: FastMathFlags,
     ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
-        // Expected: constant_fold_unary_instruction's only opcode (FNeg)
+        // Expected: constant_fold_unary_instruction's only opcode (Fneg)
         // builds at operand.ty() on every arm, so the result type equals the
         // input's. Checked, per the note on fold_int_bin_op.
         self.fold_un_op_fmf_dyn(opcode, value.as_erased(), fmf)?
@@ -524,7 +524,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
     ) -> IrResult<Option<FloatValue<'ctx, K, B>>> {
         // Expected: same constant_fold_cast_instruction / fold_cast_dyn
         // dest_ty-pinning argument as fold_cast_to_int above, for the
-        // float-destination opcodes (FpTrunc/FpExt/UIToFp/SIToFp/BitCast).
+        // float-destination opcodes (FpTrunc/FpExt/UiToFp/SiToFp/BitCast).
         // Checked the same way.
         self.fold_cast_dyn(opcode, value, dest_ty.as_type())?
             .map(K::narrow)

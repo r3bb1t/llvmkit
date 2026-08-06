@@ -451,7 +451,7 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     ));
     assert!(matches!(
         b.metadata_specialized(
-            SpecializedMetadataNode::new(SpecializedMetadataKind::DIFile).field(
+            SpecializedMetadataNode::new(SpecializedMetadataKind::DiFile).field(
                 MetadataField::new("filename", MetadataFieldValue::Metadata(a_node))
             )
         ),

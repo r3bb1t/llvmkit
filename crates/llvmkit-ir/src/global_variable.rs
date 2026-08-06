@@ -533,7 +533,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for GlobalVariable<'ctx, B>
     /// Print the full definition line `@name = <linkage> global <type>
     /// <init>, ...`, exactly as it appears in module output. Matches the
     /// module-level sibling handles [`GlobalAlias`](crate::GlobalAlias) and
-    /// [`GlobalIFunc`](crate::GlobalIFunc), which likewise print their
+    /// [`GlobalIfunc`](crate::GlobalIfunc), which likewise print their
     /// definition rather than their operand form.
     ///
     /// To print the global the way it appears as an instruction operand

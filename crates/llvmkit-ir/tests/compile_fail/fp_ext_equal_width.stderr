@@ -9,7 +9,7 @@ error[E0277]: the trait bound `llvmkit_ir::PpcFp128: FloatWiderThan<llvmkit_ir::
    = help: `llvmkit_ir::PpcFp128` implements trait `FloatWiderThan<K>`:
              FloatWiderThan<f32>
              FloatWiderThan<f64>
-             FloatWiderThan<llvmkit_ir::BFloat>
+             FloatWiderThan<llvmkit_ir::Bfloat>
              FloatWiderThan<llvmkit_ir::Half>
              FloatWiderThan<llvmkit_ir::X86Fp80>
 note: required by a bound in `IrBuilder::<'m, 'ctx, B, F, Positioned, R>::fp_ext`

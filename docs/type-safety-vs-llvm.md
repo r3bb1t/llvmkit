@@ -909,7 +909,7 @@ is that a mutator takes a `&Module<B, Unverified>` capability token, which
 is nothing left to hand one, so the re-verify obligation is enforced by the type
 checker rather than by a convention. This holds across the IR-shaped mutators —
 every `set_*` on `FunctionValue`, `GlobalVariable`, `GlobalAlias`,
-`GlobalIFunc`, and `Instruction`/`InstructionView`, plus `set_name` and the
+`GlobalIfunc`, and `Instruction`/`InstructionView`, plus `set_name` and the
 whole instruction lifecycle (`erase_from_parent`, `replace_all_uses_with`).
 
 `ComdatRef::set_selection_kind` was the last escape and now takes the token too.

@@ -1,4 +1,4 @@
-//! NamedMDNode storage. Mirrors `llvm/include/llvm/IR/Metadata.h`'s
+//! NamedMetadataNode storage. Mirrors `llvm/include/llvm/IR/Metadata.h`'s
 //! `NamedMDNode` class. Each node is a named list of [`MetadataId`].
 //!
 //! The vocabulary follows the metadata currency split (`crate::metadata`):
@@ -289,12 +289,12 @@ impl From<String> for NamedMetadataName {
 /// [`MetadataId<B>`] before it lands here.
 #[derive(Branded)]
 #[branded(Debug, Clone)]
-pub struct NamedMDNode<B: ModuleBrand> {
+pub struct NamedMetadataNode<B: ModuleBrand> {
     name: NamedMetadataName,
     operands: Vec<MetadataId<B>>,
 }
 
-impl<B: ModuleBrand> NamedMDNode<B> {
+impl<B: ModuleBrand> NamedMetadataNode<B> {
     /// Construct an empty named metadata node with the given name.
     pub fn new<Name>(name: Name) -> Self
     where
@@ -335,7 +335,7 @@ impl<B: ModuleBrand> NamedMDNode<B> {
     /// — the clone-out half of
     /// [`Module::named_metadata_get`](crate::Module::named_metadata_get).
     /// Mirrors `MetadataKind::from_stored`.
-    pub(crate) fn from_stored(stored: &NamedMDNode<StoredBrand>) -> Self {
+    pub(crate) fn from_stored(stored: &NamedMetadataNode<StoredBrand>) -> Self {
         Self {
             name: stored.name.clone(),
             operands: stored

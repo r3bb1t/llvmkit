@@ -240,7 +240,7 @@ pub enum ManglingMode {
     /// `m:m` -- MIPS mangling.
     Mips,
     /// `m:a` -- XCOFF mangling.
-    XCoff,
+    Xcoff,
 }
 
 impl ManglingMode {
@@ -255,7 +255,7 @@ impl ManglingMode {
             Self::WinCoffX86 => Some("x"),
             Self::Goff => Some("l"),
             Self::Mips => Some("m"),
-            Self::XCoff => Some("a"),
+            Self::Xcoff => Some("a"),
         }
     }
 }
@@ -685,7 +685,7 @@ impl DataLayout {
             }
             TypeData::Struct(_) => self.struct_layout_inner(module, id).size_in_bits(),
             TypeData::Integer { bits } => u64::from(*bits),
-            TypeData::Half | TypeData::BFloat => 16,
+            TypeData::Half | TypeData::Bfloat => 16,
             TypeData::Float => 32,
             TypeData::Double => 64,
             TypeData::PpcFp128 | TypeData::Fp128 => 128,
@@ -764,14 +764,14 @@ impl DataLayout {
         match module.context().type_data(id) {
             TypeData::Integer { bits } => self.integer_alignment(*bits, abi_or_pref),
             TypeData::Half
-            | TypeData::BFloat
+            | TypeData::Bfloat
             | TypeData::Float
             | TypeData::Double
             | TypeData::Fp128
             | TypeData::PpcFp128
             | TypeData::X86Fp80 => {
                 let bit_width = match module.context().type_data(id) {
-                    TypeData::Half | TypeData::BFloat => 16,
+                    TypeData::Half | TypeData::Bfloat => 16,
                     TypeData::Float => 32,
                     TypeData::Double => 64,
                     TypeData::Fp128 | TypeData::PpcFp128 | TypeData::X86Fp80 => 128,
@@ -1253,7 +1253,7 @@ impl DataLayout {
                     b'm' => ManglingMode::Mips,
                     b'w' => ManglingMode::WinCoff,
                     b'x' => ManglingMode::WinCoffX86,
-                    b'a' => ManglingMode::XCoff,
+                    b'a' => ManglingMode::Xcoff,
                     _ => return Err(invalid("unknown mangling mode".into())),
                 };
                 Ok(())

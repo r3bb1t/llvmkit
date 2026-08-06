@@ -305,7 +305,7 @@ pub enum AttrKind {
     ReadOnly,
     Returned,
     ReturnsTwice,
-    SExt,
+    Sext,
     SafeStack,
     SanitizeAddress,
     SanitizeHwAddress,
@@ -319,14 +319,14 @@ pub enum AttrKind {
     StackProtect,
     StackProtectReq,
     StackProtectStrong,
-    StrictFP,
+    StrictFp,
     SwiftAsync,
     SwiftError,
     SwiftSelf,
     WillReturn,
     Writable,
     WriteOnly,
-    ZExt,
+    Zext,
 
     // ---- Integer-valued attributes ----
     Alignment,
@@ -335,8 +335,8 @@ pub enum AttrKind {
     Dereferenceable,
     DereferenceableOrNull,
     StackAlignment,
-    UWTable,
-    VScaleRange,
+    UwTable,
+    VscaleRange,
     Range,
     Memory,
     NoFpClass,
@@ -402,7 +402,7 @@ impl AttrKind {
             Self::ReadOnly => "readonly",
             Self::Returned => "returned",
             Self::ReturnsTwice => "returns_twice",
-            Self::SExt => "signext",
+            Self::Sext => "signext",
             Self::SafeStack => "safestack",
             Self::SanitizeAddress => "sanitize_address",
             Self::SanitizeHwAddress => "sanitize_hwaddress",
@@ -416,14 +416,14 @@ impl AttrKind {
             Self::StackProtect => "ssp",
             Self::StackProtectReq => "sspreq",
             Self::StackProtectStrong => "sspstrong",
-            Self::StrictFP => "strictfp",
+            Self::StrictFp => "strictfp",
             Self::SwiftAsync => "swiftasync",
             Self::SwiftError => "swifterror",
             Self::SwiftSelf => "swiftself",
             Self::WillReturn => "willreturn",
             Self::Writable => "writable",
             Self::WriteOnly => "writeonly",
-            Self::ZExt => "zeroext",
+            Self::Zext => "zeroext",
             // Integer
             Self::Alignment => "align",
             Self::AllocKind => "allockind",
@@ -431,8 +431,8 @@ impl AttrKind {
             Self::Dereferenceable => "dereferenceable",
             Self::DereferenceableOrNull => "dereferenceable_or_null",
             Self::StackAlignment => "alignstack",
-            Self::UWTable => "uwtable",
-            Self::VScaleRange => "vscale_range",
+            Self::UwTable => "uwtable",
+            Self::VscaleRange => "vscale_range",
             Self::Range => "range",
             Self::Memory => "memory",
             Self::NoFpClass => "nofpclass",
@@ -456,8 +456,8 @@ impl AttrKind {
                 | Self::Dereferenceable
                 | Self::DereferenceableOrNull
                 | Self::StackAlignment
-                | Self::UWTable
-                | Self::VScaleRange
+                | Self::UwTable
+                | Self::VscaleRange
         )
     }
 
@@ -727,8 +727,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Attribute<'ctx, B> {
         match self {
             Self::Enum(k) => f.write_str(k.name()),
             Self::Int(AttrKind::Alignment, v) => write!(f, "align {v}"),
-            Self::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
-            Self::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
+            Self::Int(AttrKind::UwTable, 2) => f.write_str("uwtable"),
+            Self::Int(AttrKind::UwTable, 1) => f.write_str("uwtable(sync)"),
             Self::Int(k, v) => write!(f, "{}({v})", k.name()),
             Self::Type(k, t) => write!(f, "{}({t})", k.name()),
             Self::Range { ty, lower, upper } => write!(
@@ -1064,8 +1064,8 @@ impl fmt::Display for AttributeStored {
         match self {
             Self::Enum(k) => f.write_str(k.name()),
             Self::Int(AttrKind::Alignment, v) => write!(f, "align {v}"),
-            Self::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
-            Self::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
+            Self::Int(AttrKind::UwTable, 2) => f.write_str("uwtable"),
+            Self::Int(AttrKind::UwTable, 1) => f.write_str("uwtable(sync)"),
             Self::Int(k, v) => write!(f, "{}({v})", k.name()),
             Self::Type(_, _) | Self::Range { .. } => {
                 unreachable!("typed attributes need a module context to print")

@@ -18,10 +18,10 @@
 //! marked accordingly.
 
 use llvmkit_ir::{
-    AShrFlags, AddFlags, Align, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, DynBrand,
+    AddFlags, Align, AshrFlags, AttrIndex, AttrKind, Attribute, AttributeStorage, Dyn, DynBrand,
     FloatPredicate, FloatValue, FloatValueId, IntPredicate, IntValue, IntValueId, IntrinsicId,
-    IrBuilder, IrError, LShrFlags, Linkage, MemoryEffects, MulFlags, PointerValue, PointerValueId,
-    SDivFlags, ShlFlags, SubFlags, UDivFlags, VerifierRule, module_new,
+    IrBuilder, IrError, Linkage, LshrFlags, MemoryEffects, MulFlags, PointerValue, PointerValueId,
+    SdivFlags, ShlFlags, SubFlags, UdivFlags, VerifierRule, module_new,
 };
 
 fn abs_function_attrs_without_immarg() -> AttributeStorage {
@@ -271,13 +271,13 @@ fn verify_int_arithmetic_full() -> Result<(), IrError> {
     let a = b.int_add_with_flags(x, y, AddFlags::new().nuw().nsw(), "a")?;
     let s = b.int_sub_with_flags(a, y, SubFlags::new().nsw(), "s")?;
     let mu = b.int_mul_with_flags(s, x, MulFlags::new().nuw(), "mu")?;
-    let ud = b.int_udiv_with_flags(mu, 1_i32, UDivFlags::new().exact(), "ud")?;
-    let sd = b.int_sdiv_with_flags(ud, 1_i32, SDivFlags::new(), "sd")?;
+    let ud = b.int_udiv_with_flags(mu, 1_i32, UdivFlags::new().exact(), "ud")?;
+    let sd = b.int_sdiv_with_flags(ud, 1_i32, SdivFlags::new(), "sd")?;
     let ur = b.int_urem(sd, 1_i32, "ur")?;
     let sr = b.int_srem(ur, 1_i32, "sr")?;
     let sl = b.int_shl_with_flags(sr, 1_i32, ShlFlags::new().nuw(), "sl")?;
-    let lr = b.int_lshr_with_flags(sl, 1_i32, LShrFlags::new().exact(), "lr")?;
-    let ar = b.int_ashr_with_flags(lr, 1_i32, AShrFlags::new(), "ar")?;
+    let lr = b.int_lshr_with_flags(sl, 1_i32, LshrFlags::new().exact(), "lr")?;
+    let ar = b.int_ashr_with_flags(lr, 1_i32, AshrFlags::new(), "ar")?;
     let aa = b.int_and(ar, x, "aa")?;
     let oo = b.int_or(aa, x, "oo")?;
     let xx = b.int_xor(oo, x, "xx")?;

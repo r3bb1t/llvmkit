@@ -173,19 +173,19 @@ fn binary_intrinsic_mapping_is_narrow() {
     let umax = IntrinsicId::lookup("llvm.umax.i32").expect("umax intrinsic");
     assert_eq!(
         BinaryIntrinsic::from_intrinsic_id(umax),
-        Some(BinaryIntrinsic::UMax)
+        Some(BinaryIntrinsic::Umax)
     );
 
     let fshl = IntrinsicId::lookup("llvm.fshl.i32").expect("fshl intrinsic");
     assert_eq!(
         BinaryIntrinsic::from_intrinsic_id(fshl),
-        Some(BinaryIntrinsic::FShl)
+        Some(BinaryIntrinsic::Fshl)
     );
 
     let expect = IntrinsicId::lookup("llvm.expect.i32").expect("expect intrinsic");
     assert_eq!(BinaryIntrinsic::from_intrinsic_id(expect), None);
     assert_eq!(expect.as_binary_intrinsic(), None);
-    assert_eq!(fshl.as_binary_intrinsic(), Some(BinaryIntrinsic::FShl));
+    assert_eq!(fshl.as_binary_intrinsic(), Some(BinaryIntrinsic::Fshl));
     assert_eq!(
         BinaryIntrinsic::from_intrinsic_name("llvm.umax.notatype"),
         None

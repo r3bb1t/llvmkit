@@ -329,7 +329,7 @@ fn ppc_double_double_preserves_two_component_bits() -> Result<(), IrError> {
 fn decimal_non_double_values_preserve_magnitude() -> Result<(), IrError> {
     let cases: &[(ApFloatSemantics, &[u64])] = &[
         (ApFloatSemantics::IeeeHalf, &[0x4000]),
-        (ApFloatSemantics::BFloat, &[0x4000]),
+        (ApFloatSemantics::Bfloat, &[0x4000]),
         (ApFloatSemantics::IeeeQuad, &[0, 0x4000_0000_0000_0000]),
         (
             ApFloatSemantics::X87DoubleExtended,

@@ -68,7 +68,7 @@ use super::derived_types::{
 };
 use super::element::{ElemDyn, StaticVecElem};
 use super::error::{IrError, IrResult, TypeKindLabel};
-use super::float_kind::{BFloat, Fp128, Half, PpcFp128, X86Fp80};
+use super::float_kind::{Bfloat, Fp128, Half, PpcFp128, X86Fp80};
 use super::function::FunctionData;
 use super::function::{FunctionBuilder, FunctionValue};
 use super::function_signature::TypedVarArgsFunctionValue;
@@ -76,7 +76,7 @@ use super::function_signature::{
     FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
 };
 use super::global_alias::{GlobalAlias, GlobalAliasBuilder};
-use super::global_ifunc::{GlobalIFunc, GlobalIFuncBuilder};
+use super::global_ifunc::{GlobalIfunc, GlobalIfuncBuilder};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
 use super::global_variable::{GlobalBuilder, GlobalVariable};
 use super::inline_asm::{InlineAsm, InlineAsmData, InlineAsmOptions};
@@ -96,7 +96,9 @@ use super::metadata::{
 use super::module_flags::{
     ModuleFlagBehavior, ModuleFlagEntry, ModuleFlagKey, module_flag_tuple, resolve_metadata_ref,
 };
-use super::named_md_node::{NamedMDNode, NamedMetadataId, NamedMetadataName, NamedMetadataSlot};
+use super::named_md_node::{
+    NamedMetadataId, NamedMetadataName, NamedMetadataNode, NamedMetadataSlot,
+};
 use super::pass_context::{FunctionView, ModuleFunctionViews};
 use super::struct_body_state::StructBodyDyn;
 use super::struct_body_state::{BodySet, Opaque};
@@ -106,7 +108,7 @@ use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{Value, ValueData, ValueKindData, ValueSlot, ValueUse};
 use super::value_id::{
-    FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, TypedFunctionId, TypedVarArgsFunctionId,
+    FunctionId, GlobalAliasId, GlobalId, GlobalIfuncId, TypedFunctionId, TypedVarArgsFunctionId,
     ValueId, ViewIn,
 };
 use super::vec_len::{Len, LenDyn};
@@ -755,13 +757,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasView<'ctx, B> {
 
 /// Read-only branded view of a global ifunc.
 #[derive(Branded)]
-pub struct GlobalIFuncView<'ctx, B: ModuleBrand> {
-    ifunc: GlobalIFunc<'ctx, B>,
+pub struct GlobalIfuncView<'ctx, B: ModuleBrand> {
+    ifunc: GlobalIfunc<'ctx, B>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncView<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncView<'ctx, B> {
     #[inline]
-    pub(super) fn new(ifunc: GlobalIFunc<'ctx, B>) -> Self {
+    pub(super) fn new(ifunc: GlobalIfunc<'ctx, B>) -> Self {
         Self { ifunc }
     }
 
@@ -985,7 +987,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
 
     /// `bfloat`.
     #[inline]
-    pub fn bfloat_type(self) -> FloatType<'ctx, BFloat, B> {
+    pub fn bfloat_type(self) -> FloatType<'ctx, Bfloat, B> {
         FloatType::new(self.core.ctx.bfloat(), ModuleRef::new(self.core))
     }
 
@@ -1426,11 +1428,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     #[inline]
     pub fn ifuncs(
         self,
-    ) -> impl ExactSizeIterator<Item = GlobalIFuncView<'ctx, B>>
+    ) -> impl ExactSizeIterator<Item = GlobalIfuncView<'ctx, B>>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
-        self.core.iter_ifuncs::<B>().map(GlobalIFuncView::new)
+        self.core.iter_ifuncs::<B>().map(GlobalIfuncView::new)
     }
 
     /// Iterate COMDATs in insertion order.
@@ -1549,13 +1551,13 @@ impl UseListOrderRecord {
 
 /// Structured `uselistorder_bb @function, %block, { ... }` record.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UseListOrderBBRecord {
+pub struct UseListOrderBbRecord {
     function: ValueSlot,
     block: ValueSlot,
     indexes: Box<[u32]>,
 }
 
-impl UseListOrderBBRecord {
+impl UseListOrderBbRecord {
     pub fn new<Indexes>(function: ValueSlot, block: ValueSlot, indexes: Indexes) -> IrResult<Self>
     where
         Indexes: Into<Box<[u32]>>,
@@ -1641,13 +1643,13 @@ pub(super) struct ModuleCore {
     module_asm: core::cell::RefCell<String>,
     use_list_orders: core::cell::RefCell<Vec<UseListOrderRecord>>,
     attribute_groups: core::cell::RefCell<Vec<(u32, AttributeStorage)>>,
-    use_list_order_bbs: core::cell::RefCell<Vec<UseListOrderBBRecord>>,
+    use_list_order_bbs: core::cell::RefCell<Vec<UseListOrderBbRecord>>,
     /// Module-level metadata node arena. Mirrors `LLVMContextImpl`'s
     /// metadata store (scoped to the module for simplicity).
     metadata: core::cell::RefCell<MetadataStore>,
     /// Named metadata nodes (`!llvm.module.flags`, `!llvm.ident`, ...).
     /// Mirrors `Module::NamedMDList`. Insertion order is preserved.
-    named_metadata: core::cell::RefCell<Vec<NamedMDNode<StoredBrand>>>,
+    named_metadata: core::cell::RefCell<Vec<NamedMetadataNode<StoredBrand>>>,
     /// Uniquing cache for [`metadata_as_value`](Self::metadata_as_value):
     /// maps a metadata node to its wrapping value so repeated wraps of the
     /// same node return the identical `Value`. Mirrors LLVM's uniqued
@@ -1872,7 +1874,7 @@ impl<'ctx> ModuleCore {
     }
 
     /// `bfloat`.
-    pub fn bfloat_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, BFloat, B> {
+    pub fn bfloat_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, Bfloat, B> {
         FloatType::new(self.ctx.bfloat(), self)
     }
 
@@ -2224,12 +2226,12 @@ impl<'ctx> ModuleCore {
 
     pub fn iter_ifuncs<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = GlobalIFunc<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    ) -> impl ExactSizeIterator<Item = GlobalIfunc<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let ids: Vec<ValueSlot> = self.ifuncs.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
-            GlobalIFunc::from_parts_unchecked(id, ModuleRef::<B>::new(self), value_data.ty)
+            GlobalIfunc::from_parts_unchecked(id, ModuleRef::<B>::new(self), value_data.ty)
         })
     }
 
@@ -2304,8 +2306,8 @@ impl<'ctx> ModuleCore {
 
     pub(super) fn install_global_ifunc<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        builder: GlobalIFuncBuilder<'ctx, B>,
-    ) -> IrResult<GlobalIFunc<'ctx, B>> {
+        builder: GlobalIfuncBuilder<'ctx, B>,
+    ) -> IrResult<GlobalIfunc<'ctx, B>> {
         let (name, data, address_space) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
             return Err(IrError::DuplicateGlobalName { name });
@@ -2315,14 +2317,14 @@ impl<'ctx> ModuleCore {
             ty: pointer_ty,
             name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
             debug_loc: None,
-            kind: ValueKindData::GlobalIFunc(data),
+            kind: ValueKindData::GlobalIfunc(data),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.ifuncs.borrow_mut().push(value_id);
         if !name.is_empty() {
             self.ifunc_by_name.borrow_mut().insert(name, value_id);
         }
-        Ok(GlobalIFunc::from_parts_unchecked(
+        Ok(GlobalIfunc::from_parts_unchecked(
             value_id,
             ModuleRef::<B>::new(self),
             pointer_ty,
@@ -2407,7 +2409,7 @@ impl<'ctx> ModuleCore {
         Ok(())
     }
 
-    pub fn append_use_list_order_bb(&self, record: UseListOrderBBRecord) -> IrResult<()> {
+    pub fn append_use_list_order_bb(&self, record: UseListOrderBbRecord) -> IrResult<()> {
         validate_use_list_order_indexes(record.indexes())?;
         self.use_list_order_bbs.borrow_mut().push(record);
         Ok(())
@@ -2417,7 +2419,7 @@ impl<'ctx> ModuleCore {
         self.use_list_orders.borrow().clone().into_iter()
     }
 
-    pub fn iter_use_list_order_bbs(&self) -> impl ExactSizeIterator<Item = UseListOrderBBRecord> {
+    pub fn iter_use_list_order_bbs(&self) -> impl ExactSizeIterator<Item = UseListOrderBbRecord> {
         self.use_list_order_bbs.borrow().clone().into_iter()
     }
 
@@ -2697,7 +2699,7 @@ impl<'ctx> ModuleCore {
             }
         }
         let slot = NamedMetadataSlot(nmd.len());
-        nmd.push(NamedMDNode::new(name));
+        nmd.push(NamedMetadataNode::new(name));
         NamedMetadataId::from_raw(self.id, slot)
     }
 
@@ -2737,7 +2739,7 @@ impl<'ctx> ModuleCore {
     /// Look up a named metadata node by id, cloning it out. `None` when `id`
     /// belongs to another module — never another module's node. A native id
     /// always resolves: the named-metadata list is append-only.
-    pub fn named_metadata_get<B>(&self, id: NamedMetadataId<B>) -> Option<NamedMDNode<B>>
+    pub fn named_metadata_get<B>(&self, id: NamedMetadataId<B>) -> Option<NamedMetadataNode<B>>
     where
         B: ModuleBrand,
     {
@@ -2746,7 +2748,7 @@ impl<'ctx> ModuleCore {
         let node = nmd.get(slot.0).unwrap_or_else(|| {
             unreachable!("a stored NamedMetadataId always names a node in the append-only list")
         });
-        Some(NamedMDNode::from_stored(node))
+        Some(NamedMetadataNode::from_stored(node))
     }
 
     /// Number of named metadata nodes.
@@ -2755,7 +2757,9 @@ impl<'ctx> ModuleCore {
     }
 
     /// Crate-internal: borrow named metadata list for printing.
-    pub(super) fn named_metadata_list(&self) -> core::cell::Ref<'_, Vec<NamedMDNode<StoredBrand>>> {
+    pub(super) fn named_metadata_list(
+        &self,
+    ) -> core::cell::Ref<'_, Vec<NamedMetadataNode<StoredBrand>>> {
         self.named_metadata.borrow()
     }
 
@@ -2875,7 +2879,7 @@ impl<'ctx> ModuleCore {
         let node = nmd.get_mut(id.slot().0).unwrap_or_else(|| {
             unreachable!("a stored NamedMetadataId always names a node in the append-only list")
         });
-        let mut rebuilt = NamedMDNode::new(node.name().clone());
+        let mut rebuilt = NamedMetadataNode::new(node.name().clone());
         for (i, op) in node.operands().iter().enumerate() {
             rebuilt.add_operand(if i == index { replacement } else { *op });
         }
@@ -3374,11 +3378,11 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
         Some(GlobalAliasId::from_raw(self.core().id, slot))
     }
 
-    /// Look up an ifunc by name, returning its storable [`GlobalIFuncId`].
+    /// Look up an ifunc by name, returning its storable [`GlobalIfuncId`].
     /// Symmetric with [`ifunc_builder`](Self::ifunc_builder)'s `build()`.
-    pub fn ifunc(&self, name: &str) -> Option<GlobalIFuncId<B>> {
+    pub fn ifunc(&self, name: &str) -> Option<GlobalIfuncId<B>> {
         let slot = self.core().ifunc_by_name.borrow().get(name).copied()?;
-        Some(GlobalIFuncId::from_raw(self.core().id, slot))
+        Some(GlobalIfuncId::from_raw(self.core().id, slot))
     }
 
     /// Look up a comdat by name.
@@ -3558,7 +3562,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
 
     /// `bfloat`.
     #[inline]
-    pub fn bfloat_type(&'ctx self) -> FloatType<'ctx, BFloat, B> {
+    pub fn bfloat_type(&'ctx self) -> FloatType<'ctx, Bfloat, B> {
         FloatType::new(self.core().ctx.bfloat(), self.module_ref())
     }
 
@@ -4256,12 +4260,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         name: Name,
         value_type: Type<'ctx, B>,
         resolver: C,
-    ) -> GlobalIFuncBuilder<'ctx, B>
+    ) -> GlobalIfuncBuilder<'ctx, B>
     where
         C: IsConstant<'ctx, B>,
         Name: Into<String>,
     {
-        GlobalIFuncBuilder::new(self.module_ref(), name, value_type, resolver)
+        GlobalIfuncBuilder::new(self.module_ref(), name, value_type, resolver)
     }
 
     pub fn ifunc_empty(&'ctx self) -> bool {
@@ -4524,7 +4528,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// Look up a named metadata node by id, cloning it out. `None` when `id`
     /// belongs to another module — never another module's node. A native id
     /// always resolves: the named-metadata list is append-only.
-    pub fn named_metadata_get(&'ctx self, id: NamedMetadataId<B>) -> Option<NamedMDNode<B>> {
+    pub fn named_metadata_get(&'ctx self, id: NamedMetadataId<B>) -> Option<NamedMetadataNode<B>> {
         self.core().named_metadata_get(id)
     }
 
@@ -4635,7 +4639,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().append_use_list_order(record)
     }
 
-    pub fn append_use_list_order_bb(&'ctx self, record: UseListOrderBBRecord) -> IrResult<()> {
+    pub fn append_use_list_order_bb(&'ctx self, record: UseListOrderBbRecord) -> IrResult<()> {
         self.core().append_use_list_order_bb(record)
     }
 

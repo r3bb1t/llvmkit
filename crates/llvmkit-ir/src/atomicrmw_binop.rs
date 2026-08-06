@@ -7,7 +7,7 @@ use core::fmt;
 /// `Instructions.h`. The keyword spellings come from
 /// `AtomicRMWInst::getOperationName` in `lib/IR/Instructions.cpp`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AtomicRMWBinOp {
+pub enum AtomicRmwBinOp {
     /// `*p = v`
     Xchg,
     /// `*p = old + v`
@@ -27,32 +27,32 @@ pub enum AtomicRMWBinOp {
     /// Signed `*p = min(old, v)`
     Min,
     /// Unsigned `*p = max(old, v)`
-    UMax,
+    Umax,
     /// Unsigned `*p = min(old, v)`
-    UMin,
+    Umin,
     /// `*p = old + v` (FP)
-    FAdd,
+    Fadd,
     /// `*p = old - v` (FP)
-    FSub,
+    Fsub,
     /// `*p = maxnum(old, v)` (FP)
-    FMax,
+    Fmax,
     /// `*p = minnum(old, v)` (FP)
-    FMin,
+    Fmin,
     /// `*p = maximum(old, v)` (FP, IEEE-754 semantics)
-    FMaximum,
+    Fmaximum,
     /// `*p = minimum(old, v)` (FP, IEEE-754 semantics)
-    FMinimum,
+    Fminimum,
     /// `*p = (old u>= v) ? 0 : (old + 1)` (unsigned increment with wrap)
-    UIncWrap,
+    UincWrap,
     /// `*p = ((old == 0) || (old u> v)) ? v : (old - 1)` (unsigned decrement with wrap)
-    UDecWrap,
+    UdecWrap,
     /// `*p = (old u>= v) ? old - v : old` (saturating-conditional unsigned subtract)
-    USubCond,
+    UsubCond,
     /// `*p = usub.sat(old, v)` (saturating unsigned subtract)
-    USubSat,
+    UsubSat,
 }
 
-impl AtomicRMWBinOp {
+impl AtomicRmwBinOp {
     /// IR keyword. Mirrors
     /// `AtomicRMWInst::getOperationName` in `lib/IR/Instructions.cpp`.
     pub const fn keyword(self) -> &'static str {
@@ -66,18 +66,18 @@ impl AtomicRMWBinOp {
             Self::Xor => "xor",
             Self::Max => "max",
             Self::Min => "min",
-            Self::UMax => "umax",
-            Self::UMin => "umin",
-            Self::FAdd => "fadd",
-            Self::FSub => "fsub",
-            Self::FMax => "fmax",
-            Self::FMin => "fmin",
-            Self::FMaximum => "fmaximum",
-            Self::FMinimum => "fminimum",
-            Self::UIncWrap => "uinc_wrap",
-            Self::UDecWrap => "udec_wrap",
-            Self::USubCond => "usub_cond",
-            Self::USubSat => "usub_sat",
+            Self::Umax => "umax",
+            Self::Umin => "umin",
+            Self::Fadd => "fadd",
+            Self::Fsub => "fsub",
+            Self::Fmax => "fmax",
+            Self::Fmin => "fmin",
+            Self::Fmaximum => "fmaximum",
+            Self::Fminimum => "fminimum",
+            Self::UincWrap => "uinc_wrap",
+            Self::UdecWrap => "udec_wrap",
+            Self::UsubCond => "usub_cond",
+            Self::UsubSat => "usub_sat",
         }
     }
 
@@ -86,12 +86,12 @@ impl AtomicRMWBinOp {
     pub const fn is_fp_operation(self) -> bool {
         matches!(
             self,
-            Self::FAdd | Self::FSub | Self::FMax | Self::FMin | Self::FMaximum | Self::FMinimum
+            Self::Fadd | Self::Fsub | Self::Fmax | Self::Fmin | Self::Fmaximum | Self::Fminimum
         )
     }
 }
 
-impl fmt::Display for AtomicRMWBinOp {
+impl fmt::Display for AtomicRmwBinOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.keyword())
     }

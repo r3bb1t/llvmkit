@@ -12,7 +12,7 @@
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
     DynBrand, MinMaxIntrinsic, MinMaxKind, MinMaxOperation, Module, SelectPatternFlavor,
-    SelectPatternNaNBehavior, Unverified, Value, ValueTrackingQuery,
+    SelectPatternNanBehavior, Unverified, Value, ValueTrackingQuery,
     can_convert_to_min_or_max_intrinsic, match_select_pattern,
 };
 
@@ -42,7 +42,7 @@ fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, 
 type Case = (
     &'static str,
     &'static str,
-    Option<(SelectPatternFlavor, SelectPatternNaNBehavior, bool)>,
+    Option<(SelectPatternFlavor, SelectPatternNanBehavior, bool)>,
 );
 
 fn check(cases: &[Case]) {
@@ -82,8 +82,8 @@ define float @test(float %a) {
 }
 ",
             Some((
-                SelectPatternFlavor::FMinNum,
-                SelectPatternNaNBehavior::ReturnsNaN,
+                SelectPatternFlavor::FminNum,
+                SelectPatternNanBehavior::ReturnsNaN,
                 false,
             )),
         ),
@@ -97,8 +97,8 @@ define float @test(float %a) {
 }
 ",
             Some((
-                SelectPatternFlavor::FMaxNum,
-                SelectPatternNaNBehavior::ReturnsOther,
+                SelectPatternFlavor::FmaxNum,
+                SelectPatternNanBehavior::ReturnsOther,
                 true,
             )),
         ),
@@ -112,8 +112,8 @@ define float @test(float %a) {
 }
 ",
             Some((
-                SelectPatternFlavor::FMaxNum,
-                SelectPatternNaNBehavior::ReturnsOther,
+                SelectPatternFlavor::FmaxNum,
+                SelectPatternNanBehavior::ReturnsOther,
                 false,
             )),
         ),
@@ -127,8 +127,8 @@ define float @test(float %a) {
 }
 ",
             Some((
-                SelectPatternFlavor::FMaxNum,
-                SelectPatternNaNBehavior::ReturnsNaN,
+                SelectPatternFlavor::FmaxNum,
+                SelectPatternNanBehavior::ReturnsNaN,
                 false,
             )),
         ),
@@ -142,8 +142,8 @@ define float @test(float %a) {
 }
 ",
             Some((
-                SelectPatternFlavor::FMaxNum,
-                SelectPatternNaNBehavior::ReturnsOther,
+                SelectPatternFlavor::FmaxNum,
+                SelectPatternNanBehavior::ReturnsOther,
                 true,
             )),
         ),
@@ -157,8 +157,8 @@ define float @test(float %a) {
 }
 ",
             Some((
-                SelectPatternFlavor::FMinNum,
-                SelectPatternNaNBehavior::ReturnsAny,
+                SelectPatternFlavor::FminNum,
+                SelectPatternNanBehavior::ReturnsAny,
                 true,
             )),
         ),
@@ -172,8 +172,8 @@ define float @test(float %a) {
 }
 ",
             Some((
-                SelectPatternFlavor::FMinNum,
-                SelectPatternNaNBehavior::ReturnsAny,
+                SelectPatternFlavor::FminNum,
+                SelectPatternNanBehavior::ReturnsAny,
                 false,
             )),
         ),
@@ -200,8 +200,8 @@ define i32 @test(i8 %a, i8 %b) {
 }
 ",
             Some((
-                SelectPatternFlavor::UMin,
-                SelectPatternNaNBehavior::NotApplicable,
+                SelectPatternFlavor::Umin,
+                SelectPatternNanBehavior::NotApplicable,
                 false,
             )),
         ),
@@ -217,8 +217,8 @@ define i32 @test(i8 %a, i8 %b) {
 }
 ",
             Some((
-                SelectPatternFlavor::SMin,
-                SelectPatternNaNBehavior::NotApplicable,
+                SelectPatternFlavor::Smin,
+                SelectPatternNanBehavior::NotApplicable,
                 false,
             )),
         ),
@@ -259,8 +259,8 @@ define i8 @test(i8 %a, i8 %b) {
 }
 ",
             Some((
-                SelectPatternFlavor::SMin,
-                SelectPatternNaNBehavior::NotApplicable,
+                SelectPatternFlavor::Smin,
+                SelectPatternNanBehavior::NotApplicable,
                 false,
             )),
         ),
@@ -276,8 +276,8 @@ define i8 @test(i8 %a, i8 %b) {
 }
 ",
             Some((
-                SelectPatternFlavor::SMax,
-                SelectPatternNaNBehavior::NotApplicable,
+                SelectPatternFlavor::Smax,
+                SelectPatternNanBehavior::NotApplicable,
                 false,
             )),
         ),
@@ -293,8 +293,8 @@ define i8 @test(i8 %a, i8 %b) {
 }
 ",
             Some((
-                SelectPatternFlavor::UMin,
-                SelectPatternNaNBehavior::NotApplicable,
+                SelectPatternFlavor::Umin,
+                SelectPatternNanBehavior::NotApplicable,
                 false,
             )),
         ),
@@ -322,8 +322,8 @@ define i32 @test(i32 %x, i32 %y) {
 }
 ",
             Some((
-                SelectPatternFlavor::SMin,
-                SelectPatternNaNBehavior::NotApplicable,
+                SelectPatternFlavor::Smin,
+                SelectPatternNanBehavior::NotApplicable,
                 false,
             )),
         ),
@@ -339,7 +339,7 @@ define i32 @test(i32 %x) {
 ",
             Some((
                 SelectPatternFlavor::Abs,
-                SelectPatternNaNBehavior::NotApplicable,
+                SelectPatternNanBehavior::NotApplicable,
                 false,
             )),
         ),
@@ -354,8 +354,8 @@ define i32 @test(i32 %x) {
 }
 ",
             Some((
-                SelectPatternFlavor::NAbs,
-                SelectPatternNaNBehavior::NotApplicable,
+                SelectPatternFlavor::Nabs,
+                SelectPatternNanBehavior::NotApplicable,
                 false,
             )),
         ),
@@ -490,7 +490,7 @@ define i32 @test(i32 %x, i32 %y) {
 ",
             &["A"],
         ),
-        Some((MinMaxOperation::Integer(MinMaxIntrinsic::SMin), true)),
+        Some((MinMaxOperation::Integer(MinMaxIntrinsic::Smin), true)),
     );
 
     // Upstream bails as soon as two values disagree on the flavour, because one

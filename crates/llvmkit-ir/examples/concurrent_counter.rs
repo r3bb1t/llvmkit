@@ -44,7 +44,7 @@
 //! ```
 
 use llvmkit_ir::{
-    AtomicOrdering, AtomicRMWBinOp, AtomicRMWConfig, IntValue, IrBuilder, IrError, Linkage, Module,
+    AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, IntValue, IrBuilder, IrError, Linkage, Module,
     ModuleBrand, Ptr, SyncScope, module_new,
 };
 
@@ -90,10 +90,10 @@ pub fn build_atomic_inc<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let (counter,) = m.view(f).params();
     let one = i32_ty.const_int(1_i32);
     let old = b.atomicrmw(
-        AtomicRMWBinOp::Add,
+        AtomicRmwBinOp::Add,
         counter,
         one,
-        AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
+        AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
         "old",
     )?;
 

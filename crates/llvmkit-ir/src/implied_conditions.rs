@@ -743,11 +743,11 @@ fn is_true_predicate<'ctx, B: ModuleBrand + 'ctx>(
                 return !constant.is_negative();
             }
             // LHS s<= smax(LHS, V) for any V.
-            if int_min_max_over(rhs, lhs, SelectPatternFlavor::SMax).is_some() {
+            if int_min_max_over(rhs, lhs, SelectPatternFlavor::Smax).is_some() {
                 return true;
             }
             // smin(RHS, V) s<= RHS for any V.
-            if int_min_max_over(lhs, rhs, SelectPatternFlavor::SMin).is_some() {
+            if int_min_max_over(lhs, rhs, SelectPatternFlavor::Smin).is_some() {
                 return true;
             }
             // A = X +nsw CA and B = X +nsw CB, with CA s<= CB.
@@ -765,7 +765,7 @@ fn is_true_predicate<'ctx, B: ModuleBrand + 'ctx>(
                 return true;
             }
             // LHS u<= umax(LHS, V) for any V.
-            if int_min_max_over(rhs, lhs, SelectPatternFlavor::UMax).is_some() {
+            if int_min_max_over(rhs, lhs, SelectPatternFlavor::Umax).is_some() {
                 return true;
             }
             // RHS >> V u<= RHS for any V.
@@ -780,7 +780,7 @@ fn is_true_predicate<'ctx, B: ModuleBrand + 'ctx>(
             }
             // RHS & V u<= RHS, and umin(RHS, V) u<= RHS, for any V.
             if and_over(lhs, rhs).is_some()
-                || int_min_max_over(lhs, rhs, SelectPatternFlavor::UMin).is_some()
+                || int_min_max_over(lhs, rhs, SelectPatternFlavor::Umin).is_some()
             {
                 return true;
             }
@@ -864,7 +864,7 @@ struct ComparePartsOf<'ctx, B: ModuleBrand> {
 fn int_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<ComparePartsOf<'ctx, B>> {
-    let InstructionKindData::ICmp(data) = instruction_kind(value)? else {
+    let InstructionKindData::Icmp(data) = instruction_kind(value)? else {
         return None;
     };
     let predicate = if data.samesign {
@@ -883,7 +883,7 @@ fn int_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
 fn float_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<ComparePartsOf<'ctx, B>> {
-    let InstructionKindData::FCmp(data) = instruction_kind(value)? else {
+    let InstructionKindData::Fcmp(data) = instruction_kind(value)? else {
         return None;
     };
     Some(ComparePartsOf {
@@ -1089,7 +1089,7 @@ fn and_over<'ctx, B: ModuleBrand + 'ctx>(
 fn lshr_of<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>, expected: Value<'ctx, B>) -> bool {
     matches!(
         instruction_kind(value),
-        Some(InstructionKindData::LShr(data)) if data.lhs.get() == expected.slot()
+        Some(InstructionKindData::Lshr(data)) if data.lhs.get() == expected.slot()
     )
 }
 
@@ -1099,7 +1099,7 @@ fn udiv_of_by_constant<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     expected: Value<'ctx, B>,
 ) -> Option<ApInt> {
-    let InstructionKindData::UDiv(data) = instruction_kind(value)? else {
+    let InstructionKindData::Udiv(data) = instruction_kind(value)? else {
         return None;
     };
     (data.lhs.get() == expected.slot())

@@ -316,14 +316,14 @@ pub fn constant_fold_cast_operand<'ctx, B: ModuleBrand + 'ctx>(
         }
         CastOpcode::BitCast => return fold_bitcast_with_layout(operand, dest_ty, dl),
         CastOpcode::Trunc
-        | CastOpcode::ZExt
-        | CastOpcode::SExt
+        | CastOpcode::Zext
+        | CastOpcode::Sext
         | CastOpcode::FpTrunc
         | CastOpcode::FpExt
-        | CastOpcode::FpToUI
-        | CastOpcode::FpToSI
-        | CastOpcode::UIToFp
-        | CastOpcode::SIToFp
+        | CastOpcode::FpToUi
+        | CastOpcode::FpToSi
+        | CastOpcode::UiToFp
+        | CastOpcode::SiToFp
         | CastOpcode::AddrSpaceCast => {}
     }
 
@@ -483,11 +483,11 @@ where
         };
         return if matches!(
             opcode,
-            BinaryOpcode::FAdd
-                | BinaryOpcode::FSub
-                | BinaryOpcode::FMul
-                | BinaryOpcode::FDiv
-                | BinaryOpcode::FRem
+            BinaryOpcode::Fadd
+                | BinaryOpcode::Fsub
+                | BinaryOpcode::Fmul
+                | BinaryOpcode::Fdiv
+                | BinaryOpcode::Frem
         ) {
             constant_fold_fp_inst_operands(
                 opcode,
@@ -510,7 +510,7 @@ where
             };
             constant_fold_cast_operand(cast.kind, *operand, value.ty(), dl)
         }
-        InstructionKindData::ICmp(cmp) => {
+        InstructionKindData::Icmp(cmp) => {
             let [lhs, rhs] = operands else {
                 return Ok(None);
             };
@@ -522,7 +522,7 @@ where
                 None,
             )
         }
-        InstructionKindData::FCmp(cmp) => {
+        InstructionKindData::Fcmp(cmp) => {
             let [lhs, rhs] = operands else {
                 return Ok(None);
             };
@@ -538,11 +538,11 @@ where
                 )),
             )
         }
-        InstructionKindData::FNeg(_) => {
+        InstructionKindData::Fneg(_) => {
             let [operand] = operands else {
                 return Ok(None);
             };
-            constant_fold_unary_op_operand(UnaryOpcode::FNeg, *operand, dl)
+            constant_fold_unary_op_operand(UnaryOpcode::Fneg, *operand, dl)
         }
         InstructionKindData::Select(_) => {
             let [condition, true_value, false_value] = operands else {
@@ -642,30 +642,30 @@ where
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
         | InstructionKindData::Mul(_)
-        | InstructionKindData::UDiv(_)
-        | InstructionKindData::SDiv(_)
-        | InstructionKindData::URem(_)
-        | InstructionKindData::SRem(_)
+        | InstructionKindData::Udiv(_)
+        | InstructionKindData::Sdiv(_)
+        | InstructionKindData::Urem(_)
+        | InstructionKindData::Srem(_)
         | InstructionKindData::Shl(_)
-        | InstructionKindData::LShr(_)
-        | InstructionKindData::AShr(_)
+        | InstructionKindData::Lshr(_)
+        | InstructionKindData::Ashr(_)
         | InstructionKindData::And(_)
         | InstructionKindData::Or(_)
         | InstructionKindData::Xor(_)
-        | InstructionKindData::FAdd(_)
-        | InstructionKindData::FSub(_)
-        | InstructionKindData::FMul(_)
-        | InstructionKindData::FDiv(_)
-        | InstructionKindData::FRem(_)
+        | InstructionKindData::Fadd(_)
+        | InstructionKindData::Fsub(_)
+        | InstructionKindData::Fmul(_)
+        | InstructionKindData::Fdiv(_)
+        | InstructionKindData::Frem(_)
         | InstructionKindData::Phi(_)
         | InstructionKindData::Alloca(_)
         | InstructionKindData::Store(_)
         | InstructionKindData::Ret(_)
         | InstructionKindData::Br(_)
-        | InstructionKindData::VAArg(_)
+        | InstructionKindData::VaArg(_)
         | InstructionKindData::Fence(_)
         | InstructionKindData::AtomicCmpXchg(_)
-        | InstructionKindData::AtomicRMW(_)
+        | InstructionKindData::AtomicRmw(_)
         | InstructionKindData::Switch(_)
         | InstructionKindData::IndirectBr(_)
         | InstructionKindData::Invoke(_)
@@ -1268,19 +1268,19 @@ pub fn lossless_inv_cast<'ctx, B: ModuleBrand + 'ctx>(
         }
         CastOpcode::Trunc => {
             let Some(zext) =
-                constant_fold_cast_operand(CastOpcode::ZExt, constant, inv_cast_to, dl)?
+                constant_fold_cast_operand(CastOpcode::Zext, constant, inv_cast_to, dl)?
             else {
                 return Ok(None);
             };
             let mut flags = PreservedCastFlags::none().no_unsigned_wrap();
-            if constant_fold_cast_operand(CastOpcode::SExt, constant, inv_cast_to, dl)?
+            if constant_fold_cast_operand(CastOpcode::Sext, constant, inv_cast_to, dl)?
                 == Some(zext)
             {
                 flags = flags.no_signed_wrap();
             }
             Ok(Some((zext, flags)))
         }
-        CastOpcode::ZExt | CastOpcode::SExt => {
+        CastOpcode::Zext | CastOpcode::Sext => {
             let Some(inv) =
                 constant_fold_cast_operand(CastOpcode::Trunc, constant, inv_cast_to, dl)?
             else {
@@ -1293,8 +1293,8 @@ pub fn lossless_inv_cast<'ctx, B: ModuleBrand + 'ctx>(
                 return Ok(None);
             }
             let mut flags = PreservedCastFlags::none();
-            if cast_op == CastOpcode::ZExt
-                && constant_fold_cast_operand(CastOpcode::SExt, inv, constant.ty(), dl)?
+            if cast_op == CastOpcode::Zext
+                && constant_fold_cast_operand(CastOpcode::Sext, inv, constant.ty(), dl)?
                     == Some(recast)
             {
                 flags = flags.non_negative();
@@ -1303,10 +1303,10 @@ pub fn lossless_inv_cast<'ctx, B: ModuleBrand + 'ctx>(
         }
         CastOpcode::FpTrunc
         | CastOpcode::FpExt
-        | CastOpcode::FpToUI
-        | CastOpcode::FpToSI
-        | CastOpcode::UIToFp
-        | CastOpcode::SIToFp
+        | CastOpcode::FpToUi
+        | CastOpcode::FpToSi
+        | CastOpcode::UiToFp
+        | CastOpcode::SiToFp
         | CastOpcode::PtrToInt
         | CastOpcode::PtrToAddr
         | CastOpcode::IntToPtr
@@ -1320,7 +1320,7 @@ pub fn lossless_unsigned_trunc<'ctx, B: ModuleBrand + 'ctx>(
     dest_ty: Type<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<(Constant<'ctx, B>, PreservedCastFlags)>> {
-    lossless_inv_cast(constant, dest_ty, CastOpcode::ZExt, dl)
+    lossless_inv_cast(constant, dest_ty, CastOpcode::Zext, dl)
 }
 
 /// Return a truncation that can be losslessly signed-extended back to `constant`.
@@ -1329,7 +1329,7 @@ pub fn lossless_signed_trunc<'ctx, B: ModuleBrand + 'ctx>(
     dest_ty: Type<'ctx, B>,
     dl: &DataLayout,
 ) -> IrResult<Option<(Constant<'ctx, B>, PreservedCastFlags)>> {
-    lossless_inv_cast(constant, dest_ty, CastOpcode::SExt, dl)
+    lossless_inv_cast(constant, dest_ty, CastOpcode::Sext, dl)
 }
 /// Fold a known library call with constant operands.
 pub fn constant_fold_call<'ctx, B: ModuleBrand + 'ctx>(
@@ -1428,7 +1428,7 @@ fn fold_sqrt_call<'ctx, B: ModuleBrand + 'ctx>(
             Ok(Some(src.ty().const_ap_float(&apf)?.as_constant()))
         }
         ApFloatSemantics::IeeeHalf
-        | ApFloatSemantics::BFloat
+        | ApFloatSemantics::Bfloat
         | ApFloatSemantics::IeeeQuad
         | ApFloatSemantics::X87DoubleExtended
         | ApFloatSemantics::PpcDoubleDouble => Ok(None),
@@ -2163,21 +2163,21 @@ fn binary_opcode(kind: &InstructionKindData) -> Option<BinaryOpcode> {
         InstructionKindData::Add(_) => BinaryOpcode::Add,
         InstructionKindData::Sub(_) => BinaryOpcode::Sub,
         InstructionKindData::Mul(_) => BinaryOpcode::Mul,
-        InstructionKindData::UDiv(_) => BinaryOpcode::UDiv,
-        InstructionKindData::SDiv(_) => BinaryOpcode::SDiv,
-        InstructionKindData::URem(_) => BinaryOpcode::URem,
-        InstructionKindData::SRem(_) => BinaryOpcode::SRem,
+        InstructionKindData::Udiv(_) => BinaryOpcode::Udiv,
+        InstructionKindData::Sdiv(_) => BinaryOpcode::Sdiv,
+        InstructionKindData::Urem(_) => BinaryOpcode::Urem,
+        InstructionKindData::Srem(_) => BinaryOpcode::Srem,
         InstructionKindData::Shl(_) => BinaryOpcode::Shl,
-        InstructionKindData::LShr(_) => BinaryOpcode::LShr,
-        InstructionKindData::AShr(_) => BinaryOpcode::AShr,
+        InstructionKindData::Lshr(_) => BinaryOpcode::Lshr,
+        InstructionKindData::Ashr(_) => BinaryOpcode::Ashr,
         InstructionKindData::And(_) => BinaryOpcode::And,
         InstructionKindData::Or(_) => BinaryOpcode::Or,
         InstructionKindData::Xor(_) => BinaryOpcode::Xor,
-        InstructionKindData::FAdd(_) => BinaryOpcode::FAdd,
-        InstructionKindData::FSub(_) => BinaryOpcode::FSub,
-        InstructionKindData::FMul(_) => BinaryOpcode::FMul,
-        InstructionKindData::FDiv(_) => BinaryOpcode::FDiv,
-        InstructionKindData::FRem(_) => BinaryOpcode::FRem,
+        InstructionKindData::Fadd(_) => BinaryOpcode::Fadd,
+        InstructionKindData::Fsub(_) => BinaryOpcode::Fsub,
+        InstructionKindData::Fmul(_) => BinaryOpcode::Fmul,
+        InstructionKindData::Fdiv(_) => BinaryOpcode::Fdiv,
+        InstructionKindData::Frem(_) => BinaryOpcode::Frem,
         _ => return None,
     };
     Some(opcode)
@@ -2190,11 +2190,11 @@ fn binary_opcode(kind: &InstructionKindData) -> Option<BinaryOpcode> {
 /// integer opcodes.
 fn binary_op_fmf(kind: &InstructionKindData) -> FastMathFlags {
     match kind {
-        InstructionKindData::FAdd(b)
-        | InstructionKindData::FSub(b)
-        | InstructionKindData::FMul(b)
-        | InstructionKindData::FDiv(b)
-        | InstructionKindData::FRem(b) => b.fmf,
+        InstructionKindData::Fadd(b)
+        | InstructionKindData::Fsub(b)
+        | InstructionKindData::Fmul(b)
+        | InstructionKindData::Fdiv(b)
+        | InstructionKindData::Frem(b) => b.fmf,
         _ => FastMathFlags::empty(),
     }
 }
@@ -2214,20 +2214,20 @@ fn binary_constant_expr_opcode(opcode: BinaryOpcode) -> Option<ConstantExprOpcod
         BinaryOpcode::Sub => Some(ConstantExprOpcode::Sub),
         BinaryOpcode::Xor => Some(ConstantExprOpcode::Xor),
         BinaryOpcode::Mul
-        | BinaryOpcode::UDiv
-        | BinaryOpcode::SDiv
-        | BinaryOpcode::URem
-        | BinaryOpcode::SRem
+        | BinaryOpcode::Udiv
+        | BinaryOpcode::Sdiv
+        | BinaryOpcode::Urem
+        | BinaryOpcode::Srem
         | BinaryOpcode::Shl
-        | BinaryOpcode::LShr
-        | BinaryOpcode::AShr
+        | BinaryOpcode::Lshr
+        | BinaryOpcode::Ashr
         | BinaryOpcode::And
         | BinaryOpcode::Or
-        | BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => None,
+        | BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => None,
     }
 }
 
@@ -2524,9 +2524,9 @@ fn fold_integer_cast_constant<'ctx, B: ModuleBrand + 'ctx>(
     let opcode = if src_ty.bit_width() > dst_ty.bit_width() {
         CastOpcode::Trunc
     } else if is_signed {
-        CastOpcode::SExt
+        CastOpcode::Sext
     } else {
-        CastOpcode::ZExt
+        CastOpcode::Zext
     };
     constant_fold_cast_operand(opcode, constant, dest_ty, dl)
 }
@@ -2556,14 +2556,14 @@ fn cast_constant_expr_opcode(opcode: CastOpcode) -> Option<ConstantExprOpcode> {
         CastOpcode::IntToPtr => Some(ConstantExprOpcode::IntToPtr),
         CastOpcode::BitCast => Some(ConstantExprOpcode::BitCast),
         CastOpcode::AddrSpaceCast => Some(ConstantExprOpcode::AddrSpaceCast),
-        CastOpcode::ZExt
-        | CastOpcode::SExt
+        CastOpcode::Zext
+        | CastOpcode::Sext
         | CastOpcode::FpTrunc
         | CastOpcode::FpExt
-        | CastOpcode::FpToUI
-        | CastOpcode::FpToSI
-        | CastOpcode::UIToFp
-        | CastOpcode::SIToFp => None,
+        | CastOpcode::FpToUi
+        | CastOpcode::FpToSi
+        | CastOpcode::UiToFp
+        | CastOpcode::SiToFp => None,
     }
 }
 
@@ -2768,7 +2768,7 @@ fn is_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
             | ConstantData::SymbolDelta { .. }
             | ConstantData::SymbolDeltaPlus { .. }
             | ConstantData::BlockAddress { .. }
-            | ConstantData::DSOLocalEquivalent { .. }
+            | ConstantData::DsoLocalEquivalent { .. }
             | ConstantData::NoCfi { .. }
             | ConstantData::TokenNone
             | ConstantData::TargetExtNone,

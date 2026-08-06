@@ -70,7 +70,7 @@ fn function_value_define_matches_module_output() -> Result<(), IrError> {
 }
 
 // --------------------------------------------------------------------------
-// GlobalVariable -- definition line, matching its GlobalAlias/GlobalIFunc
+// GlobalVariable -- definition line, matching its GlobalAlias/GlobalIfunc
 // siblings rather than the `ptr @g` operand form
 // --------------------------------------------------------------------------
 

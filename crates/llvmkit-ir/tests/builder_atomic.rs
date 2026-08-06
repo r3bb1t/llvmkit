@@ -3,7 +3,7 @@
 //! Every test cites its upstream source per Doctrine D11.
 
 use llvmkit_ir::{
-    AtomicOrdering, AtomicRMWBinOp, Dyn, IrBuilder, IrError, Linkage, PointerValue, SyncScope,
+    AtomicOrdering, AtomicRmwBinOp, Dyn, IrBuilder, IrError, Linkage, PointerValue, SyncScope,
     module_new,
 };
 
@@ -156,10 +156,10 @@ fn atomicrmw_xchg_monotonic() -> Result<(), IrError> {
     let word: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let twelve = i32_ty.const_int(12_i32);
     let _ = b.atomicrmw(
-        AtomicRMWBinOp::Xchg,
+        AtomicRmwBinOp::Xchg,
         word,
         twelve,
-        llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
+        llvmkit_ir::AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
         "atomicrmw_no_align.xchg",
     )?;
     let _ = b.ret_void()?;
@@ -186,10 +186,10 @@ fn atomicrmw_volatile_min_monotonic() -> Result<(), IrError> {
     let word: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let twenty = i32_ty.const_int(20_i32);
     let _ = b.atomicrmw(
-        AtomicRMWBinOp::Min,
+        AtomicRmwBinOp::Min,
         word,
         twenty,
-        llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System).volatile(),
+        llvmkit_ir::AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::System).volatile(),
         "amin",
     )?;
     let _ = b.ret_void()?;
@@ -216,10 +216,10 @@ fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
     let word: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let twenty_one = i32_ty.const_int(21_i32);
     let _ = b.atomicrmw(
-        AtomicRMWBinOp::UMax,
+        AtomicRmwBinOp::Umax,
         word,
         twenty_one,
-        llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::SingleThread),
+        llvmkit_ir::AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::SingleThread),
         "u",
     )?;
     let _ = b.ret_void()?;
@@ -235,7 +235,7 @@ fn atomicrmw_umax_singlethread() -> Result<(), IrError> {
 /// `atomicrmw fmaximum ptr %word, float 1.0 monotonic`. `FMaximum` is one
 /// of the LLVM 21 IEEE-754 `maximum`/`minimum`-semantics atomicrmw ops
 /// (`AtomicRMWInst::BinOp` in `Instructions.h`); this locks its print
-/// form end to end (`AtomicRMWBinOp::keyword` -> `fmt_atomicrmw`).
+/// form end to end (`AtomicRmwBinOp::keyword` -> `fmt_atomicrmw`).
 #[test]
 fn atomicrmw_fmaximum_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -249,10 +249,10 @@ fn atomicrmw_fmaximum_monotonic() -> Result<(), IrError> {
     let word: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let one = f32_ty.const_float(1.0_f32);
     let _ = b.atomicrmw(
-        AtomicRMWBinOp::FMaximum,
+        AtomicRmwBinOp::Fmaximum,
         word,
         one,
-        llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
+        llvmkit_ir::AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
         "atomicrmw.fmaximum",
     )?;
     let _ = b.ret_void()?;
@@ -283,10 +283,10 @@ fn atomicrmw_fminimum_monotonic() -> Result<(), IrError> {
     let word: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let one = f32_ty.const_float(1.0_f32);
     let _ = b.atomicrmw(
-        AtomicRMWBinOp::FMinimum,
+        AtomicRmwBinOp::Fminimum,
         word,
         one,
-        llvmkit_ir::AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
+        llvmkit_ir::AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
         "atomicrmw.fminimum",
     )?;
     let _ = b.ret_void()?;

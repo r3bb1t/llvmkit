@@ -7,7 +7,7 @@
 use crate::argument::Argument;
 use crate::constant::Constant;
 use crate::error::{IrError, IrResult, TypeKindLabel};
-use crate::float_kind::{BFloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
+use crate::float_kind::{Bfloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
 use crate::function::FunctionValue;
 use crate::function_signature::{
     CallArgs, FunctionParam, FunctionParamList, FunctionReturn, IntoCallArg,
@@ -427,7 +427,7 @@ impl_float_field!(
     f32 => f32_type, crate::TypeKind::Float,
     f64 => f64_type, crate::TypeKind::Double,
     Half => half_type, crate::TypeKind::Half,
-    BFloat => bfloat_type, crate::TypeKind::BFloat,
+    Bfloat => bfloat_type, crate::TypeKind::Bfloat,
     Fp128 => fp128_type, crate::TypeKind::Fp128,
     X86Fp80 => x86_fp80_type, crate::TypeKind::X86Fp80,
     PpcFp128 => ppc_fp128_type, crate::TypeKind::PpcFp128,

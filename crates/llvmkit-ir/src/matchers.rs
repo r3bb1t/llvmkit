@@ -410,19 +410,19 @@ binop_matcher!(
 );
 binop_matcher!(
     /// `udiv`. Mirrors `m_UDiv`.
-    m_udiv, UDiv
+    m_udiv, Udiv
 );
 binop_matcher!(
     /// `sdiv`. Mirrors `m_SDiv`.
-    m_sdiv, SDiv
+    m_sdiv, Sdiv
 );
 binop_matcher!(
     /// `urem`. Mirrors `m_URem`.
-    m_urem, URem
+    m_urem, Urem
 );
 binop_matcher!(
     /// `srem`. Mirrors `m_SRem`.
-    m_srem, SRem
+    m_srem, Srem
 );
 binop_matcher!(
     /// `shl`. Mirrors `m_Shl`.
@@ -430,11 +430,11 @@ binop_matcher!(
 );
 binop_matcher!(
     /// `lshr`. Mirrors `m_LShr`.
-    m_lshr, LShr
+    m_lshr, Lshr
 );
 binop_matcher!(
     /// `ashr`. Mirrors `m_AShr`.
-    m_ashr, AShr
+    m_ashr, Ashr
 );
 binop_matcher!(
     /// `and`. Mirrors `m_And`.
@@ -450,23 +450,23 @@ binop_matcher!(
 );
 binop_matcher!(
     /// `fadd`. Mirrors `m_FAdd`.
-    m_fadd, FAdd
+    m_fadd, Fadd
 );
 binop_matcher!(
     /// `fsub`. Mirrors `m_FSub`.
-    m_fsub, FSub
+    m_fsub, Fsub
 );
 binop_matcher!(
     /// `fmul`. Mirrors `m_FMul`.
-    m_fmul, FMul
+    m_fmul, Fmul
 );
 binop_matcher!(
     /// `fdiv`. Mirrors `m_FDiv`.
-    m_fdiv, FDiv
+    m_fdiv, Fdiv
 );
 binop_matcher!(
     /// `frem`. Mirrors `m_FRem`.
-    m_frem, FRem
+    m_frem, Frem
 );
 
 commutative_binop_matcher!(
@@ -491,11 +491,11 @@ commutative_binop_matcher!(
 );
 commutative_binop_matcher!(
     /// Commutative `fadd`. Mirrors `m_c_FAdd`.
-    m_c_fadd, FAdd
+    m_c_fadd, Fadd
 );
 commutative_binop_matcher!(
     /// Commutative `fmul`. Mirrors `m_c_FMul`.
-    m_c_fmul, FMul
+    m_c_fmul, Fmul
 );
 
 // --------------------------------------------------------------------------

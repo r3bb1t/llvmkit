@@ -1127,7 +1127,7 @@ fn is_identified_object<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> b
         // A `GlobalAlias` is deliberately excluded: it names another object.
         ValueKindData::GlobalVariable(_)
         | ValueKindData::Function(_)
-        | ValueKindData::GlobalIFunc(_) => return true,
+        | ValueKindData::GlobalIfunc(_) => return true,
         // `isNoAliasOrByValArgument`.
         ValueKindData::Argument { parent_fn, slot } => {
             return argument_has_any_attribute(
@@ -1209,7 +1209,7 @@ fn splat_byte(bits: &ApInt) -> Option<u8> {
 /// the long-double formats upstream declines.
 fn float_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<u32> {
     match ty.kind() {
-        TypeKind::Half | TypeKind::BFloat => Some(16),
+        TypeKind::Half | TypeKind::Bfloat => Some(16),
         TypeKind::Float => Some(32),
         TypeKind::Double => Some(64),
         _ => None,

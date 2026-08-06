@@ -34,7 +34,7 @@ use super::global_value::Linkage;
 use super::global_variable::GlobalVariable;
 use super::inline_asm::InlineAsm;
 use super::instr_types::{
-    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
     ExtractElementInstData, ExtractValueInstData, FenceInstData, FnegInstData, FreezeInstData,
     IndirectBrInstData, InsertElementInstData, InsertValueInstData, InvokeInstData, LoadInstData,
     SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VaArgInstData,
@@ -241,7 +241,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     });
                 }
             }
-            ConstantData::DSOLocalEquivalent { function } => {
+            ConstantData::DsoLocalEquivalent { function } => {
                 let value =
                     Value::<B>::from_parts(*function, self.module, self.value_type(*function));
                 match &value.data().kind {
@@ -256,8 +256,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                             });
                         }
                     }
-                    ValueKindData::GlobalIFunc(_) => {
-                        if !crate::GlobalIFunc::try_from(value)?
+                    ValueKindData::GlobalIfunc(_) => {
+                        if !crate::GlobalIfunc::try_from(value)?
                             .value_type()
                             .is_function()
                         {
@@ -280,7 +280,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     ValueKindData::Function(_)
                     | ValueKindData::GlobalVariable(_)
                     | ValueKindData::GlobalAlias(_)
-                    | ValueKindData::GlobalIFunc(_) => {}
+                    | ValueKindData::GlobalIfunc(_) => {}
                     _ => {
                         return Err(IrError::InvalidOperation {
                             message: "no_cfi expects a global value",
@@ -1086,23 +1086,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             InstructionKindData::Add(b)
             | InstructionKindData::Sub(b)
             | InstructionKindData::Mul(b)
-            | InstructionKindData::UDiv(b)
-            | InstructionKindData::SDiv(b)
-            | InstructionKindData::URem(b)
-            | InstructionKindData::SRem(b)
+            | InstructionKindData::Udiv(b)
+            | InstructionKindData::Sdiv(b)
+            | InstructionKindData::Urem(b)
+            | InstructionKindData::Srem(b)
             | InstructionKindData::Shl(b)
-            | InstructionKindData::LShr(b)
-            | InstructionKindData::AShr(b)
+            | InstructionKindData::Lshr(b)
+            | InstructionKindData::Ashr(b)
             | InstructionKindData::And(b)
             | InstructionKindData::Or(b)
             | InstructionKindData::Xor(b) => self.check_int_binary(f, bb, inst, b),
-            InstructionKindData::FAdd(b)
-            | InstructionKindData::FSub(b)
-            | InstructionKindData::FMul(b)
-            | InstructionKindData::FDiv(b)
-            | InstructionKindData::FRem(b) => self.check_float_binary(f, bb, inst, b),
-            InstructionKindData::ICmp(c) => self.check_icmp(f, bb, inst, c),
-            InstructionKindData::FCmp(c) => self.check_fcmp(f, bb, inst, c),
+            InstructionKindData::Fadd(b)
+            | InstructionKindData::Fsub(b)
+            | InstructionKindData::Fmul(b)
+            | InstructionKindData::Fdiv(b)
+            | InstructionKindData::Frem(b) => self.check_float_binary(f, bb, inst, b),
+            InstructionKindData::Icmp(c) => self.check_icmp(f, bb, inst, c),
+            InstructionKindData::Fcmp(c) => self.check_fcmp(f, bb, inst, c),
             InstructionKindData::Cast(c) => self.check_cast(f, bb, inst, c),
             InstructionKindData::Alloca(a) => self.check_alloca(f, bb, inst, a),
             InstructionKindData::Load(l) => self.check_load(f, bb, inst, l),
@@ -1116,9 +1116,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
             InstructionKindData::Ret(r) => self.check_ret(f, bb, inst, r),
             InstructionKindData::Br(b) => self.check_br(f, bb, inst, b, cx.block_index),
-            InstructionKindData::FNeg(u) => self.check_fneg(f, bb, inst, u),
+            InstructionKindData::Fneg(u) => self.check_fneg(f, bb, inst, u),
             InstructionKindData::Freeze(u) => self.check_freeze(f, bb, inst, u),
-            InstructionKindData::VAArg(u) => self.check_va_arg(f, bb, inst, u),
+            InstructionKindData::VaArg(u) => self.check_va_arg(f, bb, inst, u),
             InstructionKindData::ExtractValue(d) => self.check_extract_value(f, bb, inst, d),
             InstructionKindData::InsertValue(d) => self.check_insert_value(f, bb, inst, d),
             InstructionKindData::ExtractElement(d) => self.check_extract_element(f, bb, inst, d),
@@ -1126,7 +1126,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             InstructionKindData::ShuffleVector(d) => self.check_shuffle_vector(f, bb, inst, d),
             InstructionKindData::Fence(d) => self.check_fence(f, bb, inst, d),
             InstructionKindData::AtomicCmpXchg(d) => self.check_cmpxchg(f, bb, inst, d),
-            InstructionKindData::AtomicRMW(d) => self.check_atomicrmw(f, bb, inst, d),
+            InstructionKindData::AtomicRmw(d) => self.check_atomicrmw(f, bb, inst, d),
             InstructionKindData::Switch(d) => self.check_switch(f, bb, inst, d, cx.block_index),
             InstructionKindData::IndirectBr(d) => {
                 self.check_indirectbr(f, bb, inst, d, cx.block_index)
@@ -1438,7 +1438,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             return Err(self.fail(
                 f,
                 bb,
-                VerifierRule::FNegTypeMismatch,
+                VerifierRule::FnegTypeMismatch,
                 format!(
                     "operand type {} is not floating-point",
                     self.type_label(src_ty)
@@ -1449,7 +1449,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             return Err(self.fail(
                 f,
                 bb,
-                VerifierRule::FNegTypeMismatch,
+                VerifierRule::FnegTypeMismatch,
                 format!(
                     "result {} != operand {}",
                     self.type_label(inst.ty().id),
@@ -1500,7 +1500,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             return Err(self.fail(
                 f,
                 bb,
-                VerifierRule::VAArgNonPointerOperand,
+                VerifierRule::VaArgNonPointerOperand,
                 format!("va_arg source {} is not a pointer", self.type_label(src_ty)),
             ));
         }
@@ -1845,7 +1845,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             return Err(self.fail(
                 f,
                 bb,
-                VerifierRule::AtomicRMWOperandTypeMismatch,
+                VerifierRule::AtomicRmwOperandTypeMismatch,
                 format!(
                     "cmpxchg cmp {} != new {}",
                     self.type_label(cmp_ty),
@@ -1894,7 +1894,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         f: FunctionValue<'ctx, Dyn, B>,
         bb: &BasicBlock<'ctx, Dyn, Unterminated, B>,
         inst: &InstructionView<'ctx, B>,
-        d: &AtomicRMWInstData,
+        d: &AtomicRmwInstData,
     ) -> IrResult<()> {
         use crate::atomic_ordering::AtomicOrdering as AO;
         let ptr_ty = self.value_type(d.ptr.get());
@@ -1914,7 +1914,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             return Err(self.fail(
                 f,
                 bb,
-                VerifierRule::AtomicRMWOperandTypeMismatch,
+                VerifierRule::AtomicRmwOperandTypeMismatch,
                 format!(
                     "atomicrmw {} operand {} is not floating-point",
                     d.op.keyword(),
@@ -1944,7 +1944,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             return Err(self.fail(
                 f,
                 bb,
-                VerifierRule::AtomicRMWOperandTypeMismatch,
+                VerifierRule::AtomicRmwOperandTypeMismatch,
                 format!(
                     "atomicrmw result {} != value {}",
                     self.type_label(inst.ty().id),
@@ -2067,7 +2067,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         let src_ty = self.value_type(c.src.get());
         let dst_ty = inst.ty().id;
         match c.kind {
-            CastOpcode::Trunc | CastOpcode::ZExt | CastOpcode::SExt => {
+            CastOpcode::Trunc | CastOpcode::Zext | CastOpcode::Sext => {
                 // `CastInst::castIsValid` compares `getScalarSizeInBits`, so a
                 // vector is checked on its element and separately on its
                 // shape: both sides vectors of equal element count, or both
@@ -2091,7 +2091,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 }
                 let ok = match c.kind {
                     CastOpcode::Trunc => dst_w < src_w,
-                    CastOpcode::ZExt | CastOpcode::SExt => dst_w > src_w,
+                    CastOpcode::Zext | CastOpcode::Sext => dst_w > src_w,
                     _ => unreachable!("matched only int-to-int casts here"),
                 };
                 if !ok {
@@ -2147,7 +2147,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     }
                 }
             }
-            CastOpcode::FpToUI | CastOpcode::FpToSI => {
+            CastOpcode::FpToUi | CastOpcode::FpToSi => {
                 if !is_fp_or_fp_vector(self.module, src_ty) {
                     return Err(self.fail(
                         f,
@@ -2173,7 +2173,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     ));
                 }
             }
-            CastOpcode::UIToFp | CastOpcode::SIToFp => {
+            CastOpcode::UiToFp | CastOpcode::SiToFp => {
                 if !is_int_or_int_vector(self.module, src_ty) {
                     return Err(self.fail(
                         f,
@@ -3604,7 +3604,7 @@ fn is_fp_data(d: &TypeData) -> bool {
     matches!(
         d,
         TypeData::Half
-            | TypeData::BFloat
+            | TypeData::Bfloat
             | TypeData::Float
             | TypeData::Double
             | TypeData::Fp128
@@ -3622,7 +3622,7 @@ fn is_fp_data(d: &TypeData) -> bool {
 fn fp_rank(m: &ModuleCore, ty: TypeSlot) -> Option<u32> {
     match m.context().type_data(ty) {
         TypeData::Half => Some(16),
-        TypeData::BFloat => Some(16),
+        TypeData::Bfloat => Some(16),
         TypeData::Float => Some(32),
         TypeData::Double => Some(64),
         TypeData::X86Fp80 => Some(80),
@@ -3638,7 +3638,7 @@ fn fp_rank(m: &ModuleCore, ty: TypeSlot) -> Option<u32> {
 fn type_bit_width(m: &ModuleCore, ty: TypeSlot) -> Option<u32> {
     match m.context().type_data(ty) {
         TypeData::Integer { bits } => Some(*bits),
-        TypeData::Half | TypeData::BFloat => Some(16),
+        TypeData::Half | TypeData::Bfloat => Some(16),
         TypeData::Float => Some(32),
         TypeData::Double => Some(64),
         TypeData::X86Fp80 => Some(80),

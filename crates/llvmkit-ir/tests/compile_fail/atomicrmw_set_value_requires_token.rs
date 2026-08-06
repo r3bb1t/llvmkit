@@ -1,15 +1,15 @@
 //! llvmkit typestate compile-fail (Doctrine D1 — no mutation without a token).
 //!
-//! `AtomicRMWInst::set_value_operand` mutates the IR in place, so — like
+//! `AtomicRmwInst::set_value_operand` mutates the IR in place, so — like
 //! `Instruction::replace_all_uses_with` — it requires an `&Module<Unverified>`
 //! capability witness. Calling it with only the replacement value (no token)
 //! must fail to compile. If the token parameter were ever dropped, this
 //! fixture would start compiling and trybuild would flag the regression.
 
 use llvmkit_ir::{
-    AtomicOrdering, AtomicRMWConfig, IrBuilder, IrResult, Linkage, Module, PointerValue, SyncScope,
+    AtomicOrdering, AtomicRmwConfig, IrBuilder, IrResult, Linkage, Module, PointerValue, SyncScope,
 };
-use llvmkit_ir::atomicrmw_binop::AtomicRMWBinOp;
+use llvmkit_ir::atomicrmw_binop::AtomicRmwBinOp;
 
 fn main() -> IrResult<()> {
     let m = Module::dynamic("armw-token");
@@ -23,13 +23,13 @@ fn main() -> IrResult<()> {
     let word: PointerValue<_> = m.view(f).param(0)?.try_into()?;
     let twelve = i32_ty.const_int(12_i32);
     let armw = b.atomicrmw(
-        AtomicRMWBinOp::Xchg,
+        AtomicRmwBinOp::Xchg,
         word,
         twelve,
-        AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
+        AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
         "armw",
     )?;
-    // `atomicrmw` hands back the storable `AtomicRMWInstId`, so one
+    // `atomicrmw` hands back the storable `AtomicRmwInstId`, so one
     // view recovers the opcode handle — this fixture must keep testing the
     // capability token, not id-versus-handle typing.
     let armw = b.view(armw);

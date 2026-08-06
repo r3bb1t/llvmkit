@@ -28,7 +28,7 @@ use core::iter::FusedIterator;
 use super::IrResult;
 use super::align::Align;
 use super::atomic_ordering::AtomicOrdering;
-use super::atomicrmw_binop::AtomicRMWBinOp;
+use super::atomicrmw_binop::AtomicRmwBinOp;
 use super::basic_block::{BasicBlockLabel, IntoBasicBlockLabel, require_no_block_parameters};
 use super::calling_conv::CallingConv;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
@@ -39,7 +39,7 @@ use super::float_kind::FloatKind;
 // author a phi. See `docs/design/phi-type-guarantees-design.md`, slice 7.
 #[cfg(test)]
 use super::float_kind::IntoFloatValue;
-use super::float_kind::{BFloat, FloatDyn, Fp128, Half, PpcFp128, X86Fp80};
+use super::float_kind::{Bfloat, FloatDyn, Fp128, Half, PpcFp128, X86Fp80};
 use super::fmf::FastMathFlags;
 use super::function::FunctionValue;
 use super::function_signature::{FunctionReturn, token::ValidatedCallResult};
@@ -47,7 +47,7 @@ use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::instr_types::ShuffleMaskElem;
 use super::instr_types::TailCallKind;
 use super::instr_types::{
-    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
     CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
     CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FcmpInstData,
     FenceInstData, FnegInstData, FreezeInstData, GepInstData, IndirectBrInstData,
@@ -72,7 +72,7 @@ use super::value::{
     FloatValue, IntValue, IsValue, PointerValue, Value, ValueKindData, ValueSlot, ValueUse,
 };
 use super::value_id::{
-    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FpPhiInstId, FreezeInstId,
+    AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FpPhiInstId, FreezeInstId,
     OtherPhiInstId, PhiInstId, PointerPhiInstId, TypedCallInstId, VaArgInstId,
 };
 
@@ -173,19 +173,19 @@ decl_binop_handle!(
 );
 decl_binop_handle!(
     /// `udiv` integer divide (unsigned).
-    UDivInst, UDiv
+    UdivInst, Udiv
 );
 decl_binop_handle!(
     /// `sdiv` integer divide (signed).
-    SDivInst, SDiv
+    SdivInst, Sdiv
 );
 decl_binop_handle!(
     /// `urem` integer remainder (unsigned).
-    URemInst, URem
+    UremInst, Urem
 );
 decl_binop_handle!(
     /// `srem` integer remainder (signed).
-    SRemInst, SRem
+    SremInst, Srem
 );
 decl_binop_handle!(
     /// `shl` logical left shift.
@@ -193,11 +193,11 @@ decl_binop_handle!(
 );
 decl_binop_handle!(
     /// `lshr` logical right shift.
-    LShrInst, LShr
+    LshrInst, Lshr
 );
 decl_binop_handle!(
     /// `ashr` arithmetic right shift.
-    AShrInst, AShr
+    AshrInst, Ashr
 );
 decl_binop_handle!(
     /// `and` bitwise and.
@@ -213,23 +213,23 @@ decl_binop_handle!(
 );
 decl_binop_handle!(
     /// `fadd` floating-point add.
-    FAddInst, FAdd
+    FaddInst, Fadd
 );
 decl_binop_handle!(
     /// `fsub` floating-point subtract.
-    FSubInst, FSub
+    FsubInst, Fsub
 );
 decl_binop_handle!(
     /// `fmul` floating-point multiply.
-    FMulInst, FMul
+    FmulInst, Fmul
 );
 decl_binop_handle!(
     /// `fdiv` floating-point divide.
-    FDivInst, FDiv
+    FdivInst, Fdiv
 );
 decl_binop_handle!(
     /// `frem` floating-point remainder.
-    FRemInst, FRem
+    FremInst, Frem
 );
 
 /// Grouped view over any binary operator (`add`..`frem`). Lets a pass read
@@ -263,21 +263,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> BinaryOp<'ctx, B> {
                 InstructionKindData::Add(b)
                 | InstructionKindData::Sub(b)
                 | InstructionKindData::Mul(b)
-                | InstructionKindData::UDiv(b)
-                | InstructionKindData::SDiv(b)
-                | InstructionKindData::URem(b)
-                | InstructionKindData::SRem(b)
+                | InstructionKindData::Udiv(b)
+                | InstructionKindData::Sdiv(b)
+                | InstructionKindData::Urem(b)
+                | InstructionKindData::Srem(b)
                 | InstructionKindData::Shl(b)
-                | InstructionKindData::LShr(b)
-                | InstructionKindData::AShr(b)
+                | InstructionKindData::Lshr(b)
+                | InstructionKindData::Ashr(b)
                 | InstructionKindData::And(b)
                 | InstructionKindData::Or(b)
                 | InstructionKindData::Xor(b)
-                | InstructionKindData::FAdd(b)
-                | InstructionKindData::FSub(b)
-                | InstructionKindData::FMul(b)
-                | InstructionKindData::FDiv(b)
-                | InstructionKindData::FRem(b) => b,
+                | InstructionKindData::Fadd(b)
+                | InstructionKindData::Fsub(b)
+                | InstructionKindData::Fmul(b)
+                | InstructionKindData::Fdiv(b)
+                | InstructionKindData::Frem(b) => b,
                 _ => unreachable!("BinaryOp invariant: kind is a binary operator"),
             },
             _ => unreachable!("BinaryOp invariant: kind is Instruction"),
@@ -364,9 +364,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Cmp<'ctx, B> {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::ICmp(c) => CmpPredicate::Int(c.predicate),
-                InstructionKindData::FCmp(c) => CmpPredicate::Float(c.predicate),
-                _ => unreachable!("Cmp invariant: kind is ICmp or FCmp"),
+                InstructionKindData::Icmp(c) => CmpPredicate::Int(c.predicate),
+                InstructionKindData::Fcmp(c) => CmpPredicate::Float(c.predicate),
+                _ => unreachable!("Cmp invariant: kind is Icmp or Fcmp"),
             },
             _ => unreachable!("Cmp invariant: kind is Instruction"),
         }
@@ -387,21 +387,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> Cmp<'ctx, B> {
         let module = self.module.module();
         let id = match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::ICmp(c) => {
+                InstructionKindData::Icmp(c) => {
                     if left {
                         c.lhs.get()
                     } else {
                         c.rhs.get()
                     }
                 }
-                InstructionKindData::FCmp(c) => {
+                InstructionKindData::Fcmp(c) => {
                     if left {
                         c.lhs.get()
                     } else {
                         c.rhs.get()
                     }
                 }
-                _ => unreachable!("Cmp invariant: kind is ICmp or FCmp"),
+                _ => unreachable!("Cmp invariant: kind is Icmp or Fcmp"),
             },
             _ => unreachable!("Cmp invariant: kind is Instruction"),
         };
@@ -489,7 +489,7 @@ macro_rules! decl_instruction_id_accessors {
 decl_instruction_id_accessors!(
     FreezeInst => FreezeInstId,
     VaArgInst => VaArgInstId,
-    AtomicRMWInst => AtomicRMWInstId,
+    AtomicRmwInst => AtomicRmwInstId,
     AtomicCmpXchgInst => AtomicCmpXchgInstId,
 );
 
@@ -915,7 +915,7 @@ macro_rules! call_inst_float_return {
         }
     )+ };
 }
-call_inst_float_return!(f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
+call_inst_float_return!(f32, f64, Half, Bfloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
 
 impl<'ctx, B: ModuleBrand + 'ctx> CallInst<'ctx, Ptr, B> {
     /// Typed result handle for a pointer-returning call.
@@ -1174,11 +1174,11 @@ decl_cast_handle!(
 );
 decl_cast_handle!(
     /// `zext .. to ..` — zero-extend an integer.
-    ZExtInst, ZExt
+    ZextInst, Zext
 );
 decl_cast_handle!(
     /// `sext .. to ..` — sign-extend an integer.
-    SExtInst, SExt
+    SextInst, Sext
 );
 decl_cast_handle!(
     /// `fptrunc .. to ..` — narrow a float.
@@ -1190,19 +1190,19 @@ decl_cast_handle!(
 );
 decl_cast_handle!(
     /// `fptoui .. to ..` — float to unsigned integer.
-    FpToUIInst, FpToUI
+    FpToUiInst, FpToUi
 );
 decl_cast_handle!(
     /// `fptosi .. to ..` — float to signed integer.
-    FpToSIInst, FpToSI
+    FpToSiInst, FpToSi
 );
 decl_cast_handle!(
     /// `uitofp .. to ..` — unsigned integer to float.
-    UIToFpInst, UIToFp
+    UiToFpInst, UiToFp
 );
 decl_cast_handle!(
     /// `sitofp .. to ..` — signed integer to float.
-    SIToFpInst, SIToFp
+    SiToFpInst, SiToFp
 );
 decl_cast_handle!(
     /// `ptrtoaddr .. to ..` — pointer to integer address bits.
@@ -1244,8 +1244,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> IcmpInst<'ctx, B> {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::ICmp(c) => c,
-                _ => unreachable!("IcmpInst invariant: kind is ICmp"),
+                InstructionKindData::Icmp(c) => c,
+                _ => unreachable!("IcmpInst invariant: kind is Icmp"),
             },
             _ => unreachable!("IcmpInst invariant: kind is Instruction"),
         }
@@ -1285,8 +1285,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FcmpInst<'ctx, B> {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::FCmp(c) => c,
-                _ => unreachable!("FcmpInst invariant: kind is FCmp"),
+                InstructionKindData::Fcmp(c) => c,
+                _ => unreachable!("FcmpInst invariant: kind is Fcmp"),
             },
             _ => unreachable!("FcmpInst invariant: kind is Instruction"),
         }
@@ -1593,7 +1593,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     /// when `index` is past the end.
     ///
     /// Requires an `Unverified` module token: like
-    /// [`AtomicRMWInst::set_value_operand`], this mutates the IR and must not be
+    /// [`AtomicRmwInst::set_value_operand`], this mutates the IR and must not be
     /// reachable without proof of mutation capability.
     ///
     /// Unlike upstream's default `DeletePHIIfEmpty = true`, removing the last
@@ -2246,8 +2246,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> FnegInst<'ctx, B> {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::FNeg(u) => u,
-                _ => unreachable!("FnegInst invariant: kind is FNeg"),
+                InstructionKindData::Fneg(u) => u,
+                _ => unreachable!("FnegInst invariant: kind is Fneg"),
             },
             _ => unreachable!("FnegInst invariant: kind is Instruction"),
         }
@@ -2313,8 +2313,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> VaArgInst<'ctx, B> {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::VAArg(u) => u,
-                _ => unreachable!("VaArgInst invariant: kind is VAArg"),
+                InstructionKindData::VaArg(u) => u,
+                _ => unreachable!("VaArgInst invariant: kind is VaArg"),
             },
             _ => unreachable!("VaArgInst invariant: kind is Instruction"),
         }
@@ -2640,26 +2640,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicCmpXchgInst<'ctx, B> {
 /// `atomicrmw` read-modify-write. Mirrors `AtomicRMWInst`
 /// (`Instructions.h`).
 #[derive(Branded)]
-pub struct AtomicRMWInst<'ctx, B: ModuleBrand> {
+pub struct AtomicRmwInst<'ctx, B: ModuleBrand> {
     pub(super) id: ValueSlot,
     pub(super) module: ModuleRef<'ctx, B>,
     pub(super) ty: TypeSlot,
 }
 
-decl_handle_scaffold!(AtomicRMWInst);
+decl_handle_scaffold!(AtomicRmwInst);
 
-impl<'ctx, B: ModuleBrand + 'ctx> AtomicRMWInst<'ctx, B> {
-    fn payload(self) -> &'ctx AtomicRMWInstData {
+impl<'ctx, B: ModuleBrand + 'ctx> AtomicRmwInst<'ctx, B> {
+    fn payload(self) -> &'ctx AtomicRmwInstData {
         let module = self.module.module();
         match &module.context().value_data(self.id).kind {
             ValueKindData::Instruction(i) => match &i.kind {
-                InstructionKindData::AtomicRMW(d) => d,
-                _ => unreachable!("AtomicRMWInst invariant: kind is AtomicRMW"),
+                InstructionKindData::AtomicRmw(d) => d,
+                _ => unreachable!("AtomicRmwInst invariant: kind is AtomicRmw"),
             },
-            _ => unreachable!("AtomicRMWInst invariant: kind is Instruction"),
+            _ => unreachable!("AtomicRmwInst invariant: kind is Instruction"),
         }
     }
-    pub fn operation(self) -> AtomicRMWBinOp {
+    pub fn operation(self) -> AtomicRmwBinOp {
         self.payload().op
     }
     /// Pointer operand. Statically a pointer for this opcode, so returned

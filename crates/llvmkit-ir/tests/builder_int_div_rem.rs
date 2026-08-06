@@ -10,7 +10,7 @@
 //! The shared `module_for` helper above factors module setup.
 
 use llvmkit_ir::{
-    Dyn, IntValue, IrBuilder, IrError, Linkage, Module, SDivFlags, UDivFlags, module_new,
+    Dyn, IntValue, IrBuilder, IrError, Linkage, Module, SdivFlags, UdivFlags, module_new,
 };
 
 fn module_for(op: &str) -> Result<String, IrError> {
@@ -78,7 +78,7 @@ fn udiv_exact() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
-    let r = b.int_udiv_with_flags(lhs, rhs, UDivFlags::new().exact(), "z")?;
+    let r = b.int_udiv_with_flags(lhs, rhs, UdivFlags::new().exact(), "z")?;
     b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%z = udiv exact i64 %0, %1"), "got:\n{text}");
@@ -96,7 +96,7 @@ fn sdiv_exact() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i64, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i64, _> = m.view(f).param(1)?.try_into()?;
-    let r = b.int_sdiv_with_flags(lhs, rhs, SDivFlags::new().exact(), "z")?;
+    let r = b.int_sdiv_with_flags(lhs, rhs, SdivFlags::new().exact(), "z")?;
     b.ret(r)?;
     let text = format!("{m}");
     assert!(text.contains("%z = sdiv exact i64 %0, %1"), "got:\n{text}");

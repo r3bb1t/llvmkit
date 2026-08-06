@@ -344,7 +344,7 @@ mod types {
         let expected = vec![
             Token::PrimitiveType(PrimitiveTy::Void),
             Token::PrimitiveType(PrimitiveTy::Half),
-            Token::PrimitiveType(PrimitiveTy::BFloat),
+            Token::PrimitiveType(PrimitiveTy::Bfloat),
             Token::PrimitiveType(PrimitiveTy::Float),
             Token::PrimitiveType(PrimitiveTy::Double),
             Token::PrimitiveType(PrimitiveTy::X86Fp80),
@@ -480,7 +480,7 @@ mod numbers {
         );
         assert_eq!(
             kinds("0xR3f80"),
-            vec![Token::FloatLit(FpLit::HexBFloat("3f80"))]
+            vec![Token::FloatLit(FpLit::HexBfloat("3f80"))]
         );
     }
 
@@ -506,7 +506,7 @@ mod numbers {
         assert!(matches!(
             err,
             LexError::HexFpTooLarge {
-                target: HexFpKind::BFloat,
+                target: HexFpKind::Bfloat,
                 ..
             }
         ));

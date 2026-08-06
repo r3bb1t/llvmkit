@@ -12,27 +12,27 @@ use std::collections::BTreeSet;
 
 use llvmkit_ir::{
     ApInt, CmpPredicate, FloatPredicate, IntPredicate, MinMaxIntrinsic, MinMaxKind,
-    MinMaxOperation, SelectPatternFlavor, SelectPatternNaNBehavior, SelectPatternResult,
+    MinMaxOperation, SelectPatternFlavor, SelectPatternNanBehavior, SelectPatternResult,
     select_pattern,
 };
 
 const ALL_FLAVORS: [SelectPatternFlavor; 9] = [
     SelectPatternFlavor::Unknown,
-    SelectPatternFlavor::SMin,
-    SelectPatternFlavor::UMin,
-    SelectPatternFlavor::SMax,
-    SelectPatternFlavor::UMax,
-    SelectPatternFlavor::FMinNum,
-    SelectPatternFlavor::FMaxNum,
+    SelectPatternFlavor::Smin,
+    SelectPatternFlavor::Umin,
+    SelectPatternFlavor::Smax,
+    SelectPatternFlavor::Umax,
+    SelectPatternFlavor::FminNum,
+    SelectPatternFlavor::FmaxNum,
     SelectPatternFlavor::Abs,
-    SelectPatternFlavor::NAbs,
+    SelectPatternFlavor::Nabs,
 ];
 
 const MIN_MAX_INTRINSICS: [MinMaxIntrinsic; 4] = [
-    MinMaxIntrinsic::SMin,
-    MinMaxIntrinsic::SMax,
-    MinMaxIntrinsic::UMin,
-    MinMaxIntrinsic::UMax,
+    MinMaxIntrinsic::Smin,
+    MinMaxIntrinsic::Smax,
+    MinMaxIntrinsic::Umin,
+    MinMaxIntrinsic::Umax,
 ];
 
 const MIN_MAX_KINDS: [MinMaxKind; 6] = [
@@ -51,7 +51,7 @@ fn is_min_or_max_excludes_unknown_and_the_two_absolute_flavors() {
     for flavor in ALL_FLAVORS {
         let expected = !matches!(
             flavor,
-            SelectPatternFlavor::Unknown | SelectPatternFlavor::Abs | SelectPatternFlavor::NAbs
+            SelectPatternFlavor::Unknown | SelectPatternFlavor::Abs | SelectPatternFlavor::Nabs
         );
         assert_eq!(flavor.is_min_or_max(), expected, "{flavor:?}");
     }
@@ -69,29 +69,29 @@ fn min_max_predicate_matches_upstream_for_every_flavor() {
     use IntPredicate as I;
 
     let cases: &[(SelectPatternFlavor, bool, CmpPredicate)] = &[
-        (SelectPatternFlavor::SMin, false, CmpPredicate::Int(I::Slt)),
-        (SelectPatternFlavor::SMin, true, CmpPredicate::Int(I::Slt)),
-        (SelectPatternFlavor::UMin, false, CmpPredicate::Int(I::Ult)),
-        (SelectPatternFlavor::SMax, false, CmpPredicate::Int(I::Sgt)),
-        (SelectPatternFlavor::UMax, false, CmpPredicate::Int(I::Ugt)),
+        (SelectPatternFlavor::Smin, false, CmpPredicate::Int(I::Slt)),
+        (SelectPatternFlavor::Smin, true, CmpPredicate::Int(I::Slt)),
+        (SelectPatternFlavor::Umin, false, CmpPredicate::Int(I::Ult)),
+        (SelectPatternFlavor::Smax, false, CmpPredicate::Int(I::Sgt)),
+        (SelectPatternFlavor::Umax, false, CmpPredicate::Int(I::Ugt)),
         // Ordered selects the o-prefixed float predicate, unordered the u-.
         (
-            SelectPatternFlavor::FMinNum,
+            SelectPatternFlavor::FminNum,
             true,
             CmpPredicate::Float(F::Olt),
         ),
         (
-            SelectPatternFlavor::FMinNum,
+            SelectPatternFlavor::FminNum,
             false,
             CmpPredicate::Float(F::Ult),
         ),
         (
-            SelectPatternFlavor::FMaxNum,
+            SelectPatternFlavor::FmaxNum,
             true,
             CmpPredicate::Float(F::Ogt),
         ),
         (
-            SelectPatternFlavor::FMaxNum,
+            SelectPatternFlavor::FmaxNum,
             false,
             CmpPredicate::Float(F::Ugt),
         ),
@@ -119,10 +119,10 @@ fn min_max_predicate_matches_upstream_for_every_flavor() {
 #[test]
 fn min_max_intrinsic_covers_exactly_the_integer_flavors() {
     let expected: &[(SelectPatternFlavor, MinMaxIntrinsic)] = &[
-        (SelectPatternFlavor::SMin, MinMaxIntrinsic::SMin),
-        (SelectPatternFlavor::SMax, MinMaxIntrinsic::SMax),
-        (SelectPatternFlavor::UMin, MinMaxIntrinsic::UMin),
-        (SelectPatternFlavor::UMax, MinMaxIntrinsic::UMax),
+        (SelectPatternFlavor::Smin, MinMaxIntrinsic::Smin),
+        (SelectPatternFlavor::Smax, MinMaxIntrinsic::Smax),
+        (SelectPatternFlavor::Umin, MinMaxIntrinsic::Umin),
+        (SelectPatternFlavor::Umax, MinMaxIntrinsic::Umax),
     ];
     for (flavor, intrinsic) in expected {
         assert_eq!(flavor.min_max_intrinsic(), Some(*intrinsic), "{flavor:?}");
@@ -132,10 +132,10 @@ fn min_max_intrinsic_covers_exactly_the_integer_flavors() {
     for flavor in ALL_FLAVORS {
         let integer = matches!(
             flavor,
-            SelectPatternFlavor::SMin
-                | SelectPatternFlavor::SMax
-                | SelectPatternFlavor::UMin
-                | SelectPatternFlavor::UMax
+            SelectPatternFlavor::Smin
+                | SelectPatternFlavor::Smax
+                | SelectPatternFlavor::Umin
+                | SelectPatternFlavor::Umax
         );
         assert_eq!(flavor.min_max_intrinsic().is_some(), integer, "{flavor:?}");
     }
@@ -146,10 +146,10 @@ fn min_max_intrinsic_covers_exactly_the_integer_flavors() {
 #[test]
 fn inverting_a_min_max_swaps_min_and_max_and_is_an_involution() {
     let pairs: &[(SelectPatternFlavor, SelectPatternFlavor)] = &[
-        (SelectPatternFlavor::SMin, SelectPatternFlavor::SMax),
-        (SelectPatternFlavor::UMin, SelectPatternFlavor::UMax),
-        (SelectPatternFlavor::SMax, SelectPatternFlavor::SMin),
-        (SelectPatternFlavor::UMax, SelectPatternFlavor::UMin),
+        (SelectPatternFlavor::Smin, SelectPatternFlavor::Smax),
+        (SelectPatternFlavor::Umin, SelectPatternFlavor::Umax),
+        (SelectPatternFlavor::Smax, SelectPatternFlavor::Smin),
+        (SelectPatternFlavor::Umax, SelectPatternFlavor::Umin),
     ];
     for (flavor, inverse) in pairs {
         assert_eq!(flavor.inverse_min_max(), Some(*inverse), "{flavor:?}");
@@ -262,21 +262,21 @@ fn inverting_a_floating_point_min_max_swaps_minimum_and_maximum() {
 fn min_max_limit_is_the_extreme_value_of_the_flavor() {
     for width in [1u32, 8, 32, 64] {
         assert_eq!(
-            SelectPatternFlavor::SMax.min_max_limit(width),
+            SelectPatternFlavor::Smax.min_max_limit(width),
             Some(ApInt::signed_max_value(width)),
             "smax tops out at the signed maximum"
         );
         assert_eq!(
-            SelectPatternFlavor::SMin.min_max_limit(width),
+            SelectPatternFlavor::Smin.min_max_limit(width),
             Some(ApInt::signed_min_value(width))
         );
         assert_eq!(
-            SelectPatternFlavor::UMax.min_max_limit(width),
+            SelectPatternFlavor::Umax.min_max_limit(width),
             Some(ApInt::all_ones(width)),
             "getMaxValue is the all-ones pattern"
         );
         assert_eq!(
-            SelectPatternFlavor::UMin.min_max_limit(width),
+            SelectPatternFlavor::Umin.min_max_limit(width),
             Some(ApInt::zero(width))
         );
     }
@@ -301,27 +301,27 @@ fn get_select_pattern_classifies_every_predicate() {
     use IntPredicate as I;
 
     let integer: &[(IntPredicate, SelectPatternFlavor)] = &[
-        (I::Ugt, SelectPatternFlavor::UMax),
-        (I::Uge, SelectPatternFlavor::UMax),
-        (I::Sgt, SelectPatternFlavor::SMax),
-        (I::Sge, SelectPatternFlavor::SMax),
-        (I::Ult, SelectPatternFlavor::UMin),
-        (I::Ule, SelectPatternFlavor::UMin),
-        (I::Slt, SelectPatternFlavor::SMin),
-        (I::Sle, SelectPatternFlavor::SMin),
+        (I::Ugt, SelectPatternFlavor::Umax),
+        (I::Uge, SelectPatternFlavor::Umax),
+        (I::Sgt, SelectPatternFlavor::Smax),
+        (I::Sge, SelectPatternFlavor::Smax),
+        (I::Ult, SelectPatternFlavor::Umin),
+        (I::Ule, SelectPatternFlavor::Umin),
+        (I::Slt, SelectPatternFlavor::Smin),
+        (I::Sle, SelectPatternFlavor::Smin),
     ];
     for (predicate, flavor) in integer {
         // Whatever NaN behaviour is passed in, an integer answer discards it.
         let result = select_pattern(
             CmpPredicate::Int(*predicate),
-            SelectPatternNaNBehavior::ReturnsNaN,
+            SelectPatternNanBehavior::ReturnsNaN,
             true,
         );
         assert_eq!(
             result,
             SelectPatternResult {
                 flavor: *flavor,
-                nan_behavior: SelectPatternNaNBehavior::NotApplicable,
+                nan_behavior: SelectPatternNanBehavior::NotApplicable,
                 ordered: false,
             },
             "{predicate:?}"
@@ -332,7 +332,7 @@ fn get_select_pattern_classifies_every_predicate() {
         assert_eq!(
             select_pattern(
                 CmpPredicate::Int(predicate),
-                SelectPatternNaNBehavior::NotApplicable,
+                SelectPatternNanBehavior::NotApplicable,
                 false,
             )
             .flavor,
@@ -342,26 +342,26 @@ fn get_select_pattern_classifies_every_predicate() {
     }
 
     let float: &[(FloatPredicate, SelectPatternFlavor)] = &[
-        (F::Ugt, SelectPatternFlavor::FMaxNum),
-        (F::Uge, SelectPatternFlavor::FMaxNum),
-        (F::Ogt, SelectPatternFlavor::FMaxNum),
-        (F::Oge, SelectPatternFlavor::FMaxNum),
-        (F::Ult, SelectPatternFlavor::FMinNum),
-        (F::Ule, SelectPatternFlavor::FMinNum),
-        (F::Olt, SelectPatternFlavor::FMinNum),
-        (F::Ole, SelectPatternFlavor::FMinNum),
+        (F::Ugt, SelectPatternFlavor::FmaxNum),
+        (F::Uge, SelectPatternFlavor::FmaxNum),
+        (F::Ogt, SelectPatternFlavor::FmaxNum),
+        (F::Oge, SelectPatternFlavor::FmaxNum),
+        (F::Ult, SelectPatternFlavor::FminNum),
+        (F::Ule, SelectPatternFlavor::FminNum),
+        (F::Olt, SelectPatternFlavor::FminNum),
+        (F::Ole, SelectPatternFlavor::FminNum),
     ];
     for (predicate, flavor) in float {
         let result = select_pattern(
             CmpPredicate::Float(*predicate),
-            SelectPatternNaNBehavior::ReturnsOther,
+            SelectPatternNanBehavior::ReturnsOther,
             true,
         );
         assert_eq!(
             result,
             SelectPatternResult {
                 flavor: *flavor,
-                nan_behavior: SelectPatternNaNBehavior::ReturnsOther,
+                nan_behavior: SelectPatternNanBehavior::ReturnsOther,
                 ordered: true,
             },
             "{predicate:?} carries NaN behaviour and ordering through"
@@ -382,7 +382,7 @@ fn get_select_pattern_classifies_every_predicate() {
         assert_eq!(
             select_pattern(
                 CmpPredicate::Float(predicate),
-                SelectPatternNaNBehavior::NotApplicable,
+                SelectPatternNanBehavior::NotApplicable,
                 false,
             )
             .flavor,
@@ -407,7 +407,7 @@ fn min_max_predicate_round_trips_through_get_select_pattern() {
         }
         for ordered in [false, true] {
             let predicate = flavor.min_max_predicate(ordered).expect("min/max flavour");
-            let back = select_pattern(predicate, SelectPatternNaNBehavior::ReturnsAny, ordered);
+            let back = select_pattern(predicate, SelectPatternNanBehavior::ReturnsAny, ordered);
             assert_eq!(
                 back.flavor, flavor,
                 "{flavor:?} ordered={ordered} did not round trip"

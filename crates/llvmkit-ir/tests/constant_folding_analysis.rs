@@ -198,7 +198,7 @@ fn fp_vector_fadd_folds_elementwise_through_analysis_path() -> Result<(), IrErro
         .as_constant();
 
     let folded = constant_fold_fp_inst_operands(
-        BinaryOpcode::FAdd,
+        BinaryOpcode::Fadd,
         lhs,
         rhs,
         &dl,
@@ -509,10 +509,10 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
         )?,
         Some(bool_ty.const_int(true).as_constant())
     );
-    assert!(constant_fold_unary_op_operand(UnaryOpcode::FNeg, one, &dl)?.is_some());
+    assert!(constant_fold_unary_op_operand(UnaryOpcode::Fneg, one, &dl)?.is_some());
     assert!(
         constant_fold_fp_inst_operands(
-            BinaryOpcode::FAdd,
+            BinaryOpcode::Fadd,
             one,
             two,
             &dl,
@@ -535,7 +535,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
         Some(i16_ty.const_all_ones().as_constant())
     );
     assert_eq!(
-        constant_fold_binary_intrinsic(BinaryIntrinsic::UMax, c7, c7, i32_ty.as_type(), &dl)?,
+        constant_fold_binary_intrinsic(BinaryIntrinsic::Umax, c7, c7, i32_ty.as_type(), &dl)?,
         None
     );
     let one_bits = i32_ty

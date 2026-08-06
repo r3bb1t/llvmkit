@@ -26,11 +26,11 @@ pub enum Linkage {
     /// Keep one copy; ODR not asserted.
     LinkOnceAny,
     /// Keep one copy; ODR asserted.
-    LinkOnceODR,
+    LinkOnceOdr,
     /// Keep one copy; weak.
     WeakAny,
     /// Keep one copy; weak; ODR asserted.
-    WeakODR,
+    WeakOdr,
     /// Special-case linkage for `@llvm.global_ctors` / similar.
     Appending,
     /// Internal to the translation unit.
@@ -62,9 +62,9 @@ impl Linkage {
         Self::External,
         Self::AvailableExternally,
         Self::LinkOnceAny,
-        Self::LinkOnceODR,
+        Self::LinkOnceOdr,
         Self::WeakAny,
-        Self::WeakODR,
+        Self::WeakOdr,
         Self::Appending,
         Self::Internal,
         Self::Private,
@@ -79,9 +79,9 @@ impl Linkage {
             Self::External => "",
             Self::AvailableExternally => "available_externally",
             Self::LinkOnceAny => "linkonce",
-            Self::LinkOnceODR => "linkonce_odr",
+            Self::LinkOnceOdr => "linkonce_odr",
             Self::WeakAny => "weak",
-            Self::WeakODR => "weak_odr",
+            Self::WeakOdr => "weak_odr",
             Self::Appending => "appending",
             Self::Internal => "internal",
             Self::Private => "private",
@@ -388,9 +388,9 @@ mod tests {
                 Linkage::External
                 | Linkage::AvailableExternally
                 | Linkage::LinkOnceAny
-                | Linkage::LinkOnceODR
+                | Linkage::LinkOnceOdr
                 | Linkage::WeakAny
-                | Linkage::WeakODR
+                | Linkage::WeakOdr
                 | Linkage::Appending
                 | Linkage::Internal
                 | Linkage::Private

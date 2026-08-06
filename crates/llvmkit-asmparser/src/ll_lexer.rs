@@ -851,8 +851,8 @@ impl<'src> Lexer<'src> {
                 Token::FloatLit(FpLit::HexHalf(digits))
             }
             b'R' => {
-                self.check_hex16_fits(digits, HexFpKind::BFloat)?;
-                Token::FloatLit(FpLit::HexBFloat(digits))
+                self.check_hex16_fits(digits, HexFpKind::Bfloat)?;
+                Token::FloatLit(FpLit::HexBfloat(digits))
             }
             _ => unreachable!(),
         };
@@ -1003,7 +1003,7 @@ impl<'src> Lexer<'src> {
                 Some("VIRTUALITY") => Token::DwarfVirtuality(s),
                 Some("LANG") => Token::DwarfLang(s),
                 Some("LNAME") => Token::DwarfSourceLangName(s),
-                Some("CC") => Token::DwarfCC(s),
+                Some("CC") => Token::DwarfCc(s),
                 Some("OP") => Token::DwarfOp(s),
                 Some("MACINFO") => Token::DwarfMacinfo(s),
                 Some("APPLE") if rest.starts_with("APPLE_ENUM_KIND_") => Token::DwarfEnumKind(s),

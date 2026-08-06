@@ -41,7 +41,7 @@ use core::marker::PhantomData;
 use super::align::{Align, MaybeAlign};
 use super::array_len::ArrayLen;
 use super::atomic_ordering::AtomicOrdering;
-use super::atomicrmw_binop::AtomicRMWBinOp;
+use super::atomicrmw_binop::AtomicRmwBinOp;
 use super::basic_block::{
     BasicBlock, BasicBlockLabel, BlockCall, IntoBasicBlockLabel, block_parameter_phis,
     require_no_block_parameters,
@@ -57,7 +57,7 @@ use super::constants::ConstantExprOptions;
 use super::derived_types::{FloatType, FunctionType, IntType, PointerType, StructType};
 use super::element::{ElemDyn, StaticVecElem, VecElem, WrapWitness};
 use super::error::{IrError, IrResult, TypeKindLabel};
-use super::float_kind::{BFloat, Fp128, Half, PpcFp128, StaticFloatKind, X86Fp80};
+use super::float_kind::{Bfloat, Fp128, Half, PpcFp128, StaticFloatKind, X86Fp80};
 use super::float_kind::{FloatDyn, FloatKind, FloatWiderThan, IntoFloatValue};
 use super::fmf::FastMathFlags;
 use super::function::{FunctionValue, IntoCallee};
@@ -70,15 +70,15 @@ use super::gep_no_wrap_flags::GepNoWrapFlags;
 use super::inline_asm::InlineAsm;
 use super::instr_types::FnegInstData;
 use super::instr_types::{
-    AShrFlags, AddFlags, AllocaFlags, AllocaInstData, AtomicCmpXchgConfig, AtomicCmpXchgInstData,
-    AtomicRMWConfig, AtomicRMWInstData, BranchInstData, BranchKind, CallBrInstData, CallInstData,
+    AddFlags, AllocaFlags, AllocaInstData, AshrFlags, AtomicCmpXchgConfig, AtomicCmpXchgInstData,
+    AtomicRmwConfig, AtomicRmwInstData, BranchInstData, BranchKind, CallBrInstData, CallInstData,
     CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
     CleanupReturnInstData, CmpInstData, ExtractElementInstData, ExtractValueInstData, FcmpInstData,
     FenceInstData, FreezeInstData, GepInstData, IcmpFlags, IndirectBrInstData,
     InsertElementInstData, InsertValueInstData, IntBinOpFlags, IntCastFlags, InvokeInstData,
-    LShrFlags, LandingPadInstData, MulFlags, OrFlags, PhiData, ResumeInstData, SDivFlags,
+    LandingPadInstData, LshrFlags, MulFlags, OrFlags, PhiData, ResumeInstData, SdivFlags,
     SelectInstData, ShlFlags, ShuffleVectorInstData, SubFlags, SwitchInstData, TailCallKind,
-    TruncFlags, UDivFlags, UiToFpFlags, UnreachableInstData, VaArgInstData, WriteBinopFlags,
+    TruncFlags, UdivFlags, UiToFpFlags, UnreachableInstData, VaArgInstData, WriteBinopFlags,
     ZextFlags,
 };
 use super::instr_types::{
@@ -116,7 +116,7 @@ use super::value::{
     Value, ValueKindData, ValueSlot, ValueUse, VectorValue,
 };
 use super::value_id::{
-    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
+    AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
     FreezeInstId, IntValueId, IntrinsicInstId, OtherPhiInstId, PhiInstId, PointerPhiInstId,
     PointerValueId, TypedCallInstId, VaArgInstId, ValueId, ViewIn,
 };
@@ -1281,11 +1281,11 @@ where
         Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.int_binop(
-            BinaryOpcode::UDiv,
+            BinaryOpcode::Udiv,
             lhs,
             rhs,
             name,
-            InstructionKindData::UDiv,
+            InstructionKindData::Udiv,
         )
         .map(|v| v.id())
     }
@@ -1304,11 +1304,11 @@ where
         Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.int_binop(
-            BinaryOpcode::SDiv,
+            BinaryOpcode::Sdiv,
             lhs,
             rhs,
             name,
-            InstructionKindData::SDiv,
+            InstructionKindData::Sdiv,
         )
         .map(|v| v.id())
     }
@@ -1327,11 +1327,11 @@ where
         Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.int_binop(
-            BinaryOpcode::URem,
+            BinaryOpcode::Urem,
             lhs,
             rhs,
             name,
-            InstructionKindData::URem,
+            InstructionKindData::Urem,
         )
         .map(|v| v.id())
     }
@@ -1350,11 +1350,11 @@ where
         Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.int_binop(
-            BinaryOpcode::SRem,
+            BinaryOpcode::Srem,
             lhs,
             rhs,
             name,
-            InstructionKindData::SRem,
+            InstructionKindData::Srem,
         )
         .map(|v| v.id())
     }
@@ -1397,11 +1397,11 @@ where
         Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.int_binop(
-            BinaryOpcode::LShr,
+            BinaryOpcode::Lshr,
             lhs,
             rhs,
             name,
-            InstructionKindData::LShr,
+            InstructionKindData::Lshr,
         )
         .map(|v| v.id())
     }
@@ -1420,11 +1420,11 @@ where
         Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.int_binop(
-            BinaryOpcode::AShr,
+            BinaryOpcode::Ashr,
             lhs,
             rhs,
             name,
-            InstructionKindData::AShr,
+            InstructionKindData::Ashr,
         )
         .map(|v| v.id())
     }
@@ -1610,12 +1610,12 @@ where
         .map(|v| v.id())
     }
 
-    /// Produce `udiv lhs, rhs` with explicit [`crate::UDivFlags`].
+    /// Produce `udiv lhs, rhs` with explicit [`crate::UdivFlags`].
     pub fn int_udiv_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: UDivFlags,
+        flags: UdivFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1625,22 +1625,22 @@ where
         Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.int_binop_flagged(
-            BinaryOpcode::UDiv,
+            BinaryOpcode::Udiv,
             lhs,
             rhs,
             name,
             flags,
-            InstructionKindData::UDiv,
+            InstructionKindData::Udiv,
         )
         .map(|v| v.id())
     }
 
-    /// Produce `sdiv lhs, rhs` with explicit [`crate::SDivFlags`].
+    /// Produce `sdiv lhs, rhs` with explicit [`crate::SdivFlags`].
     pub fn int_sdiv_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: SDivFlags,
+        flags: SdivFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1650,22 +1650,22 @@ where
         Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.int_binop_flagged(
-            BinaryOpcode::SDiv,
+            BinaryOpcode::Sdiv,
             lhs,
             rhs,
             name,
             flags,
-            InstructionKindData::SDiv,
+            InstructionKindData::Sdiv,
         )
         .map(|v| v.id())
     }
 
-    /// Produce `lshr lhs, rhs` with explicit [`crate::LShrFlags`].
+    /// Produce `lshr lhs, rhs` with explicit [`crate::LshrFlags`].
     pub fn int_lshr_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: LShrFlags,
+        flags: LshrFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1675,22 +1675,22 @@ where
         Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.int_binop_flagged(
-            BinaryOpcode::LShr,
+            BinaryOpcode::Lshr,
             lhs,
             rhs,
             name,
             flags,
-            InstructionKindData::LShr,
+            InstructionKindData::Lshr,
         )
         .map(|v| v.id())
     }
 
-    /// Produce `ashr lhs, rhs` with explicit [`crate::AShrFlags`].
+    /// Produce `ashr lhs, rhs` with explicit [`crate::AshrFlags`].
     pub fn int_ashr_with_flags<W, Lhs, Rhs, Name>(
         &self,
         lhs: Lhs,
         rhs: Rhs,
-        flags: AShrFlags,
+        flags: AshrFlags,
         name: Name,
     ) -> IrResult<IntValueId<W, B>>
     where
@@ -1700,12 +1700,12 @@ where
         Rhs: IntoIntValue<'ctx, W, B>,
     {
         self.int_binop_flagged(
-            BinaryOpcode::AShr,
+            BinaryOpcode::Ashr,
             lhs,
             rhs,
             name,
             flags,
-            InstructionKindData::AShr,
+            InstructionKindData::Ashr,
         )
         .map(|v| v.id())
     }
@@ -2019,7 +2019,7 @@ where
     {
         if !matches!(
             opcode,
-            CastOpcode::Trunc | CastOpcode::ZExt | CastOpcode::SExt
+            CastOpcode::Trunc | CastOpcode::Zext | CastOpcode::Sext
         ) {
             return Err(IrError::InvalidOperation {
                 message: "opcode is not trunc, zext or sext",
@@ -2043,7 +2043,7 @@ where
         }
         // `castIsValid` requires a strict change in width for all three; equal
         // widths would be a no-op cast, which upstream spells as no cast.
-        let widens = matches!(opcode, CastOpcode::ZExt | CastOpcode::SExt);
+        let widens = matches!(opcode, CastOpcode::Zext | CastOpcode::Sext);
         if (widens && dst_bits <= src_bits) || (!widens && dst_bits >= src_bits) {
             return Err(IrError::OperandWidthMismatch {
                 lhs: src_bits,
@@ -2099,7 +2099,7 @@ where
         let mut payload = CmpInstData::new(pred, lhs.id, rhs.id);
         payload.samesign = flags.samesign;
         let inst =
-            self.append_instruction(result_ty.id(), InstructionKindData::ICmp(payload), name);
+            self.append_instruction(result_ty.id(), InstructionKindData::Icmp(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -2202,7 +2202,7 @@ where
         matches!(
             scalar,
             TypeData::Half
-                | TypeData::BFloat
+                | TypeData::Bfloat
                 | TypeData::Float
                 | TypeData::Double
                 | TypeData::X86Fp80
@@ -2305,7 +2305,7 @@ where
         let mut payload = FcmpInstData::new(predicate, lhs.id, rhs.id);
         payload.fmf = fmf;
         let inst =
-            self.append_instruction(result_ty.id(), InstructionKindData::FCmp(payload), name);
+            self.append_instruction(result_ty.id(), InstructionKindData::Fcmp(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -2331,13 +2331,13 @@ where
         }
         if let Some(folded) = self
             .folder
-            .fold_un_op_fmf_dyn(UnaryOpcode::FNeg, value, fmf)?
+            .fold_un_op_fmf_dyn(UnaryOpcode::Fneg, value, fmf)?
         {
             return Ok(self.checked_folded_value(folded, value.ty)?.id());
         }
         let payload = FnegInstData::new(value.slot(), fmf);
         let inst =
-            self.append_instruction(value.ty().id(), InstructionKindData::FNeg(payload), name);
+            self.append_instruction(value.ty().id(), InstructionKindData::Fneg(payload), name);
         Ok(inst.to_erased().id())
     }
 
@@ -2497,11 +2497,11 @@ where
         let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.int_binop_dyn(
-            BinaryOpcode::LShr,
+            BinaryOpcode::Lshr,
             lhs,
             rhs,
             name,
-            InstructionKindData::LShr,
+            InstructionKindData::Lshr,
         )
         .map(|v| v.id())
     }
@@ -2522,11 +2522,11 @@ where
         let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.int_binop_dyn(
-            BinaryOpcode::AShr,
+            BinaryOpcode::Ashr,
             lhs,
             rhs,
             name,
-            InstructionKindData::AShr,
+            InstructionKindData::Ashr,
         )
         .map(|v| v.id())
     }
@@ -2547,11 +2547,11 @@ where
         let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.int_binop_dyn(
-            BinaryOpcode::UDiv,
+            BinaryOpcode::Udiv,
             lhs,
             rhs,
             name,
-            InstructionKindData::UDiv,
+            InstructionKindData::Udiv,
         )
         .map(|v| v.id())
     }
@@ -2572,11 +2572,11 @@ where
         let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.int_binop_dyn(
-            BinaryOpcode::SDiv,
+            BinaryOpcode::Sdiv,
             lhs,
             rhs,
             name,
-            InstructionKindData::SDiv,
+            InstructionKindData::Sdiv,
         )
         .map(|v| v.id())
     }
@@ -2597,11 +2597,11 @@ where
         let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.int_binop_dyn(
-            BinaryOpcode::URem,
+            BinaryOpcode::Urem,
             lhs,
             rhs,
             name,
-            InstructionKindData::URem,
+            InstructionKindData::Urem,
         )
         .map(|v| v.id())
     }
@@ -2622,11 +2622,11 @@ where
         let lhs = lhs.into_erased_value(ModuleRef::new(self.module))?;
         let rhs = rhs.into_erased_value(ModuleRef::new(self.module))?;
         self.int_binop_dyn(
-            BinaryOpcode::SRem,
+            BinaryOpcode::Srem,
             lhs,
             rhs,
             name,
-            InstructionKindData::SRem,
+            InstructionKindData::Srem,
         )
         .map(|v| v.id())
     }
@@ -2666,11 +2666,11 @@ where
         Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.fp_binop(
-            BinaryOpcode::FAdd,
+            BinaryOpcode::Fadd,
             lhs,
             rhs,
             name,
-            InstructionKindData::FAdd,
+            InstructionKindData::Fadd,
         )
         .map(|v| v.id())
     }
@@ -2689,11 +2689,11 @@ where
         Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.fp_binop(
-            BinaryOpcode::FSub,
+            BinaryOpcode::Fsub,
             lhs,
             rhs,
             name,
-            InstructionKindData::FSub,
+            InstructionKindData::Fsub,
         )
         .map(|v| v.id())
     }
@@ -2712,11 +2712,11 @@ where
         Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.fp_binop(
-            BinaryOpcode::FMul,
+            BinaryOpcode::Fmul,
             lhs,
             rhs,
             name,
-            InstructionKindData::FMul,
+            InstructionKindData::Fmul,
         )
         .map(|v| v.id())
     }
@@ -2735,11 +2735,11 @@ where
         Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.fp_binop(
-            BinaryOpcode::FDiv,
+            BinaryOpcode::Fdiv,
             lhs,
             rhs,
             name,
-            InstructionKindData::FDiv,
+            InstructionKindData::Fdiv,
         )
         .map(|v| v.id())
     }
@@ -2758,11 +2758,11 @@ where
         Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.fp_binop(
-            BinaryOpcode::FRem,
+            BinaryOpcode::Frem,
             lhs,
             rhs,
             name,
-            InstructionKindData::FRem,
+            InstructionKindData::Frem,
         )
         .map(|v| v.id())
     }
@@ -2842,12 +2842,12 @@ where
         Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.fp_binop_with_fmf(
-            BinaryOpcode::FAdd,
+            BinaryOpcode::Fadd,
             lhs,
             rhs,
             fmf,
             name,
-            InstructionKindData::FAdd,
+            InstructionKindData::Fadd,
         )
         .map(|v| v.id())
     }
@@ -2867,12 +2867,12 @@ where
         Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.fp_binop_with_fmf(
-            BinaryOpcode::FSub,
+            BinaryOpcode::Fsub,
             lhs,
             rhs,
             fmf,
             name,
-            InstructionKindData::FSub,
+            InstructionKindData::Fsub,
         )
         .map(|v| v.id())
     }
@@ -2892,12 +2892,12 @@ where
         Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.fp_binop_with_fmf(
-            BinaryOpcode::FMul,
+            BinaryOpcode::Fmul,
             lhs,
             rhs,
             fmf,
             name,
-            InstructionKindData::FMul,
+            InstructionKindData::Fmul,
         )
         .map(|v| v.id())
     }
@@ -2917,12 +2917,12 @@ where
         Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.fp_binop_with_fmf(
-            BinaryOpcode::FDiv,
+            BinaryOpcode::Fdiv,
             lhs,
             rhs,
             fmf,
             name,
-            InstructionKindData::FDiv,
+            InstructionKindData::Fdiv,
         )
         .map(|v| v.id())
     }
@@ -2942,12 +2942,12 @@ where
         Rhs: IntoFloatValue<'ctx, K, B>,
     {
         self.fp_binop_with_fmf(
-            BinaryOpcode::FRem,
+            BinaryOpcode::Frem,
             lhs,
             rhs,
             fmf,
             name,
-            InstructionKindData::FRem,
+            InstructionKindData::Frem,
         )
         .map(|v| v.id())
     }
@@ -2977,7 +2977,7 @@ where
         let mut payload = FcmpInstData::new(pred, lhs.slot(), rhs.slot());
         payload.fmf = fmf;
         Ok(self
-            .append_int_at(i1, InstructionKindData::FCmp(payload), name)
+            .append_int_at(i1, InstructionKindData::Fcmp(payload), name)
             .id())
     }
 
@@ -3006,7 +3006,7 @@ where
         // Apply builder-context FMF (`fcmp` is an `FPMathOperator` upstream).
         payload.fmf = self.fmf;
         Ok(self
-            .append_int_at(i1, InstructionKindData::FCmp(payload), name)
+            .append_int_at(i1, InstructionKindData::Fcmp(payload), name)
             .id())
     }
 
@@ -3269,12 +3269,12 @@ where
         V: IntoFloatValue<'ctx, K, B>,
     {
         let v = value.into_float_value(ModuleRef::new(self.module))?;
-        if let Some(folded) = self.folder.fold_fp_un_op(UnaryOpcode::FNeg, v, fmf)? {
+        if let Some(folded) = self.folder.fold_fp_un_op(UnaryOpcode::Fneg, v, fmf)? {
             return self.accept_folded_fp(folded, v).map(|v| v.id());
         }
         let payload = FnegInstData::new(v.slot(), fmf);
         Ok(self
-            .append_fp_like(v, InstructionKindData::FNeg(payload), name)
+            .append_fp_like(v, InstructionKindData::Fneg(payload), name)
             .id())
     }
 
@@ -3310,7 +3310,7 @@ where
         let list_ptr = list_ptr.into_pointer_value(ModuleRef::new(self.module))?;
         let v = IsValue::as_erased(list_ptr);
         let payload = VaArgInstData::new(v.id);
-        let inst = self.append_instruction(result_ty.id, InstructionKindData::VAArg(payload), name);
+        let inst = self.append_instruction(result_ty.id, InstructionKindData::VaArg(payload), name);
         Ok(VaArgInstId::from_raw(self.module.id(), inst.slot()))
     }
 
@@ -3779,11 +3779,11 @@ where
         Name: AsRef<str>,
     {
         self.vector_int_binop(
-            BinaryOpcode::LShr,
+            BinaryOpcode::Lshr,
             lhs,
             rhs,
             name,
-            InstructionKindData::LShr,
+            InstructionKindData::Lshr,
         )
     }
 
@@ -3800,11 +3800,11 @@ where
         Name: AsRef<str>,
     {
         self.vector_int_binop(
-            BinaryOpcode::AShr,
+            BinaryOpcode::Ashr,
             lhs,
             rhs,
             name,
-            InstructionKindData::AShr,
+            InstructionKindData::Ashr,
         )
     }
 
@@ -3996,15 +3996,15 @@ where
     /// `IRBuilder::CreateAtomicRMW`.
     ///
     /// Result type matches the value-operand type (the "old" value). Named by
-    /// the storable [`AtomicRMWInstId<B>`](crate::AtomicRMWInstId).
+    /// the storable [`AtomicRmwInstId<B>`](crate::AtomicRmwInstId).
     pub fn atomicrmw<P, V, Name>(
         &self,
-        op: AtomicRMWBinOp,
+        op: AtomicRmwBinOp,
         ptr: P,
         value: V,
-        config: AtomicRMWConfig,
+        config: AtomicRmwConfig,
         name: Name,
-    ) -> IrResult<AtomicRMWInstId<B>>
+    ) -> IrResult<AtomicRmwInstId<B>>
     where
         Name: AsRef<str>,
         P: IntoErasedValue<'ctx, B>,
@@ -4012,9 +4012,9 @@ where
     {
         let p = ptr.into_erased_value(ModuleRef::new(self.module))?;
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
-        let payload = AtomicRMWInstData::new(op, p.id, v.id, config);
-        let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRMW(payload), name);
-        Ok(AtomicRMWInstId::from_raw(self.module.id(), inst.slot()))
+        let payload = AtomicRmwInstData::new(op, p.id, v.id, config);
+        let inst = self.append_instruction(v.ty, InstructionKindData::AtomicRmw(payload), name);
+        Ok(AtomicRmwInstId::from_raw(self.module.id(), inst.slot()))
     }
 
     // ---- Casts: trunc / zext / sext ----
@@ -4124,11 +4124,11 @@ where
         let value = value.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) =
             self.folder
-                .fold_cast_to_int(CastOpcode::ZExt, value.as_erased(), dst_ty)?
+                .fold_cast_to_int(CastOpcode::Zext, value.as_erased(), dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(CastOpcode::ZExt, value.slot());
+        let payload = CastOpData::new(CastOpcode::Zext, value.slot());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -4156,11 +4156,11 @@ where
         let value = value.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) =
             self.folder
-                .fold_cast_to_int(CastOpcode::ZExt, value.as_erased(), dst_ty)?
+                .fold_cast_to_int(CastOpcode::Zext, value.as_erased(), dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(CastOpcode::ZExt, value.slot());
+        let payload = CastOpData::new(CastOpcode::Zext, value.slot());
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
@@ -4188,11 +4188,11 @@ where
         let value = value.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) =
             self.folder
-                .fold_cast_to_int(CastOpcode::SExt, value.as_erased(), dst_ty)?
+                .fold_cast_to_int(CastOpcode::Sext, value.as_erased(), dst_ty)?
         {
             return self.accept_folded_cast_int(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(CastOpcode::SExt, value.slot());
+        let payload = CastOpData::new(CastOpcode::Sext, value.slot());
         Ok(self
             .append_int_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -4287,7 +4287,7 @@ where
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        self.int_extend_dyn(value, dst_ty, name, CastOpcode::ZExt)
+        self.int_extend_dyn(value, dst_ty, name, CastOpcode::Zext)
             .map(|v| v.id())
     }
 
@@ -4316,12 +4316,12 @@ where
         }
         if let Some(folded) =
             self.folder
-                .fold_cast_dyn(CastOpcode::ZExt, src.as_erased(), dst.as_type())?
+                .fold_cast_dyn(CastOpcode::Zext, src.as_erased(), dst.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
             return Ok(IntValue::<IntDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(CastOpcode::ZExt, src.slot());
+        let payload = CastOpData::new(CastOpcode::Zext, src.slot());
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_int_at(dst, InstructionKindData::Cast(payload), name)
@@ -4342,7 +4342,7 @@ where
         V: IntoIntValue<'ctx, IntDyn, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        self.int_extend_dyn(value, dst_ty, name, CastOpcode::SExt)
+        self.int_extend_dyn(value, dst_ty, name, CastOpcode::Sext)
             .map(|v| v.id())
     }
 
@@ -5936,7 +5936,7 @@ where
         V: IntoFloatValue<'ctx, K, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
-        self.fp_to_int(value, dst_ty, name, CastOpcode::FpToUI)
+        self.fp_to_int(value, dst_ty, name, CastOpcode::FpToUi)
             .map(|v| v.id())
     }
 
@@ -5955,7 +5955,7 @@ where
         V: IntoFloatValue<'ctx, K, B>,
     {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
-        self.fp_to_int(value, dst_ty, name, CastOpcode::FpToSI)
+        self.fp_to_int(value, dst_ty, name, CastOpcode::FpToSi)
             .map(|v| v.id())
     }
 
@@ -5994,7 +5994,7 @@ where
         V: IntoIntValue<'ctx, W, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        self.int_to_fp(value, dst_ty, name, CastOpcode::UIToFp)
+        self.int_to_fp(value, dst_ty, name, CastOpcode::UiToFp)
             .map(|v| v.id())
     }
 
@@ -6016,10 +6016,10 @@ where
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
         let v = value.as_erased();
-        if let Some(folded) = self.folder.fold_cast_to_fp(CastOpcode::UIToFp, v, dst_ty)? {
+        if let Some(folded) = self.folder.fold_cast_to_fp(CastOpcode::UiToFp, v, dst_ty)? {
             return self.accept_folded_cast_fp(folded, dst_ty).map(|v| v.id());
         }
-        let payload = CastOpData::new(CastOpcode::UIToFp, v.id);
+        let payload = CastOpData::new(CastOpcode::UiToFp, v.id);
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
@@ -6041,7 +6041,7 @@ where
         V: IntoIntValue<'ctx, W, B>,
     {
         let value = value.into_int_value(ModuleRef::new(self.module))?;
-        self.int_to_fp(value, dst_ty, name, CastOpcode::SIToFp)
+        self.int_to_fp(value, dst_ty, name, CastOpcode::SiToFp)
             .map(|v| v.id())
     }
 
@@ -6062,12 +6062,12 @@ where
         let src = src.into_int_value(ModuleRef::new(self.module))?;
         if let Some(folded) =
             self.folder
-                .fold_cast_dyn(CastOpcode::UIToFp, src.as_erased(), dst.as_type())?
+                .fold_cast_dyn(CastOpcode::UiToFp, src.as_erased(), dst.as_type())?
         {
             let folded = self.checked_folded_value(folded, dst.as_type().id())?;
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
-        let payload = CastOpData::new(CastOpcode::UIToFp, src.slot());
+        let payload = CastOpData::new(CastOpcode::UiToFp, src.slot());
         payload.nneg.set(flags.nneg);
         Ok(self
             .append_fp_at(dst, InstructionKindData::Cast(payload), name)
@@ -6516,7 +6516,7 @@ where
         let payload = super::instr_types::CmpInstData::new(pred, lhs.slot(), rhs.slot());
         let i1 = ModuleView::<B>::new(self.module).bool_type();
         Ok(self
-            .append_int_at(i1, InstructionKindData::ICmp(payload), name)
+            .append_int_at(i1, InstructionKindData::Icmp(payload), name)
             .id())
     }
 
@@ -6657,7 +6657,7 @@ where
         }
         let payload = CmpInstData::new(pred, lhs.slot(), rhs.slot());
         Ok(self
-            .append_int_at(i1, InstructionKindData::ICmp(payload), name)
+            .append_int_at(i1, InstructionKindData::Icmp(payload), name)
             .id())
     }
 
@@ -6693,7 +6693,7 @@ where
         let mut payload = CmpInstData::new(predicate, lhs.slot(), rhs.slot());
         payload.samesign = flags.samesign;
         Ok(self
-            .append_int_at(i1, InstructionKindData::ICmp(payload), name)
+            .append_int_at(i1, InstructionKindData::Icmp(payload), name)
             .id())
     }
 
@@ -6722,7 +6722,7 @@ where
         let mut payload = CmpInstData::new(pred, lhs.slot(), rhs.slot());
         payload.samesign = flags.samesign;
         Ok(self
-            .append_int_at(i1, InstructionKindData::ICmp(payload), name)
+            .append_int_at(i1, InstructionKindData::Icmp(payload), name)
             .id())
     }
 
@@ -9187,7 +9187,7 @@ macro_rules! impl_into_return_value_float {
         }
     )+ };
 }
-impl_into_return_value_float!(f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
+impl_into_return_value_float!(f32, f64, Half, Bfloat, Fp128, X86Fp80, PpcFp128, FloatDyn,);
 
 // Pointer-marker impl: `Ptr` accepts any pointer-valued operand source.
 impl<'ctx, B: ModuleBrand + 'ctx, V> IntoReturnValue<'ctx, Ptr, B> for V
@@ -10235,11 +10235,11 @@ where
 /// away.
 fn fp_binop_kind_ctor(opcode: BinaryOpcode) -> Option<fn(BinaryOpData) -> InstructionKindData> {
     Some(match opcode {
-        BinaryOpcode::FAdd => InstructionKindData::FAdd,
-        BinaryOpcode::FSub => InstructionKindData::FSub,
-        BinaryOpcode::FMul => InstructionKindData::FMul,
-        BinaryOpcode::FDiv => InstructionKindData::FDiv,
-        BinaryOpcode::FRem => InstructionKindData::FRem,
+        BinaryOpcode::Fadd => InstructionKindData::Fadd,
+        BinaryOpcode::Fsub => InstructionKindData::Fsub,
+        BinaryOpcode::Fmul => InstructionKindData::Fmul,
+        BinaryOpcode::Fdiv => InstructionKindData::Fdiv,
+        BinaryOpcode::Frem => InstructionKindData::Frem,
         _ => return None,
     })
 }
@@ -10249,21 +10249,21 @@ fn int_binop_kind_ctor(opcode: BinaryOpcode) -> Option<fn(BinaryOpData) -> Instr
         BinaryOpcode::Add => InstructionKindData::Add,
         BinaryOpcode::Sub => InstructionKindData::Sub,
         BinaryOpcode::Mul => InstructionKindData::Mul,
-        BinaryOpcode::UDiv => InstructionKindData::UDiv,
-        BinaryOpcode::SDiv => InstructionKindData::SDiv,
-        BinaryOpcode::URem => InstructionKindData::URem,
-        BinaryOpcode::SRem => InstructionKindData::SRem,
+        BinaryOpcode::Udiv => InstructionKindData::Udiv,
+        BinaryOpcode::Sdiv => InstructionKindData::Sdiv,
+        BinaryOpcode::Urem => InstructionKindData::Urem,
+        BinaryOpcode::Srem => InstructionKindData::Srem,
         BinaryOpcode::Shl => InstructionKindData::Shl,
-        BinaryOpcode::LShr => InstructionKindData::LShr,
-        BinaryOpcode::AShr => InstructionKindData::AShr,
+        BinaryOpcode::Lshr => InstructionKindData::Lshr,
+        BinaryOpcode::Ashr => InstructionKindData::Ashr,
         BinaryOpcode::And => InstructionKindData::And,
         BinaryOpcode::Or => InstructionKindData::Or,
         BinaryOpcode::Xor => InstructionKindData::Xor,
-        BinaryOpcode::FAdd
-        | BinaryOpcode::FSub
-        | BinaryOpcode::FMul
-        | BinaryOpcode::FDiv
-        | BinaryOpcode::FRem => return None,
+        BinaryOpcode::Fadd
+        | BinaryOpcode::Fsub
+        | BinaryOpcode::Fmul
+        | BinaryOpcode::Fdiv
+        | BinaryOpcode::Frem => return None,
     })
 }
 

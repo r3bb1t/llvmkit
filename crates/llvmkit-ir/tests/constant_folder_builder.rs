@@ -11,7 +11,7 @@ use llvmkit_ir::{
     BinaryIntrinsic, BinaryOpcode, CastKind, Constant, ConstantFloatValue, ConstantFolder,
     ConstantIntValue, Dyn, GepNoWrapFlags, InstructionKind, InstructionView, IntDyn, IntPredicate,
     IntValue, IntValueId, IntWidth, IrBuilder, IrBuilderFolder, IrError, IrResult, Linkage,
-    ModuleBrand, MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type, UDivFlags, Value,
+    ModuleBrand, MulFlags, NoFolder, OverflowFlags, PointerValue, ShlFlags, Type, UdivFlags, Value,
     constant_fold_binary_instruction, module_new,
 };
 use llvmkit_macros::Branded;
@@ -139,7 +139,7 @@ fn constant_folder_exact_udiv_inexact_constants_match_upstream_plain_fold() -> R
     let result = b.int_udiv_with_flags::<i32, _, _, _>(
         i32_ty.const_int(7_i32),
         i32_ty.const_int(3_i32),
-        UDivFlags::new().exact(),
+        UdivFlags::new().exact(),
         "q",
     )?;
 
@@ -244,7 +244,7 @@ fn constant_folder_binary_intrinsic_declines() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     assert_eq!(
         ConstantFolder.fold_binary_intrinsic_dyn(
-            BinaryIntrinsic::UMax,
+            BinaryIntrinsic::Umax,
             i32_ty.const_int(1_i32).as_erased(),
             i32_ty.const_int(2_i32).as_erased(),
             i32_ty.as_type(),
@@ -631,7 +631,7 @@ fn no_folder_emits_udiv_instruction_for_constants() -> Result<(), IrError> {
 
     let result = b.int_udiv::<i32, _, _, _>(lhs, rhs, "q")?;
     let instruction = InstructionView::try_from(b.view(result).as_erased())?;
-    let Some(InstructionKind::UDiv(udiv)) = instruction.kind() else {
+    let Some(InstructionKind::Udiv(udiv)) = instruction.kind() else {
         panic!("expected udiv instruction");
     };
 
@@ -694,7 +694,7 @@ fn no_folder_emits_pointer_cmp_instruction_for_constant_nulls() -> Result<(), Ir
 
     let result = b.pointer_cmp(IntPredicate::Eq, null, null, "isn")?;
     let instruction = InstructionView::try_from(b.view(result).as_erased())?;
-    let Some(InstructionKind::ICmp(icmp)) = instruction.kind() else {
+    let Some(InstructionKind::Icmp(icmp)) = instruction.kind() else {
         panic!("expected icmp instruction");
     };
 

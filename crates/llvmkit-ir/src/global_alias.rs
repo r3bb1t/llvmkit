@@ -489,9 +489,9 @@ pub const fn is_valid_alias_linkage(linkage: Linkage) -> bool {
         Linkage::External
             | Linkage::AvailableExternally
             | Linkage::LinkOnceAny
-            | Linkage::LinkOnceODR
+            | Linkage::LinkOnceOdr
             | Linkage::WeakAny
-            | Linkage::WeakODR
+            | Linkage::WeakOdr
             | Linkage::Internal
             | Linkage::Private
             | Linkage::ExternalWeak

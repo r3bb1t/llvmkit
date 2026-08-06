@@ -244,7 +244,7 @@ where
         ValueKindData::Argument { .. }
         | ValueKindData::Function(_)
         | ValueKindData::GlobalAlias(_)
-        | ValueKindData::GlobalIFunc(_)
+        | ValueKindData::GlobalIfunc(_)
         | ValueKindData::GlobalVariable(_) => insert_affected(value),
         ValueKindData::Instruction(_) => {
             insert_affected(value);
@@ -950,7 +950,7 @@ fn logical_select_operands<'ctx, B: ModuleBrand + 'ctx>(
 fn int_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<IntCompareParts<'ctx, B>> {
-    let InstructionKindData::ICmp(data) = instruction_kind(value)? else {
+    let InstructionKindData::Icmp(data) = instruction_kind(value)? else {
         return None;
     };
     Some(IntCompareParts {
@@ -964,7 +964,7 @@ fn int_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
 fn float_compare_operands<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<(Value<'ctx, B>, Value<'ctx, B>)> {
-    let InstructionKindData::FCmp(data) = instruction_kind(value)? else {
+    let InstructionKindData::Fcmp(data) = instruction_kind(value)? else {
         return None;
     };
     Some((
@@ -1045,8 +1045,8 @@ fn shift_by_constant<'ctx, B: ModuleBrand + 'ctx>(
 ) -> Option<(Value<'ctx, B>, ApInt)> {
     let data = match instruction_kind(value)? {
         InstructionKindData::Shl(data)
-        | InstructionKindData::LShr(data)
-        | InstructionKindData::AShr(data) => data,
+        | InstructionKindData::Lshr(data)
+        | InstructionKindData::Ashr(data) => data,
         _ => return None,
     };
     let amount = constant_int(value_from_slot(value, data.rhs.get()))?;
@@ -1111,7 +1111,7 @@ fn add_like_by_constant<'ctx, B: ModuleBrand + 'ctx>(
 fn float_negation_source<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<Value<'ctx, B>> {
-    let InstructionKindData::FNeg(data) = instruction_kind(value)? else {
+    let InstructionKindData::Fneg(data) = instruction_kind(value)? else {
         return None;
     };
     Some(value_from_slot(value, data.src.get()))

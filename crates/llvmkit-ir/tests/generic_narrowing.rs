@@ -27,7 +27,7 @@
 //! (`Type::isIntegerTy` / `Type::isFloatingPointTy` predicate failure).
 
 use llvmkit_ir::{
-    ApFloat, ApFloatSemantics, ApFloatSign, BFloat, FloatDyn, FloatKind, FloatValue, Fp128, Half,
+    ApFloat, ApFloatSemantics, ApFloatSign, Bfloat, FloatDyn, FloatKind, FloatValue, Fp128, Half,
     IntDyn, IntValue, IntWidth, IrError, IrResult, ModuleBrand, PpcFp128, TypeKindLabel, Value,
     Width, X86Fp80, module_new,
 };
@@ -190,7 +190,7 @@ fn narrow_generic_float_accepts_every_marker_family() -> Result<(), IrError> {
         .as_erased();
     let bfloat_v = m
         .bfloat_type()
-        .const_ap_float(&zero(ApFloatSemantics::BFloat))?
+        .const_ap_float(&zero(ApFloatSemantics::Bfloat))?
         .as_erased();
     let fp128_v = m
         .fp128_type()
@@ -214,7 +214,7 @@ fn narrow_generic_float_accepts_every_marker_family() -> Result<(), IrError> {
     // Every marker the `decl_struct_kind!` macro expands.
     let c: FloatValue<'_, Half, _> = narrow_generic_float::<Half, _>(half_v)?;
     assert_eq!(c.as_erased(), half_v);
-    let d: FloatValue<'_, BFloat, _> = narrow_generic_float::<BFloat, _>(bfloat_v)?;
+    let d: FloatValue<'_, Bfloat, _> = narrow_generic_float::<Bfloat, _>(bfloat_v)?;
     assert_eq!(d.as_erased(), bfloat_v);
     let e: FloatValue<'_, Fp128, _> = narrow_generic_float::<Fp128, _>(fp128_v)?;
     assert_eq!(e.as_erased(), fp128_v);

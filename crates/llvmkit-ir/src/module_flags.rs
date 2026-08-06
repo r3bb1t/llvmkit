@@ -342,7 +342,7 @@ pub struct ModuleFlagEntry<B: ModuleBrand> {
 impl<B: ModuleBrand> ModuleFlagEntry<B> {
     /// Crate-internal: retag a stored entry into the caller's brand — the
     /// clone-out half of [`Module::module_flags`](crate::Module::module_flags).
-    /// Mirrors `NamedMDNode::from_stored`.
+    /// Mirrors `NamedMetadataNode::from_stored`.
     pub(crate) fn from_stored(stored: ModuleFlagEntry<StoredBrand>) -> Self {
         Self {
             behavior: stored.behavior,

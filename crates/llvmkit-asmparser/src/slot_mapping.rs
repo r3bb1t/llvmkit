@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use llvmkit_macros::Branded;
 
 use llvmkit_ir::{
-    Dyn, FunctionValue, GlobalAlias, GlobalIFunc, GlobalVariable, MetadataId, ModuleBrand, Type,
+    Dyn, FunctionValue, GlobalAlias, GlobalIfunc, GlobalVariable, MetadataId, ModuleBrand, Type,
     attributes::AttributeStorage,
 };
 
@@ -52,7 +52,7 @@ pub enum GlobalRef<'ctx, B: ModuleBrand> {
     /// Module-level alias — `@x = alias ...`.
     Alias(GlobalAlias<'ctx, B>),
     /// Module-level indirect function — `@x = ifunc ...`.
-    IFunc(GlobalIFunc<'ctx, B>),
+    Ifunc(GlobalIfunc<'ctx, B>),
 }
 
 impl<'ctx, B: ModuleBrand> From<FunctionValue<'ctx, Dyn, B>> for GlobalRef<'ctx, B> {
@@ -76,10 +76,10 @@ impl<'ctx, B: ModuleBrand> From<GlobalAlias<'ctx, B>> for GlobalRef<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand> From<GlobalIFunc<'ctx, B>> for GlobalRef<'ctx, B> {
+impl<'ctx, B: ModuleBrand> From<GlobalIfunc<'ctx, B>> for GlobalRef<'ctx, B> {
     #[inline]
-    fn from(v: GlobalIFunc<'ctx, B>) -> Self {
-        GlobalRef::IFunc(v)
+    fn from(v: GlobalIfunc<'ctx, B>) -> Self {
+        GlobalRef::Ifunc(v)
     }
 }
 

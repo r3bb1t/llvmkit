@@ -119,7 +119,7 @@ fn linkage_linkonce() {
 /// Mirrors `test/Bitcode/compatibility.ll` line 110-111.
 #[test]
 fn linkage_linkonce_odr() {
-    assert!(linkage_text(Linkage::LinkOnceODR).contains("@g = linkonce_odr global i32 0\n"));
+    assert!(linkage_text(Linkage::LinkOnceOdr).contains("@g = linkonce_odr global i32 0\n"));
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 102-103.
@@ -131,7 +131,7 @@ fn linkage_weak() {
 /// Mirrors `test/Bitcode/compatibility.ll` line 112-113.
 #[test]
 fn linkage_weak_odr() {
-    assert!(linkage_text(Linkage::WeakODR).contains("@g = weak_odr global i32 0\n"));
+    assert!(linkage_text(Linkage::WeakOdr).contains("@g = weak_odr global i32 0\n"));
 }
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 108-109:
