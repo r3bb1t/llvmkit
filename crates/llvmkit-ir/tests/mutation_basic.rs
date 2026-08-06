@@ -422,7 +422,7 @@ fn debug_record_value_operand_is_rewritten_by_rauw() -> Result<(), IrError> {
 
     assert_eq!(m.view(source).as_erased().num_uses(), 0);
     assert_eq!(replacement.as_erased().num_uses(), 1);
-    let records = anchor_inst.debug_records();
+    let records: Vec<_> = anchor_inst.debug_records().collect();
     let DebugRecord::Variable(record) = &records[0] else {
         panic!("expected variable debug record");
     };

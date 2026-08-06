@@ -24,6 +24,8 @@
 //! - **`AssumptionCache`'s `TargetTransformInfo` arm** (`getPredicatedAddrSpace`)
 //!   has no counterpart; llvmkit models no target.
 
+use core::iter::FusedIterator;
+
 use crate::attributes::{AttrIndex, AttrKind, AttributeStorage, AttributeStored};
 use crate::basic_block::BasicBlockData;
 use crate::cfg::kind_successor_ids;
@@ -563,18 +565,27 @@ impl AssumptionCache {
 
     /// Every `@llvm.assume` in the scanned function, in program order.
     ///
-    /// Ports `AssumptionCache::assumptions`.
+    /// Ports `AssumptionCache::assumptions`. Upstream's `WeakVH` list can hold
+    /// records whose instruction has since gone away; here the equivalent is a
+    /// slot that no longer resolves as an instruction, and such entries are
+    /// skipped — which is why this is **not** an [`ExactSizeIterator`]: the
+    /// count is only known after the walk.
+    ///
+    /// The slot list is snapshotted (a `Vec<ValueSlot>` clone, no IR touched)
+    /// so the receiver stays out of the returned opaque type and the iterator
+    /// chains off a borrowed cache.
+    ///
+    /// [`ExactSizeIterator`]: core::iter::ExactSizeIterator
     pub fn assumptions<'ctx, B: ModuleBrand + 'ctx>(
         &self,
         module: ModuleRef<'ctx, B>,
-    ) -> Vec<InstructionView<'ctx, B>> {
-        self.assumes
-            .iter()
-            .filter_map(|slot| {
-                let data = module.value_data(*slot);
-                InstructionView::try_from(Value::from_parts(*slot, module, data.ty)).ok()
-            })
-            .collect()
+    ) -> impl DoubleEndedIterator<Item = InstructionView<'ctx, B>> + FusedIterator + use<'ctx, B>
+    {
+        let assumes = self.assumes.clone();
+        assumes.into_iter().filter_map(move |slot| {
+            let data = module.value_data(slot);
+            InstructionView::try_from(Value::from_parts(slot, module, data.ty)).ok()
+        })
     }
 
     /// The assumptions that mention `value`.
@@ -663,19 +674,25 @@ impl DomConditionCache {
 
     /// The registered branches whose conditions constrain `value`.
     ///
-    /// Ports `DomConditionCache::conditionsFor`.
+    /// Ports `DomConditionCache::conditionsFor`. A value with no registered
+    /// branch yields nothing, exactly as upstream's empty `ArrayRef` does.
+    ///
+    /// The slot list is snapshotted (a `Vec<ValueSlot>` clone) rather than
+    /// borrowed, so the receiver stays out of the returned opaque type; every
+    /// slot maps to a value, so the count is exact.
     pub fn conditions_for<'ctx, B: ModuleBrand + 'ctx>(
         &self,
         value: Value<'ctx, B>,
-    ) -> Vec<Value<'ctx, B>> {
-        self.affected
+    ) -> impl ExactSizeIterator<Item = Value<'ctx, B>> + DoubleEndedIterator + FusedIterator + use<'ctx, B>
+    {
+        let slots = self
+            .affected
             .get(&value.slot())
-            .map_or_else(Vec::new, |slots| {
-                slots
-                    .iter()
-                    .map(|slot| value_from_slot(value, *slot))
-                    .collect()
-            })
+            .cloned()
+            .unwrap_or_default();
+        slots
+            .into_iter()
+            .map(move |slot| value_from_slot(value, slot))
     }
 }
 

@@ -553,7 +553,6 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
             }
             let mut pred_sets = cfg
                 .predecessors(&block)
-                .into_iter()
                 .filter(|pred| reachable.contains(&pred.slot()))
                 .filter_map(|pred| doms.get(&pred.slot()).cloned());
             let mut new_set = pred_sets.next().unwrap_or_default();

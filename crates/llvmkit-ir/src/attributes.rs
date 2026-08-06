@@ -908,6 +908,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> FromIterator<Attribute<'ctx, B>> for Attribute
     }
 }
 
+/// `for attr in &set` — the borrowing counterpart of the
+/// [`FromIterator`] impl above, yielding exactly what
+/// [`AttributeSet::iter`] does.
+impl<'a, 'ctx, B: ModuleBrand + 'ctx> IntoIterator for &'a AttributeSet<'ctx, B> {
+    type Item = &'a Attribute<'ctx, B>;
+    type IntoIter = core::slice::Iter<'a, Attribute<'ctx, B>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.attrs.iter()
+    }
+}
+
 // --------------------------------------------------------------------------
 // AttributeList
 // --------------------------------------------------------------------------
@@ -973,6 +985,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> AttributeList<'ctx, B> {
     /// `true` if no index has any attributes.
     pub fn is_empty(&self) -> bool {
         self.entries.iter().all(|(_, s)| s.is_empty())
+    }
+}
+
+/// The projection [`AttributeList`]'s borrowing iterator applies: a stored
+/// entry becomes the `(index, set)` pair [`AttributeList::iter`] yields.
+///
+/// Spelled as a `fn` pointer, and named, because `IntoIterator::IntoIter` is
+/// an associated *type*: a closure's own type is unnameable and `impl Trait`
+/// is not allowed there.
+type AttributeListEntryProjection<'a, 'ctx, B> =
+    fn(&'a (AttrIndex, AttributeSet<'ctx, B>)) -> (AttrIndex, &'a AttributeSet<'ctx, B>);
+
+/// `for (index, set) in &list` — yields exactly what
+/// [`AttributeList::iter`] does.
+impl<'a, 'ctx, B: ModuleBrand + 'ctx> IntoIterator for &'a AttributeList<'ctx, B> {
+    type Item = (AttrIndex, &'a AttributeSet<'ctx, B>);
+    type IntoIter = core::iter::Map<
+        core::slice::Iter<'a, (AttrIndex, AttributeSet<'ctx, B>)>,
+        AttributeListEntryProjection<'a, 'ctx, B>,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        // The annotation is what coerces the closure to the `fn` pointer.
+        let project: AttributeListEntryProjection<'a, 'ctx, B> = |(index, set)| (*index, set);
+        self.entries.iter().map(project)
     }
 }
 

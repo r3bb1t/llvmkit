@@ -29,6 +29,7 @@
 //! per concept, with the check at a single choke point, rather than a public
 //! type and a private twin that could drift apart.
 
+use core::iter::FusedIterator;
 use core::marker::PhantomData;
 
 use crate::Branded;
@@ -1032,7 +1033,11 @@ impl<B: ModuleBrand> MetadataAttachmentSet<B> {
             .find_map(|(k, id)| if k == kind { Some(*id) } else { None })
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &(MetadataAttachmentKind, MetadataId<B>)> {
+    pub fn iter(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &(MetadataAttachmentKind, MetadataId<B>)>
+    + DoubleEndedIterator
+    + FusedIterator {
         self.entries.iter()
     }
 
@@ -1057,6 +1062,17 @@ impl<B: ModuleBrand> MetadataAttachmentSet<B> {
 impl<B: ModuleBrand> Default for MetadataAttachmentSet<B> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// `for (kind, id) in &attachments` — yields exactly what
+/// [`MetadataAttachmentSet::iter`] does.
+impl<'a, B: ModuleBrand> IntoIterator for &'a MetadataAttachmentSet<B> {
+    type Item = &'a (MetadataAttachmentKind, MetadataId<B>);
+    type IntoIter = core::slice::Iter<'a, (MetadataAttachmentKind, MetadataId<B>)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter()
     }
 }
 

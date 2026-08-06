@@ -692,10 +692,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             }
         }
 
-        let module_attr_groups = self.module.module().attribute_groups();
+        let module = self.module.module();
         for group in self.data().function_attr_groups.borrow().iter().rev() {
-            if let Some((_, storage)) = module_attr_groups.iter().rev().find(|(id, _)| id == group)
-                && let Some(value) = Self::string_attribute_in_storage(storage, key)
+            if let Some(storage) = module.attribute_group(*group)
+                && let Some(value) = Self::string_attribute_in_storage(&storage, key)
             {
                 return Some(value);
             }

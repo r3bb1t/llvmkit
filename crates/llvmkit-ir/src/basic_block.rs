@@ -763,9 +763,23 @@ impl<'ctx, R: ReturnMarker, Term: BlockTerminationState, B: ModuleBrand + 'ctx, 
     }
 
     /// Successor block ids of this block's terminator, preserving duplicate CFG edges.
-    /// Returns an empty list for unterminated blocks and terminators without successors.
-    pub fn successors(&self) -> Vec<BlockId<Dyn, B>> {
-        crate::cfg::block_successors(&self.as_dyn())
+    /// Yields nothing for unterminated blocks and terminators without successors.
+    ///
+    /// A snapshot, not a borrow: the terminator's destination list lives behind
+    /// a [`RefCell`], so the ids are read out once and the iterator owns them —
+    /// holding the iterator can never conflict with an edit. The `use<..>`
+    /// bound keeps `&self` out of the returned opaque type for the same reason
+    /// it does on [`instructions`](Self::instructions).
+    pub fn successors(
+        &self,
+    ) -> impl ExactSizeIterator<Item = BlockId<Dyn, B>>
+    + DoubleEndedIterator
+    + FusedIterator
+    + use<'ctx, R, Term, B, Params> {
+        let tag = self.module.id();
+        crate::cfg::successor_ids(&self.as_dyn())
+            .into_iter()
+            .map(move |slot| BlockId::<Dyn, B>::from_raw(tag, slot))
     }
 
     /// Append an instruction value-id to the block. Crate-internal:

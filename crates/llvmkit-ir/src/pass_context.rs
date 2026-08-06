@@ -1081,9 +1081,18 @@ where
     /// driver drains this to decide which cached CFG analyses it can mark
     /// preserved (via the [`CfgIncremental`](crate::analysis) hook); exposed
     /// here so tests and the driver can inspect it.
+    ///
+    /// A snapshot, not a borrow: the log lives behind a
+    /// [`RefCell`](core::cell::RefCell) that every recording edit method
+    /// appends to through `&self`, so reading it hands back an owning iterator
+    /// — one that cannot be alive across the next edit's `borrow_mut`. The
+    /// `use<..>` bound keeps `&self` out of the opaque type accordingly.
     #[inline]
-    pub fn pending_cfg_updates(&self) -> Vec<CfgUpdate> {
-        self.cfg_updates.borrow().clone()
+    pub fn pending_cfg_updates(
+        &self,
+    ) -> impl ExactSizeIterator<Item = CfgUpdate> + DoubleEndedIterator + FusedIterator + use<B, R>
+    {
+        self.cfg_updates.borrow().clone().into_iter()
     }
 
     // The in-block-edit surface below is delegated to the inner `FnPatch` by
@@ -3574,7 +3583,7 @@ mod tests {
         let reshape = cx.mutate();
 
         // Nothing recorded before any structural edit.
-        assert!(reshape.pending_cfg_updates().is_empty());
+        assert!(reshape.pending_cfg_updates().next().is_none());
 
         // Split the entry before its terminator: `br next` (with its
         // out-edge) moves into the fresh block.
@@ -3590,7 +3599,7 @@ mod tests {
 
         // Exactly the rewiring: entry loses `→ next`, the new block gains it.
         assert_eq!(
-            reshape.pending_cfg_updates(),
+            reshape.pending_cfg_updates().collect::<Vec<_>>(),
             vec![
                 CfgUpdate::delete(entry_id, next_id),
                 CfgUpdate::insert(new_id, next_id),

@@ -26,6 +26,7 @@
 //!   helpers; reachable through [`DataLayout::mangling_mode`]).
 
 use core::fmt;
+use core::iter::FusedIterator;
 
 use crate::align::{Align, MaybeAlign};
 use crate::error::{IrError, IrResult};
@@ -455,15 +456,24 @@ impl DataLayout {
         self.legal_int_widths.iter().copied().max().unwrap_or(0)
     }
 
-    /// Mirrors `DataLayout::getNonStandardAddressSpaces`. Returns the
+    /// Mirrors `DataLayout::getNonStandardAddressSpaces`. Yields the
     /// address spaces with an explicit pointer spec (every spec
-    /// except `0`).
-    pub fn non_standard_address_spaces(&self) -> Vec<u32> {
+    /// except `0`), in spec order.
+    ///
+    /// Borrows the layout — a [`DataLayout`] has no interior mutability, so
+    /// nothing has to be copied out. No [`ExactSizeIterator`]: the length is a
+    /// *filtered* count, unknowable without walking the specs, and a `len()`
+    /// that walks would be a lie about cost. Use `.count()` when the number is
+    /// what you want.
+    ///
+    /// [`ExactSizeIterator`]: core::iter::ExactSizeIterator
+    pub fn non_standard_address_spaces(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = u32> + FusedIterator + Clone + '_ {
         self.pointer_specs
             .iter()
             .filter(|s| s.address_space() != 0)
             .map(PointerSpec::address_space)
-            .collect()
     }
 
     /// Mirrors `DataLayout::getStructPrefAlignment` (the protected
@@ -480,14 +490,20 @@ impl DataLayout {
         self.struct_abi_align
     }
 
-    /// Mirrors `DataLayout::getNonIntegralAddressSpaces` (returns
-    /// every address space marked by `ni:<as>...`).
-    pub fn non_integral_address_spaces(&self) -> Vec<u32> {
+    /// Mirrors `DataLayout::getNonIntegralAddressSpaces` (yields
+    /// every address space marked by `ni:<as>...`, in spec order).
+    ///
+    /// Borrowing and filtering, so no [`ExactSizeIterator`]; see
+    /// [`non_standard_address_spaces`](Self::non_standard_address_spaces).
+    ///
+    /// [`ExactSizeIterator`]: core::iter::ExactSizeIterator
+    pub fn non_integral_address_spaces(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = u32> + FusedIterator + Clone + '_ {
         self.pointer_specs
             .iter()
             .filter(|s| s.is_non_integral())
             .map(PointerSpec::address_space)
-            .collect()
     }
 
     /// Mirrors `DataLayout::isNonIntegralAddressSpace`.

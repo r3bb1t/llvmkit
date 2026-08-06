@@ -514,8 +514,12 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         self.as_view().set_metadata(module_token, kind, id)
     }
 
-    /// Debug records attached ahead of this instruction.
-    pub fn debug_records(&self) -> Vec<DebugRecord<B>> {
+    /// Debug records attached ahead of this instruction, in attachment order.
+    /// See [`InstructionView::debug_records`].
+    pub fn debug_records(
+        &self,
+    ) -> impl ExactSizeIterator<Item = DebugRecord<B>> + DoubleEndedIterator + FusedIterator + use<S, B>
+    {
         self.as_view().debug_records()
     }
 
@@ -663,14 +667,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
         Ok(())
     }
 
-    /// Debug records attached ahead of this instruction.
-    pub fn debug_records(&self) -> Vec<DebugRecord<B>> {
-        self.data()
-            .debug_records
-            .borrow()
-            .iter()
-            .map(DebugRecord::from_stored)
-            .collect()
+    /// Debug records attached ahead of this instruction, in attachment order.
+    ///
+    /// A snapshot, not a borrow: the records live behind a [`RefCell`], and
+    /// [`push_debug_record`](Self::push_debug_record) takes `&self`, so the
+    /// stored list is copied out once and the iterator owns it — the returned
+    /// iterator can never hold a borrow that a later append would clash with.
+    /// The `use<..>` bound then keeps `&self` out of the opaque type, so the
+    /// iterator chains freely off a borrowed instruction.
+    ///
+    /// [`RefCell`]: core::cell::RefCell
+    pub fn debug_records(
+        &self,
+    ) -> impl ExactSizeIterator<Item = DebugRecord<B>> + DoubleEndedIterator + FusedIterator + use<B>
+    {
+        let records = self.data().debug_records.borrow().clone();
+        records
+            .into_iter()
+            .map(|record| DebugRecord::from_stored(&record))
     }
 
     /// Crate-internal: the stored debug records, for the printer, which already

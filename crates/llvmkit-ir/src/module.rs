@@ -2375,6 +2375,19 @@ impl<'ctx> ModuleCore {
         self.attribute_groups.borrow().clone()
     }
 
+    /// The attribute group numbered `id`, or `None` if no such group was
+    /// registered. Scans from the back so a later registration wins, matching
+    /// what a caller walking [`Self::attribute_groups`] in reverse would see —
+    /// though [`Self::set_attribute_group`] replaces in place, so the ids are
+    /// unique and the direction only matters as a tie-break that cannot fire.
+    pub fn attribute_group(&self, id: u32) -> Option<AttributeStorage> {
+        self.attribute_groups
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|(slot, storage)| (*slot == id).then(|| storage.clone()))
+    }
+
     // ---- Metadata ----
     //
     // `ModuleCore` is brand-free, so these are generic in `B`: the brand rides
@@ -3080,8 +3093,19 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
         self.core().module_asm()
     }
 
+    /// Every numbered attribute group in the module, in registration order.
+    ///
+    /// Most callers want a single group; [`attribute_group`](Self::attribute_group)
+    /// is the point lookup and copies only that one entry.
     pub fn attribute_groups(&self) -> Vec<(u32, AttributeStorage)> {
         self.core().attribute_groups()
+    }
+
+    /// The attribute group printed as `#id`, or `None` if the module has no
+    /// group with that number. Mirrors the `attributes #N = { … }` table a
+    /// function's `#N` references resolve against.
+    pub fn attribute_group(&self, id: u32) -> Option<AttributeStorage> {
+        self.core().attribute_group(id)
     }
 
     /// Iterate globals in declaration order with this module token's brand.

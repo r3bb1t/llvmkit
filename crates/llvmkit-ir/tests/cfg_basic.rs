@@ -14,7 +14,7 @@ fn assert_successors<'ctx, R, B: ModuleBrand>(
 ) where
     R: ReturnMarker,
 {
-    let got: Vec<_> = cfg.successors(from);
+    let got: Vec<_> = cfg.successors(from).collect();
     assert_eq!(got, expected);
 }
 
@@ -25,7 +25,7 @@ fn assert_predecessors<'ctx, R, B: ModuleBrand>(
 ) where
     R: ReturnMarker,
 {
-    let got: Vec<_> = cfg.predecessors(block);
+    let got: Vec<_> = cfg.predecessors(block).collect();
     assert_eq!(got, expected);
 }
 

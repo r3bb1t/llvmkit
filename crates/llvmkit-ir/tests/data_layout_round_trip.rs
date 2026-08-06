@@ -498,13 +498,13 @@ fn address_space_name() {
 #[test]
 fn is_non_integral_address_space() {
     let default = DataLayout::default();
-    assert!(default.non_standard_address_spaces().is_empty());
+    assert!(default.non_standard_address_spaces().next().is_none());
     assert!(!default.is_non_integral_address_space(0));
     assert!(!default.is_non_integral_address_space(1));
 
     let custom = parse("ni:2:16777215");
     assert_eq!(
-        custom.non_integral_address_spaces(),
+        custom.non_integral_address_spaces().collect::<Vec<_>>(),
         vec![2u32, 16777215u32]
     );
     assert!(!custom.is_non_integral_address_space(0));

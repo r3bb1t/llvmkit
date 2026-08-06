@@ -545,7 +545,7 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     // Nothing foreign made it in: module B still prints only its own node, and
     // the instruction carries no attachment at all.
     assert!(inst.metadata().is_empty());
-    assert!(inst.debug_records().is_empty());
+    assert!(inst.debug_records().next().is_none());
     let text = format!("{b}");
     assert!(text.contains("from-b"), "{text}");
     assert!(!text.contains("from-a"), "{text}");

@@ -957,14 +957,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         &self,
         f: FunctionValue<'ctx, Dyn, B>,
     ) -> Option<AttributeStorage> {
-        let module_attr_groups = self.module.attribute_groups();
         let mut attrs = f.data().attributes.borrow().clone();
         for group in f.function_attr_groups() {
-            let (_, group_attrs) = module_attr_groups
-                .iter()
-                .rev()
-                .find(|(id, _)| *id == group)?;
-            attrs.merge_from(group_attrs);
+            let group_attrs = self.module.attribute_group(group)?;
+            attrs.merge_from(&group_attrs);
         }
         Some(attrs)
     }
