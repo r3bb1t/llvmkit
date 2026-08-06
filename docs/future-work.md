@@ -879,6 +879,17 @@ says that too rather than inventing one.
   generation work for `llvmkit-tablegen`'s sibling arm rather than a hand-typed
   enum. **Deferred to the debug-info/metadata round-trip work**
   (`ROADMAP.md`, Milestone 12), where a consumer that needs the values exists.
+
+  One consequence is now load-bearing and worth stating plainly.
+  `DIExpression` operands (`DwarfExpressionOperand::Operation`) keep their
+  source spelling instead of the `uint64_t` upstream stores through
+  `dwarf::getOperationEncoding` / `getAttributeEncoding`
+  (`LLParser::parseDIExpressionBody`). Round-tripping is unaffected —
+  `AsmWriter.cpp`'s `writeDIExpression` prints a known operation back by name —
+  but **an unrecognised `DW_OP_*` round-trips through llvmkit where `llvm-as`
+  rejects it with `invalid DWARF op '...'`**. Closing that needs the encoding
+  table, i.e. this same milestone; it is the one place the encodings would
+  actually be read.
 - **`DIFlags` / `DISPFlags` are not bitflags.** Upstream spells them as two
   `uint32_t` bitfields with `getFlag` / `getFlagString` / `splitFlags`
   (`DINode::DIFlags` and `DISubprogram::DISPFlags`, `DebugInfoMetadata.h`);

@@ -19,14 +19,15 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2210. Recounted on 2026-08-07 via the documented
+Total `#[test]` functions: 2212. Recounted on 2026-08-07 via the documented
 attribute-anchored grep below (`crates/llvmkit-ir` 1527 +
-`crates/llvmkit-asmparser` 661 + `crates/llvmkit-support` 12 +
+`crates/llvmkit-asmparser` 663 + `crates/llvmkit-support` 12 +
 `crates/llvmkit-tablegen` 9 + `llvmkit` 1; `crates/llvmkit-macros` has none).
-The +6 over the 2204 Wave 12 point below is the specialized-`DI*` field
+The +8 over the 2204 Wave 12 point below is the specialized-`DI*` field
 validation port in `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs`
 (three `test/Assembler/invalid-di*.ll` mirrors, a `debug-info.ll` flags
-round-trip, plus two llvmkit-specific table locks).
+round-trip, the `diexpression.ll` and `invalid-diexpression-large.ll` pair,
+plus two llvmkit-specific table locks).
 
 The paragraph below describes the 2204 Wave 12 point it superseded.
 Waves 1b and 12 added no `#[test]`
@@ -1175,6 +1176,8 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diexpression_declares_no_named_fields` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIExpression` (no `VISIT_MD_FIELDS` block: a `DIExpression` body is a positional `DW_OP_*` list) | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::required_fields_are_a_subset_of_accepted_fields` | `llvm/lib/AsmParser/LLParser.cpp` `PARSE_MD_FIELDS` / `REQUIRE_FIELD` macros (upstream's per-class field tables are preprocessor text, not a re-readable `.def`, so the two halves are pinned against each other instead) | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::debug_info_flag_disjunction_round_trips` | `test/Assembler/debug-info.ll` (the `DISubroutineType` flags `CHECK-NEXT`); `llvm/lib/IR/AsmWriter.cpp::printDIFlags` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diexpression_forms_round_trip` | `test/Assembler/diexpression.ll` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diexpression_element_at_the_u64_limit_is_accepted_and_beyond_is_rejected` | `test/Assembler/invalid-diexpression-large.ll` (same accept/reject logic; llvmkit reports its structured `Expected` error rather than upstream's "element too large" text) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::attribute_group_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseUnnamedAttrGroup` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_full_header_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseFunctionHeader` | mirror |
 | `crates/llvmkit-ir/tests/ap_int.rs::construction_normalizes_top_word_and_counts_bits` | `llvm/unittests/ADT/APIntTest.cpp` construction and bit-count cases | port |

@@ -262,11 +262,17 @@ fn required_specialized_metadata_fields_are_enforced() {
     }
 }
 
-/// llvmkit-specific: no upstream counterpart. `LLParser::parseDIExpression`
-/// does not use `VISIT_MD_FIELDS` at all — a `DIExpression` body is a
-/// positional `DW_OP_*` list — so its accepted-field set is empty and any
-/// `name:` pair inside one is invalid. Locks that the empty table is a real
-/// rejection rather than an unmodelled hole.
+/// llvmkit-specific: no upstream counterpart, but it locks upstream's
+/// structure. `DIExpression` is the one specialized node
+/// `LLParser::parseSpecializedMDNode` routes away from `PARSE_MD_FIELDS`, to
+/// `parseDIExpressionBody` — its body is a positional `DW_OP_*` list, so it
+/// declares no fields at all.
+///
+/// A `name: value` pair inside one is therefore not an *invalid field* but a
+/// malformed *element*: upstream sees `lltok::LabelStr`, which is neither
+/// `DwarfOp` nor `DwarfAttEncoding` nor `APSInt`, and reports "expected
+/// unsigned integer". This pins both halves — the empty tables, and that a
+/// field-shaped body is rejected on the element path rather than the field one.
 #[test]
 fn diexpression_declares_no_named_fields() {
     assert!(SpecializedMetadataKind::DiExpression.fields().is_empty());
@@ -277,8 +283,8 @@ fn diexpression_declares_no_named_fields() {
     );
     let err = parse_err("!0 = !DIExpression(line: 1)\n");
     assert!(
-        matches!(&err, ParseError::InvalidMetadataField { kind, .. } if *kind == "DIExpression"),
-        "expected invalid-field error, got: {err:?}"
+        matches!(&err, ParseError::Expected { expected, .. } if expected.contains("DIExpression")),
+        "expected an element-path error, got: {err:?}"
     );
 }
 
@@ -325,4 +331,49 @@ fn debug_info_flag_disjunction_round_trips() {
         text.contains("!DISubroutineType(flags: DIFlagPublic | DIFlagStaticMember, types: !0)"),
         "output:\n{text}"
     );
+}
+
+/// Ports `test/Assembler/diexpression.ll`, an `llvm-as | llvm-dis` round-trip
+/// whose `CHECK-SAME` lines are byte-identical to its input. Covers the empty
+/// body, bare ops, op+literal sequences, and the `DW_OP_LLVM_convert` form that
+/// mixes in `DW_ATE_*` attribute encodings — the second keyword family
+/// `LLParser::parseDIExpressionBody` accepts.
+#[test]
+fn diexpression_forms_round_trip() {
+    const FORMS: [&str; 9] = [
+        "!DIExpression()",
+        "!DIExpression(DW_OP_deref)",
+        "!DIExpression(DW_OP_constu, 3, DW_OP_plus)",
+        "!DIExpression(DW_OP_LLVM_fragment, 3, 7)",
+        "!DIExpression(DW_OP_deref, DW_OP_plus_uconst, 3, DW_OP_LLVM_fragment, 3, 7)",
+        "!DIExpression(DW_OP_constu, 2, DW_OP_swap, DW_OP_xderef)",
+        "!DIExpression(DW_OP_plus_uconst, 3)",
+        "!DIExpression(DW_OP_LLVM_convert, 16, DW_ATE_unsigned, DW_OP_LLVM_convert, 32, DW_ATE_signed)",
+        "!DIExpression(DW_OP_LLVM_tag_offset, 1)",
+    ];
+    let mut src = String::from("!named = !{!0, !1, !2, !3, !4, !5, !6, !7, !8}\n");
+    for (i, form) in FORMS.iter().enumerate() {
+        src.push_str(&format!("!{i} = {form}\n"));
+    }
+    let text = parse_and_render(&src);
+    for form in FORMS {
+        assert!(text.contains(form), "missing {form} in:\n{text}");
+    }
+}
+
+/// Ports `test/Assembler/invalid-diexpression-large.ll`: an element of exactly
+/// `UINT64_MAX` is accepted (`CHECK-NOT: error:`) and one above it is not.
+///
+/// Same logic as upstream, different diagnostic: upstream reports "element too
+/// large, limit is 18446744073709551615" from `parseDIExpressionBody`, while
+/// llvmkit reports the structured `Expected` error its parser uses throughout,
+/// so this asserts on the accept/reject behaviour rather than on message text.
+#[test]
+fn diexpression_element_at_the_u64_limit_is_accepted_and_beyond_is_rejected() {
+    let text = parse_and_render("!named = !{!0}\n!0 = !DIExpression(18446744073709551615)\n");
+    assert!(
+        text.contains("!DIExpression(18446744073709551615)"),
+        "output:\n{text}"
+    );
+    let _ = parse_err("!0 = !DIExpression(18446744073709551616)\n");
 }

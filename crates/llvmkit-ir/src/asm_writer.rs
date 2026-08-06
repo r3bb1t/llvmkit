@@ -2984,6 +2984,20 @@ fn fmt_specialized_metadata_node(
         f.write_str("distinct ")?;
     }
     write!(f, "!{}(", node.kind().name())?;
+    // `DIExpression` prints a positional element list, not `name: value` pairs.
+    // Mirrors `AsmWriter.cpp::writeDIExpression`.
+    if let super::metadata::SpecializedMetadataBody::Expression(operands) = node.body() {
+        for (i, operand) in operands.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            match operand {
+                super::metadata::DwarfExpressionOperand::Operation(name) => f.write_str(name)?,
+                super::metadata::DwarfExpressionOperand::Literal(value) => write!(f, "{value}")?,
+            }
+        }
+        return f.write_str(")");
+    }
     for (i, field) in node.fields().iter().enumerate() {
         if i > 0 {
             f.write_str(", ")?;

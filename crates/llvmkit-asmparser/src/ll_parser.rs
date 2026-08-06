@@ -2152,6 +2152,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         distinct: bool,
     ) -> ParseResult<llvmkit_ir::metadata::MetadataKind<B>> {
         self.bump()?;
+        if kind == llvmkit_ir::metadata::SpecializedMetadataKind::DiExpression {
+            return self.parse_di_expression_body(distinct);
+        }
         self.expect_punct(PunctKind::LParen, "'(' in specialized metadata")?;
         let mut fields: Vec<llvmkit_ir::metadata::MetadataField<B>> = Vec::new();
         if !matches!(self.peek(), Token::RParen) {
@@ -2202,6 +2205,64 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 node = node.distinct();
             }
             node.with_fields(fields)
+        }))
+    }
+
+    /// Parse a `DIExpression` body — `( elem, elem, ... )` — with the `(` still
+    /// current.
+    ///
+    /// Mirrors `LLParser::parseDIExpressionBody` (`LLParser.cpp`), which is the
+    /// reason `DIExpression` is the one specialized node that never reaches
+    /// `PARSE_MD_FIELDS`: its elements are positional, not `name: value` pairs.
+    ///
+    /// Upstream maps each `DW_OP_*` / `DW_ATE_*` through
+    /// `dwarf::getOperationEncoding` / `getAttributeEncoding` and stores a
+    /// `uint64_t`. llvmkit stores the written spelling — the `Dwarf.def` tables
+    /// are unmodelled (`docs/future-work.md`) and `AsmWriter.cpp`'s
+    /// `writeDIExpression` prints a known op back by name regardless — so an
+    /// operation llvmkit does not recognise round-trips rather than being
+    /// rejected. That is the one deliberate divergence here.
+    fn parse_di_expression_body(
+        &mut self,
+        distinct: bool,
+    ) -> ParseResult<llvmkit_ir::metadata::MetadataKind<B>> {
+        use llvmkit_ir::metadata::DwarfExpressionOperand;
+
+        self.expect_punct(PunctKind::LParen, "'(' in specialized metadata")?;
+        let mut operands: Vec<DwarfExpressionOperand> = Vec::new();
+        if !matches!(self.peek(), Token::RParen) {
+            loop {
+                let operand = match self.peek() {
+                    // `DW_OP_*` and `DW_ATE_*` are the two keyword families
+                    // upstream accepts here.
+                    Token::DwarfOp(s) | Token::DwarfAttEncoding(s) => {
+                        let name = (*s).to_owned();
+                        self.bump()?;
+                        DwarfExpressionOperand::Operation(name)
+                    }
+                    // Anything else must be an unsigned literal: upstream
+                    // rejects a signed element with "expected unsigned
+                    // integer", and one above `UINT64_MAX` with "element too
+                    // large".
+                    _ => DwarfExpressionOperand::Literal(
+                        self.parse_uint64("unsigned integer in DIExpression")?,
+                    ),
+                };
+                operands.push(operand);
+                if !self.eat_punct(PunctKind::Comma)? {
+                    break;
+                }
+            }
+        }
+        self.expect_punct(PunctKind::RParen, "')' closing specialized metadata")?;
+        Ok(llvmkit_ir::metadata::MetadataKind::Specialized({
+            let mut node = llvmkit_ir::metadata::SpecializedMetadataNode::new(
+                llvmkit_ir::metadata::SpecializedMetadataKind::DiExpression,
+            );
+            if distinct {
+                node = node.distinct();
+            }
+            node.with_expression_operands(operands)
         }))
     }
 

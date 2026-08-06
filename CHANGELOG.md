@@ -19,6 +19,32 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### `!DIExpression(...)` with a body now parses
+
+- **Fixed: a non-empty `DIExpression` was unparseable.** Only `!DIExpression()`
+  worked; every form clang actually emits — `!DIExpression(DW_OP_deref)`,
+  `!DIExpression(DW_OP_LLVM_fragment, 0, 32)`, `!DIExpression(DW_OP_plus_uconst,
+  8)` — was rejected, because the specialized-node loop demanded `name: value`
+  pairs. `DIExpression` is the one node upstream routes away from
+  `PARSE_MD_FIELDS`, to `parseDIExpressionBody` (`LLParser.cpp`): its body is a
+  positional list. Ported from `test/Assembler/diexpression.ll`.
+
+- **Breaking (`llvmkit-ir`): `SpecializedMetadataNode` gains a body ADT.** New
+  `SpecializedMetadataBody` (`Fields` | `Expression`) and
+  `DwarfExpressionOperand` (`Operation` | `Literal`), with
+  `SpecializedMetadataNode::body` / `expression_operands` /
+  `with_expression_operands`. Two shapes because upstream has two; one enum
+  rather than two vectors keeps "a `DIExpression` carrying named fields"
+  unrepresentable (D1). `fields()` is unchanged for every other kind and now
+  returns an empty slice for a `DIExpression`.
+
+- Operands keep their **source spelling** rather than the `uint64_t` encodings
+  upstream stores via `dwarf::getOperationEncoding`: the `Dwarf.def` tables are
+  still unmodelled, and `AsmWriter.cpp`'s `writeDIExpression` prints a known
+  operation back by name anyway, so the written form is what round-trips. One
+  deliberate divergence follows — an unrecognised `DW_OP_*` round-trips here
+  where upstream rejects it. Recorded in `docs/future-work.md`.
+
 ### Specialized `DI*` metadata: fields are validated against their node class
 
 - **Breaking (parser): `!DILocation(lien: 3)` no longer parses.** The

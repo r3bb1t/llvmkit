@@ -829,21 +829,74 @@ impl<B: ModuleBrand> MetadataField<B> {
     }
 }
 
+/// One element of a `DIExpression` body.
+///
+/// Upstream stores these as `uint64_t` encodings — `DIExpression`'s `Elements`,
+/// filled by `LLParser::parseDIExpressionBody` (`LLParser.cpp`) through
+/// `dwarf::getOperationEncoding` / `getAttributeEncoding`. llvmkit keeps the
+/// **source spelling** instead: the `Dwarf.def` tables are not modelled yet
+/// (see `docs/future-work.md`), and `AsmWriter.cpp`'s `writeDIExpression`
+/// prints a known operation back by name anyway, so the written form is what
+/// round-trips. An unrecognised `DW_OP_*` is therefore accepted here where
+/// upstream rejects it — recorded as the remaining half of that gap.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DwarfExpressionOperand {
+    /// A `DW_OP_*` or `DW_ATE_*` keyword, kept as written.
+    Operation(String),
+    /// A literal unsigned element. Upstream rejects a signed or `> u64::MAX`
+    /// element in `parseDIExpressionBody`; so does the parser here.
+    Literal(u64),
+}
+
+/// The body of a specialized `DI*` node.
+///
+/// Two shapes, because upstream has two: every class with a `VISIT_MD_FIELDS`
+/// block carries `name: value` pairs, while `DIExpression` — which
+/// `LLParser::parseDIExpression` routes to `parseDIExpressionBody`, not to
+/// `PARSE_MD_FIELDS` — carries a positional operation list. Modelling that as
+/// one enum rather than two vectors is what keeps "a `DIExpression` with named
+/// fields" unrepresentable (D1).
+///
+/// Derives [`Branded`] rather than the std traits: a std `derive` would bound
+/// `B`, which a bare brand does not satisfy.
+#[derive(Branded)]
+#[branded(Debug, Clone)]
+pub enum SpecializedMetadataBody<B: ModuleBrand> {
+    /// `name: value` pairs, validated against
+    /// [`SpecializedMetadataKind::fields`].
+    Fields(Vec<MetadataField<B>>),
+    /// A positional DWARF operation list. [`SpecializedMetadataKind::DiExpression`]
+    /// only.
+    Expression(Vec<DwarfExpressionOperand>),
+}
+
 /// Stored specialized node. Field order is significant and mirrors source.
 #[derive(Branded)]
 #[branded(Debug, Clone)]
 pub struct SpecializedMetadataNode<B: ModuleBrand> {
     distinct: bool,
     kind: SpecializedMetadataKind,
-    fields: Vec<MetadataField<B>>,
+    body: SpecializedMetadataBody<B>,
 }
 
 impl<B: ModuleBrand> SpecializedMetadataNode<B> {
+    /// A node of `kind` with an empty body.
+    ///
+    /// The body shape follows the kind:
+    /// [`SpecializedMetadataKind::DiExpression`] starts as an empty
+    /// [`SpecializedMetadataBody::Expression`], every other kind as an empty
+    /// [`SpecializedMetadataBody::Fields`].
     pub fn new(kind: SpecializedMetadataKind) -> Self {
+        let body = match kind {
+            SpecializedMetadataKind::DiExpression => {
+                SpecializedMetadataBody::Expression(Vec::new())
+            }
+            _ => SpecializedMetadataBody::Fields(Vec::new()),
+        };
         Self {
             distinct: false,
             kind,
-            fields: Vec::new(),
+            body,
         }
     }
 
@@ -854,17 +907,43 @@ impl<B: ModuleBrand> SpecializedMetadataNode<B> {
         self
     }
 
+    /// Append one `name: value` field.
+    ///
+    /// Ignored for [`SpecializedMetadataKind::DiExpression`], whose body is a
+    /// positional operation list — that kind declares no fields at all
+    /// ([`SpecializedMetadataKind::fields`] is empty for it), so there is no
+    /// field it could legitimately carry.
     #[must_use]
     pub fn field(mut self, field: MetadataField<B>) -> Self {
-        self.fields.push(field);
+        if let SpecializedMetadataBody::Fields(fields) = &mut self.body {
+            fields.push(field);
+        }
         self
     }
 
+    /// Append several `name: value` fields. Same `DIExpression` caveat as
+    /// [`Self::field`].
+    #[must_use]
     pub fn with_fields<Fields>(mut self, fields: Fields) -> Self
     where
         Fields: IntoIterator<Item = MetadataField<B>>,
     {
-        self.fields.extend(fields);
+        if let SpecializedMetadataBody::Fields(existing) = &mut self.body {
+            existing.extend(fields);
+        }
+        self
+    }
+
+    /// Append several positional `DIExpression` operands. Ignored for every
+    /// other kind, which carries fields instead.
+    #[must_use]
+    pub fn with_expression_operands<Operands>(mut self, operands: Operands) -> Self
+    where
+        Operands: IntoIterator<Item = DwarfExpressionOperand>,
+    {
+        if let SpecializedMetadataBody::Expression(existing) = &mut self.body {
+            existing.extend(operands);
+        }
         self
     }
 
@@ -876,8 +955,26 @@ impl<B: ModuleBrand> SpecializedMetadataNode<B> {
         self.kind
     }
 
+    /// This node's body.
+    pub const fn body(&self) -> &SpecializedMetadataBody<B> {
+        &self.body
+    }
+
+    /// The `name: value` fields, or an empty slice for a `DIExpression`.
     pub fn fields(&self) -> &[MetadataField<B>] {
-        &self.fields
+        match &self.body {
+            SpecializedMetadataBody::Fields(fields) => fields,
+            SpecializedMetadataBody::Expression(_) => &[],
+        }
+    }
+
+    /// The positional `DIExpression` operands, or an empty slice for every
+    /// other kind.
+    pub fn expression_operands(&self) -> &[DwarfExpressionOperand] {
+        match &self.body {
+            SpecializedMetadataBody::Expression(operands) => operands,
+            SpecializedMetadataBody::Fields(_) => &[],
+        }
     }
 
     pub(crate) fn into_stored(
@@ -887,11 +984,19 @@ impl<B: ModuleBrand> SpecializedMetadataNode<B> {
         Ok(SpecializedMetadataNode {
             distinct: self.distinct,
             kind: self.kind,
-            fields: self
-                .fields
-                .into_iter()
-                .map(|field| field.into_stored(owner))
-                .collect::<IrResult<Vec<_>>>()?,
+            body: match self.body {
+                SpecializedMetadataBody::Fields(fields) => SpecializedMetadataBody::Fields(
+                    fields
+                        .into_iter()
+                        .map(|field| field.into_stored(owner))
+                        .collect::<IrResult<Vec<_>>>()?,
+                ),
+                // Operands carry no metadata reference, so there is no tag to
+                // check — the conversion is a move.
+                SpecializedMetadataBody::Expression(operands) => {
+                    SpecializedMetadataBody::Expression(operands)
+                }
+            },
         })
     }
 
@@ -899,11 +1004,14 @@ impl<B: ModuleBrand> SpecializedMetadataNode<B> {
         Self {
             distinct: stored.distinct,
             kind: stored.kind,
-            fields: stored
-                .fields
-                .iter()
-                .map(MetadataField::from_stored)
-                .collect(),
+            body: match &stored.body {
+                SpecializedMetadataBody::Fields(fields) => SpecializedMetadataBody::Fields(
+                    fields.iter().map(MetadataField::from_stored).collect(),
+                ),
+                SpecializedMetadataBody::Expression(operands) => {
+                    SpecializedMetadataBody::Expression(operands.clone())
+                }
+            },
         }
     }
 }

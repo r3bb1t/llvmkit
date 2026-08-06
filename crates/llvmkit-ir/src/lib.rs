@@ -283,8 +283,9 @@ pub use ir_builder::{
 pub use known_bits::{AddSubOperation, KnownBits, ShiftAmountKnowledge};
 pub use marker::{Dyn, Ptr, ReturnMarker};
 pub use metadata::{
-    MetadataAttachmentKind, MetadataAttachmentSet, MetadataField, MetadataFieldValue, MetadataId,
-    MetadataKind, SpecializedMetadataKind, SpecializedMetadataNode,
+    DwarfExpressionOperand, MetadataAttachmentKind, MetadataAttachmentSet, MetadataField,
+    MetadataFieldValue, MetadataId, MetadataKind, SpecializedMetadataBody, SpecializedMetadataKind,
+    SpecializedMetadataNode,
 };
 pub use module::{
     ComdatView, DynBrand, GlobalAliasView, GlobalIfuncView, GlobalVariableView, Module,
