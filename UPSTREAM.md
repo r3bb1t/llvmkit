@@ -19,15 +19,16 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2212. Recounted on 2026-08-07 via the documented
+Total `#[test]` functions: 2215. Recounted on 2026-08-07 via the documented
 attribute-anchored grep below (`crates/llvmkit-ir` 1527 +
-`crates/llvmkit-asmparser` 663 + `crates/llvmkit-support` 12 +
+`crates/llvmkit-asmparser` 666 + `crates/llvmkit-support` 12 +
 `crates/llvmkit-tablegen` 9 + `llvmkit` 1; `crates/llvmkit-macros` has none).
-The +8 over the 2204 Wave 12 point below is the specialized-`DI*` field
+The +11 over the 2204 Wave 12 point below is the specialized-`DI*` field
 validation port in `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs`
 (three `test/Assembler/invalid-di*.ll` mirrors, a `debug-info.ll` flags
 round-trip, the `diexpression.ll` and `invalid-diexpression-large.ll` pair,
-plus two llvmkit-specific table locks).
+the fourteen remaining specialized classes that close the modelled set to
+all 32 `Metadata.def` leaves, plus three llvmkit-specific locks).
 
 The paragraph below describes the 2204 Wave 12 point it superseded.
 Waves 1b and 12 added no `#[test]`
@@ -1178,6 +1179,9 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::debug_info_flag_disjunction_round_trips` | `test/Assembler/debug-info.ll` (the `DISubroutineType` flags `CHECK-NEXT`); `llvm/lib/IR/AsmWriter.cpp::printDIFlags` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diexpression_forms_round_trip` | `test/Assembler/diexpression.ll` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diexpression_element_at_the_u64_limit_is_accepted_and_beyond_is_rejected` | `test/Assembler/invalid-diexpression-large.ll` (same accept/reject logic; llvmkit reports its structured `Expected` error rather than upstream's "element too large" text) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::the_remaining_specialized_classes_parse_and_round_trip` | the `VISIT_MD_FIELDS` blocks of `LLParser::parse{DILexicalBlock,DILexicalBlockFile,DICommonBlock,DIImportedEntity,DILabel,DIMacro,DIMacroFile,GenericDINode,DISubrangeType,DIGenericSubrange,DIFixedPointType,DIStringType,DIObjCProperty}` and `parseDIAssignID` (`LLParser.cpp`) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diassignid_requires_distinct` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIAssignID` (rejects a uniqued node before reading the parens) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::every_specialized_kind_round_trips_its_name` | `llvm/IR/Metadata.def`'s `HANDLE_SPECIALIZED_MDNODE_LEAF` list (completeness lock for the modelled set) | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::attribute_group_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseUnnamedAttrGroup` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_full_header_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseFunctionHeader` | mirror |
 | `crates/llvmkit-ir/tests/ap_int.rs::construction_normalizes_top_word_and_counts_bits` | `llvm/unittests/ADT/APIntTest.cpp` construction and bit-count cases | port |

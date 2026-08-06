@@ -440,14 +440,28 @@ pub enum SpecializedMetadataKind {
     DiModule,
     DiTemplateTypeParameter,
     DiTemplateValueParameter,
+    GenericDiNode,
+    DiSubrangeType,
+    DiGenericSubrange,
+    DiFixedPointType,
+    DiStringType,
+    DiLexicalBlock,
+    DiLexicalBlockFile,
+    DiCommonBlock,
+    DiMacro,
+    DiMacroFile,
+    DiLabel,
+    DiObjcProperty,
+    DiImportedEntity,
+    DiAssignId,
 }
 
 impl SpecializedMetadataKind {
     /// Every modelled kind, in declaration order.
     ///
-    /// The modelled subset of upstream's `HANDLE_SPECIALIZED_MDNODE_LEAF`
-    /// entries in `llvm/IR/Metadata.def`.
-    pub const ALL: [Self; 18] = [
+    /// Every `HANDLE_SPECIALIZED_MDNODE_LEAF` entry in
+    /// `llvm/IR/Metadata.def` — the set is complete, not a subset.
+    pub const ALL: [Self; 32] = [
         Self::DiFile,
         Self::DiCompileUnit,
         Self::DiSubprogram,
@@ -466,6 +480,20 @@ impl SpecializedMetadataKind {
         Self::DiModule,
         Self::DiTemplateTypeParameter,
         Self::DiTemplateValueParameter,
+        Self::GenericDiNode,
+        Self::DiSubrangeType,
+        Self::DiGenericSubrange,
+        Self::DiFixedPointType,
+        Self::DiStringType,
+        Self::DiLexicalBlock,
+        Self::DiLexicalBlockFile,
+        Self::DiCommonBlock,
+        Self::DiMacro,
+        Self::DiMacroFile,
+        Self::DiLabel,
+        Self::DiObjcProperty,
+        Self::DiImportedEntity,
+        Self::DiAssignId,
     ];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -488,6 +516,20 @@ impl SpecializedMetadataKind {
             "DIModule" => Self::DiModule,
             "DITemplateTypeParameter" => Self::DiTemplateTypeParameter,
             "DITemplateValueParameter" => Self::DiTemplateValueParameter,
+            "GenericDINode" => Self::GenericDiNode,
+            "DISubrangeType" => Self::DiSubrangeType,
+            "DIGenericSubrange" => Self::DiGenericSubrange,
+            "DIFixedPointType" => Self::DiFixedPointType,
+            "DIStringType" => Self::DiStringType,
+            "DILexicalBlock" => Self::DiLexicalBlock,
+            "DILexicalBlockFile" => Self::DiLexicalBlockFile,
+            "DICommonBlock" => Self::DiCommonBlock,
+            "DIMacro" => Self::DiMacro,
+            "DIMacroFile" => Self::DiMacroFile,
+            "DILabel" => Self::DiLabel,
+            "DIObjCProperty" => Self::DiObjcProperty,
+            "DIImportedEntity" => Self::DiImportedEntity,
+            "DIAssignID" => Self::DiAssignId,
             _ => return None,
         })
     }
@@ -512,6 +554,20 @@ impl SpecializedMetadataKind {
             Self::DiModule => "DIModule",
             Self::DiTemplateTypeParameter => "DITemplateTypeParameter",
             Self::DiTemplateValueParameter => "DITemplateValueParameter",
+            Self::GenericDiNode => "GenericDINode",
+            Self::DiSubrangeType => "DISubrangeType",
+            Self::DiGenericSubrange => "DIGenericSubrange",
+            Self::DiFixedPointType => "DIFixedPointType",
+            Self::DiStringType => "DIStringType",
+            Self::DiLexicalBlock => "DILexicalBlock",
+            Self::DiLexicalBlockFile => "DILexicalBlockFile",
+            Self::DiCommonBlock => "DICommonBlock",
+            Self::DiMacro => "DIMacro",
+            Self::DiMacroFile => "DIMacroFile",
+            Self::DiLabel => "DILabel",
+            Self::DiObjcProperty => "DIObjCProperty",
+            Self::DiImportedEntity => "DIImportedEntity",
+            Self::DiAssignId => "DIAssignID",
         }
     }
 
@@ -694,6 +750,73 @@ impl SpecializedMetadataKind {
             ],
             Self::DiTemplateTypeParameter => &["name", "type", "defaulted"],
             Self::DiTemplateValueParameter => &["tag", "name", "type", "defaulted", "value"],
+            Self::GenericDiNode => &["tag", "header", "operands"],
+            Self::DiSubrangeType => &[
+                "name",
+                "file",
+                "line",
+                "scope",
+                "baseType",
+                "size",
+                "align",
+                "flags",
+                "lowerBound",
+                "upperBound",
+                "stride",
+                "bias",
+            ],
+            Self::DiGenericSubrange => &["count", "lowerBound", "upperBound", "stride"],
+            Self::DiFixedPointType => &[
+                "tag",
+                "name",
+                "size",
+                "align",
+                "encoding",
+                "flags",
+                "kind",
+                "factor",
+                "numerator",
+                "denominator",
+            ],
+            Self::DiStringType => &[
+                "tag",
+                "name",
+                "stringLength",
+                "stringLengthExpression",
+                "stringLocationExpression",
+                "size",
+                "align",
+                "encoding",
+            ],
+            Self::DiLexicalBlock => &["scope", "file", "line", "column"],
+            Self::DiLexicalBlockFile => &["scope", "file", "discriminator"],
+            Self::DiCommonBlock => &["scope", "declaration", "name", "file", "line"],
+            Self::DiMacro => &["type", "line", "name", "value"],
+            Self::DiMacroFile => &["type", "line", "file", "nodes"],
+            Self::DiLabel => &[
+                "scope",
+                "name",
+                "file",
+                "line",
+                "column",
+                "isArtificial",
+                "coroSuspendIdx",
+            ],
+            Self::DiObjcProperty => &[
+                "name",
+                "file",
+                "line",
+                "setter",
+                "getter",
+                "attributes",
+                "type",
+            ],
+            Self::DiImportedEntity => {
+                &["tag", "scope", "entity", "file", "line", "name", "elements"]
+            }
+            // `LLParser::parseDIAssignID` takes no fields at all — only
+            // `distinct !DIAssignID()`.
+            Self::DiAssignId => &[],
         }
     }
 
@@ -718,12 +841,26 @@ impl SpecializedMetadataKind {
             Self::DiModule => &["scope", "name"],
             Self::DiTemplateTypeParameter => &["type"],
             Self::DiTemplateValueParameter => &["value"],
+            Self::GenericDiNode => &["tag"],
+            Self::DiLexicalBlock => &["scope"],
+            Self::DiLexicalBlockFile => &["scope", "discriminator"],
+            Self::DiCommonBlock => &["scope"],
+            Self::DiMacro => &["type", "name"],
+            Self::DiMacroFile => &["file"],
+            Self::DiLabel => &["scope", "name", "file", "line"],
+            Self::DiImportedEntity => &["tag", "scope"],
             // Upstream declares every field of these `OPTIONAL`.
             Self::DiSubprogram
             | Self::DiBasicType
             | Self::DiSubrange
             | Self::DiExpression
-            | Self::DiGlobalVariable => &[],
+            | Self::DiGlobalVariable
+            | Self::DiSubrangeType
+            | Self::DiGenericSubrange
+            | Self::DiFixedPointType
+            | Self::DiStringType
+            | Self::DiObjcProperty
+            | Self::DiAssignId => &[],
         }
     }
 

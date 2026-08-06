@@ -2151,6 +2151,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         kind: llvmkit_ir::metadata::SpecializedMetadataKind,
         distinct: bool,
     ) -> ParseResult<llvmkit_ir::metadata::MetadataKind<B>> {
+        // `LLParser::parseDIAssignID` rejects a non-`distinct` node outright:
+        // the class exists only to give an assignment a unique identity, so a
+        // uniqued one would be meaningless.
+        if kind == llvmkit_ir::metadata::SpecializedMetadataKind::DiAssignId && !distinct {
+            return Err(self.expected("'distinct', required for !DIAssignID()"));
+        }
         self.bump()?;
         if kind == llvmkit_ir::metadata::SpecializedMetadataKind::DiExpression {
             return self.parse_di_expression_body(distinct);

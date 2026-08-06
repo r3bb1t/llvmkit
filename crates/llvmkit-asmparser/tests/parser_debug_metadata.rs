@@ -377,3 +377,80 @@ fn diexpression_element_at_the_u64_limit_is_accepted_and_beyond_is_rejected() {
     );
     let _ = parse_err("!0 = !DIExpression(18446744073709551616)\n");
 }
+
+/// The 14 specialized classes added on 2026-08-07, closing the modelled set to
+/// all 32 `HANDLE_SPECIALIZED_MDNODE_LEAF` entries in `llvm/IR/Metadata.def`.
+///
+/// Each line is a minimal well-formed node carrying exactly that class's
+/// `REQUIRED` fields per its `LLParser::parse*` `VISIT_MD_FIELDS` block, so the
+/// case doubles as a check that the required-field tables admit a valid node
+/// rather than only rejecting invalid ones. `DILexicalBlock` matters most: it
+/// appears in essentially every `-g` build, and before this it did not parse.
+#[test]
+fn the_remaining_specialized_classes_parse_and_round_trip() {
+    let src = r#"
+!named = !{!1, !2, !3, !4, !5, !6, !7, !8, !9, !10, !11, !12, !13, !14}
+!0 = !{}
+!1 = !DILexicalBlock(scope: !0)
+!2 = !DILexicalBlockFile(scope: !0, discriminator: 7)
+!3 = !DICommonBlock(scope: !0)
+!4 = !DIImportedEntity(tag: DW_TAG_imported_module, scope: !0)
+!5 = !DILabel(scope: !0, name: "lbl", file: !0, line: 3)
+!6 = !DIMacro(type: DW_MACINFO_define, name: "M")
+!7 = !DIMacroFile(file: !0)
+!8 = !GenericDINode(tag: DW_TAG_variable)
+!9 = !DISubrangeType(name: "st")
+!10 = !DIGenericSubrange(count: !0)
+!11 = !DIFixedPointType(name: "fx")
+!12 = !DIStringType(name: "str")
+!13 = !DIObjCProperty(name: "prop")
+!14 = distinct !DIAssignID()
+"#;
+    let text = parse_and_render(src);
+    for needle in [
+        "!DILexicalBlock(",
+        "!DILexicalBlockFile(",
+        "!DICommonBlock(",
+        "!DIImportedEntity(",
+        "!DILabel(",
+        "!DIMacro(",
+        "!DIMacroFile(",
+        "!GenericDINode(",
+        "!DISubrangeType(",
+        "!DIGenericSubrange(",
+        "!DIFixedPointType(",
+        "!DIStringType(",
+        "!DIObjCProperty(",
+        "distinct !DIAssignID()",
+    ] {
+        assert!(text.contains(needle), "missing {needle} in:\n{text}");
+    }
+}
+
+/// Mirrors `LLParser::parseDIAssignID`, which rejects a uniqued node with
+/// "missing 'distinct', required for !DIAssignID()" before reading the parens —
+/// the class exists to give an assignment a unique identity.
+#[test]
+fn diassignid_requires_distinct() {
+    let _ = parse_err("!0 = !DIAssignID()\n");
+    // The `distinct` form is the only accepted one.
+    let text = parse_and_render("!named = !{!0}\n!0 = distinct !DIAssignID()\n");
+    assert!(text.contains("distinct !DIAssignID()"), "output:\n{text}");
+}
+
+/// llvmkit-specific: no upstream counterpart. Pins that the modelled set is the
+/// complete `HANDLE_SPECIALIZED_MDNODE_LEAF` list from `llvm/IR/Metadata.def`,
+/// so a class cannot be dropped from `ALL` without this failing, and every
+/// entry round-trips its own name through `from_name`.
+#[test]
+fn every_specialized_kind_round_trips_its_name() {
+    assert_eq!(SpecializedMetadataKind::ALL.len(), 32);
+    for kind in SpecializedMetadataKind::ALL {
+        assert_eq!(
+            SpecializedMetadataKind::from_name(kind.name()),
+            Some(kind),
+            "{} did not round-trip through from_name",
+            kind.name()
+        );
+    }
+}

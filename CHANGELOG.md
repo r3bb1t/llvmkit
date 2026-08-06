@@ -19,6 +19,29 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### The specialized metadata set is complete: all 32 `Metadata.def` leaves
+
+- **Fixed: `!DILexicalBlock(...)` and thirteen sibling classes did not parse.**
+  llvmkit modelled 18 of upstream's 32 `HANDLE_SPECIALIZED_MDNODE_LEAF` entries
+  (`llvm/IR/Metadata.def`); the rest failed with "expected specialized metadata
+  kind". `DILexicalBlock` and `DILexicalBlockFile` appear in essentially every
+  `-g` build, so this was not an exotic gap. Added: `GenericDINode`,
+  `DISubrangeType`, `DIGenericSubrange`, `DIFixedPointType`, `DIStringType`,
+  `DILexicalBlock`, `DILexicalBlockFile`, `DICommonBlock`, `DIMacro`,
+  `DIMacroFile`, `DILabel`, `DIObjCProperty`, `DIImportedEntity`, `DIAssignID`.
+
+- Each carries the accepted- and required-field tables from its
+  `LLParser::parse*` `VISIT_MD_FIELDS` block, so all three field rejections
+  apply to them immediately. The tables were generated from the vendored
+  `LLParser.cpp` rather than hand-typed, then diffed back against it.
+
+- `DIAssignID` gets upstream's one structural rule: `LLParser::parseDIAssignID`
+  rejects a uniqued node before reading the parens, so only
+  `distinct !DIAssignID()` is accepted.
+
+- `SpecializedMetadataKind::ALL` is now 32 entries, pinned against
+  `Metadata.def`'s leaf list by a completeness test.
+
 ### `!DIExpression(...)` with a body now parses
 
 - **Fixed: a non-empty `DIExpression` was unparseable.** Only `!DIExpression()`
