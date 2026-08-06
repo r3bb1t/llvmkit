@@ -118,6 +118,7 @@ pub mod marker;
 pub mod matchers;
 pub mod metadata;
 pub mod module;
+pub mod module_flags;
 pub mod named_md_node;
 pub mod operator;
 pub mod optimization_level;
@@ -290,6 +291,7 @@ pub use module::{
     ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord,
     UseListOrderRecord, Verified,
 };
+pub use module_flags::{ModuleFlagBehavior, ModuleFlagEntry, ModuleFlagKey};
 pub use named_md_node::{NamedMetadataId, NamedMetadataName};
 pub use operator::{OverflowingBinaryOperator, PossiblyExactOperator};
 pub use optimization_level::{

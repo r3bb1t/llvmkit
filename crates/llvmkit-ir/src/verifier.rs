@@ -57,8 +57,12 @@ use crate::instr_types::{
 };
 use crate::instruction::{InstructionKindData, InstructionView};
 use crate::marker::Dyn;
-use crate::metadata::{MetadataAttachmentKind, MetadataKind, MetadataSlot};
+use crate::metadata::{
+    MetadataAttachmentKind, MetadataId, MetadataKind, MetadataSlot, MetadataStore, StoredBrand,
+};
 use crate::module::{Invariant, ModuleBrand, ModuleCore, ModuleView};
+use crate::module_flags::{ModuleFlagBehavior, module_flag_tuple, resolve_metadata_ref};
+use crate::named_md_node::NamedMetadataName;
 use crate::phi_check::{PhiViolation, check_phi_incoming};
 use crate::r#type::{Type, TypeData, TypeSlot};
 use crate::value::{IsValue, ValueKindData, ValueSlot};
@@ -85,6 +89,13 @@ enum RangeLikeMetadataKind {
     AbsoluteSymbol,
 }
 
+/// Recursion cap for `Verifier::metadata_structurally_equal`. Module-flag
+/// values are shallow — upstream's are scalars, strings, or small tuples —
+/// so the cap exists only to make a `metadata_reserve`/`metadata_set`
+/// self-referential tuple terminate (answering unequal) instead of
+/// recursing forever.
+const METADATA_EQUALITY_DEPTH_LIMIT: u32 = 32;
+
 /// Module verifier. Stateless apart from the per-function CFG cache
 /// it builds during a [`Self::run`] traversal.
 pub(crate) struct Verifier<'ctx, B: ModuleBrand> {
@@ -108,6 +119,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         for g in self.module.iter_globals() {
             self.visit_global_variable(g)?;
         }
+        // Mirrors `Verifier::verify`'s module-level `visitModuleFlags()`
+        // step between the global-value walk and the function walk.
+        self.visit_module_flags()?;
         for f in self.module.iter_functions() {
             self.visit_function(f)?;
         }
@@ -375,6 +389,458 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             function: Some(format!("@{}", g.name())),
             block: None,
             message,
+        }
+    }
+
+    /// Module-level failure with no function/block context — the shape of
+    /// `Verifier::CheckFailed` for module-flag violations.
+    fn fail_module_flags(&self, rule: VerifierRule, message: String) -> IrError {
+        IrError::VerifierFailure {
+            rule,
+            function: None,
+            block: None,
+            message,
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Module flags
+    // ------------------------------------------------------------------
+
+    /// Mirrors `Verifier::visitModuleFlags` (`lib/IR/Verifier.cpp`): walks
+    /// every `llvm.module.flags` operand through
+    /// [`Self::visit_module_flag`], tracks the `aarch64-elf-pauthabi-*`
+    /// pairing, then validates the collected `require` entries against the
+    /// seen flags. Single-shot like the rest of this verifier — the first
+    /// violation returns where upstream's `CheckFailed` accumulates.
+    fn visit_module_flags(&self) -> IrResult<()> {
+        let Some(flags_id) = self.module.named_metadata(&NamedMetadataName::ModuleFlags) else {
+            return Ok(());
+        };
+        let operands: Vec<MetadataId<StoredBrand>> = {
+            let nmd = self.module.named_metadata_list();
+            let node = nmd.get(flags_id.slot().0).unwrap_or_else(|| {
+                unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+            });
+            node.operands().to_vec()
+        };
+
+        let store = self.module.metadata_store();
+        // Upstream: `DenseMap<const MDString*, const MDNode*> SeenIDs` — key
+        // to flag; the requirement pass reads the flag's value operand, so
+        // the map carries that operand directly.
+        let mut seen: HashMap<String, MetadataId<StoredBrand>> = HashMap::new();
+        let mut requirements: Vec<MetadataSlot> = Vec::new();
+        // Upstream tracks these as `uint64_t(-1)` sentinels; `Option` spells
+        // the same "no constant-integer value seen" state.
+        let mut pauth_abi_platform: Option<u64> = None;
+        let mut pauth_abi_version: Option<u64> = None;
+        for op in operands {
+            self.visit_module_flag(&store, op, &mut seen, &mut requirements)?;
+            let Some([_, key_id, value_id]) = module_flag_tuple(&store, op) else {
+                // Upstream: `if (MDN->getNumOperands() != 3) continue;`.
+                continue;
+            };
+            let Some(MetadataKind::String(name)) =
+                resolve_metadata_ref(&store, key_id.slot()).and_then(|slot| store.get(slot))
+            else {
+                continue;
+            };
+            let constant_value = || {
+                resolve_metadata_ref(&store, value_id.slot())
+                    .and_then(|slot| metadata_constant_int(self.module, &store, slot))
+                    .map(|(_, value)| value.limited_value(u64::MAX))
+            };
+            if name == "aarch64-elf-pauthabi-platform" {
+                pauth_abi_platform = constant_value();
+            } else if name == "aarch64-elf-pauthabi-version" {
+                pauth_abi_version = constant_value();
+            }
+        }
+
+        if pauth_abi_platform.is_some() != pauth_abi_version.is_some() {
+            return Err(self.fail_module_flags(
+                VerifierRule::ModuleFlagPauthAbiPairing,
+                "either both or no 'aarch64-elf-pauthabi-platform' and \
+                 'aarch64-elf-pauthabi-version' module flags must be present"
+                    .to_string(),
+            ));
+        }
+
+        // Validate that the requirements in the module are valid.
+        for requirement in requirements {
+            let Some(MetadataKind::Tuple { operands: pair, .. }) = store.get(requirement) else {
+                unreachable!("a collected requirement was validated as a metadata pair")
+            };
+            let Some(MetadataKind::String(flag_name)) =
+                resolve_metadata_ref(&store, pair[0].slot()).and_then(|slot| store.get(slot))
+            else {
+                unreachable!("a collected requirement's first operand was validated as a string")
+            };
+            let required_value = pair[1];
+            match seen.get(flag_name) {
+                None => {
+                    return Err(self.fail_module_flags(
+                        VerifierRule::ModuleFlagInvalidRequirement,
+                        format!(
+                            "invalid requirement on flag, flag is not present in module: !\"{flag_name}\""
+                        ),
+                    ));
+                }
+                Some(actual_value) => {
+                    if !self.metadata_structurally_equal(
+                        &store,
+                        actual_value.slot(),
+                        required_value.slot(),
+                        METADATA_EQUALITY_DEPTH_LIMIT,
+                    ) {
+                        return Err(self.fail_module_flags(
+                            VerifierRule::ModuleFlagInvalidRequirement,
+                            format!(
+                                "invalid requirement on flag, flag does not have the required value: !\"{flag_name}\""
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Mirrors `Verifier::visitModuleFlag` (`lib/IR/Verifier.cpp`): the
+    /// three-operand tuple shape, the behavior operand (via
+    /// [`ModuleFlagBehavior::from_raw`], the range check of
+    /// `Module::isValidModFlagBehavior`), the `MDString` ID, the
+    /// per-behavior value constraints, ID uniqueness outside `require`, and
+    /// the per-key `wchar_size` / `Linker Options` / `SemanticInterposition`
+    /// / `CG Profile` checks.
+    fn visit_module_flag(
+        &self,
+        store: &MetadataStore,
+        op: MetadataId<StoredBrand>,
+        seen: &mut HashMap<String, MetadataId<StoredBrand>>,
+        requirements: &mut Vec<MetadataSlot>,
+    ) -> IrResult<()> {
+        // Upstream a `NamedMDNode` operand is an `MDNode *` by type, so the
+        // only shape failure is the operand count; llvmkit's named-metadata
+        // operands are any metadata id, and a non-tuple operand lands in the
+        // same arm.
+        let operands = match resolve_metadata_ref(store, op.slot()).and_then(|slot| store.get(slot))
+        {
+            Some(MetadataKind::Tuple { operands, .. }) if operands.len() == 3 => operands.clone(),
+            _ => {
+                return Err(self.fail_module_flags(
+                    VerifierRule::ModuleFlagInvalidOperandCount,
+                    "incorrect number of operands in module flag".to_string(),
+                ));
+            }
+        };
+
+        // Behavior operand: a constant integer inside `1..=8`.
+        let Some((_, behavior_value)) = resolve_metadata_ref(store, operands[0].slot())
+            .and_then(|slot| metadata_constant_int(self.module, store, slot))
+        else {
+            return Err(self.fail_module_flags(
+                VerifierRule::ModuleFlagInvalidBehavior,
+                "invalid behavior operand in module flag (expected constant integer)".to_string(),
+            ));
+        };
+        let Some(behavior) = ModuleFlagBehavior::from_raw(behavior_value.limited_value(u64::MAX))
+        else {
+            return Err(self.fail_module_flags(
+                VerifierRule::ModuleFlagInvalidBehavior,
+                "invalid behavior operand in module flag (unexpected constant)".to_string(),
+            ));
+        };
+
+        // ID operand: a metadata string.
+        let key = match resolve_metadata_ref(store, operands[1].slot())
+            .and_then(|slot| store.get(slot))
+        {
+            Some(MetadataKind::String(s)) => s.clone(),
+            _ => {
+                return Err(self.fail_module_flags(
+                    VerifierRule::ModuleFlagInvalidId,
+                    "invalid ID operand in module flag (expected metadata string)".to_string(),
+                ));
+            }
+        };
+
+        // Check the values for behaviors with additional requirements.
+        let value_id = operands[2];
+        let value_slot = resolve_metadata_ref(store, value_id.slot());
+        let value_constant_int =
+            || value_slot.and_then(|slot| metadata_constant_int(self.module, store, slot));
+        match behavior {
+            // These behavior types accept any value.
+            ModuleFlagBehavior::Error
+            | ModuleFlagBehavior::Warning
+            | ModuleFlagBehavior::Override => {}
+            ModuleFlagBehavior::Min => {
+                if !value_constant_int().is_some_and(|(_, value)| value.is_non_negative()) {
+                    return Err(self.fail_module_flags(
+                        VerifierRule::ModuleFlagInvalidValue,
+                        "invalid value for 'min' module flag (expected constant non-negative \
+                         integer)"
+                            .to_string(),
+                    ));
+                }
+            }
+            ModuleFlagBehavior::Max => {
+                if value_constant_int().is_none() {
+                    return Err(self.fail_module_flags(
+                        VerifierRule::ModuleFlagInvalidValue,
+                        "invalid value for 'max' module flag (expected constant integer)"
+                            .to_string(),
+                    ));
+                }
+            }
+            ModuleFlagBehavior::Require => {
+                // The value should itself be a node with two operands: a
+                // flag ID string and a value.
+                let pair = match value_slot.and_then(|slot| store.get(slot)) {
+                    Some(MetadataKind::Tuple { operands, .. }) if operands.len() == 2 => {
+                        operands.clone()
+                    }
+                    _ => {
+                        return Err(self.fail_module_flags(
+                            VerifierRule::ModuleFlagInvalidValue,
+                            "invalid value for 'require' module flag (expected metadata pair)"
+                                .to_string(),
+                        ));
+                    }
+                };
+                let first_is_string = matches!(
+                    resolve_metadata_ref(store, pair[0].slot()).and_then(|slot| store.get(slot)),
+                    Some(MetadataKind::String(_))
+                );
+                if !first_is_string {
+                    return Err(self.fail_module_flags(
+                        VerifierRule::ModuleFlagInvalidValue,
+                        "invalid value for 'require' module flag (first value operand should be \
+                         a string)"
+                            .to_string(),
+                    ));
+                }
+                // Append it to the list of requirements, to check once all
+                // module flags are scanned.
+                requirements.push(value_slot.unwrap_or_else(|| {
+                    unreachable!("a decoded metadata pair resolved to a node slot")
+                }));
+            }
+            ModuleFlagBehavior::Append | ModuleFlagBehavior::AppendUnique => {
+                // These behavior types require the operand be a metadata
+                // node (upstream `isa<MDNode>` — a tuple or a specialized
+                // node here; strings, constants, and null are not nodes).
+                let is_node = matches!(
+                    value_slot.and_then(|slot| store.get(slot)),
+                    Some(MetadataKind::Tuple { .. } | MetadataKind::Specialized(_))
+                );
+                if !is_node {
+                    return Err(self.fail_module_flags(
+                        VerifierRule::ModuleFlagInvalidValue,
+                        "invalid value for 'append'-type module flag (expected a metadata node)"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Unless this is a "requires" flag, check the ID is unique.
+        if behavior != ModuleFlagBehavior::Require && seen.insert(key.clone(), value_id).is_some() {
+            return Err(self.fail_module_flags(
+                VerifierRule::ModuleFlagDuplicateId,
+                format!(
+                    "module flag identifiers must be unique (or of 'require' type): !\"{key}\""
+                ),
+            ));
+        }
+
+        if key == "wchar_size" && value_constant_int().is_none() {
+            return Err(self.fail_module_flags(
+                VerifierRule::ModuleFlagInvalidValue,
+                "wchar_size metadata requires constant integer argument".to_string(),
+            ));
+        }
+
+        if key == "Linker Options"
+            && self
+                .module
+                .named_metadata(&NamedMetadataName::LinkerOptions)
+                .is_none()
+        {
+            // If the llvm.linker.options named metadata exists, the flag was
+            // upgraded by the bitcode reader; otherwise it was created by a
+            // client directly and is no longer supported.
+            return Err(self.fail_module_flags(
+                VerifierRule::ModuleFlagLinkerOptionsUnsupported,
+                "'Linker Options' named metadata no longer supported".to_string(),
+            ));
+        }
+
+        if key == "SemanticInterposition" && value_constant_int().is_none() {
+            return Err(self.fail_module_flags(
+                VerifierRule::ModuleFlagInvalidValue,
+                "SemanticInterposition metadata requires constant integer argument".to_string(),
+            ));
+        }
+
+        if key == "CG Profile" {
+            // Upstream's `cast<MDNode>(Op->getOperand(2))` assumes a
+            // node-valued flag — guaranteed when the behavior is `append`
+            // (checked above), an assertion failure otherwise. llvmkit
+            // iterates the entries only when the value is a tuple.
+            if let Some(MetadataKind::Tuple {
+                operands: entries, ..
+            }) = value_slot.and_then(|slot| store.get(slot))
+            {
+                for entry in entries.clone() {
+                    self.visit_module_flag_cg_profile_entry(store, entry)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Mirrors `Verifier::visitModuleFlagCGProfileEntry`
+    /// (`lib/IR/Verifier.cpp`): each `CG Profile` entry is a three-operand
+    /// node of caller, callee, and count, where caller/callee are functions
+    /// or null and the count is a constant integer.
+    fn visit_module_flag_cg_profile_entry(
+        &self,
+        store: &MetadataStore,
+        entry: MetadataId<StoredBrand>,
+    ) -> IrResult<()> {
+        let triple = match resolve_metadata_ref(store, entry.slot())
+            .and_then(|slot| store.get(slot))
+        {
+            Some(MetadataKind::Tuple { operands, .. }) if operands.len() == 3 => operands.clone(),
+            _ => {
+                return Err(self.fail_module_flags(
+                    VerifierRule::ModuleFlagCgProfileMalformed,
+                    "expected a MDNode triple".to_string(),
+                ));
+            }
+        };
+        for function_operand in [triple[0], triple[1]] {
+            if !self.cg_profile_operand_is_function_or_null(store, function_operand) {
+                return Err(self.fail_module_flags(
+                    VerifierRule::ModuleFlagCgProfileMalformed,
+                    "expected a Function or null".to_string(),
+                ));
+            }
+        }
+        let count_is_integer = resolve_metadata_ref(store, triple[2].slot())
+            .and_then(|slot| metadata_constant_int(self.module, store, slot))
+            .is_some();
+        if !count_is_integer {
+            return Err(self.fail_module_flags(
+                VerifierRule::ModuleFlagCgProfileMalformed,
+                "expected an integer constant".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The `CheckFunction` lambda of `Verifier::visitModuleFlagCGProfileEntry`:
+    /// null passes; otherwise the operand must be a value-as-metadata whose
+    /// value strips to a `Function`. llvmkit's expressible spellings of such
+    /// a value are a `GlobalValueRef` constant naming a function (`ptr @f`)
+    /// or the function value itself.
+    fn cg_profile_operand_is_function_or_null(
+        &self,
+        store: &MetadataStore,
+        op: MetadataId<StoredBrand>,
+    ) -> bool {
+        let Some(slot) = resolve_metadata_ref(store, op.slot()) else {
+            return false;
+        };
+        match store.get(slot) {
+            Some(MetadataKind::Null) => true,
+            Some(MetadataKind::Constant(value_id)) => {
+                let data = self.module.context().value_data(value_id.slot());
+                match &data.kind {
+                    ValueKindData::Function(_) => true,
+                    ValueKindData::Constant(ConstantData::GlobalValueRef { value }) => matches!(
+                        self.module.context().value_data(*value).kind,
+                        ValueKindData::Function(_)
+                    ),
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Metadata equality for the `require` value comparison.
+    ///
+    /// Upstream compares `Op->getOperand(2) != ReqValue` — pointer identity,
+    /// which metadata uniquing makes structural for the uniqued kinds.
+    /// llvmkit interns strings and global-value-ref constants but not (yet)
+    /// tuples or integer constants (the constant-uniquing layer is recorded
+    /// future work), so identity alone would wrongly reject
+    /// `!{!"flag-1", i32 55}` against a flag whose value is a *different*
+    /// arena node spelling the same `i32 55`. This helper therefore compares
+    /// structurally, keeping upstream's identity semantics where uniquing
+    /// *is* identity upstream: `distinct` tuples and specialized nodes are
+    /// equal only as the same slot. Depth-capped so a
+    /// `metadata_reserve`/`metadata_set` cycle terminates (answering
+    /// `false`), which no well-formed flag value reaches.
+    fn metadata_structurally_equal(
+        &self,
+        store: &MetadataStore,
+        a: MetadataSlot,
+        b: MetadataSlot,
+        depth: u32,
+    ) -> bool {
+        if depth == 0 {
+            return false;
+        }
+        let (Some(a), Some(b)) = (
+            resolve_metadata_ref(store, a),
+            resolve_metadata_ref(store, b),
+        ) else {
+            return false;
+        };
+        if a == b {
+            return true;
+        }
+        let (Some(node_a), Some(node_b)) = (store.get(a), store.get(b)) else {
+            return false;
+        };
+        match (node_a, node_b) {
+            (MetadataKind::Null, MetadataKind::Null) => true,
+            (MetadataKind::String(x), MetadataKind::String(y)) => x == y,
+            (MetadataKind::Constant(x), MetadataKind::Constant(y)) => {
+                let data_x = self.module.context().value_data(x.slot());
+                let data_y = self.module.context().value_data(y.slot());
+                if data_x.ty != data_y.ty {
+                    return false;
+                }
+                match (&data_x.kind, &data_y.kind) {
+                    (ValueKindData::Constant(constant_x), ValueKindData::Constant(constant_y)) => {
+                        constant_x == constant_y
+                    }
+                    _ => false,
+                }
+            }
+            (
+                MetadataKind::Tuple {
+                    distinct: false,
+                    operands: x,
+                },
+                MetadataKind::Tuple {
+                    distinct: false,
+                    operands: y,
+                },
+            ) => {
+                x.len() == y.len()
+                    && x.iter().zip(y.iter()).all(|(x, y)| {
+                        self.metadata_structurally_equal(store, x.slot(), y.slot(), depth - 1)
+                    })
+            }
+            _ => false,
         }
     }
 

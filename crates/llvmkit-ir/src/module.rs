@@ -59,6 +59,7 @@ use super::constant::{
     BlockAddressPlaceholder, Constant, ConstantExprFlags, ConstantExprOpcode, IntoConstantValue,
     IsConstant,
 };
+use super::constant_range::metadata_constant_int;
 use super::constants::ConstantExprOptions;
 use super::data_layout::DataLayout;
 use super::derived_types::{
@@ -91,6 +92,9 @@ use super::marker::ReturnMarker;
 use super::metadata::{
     MetadataAttachmentSet, MetadataId, MetadataKind, MetadataSlot, MetadataStore,
     SpecializedMetadataNode, StoredBrand,
+};
+use super::module_flags::{
+    ModuleFlagBehavior, ModuleFlagEntry, ModuleFlagKey, module_flag_tuple, resolve_metadata_ref,
 };
 use super::named_md_node::{NamedMDNode, NamedMetadataId, NamedMetadataName, NamedMetadataSlot};
 use super::pass_context::{FunctionView, ModuleFunctionViews};
@@ -2682,6 +2686,130 @@ impl<'ctx> ModuleCore {
         self.named_metadata.borrow()
     }
 
+    // ---- Module flags ----
+    //
+    // Flags have no storage of their own: they are the three-operand tuples
+    // of the `llvm.module.flags` named metadata node, exactly as upstream
+    // stores them, so the printer and the parse/print round trip are
+    // untouched. Malformed tuples are skipped silently on this read path —
+    // upstream's `Module::getModuleFlagsMetadata` reads them unchecked with
+    // the comment "The verifier will catch errors"; the checking lives in
+    // `Verifier::visit_module_flags`.
+
+    /// The operand ids of the `llvm.module.flags` node, or an empty list
+    /// when the node is absent.
+    fn module_flag_operands(&self) -> Vec<MetadataId<StoredBrand>> {
+        let Some(id) = self.named_metadata(&NamedMetadataName::ModuleFlags) else {
+            return Vec::new();
+        };
+        let nmd = self.named_metadata.borrow();
+        let node = nmd.get(id.slot().0).unwrap_or_else(|| {
+            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+        });
+        node.operands().to_vec()
+    }
+
+    /// The value operand of the flag whose key string is `key`. Mirrors
+    /// `Module::getModuleFlag` (`lib/IR/Module.cpp`), which walks the flag
+    /// tuples comparing only the `!"key"` operand.
+    pub(super) fn module_flag_value(&self, key: &str) -> Option<MetadataId<StoredBrand>> {
+        let operands = self.module_flag_operands();
+        let store = self.metadata.borrow();
+        for op in operands {
+            let Some([_, key_id, value_id]) = module_flag_tuple(&store, op) else {
+                continue;
+            };
+            let Some(MetadataKind::String(s)) =
+                resolve_metadata_ref(&store, key_id.slot()).and_then(|slot| store.get(slot))
+            else {
+                continue;
+            };
+            if s.as_str() == key {
+                return Some(value_id);
+            }
+        }
+        None
+    }
+
+    /// Decode every well-formed flag tuple. Mirrors
+    /// `Module::getModuleFlagsMetadata(SmallVectorImpl<ModuleFlagEntry>&)`
+    /// (`lib/IR/Module.cpp`).
+    pub(super) fn module_flags_stored(&self) -> Vec<ModuleFlagEntry<StoredBrand>> {
+        let operands = self.module_flag_operands();
+        let store = self.metadata.borrow();
+        let mut entries = Vec::new();
+        for op in operands {
+            let Some([behavior_id, key_id, value_id]) = module_flag_tuple(&store, op) else {
+                continue;
+            };
+            let Some(behavior) = resolve_metadata_ref(&store, behavior_id.slot())
+                .and_then(|slot| metadata_constant_int(self, &store, slot))
+                .and_then(|(_, value)| ModuleFlagBehavior::from_raw(value.limited_value(u64::MAX)))
+            else {
+                continue;
+            };
+            let Some(MetadataKind::String(key)) =
+                resolve_metadata_ref(&store, key_id.slot()).and_then(|slot| store.get(slot))
+            else {
+                continue;
+            };
+            entries.push(ModuleFlagEntry {
+                behavior,
+                key: ModuleFlagKey::from_key(key),
+                value: value_id,
+            });
+        }
+        entries
+    }
+
+    /// The replace half of `Module::setModuleFlag` (`lib/IR/Module.cpp`):
+    /// overwrite the first flag whose key string is `key` with
+    /// `replacement`, preserving its position. `false` when no flag carries
+    /// that key — the caller then appends, exactly as upstream falls through
+    /// to `addModuleFlag`.
+    pub(super) fn replace_module_flag(
+        &self,
+        key: &str,
+        replacement: MetadataId<StoredBrand>,
+    ) -> bool {
+        let Some(id) = self.named_metadata(&NamedMetadataName::ModuleFlags) else {
+            return false;
+        };
+        let replace_at = {
+            let nmd = self.named_metadata.borrow();
+            let node = nmd.get(id.slot().0).unwrap_or_else(|| {
+                unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+            });
+            let store = self.metadata.borrow();
+            node.operands().iter().position(|op| {
+                matches!(
+                    module_flag_tuple(&store, *op).and_then(|[_, key_id, _]| {
+                        resolve_metadata_ref(&store, key_id.slot())
+                            .and_then(|slot| store.get(slot))
+                    }),
+                    Some(MetadataKind::String(s)) if s.as_str() == key
+                )
+            })
+        };
+        let Some(index) = replace_at else {
+            return false;
+        };
+        // `NamedMDNode` deliberately exposes no positional operand mutator
+        // (its public surface mirrors `NamedMDNode::addOperand`), so the
+        // replacement rebuilds the node with the one operand swapped —
+        // observable content is identical to upstream's `setOperand(i, ..)`.
+        let mut nmd = self.named_metadata.borrow_mut();
+        let node = nmd.get_mut(id.slot().0).unwrap_or_else(|| {
+            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+        });
+        let mut rebuilt = NamedMDNode::new(node.name().clone());
+        for (i, op) in node.operands().iter().enumerate() {
+            rebuilt.add_operand(if i == index { replacement } else { *op });
+        }
+        *node = rebuilt;
+        true
+    }
+
     // ---- Comdats ----
 
     /// Get or create a [`ComdatRef`](ComdatRef) of
@@ -4310,6 +4438,105 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
 
     pub fn named_metadata_count(&'ctx self) -> usize {
         self.core().named_metadata_count()
+    }
+
+    // ---- Module flags ----
+    //
+    // Backed entirely by the `llvm.module.flags` named metadata node — each
+    // flag is the three-operand tuple `!{i32 behavior, !"key", value}`
+    // upstream stores, so parsed IR, the printer, and the round-trip
+    // contract are untouched. The typed vocabulary lives in
+    // [`crate::module_flags`].
+
+    /// Append a module flag. Mirrors `Module::addModuleFlag`
+    /// (`lib/IR/Module.cpp`): builds the tuple
+    /// `!{i32 behavior, !"key", value}` and appends it to the
+    /// `llvm.module.flags` named metadata node, creating the node if absent.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `value` was minted by another
+    /// module (checked before anything is interned);
+    /// `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    pub fn add_module_flag<Key>(
+        &'ctx self,
+        behavior: ModuleFlagBehavior,
+        key: Key,
+        value: MetadataId<B>,
+    ) -> IrResult<()>
+    where
+        Key: Into<ModuleFlagKey>,
+    {
+        let tuple = self.module_flag_tuple_id(behavior, &key.into(), value)?;
+        let flags = self.get_or_insert_named_metadata(NamedMetadataName::ModuleFlags);
+        self.named_metadata_add_operand(flags, tuple)
+    }
+
+    /// Like [`add_module_flag`](Self::add_module_flag), but replaces the
+    /// existing flag with the same key in place (preserving its position)
+    /// instead of appending a duplicate. Mirrors `Module::setModuleFlag`
+    /// (`lib/IR/Module.cpp`).
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `value` was minted by another
+    /// module; `Err(IrError::UnknownMetadataSlot)` when it names nothing
+    /// here.
+    pub fn set_module_flag<Key>(
+        &'ctx self,
+        behavior: ModuleFlagBehavior,
+        key: Key,
+        value: MetadataId<B>,
+    ) -> IrResult<()>
+    where
+        Key: Into<ModuleFlagKey>,
+    {
+        let key = key.into();
+        let tuple = self.module_flag_tuple_id(behavior, &key, value)?;
+        if self
+            .core()
+            .replace_module_flag(key.key(), tuple.into_stored(self.core().id())?)
+        {
+            return Ok(());
+        }
+        let flags = self.get_or_insert_named_metadata(NamedMetadataName::ModuleFlags);
+        self.named_metadata_add_operand(flags, tuple)
+    }
+
+    /// The value operand of the flag named `key`, or `None` when no flag
+    /// carries that key. Mirrors `Module::getModuleFlag`
+    /// (`lib/IR/Module.cpp`). Resolve the returned id with
+    /// [`metadata_get`](Self::metadata_get).
+    pub fn module_flag(&'ctx self, key: &ModuleFlagKey) -> Option<MetadataId<B>> {
+        self.core()
+            .module_flag_value(key.key())
+            .map(MetadataId::from_stored)
+    }
+
+    /// Every well-formed module flag, in `llvm.module.flags` operand order.
+    /// Mirrors `Module::getModuleFlagsMetadata` (`lib/IR/Module.cpp`);
+    /// like upstream's read path, malformed tuples are skipped silently —
+    /// rejecting them is [`verify`](Self::verify)'s job.
+    pub fn module_flags(&'ctx self) -> Vec<ModuleFlagEntry<B>> {
+        self.core()
+            .module_flags_stored()
+            .into_iter()
+            .map(ModuleFlagEntry::from_stored)
+            .collect()
+    }
+
+    /// Shared tuple constructor for
+    /// [`add_module_flag`](Self::add_module_flag) /
+    /// [`set_module_flag`](Self::set_module_flag) — the `Ops[3]` array of
+    /// `Module::addModuleFlag`. Tag-checks `value` *before* interning the
+    /// behavior constant and key string, so a foreign id leaves no junk
+    /// nodes behind.
+    fn module_flag_tuple_id(
+        &'ctx self,
+        behavior: ModuleFlagBehavior,
+        key: &ModuleFlagKey,
+        value: MetadataId<B>,
+    ) -> IrResult<MetadataId<B>> {
+        self.core().metadata_slot_of(value)?;
+        let behavior_md = self.metadata_constant(self.i32_type().const_int(behavior.raw()))?;
+        let key_md = self.metadata_string(key.key());
+        self.metadata_tuple([behavior_md, key_md, value])
     }
 
     pub fn append_use_list_order(&'ctx self, record: UseListOrderRecord) -> IrResult<()> {

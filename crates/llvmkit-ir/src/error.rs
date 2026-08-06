@@ -397,6 +397,49 @@ pub enum VerifierRule {
     /// Mirrors `Verifier::verifyRangeLikeMetadata`.
     RangeMetadataContiguous,
 
+    /// A `llvm.module.flags` operand is not a three-operand metadata tuple.
+    /// Mirrors `Verifier::visitModuleFlag` ("incorrect number of operands in
+    /// module flag").
+    ModuleFlagInvalidOperandCount,
+    /// A module flag's behavior operand is not a constant integer, or is a
+    /// constant outside the `ModFlagBehavior` range `1..=8`. Mirrors
+    /// `Verifier::visitModuleFlag` (both "invalid behavior operand in module
+    /// flag" messages, split by `Module::isValidModFlagBehavior`).
+    ModuleFlagInvalidBehavior,
+    /// A module flag's ID operand is not a metadata string. Mirrors
+    /// `Verifier::visitModuleFlag` ("invalid ID operand in module flag
+    /// (expected metadata string)").
+    ModuleFlagInvalidId,
+    /// A module flag's value operand does not satisfy its behavior's
+    /// constraint: `min` needs a constant non-negative integer, `max` a
+    /// constant integer, `require` a two-element metadata pair whose first
+    /// operand is a string, `append`/`appendunique` a metadata node — plus
+    /// the per-key constant-integer constraints on `wchar_size` and
+    /// `SemanticInterposition`. Mirrors the behavior `switch` and per-key
+    /// checks of `Verifier::visitModuleFlag`.
+    ModuleFlagInvalidValue,
+    /// Two non-`require` module flags share one ID. Mirrors
+    /// `Verifier::visitModuleFlag` ("module flag identifiers must be unique
+    /// (or of 'require' type)").
+    ModuleFlagDuplicateId,
+    /// A `require` module flag names a flag that is absent, or one whose
+    /// value differs from the required value. Mirrors the requirement
+    /// validation loop of `Verifier::visitModuleFlags`.
+    ModuleFlagInvalidRequirement,
+    /// Exactly one of the `aarch64-elf-pauthabi-platform` /
+    /// `aarch64-elf-pauthabi-version` module flags is present. Mirrors
+    /// `Verifier::visitModuleFlags`.
+    ModuleFlagPauthAbiPairing,
+    /// A `Linker Options` module flag without the `llvm.linker.options`
+    /// named metadata the bitcode reader upgrades it to. Mirrors
+    /// `Verifier::visitModuleFlag` ("'Linker Options' named metadata no
+    /// longer supported").
+    ModuleFlagLinkerOptionsUnsupported,
+    /// A `CG Profile` entry is not a `(function, function, count)` triple:
+    /// not a three-operand node, a non-function non-null callee/caller, or a
+    /// non-integer count. Mirrors `Verifier::visitModuleFlagCGProfileEntry`.
+    ModuleFlagCgProfileMalformed,
+
     /// In-block use-before-def: an operand whose defining instruction follows
     /// the use within the same basic block. Mirrors
     /// `Verifier::verifyDominatesUse`.
@@ -508,6 +551,25 @@ impl fmt::Display for VerifierRule {
             Self::RangeMetadataOverlapping => "range intervals overlap",
             Self::RangeMetadataOutOfOrder => "range intervals are not in order",
             Self::RangeMetadataContiguous => "range intervals are contiguous",
+            Self::ModuleFlagInvalidOperandCount => "incorrect number of operands in module flag",
+            Self::ModuleFlagInvalidBehavior => "invalid behavior operand in module flag",
+            Self::ModuleFlagInvalidId => {
+                "invalid ID operand in module flag (expected metadata string)"
+            }
+            Self::ModuleFlagInvalidValue => {
+                "module flag value does not satisfy its behavior's requirements"
+            }
+            Self::ModuleFlagDuplicateId => {
+                "module flag identifiers must be unique (or of 'require' type)"
+            }
+            Self::ModuleFlagInvalidRequirement => "invalid requirement on module flag",
+            Self::ModuleFlagPauthAbiPairing => {
+                "either both or no 'aarch64-elf-pauthabi-platform' and 'aarch64-elf-pauthabi-version' module flags must be present"
+            }
+            Self::ModuleFlagLinkerOptionsUnsupported => {
+                "'Linker Options' named metadata no longer supported"
+            }
+            Self::ModuleFlagCgProfileMalformed => "CG Profile module flag entry is malformed",
             Self::UseBeforeDef => "instruction does not dominate all uses",
         };
         f.write_str(s)

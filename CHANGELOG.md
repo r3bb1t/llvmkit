@@ -24,6 +24,35 @@ bullet below names its wave.
 
 #### Changed
 
+- **Breaking (W7): typed module flags — `ModuleFlagBehavior` /
+  `ModuleFlagKey` / `ModuleFlagEntry`, module accessors, and the verifier
+  port (C-CUSTOM-TYPE).** New `module_flags` module mirroring
+  `Module::ModFlagBehavior` (`Module.h`, discriminants 1–8 with
+  `from_raw`/`raw` spelling `isValidModFlagBehavior`'s range check) and a
+  `#[non_exhaustive]` `ModuleFlagKey` naming the 27 well-known keys with
+  their exact `lib/IR/Module.cpp` spellings (`"Dwarf Version"`,
+  `"PIC Level"`, `"wchar_size"`, `"CG Profile"`, ...), `Custom(String)` for
+  the open rest, and `default_behavior()` giving the `Module.cpp` setter
+  pairing (`setPICLevel`→`Min`, `setUwtable`→`Max`, `setCodeModel`→`Error`,
+  `setSDKVersion`→`Warning`, ...; `None` where `Module.cpp` has no setter).
+  `Module` gains `add_module_flag` / `set_module_flag` (append vs
+  replace-in-place, mirroring `addModuleFlag`/`setModuleFlag`),
+  `module_flag(&ModuleFlagKey)`, and `module_flags() ->
+  Vec<ModuleFlagEntry>` — all backed by the `llvm.module.flags` named node
+  as ordinary `!{i32 behavior, !"key", value}` tuples, so printed IR and
+  the round-trip contract are untouched. The breaking half is the verifier:
+  `Verifier::visitModuleFlags` / `visitModuleFlag` /
+  `visitModuleFlagCGProfileEntry` are ported (tuple shape, behavior
+  validity, `MDString` ID, `min`/`max`/`require`/`append` value
+  constraints, ID uniqueness, requirement resolution, the
+  `aarch64-elf-pauthabi-*` pairing, and the `wchar_size` /
+  `Linker Options` / `SemanticInterposition` / `CG Profile` per-key
+  checks), so `verify` now rejects malformed `!llvm.module.flags` it
+  previously accepted — nine new `VerifierRule::ModuleFlag*` variants. One
+  deliberate deviation, documented in the verifier: upstream's `require`
+  comparison is uniqued-pointer identity; llvmkit compares structurally
+  because tuples and integer constants are not yet uniqued.
+
 - **W8: ADT leftovers — the fixed metadata kinds close their drift, the
   `deactivation-symbol` bundle tag is spelled right, and string-attribute
   reading gets typed (C-CUSTOM-TYPE).** `MetadataAttachmentKind` gains the 17
