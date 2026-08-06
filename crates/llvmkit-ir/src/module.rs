@@ -4609,12 +4609,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// Mirrors `Module::getModuleFlagsMetadata` (`lib/IR/Module.cpp`);
     /// like upstream's read path, malformed tuples are skipped silently —
     /// rejecting them is [`verify`](Self::verify)'s job.
-    pub fn module_flags(&'ctx self) -> Vec<ModuleFlagEntry<B>> {
+    ///
+    /// The flags live behind a `RefCell`, so the iterator walks a snapshot
+    /// taken at call time rather than borrowing the module.
+    pub fn module_flags(
+        &'ctx self,
+    ) -> impl ExactSizeIterator<Item = ModuleFlagEntry<B>>
+    + DoubleEndedIterator
+    + core::iter::FusedIterator
+    + use<B> {
         self.core()
             .module_flags_stored()
             .into_iter()
             .map(ModuleFlagEntry::from_stored)
-            .collect()
     }
 
     /// Shared tuple constructor for

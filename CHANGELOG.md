@@ -279,6 +279,10 @@ wave so a commit can be traced back to it.
   and `FunctionValue`'s string-attribute reader use it now instead of
   deep-cloning the whole table once per query. `Module::attribute_groups`
   itself, the whole-table read, became an iterator in the same wave.
+  `Module::module_flags` joins them: it shipped one wave earlier than this
+  sweep, so the sweep's list never contained it, and it was the last
+  `Vec`-returning read API on the public surface. It snapshots, like its
+  `RefCell`-backed siblings.
 
 - **Breaking (W10): `LoadBuilder` / `StoreBuilder` / `AllocaBuilder` — one
   spelling per memory op (C-BUILDER).** `load`, `store` and `alloca` each carry

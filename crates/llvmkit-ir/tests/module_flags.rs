@@ -296,7 +296,7 @@ fn module_flags_decodes_entries_and_skips_malformed() -> Result<(), IrError> {
     let flags_node = m.get_or_insert_named_metadata("llvm.module.flags");
     m.named_metadata_add_operand(flags_node, malformed)?;
 
-    let entries = m.module_flags();
+    let entries: Vec<_> = m.module_flags().collect();
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].behavior, ModuleFlagBehavior::Error);
     assert_eq!(entries[0].key, ModuleFlagKey::WcharSize);
@@ -322,7 +322,7 @@ fn add_appends_but_set_replaces_in_place() -> Result<(), IrError> {
     m.add_module_flag(ModuleFlagBehavior::Warning, "second", b)?;
     // Replace the *first* flag: position preserved, no duplicate added.
     m.set_module_flag(ModuleFlagBehavior::Warning, "first", c)?;
-    let entries = m.module_flags();
+    let entries: Vec<_> = m.module_flags().collect();
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].key, ModuleFlagKey::Custom("first".to_owned()));
     assert_eq!(entries[0].value, c);
@@ -332,7 +332,7 @@ fn add_appends_but_set_replaces_in_place() -> Result<(), IrError> {
     // which `module_flag` — a first-match walk like `getModuleFlag` —
     // does not observe.
     m.add_module_flag(ModuleFlagBehavior::Warning, "second", a)?;
-    assert_eq!(m.module_flags().len(), 3);
+    assert_eq!(m.module_flags().count(), 3);
     assert_eq!(m.module_flag(&ModuleFlagKey::from("second")), Some(b));
     Ok(())
 }
