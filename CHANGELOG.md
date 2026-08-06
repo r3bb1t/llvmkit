@@ -118,6 +118,14 @@ wave so a commit can be traced back to it.
   `AttributeStorage::or_default_mut` (was `get_mut_or_default`).
   The `get_or_insert_*` family keeps its std-consistent names.
 
+- **Breaking (W3 follow-up): `MemoryEffects::get_mod_ref` → `mod_ref`.**
+  One public accessor was missed by the sweep above and surfaced in the
+  documentation audit that followed. It sat beside its own un-prefixed
+  sibling `with_mod_ref`, so the pair read `get_mod_ref` / `with_mod_ref`.
+  Mirrors `MemoryEffectsBase::getModRef` (`ModRef.h`); upstream's camelCase
+  getter becomes a bare-noun Rust accessor, exactly as the other `get_*`
+  methods in this wave did (C-GETTER).
+
 - **Breaking (W3): conversion-name honesty (C-CONV).**
   `Value::as_const_int` → `to_const_int` (it allocates an `ApInt`);
   `AtomicOrdering::to_ir_string` and `IntPredicate`/`FloatPredicate::name`

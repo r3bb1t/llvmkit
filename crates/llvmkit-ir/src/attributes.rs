@@ -160,7 +160,11 @@ impl MemoryEffects {
         self.data
     }
 
-    pub const fn get_mod_ref(self, location: MemoryLocation) -> ModRefInfo {
+    /// The [`ModRefInfo`] recorded for `location`.
+    ///
+    /// Mirrors `MemoryEffectsBase::getModRef` (`ModRef.h`); the `get_` prefix
+    /// is dropped per C-GETTER.
+    pub const fn mod_ref(self, location: MemoryLocation) -> ModRefInfo {
         ModRefInfo::from_bits((self.data >> location.shift()) & Self::LOC_MASK)
     }
 
@@ -181,7 +185,7 @@ impl MemoryEffects {
     fn aggregate_mod_ref(self) -> ModRefInfo {
         let mut bits = 0;
         for location in MemoryLocation::ALL {
-            bits |= self.get_mod_ref(location).bits();
+            bits |= self.mod_ref(location).bits();
         }
         ModRefInfo::from_bits(bits)
     }
@@ -219,7 +223,7 @@ impl MemoryEffects {
 impl fmt::Display for MemoryEffects {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let effects = *self;
-        let other = effects.get_mod_ref(MemoryLocation::Other);
+        let other = effects.mod_ref(MemoryLocation::Other);
         let aggregate = effects.aggregate_mod_ref();
         let mut first = true;
 
@@ -230,7 +234,7 @@ impl fmt::Display for MemoryEffects {
         }
 
         for location in MemoryLocation::ALL {
-            let mod_ref = effects.get_mod_ref(location);
+            let mod_ref = effects.mod_ref(location);
             if mod_ref == other || location == MemoryLocation::Other {
                 continue;
             }
