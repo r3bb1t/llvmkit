@@ -15,7 +15,7 @@ use llvmkit_ir::{
     RoundingMode,
 };
 
-const BFLOAT: ApFloatSemantics = ApFloatSemantics::BFloat;
+const BFLOAT: ApFloatSemantics = ApFloatSemantics::Bfloat;
 const SINGLE: ApFloatSemantics = ApFloatSemantics::IeeeSingle;
 const DOUBLE: ApFloatSemantics = ApFloatSemantics::IeeeDouble;
 const QUAD: ApFloatSemantics = ApFloatSemantics::IeeeQuad;

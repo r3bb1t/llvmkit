@@ -28,7 +28,7 @@ pub enum TypeKindLabel {
     /// The 16-bit IEEE half-precision float (`half`).
     Half,
     /// The 16-bit brain-float (`bfloat`).
-    BFloat,
+    Bfloat,
     /// The 32-bit IEEE single-precision float (`float`).
     Float,
     /// The 64-bit IEEE double-precision float (`double`).
@@ -75,7 +75,7 @@ impl fmt::Display for TypeKindLabel {
         let s = match self {
             TypeKindLabel::Void => "void",
             TypeKindLabel::Half => "half",
-            TypeKindLabel::BFloat => "bfloat",
+            TypeKindLabel::Bfloat => "bfloat",
             TypeKindLabel::Float => "float",
             TypeKindLabel::Double => "double",
             TypeKindLabel::X86Fp80 => "x86_fp80",
@@ -120,7 +120,7 @@ pub enum ValueCategoryLabel {
     /// A global alias.
     GlobalAlias,
     /// A global indirect function (`ifunc`).
-    GlobalIFunc,
+    GlobalIfunc,
     /// Metadata wrapped as a value.
     MetadataAsValue,
     /// An inline-assembly value.
@@ -137,7 +137,7 @@ impl fmt::Display for ValueCategoryLabel {
             ValueCategoryLabel::Instruction => "instruction",
             ValueCategoryLabel::GlobalVariable => "global-variable",
             ValueCategoryLabel::GlobalAlias => "global-alias",
-            ValueCategoryLabel::GlobalIFunc => "global-ifunc",
+            ValueCategoryLabel::GlobalIfunc => "global-ifunc",
             ValueCategoryLabel::MetadataAsValue => "metadata-as-value",
             ValueCategoryLabel::InlineAsm => "inline-asm",
         };
@@ -319,14 +319,14 @@ pub enum VerifierRule {
     SelfReference,
     /// `fneg` operand or result is not floating-point, or result type
     /// does not match operand type. Mirrors `Verifier::visitFNeg`.
-    FNegTypeMismatch,
+    FnegTypeMismatch,
     /// `freeze` result type differs from operand type. Mirrors
     /// `Verifier::visitFreeze` ("Freeze should produce its operand's
     /// type").
     FreezeTypeMismatch,
     /// `va_arg` source operand is not a pointer. Mirrors
     /// `Verifier::visitVAArgInst`.
-    VAArgNonPointerOperand,
+    VaArgNonPointerOperand,
     /// `extractvalue` / `insertvalue` aggregate operand is not
     /// struct- or array-typed. Mirrors `Verifier::visitExtractValueInst`
     /// / `Verifier::visitInsertValueInst`.
@@ -356,7 +356,7 @@ pub enum VerifierRule {
     /// `atomicrmw` operand value type does not match the operation's
     /// expected element type, or the FP-only ops were given a non-FP
     /// operand.
-    AtomicRMWOperandTypeMismatch,
+    AtomicRmwOperandTypeMismatch,
     /// `switch` condition is not integer-typed, or a case value type
     /// disagrees with the condition. Mirrors `Verifier::visitSwitchInst`.
     SwitchOperandTypeMismatch,
@@ -396,6 +396,49 @@ pub enum VerifierRule {
     /// Range intervals are adjacent and should be coalesced.
     /// Mirrors `Verifier::verifyRangeLikeMetadata`.
     RangeMetadataContiguous,
+
+    /// A `llvm.module.flags` operand is not a three-operand metadata tuple.
+    /// Mirrors `Verifier::visitModuleFlag` ("incorrect number of operands in
+    /// module flag").
+    ModuleFlagInvalidOperandCount,
+    /// A module flag's behavior operand is not a constant integer, or is a
+    /// constant outside the `ModFlagBehavior` range `1..=8`. Mirrors
+    /// `Verifier::visitModuleFlag` (both "invalid behavior operand in module
+    /// flag" messages, split by `Module::isValidModFlagBehavior`).
+    ModuleFlagInvalidBehavior,
+    /// A module flag's ID operand is not a metadata string. Mirrors
+    /// `Verifier::visitModuleFlag` ("invalid ID operand in module flag
+    /// (expected metadata string)").
+    ModuleFlagInvalidId,
+    /// A module flag's value operand does not satisfy its behavior's
+    /// constraint: `min` needs a constant non-negative integer, `max` a
+    /// constant integer, `require` a two-element metadata pair whose first
+    /// operand is a string, `append`/`appendunique` a metadata node — plus
+    /// the per-key constant-integer constraints on `wchar_size` and
+    /// `SemanticInterposition`. Mirrors the behavior `switch` and per-key
+    /// checks of `Verifier::visitModuleFlag`.
+    ModuleFlagInvalidValue,
+    /// Two non-`require` module flags share one ID. Mirrors
+    /// `Verifier::visitModuleFlag` ("module flag identifiers must be unique
+    /// (or of 'require' type)").
+    ModuleFlagDuplicateId,
+    /// A `require` module flag names a flag that is absent, or one whose
+    /// value differs from the required value. Mirrors the requirement
+    /// validation loop of `Verifier::visitModuleFlags`.
+    ModuleFlagInvalidRequirement,
+    /// Exactly one of the `aarch64-elf-pauthabi-platform` /
+    /// `aarch64-elf-pauthabi-version` module flags is present. Mirrors
+    /// `Verifier::visitModuleFlags`.
+    ModuleFlagPauthAbiPairing,
+    /// A `Linker Options` module flag without the `llvm.linker.options`
+    /// named metadata the bitcode reader upgrades it to. Mirrors
+    /// `Verifier::visitModuleFlag` ("'Linker Options' named metadata no
+    /// longer supported").
+    ModuleFlagLinkerOptionsUnsupported,
+    /// A `CG Profile` entry is not a `(function, function, count)` triple:
+    /// not a three-operand node, a non-function non-null callee/caller, or a
+    /// non-integer count. Mirrors `Verifier::visitModuleFlagCGProfileEntry`.
+    ModuleFlagCgProfileMalformed,
 
     /// In-block use-before-def: an operand whose defining instruction follows
     /// the use within the same basic block. Mirrors
@@ -469,9 +512,9 @@ impl fmt::Display for VerifierRule {
             Self::CastTypeMismatch => "cast source/destination kind constraint failed",
             Self::CastWidthMismatch => "cast width relationship is invalid",
             Self::SelfReference => "only PHI nodes may reference their own value",
-            Self::FNegTypeMismatch => "fneg operand/result is not floating-point or types differ",
+            Self::FnegTypeMismatch => "fneg operand/result is not floating-point or types differ",
             Self::FreezeTypeMismatch => "freeze result type does not match operand type",
-            Self::VAArgNonPointerOperand => "va_arg source operand is not a pointer",
+            Self::VaArgNonPointerOperand => "va_arg source operand is not a pointer",
             Self::AggregateOpNonAggregate => {
                 "extractvalue/insertvalue aggregate is not struct- or array-typed"
             }
@@ -489,7 +532,7 @@ impl fmt::Display for VerifierRule {
             }
             Self::AtomicInvalidOrdering => "atomic op given an invalid memory ordering",
             Self::AtomicNonPointerOperand => "atomic op pointer operand is not a pointer",
-            Self::AtomicRMWOperandTypeMismatch => "atomicrmw operand type does not match operation",
+            Self::AtomicRmwOperandTypeMismatch => "atomicrmw operand type does not match operation",
             Self::SwitchOperandTypeMismatch => "switch operand types disagree",
             Self::IndirectBrNonPointerAddress => "indirectbr address operand is not a pointer",
             Self::GlobalInitializerTypeMismatch => {
@@ -508,6 +551,25 @@ impl fmt::Display for VerifierRule {
             Self::RangeMetadataOverlapping => "range intervals overlap",
             Self::RangeMetadataOutOfOrder => "range intervals are not in order",
             Self::RangeMetadataContiguous => "range intervals are contiguous",
+            Self::ModuleFlagInvalidOperandCount => "incorrect number of operands in module flag",
+            Self::ModuleFlagInvalidBehavior => "invalid behavior operand in module flag",
+            Self::ModuleFlagInvalidId => {
+                "invalid ID operand in module flag (expected metadata string)"
+            }
+            Self::ModuleFlagInvalidValue => {
+                "module flag value does not satisfy its behavior's requirements"
+            }
+            Self::ModuleFlagDuplicateId => {
+                "module flag identifiers must be unique (or of 'require' type)"
+            }
+            Self::ModuleFlagInvalidRequirement => "invalid requirement on module flag",
+            Self::ModuleFlagPauthAbiPairing => {
+                "either both or no 'aarch64-elf-pauthabi-platform' and 'aarch64-elf-pauthabi-version' module flags must be present"
+            }
+            Self::ModuleFlagLinkerOptionsUnsupported => {
+                "'Linker Options' named metadata no longer supported"
+            }
+            Self::ModuleFlagCgProfileMalformed => "CG Profile module flag entry is malformed",
             Self::UseBeforeDef => "instruction does not dominate all uses",
         };
         f.write_str(s)
@@ -518,7 +580,13 @@ impl fmt::Display for VerifierRule {
 ///
 /// Variants are added incrementally as new subsystems land. Marked
 /// `#[non_exhaustive]` so future additions are non-breaking.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+///
+/// `Hash` alongside `Eq` so an error can be de-duplicated: a verifier or a
+/// pass driver that collects failures across a whole module wants a
+/// `HashSet<IrError>`, not a `Vec` it has to scan. Every payload is a plain
+/// `String`, `&'static str`, or integer, so the derive is total. The sibling
+/// `llvmkit_asmparser::ParseError` already carried `Hash` for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum IrError {
     /// Integer width outside `[`[`MIN_INT_BITS`]`, `[`MAX_INT_BITS`]`]`.
@@ -778,13 +846,13 @@ pub enum IrError {
         name: String,
     },
 
-    /// `IRBuilder::build_ret` was given a value whose type does not
+    /// `IrBuilder::ret` was given a value whose type does not
     /// match the function's declared return type.
     #[error("return type mismatch: function returns {expected}, got {got}")]
     ReturnTypeMismatch {
         /// The type kind the function is declared to return.
         expected: TypeKindLabel,
-        /// The type kind of the value passed to `build_ret`.
+        /// The type kind of the value passed to `ret`.
         got: TypeKindLabel,
     },
 
@@ -811,6 +879,39 @@ pub enum IrError {
     InvalidDataLayout {
         /// Why the `target datalayout` string could not be parsed.
         reason: String,
+    },
+    /// A `.ll` keyword did not name any variant of the enum it was parsed
+    /// into — the error of the [`FromStr`](core::str::FromStr) family
+    /// ([`Linkage`](crate::Linkage), [`Visibility`](crate::Visibility),
+    /// [`AtomicOrdering`](crate::AtomicOrdering),
+    /// [`CallingConv`](crate::CallingConv), …).
+    ///
+    /// `target` names the type that rejected it, so one message serves the
+    /// whole family without each enum inventing its own error. Mirrors the
+    /// shape of `LLParser`'s `error(Loc, "invalid ... keyword")` diagnostics —
+    /// upstream's parser reaches the same dead end from its generated keyword
+    /// tables.
+    #[error("invalid {target} keyword '{keyword}'")]
+    InvalidKeyword {
+        /// The type that rejected the keyword, e.g. `"linkage"`.
+        target: &'static str,
+        /// The unrecognized keyword text.
+        keyword: String,
+    },
+    /// A raw numeric discriminant did not name any variant of the enum it was
+    /// converted into — the error of the [`TryFrom`] family that pairs with
+    /// each enum's `from_raw` const constructor
+    /// ([`IntPredicate`](crate::IntPredicate),
+    /// [`FloatPredicate`](crate::FloatPredicate)). `from_raw` stays the
+    /// `const fn` path and returns [`Option`]; `TryFrom` is the `?`-friendly
+    /// one and says which value was rejected.
+    #[error("invalid {target} discriminant {value}")]
+    InvalidDiscriminant {
+        /// The type that rejected the value, e.g. `"icmp predicate"`.
+        target: &'static str,
+        /// The rejected raw discriminant, widened to the largest raw width in
+        /// the family so one variant serves them all.
+        value: u64,
     },
     /// A textual optimization level did not match LLVM's built-in aliases.
     #[error("invalid optimization level '{level}'")]
@@ -932,14 +1033,12 @@ pub enum IrError {
     #[error("value id belongs to a different Module")]
     ForeignValueId,
 
-    /// A [`MetadataId`](crate::MetadataId) or a named-metadata index named
-    /// nothing in the target [`Module`](crate::Module) — the id's tag matched,
-    /// but its slot is past the end of the arena.
+    /// A [`MetadataId`](crate::MetadataId) named nothing in the target
+    /// [`Module`](crate::Module) — the id's tag matched, but its slot is past
+    /// the end of the arena.
     ///
-    /// Raised by [`Module::metadata_set`](crate::Module::metadata_set),
-    /// [`Module::metadata_as_value`](crate::Module::metadata_as_value), and
-    /// [`Module::named_metadata_add_operand`](crate::Module::named_metadata_add_operand)
-    /// (whose `index` is a plain named-node position, not a tagged id). A
+    /// Raised by [`Module::metadata_set`](crate::Module::metadata_set) and
+    /// [`Module::metadata_as_value`](crate::Module::metadata_as_value). A
     /// *foreign* id is [`ForeignMetadataId`](Self::ForeignMetadataId) instead:
     /// the tag separates the two cases, so an in-range slot from another module
     /// is rejected rather than silently mis-resolved.
@@ -968,6 +1067,20 @@ pub enum IrError {
     #[error("metadata id belongs to a different Module")]
     ForeignMetadataId,
 
+    /// A [`NamedMetadataId`](crate::NamedMetadataId) was used against a
+    /// different [`Module`](crate::Module) than the one that minted it. The
+    /// id's module tag did not match the target module, so it cannot name a
+    /// node there.
+    ///
+    /// The named-metadata twin of
+    /// [`ForeignMetadataId`](Self::ForeignMetadataId), raised by
+    /// [`Module::named_metadata_add_operand`](crate::Module::named_metadata_add_operand)
+    /// when the *id* (rather than the operand) is foreign. The lookup,
+    /// [`Module::named_metadata_get`](crate::Module::named_metadata_get),
+    /// returns `None` for a foreign id instead.
+    #[error("named metadata id belongs to a different Module")]
+    ForeignNamedMetadataId,
+
     /// [`crate::SsaState::for_function`] was given a function that
     /// already has a body. The layer must observe every CFG edge from
     /// birth (Braun's algorithm needs to see every `br` as it is
@@ -994,7 +1107,7 @@ pub enum IrError {
     /// on the on-the-fly SSA layer only (the crate's `_dyn` convention),
     /// because that layer's whole purpose is authoring a CFG discovered
     /// at run time — see `ssa_builder.rs`'s module docs. The plain
-    /// [`IRBuilder`](crate::IRBuilder) keeps its static positioning
+    /// [`IrBuilder`](crate::IrBuilder) keeps its static positioning
     /// type-state untouched.
     #[error("SsaBuilder has no current block; call switch_to_block first")]
     SsaUnpositioned,

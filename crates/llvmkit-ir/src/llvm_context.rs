@@ -227,7 +227,7 @@ impl Context {
         self.singleton(&self.half, TypeData::Half)
     }
     pub(crate) fn bfloat(&self) -> TypeSlot {
-        self.singleton(&self.bfloat, TypeData::BFloat)
+        self.singleton(&self.bfloat, TypeData::Bfloat)
     }
     pub(crate) fn float(&self) -> TypeSlot {
         self.singleton(&self.float, TypeData::Float)
@@ -486,7 +486,7 @@ impl Context {
                 .any(|&param| self.type_reaches_type(param, target, visited)),
             TypeData::Void
             | TypeData::Half
-            | TypeData::BFloat
+            | TypeData::Bfloat
             | TypeData::Float
             | TypeData::Double
             | TypeData::X86Fp80
@@ -819,7 +819,7 @@ impl Context {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
-            kind: ValueKindData::Constant(ConstantData::DSOLocalEquivalent { function }),
+            kind: ValueKindData::Constant(ConstantData::DsoLocalEquivalent { function }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.dso_local_equivalent_constants

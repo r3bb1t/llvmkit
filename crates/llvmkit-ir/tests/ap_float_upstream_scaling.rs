@@ -17,7 +17,7 @@ use llvmkit_ir::{
 };
 
 const HALF: ApFloatSemantics = ApFloatSemantics::IeeeHalf;
-const BFLOAT: ApFloatSemantics = ApFloatSemantics::BFloat;
+const BFLOAT: ApFloatSemantics = ApFloatSemantics::Bfloat;
 const SINGLE: ApFloatSemantics = ApFloatSemantics::IeeeSingle;
 const DOUBLE: ApFloatSemantics = ApFloatSemantics::IeeeDouble;
 const QUAD: ApFloatSemantics = ApFloatSemantics::IeeeQuad;

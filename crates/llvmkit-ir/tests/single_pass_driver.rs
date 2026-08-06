@@ -23,7 +23,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use llvmkit_ir::{
-    Analyses, Dyn, FnCx, FnReport, FunctionPass, IRBuilder, Inspect, IrError, IrResult, Linkage,
+    Analyses, Dyn, FnCx, FnReport, FunctionPass, Inspect, IrBuilder, IrError, IrResult, Linkage,
     ModCx, ModReport, Module, ModuleBrand, ModulePass, RewriteModule, Unverified, Verified,
     module_new, run_function_pass, run_module_pass,
 };
@@ -64,11 +64,11 @@ impl<B: ModuleBrand> ModulePass<B> for CountFunctionsPass {
 fn inspect_module_pass_stays_verified_and_runs() -> Result<(), IrError> {
     let m = module_new!("inspect-module-pass")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    b.build_ret(i32_ty.const_int(1_u32))?;
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    b.ret(i32_ty.const_int(1_u32))?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();
@@ -121,11 +121,11 @@ impl<B: ModuleBrand> ModulePass<B> for AddGlobalPass {
 fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
     let m = module_new!("rewrite-module-pass")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    b.build_ret(i32_ty.const_int(0_u32))?;
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    b.ret(i32_ty.const_int(0_u32))?;
 
     let verified = m.verify()?;
     assert_eq!(verified.globals().len(), 0);
@@ -188,11 +188,11 @@ impl<B: ModuleBrand> FunctionPass<B> for InspectFnPass {
 fn inspect_function_pass_stays_verified_and_runs() -> Result<(), IrError> {
     let m = module_new!("inspect-function-pass")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    b.build_ret(i32_ty.const_int(1_u32))?;
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    b.ret(i32_ty.const_int(1_u32))?;
 
     let verified = m.verify()?;
     let mut analyses = Analyses::new();

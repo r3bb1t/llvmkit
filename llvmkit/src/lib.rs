@@ -9,13 +9,16 @@
 //! location utilities.
 
 pub mod asmparser {
+    #[doc(inline)]
     pub use llvmkit_asmparser::*;
 }
 
 pub mod ir {
+    #[doc(inline)]
     pub use llvmkit_ir::*;
 }
 
 pub mod support {
+    #[doc(inline)]
     pub use llvmkit_support::*;
 }

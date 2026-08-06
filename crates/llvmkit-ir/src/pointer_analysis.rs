@@ -12,7 +12,7 @@
 //!
 //! # What is not modeled, and why
 //!
-//! - [`get_underlying_objects`] takes no `LoopInfo`. Upstream uses it for one
+//! - [`underlying_objects`] takes no `LoopInfo`. Upstream uses it for one
 //!   refinement — refusing to look through a loop-header phi whose underlying
 //!   object changes every iteration — and llvmkit has no loop analysis, so the
 //!   phi is always looked through. That is also upstream's behaviour at its own
@@ -25,7 +25,7 @@
 //!   parameter lets it *synthesise* `insertvalue` instructions to rebuild a
 //!   sub-aggregate; an analysis that edits the IR it is asked about has no
 //!   place here, and `std::nullopt` is upstream's own default.
-//! - [`get_constant_data_array_info`] does not port `ReadByteArrayFromGlobal`,
+//! - [`constant_data_array_info`] does not port `ReadByteArrayFromGlobal`,
 //!   the `ConstantFolding.cpp` helper that re-reads an arbitrary initializer as
 //!   bytes. Only initializers that are already an array of the requested
 //!   element width, or a zeroinitializer, are read. Declining to read narrows
@@ -46,13 +46,13 @@ use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::value_tracking::value_from_slot;
 use std::collections::HashSet;
 
-/// How many layers [`get_underlying_object`] peels before giving up.
+/// How many layers [`underlying_object`] peels before giving up.
 ///
 /// Ports `llvm::MaxLookupSearchDepth` (`ValueTracking.h`), the default of every
 /// `MaxLookup` parameter in this family.
 pub const MAX_LOOKUP_SEARCH_DEPTH: u32 = 10;
 
-/// How many distinct objects [`get_underlying_object_aggressive`] visits before
+/// How many distinct objects [`underlying_object_aggressive`] visits before
 /// falling back. Ports its local `MaxVisited`.
 const MAX_VISITED_AGGRESSIVE: usize = 8;
 
@@ -68,9 +68,9 @@ const MAX_VISITED_AGGRESSIVE: usize = 8;
 ///
 /// The result is not guaranteed to be an *identifiable* object — the walk stops
 /// at whatever it cannot peel, which may be a `load`, an argument, or `value`
-/// itself. [`get_underlying_objects_for_code_gen`] is the variant that insists
+/// itself. [`underlying_objects_for_code_gen`] is the variant that insists
 /// on identifiability.
-pub fn get_underlying_object<'ctx, B: ModuleBrand + 'ctx>(
+pub fn underlying_object<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     max_lookup: u32,
 ) -> Value<'ctx, B> {
@@ -86,7 +86,7 @@ pub fn get_underlying_object<'ctx, B: ModuleBrand + 'ctx>(
     current
 }
 
-/// One step of [`get_underlying_object`]'s loop, or `None` when nothing peels.
+/// One step of [`underlying_object`]'s loop, or `None` when nothing peels.
 fn peel_one_layer<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
     // `dyn_cast<GEPOperator>`: a `getelementptr` instruction or the constant
     // expression of the same name. Only a scalar pointer base peels — a vector
@@ -134,16 +134,16 @@ fn peel_one_layer<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<
     }
 }
 
-/// Try harder than [`get_underlying_object`] to name a *single* object,
+/// Try harder than [`underlying_object`] to name a *single* object,
 /// following `select` and `phi` when every path agrees.
 ///
 /// Ports `llvm::getUnderlyingObjectAggressive`. When the paths disagree, or
 /// more than eight distinct objects turn up, the answer falls back to
-/// `get_underlying_object(value)`.
-pub fn get_underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
+/// `underlying_object(value)`.
+pub fn underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Value<'ctx, B> {
-    let first_object = get_underlying_object(value, MAX_LOOKUP_SEARCH_DEPTH);
+    let first_object = underlying_object(value, MAX_LOOKUP_SEARCH_DEPTH);
     let mut visited: HashSet<ValueSlot> = HashSet::new();
     let mut worklist = vec![value];
     let mut object: Option<Value<'ctx, B>> = None;
@@ -154,7 +154,7 @@ pub fn get_underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
             first = false;
             first_object
         } else {
-            get_underlying_object(candidate, MAX_LOOKUP_SEARCH_DEPTH)
+            underlying_object(candidate, MAX_LOOKUP_SEARCH_DEPTH)
         };
 
         if !visited.insert(candidate.slot()) {
@@ -195,9 +195,9 @@ pub fn get_underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
 /// Every object `value` may refer to, following `select` and `phi`.
 ///
 /// Ports `llvm::getUnderlyingObjects`. Where
-/// [`get_underlying_object_aggressive`] gives up on disagreement, this collects
+/// [`underlying_object_aggressive`] gives up on disagreement, this collects
 /// each answer: given `select %c, ptr %a, ptr %b` it returns both.
-pub fn get_underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
+pub fn underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     max_lookup: u32,
 ) -> Vec<Value<'ctx, B>> {
@@ -206,7 +206,7 @@ pub fn get_underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
     let mut worklist = vec![value];
 
     while let Some(candidate) = worklist.pop() {
-        let candidate = get_underlying_object(candidate, max_lookup);
+        let candidate = underlying_object(candidate, max_lookup);
         if !visited.insert(candidate.slot()) {
             continue;
         }
@@ -231,13 +231,13 @@ pub fn get_underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
     objects
 }
 
-/// [`get_underlying_objects`] plus `inttoptr` chasing, insisting every result
+/// [`underlying_objects`] plus `inttoptr` chasing, insisting every result
 /// is an identifiable object.
 ///
 /// Ports `llvm::getUnderlyingObjectsForCodeGen`. Upstream returns a `bool` and
 /// clears its out-parameter on failure; here failure is `None`, so a caller
 /// cannot read a half-filled list.
-pub fn get_underlying_objects_for_code_gen<'ctx, B: ModuleBrand + 'ctx>(
+pub fn underlying_objects_for_code_gen<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<Vec<Value<'ctx, B>>> {
     let mut objects = Vec::new();
@@ -245,7 +245,7 @@ pub fn get_underlying_objects_for_code_gen<'ctx, B: ModuleBrand + 'ctx>(
     let mut working = vec![value];
 
     while let Some(current) = working.pop() {
-        for object in get_underlying_objects(current, MAX_LOOKUP_SEARCH_DEPTH) {
+        for object in underlying_objects(current, MAX_LOOKUP_SEARCH_DEPTH) {
             if !visited.insert(object.slot()) {
                 continue;
             }
@@ -595,7 +595,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ConstantDataArraySlice<'ctx, B> {
 ///
 /// `offset` is upstream's starting element offset, added to whatever the
 /// pointer arithmetic contributes.
-pub fn get_constant_data_array_info<'ctx, B: ModuleBrand + 'ctx>(
+pub fn constant_data_array_info<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     element_size: u32,
     offset: u64,
@@ -608,7 +608,7 @@ pub fn get_constant_data_array_info<'ctx, B: ModuleBrand + 'ctx>(
 
     // Drill down through the pointer expression, ignoring intervening casts,
     // and identify the object it references.
-    let global = get_underlying_object(value, MAX_LOOKUP_SEARCH_DEPTH);
+    let global = underlying_object(value, MAX_LOOKUP_SEARCH_DEPTH);
     let ValueKindData::GlobalVariable(data) = &global.data().kind else {
         return None;
     };
@@ -685,12 +685,12 @@ pub fn get_constant_data_array_info<'ctx, B: ModuleBrand + 'ctx>(
 /// Upstream writes a `StringRef` into the caller's buffer and returns a
 /// `bool`; here the string is the `Some`. It is a `Vec<u8>` rather than a
 /// `String` because the bytes are IR data and need not be UTF-8.
-pub fn get_constant_string_info<'ctx, B: ModuleBrand + 'ctx>(
+pub fn constant_string_info<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     trim_at_nul: bool,
     data_layout: &DataLayout,
 ) -> Option<Vec<u8>> {
-    let slice = get_constant_data_array_info(value, 8, 0, data_layout)?;
+    let slice = constant_data_array_info(value, 8, 0, data_layout)?;
 
     let Some(_) = slice.array() else {
         if trim_at_nul {
@@ -726,7 +726,7 @@ pub fn get_constant_string_info<'ctx, B: ModuleBrand + 'ctx>(
 /// tell"; that is `None` here, so a caller cannot mistake it for a length.
 ///
 /// `char_size` is in bits and defaults to 8 upstream.
-pub fn get_string_length<'ctx, B: ModuleBrand + 'ctx>(
+pub fn string_length<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
     char_size: u32,
     data_layout: &DataLayout,
@@ -815,7 +815,7 @@ fn string_length_recursive<'ctx, B: ModuleBrand + 'ctx>(
     }
 
     // Otherwise, try to read the string.
-    let Some(slice) = get_constant_data_array_info(value, char_size, 0, data_layout) else {
+    let Some(slice) = constant_data_array_info(value, char_size, 0, data_layout) else {
         return StringLength::Unknown;
     };
     if slice.array().is_none() {
@@ -972,7 +972,7 @@ pub fn find_inserted_value<'ctx, B: ModuleBrand + 'ctx>(
     if let ValueKindData::Constant(_) = &value.data().kind {
         // `C->getAggregateElement(idx)`.
         let element = Constant::from_parts(value).aggregate_element(first)?;
-        return find_inserted_value(element.into_erased(), rest);
+        return find_inserted_value(element.as_erased(), rest);
     }
 
     match instruction_kind(value)? {
@@ -1115,7 +1115,7 @@ pub(crate) fn strip_pointer_casts_same_representation<'ctx, B: ModuleBrand + 'ct
 ///
 /// Not public: it belongs to `AliasAnalysis.h`, a surface the ValueTracking
 /// parity ledger does not track, and only
-/// [`get_underlying_objects_for_code_gen`] reads it.
+/// [`underlying_objects_for_code_gen`] reads it.
 fn is_identified_object<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
     if matches!(
         instruction_kind(value),
@@ -1127,7 +1127,7 @@ fn is_identified_object<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> b
         // A `GlobalAlias` is deliberately excluded: it names another object.
         ValueKindData::GlobalVariable(_)
         | ValueKindData::Function(_)
-        | ValueKindData::GlobalIFunc(_) => return true,
+        | ValueKindData::GlobalIfunc(_) => return true,
         // `isNoAliasOrByValArgument`.
         ValueKindData::Argument { parent_fn, slot } => {
             return argument_has_any_attribute(
@@ -1209,7 +1209,7 @@ fn splat_byte(bits: &ApInt) -> Option<u8> {
 /// the long-double formats upstream declines.
 fn float_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<u32> {
     match ty.kind() {
-        TypeKind::Half | TypeKind::BFloat => Some(16),
+        TypeKind::Half | TypeKind::Bfloat => Some(16),
         TypeKind::Float => Some(32),
         TypeKind::Double => Some(64),
         _ => None,

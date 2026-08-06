@@ -333,7 +333,7 @@ pub(crate) enum ConstantData {
         block: ValueSlot,
     },
     /// `dso_local_equivalent @function`.
-    DSOLocalEquivalent { function: ValueSlot },
+    DsoLocalEquivalent { function: ValueSlot },
     /// `no_cfi @function`.
     NoCfi { function: ValueSlot },
     /// `token none`.
@@ -393,7 +393,7 @@ impl ConstantData {
             | Self::SymbolDelta { .. }
             | Self::SymbolDeltaPlus { .. }
             | Self::BlockAddress { .. }
-            | Self::DSOLocalEquivalent { .. }
+            | Self::DsoLocalEquivalent { .. }
             | Self::NoCfi { .. }
             | Self::TokenNone
             | Self::TargetExtNone
@@ -407,6 +407,8 @@ impl ConstantData {
 ///
 /// The erased [`Constant`] view may be embedded in parsed constants and
 /// instructions, but only this parser-only handle can resolve the placeholder.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct BlockAddressPlaceholder<'ctx, B: ModuleBrand> {
     constant: Constant<'ctx, B>,
 }
@@ -484,11 +486,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// folder materialises a fixed one into an element list at construction.
     pub fn splat_value(self, allow_poison: bool) -> Option<Constant<'ctx, B>> {
         let (element_ty, _, _) = self.ty().data().as_vector()?;
-        let element_ty = Type::new(element_ty, self.into_erased().module());
+        let element_ty = Type::new(element_ty, self.as_erased().module());
 
-        match &self.into_erased().data().kind {
+        match &self.as_erased().data().kind {
             ValueKindData::Constant(ConstantData::Poison) => {
-                return Some(element_ty.get_poison().as_constant());
+                return Some(element_ty.poison().as_constant());
             }
             // `isa<ConstantAggregateZero>`: llvmkit spells a zeroinitializer
             // as an aggregate of zeros, so this arm catches only the
@@ -502,11 +504,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
         }
 
         let ValueKindData::Constant(ConstantData::Aggregate(elements)) =
-            &self.into_erased().data().kind
+            &self.as_erased().data().kind
         else {
             return None;
         };
-        let module = self.into_erased().module();
+        let module = self.as_erased().module();
         let element_at = |slot: &ValueSlot| {
             let data = module.context().value_data(*slot);
             Constant::from_parts(Value::from_parts(*slot, module, data.ty))
@@ -516,7 +518,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
         for slot in elements.iter() {
             let element = element_at(slot);
             let element_is_poison = matches!(
-                &element.into_erased().data().kind,
+                &element.as_erased().data().kind,
                 ValueKindData::Constant(ConstantData::Poison)
             );
             match splat {
@@ -528,7 +530,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
                 // A defined lane replaces a poison one already seen.
                 Some(seen)
                     if matches!(
-                        &seen.into_erased().data().kind,
+                        &seen.as_erased().data().kind,
                         ValueKindData::Constant(ConstantData::Poison)
                     ) =>
                 {
@@ -563,7 +565,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// mask lane reads back as `-1` through `getShuffleMask`, so it fails.
     /// Every lane must be a defined zero.
     fn constant_expression_splat_value(self) -> Option<Constant<'ctx, B>> {
-        let module = self.into_erased().module();
+        let module = self.as_erased().module();
         let at = |slot: ValueSlot| {
             Constant::from_parts(Value::from_parts(
                 slot,
@@ -574,12 +576,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
         let is_undefined = |constant: Constant<'ctx, B>| {
             // `isa<UndefValue>`, which catches `poison` upstream.
             matches!(
-                &constant.into_erased().data().kind,
+                &constant.as_erased().data().kind,
                 ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison)
             )
         };
 
-        let ValueKindData::Constant(ConstantData::Expr(shuffle)) = &self.into_erased().data().kind
+        let ValueKindData::Constant(ConstantData::Expr(shuffle)) = &self.as_erased().data().kind
         else {
             return None;
         };
@@ -594,8 +596,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
         }
 
         let inserted = at(shuffle_source);
-        let ValueKindData::Constant(ConstantData::Expr(insert)) =
-            &inserted.into_erased().data().kind
+        let ValueKindData::Constant(ConstantData::Expr(insert)) = &inserted.as_erased().data().kind
         else {
             return None;
         };
@@ -610,8 +611,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
         }
 
         // `Index && Index->getValue() == 0`.
-        let ValueKindData::Constant(ConstantData::Int(words)) =
-            &at(index).into_erased().data().kind
+        let ValueKindData::Constant(ConstantData::Int(words)) = &at(index).as_erased().data().kind
         else {
             return None;
         };
@@ -636,7 +636,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// global references and the symbol-relative payloads — are never null,
     /// which is the answer upstream gives them too.
     pub fn is_null_value(self) -> bool {
-        let value = self.into_erased();
+        let value = self.as_erased();
         match &value.data().kind {
             ValueKindData::Constant(ConstantData::Int(words)) => {
                 words.iter().all(|word| *word == 0)
@@ -667,7 +667,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// upstream routes this one through `getSplatValue` instead, so a vector
     /// of all-ones lanes qualifies only where that recognises a splat.
     pub fn is_all_ones_value(self) -> bool {
-        let value = self.into_erased();
+        let value = self.as_erased();
         match (&value.data().kind, self.ty().kind()) {
             // Check for -1 integers.
             (ValueKindData::Constant(ConstantData::Int(words)), TypeKind::Integer { bits }) => {
@@ -712,7 +712,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// vector constant is always an element list — so those arms are
     /// unreachable rather than missing.
     pub fn aggregate_element(self, index: u32) -> Option<Constant<'ctx, B>> {
-        let value = self.into_erased();
+        let value = self.as_erased();
         let ValueKindData::Constant(constant) = &value.data().kind else {
             return None;
         };
@@ -733,16 +733,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
             // `isa<ScalableVectorType>` bail-out sits *above* these two, so a
             // scalable `undef` answers nothing — that ordering is what
             // [`Self::aggregate_element_type`] reproduces.
-            ConstantData::Undef => Some(
-                self.aggregate_element_type(index)?
-                    .get_undef()
-                    .as_constant(),
-            ),
-            ConstantData::Poison => Some(
-                self.aggregate_element_type(index)?
-                    .get_poison()
-                    .as_constant(),
-            ),
+            ConstantData::Undef => Some(self.aggregate_element_type(index)?.undef().as_constant()),
+            ConstantData::Poison => {
+                Some(self.aggregate_element_type(index)?.poison().as_constant())
+            }
             _ => None,
         }
     }
@@ -754,7 +748,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
     /// `UndefValue` and `PoisonValue` share, plus the `isa<ScalableVectorType>`
     /// bail-out that guards them.
     fn aggregate_element_type(self, index: u32) -> Option<Type<'ctx, B>> {
-        let module = self.into_erased().module();
+        let module = self.as_erased().module();
         let data = self.ty().data();
         let slot = if let Some((element, lanes, scalable)) = data.as_vector() {
             if scalable || index >= lanes {
@@ -775,7 +769,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
 
     /// Widen to the erased [`Value`] handle.
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -800,7 +794,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
 /// direction for an "is this all ones" test.
 fn float_format_bit_width(kind: TypeKind) -> Option<u32> {
     match kind {
-        TypeKind::Half | TypeKind::BFloat => Some(16),
+        TypeKind::Half | TypeKind::Bfloat => Some(16),
         TypeKind::Float => Some(32),
         TypeKind::Double => Some(64),
         TypeKind::Fp128 => Some(128),
@@ -810,17 +804,17 @@ fn float_format_bit_width(kind: TypeKind) -> Option<u32> {
 
 impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for Constant<'ctx, B> {
     /// Print the operand form `<type> <literal>`, identical to what the
-    /// erased [`Value`] handle from [`Constant::into_erased`] prints.
+    /// erased [`Value`] handle from [`Constant::as_erased`] prints.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(&Constant::into_erased(*self), f)
+        core::fmt::Display::fmt(&Constant::as_erased(*self), f)
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> sealed::Sealed for Constant<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for Constant<'ctx, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        Constant::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        Constant::as_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(Constant);
@@ -833,31 +827,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> Typed<'ctx, B> for Constant<'ctx, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for Constant<'ctx, B> {
     #[inline]
     fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
     #[inline]
     fn set_name<Name>(self, module_token: &'ctx Module<B, Unverified>, name: Name)
     where
         Name: Into<String>,
     {
-        self.into_erased().set_name(module_token, name);
+        self.as_erased().set_name(module_token, name);
     }
     #[inline]
     fn clear_name(self, module_token: &'ctx Module<B, Unverified>) {
-        self.into_erased().clear_name(module_token);
+        self.as_erased().clear_name(module_token);
     }
 }
 impl<B: ModuleBrand + 'static> HasDebugLoc for Constant<'_, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.into_erased().debug_loc()
+        self.as_erased().debug_loc()
     }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> From<Constant<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(c: Constant<'ctx, B>) -> Self {
-        c.into_erased()
+        c.as_erased()
     }
 }
 

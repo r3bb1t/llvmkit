@@ -165,3 +165,122 @@ fn unbounded_parameters_still_work() {
     assert_eq!(hash_of(&g), hash_of(&h));
     assert_eq!(format!("{g:?}"), "G { x: 9 }");
 }
+
+// -- opt-in ordering: struct, lexicographic over all fields ------------------
+
+#[derive(Branded)]
+#[branded(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct Ranked<B> {
+    major: u32,
+    minor: u32,
+    _brand: PhantomData<fn(B) -> B>,
+}
+
+fn ranked(major: u32, minor: u32) -> Ranked<NoTraits> {
+    Ranked {
+        major,
+        minor,
+        _brand: PhantomData,
+    }
+}
+
+/// llvmkit-specific: the derive's ordering is field-order lexicographic and
+/// still needs no bound on the unbounded brand. No upstream counterpart —
+/// `#[derive(Branded)]` exists because std's derive cannot express this.
+#[test]
+fn struct_ordering_is_lexicographic() {
+    assert!(ranked(1, 0) < ranked(1, 1), "second field breaks the tie");
+    assert!(ranked(1, 9) < ranked(2, 0), "first field dominates");
+    assert_eq!(ranked(3, 4).cmp(&ranked(3, 4)), std::cmp::Ordering::Equal);
+    assert_eq!(
+        ranked(3, 4).partial_cmp(&ranked(3, 5)),
+        Some(std::cmp::Ordering::Less)
+    );
+
+    let mut v = [ranked(2, 1), ranked(1, 7), ranked(2, 0)];
+    v.sort();
+    assert_eq!(
+        v.iter().map(|r| (r.major, r.minor)).collect::<Vec<_>>(),
+        [(1, 7), (2, 0), (2, 1)]
+    );
+}
+
+/// llvmkit-specific: `Ord` and the derived `PartialEq` agree — `cmp` returns
+/// `Equal` exactly when `eq` is true, which is the contract `Ord` states and
+/// what a `BTreeMap` keyed by a branded id relies on. No upstream counterpart.
+#[test]
+fn struct_ordering_agrees_with_equality() {
+    let values = [ranked(1, 1), ranked(1, 2), ranked(2, 1)];
+    for a in values {
+        for b in values {
+            assert_eq!(
+                a.cmp(&b) == std::cmp::Ordering::Equal,
+                a == b,
+                "cmp/eq disagree on {a:?} vs {b:?}"
+            );
+            assert_eq!(a.partial_cmp(&b), Some(a.cmp(&b)));
+        }
+    }
+}
+
+// -- opt-in ordering: enum, declaration order then payload -------------------
+
+#[derive(Branded)]
+#[branded(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Rung<B> {
+    Low,
+    Mid(u32),
+    High(PhantomData<fn(B) -> B>),
+}
+
+/// llvmkit-specific: enum ordering ranks by declaration order first, then by
+/// payload — matching the std derive's semantics without its bounds, and
+/// without an `as`-cast on the discriminant. No upstream counterpart.
+#[test]
+fn enum_ordering_ranks_by_declaration_then_payload() {
+    let low = Rung::<NoTraits>::Low;
+    let mid1 = Rung::<NoTraits>::Mid(1);
+    let mid2 = Rung::<NoTraits>::Mid(2);
+    let high = Rung::<NoTraits>::High(PhantomData);
+
+    assert!(low < mid1, "earlier variant sorts first");
+    assert!(mid1 < mid2, "same variant compares payloads");
+    assert!(mid2 < high, "later variant sorts last");
+    assert_eq!(low.cmp(&low), std::cmp::Ordering::Equal);
+    assert_eq!(
+        high.cmp(&high),
+        std::cmp::Ordering::Equal,
+        "an all-phantom variant ties with itself"
+    );
+
+    let mut v = [high, mid2, low, mid1];
+    v.sort();
+    assert_eq!(v, [low, mid1, mid2, high]);
+}
+
+// -- partial orders stay partial ---------------------------------------------
+
+#[derive(Branded)]
+#[branded(Clone, Copy, Debug, PartialEq, PartialOrd)]
+struct Measured<B> {
+    value: f64,
+    _brand: PhantomData<fn(B) -> B>,
+}
+
+/// llvmkit-specific: `PartialOrd` alone is derivable, and an incomparable
+/// field (NaN) propagates `None` rather than being forced into a total order.
+/// No upstream counterpart.
+#[test]
+fn partial_ord_without_ord_stays_partial() {
+    let nan = Measured::<NoTraits> {
+        value: f64::NAN,
+        _brand: PhantomData,
+    };
+    let one = Measured::<NoTraits> {
+        value: 1.0,
+        _brand: PhantomData,
+    };
+    assert_eq!(one.partial_cmp(&one), Some(std::cmp::Ordering::Equal));
+    assert_eq!(nan.partial_cmp(&one), None);
+    assert_eq!(nan.partial_cmp(&nan), None);
+}

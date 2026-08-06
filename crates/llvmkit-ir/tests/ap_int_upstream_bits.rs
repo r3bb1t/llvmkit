@@ -16,13 +16,13 @@
 
 use std::collections::HashMap;
 
-use llvmkit_ir::{ApInt, ApIntSignedness, ApIntTruncation};
+use llvmkit_ir::{ApInt, ApIntTruncation, Signedness};
 
 fn unsigned(bit_width: u32, value: u64) -> ApInt {
     ApInt::new(
         bit_width,
         value,
-        ApIntSignedness::Unsigned,
+        Signedness::Unsigned,
         ApIntTruncation::Truncate,
     )
     .expect("truncating construction cannot overflow")
@@ -32,7 +32,7 @@ fn signed(bit_width: u32, value: i64) -> ApInt {
     ApInt::new(
         bit_width,
         u64::from_ne_bytes(value.to_ne_bytes()),
-        ApIntSignedness::Signed,
+        Signedness::Signed,
         ApIntTruncation::Truncate,
     )
     .expect("truncating construction cannot overflow")

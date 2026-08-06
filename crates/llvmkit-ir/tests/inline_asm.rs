@@ -2,7 +2,7 @@
 //! (mirrors LLVM's `InlineAsm`) and the `asm "...", "..."` printer path in
 //! the asm-writer's `CallInst` arm.
 
-use llvmkit_ir::{AsmDialect, Dyn, IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{AsmDialect, Dyn, IrBuilder, IrError, Linkage, module_new};
 
 /// `%r = call i64 asm sideeffect "add $1, $0", "=r,r,r"(i64 %a, i64 %b)`.
 /// Mirrors `AsmWriter.cpp::writeAsOperandInternal(Value*)` inline-asm arm.
@@ -15,26 +15,26 @@ fn inline_asm_call_with_side_effects() -> Result<(), IrError> {
     let i64_ty = m.i64_type();
 
     // The function the host body lives in: i64 @add_via_asm(i64 %a, i64 %b).
-    let host_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+    let host_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()]);
     let host = m.add_function_dyn("add_via_asm", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let a = m.view(host).param(0).expect("param 0");
     let bb = m.view(host).param(1).expect("param 1");
 
     // i64 (i64, i64) inline asm with sideeffect.
-    let asm_fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+    let asm_fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()]);
     let asm = m.inline_asm(
         asm_fn_ty,
         "add $1, $0",
         "=r,r,r",
-        llvmkit_ir::InlineAsmOptions::new().side_effects(true),
+        llvmkit_ir::InlineAsmOptions::new().side_effects(),
     );
 
-    let r = b.build_inline_asm_call::<i64, _, _, _>(asm, [a, bb], "r")?;
+    let r = b.inline_asm_call::<i64, _, _, _>(asm, [a, bb], "r")?;
     let ret = b.view(r).return_int_value();
-    b.build_ret(ret)?;
+    b.ret(ret)?;
 
     let text = format!("{m}");
 
@@ -69,14 +69,14 @@ fn inline_asm_call_without_side_effects() -> Result<(), IrError> {
     let m = module_new!("inline_asm_pure")?;
     let i32_ty = m.i32_type();
 
-    let host_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let host_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let host = m.add_function_dyn("neg_via_asm", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let x = m.view(host).param(0).expect("param 0");
 
-    let asm_fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let asm_fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let asm = m.inline_asm(
         asm_fn_ty,
         "neg $0",
@@ -84,9 +84,9 @@ fn inline_asm_call_without_side_effects() -> Result<(), IrError> {
         llvmkit_ir::InlineAsmOptions::new(),
     );
 
-    let r = b.build_inline_asm_call::<i32, _, _, _>(asm, [x], "r")?;
+    let r = b.inline_asm_call::<i32, _, _, _>(asm, [x], "r")?;
     let ret = b.view(r).return_int_value();
-    b.build_ret(ret)?;
+    b.ret(ret)?;
 
     let text = format!("{m}");
 
@@ -111,22 +111,22 @@ fn inline_asm_multiline_escapes_newline() -> Result<(), IrError> {
     let m = module_new!("inline_asm_multiline")?;
     let void_ty = m.void_type();
 
-    let host_ty = m.fn_type_no_params(void_ty.as_type(), false);
+    let host_ty = m.function_type_no_parameters(void_ty.as_type());
     let host = m.add_function_dyn("fence_via_asm", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
-    let asm_fn_ty = m.fn_type_no_params(void_ty.as_type(), false);
+    let asm_fn_ty = m.function_type_no_parameters(void_ty.as_type());
     // Two instructions separated by a newline in the template.
     let asm = m.inline_asm(
         asm_fn_ty,
         "nop\nnop",
         "",
-        llvmkit_ir::InlineAsmOptions::new().side_effects(true),
+        llvmkit_ir::InlineAsmOptions::new().side_effects(),
     );
 
-    b.build_inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value<'_, _>>::new(), "")?;
-    b.build_ret_void()?;
+    b.inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value<'_, _>>::new(), "")?;
+    b.ret_void()?;
 
     let text = format!("{m}");
 
@@ -153,19 +153,15 @@ fn indirect_call_rejects_wrong_return_marker() -> Result<(), IrError> {
     let m = module_new!("indirect_marker")?;
     let void_ty = m.void_type();
     let ptr_ty = m.ptr_type(0);
-    let host_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let host_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let callee_ptr =
         llvmkit_ir::PointerValue::try_from(m.view(host).param(0).expect("callee ptr"))?;
-    let callee_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let err = b
-        .build_indirect_call_dyn::<i64, _, _, _, _>(
+        .indirect_call_dyn::<i64, _, _, _, _>(
             callee_ty,
             callee_ptr,
             Vec::<llvmkit_ir::Value<'_, _>>::new(),
@@ -185,14 +181,14 @@ fn indirect_call_rejects_wrong_return_marker() -> Result<(), IrError> {
 fn inline_asm_call_rejects_label_constraint() -> Result<(), IrError> {
     let m = module_new!("asm_label_constraint")?;
     let void_ty = m.void_type();
-    let host_ty = m.fn_type_no_params(void_ty.as_type(), false);
+    let host_ty = m.function_type_no_parameters(void_ty.as_type());
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
-    let asm_ty = m.fn_type_no_params(void_ty.as_type(), false);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let asm_ty = m.function_type_no_parameters(void_ty.as_type());
     let asm = m.inline_asm(asm_ty, "", "!i", llvmkit_ir::InlineAsmOptions::new());
-    b.build_inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value<'_, _>>::new(), "")?;
-    b.build_ret_void()?;
+    b.inline_asm_call::<(), _, _, _>(asm, Vec::<llvmkit_ir::Value<'_, _>>::new(), "")?;
+    b.ret_void()?;
     let err = m
         .verify_borrowed()
         .expect_err("ordinary call with label constraint must fail");
@@ -212,13 +208,13 @@ fn inline_asm_intel_dialect_keyword() -> Result<(), IrError> {
     let m = module_new!("inline_asm_intel")?;
     let i64_ty = m.i64_type();
 
-    let host_ty = m.fn_type(i64_ty, [i64_ty.as_type()], false);
+    let host_ty = m.function_type(i64_ty, [i64_ty.as_type()]);
     let host = m.add_function_dyn("id_via_asm", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x = m.view(host).param(0).expect("param 0");
 
-    let asm_fn_ty = m.fn_type(i64_ty, [i64_ty.as_type()], false);
+    let asm_fn_ty = m.function_type(i64_ty, [i64_ty.as_type()]);
     let asm = m.inline_asm(
         asm_fn_ty,
         "mov $0, $1",
@@ -226,9 +222,9 @@ fn inline_asm_intel_dialect_keyword() -> Result<(), IrError> {
         llvmkit_ir::InlineAsmOptions::new().with_dialect(AsmDialect::Intel),
     );
 
-    let r = b.build_inline_asm_call::<i64, _, _, _>(asm, [x], "r")?;
+    let r = b.inline_asm_call::<i64, _, _, _>(asm, [x], "r")?;
     let ret = b.view(r).return_int_value();
-    b.build_ret(ret)?;
+    b.ret(ret)?;
 
     let text = format!("{m}");
     assert!(

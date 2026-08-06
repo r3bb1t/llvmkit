@@ -36,7 +36,7 @@ fn vector_type_n_constructor_prints_and_round_trips() {
 fn value_narrows_to_matching_typed_vector() {
     let m = module_new!("vt").expect("fresh module");
     let vt = m.vector_type_n::<i32, 4>();
-    let v = vt.as_type().get_poison().into_erased();
+    let v = vt.as_type().poison().as_erased();
 
     let typed: VectorValue<'_, i32, Len<4>, _> = v.try_into().expect("<4 x i32> narrows");
     assert_eq!(format!("{}", typed.ty().as_type()), "<4 x i32>");
@@ -53,11 +53,7 @@ fn value_narrows_to_matching_typed_vector() {
 fn wrong_lane_count_is_rejected() {
     let m = module_new!("vt").expect("fresh module");
     let i32_ty = m.i32_type();
-    let v = m
-        .vector_type(i32_ty, 2, false)
-        .as_type()
-        .get_poison()
-        .into_erased();
+    let v = m.vector_type(i32_ty, 2).as_type().poison().as_erased();
 
     let err = VectorValue::<i32, Len<4>, _>::try_from(v)
         .expect_err("<2 x i32> must not narrow to Len<4>");
@@ -70,11 +66,7 @@ fn wrong_lane_count_is_rejected() {
 fn wrong_element_type_is_rejected() {
     let m = module_new!("vt").expect("fresh module");
     let i64_ty = m.i64_type();
-    let v = m
-        .vector_type(i64_ty, 4, false)
-        .as_type()
-        .get_poison()
-        .into_erased();
+    let v = m.vector_type(i64_ty, 4).as_type().poison().as_erased();
 
     let err = VectorValue::<i32, Len<4>, _>::try_from(v)
         .expect_err("<4 x i64> must not narrow to <i32, Len<4>>");
@@ -90,11 +82,7 @@ fn wrong_element_type_is_rejected() {
 fn erased_narrowing_accepts_any_vector() {
     let m = module_new!("vt").expect("fresh module");
     let i64_ty = m.i64_type();
-    let v = m
-        .vector_type(i64_ty, 3, false)
-        .as_type()
-        .get_poison()
-        .into_erased();
+    let v = m.vector_type(i64_ty, 3).as_type().poison().as_erased();
 
     let erased: VectorValue<'_, ElemDyn, LenDyn, _> =
         v.try_into().expect("any vector narrows to the dyn form");

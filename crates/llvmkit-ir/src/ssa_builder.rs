@@ -1,4 +1,4 @@
-//! On-the-fly SSA construction on top of the typed [`crate::IRBuilder`].
+//! On-the-fly SSA construction on top of the typed [`crate::IrBuilder`].
 //!
 //! Ports the "simple and efficient" algorithm from Braun, Buchwald,
 //! Hack, Leißa, Mehofer, Kempf, "Simple and Efficient Construction of
@@ -41,7 +41,7 @@
 //! (see `examples/lifter_session.rs`, which the old shape could not
 //! express at all).
 //!
-//! What is emphatically **not** softened: [`crate::IRBuilder`]'s own
+//! What is emphatically **not** softened: [`crate::IrBuilder`]'s own
 //! linear `BasicBlock` token and its terminator-consuming cursor stay
 //! exactly as they were. A linear capability never becomes a `Copy` id —
 //! that is why the phi `Open`/`Closed` marker was retired while the
@@ -65,7 +65,7 @@ use super::function::FunctionValue;
 use super::instruction::{Instruction, state::Attached};
 use super::int_width::{IntWidth, IntoConstantInt, IntoIntValue, StaticIntWidth};
 use super::ir_builder::constant_folder::ConstantFolder;
-use super::ir_builder::folder::IRBuilderFolder;
+use super::ir_builder::folder::IrBuilderFolder;
 use super::ir_builder::{IntoReturnValue, Positioned};
 use super::marker::{Dyn, ReturnMarker};
 use super::module::{Invariant, Module, ModuleBrand, ModuleRef, Unverified};
@@ -285,12 +285,12 @@ impl<B: ModuleBrand> PointerVariable<B> {
 /// insertion capability -- the linear `BasicBlock` handles stay inside the
 /// `SsaBuilder`; this implements [`crate::IntoBasicBlockLabel`] as the
 /// escape hatch for feeding a `br`/successor built through the plain
-/// [`IRBuilder`] surface elsewhere.
+/// [`IrBuilder`] surface elsewhere.
 ///
 /// Wraps the storable [`BlockId`] currency with the owning builder's identity,
 /// so it is lifetime-free like the id it carries.
 ///
-/// [`IRBuilder`]: crate::IRBuilder
+/// [`IrBuilder`]: crate::IrBuilder
 pub struct SsaBlock<R: ReturnMarker, B: ModuleBrand> {
     id: BlockId<R, B>,
     owner: SsaBuilderId,
@@ -332,7 +332,7 @@ impl<R: ReturnMarker, B: ModuleBrand> core::hash::Hash for SsaBlock<R, B> {
 impl<R: ReturnMarker, B: ModuleBrand> SsaBlock<R, B> {
     /// The underlying storable [`BlockId`], usable anywhere a
     /// [`crate::IntoBasicBlockLabel`] source is accepted (e.g. a plain
-    /// `IRBuilder::build_br` target).
+    /// `IrBuilder::br` target).
     #[inline]
     pub fn id(&self) -> BlockId<R, B> {
         self.id
@@ -527,7 +527,7 @@ impl<B: ModuleBrand> SsaState<B> {
 }
 
 /// Cranelift-`FunctionBuilder`-style layer on top of the typed
-/// [`IRBuilder`] implementing Braun et al.'s on-the-fly SSA construction
+/// [`IrBuilder`] implementing Braun et al.'s on-the-fly SSA construction
 /// (sealed blocks, incomplete phis, trivial-phi elimination). See the
 /// module docs for the algorithm citation and for why the insertion
 /// point is *data* rather than a type-state parameter.
@@ -536,11 +536,11 @@ impl<B: ModuleBrand> SsaState<B> {
 /// and its [`SsaState`], and holds nothing that cannot be rebuilt from
 /// the two. Mint one, drive it, drop it; the session lives in the state.
 ///
-/// [`IRBuilder`]: crate::IRBuilder
+/// [`IrBuilder`]: crate::IrBuilder
 pub struct SsaBuilder<'s, 'ctx, B, F = ConstantFolder, R = Dyn>
 where
     B: ModuleBrand,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
     module: &'ctx Module<B, Unverified>,
@@ -550,7 +550,7 @@ where
     /// needs an insertion point reports [`IrError::SsaUnpositioned`] when
     /// it is empty, and every terminator empties it.
     ///
-    /// The payload is the positioned plain [`IRBuilder`] itself rather
+    /// The payload is the positioned plain [`IrBuilder`] itself rather
     /// than a bare [`BlockId`], for one reason: it is what lets
     /// [`ins`](Self::ins) hand out a **borrow**. A borrowed positioned
     /// builder cannot reach the plain builder's `self`-consuming
@@ -560,9 +560,28 @@ where
     /// any time ([`current_block`](Self::current_block)), so nothing
     /// about "the position is data" is given up.
     ///
-    /// [`IRBuilder`]: crate::IRBuilder
-    cursor: Option<super::ir_builder::IRBuilder<'ctx, 'ctx, B, F, Positioned, R>>,
+    /// [`IrBuilder`]: crate::IrBuilder
+    cursor: Option<super::ir_builder::IrBuilder<'ctx, 'ctx, B, F, Positioned, R>>,
     state: &'s mut SsaState<B>,
+}
+
+/// Prints the session's *position*, not its contents: which function is being
+/// built, and whether the cursor is currently parked in a block. The Braun
+/// state (`SsaState`) is the algorithm's incremental bookkeeping — printing
+/// it would dump every variable definition in every block — and the folder is
+/// a caller-supplied type with no `Debug` bound.
+impl<B, F, R> core::fmt::Debug for SsaBuilder<'_, '_, B, F, R>
+where
+    B: ModuleBrand,
+    F: for<'any> IrBuilderFolder<'any, B> + Clone,
+    R: ReturnMarker,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SsaBuilder")
+            .field("function", &self.function.name())
+            .field("positioned", &self.cursor.is_some())
+            .finish()
+    }
 }
 
 impl<'s, 'ctx, B: ModuleBrand + 'ctx, R: ReturnMarker> SsaBuilder<'s, 'ctx, B, ConstantFolder, R> {
@@ -585,7 +604,7 @@ impl<'s, 'ctx, B: ModuleBrand + 'ctx, R: ReturnMarker> SsaBuilder<'s, 'ctx, B, C
 impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
     /// [`for_function`](SsaBuilder::for_function) with a caller-supplied
@@ -616,7 +635,7 @@ where
 impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
     /// This session's per-module id. Exposed for diagnostics /
@@ -861,7 +880,7 @@ where
 impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
     /// Move the cursor to the end of `block`.
@@ -888,7 +907,7 @@ where
         // at every reposition rather than assumed from a token this
         // layer had been hoarding.
         self.cursor = Some(
-            super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone())
+            super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone())
                 .position_at_end_dyn(block.id)?,
         );
         Ok(())
@@ -956,14 +975,14 @@ where
 impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
     /// The full existing typed instruction surface, cranelift-style:
-    /// `b.ins()?.build_int_mul(a, b, "x")?`.
+    /// `b.ins()?.int_mul(a, b, "x")?`.
     ///
     /// The `&`-return makes the plain
-    /// [`IRBuilder`](super::ir_builder::IRBuilder)'s self-consuming
+    /// [`IrBuilder`](super::ir_builder::IrBuilder)'s self-consuming
     /// methods (terminators, repositioning) structurally unreachable
     /// through this handle -- the `SsaBuilder` never surrenders its
     /// positioned builder, which keeps its CFG bookkeeping (edges/fill
@@ -974,7 +993,7 @@ where
     /// What *did* change in cycle D is only the failure mode: an
     /// unpositioned builder used to be a different type (so this was an
     /// `E0599`), and now reports [`IrError::SsaUnpositioned`].
-    pub fn ins(&self) -> IrResult<&super::ir_builder::IRBuilder<'ctx, 'ctx, B, F, Positioned, R>> {
+    pub fn ins(&self) -> IrResult<&super::ir_builder::IrBuilder<'ctx, 'ctx, B, F, Positioned, R>> {
         self.cursor.as_ref().ok_or(IrError::SsaUnpositioned)
     }
 
@@ -1031,7 +1050,7 @@ where
     {
         self.check_owner_var(var.owner)?;
         let v = value.into_int_value(self.module_ref())?;
-        super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.into_erased().ty())?;
+        super::r#type::Type::new(var.ty, self.module_ref()).require_match(v.as_erased().ty())?;
         let block = self.current_block_id()?;
         self.write_variable(var.index, block, v.slot());
         Ok(())
@@ -1159,7 +1178,7 @@ where
         }
         let src_id = self.current_block_id()?;
         let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
-        let (_terminated, _inst) = inner.build_br(dest.id)?;
+        let (_terminated, _inst) = inner.br(dest.id)?;
         self.state.preds.entry(dest_id).or_default().push(src_id);
         self.state.filled.insert(src_id);
         Ok(())
@@ -1195,7 +1214,7 @@ where
         }
         let src_id = self.current_block_id()?;
         let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
-        let (_terminated, _inst) = inner.build_cond_br(cond, then_dest.id, else_dest.id)?;
+        let (_terminated, _inst) = inner.cond_br(cond, then_dest.id, else_dest.id)?;
         self.state.preds.entry(then_id).or_default().push(src_id);
         self.state.preds.entry(else_id).or_default().push(src_id);
         self.state.filled.insert(src_id);
@@ -1269,7 +1288,7 @@ where
         }
         let src_id = self.current_block_id()?;
         let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
-        let (_terminated, open) = inner.build_switch_dyn(cond, default_dest.id, "")?;
+        let (_terminated, open) = inner.switch_dyn(cond, default_dest.id, "")?;
         let mut open = open;
         for (case_value, target) in cases {
             open = open.add_case(case_value, target.id).unwrap_or_else(|_| {
@@ -1295,18 +1314,18 @@ where
     {
         let src_id = self.current_block_id()?;
         let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
-        let (_terminated, _inst) = inner.build_ret(value)?;
+        let (_terminated, _inst) = inner.ret(value)?;
         self.state.filled.insert(src_id);
         Ok(())
     }
 
     /// Produce `unreachable`. Mirrors `IRBuilder::CreateUnreachable`.
-    /// Records no edges. The inner `build_unreachable` is infallible, so
+    /// Records no edges. The inner `unreachable` is infallible, so
     /// the only failure here is an empty cursor.
     pub fn unreachable(&mut self) -> IrResult<()> {
         let src_id = self.current_block_id()?;
         let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
-        let (_terminated, _inst) = inner.build_unreachable();
+        let (_terminated, _inst) = inner.unreachable();
         self.state.filled.insert(src_id);
         Ok(())
     }
@@ -1315,18 +1334,18 @@ where
 impl<'s, 'ctx, B, F> SsaBuilder<'s, 'ctx, B, F, ()>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
 {
     /// Produce `ret void`. Mirrors `IRBuilder::CreateRetVoid`. Gated on
     /// the builder's return marker being statically `()`, matching the
-    /// inner builder's own `build_ret_void` split (a [`Dyn`]-marker
+    /// inner builder's own `ret_void` split (a [`Dyn`]-marker
     /// builder's `ret_void` would need a runtime parent-function check;
     /// no such builder shape is reachable here since `R = ()` is fixed
     /// by this impl block).
     pub fn ret_void(&mut self) -> IrResult<()> {
         let src_id = self.current_block_id()?;
         let inner = self.cursor.take().ok_or(IrError::SsaUnpositioned)?;
-        let (_terminated, _inst) = inner.build_ret_void();
+        let (_terminated, _inst) = inner.ret_void();
         self.state.filled.insert(src_id);
         Ok(())
     }
@@ -1387,7 +1406,7 @@ impl<K: FloatKind, B: ModuleBrand> From<VarHandle<B>> for FloatVariable<K, B> {
 /// `module` resolves it back to the category-appropriate typed handle
 /// each dyn phi builder expects.
 fn build_typed_phi<'m, 'ctx, B, F, R>(
-    builder: &super::ir_builder::IRBuilder<'m, 'ctx, B, F, Positioned, R>,
+    builder: &super::ir_builder::IrBuilder<'m, 'ctx, B, F, Positioned, R>,
     category: VarCategory,
     ty: TypeSlot,
     module: ModuleRef<'ctx, B>,
@@ -1395,23 +1414,23 @@ fn build_typed_phi<'m, 'ctx, B, F, R>(
 ) -> IrResult<ValueSlot>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B>,
+    F: IrBuilderFolder<'ctx, B>,
     R: ReturnMarker,
 {
     let id = match category {
         VarCategory::Int => {
             let int_ty = IntType::<super::int_width::IntDyn, B>::new(ty, module);
-            let phi = builder.build_int_phi_dyn(int_ty, name)?;
+            let phi = builder.int_phi_dyn(int_ty, name)?;
             builder.view(phi).slot()
         }
         VarCategory::Float => {
             let float_ty = FloatType::<super::float_kind::FloatDyn, B>::new(ty, module);
-            let phi = builder.build_fp_phi_dyn(float_ty, name)?;
+            let phi = builder.fp_phi_dyn(float_ty, name)?;
             builder.view(phi).slot()
         }
         VarCategory::Pointer => {
             let ptr_ty = PointerType::<B>::new(ty, module);
-            let phi = builder.build_pointer_phi_in_addrspace(ptr_ty, name)?;
+            let phi = builder.pointer_phi_in_addrspace(ptr_ty, name)?;
             builder.view(phi).slot()
         }
     };
@@ -1447,7 +1466,7 @@ where
 impl<'s, 'ctx, B, F, R> SsaBuilder<'s, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
-    F: IRBuilderFolder<'ctx, B> + Clone,
+    F: IrBuilderFolder<'ctx, B> + Clone,
     R: ReturnMarker,
 {
     /// Braun `writeVariable`.
@@ -1604,7 +1623,7 @@ where
         // (instruction.rs). `same` is one of this very phi's own incoming
         // operands (the loop above only ever assigns `same` from
         // `self.phi_incoming_values(phi)`). The dyn path this engine uses
-        // (`phi_add_incoming_raw` -> `IRBuilder::phi_add_incoming_from_value`,
+        // (`phi_add_incoming_raw` -> `IrBuilder::phi_add_incoming_from_value`,
         // ir_builder.rs) now performs the same result-type check the typed
         // `PhiInst::add_incoming` does, at the call site rather than only at
         // `Module::verify` (belt-and-braces: Braun reads are same-typed by
@@ -1719,8 +1738,8 @@ where
             // linear handle required. Pinned to `Dyn` -- this throwaway
             // builder never emits a terminator, so the return-marker
             // parameter carries no real invariant here.
-            let builder: super::ir_builder::IRBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
-                super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone())
+            let builder: super::ir_builder::IrBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
+                super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone())
                     .position_before(&anchor);
             build_typed_phi(&builder, var_category, var_ty, module, &var_name)?
         } else {
@@ -1729,8 +1748,8 @@ where
             // from the slot states only what the emptiness check just
             // proved.
             let open = BasicBlock::<Dyn, Unterminated, B>::from_parts(block, module, label_ty);
-            let positioned: super::ir_builder::IRBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
-                super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone())
+            let positioned: super::ir_builder::IrBuilder<'_, 'ctx, B, F, Positioned, Dyn> =
+                super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone())
                     .position_at_end(open);
             build_typed_phi(&positioned, var_category, var_ty, module, &var_name)?
         };
@@ -1741,7 +1760,7 @@ where
 
     /// Add `(operand, pred)` to the layer-created phi named by `phi`.
     /// Thin wrapper over the same dyn phi-mutation idiom
-    /// `IRBuilder::phi_add_incoming_from_value` uses, since the engine
+    /// `IrBuilder::phi_add_incoming_from_value` uses, since the engine
     /// only ever holds category-erased `ValueSlot`s. Pinned to `Dyn`: the
     /// return-marker parameter is irrelevant to a payload-only mutation
     /// that never emits a terminator.
@@ -1756,8 +1775,8 @@ where
         let operand_value = Value::from_parts(operand, module, module.value_data(operand).ty);
         let label_ty = module.module().label_type::<B>().as_type().id();
         let pred_block = BasicBlock::<Dyn, Unterminated, B>::from_parts(pred, module, label_ty);
-        let ib: super::ir_builder::IRBuilder<'_, 'ctx, B, F, super::ir_builder::Unpositioned, Dyn> =
-            super::ir_builder::IRBuilder::with_folder(self.module, self.folder.clone());
+        let ib: super::ir_builder::IrBuilder<'_, 'ctx, B, F, super::ir_builder::Unpositioned, Dyn> =
+            super::ir_builder::IrBuilder::with_folder(self.module, self.folder.clone());
         ib.phi_add_incoming_from_value(phi_value, operand_value, pred_block)
     }
 
@@ -1799,7 +1818,7 @@ where
         if data.poison_on_undef {
             let module = self.module_ref();
             let ty = super::r#type::Type::new(data.ty, module);
-            let poison = ty.get_poison();
+            let poison = ty.poison();
             return Ok(poison.slot());
         }
         Err(IrError::SsaUseOfUndefinedVariable {
@@ -1845,7 +1864,7 @@ where
         })];
         if var.poison_on_undef {
             let poison_ty = super::r#type::Type::new(ty, module);
-            let poison = poison_ty.get_poison();
+            let poison = poison_ty.poison();
             // Braun's `same == None` arm still runs `phi.replaceBy(same)`:
             // reroute every user to the poison constant BEFORE erasing, or
             // surviving instructions keep an operand naming an erased
@@ -1860,7 +1879,7 @@ where
                 )
             }
             Instruction::<Attached, B>::from_parts(phi, module)
-                .replace_all_uses_with(self.module, poison.into_erased())
+                .replace_all_uses_with(self.module, poison.as_erased())
                 .unwrap_or_else(|_| {
                     unreachable!(
                         "SsaBuilder invariant: the poison constant is built from the phi's own \
@@ -1899,7 +1918,7 @@ mod tests {
     #[test]
     fn first_created_block_is_auto_sealed() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-entry-seal")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -1920,7 +1939,7 @@ mod tests {
     #[test]
     fn seal_block_twice_errors() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-double-seal")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -1944,7 +1963,7 @@ mod tests {
     #[test]
     fn for_function_rejects_function_with_existing_blocks() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-nonempty-fn")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let _entry = m.view(f).append_basic_block(&m, "entry");
         match SsaState::for_function(&m, m.view(f)) {
@@ -1960,7 +1979,7 @@ mod tests {
     #[test]
     fn seal_block_rejects_foreign_block() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-foreign-block")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f1 = m.add_function_dyn("f1", fn_ty, Linkage::External)?;
         let f2 = m.add_function_dyn("f2", fn_ty, Linkage::External)?;
         let mut st_b1 = SsaState::for_function(&m, m.view(f1))?;
@@ -1987,7 +2006,7 @@ mod tests {
     #[test]
     fn declare_var_family_reports_owner() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-declare")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2011,7 +2030,7 @@ mod tests {
     #[test]
     fn read_after_write_same_block_needs_no_phi() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-straight-line")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2039,7 +2058,7 @@ mod tests {
     #[test]
     fn incomplete_phi_completes_on_seal() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-incomplete-phi")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2097,7 +2116,7 @@ mod tests {
     #[test]
     fn trivial_phi_is_eliminated() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-trivial-join")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2150,7 +2169,7 @@ mod tests {
     #[test]
     fn strict_variable_undefined_read_errors() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-undefined-strict")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2175,7 +2194,7 @@ mod tests {
     #[test]
     fn poison_variable_undefined_read_yields_poison() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-undefined-poison")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2185,7 +2204,7 @@ mod tests {
         let var: IntVariable<i32, _> = b.declare_int_var_poison("x");
         let read = b.read_variable_in(var.index, entry_id)?;
         let i32_ty = m.i32_type();
-        let poison_id = i32_ty.as_type().get_poison().slot();
+        let poison_id = i32_ty.as_type().poison().slot();
         assert_eq!(read, poison_id);
         Ok(())
     }
@@ -2208,7 +2227,7 @@ mod tests {
     #[test]
     fn read_variable_in_memoizes_single_pred_chase() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-chase-memoization")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2270,7 +2289,7 @@ mod tests {
     ///
     /// Locks [`SsaBuilder::def_int_var`] at a *static* `W` -- the half its old
     /// `W::static_bits().is_none() &&` short-circuit let through, and the same
-    /// bug class the `IRBuilder` acceptors shed in `bf57e17`/`b5cb1e5`
+    /// bug class the `IrBuilder` acceptors shed in `bf57e17`/`b5cb1e5`
     /// (`hostile_native_typed_override_wrong_width_rejected_at_static_width`,
     /// `ir_builder.rs`, is the fold-result analogue). The old doc argued the
     /// static case was safe because `IntValue<W>` proves the width -- circular,
@@ -2289,7 +2308,7 @@ mod tests {
     #[test]
     fn def_int_var_rejects_forged_static_width_handle() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-forged-static-width")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2298,7 +2317,7 @@ mod tests {
 
         b.switch_to_block(entry)?;
         let forged: IntValue<'_, i32, _> =
-            IntValue::from_value_unchecked(m.i64_type().const_zero().into_erased());
+            IntValue::from_value_unchecked(m.i64_type().const_zero().as_erased());
 
         let err = b
             .def_int_var(x, forged)
@@ -2327,7 +2346,7 @@ mod tests {
     #[test]
     fn def_float_var_rejects_forged_static_kind_handle() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-forged-static-kind")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2336,7 +2355,7 @@ mod tests {
 
         b.switch_to_block(entry)?;
         let forged: FloatValue<'_, f32, _> =
-            FloatValue::from_value_unchecked(m.f64_type().const_from_bits(0).into_erased());
+            FloatValue::from_value_unchecked(m.f64_type().const_from_bits(0).as_erased());
 
         let err = b
             .def_float_var(x, forged)
@@ -2372,7 +2391,7 @@ mod tests {
     #[test]
     fn def_pointer_var_rejects_forged_non_pointer_handle() -> Result<(), IrError> {
         let m = crate::module_new!("ssa-forged-pointer")?;
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let mut st_b = SsaState::for_function(&m, m.view(f))?;
         let mut b = SsaBuilder::for_function(&m, m.view(f), &mut st_b)?;
@@ -2381,7 +2400,7 @@ mod tests {
 
         b.switch_to_block(entry)?;
         let forged: PointerValue<'_, _> =
-            PointerValue::from_value_unchecked(m.i32_type().const_zero().into_erased());
+            PointerValue::from_value_unchecked(m.i32_type().const_zero().as_erased());
 
         let err = b
             .def_pointer_var(p, forged)

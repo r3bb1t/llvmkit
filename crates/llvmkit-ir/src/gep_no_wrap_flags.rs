@@ -58,6 +58,7 @@ impl GepNoWrapFlags {
     }
 
     /// Mirrors `intersectForOffsetAdd` (`GEPNoWrapFlags.h`).
+    #[must_use]
     pub fn intersect_for_offset_add(self, other: Self) -> Self {
         let mut r = self & other;
         if !r.contains(Self::IN_BOUNDS) && r.contains(Self::NUSW) {
@@ -67,6 +68,7 @@ impl GepNoWrapFlags {
     }
 
     /// Mirrors `intersectForReassociate` (`GEPNoWrapFlags.h`).
+    #[must_use]
     pub fn intersect_for_reassociate(self, other: Self) -> Self {
         let r = self & other;
         if !r.contains(Self::NUW) {

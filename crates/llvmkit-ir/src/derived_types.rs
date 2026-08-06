@@ -37,7 +37,7 @@ use core::marker::PhantomData;
 
 use super::array_len::{ArrLenDyn, ArrayLen};
 use super::element::{ElemDyn, VecElem};
-use super::float_kind::{BFloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
+use super::float_kind::{Bfloat, FloatDyn, FloatKind, Fp128, Half, PpcFp128, X86Fp80};
 use super::int_width::{IntDyn, IntWidth};
 use super::struct_body_state::{StructBodyDyn, StructBodyState};
 use super::r#type::{IrType, sealed};
@@ -560,7 +560,7 @@ decl_type_handle!(
 ///
 /// The `W: IntWidth` marker encodes the bit-width at the type level:
 /// `IntType<'ctx, i32>` is a different type from `IntType<'ctx, i64>`,
-/// and the IRBuilder's binary-op methods use this distinction to
+/// and the IrBuilder's binary-op methods use this distinction to
 /// reject mismatched widths at compile time.
 ///
 /// Use [`IntType<'ctx, IntDyn>`](IntDyn) when the width
@@ -853,7 +853,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for FloatType<'ctx, Flo
         if matches!(
             t.data(),
             TypeData::Half
-                | TypeData::BFloat
+                | TypeData::Bfloat
                 | TypeData::Float
                 | TypeData::Double
                 | TypeData::X86Fp80
@@ -896,7 +896,7 @@ macro_rules! impl_float_type_static_try_from {
     };
 }
 impl_float_type_static_try_from!(Half, Half, Half);
-impl_float_type_static_try_from!(BFloat, BFloat, BFloat);
+impl_float_type_static_try_from!(Bfloat, Bfloat, Bfloat);
 impl_float_type_static_try_from!(f32, Float, Float);
 impl_float_type_static_try_from!(f64, Double, Double);
 impl_float_type_static_try_from!(Fp128, Fp128, Fp128);
@@ -916,7 +916,7 @@ macro_rules! impl_float_type_static_to_dyn {
     };
 }
 impl_float_type_static_to_dyn!(Half);
-impl_float_type_static_to_dyn!(BFloat);
+impl_float_type_static_to_dyn!(Bfloat);
 impl_float_type_static_to_dyn!(f32);
 impl_float_type_static_to_dyn!(f64);
 impl_float_type_static_to_dyn!(Fp128);
@@ -1265,7 +1265,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<Type<'ctx, B>> for AnyTypeEnum<'ctx, B> {
             TypeKind::Void => Self::Void(VoidType::new(t.id(), m)),
             TypeKind::Integer { .. } => Self::Int(IntType::new(t.id(), m)),
             TypeKind::Half
-            | TypeKind::BFloat
+            | TypeKind::Bfloat
             | TypeKind::Float
             | TypeKind::Double
             | TypeKind::X86Fp80
@@ -1381,7 +1381,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> TryFrom<Type<'ctx, B>> for BasicTypeEnum<'ctx,
         Ok(match t.kind() {
             TypeKind::Integer { .. } => Self::Int(IntType::new(t.id(), m)),
             TypeKind::Half
-            | TypeKind::BFloat
+            | TypeKind::Bfloat
             | TypeKind::Float
             | TypeKind::Double
             | TypeKind::X86Fp80

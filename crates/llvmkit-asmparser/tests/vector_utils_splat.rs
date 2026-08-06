@@ -18,8 +18,7 @@
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
-    DynBrand, Module, ShuffleMaskElem, Unverified, Value, get_splat_value, is_splat_value,
-    splat_index,
+    DynBrand, Module, ShuffleMaskElem, Unverified, Value, is_splat_value, splat_index, splat_value,
 };
 
 fn parse(source: &str) -> Module<DynBrand, Unverified> {
@@ -403,7 +402,7 @@ define <2 x i8> @test(i8 %x) {
 }
 ",
     );
-    let splat = get_splat_value(instruction_a(&module)).expect("a splat");
+    let splat = splat_value(instruction_a(&module)).expect("a splat");
     assert_eq!(splat.name().as_deref(), Some("x"));
 }
 
@@ -420,7 +419,7 @@ define <2 x i8> @test(i8 %x) {
 }
 ",
     );
-    assert!(get_splat_value(instruction_a(&module)).is_none());
+    assert!(splat_value(instruction_a(&module)).is_none());
 }
 
 /// Ports `TEST_F(VectorUtilsTest, getSplatValueElt1)`, which upstream
@@ -438,5 +437,5 @@ define <2 x i8> @test(i8 %x) {
 }
 ",
     );
-    assert!(get_splat_value(instruction_a(&module)).is_none());
+    assert!(splat_value(instruction_a(&module)).is_none());
 }

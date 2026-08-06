@@ -31,7 +31,7 @@ impl ModuleBrand for Right {}
 fn main() {
     let left = Module::branded::<Left, _>("left").unwrap();
     let void_ty = left.void_type();
-    let fn_ty = left.fn_type_no_params(void_ty, false);
+    let fn_ty = left.function_type_no_parameters(void_ty);
     let left_fn = left
         .add_function_dyn("f", fn_ty, Linkage::External)
         .unwrap();

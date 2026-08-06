@@ -4,6 +4,7 @@
 //! `llvm/lib/AsmParser/LLParser.cpp` (`parseSummaryEntry`, `parseModuleEntry`,
 //! `parseGVEntry`, and the basic function/variable/alias summary forms).
 
+use std::borrow::Cow;
 use std::fmt;
 
 use llvmkit_support::Spanned;
@@ -80,7 +81,7 @@ pub struct FunctionSummary {
 pub struct VariableSummary {
     pub module: u32,
     pub flags: GvFlags,
-    pub var_flags: GVarFlags,
+    pub var_flags: GlobalVariableFlags,
     pub refs: Vec<GvReference>,
 }
 
@@ -164,7 +165,7 @@ pub struct FunctionFlags {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct GVarFlags {
+pub struct GlobalVariableFlags {
     pub read_only: bool,
     pub write_only: bool,
     pub constant: bool,
@@ -568,11 +569,11 @@ impl<'src> SummaryParser<'src> {
         Ok(flags)
     }
 
-    fn parse_var_flags(&mut self) -> ParseResult<GVarFlags> {
+    fn parse_var_flags(&mut self) -> ParseResult<GlobalVariableFlags> {
         self.expect_keyword(Keyword::VarFlags, "'varFlags'")?;
         self.expect(Token::Colon, "':' here")?;
         self.expect(Token::LParen, "'(' here")?;
-        let mut flags = GVarFlags::default();
+        let mut flags = GlobalVariableFlags::default();
         loop {
             match &self.current.value {
                 Token::Kw(Keyword::Readonly) => {
@@ -758,7 +759,7 @@ impl<'src> SummaryParser<'src> {
         }
     }
 
-    fn parse_uint32(&mut self, expected: &str) -> ParseResult<u32> {
+    fn parse_uint32(&mut self, expected: &'static str) -> ParseResult<u32> {
         let n = self.parse_uint64(expected)?;
         u32::try_from(n).map_err(|_| ParseError::Expected {
             expected: expected.into(),
@@ -766,7 +767,7 @@ impl<'src> SummaryParser<'src> {
         })
     }
 
-    fn parse_uint64(&mut self, expected: &str) -> ParseResult<u64> {
+    fn parse_uint64(&mut self, expected: &'static str) -> ParseResult<u64> {
         let (sign, digits) = match &self.current.value {
             Token::IntegerLit(IntLit { sign, digits, .. }) => (*sign, (*digits).to_owned()),
             _ => return Err(self.expected(expected)),
@@ -781,7 +782,7 @@ impl<'src> SummaryParser<'src> {
         })
     }
 
-    fn parse_string(&mut self, expected: &str) -> ParseResult<String> {
+    fn parse_string(&mut self, expected: &'static str) -> ParseResult<String> {
         let s = match &self.current.value {
             Token::StringConstant(bytes) => std::str::from_utf8(bytes.as_ref())
                 .map_err(|_| self.expected(expected))?
@@ -792,7 +793,7 @@ impl<'src> SummaryParser<'src> {
         Ok(s)
     }
 
-    fn expect_keyword(&mut self, kw: Keyword, expected: &str) -> ParseResult<()> {
+    fn expect_keyword(&mut self, kw: Keyword, expected: &'static str) -> ParseResult<()> {
         match &self.current.value {
             Token::Kw(k) if *k == kw => {
                 self.bump()?;
@@ -812,7 +813,7 @@ impl<'src> SummaryParser<'src> {
         }
     }
 
-    fn expect(&mut self, tok: Token<'static>, expected: &str) -> ParseResult<()> {
+    fn expect(&mut self, tok: Token<'static>, expected: &'static str) -> ParseResult<()> {
         if same_token_kind(&self.current.value, &tok) {
             self.bump()?;
             Ok(())
@@ -835,7 +836,7 @@ impl<'src> SummaryParser<'src> {
         Ok(())
     }
 
-    fn expected<E: Into<String>>(&self, expected: E) -> ParseError {
+    fn expected<E: Into<Cow<'static, str>>>(&self, expected: E) -> ParseError {
         ParseError::Expected {
             expected: expected.into(),
             loc: DiagLoc::span(self.current.span),
@@ -1047,7 +1048,7 @@ impl fmt::Display for FunctionFlags {
     }
 }
 
-impl fmt::Display for GVarFlags {
+impl fmt::Display for GlobalVariableFlags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,

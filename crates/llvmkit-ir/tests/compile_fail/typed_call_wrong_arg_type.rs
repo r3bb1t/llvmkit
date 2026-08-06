@@ -3,7 +3,7 @@
 //! Closest upstream behaviour: `CallInst::init`'s "Calling a function with a
 //! bad signature!" assertion (`lib/IR/Instructions.cpp`) and
 //! `Verifier::visitCallBase`'s per-argument type check reject a
-//! wrong-typed call argument *at runtime*. llvmkit's typed `build_call`
+//! wrong-typed call argument *at runtime*. llvmkit's typed `call`
 //! pushes that same invariant into the Rust type system via the
 //! `IntoCallArg<'ctx, P, B>` bound on each call-argument position.
 //!
@@ -36,7 +36,7 @@
 //! `String` argument, and rustc correctly reports `IntoCallArg` itself
 //! as unsatisfied, firing its `on_unimplemented` message.
 
-use llvmkit_ir::{IRBuilder, IrStruct, Linkage, Module};
+use llvmkit_ir::{IrBuilder, IrStruct, Linkage, Module};
 
 #[derive(IrStruct)]
 struct Point {
@@ -53,7 +53,7 @@ fn main() {
         .add_typed_function::<i32, (i32,), _>("caller", Linkage::External)
         .unwrap();
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<i32>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<i32>(&m).position_at_end(entry);
     let (x,) = m.view(caller).params();
     // `String` implements neither `IntoIntValue`/`IntoFloatValue`/
     // `IntoPointerValue` nor is one of the struct-schema blanket's
@@ -63,5 +63,5 @@ fn main() {
     // `IntoCallArg` itself as unsatisfied and its on_unimplemented
     // message fires.
     let bogus = String::from("not a value");
-    let _ = b.build_call(callee, (bogus, x), "bad");
+    let _ = b.call(callee, (bogus, x), "bad");
 }

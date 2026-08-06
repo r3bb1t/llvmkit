@@ -22,7 +22,7 @@ use super::value_id::BlockId;
 
 /// Analysis marker for caching a [`DominatorTree`] in the new-pass-manager
 /// substrate. Its invalidation rule is wired in `analysis.rs`: preserved by
-/// itself, `AllAnalysesOnFunction`, or `CFGAnalyses`, matching LLVM's
+/// itself, `AllAnalysesOnFunction`, or `CfgAnalyses`, matching LLVM's
 /// `DominatorTree::invalidate`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct DominatorTreeAnalysis;
@@ -553,7 +553,6 @@ fn compute_dominators<'ctx, B: ModuleBrand + 'ctx>(
             }
             let mut pred_sets = cfg
                 .predecessors(&block)
-                .into_iter()
                 .filter(|pred| reachable.contains(&pred.slot()))
                 .filter_map(|pred| doms.get(&pred.slot()).cloned());
             let mut new_set = pred_sets.next().unwrap_or_default();
@@ -603,7 +602,7 @@ fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
             let inst_id = inst.slot();
             parent.insert(inst_id, block_id);
             order.insert(inst_id, (block_id, index));
-            if let ValueKindData::Instruction(data) = &inst.into_erased().data().kind {
+            if let ValueKindData::Instruction(data) = &inst.as_erased().data().kind {
                 match &data.kind {
                     InstructionKindData::Invoke(invoke) => {
                         normal_dest.insert(inst_id, invoke.normal_dest.get());
@@ -624,21 +623,21 @@ fn compute_instruction_maps<'ctx, B: ModuleBrand + 'ctx>(
 
 fn is_phi<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
     matches!(
-        &inst.into_erased().data().kind,
+        &inst.as_erased().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::Phi(_))
     )
 }
 
 fn is_invoke<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
     matches!(
-        &inst.into_erased().data().kind,
+        &inst.as_erased().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::Invoke(_))
     )
 }
 
 fn is_callbr<B: ModuleBrand>(inst: &InstructionView<'_, B>) -> bool {
     matches!(
-        &inst.into_erased().data().kind,
+        &inst.as_erased().data().kind,
         ValueKindData::Instruction(data) if matches!(data.kind, InstructionKindData::CallBr(_))
     )
 }

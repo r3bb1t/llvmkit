@@ -39,16 +39,16 @@ pub enum IntrinsicNameResolution {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BinaryIntrinsic {
-    FShl,
-    FShr,
-    UMax,
-    UMin,
-    SMax,
-    SMin,
-    UAddSat,
-    USubSat,
-    SAddSat,
-    SSubSat,
+    Fshl,
+    Fshr,
+    Umax,
+    Umin,
+    Smax,
+    Smin,
+    UaddSat,
+    UsubSat,
+    SaddSat,
+    SsubSat,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -66,24 +66,24 @@ pub(crate) enum IntrinsicSemantic {
     WriteRegister,
     Assume,
     Abs,
-    BSwap,
+    Bswap,
     BitReverse,
     Ctlz,
     Cttz,
     Ctpop,
-    FShl,
-    FShr,
-    UMax,
-    UMin,
-    SMax,
-    SMin,
-    UAddSat,
-    USubSat,
-    SAddSat,
-    SSubSat,
+    Fshl,
+    Fshr,
+    Umax,
+    Umin,
+    Smax,
+    Smin,
+    UaddSat,
+    UsubSat,
+    SaddSat,
+    SsubSat,
     VectorReduceAdd,
     PtrMask,
-    VScale,
+    Vscale,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -434,24 +434,24 @@ impl IntrinsicId {
             generated::SEMANTIC_WRITE_REGISTER => Some(IntrinsicSemantic::WriteRegister),
             generated::SEMANTIC_ASSUME => Some(IntrinsicSemantic::Assume),
             generated::SEMANTIC_ABS => Some(IntrinsicSemantic::Abs),
-            generated::SEMANTIC_BSWAP => Some(IntrinsicSemantic::BSwap),
+            generated::SEMANTIC_BSWAP => Some(IntrinsicSemantic::Bswap),
             generated::SEMANTIC_BITREVERSE => Some(IntrinsicSemantic::BitReverse),
             generated::SEMANTIC_CTLZ => Some(IntrinsicSemantic::Ctlz),
             generated::SEMANTIC_CTTZ => Some(IntrinsicSemantic::Cttz),
             generated::SEMANTIC_CTPOP => Some(IntrinsicSemantic::Ctpop),
-            generated::SEMANTIC_FSHL => Some(IntrinsicSemantic::FShl),
-            generated::SEMANTIC_FSHR => Some(IntrinsicSemantic::FShr),
-            generated::SEMANTIC_UMAX => Some(IntrinsicSemantic::UMax),
-            generated::SEMANTIC_UMIN => Some(IntrinsicSemantic::UMin),
-            generated::SEMANTIC_SMAX => Some(IntrinsicSemantic::SMax),
-            generated::SEMANTIC_SMIN => Some(IntrinsicSemantic::SMin),
-            generated::SEMANTIC_UADD_SAT => Some(IntrinsicSemantic::UAddSat),
-            generated::SEMANTIC_USUB_SAT => Some(IntrinsicSemantic::USubSat),
-            generated::SEMANTIC_SADD_SAT => Some(IntrinsicSemantic::SAddSat),
-            generated::SEMANTIC_SSUB_SAT => Some(IntrinsicSemantic::SSubSat),
+            generated::SEMANTIC_FSHL => Some(IntrinsicSemantic::Fshl),
+            generated::SEMANTIC_FSHR => Some(IntrinsicSemantic::Fshr),
+            generated::SEMANTIC_UMAX => Some(IntrinsicSemantic::Umax),
+            generated::SEMANTIC_UMIN => Some(IntrinsicSemantic::Umin),
+            generated::SEMANTIC_SMAX => Some(IntrinsicSemantic::Smax),
+            generated::SEMANTIC_SMIN => Some(IntrinsicSemantic::Smin),
+            generated::SEMANTIC_UADD_SAT => Some(IntrinsicSemantic::UaddSat),
+            generated::SEMANTIC_USUB_SAT => Some(IntrinsicSemantic::UsubSat),
+            generated::SEMANTIC_SADD_SAT => Some(IntrinsicSemantic::SaddSat),
+            generated::SEMANTIC_SSUB_SAT => Some(IntrinsicSemantic::SsubSat),
             generated::SEMANTIC_VECTOR_REDUCE_ADD => Some(IntrinsicSemantic::VectorReduceAdd),
             generated::SEMANTIC_PTRMASK => Some(IntrinsicSemantic::PtrMask),
-            generated::SEMANTIC_VSCALE => Some(IntrinsicSemantic::VScale),
+            generated::SEMANTIC_VSCALE => Some(IntrinsicSemantic::Vscale),
             _ => None,
         }
     }
@@ -625,7 +625,7 @@ fn add_function_attrs<B: ModuleBrand>(storage: &mut AttributeStorage, record: &I
     add_function_attr_if::<B>(storage, attrs.no_merge, AttrKind::NoMerge);
     add_function_attr_if::<B>(storage, attrs.convergent, AttrKind::Convergent);
     add_function_attr_if::<B>(storage, attrs.speculatable, AttrKind::Speculatable);
-    add_function_attr_if::<B>(storage, attrs.strict_fp, AttrKind::StrictFP);
+    add_function_attr_if::<B>(storage, attrs.strict_fp, AttrKind::StrictFp);
     add_function_attr_if::<B>(
         storage,
         attrs.no_create_undef_or_poison,
@@ -709,7 +709,7 @@ fn ap_int_from_i64(bits: u32, value: i64) -> IrResult<crate::ApInt> {
     crate::ApInt::new(
         bits,
         u64::from_ne_bytes(value.to_ne_bytes()),
-        crate::ApIntSignedness::Signed,
+        crate::Signedness::Signed,
         crate::ApIntTruncation::Truncate,
     )
 }
@@ -721,7 +721,7 @@ fn append_mangled_type<'ctx, B: ModuleBrand + 'ctx>(
     match ty.data() {
         TypeData::Void => out.push_str("isVoid"),
         TypeData::Half => out.push_str("f16"),
-        TypeData::BFloat => out.push_str("bf16"),
+        TypeData::Bfloat => out.push_str("bf16"),
         TypeData::Float => out.push_str("f32"),
         TypeData::Double => out.push_str("f64"),
         TypeData::X86Fp80 => out.push_str("f80"),
@@ -882,7 +882,7 @@ fn match_fixed_type<'ctx, B: ModuleBrand + 'ctx>(
         IitDescriptor::Half => {
             require_type(actual, Type::new(module.module().context().half(), module))
         }
-        IitDescriptor::BFloat => require_type(
+        IitDescriptor::Bfloat => require_type(
             actual,
             Type::new(module.module().context().bfloat(), module),
         ),
@@ -900,7 +900,7 @@ fn match_fixed_type<'ctx, B: ModuleBrand + 'ctx>(
             actual,
             Type::new(module.module().context().ppc_fp128(), module),
         ),
-        IitDescriptor::AArch64Svcount => {
+        IitDescriptor::Aarch64Svcount => {
             require_type(actual, target_ext_type(module, "aarch64.svcount", [], []))
         }
         IitDescriptor::Integer(bits) => require_type(actual, int_type(module, bits)),
@@ -1179,16 +1179,16 @@ impl BinaryIntrinsic {
 
     fn from_semantic(semantic: IntrinsicSemantic) -> Option<Self> {
         match semantic {
-            IntrinsicSemantic::FShl => Some(Self::FShl),
-            IntrinsicSemantic::FShr => Some(Self::FShr),
-            IntrinsicSemantic::UMax => Some(Self::UMax),
-            IntrinsicSemantic::UMin => Some(Self::UMin),
-            IntrinsicSemantic::SMax => Some(Self::SMax),
-            IntrinsicSemantic::SMin => Some(Self::SMin),
-            IntrinsicSemantic::UAddSat => Some(Self::UAddSat),
-            IntrinsicSemantic::USubSat => Some(Self::USubSat),
-            IntrinsicSemantic::SAddSat => Some(Self::SAddSat),
-            IntrinsicSemantic::SSubSat => Some(Self::SSubSat),
+            IntrinsicSemantic::Fshl => Some(Self::Fshl),
+            IntrinsicSemantic::Fshr => Some(Self::Fshr),
+            IntrinsicSemantic::Umax => Some(Self::Umax),
+            IntrinsicSemantic::Umin => Some(Self::Umin),
+            IntrinsicSemantic::Smax => Some(Self::Smax),
+            IntrinsicSemantic::Smin => Some(Self::Smin),
+            IntrinsicSemantic::UaddSat => Some(Self::UaddSat),
+            IntrinsicSemantic::UsubSat => Some(Self::UsubSat),
+            IntrinsicSemantic::SaddSat => Some(Self::SaddSat),
+            IntrinsicSemantic::SsubSat => Some(Self::SsubSat),
             _ => None,
         }
     }
@@ -1731,12 +1731,12 @@ enum IitDescriptor {
     Token,
     Metadata,
     Half,
-    BFloat,
+    Bfloat,
     Float,
     Double,
     Quad,
     PpcQuad,
-    AArch64Svcount,
+    Aarch64Svcount,
     Integer(u32),
     Vector { width: u32, scalable: bool },
     Pointer(u32),
@@ -1862,7 +1862,7 @@ fn decode_iit_type(
             next_iit_usize_or_zero(entries, pos),
         )?)),
         39 => decode_iit_vector(entries, pos, info, out, 128, scalable)?,
-        40 => out.push(IitDescriptor::BFloat),
+        40 => out.push(IitDescriptor::Bfloat),
         41 => decode_iit_vector(entries, pos, info, out, 256, scalable)?,
         42 => out.push(IitDescriptor::Amx),
         43 => out.push(IitDescriptor::PpcQuad),
@@ -1871,7 +1871,7 @@ fn decode_iit_type(
         46 => out.push(IitDescriptor::Pointer(20)),
         47 => out.push(IitDescriptor::Integer(2)),
         48 => out.push(IitDescriptor::Integer(4)),
-        49 => out.push(IitDescriptor::AArch64Svcount),
+        49 => out.push(IitDescriptor::Aarch64Svcount),
         50 => decode_iit_vector(entries, pos, info, out, 6, scalable)?,
         51 => decode_iit_vector(entries, pos, info, out, 10, scalable)?,
         52 => decode_iit_vector(entries, pos, info, out, 2048, scalable)?,
@@ -1933,12 +1933,12 @@ where
         IitDescriptor::Token => Ok(Type::new(module.module().context().token(), module)),
         IitDescriptor::Metadata => Ok(metadata_type(module)),
         IitDescriptor::Half => Ok(Type::new(module.module().context().half(), module)),
-        IitDescriptor::BFloat => Ok(Type::new(module.module().context().bfloat(), module)),
+        IitDescriptor::Bfloat => Ok(Type::new(module.module().context().bfloat(), module)),
         IitDescriptor::Float => Ok(Type::new(module.module().context().float(), module)),
         IitDescriptor::Double => Ok(Type::new(module.module().context().double(), module)),
         IitDescriptor::Quad => Ok(Type::new(module.module().context().fp128(), module)),
         IitDescriptor::PpcQuad => Ok(Type::new(module.module().context().ppc_fp128(), module)),
-        IitDescriptor::AArch64Svcount => Ok(target_ext_type(module, "aarch64.svcount", [], [])),
+        IitDescriptor::Aarch64Svcount => Ok(target_ext_type(module, "aarch64.svcount", [], [])),
         IitDescriptor::Integer(bits) => Ok(int_type(module, bits)),
         IitDescriptor::Pointer(addr_space) => Ok(ptr_type(module, addr_space)),
         IitDescriptor::Vector { width, scalable } => {
@@ -2044,7 +2044,7 @@ where
     matches!(
         scalar_type_data(module, ty),
         TypeData::Half
-            | TypeData::BFloat
+            | TypeData::Bfloat
             | TypeData::Float
             | TypeData::Double
             | TypeData::X86Fp80
@@ -2237,7 +2237,7 @@ where
 {
     match ty.data() {
         TypeData::Integer { bits } => Some(*bits),
-        TypeData::Half | TypeData::BFloat => Some(16),
+        TypeData::Half | TypeData::Bfloat => Some(16),
         TypeData::Float => Some(32),
         TypeData::Double => Some(64),
         TypeData::X86Fp80 => Some(80),
@@ -2331,7 +2331,7 @@ where
         TypeData::Double => Ok(Type::new(module.module().context().float(), module)),
         TypeData::Float => Ok(Type::new(module.module().context().half(), module)),
         TypeData::Half
-        | TypeData::BFloat
+        | TypeData::Bfloat
         | TypeData::X86Fp80
         | TypeData::PpcFp128
         | TypeData::Fp128 => Err(intrinsic_mismatch()),

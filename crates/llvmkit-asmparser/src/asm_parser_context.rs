@@ -31,7 +31,7 @@
 //! 3. `FunctionValue<'ctx, R, B>` carries a return marker that the parser
 //!    cannot pin statically.
 //!
-//! Each typed accessor lifts to the erased identity through `into_erased()`.
+//! Each typed accessor lifts to the erased identity through `as_erased()`.
 
 use std::collections::HashMap;
 
@@ -163,7 +163,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
         &self,
         f: FunctionValue<'ctx, R, B>,
     ) -> Option<FileLocRange> {
-        self.functions.location_of(f.into_erased())
+        self.functions.location_of(f.as_erased())
     }
 
     /// Source range of a recorded basic block. Mirrors
@@ -249,7 +249,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AsmParserContext<'ctx, B> {
         f: FunctionValue<'ctx, R, B>,
         loc: FileLocRange,
     ) -> Result<(), LocationError> {
-        self.functions.add(f.into_erased(), loc)
+        self.functions.add(f.as_erased(), loc)
     }
 
     /// Record `b`'s location. Mirrors `addBlockLocation`.
@@ -294,10 +294,10 @@ mod tests {
 
         let mut map: LocMap<'_, _> = LocMap::default();
         let r = FileLocRange::new(FileLoc::new(2, 0), FileLoc::new(4, 0));
-        map.add(m.view(g).into_erased(), r).unwrap();
-        assert_eq!(map.location_of(m.view(g).into_erased()), Some(r));
+        map.add(m.view(g).as_erased(), r).unwrap();
+        assert_eq!(map.location_of(m.view(g).as_erased()), Some(r));
         assert_eq!(
-            map.add(m.view(g).into_erased(), r),
+            map.add(m.view(g).as_erased(), r),
             Err(LocationError::DuplicateHandle)
         );
     }
@@ -315,15 +315,15 @@ mod tests {
 
         let mut map: LocMap<'_, _> = LocMap::default();
         let r = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(1, 5));
-        map.add(m.view(g).into_erased(), r).unwrap();
+        map.add(m.view(g).as_erased(), r).unwrap();
 
         assert_eq!(
             map.handle_at(FileLoc::new(1, 0)),
-            Some(m.view(g).into_erased())
+            Some(m.view(g).as_erased())
         );
         assert_eq!(
             map.handle_at(FileLoc::new(1, 4)),
-            Some(m.view(g).into_erased())
+            Some(m.view(g).as_erased())
         );
         assert_eq!(map.handle_at(FileLoc::new(1, 5)), None);
         assert_eq!(map.handle_at(FileLoc::new(0, 0)), None);
@@ -346,13 +346,13 @@ mod tests {
         let mut map: LocMap<'_, _> = LocMap::default();
         let inner = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(2, 0));
         let far = FileLocRange::new(FileLoc::new(5, 0), FileLoc::new(6, 0));
-        map.add(m.view(g_inner).into_erased(), inner).unwrap();
-        map.add(m.view(g_far).into_erased(), far).unwrap();
+        map.add(m.view(g_inner).as_erased(), inner).unwrap();
+        map.add(m.view(g_far).as_erased(), far).unwrap();
 
         let outer = FileLocRange::new(FileLoc::new(1, 0), FileLoc::new(3, 0));
         assert_eq!(
             map.handle_at_range(outer),
-            Some(m.view(g_inner).into_erased())
+            Some(m.view(g_inner).as_erased())
         );
 
         // Mismatched start — no hit.

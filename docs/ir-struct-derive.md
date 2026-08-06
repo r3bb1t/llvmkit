@@ -9,7 +9,7 @@ Use it when the LLVM aggregate you want to construct already has a natural Rust
 shape:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, IrStruct, Linkage, NoFolder, module_new};
+use llvmkit_ir::{IrBuilder, IrError, IrStruct, Linkage, NoFolder, module_new};
 
 #[derive(IrStruct)]
 struct Point {
@@ -40,7 +40,7 @@ fn build() -> Result<String, IrError> {
         Linkage::External,
     )?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let (placement,) = m.view(f).params();
 
     let normal_position = placement.normal_position(&b)?;
@@ -58,7 +58,7 @@ fn build() -> Result<String, IrError> {
         rebuilt_rect,
         "placement",
     )?;
-    b.build_ret(rebuilt)?;
+    b.ret(rebuilt)?;
 
     Ok(format!("{m}"))
 }
@@ -101,7 +101,7 @@ For `struct Point { x: i32, y: i32 }`, the derive creates:
   mismatched one with `IrError::StructBodyMismatch`. Its `ir_type` /
   `field_types` take a `ModuleView<'ctx, B>`, not a `&Module`.
 - Field accessors on `PointValue`, such as `x(&builder)` and `y(&builder)`,
-  implemented with `IRBuilder::build_extract_field`.
+  implemented with `IrBuilder::extract_field`.
 - `PointValue::build(module_view, &builder, x, y, name)` — the first argument is
   a `ModuleView<'ctx, B>`, spelled `m.as_view()` at the call site — implemented
   as a poison aggregate plus `insertvalue` steps.
@@ -111,10 +111,10 @@ For `struct Point { x: i32, y: i32 }`, the derive creates:
 - Conversion impls that let the wrapper be used as a struct field, function
   parameter, and `Dyn` return value.
 - An `IntoCallArg` impl, so `PointValue` fills a `Point`-typed parameter slot
-  in a typed `IRBuilder::build_call` argument tuple directly.
+  in a typed `IrBuilder::call` argument tuple directly.
 
 Generated value wrappers intentionally do not implement `IsValue`. Use the
-wrapper's typed accessors/builders, or call `as_struct_value()` / `into_erased()`
+wrapper's typed accessors/builders, or call `as_struct_value()` / `as_erased()`
 when you explicitly want to erase the schema.
 
 ## Supported input

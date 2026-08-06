@@ -50,12 +50,12 @@ a second terminator on one block a compile error.
 Instruction lifecycle mutation likewise uses linear `Instruction<Attached>`
 handles: erase, detach, move, and RAUW consume the handle. Copyable rediscovery
 paths return `InstructionView`, and cursor-driven mutation goes through
-`BlockCursor::next` on an unterminated block.
+`BlockCursor::step` on an unterminated block.
 
-Phis are not written by hand. The raw `build_*_phi` + `add_incoming` pair is
-crate-private; author merges with **block arguments** instead
-(`append_block_with_params` / `append_block_typed`, branched to with
-`build_br_with_args` / `build_cond_br_with_args`), or let `SsaBuilder` discover
+Phis are not written by hand. The raw `int_phi` / `fp_phi` / `pointer_phi` +
+`add_incoming` pair is crate-private; author merges with **block arguments**
+instead (`append_block_with_params` / `append_block_typed`, branched to with
+`br_with_args` / `cond_br_with_args`), or let `SsaBuilder` discover
 them for you. Inside a pass, `FnReshape::insert_phi` is the third route.
 
 ## Module brands

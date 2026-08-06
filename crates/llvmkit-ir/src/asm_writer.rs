@@ -30,18 +30,18 @@ use super::comdat::ComdatRef;
 use super::constant::{ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode};
 use super::function::FunctionValue;
 use super::global_alias::GlobalAlias;
-use super::global_ifunc::GlobalIFunc;
+use super::global_ifunc::GlobalIfunc;
 use super::global_value::Linkage;
 use super::global_variable::GlobalVariable;
 use super::inline_asm::{AsmDialect, InlineAsmData};
 use super::instr_types::{
-    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
     CatchReturnInstData, CatchSwitchInstData, CleanupReturnInstData, ExtractElementInstData,
-    ExtractValueInstData, FCmpInstData, FNegInstData, FenceInstData, FreezeInstData, GepInstData,
+    ExtractValueInstData, FcmpInstData, FenceInstData, FnegInstData, FreezeInstData, GepInstData,
     IndirectBrInstData, InsertElementInstData, InsertValueInstData, InvokeInstData,
     LandingPadClauseKind, LandingPadInstData, LoadInstData, OperandBundleData, OperandBundleTag,
     ResumeInstData, SelectInstData, ShuffleMaskElem, ShuffleVectorInstData, StoreInstData,
-    SwitchInstData, TailCallKind, VAArgInstData,
+    SwitchInstData, TailCallKind, VaArgInstData,
 };
 use super::instr_types::{
     BinaryOpData, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData, PhiData,
@@ -55,12 +55,12 @@ use super::metadata::{
     MetadataStore, SpecializedMetadataKind, SpecializedMetadataNode, StoredBrand,
 };
 use super::module::{
-    DynBrand, ModuleBrand, ModuleCore, ModuleView, UseListOrderBBRecord, UseListOrderRecord,
+    DynBrand, ModuleBrand, ModuleCore, ModuleView, UseListOrderBbRecord, UseListOrderRecord,
 };
 use super::sync_scope::SyncScope;
 use super::r#type::{StructBody, Type, TypeData, TypeSlot};
 use super::value::{IsValue, Value, ValueKindData, ValueSlot};
-use super::{ApInt, ApIntSignedness, AttrIndex};
+use super::{ApInt, AttrIndex, Signedness};
 
 // --------------------------------------------------------------------------
 // SlotTracker
@@ -134,38 +134,38 @@ fn produces_named_result(inst: &InstructionView<'_, impl ModuleBrand>) -> bool {
         InstructionKindData::Add(_)
         | InstructionKindData::Sub(_)
         | InstructionKindData::Mul(_)
-        | InstructionKindData::UDiv(_)
-        | InstructionKindData::SDiv(_)
-        | InstructionKindData::URem(_)
-        | InstructionKindData::SRem(_)
+        | InstructionKindData::Udiv(_)
+        | InstructionKindData::Sdiv(_)
+        | InstructionKindData::Urem(_)
+        | InstructionKindData::Srem(_)
         | InstructionKindData::Shl(_)
-        | InstructionKindData::LShr(_)
-        | InstructionKindData::AShr(_)
+        | InstructionKindData::Lshr(_)
+        | InstructionKindData::Ashr(_)
         | InstructionKindData::And(_)
         | InstructionKindData::Or(_)
         | InstructionKindData::Xor(_)
-        | InstructionKindData::FAdd(_)
-        | InstructionKindData::FSub(_)
-        | InstructionKindData::FMul(_)
-        | InstructionKindData::FDiv(_)
-        | InstructionKindData::FRem(_)
-        | InstructionKindData::FCmp(_)
+        | InstructionKindData::Fadd(_)
+        | InstructionKindData::Fsub(_)
+        | InstructionKindData::Fmul(_)
+        | InstructionKindData::Fdiv(_)
+        | InstructionKindData::Frem(_)
+        | InstructionKindData::Fcmp(_)
         | InstructionKindData::Alloca(_)
         | InstructionKindData::Load(_)
         | InstructionKindData::Gep(_)
         | InstructionKindData::Select(_)
         | InstructionKindData::Cast(_)
-        | InstructionKindData::ICmp(_)
-        | InstructionKindData::FNeg(_)
+        | InstructionKindData::Icmp(_)
+        | InstructionKindData::Fneg(_)
         | InstructionKindData::Freeze(_)
-        | InstructionKindData::VAArg(_)
+        | InstructionKindData::VaArg(_)
         | InstructionKindData::ExtractValue(_)
         | InstructionKindData::InsertValue(_)
         | InstructionKindData::ExtractElement(_)
         | InstructionKindData::InsertElement(_)
         | InstructionKindData::ShuffleVector(_)
         | InstructionKindData::AtomicCmpXchg(_)
-        | InstructionKindData::AtomicRMW(_)
+        | InstructionKindData::AtomicRmw(_)
         | InstructionKindData::Phi(_) => true,
         InstructionKindData::Fence(_) => false,
         InstructionKindData::Ret(_)
@@ -190,7 +190,7 @@ fn produces_named_result(inst: &InstructionView<'_, impl ModuleBrand>) -> bool {
 fn inst_kind_data<'ctx, B: ModuleBrand + 'ctx>(
     inst: &InstructionView<'ctx, B>,
 ) -> &'ctx InstructionKindData {
-    match &inst.into_erased().data().kind {
+    match &inst.as_erased().data().kind {
         ValueKindData::Instruction(i) => &i.kind,
         _ => unreachable!("Instruction handle invariant: kind is Instruction"),
     }
@@ -237,7 +237,7 @@ pub(super) fn fmt_operand_ref<'ctx, B: ModuleBrand + 'ctx>(
         },
         ValueKindData::GlobalVariable(_)
         | ValueKindData::GlobalAlias(_)
-        | ValueKindData::GlobalIFunc(_) => fmt_global_value_ref(f, v),
+        | ValueKindData::GlobalIfunc(_) => fmt_global_value_ref(f, v),
         ValueKindData::Constant(c) => fmt_constant(f, v, c),
         // `MetadataAsValue` delegates to the metadata printer. MDStrings
         // print inline as `!"..."`; MDNodes print as their numbered slot.
@@ -283,7 +283,7 @@ fn fmt_use_list_order(
 fn fmt_use_list_order_bb(
     f: &mut fmt::Formatter<'_>,
     m: &ModuleCore,
-    record: &UseListOrderBBRecord,
+    record: &UseListOrderBbRecord,
 ) -> fmt::Result {
     let function_id = record.function();
     let function_data = m.context().value_data(function_id);
@@ -371,7 +371,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
             fmt_operand_ref(f, bval, None)?;
             f.write_str(")")
         }
-        ConstantData::DSOLocalEquivalent { function } => {
+        ConstantData::DsoLocalEquivalent { function } => {
             let module = host.module.module();
             let fval = Value::<B>::from_parts(
                 *function,
@@ -583,7 +583,7 @@ fn infer_gep_source_ty(module: &ModuleCore, expr: &ConstantExprData) -> TypeSlot
 fn constant_ptr_operand_type<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Type<'ctx, B> {
     match &value.data().kind {
         ValueKindData::Function(_) => value.module().ptr_type(0).as_type(),
-        ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIFunc(_) => value.ty(),
+        ValueKindData::GlobalAlias(_) | ValueKindData::GlobalIfunc(_) => value.ty(),
         _ => value.ty(),
     }
 }
@@ -708,7 +708,7 @@ fn fmt_float_constant<B: ModuleBrand>(
 ) -> fmt::Result {
     match ty.data() {
         TypeData::Half => write!(f, "0xH{:04X}", low_u16(bits)),
-        TypeData::BFloat => write!(f, "0xR{:04X}", low_u16(bits)),
+        TypeData::Bfloat => write!(f, "0xR{:04X}", low_u16(bits)),
         TypeData::Float => {
             let value = f32::from_bits(low_u32(bits));
             if value.is_finite() && try_write_finite_float_decimal(f, f64::from(value))? {
@@ -803,7 +803,7 @@ fn fmt_global_value_ref<'ctx, B: ModuleBrand + 'ctx>(
 fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
     let mut next = 0_u32;
     for global in module.iter_globals::<DynBrand>() {
-        if global.into_erased().name().is_none() {
+        if global.as_erased().name().is_none() {
             if global.slot() == id {
                 return Some(next);
             }
@@ -811,7 +811,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
         }
     }
     for alias in module.iter_aliases::<DynBrand>() {
-        if alias.into_erased().name().is_none() {
+        if alias.as_erased().name().is_none() {
             if alias.slot() == id {
                 return Some(next);
             }
@@ -819,7 +819,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
         }
     }
     for ifunc in module.iter_ifuncs::<DynBrand>() {
-        if ifunc.into_erased().name().is_none() {
+        if ifunc.as_erased().name().is_none() {
             if ifunc.slot() == id {
                 return Some(next);
             }
@@ -827,7 +827,7 @@ fn module_global_slot(module: &ModuleCore, id: ValueSlot) -> Option<u32> {
         }
     }
     for function in module.iter_functions::<DynBrand>() {
-        if function.into_erased().name().is_none() {
+        if function.as_erased().name().is_none() {
             if function.slot() == id {
                 return Some(next);
             }
@@ -1014,22 +1014,22 @@ pub(super) fn fmt_instruction(
         InstructionKindData::Add(b) => fmt_binop(f, "add", inst, b, slots),
         InstructionKindData::Sub(b) => fmt_binop(f, "sub", inst, b, slots),
         InstructionKindData::Mul(b) => fmt_binop(f, "mul", inst, b, slots),
-        InstructionKindData::UDiv(b) => fmt_binop(f, "udiv", inst, b, slots),
-        InstructionKindData::SDiv(b) => fmt_binop(f, "sdiv", inst, b, slots),
-        InstructionKindData::URem(b) => fmt_binop(f, "urem", inst, b, slots),
-        InstructionKindData::SRem(b) => fmt_binop(f, "srem", inst, b, slots),
+        InstructionKindData::Udiv(b) => fmt_binop(f, "udiv", inst, b, slots),
+        InstructionKindData::Sdiv(b) => fmt_binop(f, "sdiv", inst, b, slots),
+        InstructionKindData::Urem(b) => fmt_binop(f, "urem", inst, b, slots),
+        InstructionKindData::Srem(b) => fmt_binop(f, "srem", inst, b, slots),
         InstructionKindData::Shl(b) => fmt_binop(f, "shl", inst, b, slots),
-        InstructionKindData::LShr(b) => fmt_binop(f, "lshr", inst, b, slots),
-        InstructionKindData::AShr(b) => fmt_binop(f, "ashr", inst, b, slots),
+        InstructionKindData::Lshr(b) => fmt_binop(f, "lshr", inst, b, slots),
+        InstructionKindData::Ashr(b) => fmt_binop(f, "ashr", inst, b, slots),
         InstructionKindData::And(b) => fmt_binop(f, "and", inst, b, slots),
         InstructionKindData::Or(b) => fmt_binop(f, "or", inst, b, slots),
         InstructionKindData::Xor(b) => fmt_binop(f, "xor", inst, b, slots),
-        InstructionKindData::FAdd(b) => fmt_binop(f, "fadd", inst, b, slots),
-        InstructionKindData::FSub(b) => fmt_binop(f, "fsub", inst, b, slots),
-        InstructionKindData::FMul(b) => fmt_binop(f, "fmul", inst, b, slots),
-        InstructionKindData::FDiv(b) => fmt_binop(f, "fdiv", inst, b, slots),
-        InstructionKindData::FRem(b) => fmt_binop(f, "frem", inst, b, slots),
-        InstructionKindData::FCmp(c) => fmt_fcmp(f, inst, c, slots),
+        InstructionKindData::Fadd(b) => fmt_binop(f, "fadd", inst, b, slots),
+        InstructionKindData::Fsub(b) => fmt_binop(f, "fsub", inst, b, slots),
+        InstructionKindData::Fmul(b) => fmt_binop(f, "fmul", inst, b, slots),
+        InstructionKindData::Fdiv(b) => fmt_binop(f, "fdiv", inst, b, slots),
+        InstructionKindData::Frem(b) => fmt_binop(f, "frem", inst, b, slots),
+        InstructionKindData::Fcmp(c) => fmt_fcmp(f, inst, c, slots),
         InstructionKindData::Alloca(a) => fmt_alloca(f, inst, a, slots),
         InstructionKindData::Load(l) => fmt_load(f, inst, l, slots),
         InstructionKindData::Store(s) => fmt_store(f, inst, s, slots),
@@ -1037,7 +1037,7 @@ pub(super) fn fmt_instruction(
         InstructionKindData::Call(c) => fmt_call(f, inst, c, slots),
         InstructionKindData::Select(s) => fmt_select(f, inst, s, slots),
         InstructionKindData::Cast(c) => fmt_cast(f, inst, c, slots),
-        InstructionKindData::ICmp(c) => fmt_icmp(f, inst, c, slots),
+        InstructionKindData::Icmp(c) => fmt_icmp(f, inst, c, slots),
         InstructionKindData::Phi(p) => fmt_phi(f, inst, p, slots),
         InstructionKindData::Switch(d) => fmt_switch(f, inst, d, slots),
         InstructionKindData::IndirectBr(d) => fmt_indirectbr(f, inst, d, slots),
@@ -1055,9 +1055,9 @@ pub(super) fn fmt_instruction(
         InstructionKindData::CleanupReturn(d) => fmt_cleanupret(f, inst, d, slots),
         InstructionKindData::CatchSwitch(d) => fmt_catchswitch(f, inst, d, slots),
         InstructionKindData::Br(b) => fmt_br(f, inst, b, slots),
-        InstructionKindData::FNeg(u) => fmt_fneg(f, inst, u, slots),
+        InstructionKindData::Fneg(u) => fmt_fneg(f, inst, u, slots),
         InstructionKindData::Freeze(u) => fmt_freeze(f, inst, u, slots),
-        InstructionKindData::VAArg(u) => fmt_va_arg(f, inst, u, slots),
+        InstructionKindData::VaArg(u) => fmt_va_arg(f, inst, u, slots),
         InstructionKindData::ExtractValue(d) => fmt_extract_value(f, inst, d, slots),
         InstructionKindData::InsertValue(d) => fmt_insert_value(f, inst, d, slots),
         InstructionKindData::ExtractElement(d) => fmt_extract_element(f, inst, d, slots),
@@ -1065,7 +1065,7 @@ pub(super) fn fmt_instruction(
         InstructionKindData::ShuffleVector(d) => fmt_shuffle_vector(f, inst, d, slots),
         InstructionKindData::Fence(d) => fmt_fence(f, d),
         InstructionKindData::AtomicCmpXchg(d) => fmt_cmpxchg(f, inst, d, slots),
-        InstructionKindData::AtomicRMW(d) => fmt_atomicrmw(f, inst, d, slots),
+        InstructionKindData::AtomicRmw(d) => fmt_atomicrmw(f, inst, d, slots),
         InstructionKindData::Unreachable(_) => f.write_str("unreachable"),
         InstructionKindData::Ret(r) => fmt_ret(f, inst, r, slots),
     }?;
@@ -1135,7 +1135,7 @@ fn fmt_cast(
                 f.write_str(" nsw")?;
             }
         }
-        CastOpcode::ZExt | CastOpcode::UIToFp if c.nneg.get() => {
+        CastOpcode::Zext | CastOpcode::UiToFp if c.nneg.get() => {
             f.write_str(" nneg")?;
         }
         _ => {}
@@ -1152,7 +1152,7 @@ fn fmt_cast(
 fn fmt_fneg(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    u: &FNegInstData,
+    u: &FnegInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `fneg [<fmf>] <ty> <src>` --- mirrors `printInstruction` /
@@ -1187,7 +1187,7 @@ fn fmt_freeze(
 fn fmt_va_arg(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    u: &VAArgInstData,
+    u: &VaArgInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `va_arg <list-ty> <list-val>, <result-ty>`
@@ -1427,7 +1427,7 @@ fn fmt_cmpxchg(
 fn fmt_atomicrmw(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    d: &AtomicRMWInstData,
+    d: &AtomicRmwInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `atomicrmw [volatile] <op> <ptr-ty> <ptr>, <val-ty> <val>
@@ -1484,9 +1484,9 @@ fn fmt_icmp(
     let lhs_data = module.context().value_data(c.lhs.get());
     let lhs = Value::from_parts(c.lhs.get(), module, lhs_data.ty);
     if c.samesign {
-        write!(f, "icmp samesign {} {} ", c.predicate.name(), lhs.ty())?;
+        write!(f, "icmp samesign {} {} ", c.predicate.as_str(), lhs.ty())?;
     } else {
-        write!(f, "icmp {} {} ", c.predicate.name(), lhs.ty())?;
+        write!(f, "icmp {} {} ", c.predicate.as_str(), lhs.ty())?;
     }
     fmt_operand_ref(f, lhs, Some(slots))?;
     f.write_str(", ")?;
@@ -1497,7 +1497,7 @@ fn fmt_icmp(
 fn fmt_fcmp(
     f: &mut fmt::Formatter<'_>,
     inst: &InstructionView<'_, impl ModuleBrand>,
-    c: &FCmpInstData,
+    c: &FcmpInstData,
     slots: &SlotTracker,
 ) -> fmt::Result {
     // `fcmp [<fmf>] <pred> <ty> <lhs>, <rhs>`. The optional FMF block
@@ -1509,7 +1509,7 @@ fn fmt_fcmp(
     if !c.fmf.is_empty() {
         write!(f, " {}", c.fmf)?;
     }
-    write!(f, " {} {} ", c.predicate.name(), lhs.ty())?;
+    write!(f, " {} {} ", c.predicate.as_str(), lhs.ty())?;
     fmt_operand_ref(f, lhs, Some(slots))?;
     f.write_str(", ")?;
     let rhs_data = module.context().value_data(c.rhs.get());
@@ -1729,14 +1729,14 @@ fn fmt_call(
     // trailing `...` (AsmWriter's CallInst arm:
     // `isMustTailCall() && getParent()->getParent()->isVarArg()`).
     if matches!(c.tail_kind, TailCallKind::MustTail) {
-        let enclosing_varargs =
-            inst.into_erased()
-                .local_parent_function_id()
-                .is_some_and(|fn_id| {
-                    FunctionValue::<Dyn, _>::from_parts_unchecked(fn_id, module)
-                        .signature()
-                        .is_var_arg()
-                });
+        let enclosing_varargs = inst
+            .as_erased()
+            .local_parent_function_id()
+            .is_some_and(|fn_id| {
+                FunctionValue::<Dyn, _>::from_parts_unchecked(fn_id, module)
+                    .signature()
+                    .is_var_arg()
+            });
         if enclosing_varargs {
             if !c.args.is_empty() {
                 f.write_str(", ")?;
@@ -1870,6 +1870,8 @@ fn constant_int_zext_u128<B: ModuleBrand>(value: Value<'_, B>) -> Option<u128> {
     ApInt::from_words(*bits, words).try_zext_u128()
 }
 
+/// Mirrors `knownBundleName` (`lib/IR/LLVMContext.cpp`), the spelling table
+/// `LLVMContext::LLVMContext` registers for the `OB_*` operand-bundle tags.
 fn operand_bundle_tag_name(tag: &OperandBundleTag) -> &str {
     match tag {
         OperandBundleTag::Deopt => "deopt",
@@ -1883,7 +1885,7 @@ fn operand_bundle_tag_name(tag: &OperandBundleTag) -> &str {
         OperandBundleTag::Kcfi => "kcfi",
         OperandBundleTag::ConvergenceCtrl => "convergencectrl",
         OperandBundleTag::Align => "align",
-        OperandBundleTag::DeactivationSymbol => "deactivation",
+        OperandBundleTag::DeactivationSymbol => "deactivation-symbol",
         OperandBundleTag::Custom(name) => name.as_str(),
     }
 }
@@ -2434,16 +2436,16 @@ fn fmt_attribute_stored<'ctx, B: ModuleBrand + 'ctx>(
     match attr {
         AttributeStored::Enum(k) => f.write_str(k.name()),
         AttributeStored::Int(AttrKind::Alignment, v) => write!(f, "align {v}"),
-        AttributeStored::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
-        AttributeStored::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
+        AttributeStored::Int(AttrKind::UwTable, 2) => f.write_str("uwtable"),
+        AttributeStored::Int(AttrKind::UwTable, 1) => f.write_str("uwtable(sync)"),
         AttributeStored::Int(k, v) => write!(f, "{}({v})", k.name()),
         AttributeStored::Type(k, ty_id) => write!(f, "{}({})", k.name(), Type::new(*ty_id, module)),
         AttributeStored::Range { ty, lower, upper } => write!(
             f,
             "range({} {}, {})",
             Type::new(*ty, module),
-            lower.to_string_radix(10, ApIntSignedness::Signed),
-            upper.to_string_radix(10, ApIntSignedness::Signed)
+            lower.to_string_radix(10, Signedness::Signed),
+            upper.to_string_radix(10, Signedness::Signed)
         ),
         AttributeStored::Memory(effects) => write!(f, "{effects}"),
         AttributeStored::NoFpClass(_) => write!(f, "{attr}"),
@@ -2594,7 +2596,7 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         f.write_str(" ")?;
     }
     write!(f, "{} ", sig.return_type())?;
-    fmt_global_value_ref(f, func.into_erased())?;
+    fmt_global_value_ref(f, func.as_erased())?;
     f.write_str("(")?;
     let mut first = true;
     for arg in func.params() {
@@ -2668,15 +2670,15 @@ pub(super) fn fmt_function<B: ModuleBrand>(
     }
     if let Some(prefix) = func.prefix_data() {
         f.write_str(" prefix ")?;
-        fmt_operand(f, prefix.into_erased(), None)?;
+        fmt_operand(f, prefix.as_erased(), None)?;
     }
     if let Some(prologue) = func.prologue_data() {
         f.write_str(" prologue ")?;
-        fmt_operand(f, prologue.into_erased(), None)?;
+        fmt_operand(f, prologue.as_erased(), None)?;
     }
     if let Some(personality) = func.personality_fn() {
         f.write_str(" personality ")?;
-        fmt_operand(f, personality.into_erased(), None)?;
+        fmt_operand(f, personality.as_erased(), None)?;
     }
     {
         let module_view = func.module();
@@ -2906,7 +2908,7 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
             let md = m.metadata_store();
             let slots = metadata_slot_map(md.nodes());
             for node in nmd.iter() {
-                write!(f, "!{} = !{{", node.name())?;
+                write!(f, "!{} = !{{", node.name_str())?;
                 for (j, op) in node.operands().iter().enumerate() {
                     if j > 0 {
                         f.write_str(", ")?;
@@ -3058,7 +3060,7 @@ fn is_inline_metadata_node(node: &MetadataKind<StoredBrand>) -> bool {
         || matches!(
             node,
             MetadataKind::Specialized(s)
-                if s.kind() == SpecializedMetadataKind::DIExpression
+                if s.kind() == SpecializedMetadataKind::DiExpression
         )
 }
 
@@ -3087,7 +3089,7 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
 ) -> fmt::Result {
     // Mirrors `AssemblyWriter::printGlobal` in
     // `lib/IR/AsmWriter.cpp`.
-    fmt_global_value_ref(f, g.into_erased())?;
+    fmt_global_value_ref(f, g.as_erased())?;
     f.write_str(" = ")?;
 
     // `external` keyword in front of decl-only globals with
@@ -3145,7 +3147,7 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
     // Initializer.
     if let Some(init) = g.initializer() {
         f.write_str(" ")?;
-        let v = init.into_erased();
+        let v = init.as_erased();
         fmt_operand_ref(f, v, None)?;
     }
 
@@ -3192,7 +3194,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     a: GlobalAlias<'ctx, B>,
 ) -> fmt::Result {
-    fmt_global_value_ref(f, a.into_erased())?;
+    fmt_global_value_ref(f, a.as_erased())?;
     f.write_str(" = ")?;
     let linkage_kw = a.linkage().keyword();
     if !linkage_kw.is_empty() {
@@ -3221,7 +3223,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
     }
     f.write_str("alias ")?;
     write!(f, "{}, ", a.value_type())?;
-    fmt_operand(f, a.aliasee().into_erased(), None)?;
+    fmt_operand(f, a.aliasee().as_erased(), None)?;
     if let Some(partition) = a.partition() {
         f.write_str(", partition \"")?;
         print_escaped_string(f, partition.as_bytes())?;
@@ -3242,9 +3244,9 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
 
 pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
-    i: GlobalIFunc<'ctx, B>,
+    i: GlobalIfunc<'ctx, B>,
 ) -> fmt::Result {
-    fmt_global_value_ref(f, i.into_erased())?;
+    fmt_global_value_ref(f, i.as_erased())?;
     f.write_str(" = ")?;
     let linkage_kw = i.linkage().keyword();
     if !linkage_kw.is_empty() {
@@ -3261,7 +3263,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
     }
     f.write_str("ifunc ")?;
     write!(f, "{}, ", i.value_type())?;
-    fmt_operand(f, i.resolver().into_erased(), None)?;
+    fmt_operand(f, i.resolver().as_erased(), None)?;
     if let Some(partition) = i.partition() {
         f.write_str(", partition \"")?;
         print_escaped_string(f, partition.as_bytes())?;

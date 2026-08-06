@@ -1,5 +1,5 @@
 use core::ops::Not;
-use llvmkit_ir::{ApInt, IrError, KnownBits};
+use llvmkit_ir::{AddSubOperation, ApInt, IrError, KnownBits, OverflowFlags, SdivFlags};
 
 type UnaryBitsFn = fn(&KnownBits) -> KnownBits;
 type UnaryIntFn = fn(&ApInt) -> Option<ApInt>;
@@ -423,7 +423,25 @@ fn add_carry_add_sub_and_borrow_match_upstream_exhaustive() {
                     assert_known_result(
                         "add/sub flags",
                         exact_known(4, outputs),
-                        KnownBits::compute_for_add_sub(add, nsw, nuw, &lhs, &rhs),
+                        KnownBits::compute_for_add_sub(
+                            if add {
+                                AddSubOperation::Add
+                            } else {
+                                AddSubOperation::Sub
+                            },
+                            {
+                                let mut flags = OverflowFlags::new();
+                                if nuw {
+                                    flags = flags.nuw();
+                                }
+                                if nsw {
+                                    flags = flags.nsw();
+                                }
+                                flags
+                            },
+                            &lhs,
+                            &rhs,
+                        ),
                     );
                 }
             }
@@ -654,13 +672,13 @@ fn extended_unary_and_binary_transfers_match_upstream() {
 
     check_binary_exhaustive(
         "sdiv",
-        |lhs, rhs| KnownBits::sdiv_with_exact(lhs, rhs, false),
+        |lhs, rhs| KnownBits::sdiv_with_exact(lhs, rhs, SdivFlags::new()),
         ApInt::checked_sdiv,
         false,
     );
     check_binary_exhaustive(
         "sdiv exact",
-        |lhs, rhs| KnownBits::sdiv_with_exact(lhs, rhs, true),
+        |lhs, rhs| KnownBits::sdiv_with_exact(lhs, rhs, SdivFlags::new().exact()),
         |lhs, rhs| {
             let rem = lhs.checked_srem(rhs)?;
             rem.is_zero().then(|| lhs.checked_sdiv(rhs)).flatten()
@@ -860,11 +878,11 @@ fn sdiv_defaults_to_inexact() {
     let rhs = KnownBits::from_ap_int(ApInt::from_words(8, &[0b0000_0100]));
     assert_eq!(
         KnownBits::sdiv(&lhs, &rhs),
-        KnownBits::sdiv_with_exact(&lhs, &rhs, false)
+        KnownBits::sdiv_with_exact(&lhs, &rhs, SdivFlags::new())
     );
     assert_eq!(
         KnownBits::udiv(&lhs, &rhs),
-        KnownBits::udiv_with_exact(&lhs, &rhs, false)
+        KnownBits::udiv_with_exact(&lhs, &rhs, llvmkit_ir::UdivFlags::new())
     );
 }
 

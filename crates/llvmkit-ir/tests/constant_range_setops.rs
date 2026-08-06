@@ -18,16 +18,11 @@
 
 use std::collections::BTreeSet;
 
-use llvmkit_ir::{ApInt, ApIntSignedness, ApIntTruncation, ConstantRange, PreferredRangeType};
+use llvmkit_ir::{ApInt, ApIntTruncation, ConstantRange, PreferredRangeType, Signedness};
 
 fn ap(bits: u32, value: u64) -> ApInt {
-    ApInt::new(
-        bits,
-        value,
-        ApIntSignedness::Unsigned,
-        ApIntTruncation::Truncate,
-    )
-    .expect("in-range constant")
+    ApInt::new(bits, value, Signedness::Unsigned, ApIntTruncation::Truncate)
+        .expect("in-range constant")
 }
 
 /// Ports `EnumerateConstantRanges`.

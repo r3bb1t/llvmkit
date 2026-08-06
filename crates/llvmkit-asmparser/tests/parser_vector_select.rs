@@ -3,8 +3,8 @@
 //! The third sibling of `parser_vector_binops.rs` and `parser_vector_casts.rs`,
 //! and for the same reason: llvmkit's typed handles cannot name a vector
 //! condition (`IntValue<bool>` is scalar) or a vector arm (no `IntWidth`
-//! describes `<N x iM>`), so `IRBuilder::build_select_erased` carries the shape
-//! that `IRBuilder::build_select` cannot. Upstream needs no split —
+//! describes `<N x iM>`), so `IrBuilder::select_erased` carries the shape
+//! that `IrBuilder::select` cannot. Upstream needs no split —
 //! `LLParser::parseSelect` hands all three operands to `SelectInst::Create`.
 //!
 //! These lock that path end to end: the IR parses, **verifies**, and prints

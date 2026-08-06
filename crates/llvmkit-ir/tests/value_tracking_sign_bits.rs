@@ -15,8 +15,8 @@
 //! definition, not a second implementation of the analysis.
 
 use llvmkit_ir::{
-    ApInt, ApIntSignedness, ApIntTruncation, Dyn, IRBuilder, IntValue, IrError, Linkage, Module,
-    NoFolder, Value, ValueTrackingQuery, compute_max_significant_bits, compute_num_sign_bits,
+    ApInt, ApIntTruncation, Dyn, IntValue, IrBuilder, IrError, Linkage, Module, NoFolder,
+    Signedness, Value, ValueTrackingQuery, compute_max_significant_bits, compute_num_sign_bits,
 };
 
 /// An `i32` constant, built the way the fixtures spell one.
@@ -24,7 +24,7 @@ fn i32_const(value: i64) -> ApInt {
     ApInt::new(
         32,
         value as u64,
-        ApIntSignedness::Signed,
+        Signedness::Signed,
         ApIntTruncation::Truncate,
     )
     .expect("32-bit constant")
@@ -35,16 +35,16 @@ fn in_function<F, R>(name: &str, body: F) -> Result<R, IrError>
 where
     F: for<'m> FnOnce(
         &'m Module<llvmkit_ir::DynBrand>,
-        &IRBuilder<'m, 'm, llvmkit_ir::DynBrand, NoFolder, llvmkit_ir::Positioned, Dyn>,
+        &IrBuilder<'m, 'm, llvmkit_ir::DynBrand, NoFolder, llvmkit_ir::Positioned, Dyn>,
         IntValue<'m, i32, llvmkit_ir::DynBrand>,
     ) -> Result<R, IrError>,
 {
     let m = Module::dynamic(name);
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty.as_type(), [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     body(&m, &b, a)
 }
@@ -66,10 +66,10 @@ where
 fn compute_num_sign_bits_pr32045() -> Result<(), IrError> {
     let bits = in_function("nsb-pr32045", |m, b, a| {
         let minus_one = m.i32_type().const_int(-1_i32);
-        let shifted = b.build_int_ashr::<i32, _, _, _>(a, minus_one, "A")?;
+        let shifted = b.int_ashr::<i32, _, _, _>(a, minus_one, "A")?;
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        compute_num_sign_bits(b.view(shifted).into_erased(), &query)
+        compute_num_sign_bits(b.view(shifted).as_erased(), &query)
     })?;
     assert_eq!(bits, 32);
     Ok(())
@@ -84,7 +84,7 @@ fn unknown_value_has_one_sign_bit_and_full_significant_width() -> Result<(), IrE
     let (sign_bits, significant) = in_function("nsb-unknown", |m, _b, a| {
         let dl = m.data_layout();
         let query = ValueTrackingQuery::new(&dl);
-        let value: Value<'_, _> = a.into_erased();
+        let value: Value<'_, _> = a.as_erased();
         Ok((
             compute_num_sign_bits(value, &query)?,
             compute_max_significant_bits(value, &query)?,
@@ -216,21 +216,21 @@ fn ported_arms_never_over_report_sign_bits() -> Result<(), IrError> {
             let lhs = i32_ty.const_int(i32::try_from(case.lhs).expect("fits i32"));
             let rhs = i32_ty.const_int(i32::try_from(case.rhs).expect("fits i32"));
             let result = match case.label {
-                "sdiv" => b.build_int_sdiv::<i32, _, _, _>(lhs, rhs, "r")?,
-                "srem" => b.build_int_srem::<i32, _, _, _>(lhs, rhs, "r")?,
-                "ashr" => b.build_int_ashr::<i32, _, _, _>(lhs, rhs, "r")?,
-                "shl" => b.build_int_shl::<i32, _, _, _>(lhs, rhs, "r")?,
-                "add" => b.build_int_add::<i32, _, _, _>(lhs, rhs, "r")?,
-                "sub" => b.build_int_sub::<i32, _, _, _>(lhs, rhs, "r")?,
-                "mul" => b.build_int_mul::<i32, _, _, _>(lhs, rhs, "r")?,
-                "and" => b.build_int_and::<i32, _, _, _>(lhs, rhs, "r")?,
-                "or" => b.build_int_or::<i32, _, _, _>(lhs, rhs, "r")?,
-                "xor" => b.build_int_xor::<i32, _, _, _>(lhs, rhs, "r")?,
+                "sdiv" => b.int_sdiv::<i32, _, _, _>(lhs, rhs, "r")?,
+                "srem" => b.int_srem::<i32, _, _, _>(lhs, rhs, "r")?,
+                "ashr" => b.int_ashr::<i32, _, _, _>(lhs, rhs, "r")?,
+                "shl" => b.int_shl::<i32, _, _, _>(lhs, rhs, "r")?,
+                "add" => b.int_add::<i32, _, _, _>(lhs, rhs, "r")?,
+                "sub" => b.int_sub::<i32, _, _, _>(lhs, rhs, "r")?,
+                "mul" => b.int_mul::<i32, _, _, _>(lhs, rhs, "r")?,
+                "and" => b.int_and::<i32, _, _, _>(lhs, rhs, "r")?,
+                "or" => b.int_or::<i32, _, _, _>(lhs, rhs, "r")?,
+                "xor" => b.int_xor::<i32, _, _, _>(lhs, rhs, "r")?,
                 other => panic!("unhandled case label {other}"),
             };
             let dl = m.data_layout();
             let query = ValueTrackingQuery::new(&dl);
-            compute_num_sign_bits(b.view(result).into_erased(), &query)
+            compute_num_sign_bits(b.view(result).as_erased(), &query)
         })?;
 
         let truth = i32_const(case.result).num_sign_bits();
@@ -260,34 +260,34 @@ fn sext_and_trunc_arms_never_over_report() -> Result<(), IrError> {
     let m = Module::dynamic("nsb-casts");
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty.as_type(), false);
+    let fn_ty = m.function_type_no_parameters(i32_ty.as_type());
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
 
     // sext i8 -8 to i32 == -8; an i8 -8 has 5 sign bits, the i32 has 29.
     let narrow: IntValue<'_, i8, _> = i8_ty.const_int(-8_i8).as_constant().try_into()?;
-    let widened = b.build_sext::<i8, i32, _, _>(narrow, i32_ty, "s")?;
+    let widened = b.sext::<i8, i32, _, _>(narrow, i32_ty, "s")?;
 
     // trunc i32 -8 to i8 == -8.
     let wide: IntValue<'_, i32, _> = i32_ty.const_int(-8_i32).as_constant().try_into()?;
-    let narrowed = b.build_trunc::<i32, i8, _, _>(wide, i8_ty, "t")?;
+    let narrowed = b.trunc::<i32, i8, _, _>(wide, i8_ty, "t")?;
 
     let dl = m.data_layout();
     let query = ValueTrackingQuery::new(&dl);
 
-    let sext_bits = compute_num_sign_bits(b.view(widened).into_erased(), &query)?;
+    let sext_bits = compute_num_sign_bits(b.view(widened).as_erased(), &query)?;
     let sext_truth = i32_const(-8).num_sign_bits();
     assert!(
         sext_bits >= 1 && sext_bits <= sext_truth,
         "sext: {sext_bits} vs {sext_truth}"
     );
 
-    let trunc_bits = compute_num_sign_bits(b.view(narrowed).into_erased(), &query)?;
+    let trunc_bits = compute_num_sign_bits(b.view(narrowed).as_erased(), &query)?;
     let trunc_truth = ApInt::new(
         8,
         (-8_i64) as u64,
-        ApIntSignedness::Signed,
+        Signedness::Signed,
         ApIntTruncation::Truncate,
     )
     .expect("8-bit constant")

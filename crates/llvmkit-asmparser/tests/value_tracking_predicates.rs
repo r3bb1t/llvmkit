@@ -45,7 +45,7 @@ fn named<'m>(module: &'m Module<DynBrand, Unverified>, name: &str) -> Value<'m, 
     let ids: Vec<_> = view.functions().map(|f| f.id()).collect();
     ids.into_iter()
         .flat_map(|id| module.view(id).params())
-        .map(|param| param.into_erased())
+        .map(|param| param.as_erased())
         .find(|value| value.name().as_deref() == Some(name))
         .unwrap_or_else(|| panic!("fixture defines %{name}"))
 }

@@ -8,7 +8,7 @@
 //! [`Unterminated`] block handle can be positioned for appends, and
 //! terminator builders return a [`Terminated`] view of the insertion
 //! block. Code that follows that returned view cannot append via
-//! [`crate::IRBuilder::position_at_end`].
+//! [`crate::IrBuilder::position_at_end`].
 //!
 //! Cranelift calls this state "filled"; llvmkit uses LLVM's own
 //! "terminator" vocabulary. The word "sealed" is reserved for the
@@ -17,7 +17,7 @@
 //! `BasicBlock` is a linear insertion-capability handle (`!Copy` / `!Clone`).
 //! Copyable cross-block references use [`crate::BasicBlockLabel`], so a
 //! retained label can still name a predecessor after termination without
-//! being accepted by [`crate::IRBuilder::position_at_end`].
+//! being accepted by [`crate::IrBuilder::position_at_end`].
 
 use crate::value::sealed;
 
@@ -31,13 +31,13 @@ pub trait BlockTerminationState: sealed::Sealed + 'static {
     const IS_TERMINATED: bool;
 }
 
-/// Marker: the block has no terminator yet. `IRBuilder` may be
+/// Marker: the block has no terminator yet. `IrBuilder` may be
 /// positioned at this block and emit instructions into it.
 #[derive(Debug, Clone, Copy)]
 pub struct Unterminated;
 
 /// Marker: the block has a terminator. No further instructions can
-/// be appended via `IRBuilder`.
+/// be appended via `IrBuilder`.
 #[derive(Debug, Clone, Copy)]
 pub struct Terminated;
 

@@ -15,10 +15,10 @@
 
 use core::cell::{Cell, RefCell};
 
-use super::atomicrmw_binop::AtomicRMWBinOp;
+use super::atomicrmw_binop::AtomicRmwBinOp;
 use super::cmp_predicate::{FloatPredicate, IntPredicate};
 use super::gep_no_wrap_flags::GepNoWrapFlags;
-use crate::align::{Align, MaybeAlign};
+use crate::align::MaybeAlign;
 use crate::atomic_ordering::AtomicOrdering;
 use crate::attributes::AttributeStorage;
 use crate::fmf::FastMathFlags;
@@ -30,21 +30,21 @@ pub enum BinaryOpcode {
     Add,
     Sub,
     Mul,
-    UDiv,
-    SDiv,
-    URem,
-    SRem,
+    Udiv,
+    Sdiv,
+    Urem,
+    Srem,
     Shl,
-    LShr,
-    AShr,
+    Lshr,
+    Ashr,
     And,
     Or,
     Xor,
-    FAdd,
-    FSub,
-    FMul,
-    FDiv,
-    FRem,
+    Fadd,
+    Fsub,
+    Fmul,
+    Fdiv,
+    Frem,
 }
 
 impl BinaryOpcode {
@@ -53,28 +53,28 @@ impl BinaryOpcode {
             Self::Add => "add",
             Self::Sub => "sub",
             Self::Mul => "mul",
-            Self::UDiv => "udiv",
-            Self::SDiv => "sdiv",
-            Self::URem => "urem",
-            Self::SRem => "srem",
+            Self::Udiv => "udiv",
+            Self::Sdiv => "sdiv",
+            Self::Urem => "urem",
+            Self::Srem => "srem",
             Self::Shl => "shl",
-            Self::LShr => "lshr",
-            Self::AShr => "ashr",
+            Self::Lshr => "lshr",
+            Self::Ashr => "ashr",
             Self::And => "and",
             Self::Or => "or",
             Self::Xor => "xor",
-            Self::FAdd => "fadd",
-            Self::FSub => "fsub",
-            Self::FMul => "fmul",
-            Self::FDiv => "fdiv",
-            Self::FRem => "frem",
+            Self::Fadd => "fadd",
+            Self::Fsub => "fsub",
+            Self::Fmul => "fmul",
+            Self::Fdiv => "fdiv",
+            Self::Frem => "frem",
         }
     }
 
     pub const fn is_commutative(self) -> bool {
         matches!(
             self,
-            Self::Add | Self::Mul | Self::And | Self::Or | Self::Xor | Self::FAdd | Self::FMul
+            Self::Add | Self::Mul | Self::And | Self::Or | Self::Xor | Self::Fadd | Self::Fmul
         )
     }
 
@@ -86,7 +86,7 @@ impl BinaryOpcode {
     }
 
     pub const fn is_int_div_rem(self) -> bool {
-        matches!(self, Self::UDiv | Self::SDiv | Self::URem | Self::SRem)
+        matches!(self, Self::Udiv | Self::Sdiv | Self::Urem | Self::Srem)
     }
 
     pub const fn is_desirable_constant_expr(self) -> bool {
@@ -100,7 +100,7 @@ impl BinaryOpcode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnaryOpcode {
-    FNeg,
+    Fneg,
 }
 
 /// Every instruction opcode, as one closed enum.
@@ -147,38 +147,38 @@ pub enum Opcode {
     CallBr,
     // Unary operators.
     /// `fneg`
-    FNeg,
+    Fneg,
     // Binary operators.
     /// `add`
     Add,
     /// `fadd`
-    FAdd,
+    Fadd,
     /// `sub`
     Sub,
     /// `fsub`
-    FSub,
+    Fsub,
     /// `mul`
     Mul,
     /// `fmul`
-    FMul,
+    Fmul,
     /// `udiv`
-    UDiv,
+    Udiv,
     /// `sdiv`
-    SDiv,
+    Sdiv,
     /// `fdiv`
-    FDiv,
+    Fdiv,
     /// `urem`
-    URem,
+    Urem,
     /// `srem`
-    SRem,
+    Srem,
     /// `frem`
-    FRem,
+    Frem,
     /// `shl`
     Shl,
     /// `lshr`
-    LShr,
+    Lshr,
     /// `ashr`
-    AShr,
+    Ashr,
     /// `and`
     And,
     /// `or`
@@ -199,22 +199,22 @@ pub enum Opcode {
     /// `cmpxchg`
     AtomicCmpXchg,
     /// `atomicrmw`
-    AtomicRMW,
+    AtomicRmw,
     // Cast operators.
     /// `trunc`
     Trunc,
     /// `zext`
-    ZExt,
+    Zext,
     /// `sext`
-    SExt,
+    Sext,
     /// `fptoui`
-    FpToUI,
+    FpToUi,
     /// `fptosi`
-    FpToSI,
+    FpToSi,
     /// `uitofp`
-    UIToFp,
+    UiToFp,
     /// `sitofp`
-    SIToFp,
+    SiToFp,
     /// `fptrunc`
     FpTrunc,
     /// `fpext`
@@ -236,9 +236,9 @@ pub enum Opcode {
     CatchPad,
     // Other operators.
     /// `icmp`
-    ICmp,
+    Icmp,
     /// `fcmp`
-    FCmp,
+    Fcmp,
     /// `phi`
     Phi,
     /// `call`
@@ -246,7 +246,7 @@ pub enum Opcode {
     /// `select`
     Select,
     /// `va_arg`
-    VAArg,
+    VaArg,
     /// `extractelement`
     ExtractElement,
     /// `insertelement`
@@ -301,22 +301,22 @@ impl Opcode {
             Self::CatchReturn => "catchret",
             Self::CatchSwitch => "catchswitch",
             Self::CallBr => "callbr",
-            Self::FNeg => "fneg",
+            Self::Fneg => "fneg",
             Self::Add => "add",
-            Self::FAdd => "fadd",
+            Self::Fadd => "fadd",
             Self::Sub => "sub",
-            Self::FSub => "fsub",
+            Self::Fsub => "fsub",
             Self::Mul => "mul",
-            Self::FMul => "fmul",
-            Self::UDiv => "udiv",
-            Self::SDiv => "sdiv",
-            Self::FDiv => "fdiv",
-            Self::URem => "urem",
-            Self::SRem => "srem",
-            Self::FRem => "frem",
+            Self::Fmul => "fmul",
+            Self::Udiv => "udiv",
+            Self::Sdiv => "sdiv",
+            Self::Fdiv => "fdiv",
+            Self::Urem => "urem",
+            Self::Srem => "srem",
+            Self::Frem => "frem",
             Self::Shl => "shl",
-            Self::LShr => "lshr",
-            Self::AShr => "ashr",
+            Self::Lshr => "lshr",
+            Self::Ashr => "ashr",
             Self::And => "and",
             Self::Or => "or",
             Self::Xor => "xor",
@@ -326,14 +326,14 @@ impl Opcode {
             Self::GetElementPtr => "getelementptr",
             Self::Fence => "fence",
             Self::AtomicCmpXchg => "cmpxchg",
-            Self::AtomicRMW => "atomicrmw",
+            Self::AtomicRmw => "atomicrmw",
             Self::Trunc => "trunc",
-            Self::ZExt => "zext",
-            Self::SExt => "sext",
-            Self::FpToUI => "fptoui",
-            Self::FpToSI => "fptosi",
-            Self::UIToFp => "uitofp",
-            Self::SIToFp => "sitofp",
+            Self::Zext => "zext",
+            Self::Sext => "sext",
+            Self::FpToUi => "fptoui",
+            Self::FpToSi => "fptosi",
+            Self::UiToFp => "uitofp",
+            Self::SiToFp => "sitofp",
             Self::FpTrunc => "fptrunc",
             Self::FpExt => "fpext",
             Self::PtrToInt => "ptrtoint",
@@ -343,12 +343,12 @@ impl Opcode {
             Self::AddrSpaceCast => "addrspacecast",
             Self::CleanupPad => "cleanuppad",
             Self::CatchPad => "catchpad",
-            Self::ICmp => "icmp",
-            Self::FCmp => "fcmp",
+            Self::Icmp => "icmp",
+            Self::Fcmp => "fcmp",
             Self::Phi => "phi",
             Self::Call => "call",
             Self::Select => "select",
-            Self::VAArg => "va_arg",
+            Self::VaArg => "va_arg",
             Self::ExtractElement => "extractelement",
             Self::InsertElement => "insertelement",
             Self::ShuffleVector => "shufflevector",
@@ -373,22 +373,22 @@ impl Opcode {
             | Self::CatchReturn
             | Self::CatchSwitch
             | Self::CallBr => OpcodeGroup::Terminator,
-            Self::FNeg => OpcodeGroup::Unary,
+            Self::Fneg => OpcodeGroup::Unary,
             Self::Add
-            | Self::FAdd
+            | Self::Fadd
             | Self::Sub
-            | Self::FSub
+            | Self::Fsub
             | Self::Mul
-            | Self::FMul
-            | Self::UDiv
-            | Self::SDiv
-            | Self::FDiv
-            | Self::URem
-            | Self::SRem
-            | Self::FRem
+            | Self::Fmul
+            | Self::Udiv
+            | Self::Sdiv
+            | Self::Fdiv
+            | Self::Urem
+            | Self::Srem
+            | Self::Frem
             | Self::Shl
-            | Self::LShr
-            | Self::AShr
+            | Self::Lshr
+            | Self::Ashr
             | Self::And
             | Self::Or
             | Self::Xor => OpcodeGroup::Binary,
@@ -398,14 +398,14 @@ impl Opcode {
             | Self::GetElementPtr
             | Self::Fence
             | Self::AtomicCmpXchg
-            | Self::AtomicRMW => OpcodeGroup::Memory,
+            | Self::AtomicRmw => OpcodeGroup::Memory,
             Self::Trunc
-            | Self::ZExt
-            | Self::SExt
-            | Self::FpToUI
-            | Self::FpToSI
-            | Self::UIToFp
-            | Self::SIToFp
+            | Self::Zext
+            | Self::Sext
+            | Self::FpToUi
+            | Self::FpToSi
+            | Self::UiToFp
+            | Self::SiToFp
             | Self::FpTrunc
             | Self::FpExt
             | Self::PtrToInt
@@ -414,12 +414,12 @@ impl Opcode {
             | Self::BitCast
             | Self::AddrSpaceCast => OpcodeGroup::Cast,
             Self::CleanupPad | Self::CatchPad => OpcodeGroup::FuncletPad,
-            Self::ICmp
-            | Self::FCmp
+            Self::Icmp
+            | Self::Fcmp
             | Self::Phi
             | Self::Call
             | Self::Select
-            | Self::VAArg
+            | Self::VaArg
             | Self::ExtractElement
             | Self::InsertElement
             | Self::ShuffleVector
@@ -456,21 +456,21 @@ impl Opcode {
             Self::Add => BinaryOpcode::Add,
             Self::Sub => BinaryOpcode::Sub,
             Self::Mul => BinaryOpcode::Mul,
-            Self::UDiv => BinaryOpcode::UDiv,
-            Self::SDiv => BinaryOpcode::SDiv,
-            Self::URem => BinaryOpcode::URem,
-            Self::SRem => BinaryOpcode::SRem,
+            Self::Udiv => BinaryOpcode::Udiv,
+            Self::Sdiv => BinaryOpcode::Sdiv,
+            Self::Urem => BinaryOpcode::Urem,
+            Self::Srem => BinaryOpcode::Srem,
             Self::Shl => BinaryOpcode::Shl,
-            Self::LShr => BinaryOpcode::LShr,
-            Self::AShr => BinaryOpcode::AShr,
+            Self::Lshr => BinaryOpcode::Lshr,
+            Self::Ashr => BinaryOpcode::Ashr,
             Self::And => BinaryOpcode::And,
             Self::Or => BinaryOpcode::Or,
             Self::Xor => BinaryOpcode::Xor,
-            Self::FAdd => BinaryOpcode::FAdd,
-            Self::FSub => BinaryOpcode::FSub,
-            Self::FMul => BinaryOpcode::FMul,
-            Self::FDiv => BinaryOpcode::FDiv,
-            Self::FRem => BinaryOpcode::FRem,
+            Self::Fadd => BinaryOpcode::Fadd,
+            Self::Fsub => BinaryOpcode::Fsub,
+            Self::Fmul => BinaryOpcode::Fmul,
+            Self::Fdiv => BinaryOpcode::Fdiv,
+            Self::Frem => BinaryOpcode::Frem,
             _ => return None,
         })
     }
@@ -479,12 +479,12 @@ impl Opcode {
     pub const fn as_cast_opcode(self) -> Option<CastOpcode> {
         Some(match self {
             Self::Trunc => CastOpcode::Trunc,
-            Self::ZExt => CastOpcode::ZExt,
-            Self::SExt => CastOpcode::SExt,
-            Self::FpToUI => CastOpcode::FpToUI,
-            Self::FpToSI => CastOpcode::FpToSI,
-            Self::UIToFp => CastOpcode::UIToFp,
-            Self::SIToFp => CastOpcode::SIToFp,
+            Self::Zext => CastOpcode::Zext,
+            Self::Sext => CastOpcode::Sext,
+            Self::FpToUi => CastOpcode::FpToUi,
+            Self::FpToSi => CastOpcode::FpToSi,
+            Self::UiToFp => CastOpcode::UiToFp,
+            Self::SiToFp => CastOpcode::SiToFp,
             Self::FpTrunc => CastOpcode::FpTrunc,
             Self::FpExt => CastOpcode::FpExt,
             Self::PtrToInt => CastOpcode::PtrToInt,
@@ -503,21 +503,21 @@ impl From<BinaryOpcode> for Opcode {
             BinaryOpcode::Add => Self::Add,
             BinaryOpcode::Sub => Self::Sub,
             BinaryOpcode::Mul => Self::Mul,
-            BinaryOpcode::UDiv => Self::UDiv,
-            BinaryOpcode::SDiv => Self::SDiv,
-            BinaryOpcode::URem => Self::URem,
-            BinaryOpcode::SRem => Self::SRem,
+            BinaryOpcode::Udiv => Self::Udiv,
+            BinaryOpcode::Sdiv => Self::Sdiv,
+            BinaryOpcode::Urem => Self::Urem,
+            BinaryOpcode::Srem => Self::Srem,
             BinaryOpcode::Shl => Self::Shl,
-            BinaryOpcode::LShr => Self::LShr,
-            BinaryOpcode::AShr => Self::AShr,
+            BinaryOpcode::Lshr => Self::Lshr,
+            BinaryOpcode::Ashr => Self::Ashr,
             BinaryOpcode::And => Self::And,
             BinaryOpcode::Or => Self::Or,
             BinaryOpcode::Xor => Self::Xor,
-            BinaryOpcode::FAdd => Self::FAdd,
-            BinaryOpcode::FSub => Self::FSub,
-            BinaryOpcode::FMul => Self::FMul,
-            BinaryOpcode::FDiv => Self::FDiv,
-            BinaryOpcode::FRem => Self::FRem,
+            BinaryOpcode::Fadd => Self::Fadd,
+            BinaryOpcode::Fsub => Self::Fsub,
+            BinaryOpcode::Fmul => Self::Fmul,
+            BinaryOpcode::Fdiv => Self::Fdiv,
+            BinaryOpcode::Frem => Self::Frem,
         }
     }
 }
@@ -525,7 +525,7 @@ impl From<BinaryOpcode> for Opcode {
 impl From<UnaryOpcode> for Opcode {
     fn from(opcode: UnaryOpcode) -> Self {
         match opcode {
-            UnaryOpcode::FNeg => Self::FNeg,
+            UnaryOpcode::Fneg => Self::Fneg,
         }
     }
 }
@@ -534,14 +534,14 @@ impl From<CastOpcode> for Opcode {
     fn from(opcode: CastOpcode) -> Self {
         match opcode {
             CastOpcode::Trunc => Self::Trunc,
-            CastOpcode::ZExt => Self::ZExt,
-            CastOpcode::SExt => Self::SExt,
+            CastOpcode::Zext => Self::Zext,
+            CastOpcode::Sext => Self::Sext,
             CastOpcode::FpTrunc => Self::FpTrunc,
             CastOpcode::FpExt => Self::FpExt,
-            CastOpcode::FpToUI => Self::FpToUI,
-            CastOpcode::FpToSI => Self::FpToSI,
-            CastOpcode::UIToFp => Self::UIToFp,
-            CastOpcode::SIToFp => Self::SIToFp,
+            CastOpcode::FpToUi => Self::FpToUi,
+            CastOpcode::FpToSi => Self::FpToSi,
+            CastOpcode::UiToFp => Self::UiToFp,
+            CastOpcode::SiToFp => Self::SiToFp,
             CastOpcode::PtrToAddr => Self::PtrToAddr,
             CastOpcode::PtrToInt => Self::PtrToInt,
             CastOpcode::IntToPtr => Self::IntToPtr,
@@ -681,21 +681,21 @@ pub enum CastOpcode {
     /// `trunc` — narrow an integer to a smaller width.
     Trunc,
     /// `zext` — widen an integer with zero-extension.
-    ZExt,
+    Zext,
     /// `sext` — widen an integer with sign-extension.
-    SExt,
+    Sext,
     /// `fptrunc` — narrow a float kind.
     FpTrunc,
     /// `fpext` — widen a float kind.
     FpExt,
     /// `fptoui` — float to unsigned integer.
-    FpToUI,
+    FpToUi,
     /// `fptosi` — float to signed integer.
-    FpToSI,
+    FpToSi,
     /// `uitofp` — unsigned integer to float.
-    UIToFp,
+    UiToFp,
     /// `sitofp` — signed integer to float.
-    SIToFp,
+    SiToFp,
     /// `ptrtoaddr` — pointer to integer address bits.
     PtrToAddr,
     /// `ptrtoint` — pointer to integer.
@@ -713,14 +713,14 @@ impl CastOpcode {
     pub const fn keyword(self) -> &'static str {
         match self {
             Self::Trunc => "trunc",
-            Self::ZExt => "zext",
-            Self::SExt => "sext",
+            Self::Zext => "zext",
+            Self::Sext => "sext",
             Self::FpTrunc => "fptrunc",
             Self::FpExt => "fpext",
-            Self::FpToUI => "fptoui",
-            Self::FpToSI => "fptosi",
-            Self::UIToFp => "uitofp",
-            Self::SIToFp => "sitofp",
+            Self::FpToUi => "fptoui",
+            Self::FpToSi => "fptosi",
+            Self::UiToFp => "uitofp",
+            Self::SiToFp => "sitofp",
             Self::PtrToAddr => "ptrtoaddr",
             Self::PtrToInt => "ptrtoint",
             Self::IntToPtr => "inttoptr",
@@ -815,12 +815,12 @@ impl core::hash::Hash for CastOpData {
 /// because every `FPMathOperator` instruction subclass may set them
 /// (`Operator.h`, `FPMathOperator`).
 #[derive(Debug)]
-pub(crate) struct FNegInstData {
+pub(crate) struct FnegInstData {
     pub(crate) src: Cell<ValueSlot>,
     pub(crate) fmf: FastMathFlags,
 }
 
-impl FNegInstData {
+impl FnegInstData {
     pub(crate) fn new(src: ValueSlot, fmf: FastMathFlags) -> Self {
         Self {
             src: Cell::new(src),
@@ -828,7 +828,7 @@ impl FNegInstData {
         }
     }
 }
-impl Clone for FNegInstData {
+impl Clone for FnegInstData {
     fn clone(&self) -> Self {
         Self {
             src: Cell::new(self.src.get()),
@@ -836,13 +836,13 @@ impl Clone for FNegInstData {
         }
     }
 }
-impl PartialEq for FNegInstData {
+impl PartialEq for FnegInstData {
     fn eq(&self, other: &Self) -> bool {
         self.src.get() == other.src.get() && self.fmf == other.fmf
     }
 }
-impl Eq for FNegInstData {}
-impl core::hash::Hash for FNegInstData {
+impl Eq for FnegInstData {}
+impl core::hash::Hash for FnegInstData {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.src.get().hash(h);
         self.fmf.bits().hash(h);
@@ -883,35 +883,35 @@ impl core::hash::Hash for FreezeInstData {
     }
 }
 
-/// Storage payload for `va_arg`. Mirrors `VAArgInst`
+/// Storage payload for `va_arg`. Mirrors `VaArgInst`
 /// (`Instructions.h`). The destination type is carried in the host
 /// `ValueData::ty`; the payload stores only the `va_list` pointer.
 #[derive(Debug)]
-pub(crate) struct VAArgInstData {
+pub(crate) struct VaArgInstData {
     pub(crate) src: Cell<ValueSlot>,
 }
 
-impl VAArgInstData {
+impl VaArgInstData {
     pub(crate) fn new(src: ValueSlot) -> Self {
         Self {
             src: Cell::new(src),
         }
     }
 }
-impl Clone for VAArgInstData {
+impl Clone for VaArgInstData {
     fn clone(&self) -> Self {
         Self {
             src: Cell::new(self.src.get()),
         }
     }
 }
-impl PartialEq for VAArgInstData {
+impl PartialEq for VaArgInstData {
     fn eq(&self, other: &Self) -> bool {
         self.src.get() == other.src.get()
     }
 }
-impl Eq for VAArgInstData {}
-impl core::hash::Hash for VAArgInstData {
+impl Eq for VaArgInstData {}
+impl core::hash::Hash for VaArgInstData {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.src.get().hash(h);
     }
@@ -923,7 +923,7 @@ impl core::hash::Hash for VAArgInstData {
 
 /// Storage payload for `icmp`. Mirrors the operand layout of
 /// `CmpInst` (`InstrTypes.h`) restricted to integer compares. Float
-/// comparisons (`fcmp`) live in their own `FCmpInstData`. Keeping the
+/// comparisons (`fcmp`) live in their own `FcmpInstData`. Keeping the
 /// two payloads separate means this one carries an [`IntPredicate`]
 /// directly — no predicate-enum envelope, so no `match` arms going
 /// stale.
@@ -936,7 +936,7 @@ pub(crate) struct CmpInstData {
     pub(crate) lhs: Cell<ValueSlot>,
     pub(crate) rhs: Cell<ValueSlot>,
     /// `samesign` flag. LLVM 20+: asserts both operands have the same sign.
-    /// Mirrors `ICmpInst::hasSameSign` / `setSameSign`.
+    /// Mirrors `IcmpInst::hasSameSign` / `setSameSign`.
     pub(crate) samesign: bool,
 }
 
@@ -983,7 +983,7 @@ impl core::hash::Hash for CmpInstData {
 /// predicate field's type pins `FloatPredicate` at the storage
 /// layer.
 #[derive(Debug)]
-pub(crate) struct FCmpInstData {
+pub(crate) struct FcmpInstData {
     pub(crate) predicate: FloatPredicate,
     pub(crate) lhs: Cell<ValueSlot>,
     pub(crate) rhs: Cell<ValueSlot>,
@@ -992,7 +992,7 @@ pub(crate) struct FCmpInstData {
     pub(crate) fmf: FastMathFlags,
 }
 
-impl FCmpInstData {
+impl FcmpInstData {
     pub(crate) fn new(predicate: FloatPredicate, lhs: ValueSlot, rhs: ValueSlot) -> Self {
         Self {
             predicate,
@@ -1002,7 +1002,7 @@ impl FCmpInstData {
         }
     }
 }
-impl Clone for FCmpInstData {
+impl Clone for FcmpInstData {
     fn clone(&self) -> Self {
         Self {
             predicate: self.predicate,
@@ -1012,7 +1012,7 @@ impl Clone for FCmpInstData {
         }
     }
 }
-impl PartialEq for FCmpInstData {
+impl PartialEq for FcmpInstData {
     fn eq(&self, other: &Self) -> bool {
         self.predicate == other.predicate
             && self.lhs.get() == other.lhs.get()
@@ -1020,8 +1020,8 @@ impl PartialEq for FCmpInstData {
             && self.fmf == other.fmf
     }
 }
-impl Eq for FCmpInstData {}
-impl core::hash::Hash for FCmpInstData {
+impl Eq for FcmpInstData {}
+impl core::hash::Hash for FcmpInstData {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.predicate.hash(h);
         self.lhs.get().hash(h);
@@ -1208,7 +1208,7 @@ impl Clone for PhiData {
 // runtime `IrError::InvalidOperation`.
 //
 // Opcodes without flags (`urem`/`srem`/`and`/`or`/`xor`) have no
-// matching flag type - they only ship the flag-free `build_int_*`
+// matching flag type - they only ship the flag-free `int_*`
 // methods.
 
 macro_rules! decl_overflowing_flags {
@@ -1251,6 +1251,12 @@ macro_rules! decl_exact_flags {
             #[inline]
             pub const fn new() -> Self { Self { exact: false } }
 
+            // Crate-internal per the no-bool-params convention.
+            #[inline]
+            pub(crate) const fn from_parts(exact: bool) -> Self {
+                Self { exact }
+            }
+
             /// Set the `exact` flag.
             #[inline]
             #[must_use]
@@ -1277,21 +1283,43 @@ decl_overflowing_flags!(
     ShlFlags
 );
 
+// Crate-internal lifts for analyses holding runtime flag bits
+// (value_tracking). Only the structs a caller actually lifts get one —
+// a macro-emitted blanket impl would leave MulFlags's copy dead.
+impl AddFlags {
+    #[inline]
+    pub(crate) const fn from_parts(nuw: bool, nsw: bool) -> Self {
+        Self { nuw, nsw }
+    }
+}
+impl SubFlags {
+    #[inline]
+    pub(crate) const fn from_parts(nuw: bool, nsw: bool) -> Self {
+        Self { nuw, nsw }
+    }
+}
+impl ShlFlags {
+    #[inline]
+    pub(crate) const fn from_parts(nuw: bool, nsw: bool) -> Self {
+        Self { nuw, nsw }
+    }
+}
+
 decl_exact_flags!(
     /// Flags for `udiv`. Mirrors `PossiblyExactOperator`.
-    UDivFlags
+    UdivFlags
 );
 decl_exact_flags!(
     /// Flags for `sdiv`.
-    SDivFlags
+    SdivFlags
 );
 decl_exact_flags!(
     /// Flags for `lshr`.
-    LShrFlags
+    LshrFlags
 );
 decl_exact_flags!(
     /// Flags for `ashr`.
-    AShrFlags
+    AshrFlags
 );
 
 /// Crate-internal: write a flag-set onto the underlying
@@ -1327,10 +1355,10 @@ impl_overflowing_flags_writer!(AddFlags);
 impl_overflowing_flags_writer!(SubFlags);
 impl_overflowing_flags_writer!(MulFlags);
 impl_overflowing_flags_writer!(ShlFlags);
-impl_exact_flags_writer!(UDivFlags);
-impl_exact_flags_writer!(SDivFlags);
-impl_exact_flags_writer!(LShrFlags);
-impl_exact_flags_writer!(AShrFlags);
+impl_exact_flags_writer!(UdivFlags);
+impl_exact_flags_writer!(SdivFlags);
+impl_exact_flags_writer!(LshrFlags);
+impl_exact_flags_writer!(AshrFlags);
 
 /// nuw/nsw pair for overflowing binary operators. Mirrors the flag
 /// pair on `OverflowingBinaryOperator` (`IR/Operator.h`). Public
@@ -1341,8 +1369,8 @@ impl_exact_flags_writer!(AShrFlags);
 /// convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct OverflowFlags {
-    nuw: bool,
-    nsw: bool,
+    pub(crate) nuw: bool,
+    pub(crate) nsw: bool,
 }
 
 impl OverflowFlags {
@@ -1416,7 +1444,7 @@ impl WriteBinopFlags for OrFlags {
 /// Every integer-binop flag in one value, for callers holding a *runtime*
 /// [`BinaryOpcode`] rather than a statically-known one.
 ///
-/// The per-opcode structs above ([`AddFlags`], [`ShlFlags`], [`UDivFlags`],
+/// The per-opcode structs above ([`AddFlags`], [`ShlFlags`], [`UdivFlags`],
 /// [`OrFlags`], …) are the right shape when the opcode is known at the call
 /// site: each admits exactly the flags its opcode accepts, so `exact` on an
 /// `add` is unspellable. A dispatcher cannot use them — it does not know which
@@ -1509,7 +1537,7 @@ impl BinaryOpcode {
                 is_exact: false,
                 disjoint: false,
             },
-            Self::UDiv | Self::SDiv | Self::LShr | Self::AShr => IntBinOpFlags {
+            Self::Udiv | Self::Sdiv | Self::Lshr | Self::Ashr => IntBinOpFlags {
                 no_unsigned_wrap: false,
                 no_signed_wrap: false,
                 is_exact: flags.is_exact,
@@ -1534,8 +1562,8 @@ impl BinaryOpcode {
 ///
 /// The counterpart of [`IntBinOpFlags`] for the erased cast path: a caller
 /// holding a *runtime* `CastOpcode` cannot pick between [`TruncFlags`] and
-/// [`ZExtFlags`] statically, so it supplies both and
-/// `IRBuilder::build_int_cast_erased` writes through whichever the opcode
+/// [`ZextFlags`] statically, so it supplies both and
+/// `IrBuilder::int_cast_erased` writes through whichever the opcode
 /// reads. `trunc` reads `nuw` / `nsw`, `zext` reads `nneg`, and `sext` reads
 /// none — a flag set for an opcode that does not accept it is dropped rather
 /// than rejected, matching the typed builders, which simply have no parameter
@@ -1586,10 +1614,10 @@ impl IntCastFlags {
 /// Flags for `zext`. The `nneg` flag asserts the source value is non-negative.
 /// Mirrors `PossiblyNonNegInst` in `Operator.h`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct ZExtFlags {
+pub struct ZextFlags {
     pub(crate) nneg: bool,
 }
-impl ZExtFlags {
+impl ZextFlags {
     #[inline]
     pub const fn new() -> Self {
         Self { nneg: false }
@@ -1637,10 +1665,10 @@ impl TruncFlags {
 /// Flags for `uitofp`. The `nneg` flag asserts the source is non-negative.
 /// Mirrors `PossiblyNonNegInst` in `Operator.h`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct UIToFpFlags {
+pub struct UiToFpFlags {
     pub(crate) nneg: bool,
 }
-impl UIToFpFlags {
+impl UiToFpFlags {
     #[inline]
     pub const fn new() -> Self {
         Self { nneg: false }
@@ -1659,12 +1687,12 @@ impl UIToFpFlags {
 // --------------------------------------------------------------------------
 
 /// Flags for `icmp`. The `samesign` flag asserts both operands carry the same
-/// sign. Mirrors `ICmpInst::hasSameSign` / `setSameSign` (LLVM 20+).
+/// sign. Mirrors `IcmpInst::hasSameSign` / `setSameSign` (LLVM 20+).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct ICmpFlags {
+pub struct IcmpFlags {
     pub(crate) samesign: bool,
 }
-impl ICmpFlags {
+impl IcmpFlags {
     #[inline]
     pub const fn new() -> Self {
         Self { samesign: false }
@@ -1685,31 +1713,40 @@ impl ICmpFlags {
 /// The `inalloca` / `swifterror` markers on an `alloca` (mirrors
 /// `AllocaInst::isUsedWithInAlloca` / `isSwiftError`). A typed carrier rather
 /// than trailing bool parameters.
+///
+/// Crate-internal: the public spellings are
+/// [`AllocaBuilder::inalloca`](crate::AllocaBuilder::inalloca) /
+/// [`AllocaBuilder::swifterror`](crate::AllocaBuilder::swifterror) going in and
+/// [`AllocaInst::is_inalloca`](crate::AllocaInst::is_inalloca) /
+/// [`AllocaInst::is_swifterror`](crate::AllocaInst::is_swifterror) coming back
+/// out — one spelling per direction, as with every other `alloca` knob.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct AllocaFlags {
+pub(crate) struct AllocaFlags {
     inalloca: bool,
     swifterror: bool,
 }
 
 impl AllocaFlags {
     /// No markers.
-    pub fn none() -> Self {
+    pub(crate) fn none() -> Self {
         Self::default()
     }
     /// Set `inalloca`.
-    pub fn with_inalloca(mut self) -> Self {
+    #[must_use]
+    pub(crate) fn with_inalloca(mut self) -> Self {
         self.inalloca = true;
         self
     }
     /// Set `swifterror`.
-    pub fn with_swifterror(mut self) -> Self {
+    #[must_use]
+    pub(crate) fn with_swifterror(mut self) -> Self {
         self.swifterror = true;
         self
     }
-    pub fn is_inalloca(self) -> bool {
+    pub(crate) fn is_inalloca(self) -> bool {
         self.inalloca
     }
-    pub fn is_swifterror(self) -> bool {
+    pub(crate) fn is_swifterror(self) -> bool {
         self.swifterror
     }
 }
@@ -2699,8 +2736,8 @@ impl core::hash::Hash for AtomicCmpXchgInstData {
 /// Storage payload for `atomicrmw`. Mirrors `AtomicRMWInst`
 /// (`Instructions.h`).
 #[derive(Debug)]
-pub(crate) struct AtomicRMWInstData {
-    pub(crate) op: AtomicRMWBinOp,
+pub(crate) struct AtomicRmwInstData {
+    pub(crate) op: AtomicRmwBinOp,
     pub(crate) ptr: Cell<ValueSlot>,
     pub(crate) value: Cell<ValueSlot>,
     pub(crate) align: MaybeAlign,
@@ -2709,12 +2746,12 @@ pub(crate) struct AtomicRMWInstData {
     pub(crate) volatile: bool,
 }
 
-impl AtomicRMWInstData {
+impl AtomicRmwInstData {
     pub(crate) fn new(
-        op: AtomicRMWBinOp,
+        op: AtomicRmwBinOp,
         ptr: ValueSlot,
         value: ValueSlot,
-        config: crate::instr_types::AtomicRMWConfig,
+        config: crate::instr_types::AtomicRmwConfig,
     ) -> Self {
         Self {
             op,
@@ -2727,7 +2764,7 @@ impl AtomicRMWInstData {
         }
     }
 }
-impl Clone for AtomicRMWInstData {
+impl Clone for AtomicRmwInstData {
     fn clone(&self) -> Self {
         Self {
             op: self.op,
@@ -2740,7 +2777,7 @@ impl Clone for AtomicRMWInstData {
         }
     }
 }
-impl PartialEq for AtomicRMWInstData {
+impl PartialEq for AtomicRmwInstData {
     fn eq(&self, other: &Self) -> bool {
         self.op == other.op
             && self.ptr.get() == other.ptr.get()
@@ -2751,8 +2788,8 @@ impl PartialEq for AtomicRMWInstData {
             && self.volatile == other.volatile
     }
 }
-impl Eq for AtomicRMWInstData {}
-impl core::hash::Hash for AtomicRMWInstData {
+impl Eq for AtomicRmwInstData {}
+impl core::hash::Hash for AtomicRmwInstData {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.op.hash(h);
         self.ptr.get().hash(h);
@@ -2799,11 +2836,11 @@ impl CmpXchgFlags {
 
 /// Flags for `atomicrmw`. Mirrors `AtomicRMWInst::isVolatile`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct AtomicRMWFlags {
+pub struct AtomicRmwFlags {
     pub(crate) volatile: bool,
 }
 
-impl AtomicRMWFlags {
+impl AtomicRmwFlags {
     #[inline]
     pub const fn new() -> Self {
         Self { volatile: false }
@@ -3421,7 +3458,7 @@ impl core::hash::Hash for CatchSwitchInstData {
     }
 }
 
-/// Bundled configuration for [`crate::IRBuilder::build_atomic_cmpxchg`].
+/// Bundled configuration for [`crate::IrBuilder::atomic_cmpxchg`].
 /// Mirrors the per-instruction state stored on `AtomicCmpXchgInst`
 /// (orderings + scope + flags + alignment).
 #[derive(Debug, Clone)]
@@ -3511,22 +3548,22 @@ impl AtomicCmpXchgConfig {
     }
 }
 
-/// Bundled configuration for [`crate::IRBuilder::build_atomicrmw`].
+/// Bundled configuration for [`crate::IrBuilder::atomicrmw`].
 /// Mirrors the per-instruction state stored on `AtomicRMWInst`.
 #[derive(Debug, Clone)]
-pub struct AtomicRMWConfig {
+pub struct AtomicRmwConfig {
     ordering: AtomicOrdering,
     sync_scope: SyncScope,
-    flags: AtomicRMWFlags,
+    flags: AtomicRmwFlags,
     align: MaybeAlign,
 }
 
-impl AtomicRMWConfig {
+impl AtomicRmwConfig {
     pub fn new(ordering: AtomicOrdering, sync_scope: SyncScope) -> Self {
         Self {
             ordering,
             sync_scope,
-            flags: AtomicRMWFlags::new(),
+            flags: AtomicRmwFlags::new(),
             align: MaybeAlign::NONE,
         }
     }
@@ -3544,7 +3581,7 @@ impl AtomicRMWConfig {
     }
 
     #[must_use]
-    pub fn flags(mut self, flags: AtomicRMWFlags) -> Self {
+    pub fn flags(mut self, flags: AtomicRmwFlags) -> Self {
         self.flags = flags;
         self
     }
@@ -3569,143 +3606,11 @@ impl AtomicRMWConfig {
         &self.sync_scope
     }
 
-    pub fn flags_value(&self) -> AtomicRMWFlags {
+    pub fn flags_value(&self) -> AtomicRmwFlags {
         self.flags
     }
 
     pub fn align_value(&self) -> MaybeAlign {
         self.align
-    }
-}
-
-/// Bundled configuration for atomic [`crate::IRBuilder::build_int_load_atomic`]
-/// / `build_load_atomic` / `build_int_load_atomic_volatile`. Mirrors the
-/// state passed to the 5-arg upstream constructor
-/// `LoadInst::LoadInst(Type*, Value*, Twine&, bool isVolatile, Align,
-/// AtomicOrdering, SyncScope::ID)` (`Instructions.h`).
-#[derive(Debug, Clone)]
-pub struct AtomicLoadConfig {
-    ordering: AtomicOrdering,
-    sync_scope: SyncScope,
-    align: Align,
-    volatile: bool,
-}
-
-impl AtomicLoadConfig {
-    /// Convenience constructor with `volatile = false`. The 4-arg shape
-    /// matches the common-case upstream `LoadInst` constructor that omits
-    /// the volatile slot.
-    pub fn new(ordering: AtomicOrdering, sync_scope: SyncScope, align: Align) -> Self {
-        Self {
-            ordering,
-            sync_scope,
-            align,
-            volatile: false,
-        }
-    }
-
-    #[must_use]
-    pub fn ordering(mut self, ordering: AtomicOrdering) -> Self {
-        self.ordering = ordering;
-        self
-    }
-
-    #[must_use]
-    pub fn sync_scope(mut self, sync_scope: SyncScope) -> Self {
-        self.sync_scope = sync_scope;
-        self
-    }
-
-    #[must_use]
-    pub fn align(mut self, align: Align) -> Self {
-        self.align = align;
-        self
-    }
-
-    /// Flip the volatile bit. Mirrors `LoadInst::setVolatile(true)`.
-    #[must_use]
-    pub fn volatile(mut self) -> Self {
-        self.volatile = true;
-        self
-    }
-
-    pub fn ordering_value(&self) -> AtomicOrdering {
-        self.ordering
-    }
-
-    pub fn sync_scope_value(&self) -> &SyncScope {
-        &self.sync_scope
-    }
-
-    pub fn align_value(&self) -> Align {
-        self.align
-    }
-
-    pub fn is_volatile(&self) -> bool {
-        self.volatile
-    }
-}
-
-/// Bundled configuration for atomic [`crate::IRBuilder::build_store_atomic`]
-/// / `build_store_atomic_volatile`. Mirrors the state passed to the 6-arg
-/// upstream constructor `StoreInst::StoreInst(Value*, Value*, bool isVolatile,
-/// Align, AtomicOrdering, SyncScope::ID)`.
-#[derive(Debug, Clone)]
-pub struct AtomicStoreConfig {
-    ordering: AtomicOrdering,
-    sync_scope: SyncScope,
-    align: Align,
-    volatile: bool,
-}
-
-impl AtomicStoreConfig {
-    pub fn new(ordering: AtomicOrdering, sync_scope: SyncScope, align: Align) -> Self {
-        Self {
-            ordering,
-            sync_scope,
-            align,
-            volatile: false,
-        }
-    }
-
-    #[must_use]
-    pub fn ordering(mut self, ordering: AtomicOrdering) -> Self {
-        self.ordering = ordering;
-        self
-    }
-
-    #[must_use]
-    pub fn sync_scope(mut self, sync_scope: SyncScope) -> Self {
-        self.sync_scope = sync_scope;
-        self
-    }
-
-    #[must_use]
-    pub fn align(mut self, align: Align) -> Self {
-        self.align = align;
-        self
-    }
-
-    /// Flip the volatile bit. Mirrors `StoreInst::setVolatile(true)`.
-    #[must_use]
-    pub fn volatile(mut self) -> Self {
-        self.volatile = true;
-        self
-    }
-
-    pub fn ordering_value(&self) -> AtomicOrdering {
-        self.ordering
-    }
-
-    pub fn sync_scope_value(&self) -> &SyncScope {
-        &self.sync_scope
-    }
-
-    pub fn align_value(&self) -> Align {
-        self.align
-    }
-
-    pub fn is_volatile(&self) -> bool {
-        self.volatile
     }
 }

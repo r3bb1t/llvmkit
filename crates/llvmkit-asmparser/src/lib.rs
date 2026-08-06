@@ -36,15 +36,31 @@ pub mod slot_mapping;
 
 use std::io::{self, Read};
 
-/// The closure-free entry points, re-exported at the crate root because they
-/// are the ordinary way to parse: each returns the owned
-/// [`Module`](llvmkit_ir::Module) itself. The closure forms that also hand back
-/// the [`ParsedModule`](ll_parser::ParsedModule) slot mapping stay in
-/// [`parser`], since that by-product borrows the module and so cannot be
-/// returned alongside it.
+/// Every parsing entry point, at the crate root.
+///
+/// [`parse_dynamic`] / [`parse_branded`] and their `_file` twins are the
+/// ordinary way in: each returns the owned [`Module`](llvmkit_ir::Module)
+/// itself. The `parse_assembly*` forms take a closure instead, because they
+/// also hand back the [`ParsedModule`] slot mapping — a by-product that
+/// *borrows* the module, so the two cannot both be returned from one call.
+/// The `parse_type*` / `parse_constant_value*` family parses one fragment
+/// against an existing module, mirroring `Parser.h`'s standalone entry points.
 pub use parser::{
-    parse_branded, parse_dynamic, parse_file_branded, parse_file_dynamic, parse_into,
+    parse_assembly, parse_assembly_file, parse_assembly_with_context, parse_branded,
+    parse_constant_value, parse_constant_value_with_slots, parse_dynamic, parse_file_branded,
+    parse_file_dynamic, parse_into, parse_summary_index_assembly,
+    parse_summary_index_assembly_file, parse_type, parse_type_at_beginning,
+    parse_type_at_beginning_with_slots, parse_type_with_slots,
 };
+
+/// The types those entry points speak: what they return, what they take, and
+/// how they fail. [`Lexer`](ll_lexer::Lexer), [`Token`](ll_token::Token) and
+/// the parser state machine stay module-scoped — they mirror LLVM's
+/// `LLLexer` / `LLParser` plumbing rather than the surface a caller drives.
+pub use ll_parser::ParsedModule;
+pub use module_summary::ModuleSummaryIndex;
+pub use parse_error::{DiagLoc, ParseError, ParseResult, SymbolId, SymbolKind};
+pub use slot_mapping::{GlobalRef, SlotMapping};
 
 /// Drain `r` into a fresh `Vec<u8>`. Convenience helper for the common case
 /// where a caller has any `Read` source and wants to feed it to

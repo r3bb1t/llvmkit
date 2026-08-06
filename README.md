@@ -25,13 +25,13 @@ Shipped today:
 - **Owned modules and storable ids** — the 0.0.4 handle model. `Module<B, S>`
   has no lifetime parameter, owns its storage, and is `Send`, so it can be
   returned, stored in a struct, collected into a `Vec`, and moved between
-  threads. Declarations and value-producing `build_*` calls return a
+  threads. Declarations and value-producing builder calls return a
   `Copy + Send` **id** (`IntValueId<W, B>`, `FunctionId<R, B>`, `GlobalId<B>`,
   …) that carries the module's identity without borrowing it. Blocks are
   minted as linear, `!Copy` handles instead (`append_basic_block` returns a
   `BasicBlock<..>`, `append_block_with_params` a `BlockWithParams<..>`);
   calling `.id()` on one gives the storable `BlockId<R, B, Params>`.
-  Terminator builders (`build_br`, `build_cond_br`, `build_ret`, …) consume
+  Terminator builders (`br`, `cond_br`, `ret`, …) consume
   the builder and hand back the terminated block alongside the new
   instruction, not an id. The borrowing handles themselves are minted per
   operation from `m.view(id)` / `m.try_view(id)`. A module's identity is the
@@ -182,17 +182,17 @@ while let Some(tok) = lex.next() {
 Build IR programmatically:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{IrBuilder, IrError, Linkage, module_new};
 
 fn build() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let f = m.add_typed_function::<i32, (i32, i32), _>("add", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
     let (lhs, rhs) = m.view(f).params();
-    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
-    b.build_ret(sum)?;
+    let sum = b.int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    b.ret(sum)?;
 
     print!("{m}");
     Ok(())
@@ -210,33 +210,33 @@ LLVM signature directly from the alias.
 
 ### Typed calls
 
-`IRBuilder::build_call` takes a `TypedFunctionValue` callee and an argument
+`IrBuilder::call` takes a `TypedFunctionValue` callee and an argument
 tuple typed against its parameter schema. Wrong arity, a wrong-typed argument,
 or misusing a void call's result are all compile errors instead of runtime
 `IrError`s or verifier failures, and the result narrows to the callee's real
 return type with no `try_into`:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{IrBuilder, IrError, Linkage, module_new};
 
 fn build_typed_call() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let callee = m.add_typed_function::<i32, (i32, i32), _>("add_inner", Linkage::External)?;
     let entry = m.view(callee).append_basic_block(&m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
     let (lhs, rhs) = m.view(callee).params();
-    let sum = b.build_int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
-    b.build_ret(sum)?;
+    let sum = b.int_add::<i32, _, _, _>(lhs, rhs, "sum")?;
+    b.ret(sum)?;
 
     let caller = m.add_typed_function::<i32, (i32, i32), _>("caller", Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
     let (x, y) = m.view(caller).params();
 
-    // `build_call` hands back a storable `TypedCallInstId`; `b.view(..)` reaches
+    // `call` hands back a storable `TypedCallInstId`; `b.view(..)` reaches
     // the handle, whose `result()` is already `IntValue<i32>` -- no `try_into`.
-    let call = b.build_call(m.view(callee), (x, y), "r")?;
-    b.build_ret(b.view(call).result())?;
+    let call = b.call(m.view(callee), (x, y), "r")?;
+    b.ret(b.view(call).result())?;
 
     print!("{m}");
     Ok(())
@@ -245,13 +245,13 @@ fn build_typed_call() -> Result<(), IrError> {
 
 A callee whose signature is only known at runtime (parsed IR, an `extern`
 declaration built from user input) keeps using the `_dyn` counterparts —
-`build_call_dyn`, `build_indirect_call_dyn`, `build_invoke_dyn` — which take a
+`call_dyn`, `indirect_call_dyn`, `invoke_dyn` — which take a
 plain `FunctionValue` and an iterable of pre-widened `Value`s, and reject a
 wrong argument count or type with `IrError::CallArgumentCountMismatch` /
 `CallArgumentTypeMismatch` at build time rather than deferring to the verifier.
-`build_indirect_call::<Sig>` derives the callee's function type from a Rust
-function-pointer schema `Sig` instead of taking it by hand; `build_varargs_call`
-lowers a fixed, schema-typed prefix the same way `build_call` does and appends
+`indirect_call::<Sig>` derives the callee's function type from a Rust
+function-pointer schema `Sig` instead of taking it by hand; `varargs_call`
+lowers a fixed, schema-typed prefix the same way `call` does and appends
 an erased `...` tail, matching LLVM's own no-static-check contract on variadic
 arguments.
 
@@ -260,7 +260,7 @@ generated `<Struct>Value<'ctx, B>` wrapper in IR, and call field
 accessors/builders instead of indexing aggregates manually:
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrStruct, Linkage, module_new};
+use llvmkit_ir::{IrBuilder, IrStruct, Linkage, module_new};
 
 #[derive(IrStruct)]
 struct Point {
@@ -285,7 +285,7 @@ type Normalize = fn(WindowPlacement) -> WindowPlacement;
 let m = module_new!("window")?;
 let f = m.add_typed_function_of::<Normalize, _>("normalize", Linkage::External)?;
 let entry = m.view(f).append_basic_block(&m, "entry");
-let b = IRBuilder::new_for_return::<Normalize>(&m).position_at_end(entry);
+let b = IrBuilder::new_for_return::<Normalize>(&m).position_at_end(entry);
 let (placement,) = m.view(f).params();
 // `normal_position` returns `RectValue<'ctx, B>`, and `min` returns
 // `PointValue<'ctx, B>`; nested structs keep their generated wrapper type.
@@ -312,11 +312,11 @@ Detailed macro docs: [IrStruct derive macro](docs/ir-struct-derive.md).
 schema on top of a plain opaque `ptr` value -- it is Rust-side bookkeeping
 only, so printed IR is byte-identical to the erased path. `PointerValue::with_pointee::<T>()`
 attaches the schema as an explicit, documented assertion (exactly as
-powerful as passing a type to `build_load` today; a mis-assertion produces
+powerful as passing a type to `load` today; a mis-assertion produces
 wrong IR that the verifier catches, never memory-unsafe behavior).
-`build_typed_alloca::<T>`, `build_typed_load`, and `build_typed_store` skip
+`typed_alloca::<T>`, `typed_load`, and `typed_store` skip
 the runtime type-narrowing that the erased path needs, and
-`build_field_gep::<S, I>` projects the field type at compile time straight
+`field_gep::<S, I>` projects the field type at compile time straight
 from a `#[derive(IrStruct)]` schema -- an out-of-range field index is a
 missing trait impl, not a runtime bounds check.
 
@@ -333,27 +333,27 @@ land in; it narrows to the typed form with `TryFrom`, which checks both element
 and length.
 
 ```rust
-use llvmkit_ir::{IRBuilder, IrError, Len, Linkage, VectorValue, module_new};
+use llvmkit_ir::{IrBuilder, IrError, Len, Linkage, VectorValue, module_new};
 
 fn typed_vec() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let v4i32 = m.vector_type_n::<i32, 4>(); // VectorType<'_, i32, Len<4>>
-    let fn_ty = m.fn_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()], false);
+    let fn_ty = m.function_type(m.i32_type().as_type(), [v4i32.as_type(), v4i32.as_type()]);
     let f = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
 
     // `try_into` checks element (i32) AND lane count (4) before stamping the markers.
     let a: VectorValue<'_, i32, Len<4>> =
-        m.view(f).param(0).unwrap().into_erased().try_into().unwrap();
+        m.view(f).param(0).unwrap().as_erased().try_into().unwrap();
     let c: VectorValue<'_, i32, Len<4>> =
-        m.view(f).param(1).unwrap().into_erased().try_into().unwrap();
+        m.view(f).param(1).unwrap().as_erased().try_into().unwrap();
 
     // Both operands are pinned to `<4 x i32>`; a length/element mismatch would not compile.
-    let sum = b.build_vec_int_add(a, c, "sum")?;
+    let sum = b.vector_int_add(a, c, "sum")?;
     // Extract returns the element as its typed scalar handle -- `IntValue<i32>`, inferred.
-    let lane0 = b.build_vec_extract(sum, m.i32_type().const_int(0_i32), "lane0")?;
-    b.build_ret(lane0)?;
+    let lane0 = b.vector_extract(sum, m.i32_type().const_int(0_i32), "lane0")?;
+    b.ret(lane0)?;
     Ok(())
 }
 ```
@@ -364,7 +364,7 @@ The full runnable version (vectors and arrays) is
 ### Auto-SSA: typed local variables instead of manual phi wiring
 
 `SsaBuilder` (`crates/llvmkit-ir/src/ssa_builder.rs`) sits on top of the
-typed `IRBuilder` and implements Braun et al.'s 2013 on-the-fly SSA
+typed `IrBuilder` and implements Braun et al.'s 2013 on-the-fly SSA
 construction algorithm (the same family of technique Cranelift's
 `FunctionBuilder` uses). Instead of pre-declaring phi nodes and patching
 their incoming edges by hand, you declare a typed variable once and then
@@ -392,19 +392,19 @@ let (loop_bb, params) = bwp.append_block_with_named_params(
 let loop_label = loop_bb.id();       // storable `BlockId` — the branch currency
 
 // entry: enter the loop carrying the initial values `[ acc = 1, i = %n ]`.
-b.build_cond_br_with_args(is_zero, base_label, &[], loop_label,
-    &[i32_ty.const_int(1_i32).into_erased(), n.into_erased()])?;
+b.cond_br_with_args(is_zero, base_label, &[], loop_label,
+    &[i32_ty.const_int(1_i32).as_erased(), n.as_erased()])?;
 
 // loop: read the header params, compute, re-enter carrying the back-edge values.
 let acc: IntValue<'_, i32, _> = params[0].try_into()?;
 let i: IntValue<'_, i32, _> = params[1].try_into()?;
-let next_acc = b.build_int_mul(acc, i, "next_acc")?;
-let next_i = b.build_int_sub(i, 1_i32, "next_i")?;
-b.build_cond_br_with_args(done, exit_label, &[], loop_label,
-    &[m.view(next_acc).into_erased(), m.view(next_i).into_erased()])?;
+let next_acc = b.int_mul(acc, i, "next_acc")?;
+let next_i = b.int_sub(i, 1_i32, "next_i")?;
+b.cond_br_with_args(done, exit_label, &[], loop_label,
+    &[m.view(next_acc).as_erased(), m.view(next_i).as_erased()])?;
 ```
 
-(The raw `build_int_phi` / `add_incoming` pair that predates block parameters is
+(The raw `int_phi` / `add_incoming` pair that predates block parameters is
 `pub(crate)` and cannot be called from outside the crate — that is deliberate,
 and a compile-fail fixture pins it. Block parameters and `SsaBuilder` are the
 two public ways to author a phi; `FnReshape::insert_phi` is the third, for
@@ -423,8 +423,8 @@ b.def_int_var(i_var, n)?;
 // loop block:
 let i = b.use_int_var(i_var)?;
 let acc = b.use_int_var(acc_var)?;
-let next_acc = b.ins()?.build_int_mul(acc, i, "next_acc")?;
-let next_i = b.ins()?.build_int_sub(i, 1_i32, "next_i")?;
+let next_acc = b.ins()?.int_mul(acc, i, "next_acc")?;
+let next_i = b.ins()?.int_sub(i, 1_i32, "next_i")?;
 b.def_int_var(acc_var, next_acc)?;
 b.def_int_var(i_var, next_i)?;
 b.seal_block(loop_bb)?; // completes both phis from the now-known predecessor set
@@ -628,7 +628,7 @@ detach, move, and RAUW operations. Those methods consume the handle, so a used
 lifecycle capability cannot be reused. Copyable discovery APIs return
 `InstructionView` instead: blocks, value use-lists, and per-opcode handles expose
 read-only inspection without minting a new mutation handle. Cursor-driven
-mutation uses `BlockCursor::next` on an unterminated block.
+mutation uses `BlockCursor::step` on an unterminated block.
 
 Run the examples:
 

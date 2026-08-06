@@ -142,7 +142,7 @@ yields `Instruction<Attached>`); that primitive is unchanged.
 
 ```rust
 let scope = patch.worklist();          // activates + seeds all non-terminators
-while let Some(inst) = scope.next() {  // liveness-safe pop
+while let Some(inst) = scope.step() {  // liveness-safe pop
     // pass body mutates via `patch` directly; the mutation auto-cascades
 }
 drop(scope);                           // deactivates the worklist slot
@@ -150,10 +150,10 @@ drop(scope);                           // deactivates the worklist slot
 
 `patch.worklist()` returns a `WorklistScope` borrowing `&patch`: on creation it
 sets `patch.worklist = Some(Worklist::new())` and seeds it from
-`body_instructions()`; `next()` pops the next live instruction; `Drop` restores
+`body_instructions()`; `step()` pops the next live instruction; `Drop` restores
 `patch.worklist = None`. The scope borrows `patch` shared, and the pass body calls
 `patch.erase`/`patch.replace_all_uses` (also `&self`) — both shared borrows, so the
-loop composes without a borrow conflict; `next()`'s pop and the mutators' pushes
+loop composes without a borrow conflict; `step()`'s pop and the mutators' pushes
 touch the `RefCell` in disjoint, sequential borrows.
 
 Only one scope may be live on a given `FnPatch`: the shared slot holds one
@@ -167,7 +167,7 @@ that rather than failing quietly.
 // DcePass::run
 let patch = cx.mutate();
 let scope = patch.worklist();
-while let Some(inst) = scope.next() {
+while let Some(inst) = scope.step() {
     if is_trivially_dead(&inst.as_view()) {
         patch.erase(&inst);                      // auto-pushes operand-defs, self-removes
     }
@@ -179,7 +179,7 @@ Ok(patch.done())
 let patch = cx.mutate();
 let dl = patch.function().module().data_layout().clone();
 let scope = patch.worklist();
-while let Some(inst) = scope.next() {
+while let Some(inst) = scope.step() {
     let view = inst.as_view();
     if !view.to_erased().has_uses() { continue; }            // upstream !use_empty guard
     if let Some(c) = constant_fold_instruction(&view, &dl, None)? {

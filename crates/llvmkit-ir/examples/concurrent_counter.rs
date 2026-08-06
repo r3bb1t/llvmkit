@@ -44,7 +44,7 @@
 //! ```
 
 use llvmkit_ir::{
-    AtomicOrdering, AtomicRMWBinOp, AtomicRMWConfig, IRBuilder, IntValue, IrError, Linkage, Module,
+    AtomicOrdering, AtomicRmwBinOp, AtomicRmwConfig, IntValue, IrBuilder, IrError, Linkage, Module,
     ModuleBrand, Ptr, SyncScope, module_new,
 };
 
@@ -79,30 +79,30 @@ pub fn build_atomic_inc<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     // separately built `FunctionType`.
     let f = m.add_typed_function::<i32, (Ptr,), _>("atomic_inc", Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
-    let b = IRBuilder::at_end(entry);
+    let b = IrBuilder::at_end(entry);
 
     // fence release
-    let _ = b.build_fence(AtomicOrdering::Release, SyncScope::System, "")?;
+    let _ = b.fence(AtomicOrdering::Release, SyncScope::System, "")?;
 
     // %old = atomicrmw add ptr %counter, i32 1 monotonic
     // `f.params()` hands back the parameter already typed as `PointerValue`
     // — no `f.param(0)?.try_into()?` narrowing step.
     let (counter,) = m.view(f).params();
     let one = i32_ty.const_int(1_i32);
-    let old = b.build_atomicrmw(
-        AtomicRMWBinOp::Add,
+    let old = b.atomicrmw(
+        AtomicRmwBinOp::Add,
         counter,
         one,
-        AtomicRMWConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
+        AtomicRmwConfig::new(AtomicOrdering::Monotonic, SyncScope::System),
         "old",
     )?;
 
     // fence acquire
-    let _ = b.build_fence(AtomicOrdering::Acquire, SyncScope::System, "")?;
+    let _ = b.fence(AtomicOrdering::Acquire, SyncScope::System, "")?;
 
     // ret i32 %old
     let result: IntValue<'_, i32, _> = b.view(old).to_erased().try_into()?;
-    b.build_ret(result)?;
+    b.ret(result)?;
     Ok(())
 }
 
@@ -131,30 +131,30 @@ pub fn build_dispatch<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     // Each case body computes a single arithmetic op and returns.
     let (op, a, b_op) = m.view(f).params();
     {
-        let bb = IRBuilder::at_end(do_add);
-        let r = bb.build_int_add(a, b_op, "r_add")?;
-        bb.build_ret(r)?;
+        let bb = IrBuilder::at_end(do_add);
+        let r = bb.int_add(a, b_op, "r_add")?;
+        bb.ret(r)?;
     }
     {
-        let bb = IRBuilder::at_end(do_sub);
-        let r = bb.build_int_sub(a, b_op, "r_sub")?;
-        bb.build_ret(r)?;
+        let bb = IrBuilder::at_end(do_sub);
+        let r = bb.int_sub(a, b_op, "r_sub")?;
+        bb.ret(r)?;
     }
     {
-        let bb = IRBuilder::at_end(do_mul);
-        let r = bb.build_int_mul(a, b_op, "r_mul")?;
-        bb.build_ret(r)?;
+        let bb = IrBuilder::at_end(do_mul);
+        let r = bb.int_mul(a, b_op, "r_mul")?;
+        bb.ret(r)?;
     }
     {
-        let bb = IRBuilder::at_end(default_bb);
-        bb.build_ret(0_i32)?;
+        let bb = IrBuilder::at_end(default_bb);
+        bb.ret(0_i32)?;
     }
 
     // Build the entry switch. `add_case` returns the same `Open` handle
     // so the chain reads top-to-bottom; `finish` consumes it to a
     // `Closed` view that no longer accepts new cases at the type level.
-    let entry_b = IRBuilder::at_end(entry);
-    let (_sealed, sw) = entry_b.build_switch_dyn(op, default_label, "")?;
+    let entry_b = IrBuilder::at_end(entry);
+    let (_sealed, sw) = entry_b.switch_dyn(op, default_label, "")?;
     let _closed = sw
         .add_case(i32_ty.const_int(0_i32), do_add_label)?
         .add_case(i32_ty.const_int(1_i32), do_sub_label)?

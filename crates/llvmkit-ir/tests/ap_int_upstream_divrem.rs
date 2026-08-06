@@ -19,13 +19,13 @@
 //!   `operator==(APInt, uint64_t)`, which cannot represent a negative value.
 //!   The negation is kept so the port reads against the same text.
 
-use llvmkit_ir::{ApInt, ApIntSignedness, ApIntTruncation};
+use llvmkit_ir::{ApInt, ApIntTruncation, Signedness};
 
 fn unsigned(bit_width: u32, value: u64) -> ApInt {
     ApInt::new(
         bit_width,
         value,
-        ApIntSignedness::Unsigned,
+        Signedness::Unsigned,
         ApIntTruncation::Truncate,
     )
     .expect("truncating construction cannot overflow")

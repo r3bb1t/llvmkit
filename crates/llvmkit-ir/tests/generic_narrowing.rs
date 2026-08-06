@@ -27,7 +27,7 @@
 //! (`Type::isIntegerTy` / `Type::isFloatingPointTy` predicate failure).
 
 use llvmkit_ir::{
-    ApFloat, ApFloatSemantics, ApFloatSign, BFloat, FloatDyn, FloatKind, FloatValue, Fp128, Half,
+    ApFloat, ApFloatSemantics, ApFloatSign, Bfloat, FloatDyn, FloatKind, FloatValue, Fp128, Half,
     IntDyn, IntValue, IntWidth, IrError, IrResult, ModuleBrand, PpcFp128, TypeKindLabel, Value,
     Width, X86Fp80, module_new,
 };
@@ -64,35 +64,35 @@ fn narrow_generic_float<'ctx, K: FloatKind, B: ModuleBrand + 'ctx>(
 #[test]
 fn narrow_generic_accepts_every_marker_family() -> Result<(), IrError> {
     let m = module_new!("c")?;
-    let bool_v = m.bool_type().const_zero().into_erased();
-    let i8_v = m.i8_type().const_zero().into_erased();
-    let i16_v = m.i16_type().const_zero().into_erased();
-    let i32_v = m.i32_type().const_zero().into_erased();
-    let i64_v = m.i64_type().const_zero().into_erased();
-    let i128_v = m.i128_type().const_zero().into_erased();
-    let i7_v = m.int_type_n::<7>().const_zero().into_erased();
+    let bool_v = m.bool_type().const_zero().as_erased();
+    let i8_v = m.i8_type().const_zero().as_erased();
+    let i16_v = m.i16_type().const_zero().as_erased();
+    let i32_v = m.i32_type().const_zero().as_erased();
+    let i64_v = m.i64_type().const_zero().as_erased();
+    let i128_v = m.i128_type().const_zero().as_erased();
+    let i7_v = m.int_type_n::<7>().const_zero().as_erased();
 
     // Rust-scalar markers — every marker the macro expands.
     let a: IntValue<'_, bool, _> = narrow_generic::<bool, _>(bool_v)?;
-    assert_eq!(a.into_erased(), bool_v);
+    assert_eq!(a.as_erased(), bool_v);
     let b: IntValue<'_, i8, _> = narrow_generic::<i8, _>(i8_v)?;
-    assert_eq!(b.into_erased(), i8_v);
+    assert_eq!(b.as_erased(), i8_v);
     let c: IntValue<'_, i16, _> = narrow_generic::<i16, _>(i16_v)?;
-    assert_eq!(c.into_erased(), i16_v);
+    assert_eq!(c.as_erased(), i16_v);
     let d: IntValue<'_, i32, _> = narrow_generic::<i32, _>(i32_v)?;
-    assert_eq!(d.into_erased(), i32_v);
+    assert_eq!(d.as_erased(), i32_v);
     let e: IntValue<'_, i64, _> = narrow_generic::<i64, _>(i64_v)?;
-    assert_eq!(e.into_erased(), i64_v);
+    assert_eq!(e.as_erased(), i64_v);
     let f: IntValue<'_, i128, _> = narrow_generic::<i128, _>(i128_v)?;
-    assert_eq!(f.into_erased(), i128_v);
+    assert_eq!(f.as_erased(), i128_v);
 
     // Erased marker.
     let g: IntValue<'_, IntDyn, _> = narrow_generic::<IntDyn, _>(i32_v)?;
-    assert_eq!(g.into_erased(), i32_v);
+    assert_eq!(g.as_erased(), i32_v);
 
     // Const-generic marker.
     let h: IntValue<'_, Width<7>, _> = narrow_generic::<Width<7>, _>(i7_v)?;
-    assert_eq!(h.into_erased(), i7_v);
+    assert_eq!(h.as_erased(), i7_v);
 
     Ok(())
 }
@@ -103,14 +103,14 @@ fn narrow_generic_accepts_every_marker_family() -> Result<(), IrError> {
 fn int_dyn_accepts_any_width() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let vals = [
-        m.bool_type().const_zero().into_erased(),
-        m.int_type_n::<7>().const_zero().into_erased(),
-        m.i32_type().const_zero().into_erased(),
-        m.i64_type().const_zero().into_erased(),
+        m.bool_type().const_zero().as_erased(),
+        m.int_type_n::<7>().const_zero().as_erased(),
+        m.i32_type().const_zero().as_erased(),
+        m.i64_type().const_zero().as_erased(),
     ];
     for v in vals {
         let narrowed = narrow_generic::<IntDyn, _>(v)?;
-        assert_eq!(narrowed.into_erased(), v);
+        assert_eq!(narrowed.as_erased(), v);
     }
     Ok(())
 }
@@ -124,7 +124,7 @@ fn int_dyn_accepts_any_width() -> Result<(), IrError> {
 #[test]
 fn wrong_width_is_operand_width_mismatch() {
     let m = module_new!("c").expect("fresh module");
-    let i64_v = m.i64_type().const_zero().into_erased();
+    let i64_v = m.i64_type().const_zero().as_erased();
     let err = narrow_generic::<i32, _>(i64_v).unwrap_err();
     assert_eq!(err, IrError::OperandWidthMismatch { lhs: 32, rhs: 64 });
 }
@@ -133,7 +133,7 @@ fn wrong_width_is_operand_width_mismatch() {
 #[test]
 fn wrong_width_is_operand_width_mismatch_for_const_generic_marker() {
     let m = module_new!("c").expect("fresh module");
-    let i32_v = m.i32_type().const_zero().into_erased();
+    let i32_v = m.i32_type().const_zero().as_erased();
     let err = narrow_generic::<Width<7>, _>(i32_v).unwrap_err();
     assert_eq!(err, IrError::OperandWidthMismatch { lhs: 7, rhs: 32 });
 }
@@ -144,7 +144,7 @@ fn wrong_width_is_operand_width_mismatch_for_const_generic_marker() {
 #[test]
 fn wrong_kind_is_type_mismatch() {
     let m = module_new!("c").expect("fresh module");
-    let ptr_v = m.ptr_type(0).const_null().into_erased();
+    let ptr_v = m.ptr_type(0).const_null().as_erased();
     let err = narrow_generic::<i32, _>(ptr_v).unwrap_err();
     assert_eq!(
         err,
@@ -160,7 +160,7 @@ fn wrong_kind_is_type_mismatch() {
 #[test]
 fn int_dyn_still_rejects_non_integer() {
     let m = module_new!("c").expect("fresh module");
-    let f32_v = m.f32_type().const_float(1.0_f32).into_erased();
+    let f32_v = m.f32_type().const_float(1.0_f32).as_erased();
     let err = narrow_generic::<IntDyn, _>(f32_v).unwrap_err();
     assert_eq!(
         err,
@@ -181,53 +181,53 @@ fn int_dyn_still_rejects_non_integer() {
 fn narrow_generic_float_accepts_every_marker_family() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let zero = |sem| ApFloat::zero(sem, ApFloatSign::Positive);
-    let f32_v = m.f32_type().const_float(1.5_f32).into_erased();
-    let f64_v = m.f64_type().const_double(2.5_f64).into_erased();
+    let f32_v = m.f32_type().const_float(1.5_f32).as_erased();
+    let f64_v = m.f64_type().const_double(2.5_f64).as_erased();
     // Exotic kinds have no Rust-scalar constant ctor; go through ApFloat.
     let half_v = m
         .half_type()
         .const_ap_float(&zero(ApFloatSemantics::IeeeHalf))?
-        .into_erased();
+        .as_erased();
     let bfloat_v = m
         .bfloat_type()
-        .const_ap_float(&zero(ApFloatSemantics::BFloat))?
-        .into_erased();
+        .const_ap_float(&zero(ApFloatSemantics::Bfloat))?
+        .as_erased();
     let fp128_v = m
         .fp128_type()
         .const_ap_float(&zero(ApFloatSemantics::IeeeQuad))?
-        .into_erased();
+        .as_erased();
     let x86_v = m
         .x86_fp80_type()
         .const_ap_float(&zero(ApFloatSemantics::X87DoubleExtended))?
-        .into_erased();
+        .as_erased();
     let ppc_v = m
         .ppc_fp128_type()
         .const_ap_float(&zero(ApFloatSemantics::PpcDoubleDouble))?
-        .into_erased();
+        .as_erased();
 
     // Rust-scalar markers.
     let a: FloatValue<'_, f32, _> = narrow_generic_float::<f32, _>(f32_v)?;
-    assert_eq!(a.into_erased(), f32_v);
+    assert_eq!(a.as_erased(), f32_v);
     let b: FloatValue<'_, f64, _> = narrow_generic_float::<f64, _>(f64_v)?;
-    assert_eq!(b.into_erased(), f64_v);
+    assert_eq!(b.as_erased(), f64_v);
 
     // Every marker the `decl_struct_kind!` macro expands.
     let c: FloatValue<'_, Half, _> = narrow_generic_float::<Half, _>(half_v)?;
-    assert_eq!(c.into_erased(), half_v);
-    let d: FloatValue<'_, BFloat, _> = narrow_generic_float::<BFloat, _>(bfloat_v)?;
-    assert_eq!(d.into_erased(), bfloat_v);
+    assert_eq!(c.as_erased(), half_v);
+    let d: FloatValue<'_, Bfloat, _> = narrow_generic_float::<Bfloat, _>(bfloat_v)?;
+    assert_eq!(d.as_erased(), bfloat_v);
     let e: FloatValue<'_, Fp128, _> = narrow_generic_float::<Fp128, _>(fp128_v)?;
-    assert_eq!(e.into_erased(), fp128_v);
+    assert_eq!(e.as_erased(), fp128_v);
     let f: FloatValue<'_, X86Fp80, _> = narrow_generic_float::<X86Fp80, _>(x86_v)?;
-    assert_eq!(f.into_erased(), x86_v);
+    assert_eq!(f.as_erased(), x86_v);
     let g: FloatValue<'_, PpcFp128, _> = narrow_generic_float::<PpcFp128, _>(ppc_v)?;
-    assert_eq!(g.into_erased(), ppc_v);
+    assert_eq!(g.as_erased(), ppc_v);
 
     // Erased marker accepts any kind.
     let h: FloatValue<'_, FloatDyn, _> = narrow_generic_float::<FloatDyn, _>(f32_v)?;
-    assert_eq!(h.into_erased(), f32_v);
+    assert_eq!(h.as_erased(), f32_v);
     let i: FloatValue<'_, FloatDyn, _> = narrow_generic_float::<FloatDyn, _>(ppc_v)?;
-    assert_eq!(i.into_erased(), ppc_v);
+    assert_eq!(i.as_erased(), ppc_v);
 
     Ok(())
 }
@@ -238,7 +238,7 @@ fn narrow_generic_float_accepts_every_marker_family() -> Result<(), IrError> {
 #[test]
 fn integer_at_float_kind_is_type_mismatch() {
     let m = module_new!("c").expect("fresh module");
-    let i32_v = m.i32_type().const_zero().into_erased();
+    let i32_v = m.i32_type().const_zero().as_erased();
     let err = narrow_generic_float::<f32, _>(i32_v).unwrap_err();
     assert_eq!(
         err,
@@ -254,7 +254,7 @@ fn integer_at_float_kind_is_type_mismatch() {
 #[test]
 fn wrong_float_kind_is_type_mismatch() {
     let m = module_new!("c").expect("fresh module");
-    let f64_v = m.f64_type().const_double(2.5_f64).into_erased();
+    let f64_v = m.f64_type().const_double(2.5_f64).as_erased();
     let err = narrow_generic_float::<f32, _>(f64_v).unwrap_err();
     assert_eq!(
         err,
@@ -269,7 +269,7 @@ fn wrong_float_kind_is_type_mismatch() {
 #[test]
 fn float_dyn_still_rejects_non_float() {
     let m = module_new!("c").expect("fresh module");
-    let ptr_v = m.ptr_type(0).const_null().into_erased();
+    let ptr_v = m.ptr_type(0).const_null().as_erased();
     let err = narrow_generic_float::<FloatDyn, _>(ptr_v).unwrap_err();
     assert_eq!(
         err,

@@ -345,10 +345,9 @@ fn no_cfi_round_trips() {
 #[test]
 fn token_none_round_trips() {
     let module = module_new!("parser_constants_none").expect("fresh module");
-    let parsed =
-        parser::parse_constant_value(b"none", &module, module.token_type().as_type(), None)
-            .expect("token none parses");
-    assert_eq!(format!("{}", parsed.into_erased()), "token none");
+    let parsed = parser::parse_constant_value(b"none", &module, module.token_type().as_type())
+        .expect("token none parses");
+    assert_eq!(format!("{}", parsed.as_erased()), "token none");
 }
 
 /// Exact `ptrtoaddr` constant expression from `test/Assembler/ptrtoaddr.ll`.
@@ -499,10 +498,9 @@ fn constant_expr_gep_rejects_scalable_vector_pointee() {
 #[test]
 fn none_is_token_only() {
     let module = module_new!("parser_constants_none_token").expect("fresh module");
-    let parsed =
-        parser::parse_constant_value(b"none", &module, module.token_type().as_type(), None)
-            .expect("token none parses");
-    assert_eq!(format!("{}", parsed.into_erased()), "token none");
+    let parsed = parser::parse_constant_value(b"none", &module, module.token_type().as_type())
+        .expect("token none parses");
+    assert_eq!(format!("{}", parsed.as_erased()), "token none");
 
     let target_ty = module
         .target_ext_type(
@@ -511,7 +509,7 @@ fn none_is_token_only() {
             Vec::<u32>::new(),
         )
         .as_type();
-    let err = parser::parse_constant_value(b"none", &module, target_ty, None)
+    let err = parser::parse_constant_value(b"none", &module, target_ty)
         .expect_err("target-extension none is rejected");
     match err {
         ParseError::Expected { expected, .. } => {
@@ -534,10 +532,10 @@ fn target_ext_zeroinitializer_requires_zero_init_property() {
             Vec::<u32>::new(),
         )
         .as_type();
-    let zero = parser::parse_constant_value(b"zeroinitializer", &module, zero_ty, None)
+    let zero = parser::parse_constant_value(b"zeroinitializer", &module, zero_ty)
         .expect("zero-initializable target extension parses");
     assert_eq!(
-        format!("{}", zero.into_erased()),
+        format!("{}", zero.as_erased()),
         "target(\"spirv.foo\") zeroinitializer"
     );
 
@@ -548,7 +546,7 @@ fn target_ext_zeroinitializer_requires_zero_init_property() {
             Vec::<u32>::new(),
         )
         .as_type();
-    let err = parser::parse_constant_value(b"zeroinitializer", &module, image_ty, None)
+    let err = parser::parse_constant_value(b"zeroinitializer", &module, image_ty)
         .expect_err("non-zero-initializable target extension is rejected");
     match err {
         ParseError::Expected { expected, .. } => {

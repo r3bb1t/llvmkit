@@ -14,10 +14,10 @@ Shipped today:
   0.0.4.** `Module<B, S>` has no lifetime parameter, owns its storage, and is
   `Send`, so it can be returned from a function, stored in a struct or a `Vec`,
   and moved across a thread boundary. Declarations and value-producing
-  `build_*` calls return a `Copy + Send` **id** (`IntValueId<W, B>`,
+  builder calls return a `Copy + Send` **id** (`IntValueId<W, B>`,
   `FunctionId<R, B>`, `GlobalId<B>`, …) that carries the module's identity
-  without borrowing it; the by-name lookups (`get_global`, `get_alias`,
-  `get_ifunc`, `function_by_name`, `function_by_name_dyn`) return the same
+  without borrowing it; the by-name lookups (`global`, `alias`,
+  `ifunc`, `function`, `function_dyn`) return the same
   currency their `add_*` twins do. Blocks are minted as linear, `!Copy` handles
   instead (`append_basic_block`, `append_block_with_params`), and `.id()` on one
   gives the storable `BlockId`; terminator builders consume the builder and hand
@@ -30,7 +30,7 @@ Shipped today:
   points (`parse_branded::<B>`, `parse_dynamic`, `parse_file_branded::<B>`,
   `parse_file_dynamic`, `parse_into`) that return the owned `Module`.
 - Typed IR model, constants, globals, functions, basic blocks, instructions, verifier, AsmWriter.
-- Schema-typed IR construction: compile-checked calls (`build_call` +
+- Schema-typed IR construction: compile-checked calls (`call` +
   `TypedCallInst`), typed pointers (`TypedPointerValue` + compile-time field
   GEPs), typed folder hooks, and Braun-style auto-SSA (`SsaBuilder`).
 - CFG and dominator-tree queries.
@@ -279,7 +279,7 @@ denormal, load-through-bitcast, and other target/library-dependent folds live in
      not in the all-constant default folder.
 
 3. **Folder trait expansion**
-   - Expand `IRBuilderFolder` hooks as new builder families need folding.
+   - Expand `IrBuilderFolder` hooks as new builder families need folding.
    - Keep `NoFolder` and allow custom folders.
    - Consider a `TargetFolder` only if builder-time DataLayout-dependent folds
      are intentionally exposed; today those folds remain in analysis folding

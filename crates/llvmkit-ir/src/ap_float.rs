@@ -6,14 +6,14 @@
 //! narrow through host `f64`; narrower helper-only operations are still ported
 //! incrementally.
 
-use crate::ap_int::{ApInt, ApIntSignedness};
+use crate::ap_int::{ApInt, Signedness};
 use crate::{IrError, IrResult};
 use core::cmp::Ordering;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ApFloatSemantics {
     IeeeHalf,
-    BFloat,
+    Bfloat,
     IeeeSingle,
     IeeeDouble,
     IeeeQuad,
@@ -139,7 +139,7 @@ pub struct ApFloat {
 impl ApFloatSemantics {
     pub fn bit_width(self) -> u32 {
         match self {
-            Self::IeeeHalf | Self::BFloat => 16,
+            Self::IeeeHalf | Self::Bfloat => 16,
             Self::IeeeSingle => 32,
             Self::IeeeDouble => 64,
             Self::IeeeQuad | Self::PpcDoubleDouble => 128,
@@ -150,7 +150,7 @@ impl ApFloatSemantics {
     pub fn precision(self) -> u32 {
         match self {
             Self::IeeeHalf => 11,
-            Self::BFloat => 8,
+            Self::Bfloat => 8,
             Self::IeeeSingle => 24,
             Self::IeeeDouble => 53,
             Self::IeeeQuad => 113,
@@ -168,7 +168,7 @@ impl ApFloatSemantics {
     pub fn max_exponent(self) -> i32 {
         match self {
             Self::IeeeHalf => 15,
-            Self::BFloat | Self::IeeeSingle => 127,
+            Self::Bfloat | Self::IeeeSingle => 127,
             Self::IeeeDouble => 1023,
             Self::IeeeQuad | Self::X87DoubleExtended => 16383,
             Self::PpcDoubleDouble => -1,
@@ -181,7 +181,7 @@ impl ApFloatSemantics {
     pub fn min_exponent(self) -> i32 {
         match self {
             Self::IeeeHalf => -14,
-            Self::BFloat | Self::IeeeSingle => -126,
+            Self::Bfloat | Self::IeeeSingle => -126,
             Self::IeeeDouble => -1022,
             Self::IeeeQuad | Self::X87DoubleExtended => -16382,
             Self::PpcDoubleDouble => 0,
@@ -277,7 +277,7 @@ impl ApFloat {
 
     pub fn zero(semantics: ApFloatSemantics, sign: ApFloatSign) -> ApFloat {
         let bits = match semantics {
-            ApFloatSemantics::IeeeHalf | ApFloatSemantics::BFloat => {
+            ApFloatSemantics::IeeeHalf | ApFloatSemantics::Bfloat => {
                 if matches!(sign, ApFloatSign::Negative) {
                     0x8000
                 } else {
@@ -309,7 +309,7 @@ impl ApFloat {
     pub fn one(semantics: ApFloatSemantics, sign: ApFloatSign) -> ApFloat {
         let mut value = match semantics {
             ApFloatSemantics::IeeeHalf => Self::from_bits_unchecked(semantics, &[0x3c00]),
-            ApFloatSemantics::BFloat => Self::from_bits_unchecked(semantics, &[0x3f80]),
+            ApFloatSemantics::Bfloat => Self::from_bits_unchecked(semantics, &[0x3f80]),
             ApFloatSemantics::IeeeSingle => Self::from_bits_unchecked(semantics, &[0x3f80_0000]),
             ApFloatSemantics::IeeeDouble => {
                 Self::from_bits_unchecked(semantics, &[0x3ff0_0000_0000_0000])
@@ -333,7 +333,7 @@ impl ApFloat {
     pub fn inf(semantics: ApFloatSemantics, sign: ApFloatSign) -> ApFloat {
         let mut value = match semantics {
             ApFloatSemantics::IeeeHalf => Self::from_bits_unchecked(semantics, &[0x7c00]),
-            ApFloatSemantics::BFloat => Self::from_bits_unchecked(semantics, &[0x7f80]),
+            ApFloatSemantics::Bfloat => Self::from_bits_unchecked(semantics, &[0x7f80]),
             ApFloatSemantics::IeeeSingle => Self::from_bits_unchecked(semantics, &[0x7f80_0000]),
             ApFloatSemantics::IeeeDouble => {
                 Self::from_bits_unchecked(semantics, &[0x7ff0_0000_0000_0000])
@@ -373,7 +373,7 @@ impl ApFloat {
     pub fn largest(semantics: ApFloatSemantics, sign: ApFloatSign) -> ApFloat {
         let mut value = match semantics {
             ApFloatSemantics::IeeeHalf => Self::from_bits_unchecked(semantics, &[0x7bff]),
-            ApFloatSemantics::BFloat => Self::from_bits_unchecked(semantics, &[0x7f7f]),
+            ApFloatSemantics::Bfloat => Self::from_bits_unchecked(semantics, &[0x7f7f]),
             ApFloatSemantics::IeeeSingle => Self::from_bits_unchecked(semantics, &[0x7f7f_ffff]),
             ApFloatSemantics::IeeeDouble => {
                 Self::from_bits_unchecked(semantics, &[0x7fef_ffff_ffff_ffff])
@@ -409,7 +409,7 @@ impl ApFloat {
     pub fn smallest_normalized(semantics: ApFloatSemantics, sign: ApFloatSign) -> ApFloat {
         let mut value = match semantics {
             ApFloatSemantics::IeeeHalf => Self::from_bits_unchecked(semantics, &[0x0400]),
-            ApFloatSemantics::BFloat => Self::from_bits_unchecked(semantics, &[0x0080]),
+            ApFloatSemantics::Bfloat => Self::from_bits_unchecked(semantics, &[0x0080]),
             ApFloatSemantics::IeeeSingle => Self::from_bits_unchecked(semantics, &[0x0080_0000]),
             ApFloatSemantics::IeeeDouble => {
                 Self::from_bits_unchecked(semantics, &[0x0010_0000_0000_0000])
@@ -770,7 +770,7 @@ impl ApFloat {
     pub fn convert_to_integer(
         &self,
         width: u32,
-        signedness: ApIntSignedness,
+        signedness: Signedness,
         rounding: RoundingMode,
     ) -> (ApInt, ApFloatStatus, Exactness) {
         let (value, status, exact) =
@@ -784,8 +784,8 @@ impl ApFloat {
     /// The `fs == opInvalidOp` tail of `IEEEFloat::convertToInteger`: set the
     /// low `bits` bits, then move the single sign bit up for a negative
     /// signed result.
-    fn saturated_integer(&self, width: u32, signedness: ApIntSignedness) -> ApInt {
-        let is_signed = matches!(signedness, ApIntSignedness::Signed);
+    fn saturated_integer(&self, width: u32, signedness: Signedness) -> ApInt {
+        let is_signed = matches!(signedness, Signedness::Signed);
         if self.is_nan() || width == 0 {
             return ApInt::zero(width);
         }
@@ -806,7 +806,7 @@ impl ApFloat {
     fn convert_to_integer_unsaturated(
         &self,
         width: u32,
-        signedness: ApIntSignedness,
+        signedness: Signedness,
         rounding: RoundingMode,
     ) -> (ApInt, ApFloatStatus, Exactness) {
         if self.is_nan() || self.is_infinity() {
@@ -833,7 +833,7 @@ impl ApFloat {
     fn convert_binary_float_to_integer(
         &self,
         width: u32,
-        signedness: ApIntSignedness,
+        signedness: Signedness,
         rounding: RoundingMode,
     ) -> Option<(ApInt, ApFloatStatus, Exactness)> {
         let components = self.binary_components()?;
@@ -887,7 +887,7 @@ impl ApFloat {
             ));
         }
         rounded_magnitude = ApInt::from_words(width, rounded_magnitude.words());
-        let int = if matches!(signedness, ApIntSignedness::Signed) && components.negative {
+        let int = if matches!(signedness, Signedness::Signed) && components.negative {
             rounded_magnitude.negate()
         } else {
             rounded_magnitude
@@ -906,7 +906,7 @@ impl ApFloat {
     fn convert_ppc_double_double_to_integer(
         &self,
         width: u32,
-        signedness: ApIntSignedness,
+        signedness: Signedness,
         rounding: RoundingMode,
     ) -> Option<(ApInt, ApFloatStatus, Exactness)> {
         if !matches!(self.semantics, ApFloatSemantics::PpcDoubleDouble) {
@@ -1004,7 +1004,7 @@ impl ApFloat {
             ));
         }
         rounded_magnitude = ApInt::from_words(width, rounded_magnitude.words());
-        let int = if matches!(signedness, ApIntSignedness::Signed) && result_negative {
+        let int = if matches!(signedness, Signedness::Signed) && result_negative {
             rounded_magnitude.negate()
         } else {
             rounded_magnitude
@@ -1028,7 +1028,7 @@ impl ApFloat {
         let negative = self.is_negative();
         match self.semantics {
             ApFloatSemantics::IeeeHalf
-            | ApFloatSemantics::BFloat
+            | ApFloatSemantics::Bfloat
             | ApFloatSemantics::IeeeSingle
             | ApFloatSemantics::IeeeDouble
             | ApFloatSemantics::IeeeQuad => {
@@ -1083,10 +1083,10 @@ impl ApFloat {
     pub fn convert_from_ap_int(
         semantics: ApFloatSemantics,
         input: &ApInt,
-        signedness: ApIntSignedness,
+        signedness: Signedness,
         rounding: RoundingMode,
     ) -> (ApFloat, ApFloatStatus) {
-        let negative = matches!(signedness, ApIntSignedness::Signed) && input.is_negative();
+        let negative = matches!(signedness, Signedness::Signed) && input.is_negative();
         let magnitude = if negative {
             input.negate()
         } else {
@@ -1335,7 +1335,7 @@ impl ApFloat {
         if matches!(self.semantics, ApFloatSemantics::PpcDoubleDouble) {
             let Some((_, status, exact)) = self.convert_ppc_double_double_to_integer(
                 2048,
-                ApIntSignedness::Signed,
+                Signedness::Signed,
                 RoundingMode::TowardZero,
             ) else {
                 return false;
@@ -1655,7 +1655,7 @@ impl ApFloat {
             ApFloatSemantics::IeeeHalf => {
                 half_to_f64(u16::try_from(self.to_bits().try_zext_u64().unwrap_or(0)).unwrap_or(0))
             }
-            ApFloatSemantics::BFloat => {
+            ApFloatSemantics::Bfloat => {
                 let raw = u16::try_from(self.to_bits().try_zext_u64().unwrap_or(0)).unwrap_or(0);
                 f64::from(f32::from_bits(u32::from(raw) << 16))
             }
@@ -3095,7 +3095,7 @@ fn round_power_of_two_div(
 fn integer_magnitude_out_of_range(
     magnitude: &ApInt,
     width: u32,
-    signedness: ApIntSignedness,
+    signedness: Signedness,
     negative: bool,
 ) -> bool {
     if width == 0 {
@@ -3105,8 +3105,8 @@ fn integer_magnitude_out_of_range(
         return false;
     }
     match signedness {
-        ApIntSignedness::Unsigned => negative || magnitude.active_bits() > width,
-        ApIntSignedness::Signed => {
+        Signedness::Unsigned => negative || magnitude.active_bits() > width,
+        Signedness::Signed => {
             let Some(limit_bit) = width.checked_sub(1) else {
                 return true;
             };
@@ -3491,7 +3491,7 @@ fn encode_decimal_subnormal(
 fn exponent_bias(semantics: ApFloatSemantics) -> Option<i32> {
     match semantics {
         ApFloatSemantics::IeeeHalf => Some(15),
-        ApFloatSemantics::BFloat | ApFloatSemantics::IeeeSingle => Some(127),
+        ApFloatSemantics::Bfloat | ApFloatSemantics::IeeeSingle => Some(127),
         ApFloatSemantics::IeeeDouble => Some(1023),
         ApFloatSemantics::IeeeQuad | ApFloatSemantics::X87DoubleExtended => Some(16383),
         ApFloatSemantics::PpcDoubleDouble => None,
@@ -3501,7 +3501,7 @@ fn exponent_bias(semantics: ApFloatSemantics) -> Option<i32> {
 fn exponent_bits(semantics: ApFloatSemantics) -> Option<u32> {
     match semantics {
         ApFloatSemantics::IeeeHalf => Some(5),
-        ApFloatSemantics::BFloat | ApFloatSemantics::IeeeSingle => Some(8),
+        ApFloatSemantics::Bfloat | ApFloatSemantics::IeeeSingle => Some(8),
         ApFloatSemantics::IeeeDouble => Some(11),
         ApFloatSemantics::IeeeQuad | ApFloatSemantics::X87DoubleExtended => Some(15),
         ApFloatSemantics::PpcDoubleDouble => None,
@@ -3586,7 +3586,7 @@ fn pack_decimal_bits(
                 sign | (exponent << 10) | u64::try_from(fraction).ok()?,
             ])
         }
-        ApFloatSemantics::BFloat => {
+        ApFloatSemantics::Bfloat => {
             let sign = if negative { 1u64 << 15 } else { 0 };
             Some(vec![sign | (exponent << 7) | u64::try_from(fraction).ok()?])
         }
@@ -3678,7 +3678,7 @@ fn x87_to_f64(bits: &ApInt) -> f64 {
 fn exponent_layout(semantics: ApFloatSemantics) -> (u32, u32) {
     match semantics {
         ApFloatSemantics::IeeeHalf => (10, 5),
-        ApFloatSemantics::BFloat => (7, 8),
+        ApFloatSemantics::Bfloat => (7, 8),
         ApFloatSemantics::IeeeSingle => (23, 8),
         ApFloatSemantics::IeeeDouble => (52, 11),
         ApFloatSemantics::IeeeQuad => (112, 15),
@@ -3690,7 +3690,7 @@ fn exponent_layout(semantics: ApFloatSemantics) -> (u32, u32) {
 fn fraction_bits(semantics: ApFloatSemantics) -> u32 {
     match semantics {
         ApFloatSemantics::IeeeHalf => 10,
-        ApFloatSemantics::BFloat => 7,
+        ApFloatSemantics::Bfloat => 7,
         ApFloatSemantics::IeeeSingle => 23,
         ApFloatSemantics::IeeeDouble => 52,
         ApFloatSemantics::IeeeQuad => 112,
@@ -3702,7 +3702,7 @@ fn fraction_bits(semantics: ApFloatSemantics) -> u32 {
 fn quiet_nan_bit(semantics: ApFloatSemantics) -> u32 {
     match semantics {
         ApFloatSemantics::IeeeHalf => 9,
-        ApFloatSemantics::BFloat => 6,
+        ApFloatSemantics::Bfloat => 6,
         ApFloatSemantics::IeeeSingle => 22,
         ApFloatSemantics::IeeeDouble => 51,
         ApFloatSemantics::IeeeQuad => 111,

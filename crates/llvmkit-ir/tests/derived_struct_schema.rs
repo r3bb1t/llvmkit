@@ -1,5 +1,5 @@
 use llvmkit_ir::{
-    CallArgs, IRBuilder, IntValue, IrError, IrStruct, Linkage, NoFolder, StructFields, module_new,
+    CallArgs, IntValue, IrBuilder, IrError, IrStruct, Linkage, NoFolder, StructFields, module_new,
 };
 
 #[derive(IrStruct)]
@@ -48,7 +48,7 @@ fn derive_builds_nested_named_structs_and_accessors() -> Result<(), IrError> {
         Linkage::External,
     )?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let (placement,) = m.view(f).params();
     let rect = placement.normal_position(&b)?;
     let min = rect.min(&b)?;
@@ -63,7 +63,7 @@ fn derive_builds_nested_named_structs_and_accessors() -> Result<(), IrError> {
         adjusted_rect,
         "rebuilt",
     )?;
-    b.build_ret(rebuilt)?;
+    b.ret(rebuilt)?;
 
     let text = format!("{m}");
     assert!(text.contains("%Point = type { i32, i32 }"), "got:\n{text}");
@@ -114,12 +114,12 @@ fn derive_try_from_raw_ir_values() -> Result<(), IrError> {
     let m = module_new!("derived_try_from")?;
     let f = m.add_typed_function::<(), (WindowPlacement,), _>("read_raw", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let arg = m.view(f).as_function().param(0)?;
     let placement = WindowPlacementValue::try_from(arg)?;
     let normal_position = placement.normal_position(&b)?;
     let _: RectValue<'_, _> = normal_position;
-    b.build_ret_void();
+    b.ret_void();
     Ok(())
 }
 
@@ -134,13 +134,13 @@ fn derive_struct_fields_unpacks_top_level_fields() -> Result<(), IrError> {
         Linkage::External,
     )?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let (show_cmd, normal_position) = m.view(f).params();
     let _: IntValue<'_, i32, _> = show_cmd;
     let _: RectValue<'_, _> = normal_position;
     let rebuilt =
         WindowPlacementValue::build(m.as_view(), &b, show_cmd, normal_position, "rebuilt")?;
-    b.build_ret(rebuilt)?;
+    b.ret(rebuilt)?;
     let text = format!("{m}");
     assert!(
         text.contains("define %WindowPlacement @normalize_fields(i32 %0, %Rect %1)"),
@@ -171,9 +171,9 @@ fn derive_build_accepts_fields_named_like_helper_parameters() -> Result<(), IrEr
     let m = module_new!("collision")?;
     let f = m.add_typed_function::<CollisionNames, (), _>("collision", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let value = CollisionNamesValue::build(m.as_view(), &b, 1_i32, 2_i32, 3_i32, "collision")?;
-    b.build_ret(value)?;
+    b.ret(value)?;
     let text = format!("{m}");
     assert!(
         text.contains("ret %CollisionNames %collision.name"),
@@ -191,13 +191,13 @@ fn derive_emits_into_call_arg_for_struct_schema() -> Result<(), IrError> {
     let m = module_new!("derived_call_arg")?;
     let f = m.add_typed_function::<i32, (Point,), _>("consume_point", Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::with_folder(&m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let point = PointValue::build(m.as_view(), &b, 1_i32, 2_i32, "point")?;
 
     let ids = <(_,) as CallArgs<'_, (Point,), _>>::lower((point,), (&m).into())?;
 
     assert_eq!(ids.len(), 1, "expected one lowered call-argument id");
-    b.build_ret(0_i32)?;
+    b.ret(0_i32)?;
     Ok(())
 }
 

@@ -16,11 +16,11 @@
 //! [`FunctionParamList`](crate::FunctionParamList) tuples that describe a
 //! function's parameter list: a block marked `(i32, Ptr)` yields typed
 //! head-phi parameter handles from
-//! [`IRBuilder::append_block_typed`](crate::IRBuilder::append_block_typed).
+//! [`IrBuilder::append_block_typed`](crate::IrBuilder::append_block_typed).
 //! `BlockParamsDyn` and a parameter tuple are distinct types, so there is
 //! no coherence conflict with the `FunctionParamList` tuple impls. The
 //! `BlockCall` edge that consumes typed block parameters — `head.call(args)`
-//! seeding a `build_br_call` / `build_cond_br_call` branch — reuses these
+//! seeding a `br_call` / `cond_br_call` branch — reuses these
 //! same markers.
 //!
 //! The base trait is **sealed** — the set of parameter-shape markers is

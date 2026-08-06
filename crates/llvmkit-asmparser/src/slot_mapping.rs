@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use llvmkit_macros::Branded;
 
 use llvmkit_ir::{
-    Dyn, FunctionValue, GlobalAlias, GlobalIFunc, GlobalVariable, MetadataId, ModuleBrand, Type,
+    Dyn, FunctionValue, GlobalAlias, GlobalIfunc, GlobalVariable, MetadataId, ModuleBrand, Type,
     attributes::AttributeStorage,
 };
 
@@ -52,7 +52,7 @@ pub enum GlobalRef<'ctx, B: ModuleBrand> {
     /// Module-level alias — `@x = alias ...`.
     Alias(GlobalAlias<'ctx, B>),
     /// Module-level indirect function — `@x = ifunc ...`.
-    IFunc(GlobalIFunc<'ctx, B>),
+    Ifunc(GlobalIfunc<'ctx, B>),
 }
 
 impl<'ctx, B: ModuleBrand> From<FunctionValue<'ctx, Dyn, B>> for GlobalRef<'ctx, B> {
@@ -76,10 +76,10 @@ impl<'ctx, B: ModuleBrand> From<GlobalAlias<'ctx, B>> for GlobalRef<'ctx, B> {
     }
 }
 
-impl<'ctx, B: ModuleBrand> From<GlobalIFunc<'ctx, B>> for GlobalRef<'ctx, B> {
+impl<'ctx, B: ModuleBrand> From<GlobalIfunc<'ctx, B>> for GlobalRef<'ctx, B> {
     #[inline]
-    fn from(v: GlobalIFunc<'ctx, B>) -> Self {
-        GlobalRef::IFunc(v)
+    fn from(v: GlobalIfunc<'ctx, B>) -> Self {
+        GlobalRef::Ifunc(v)
     }
 }
 
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn fresh_mapping_is_empty() {
         let m: SlotMapping<'_, DynBrand> = SlotMapping::new();
-        assert_eq!(m.global_values.get_next(), 0);
+        assert_eq!(m.global_values.next_unused_id(), 0);
         assert!(m.global_values.is_empty());
         assert!(m.named_types.is_empty());
         assert!(m.numbered_types.is_empty());
@@ -168,7 +168,7 @@ mod tests {
             .add(0, GlobalRef::Variable(m.view(g)))
             .expect("first slot");
 
-        assert_eq!(mapping.global_values.get_next(), 1);
+        assert_eq!(mapping.global_values.next_unused_id(), 1);
         match mapping.global_values.get(0) {
             Some(GlobalRef::Variable(stored)) => assert_eq!(*stored, m.view(g)),
             other => panic!("unexpected entry: {other:?}"),

@@ -305,7 +305,7 @@ pub enum AttrKind {
     ReadOnly,
     Returned,
     ReturnsTwice,
-    SExt,
+    Sext,
     SafeStack,
     SanitizeAddress,
     SanitizeHwAddress,
@@ -319,14 +319,14 @@ pub enum AttrKind {
     StackProtect,
     StackProtectReq,
     StackProtectStrong,
-    StrictFP,
+    StrictFp,
     SwiftAsync,
     SwiftError,
     SwiftSelf,
     WillReturn,
     Writable,
     WriteOnly,
-    ZExt,
+    Zext,
 
     // ---- Integer-valued attributes ----
     Alignment,
@@ -335,8 +335,8 @@ pub enum AttrKind {
     Dereferenceable,
     DereferenceableOrNull,
     StackAlignment,
-    UWTable,
-    VScaleRange,
+    UwTable,
+    VscaleRange,
     Range,
     Memory,
     NoFpClass,
@@ -402,7 +402,7 @@ impl AttrKind {
             Self::ReadOnly => "readonly",
             Self::Returned => "returned",
             Self::ReturnsTwice => "returns_twice",
-            Self::SExt => "signext",
+            Self::Sext => "signext",
             Self::SafeStack => "safestack",
             Self::SanitizeAddress => "sanitize_address",
             Self::SanitizeHwAddress => "sanitize_hwaddress",
@@ -416,14 +416,14 @@ impl AttrKind {
             Self::StackProtect => "ssp",
             Self::StackProtectReq => "sspreq",
             Self::StackProtectStrong => "sspstrong",
-            Self::StrictFP => "strictfp",
+            Self::StrictFp => "strictfp",
             Self::SwiftAsync => "swiftasync",
             Self::SwiftError => "swifterror",
             Self::SwiftSelf => "swiftself",
             Self::WillReturn => "willreturn",
             Self::Writable => "writable",
             Self::WriteOnly => "writeonly",
-            Self::ZExt => "zeroext",
+            Self::Zext => "zeroext",
             // Integer
             Self::Alignment => "align",
             Self::AllocKind => "allockind",
@@ -431,8 +431,8 @@ impl AttrKind {
             Self::Dereferenceable => "dereferenceable",
             Self::DereferenceableOrNull => "dereferenceable_or_null",
             Self::StackAlignment => "alignstack",
-            Self::UWTable => "uwtable",
-            Self::VScaleRange => "vscale_range",
+            Self::UwTable => "uwtable",
+            Self::VscaleRange => "vscale_range",
             Self::Range => "range",
             Self::Memory => "memory",
             Self::NoFpClass => "nofpclass",
@@ -456,8 +456,8 @@ impl AttrKind {
                 | Self::Dereferenceable
                 | Self::DereferenceableOrNull
                 | Self::StackAlignment
-                | Self::UWTable
-                | Self::VScaleRange
+                | Self::UwTable
+                | Self::VscaleRange
         )
     }
 
@@ -507,6 +507,93 @@ impl fmt::Display for AttrKind {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
+    }
+}
+
+// --------------------------------------------------------------------------
+// StrBoolAttrKind
+// --------------------------------------------------------------------------
+
+/// The string attributes `Attributes.td` declares as `StrBoolAttr`: string
+/// attributes whose value is a boolean spelled `"true"` / `"false"`.
+///
+/// This is a *reader* layer. Construction stays `Attribute::String { key,
+/// value }` — the string-attribute namespace is genuinely open (target
+/// dependent keys like `"target-features"` live alongside these), so only
+/// reading gains the typed spelling:
+/// [`FunctionValue::str_bool_attribute`](crate::function::FunctionValue::str_bool_attribute).
+/// Variants follow the `.td`'s declaration order. The two `ComplexStrAttr`
+/// declarations (`"denormal-fp-math"`, `"denormal-fp-math-f32"`) are not
+/// here — they are already typed via [`DenormalMode`](crate::DenormalMode)
+/// readers.
+///
+/// Marked `#[non_exhaustive]` so future upstream additions are non-breaking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum StrBoolAttrKind {
+    /// `"marked_for_windows_hot_patching"` (`MarkedForWindowsSecureHotPatching`).
+    MarkedForWindowsHotPatching,
+    /// `"allow_direct_access_in_hot_patch_function"`.
+    AllowDirectAccessInHotPatchFunction,
+    /// `"less-precise-fpmad"`.
+    LessPreciseFpmad,
+    /// `"no-infs-fp-math"`.
+    NoInfsFpMath,
+    /// `"no-nans-fp-math"`.
+    NoNansFpMath,
+    /// `"no-signed-zeros-fp-math"`.
+    NoSignedZerosFpMath,
+    /// `"no-jump-tables"`.
+    NoJumpTables,
+    /// `"no-inline-line-tables"`.
+    NoInlineLineTables,
+    /// `"profile-sample-accurate"`.
+    ProfileSampleAccurate,
+    /// `"use-sample-profile"`.
+    UseSampleProfile,
+    /// `"loader-replaceable"`.
+    LoaderReplaceable,
+}
+
+impl StrBoolAttrKind {
+    /// The attribute key exactly as `Attributes.td` spells it.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::MarkedForWindowsHotPatching => "marked_for_windows_hot_patching",
+            Self::AllowDirectAccessInHotPatchFunction => {
+                "allow_direct_access_in_hot_patch_function"
+            }
+            Self::LessPreciseFpmad => "less-precise-fpmad",
+            Self::NoInfsFpMath => "no-infs-fp-math",
+            Self::NoNansFpMath => "no-nans-fp-math",
+            Self::NoSignedZerosFpMath => "no-signed-zeros-fp-math",
+            Self::NoJumpTables => "no-jump-tables",
+            Self::NoInlineLineTables => "no-inline-line-tables",
+            Self::ProfileSampleAccurate => "profile-sample-accurate",
+            Self::UseSampleProfile => "use-sample-profile",
+            Self::LoaderReplaceable => "loader-replaceable",
+        }
+    }
+
+    /// The kind whose [`key`](Self::key) is `key`, or `None` when `key` is
+    /// not a `StrBoolAttr` declaration.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "marked_for_windows_hot_patching" => Self::MarkedForWindowsHotPatching,
+            "allow_direct_access_in_hot_patch_function" => {
+                Self::AllowDirectAccessInHotPatchFunction
+            }
+            "less-precise-fpmad" => Self::LessPreciseFpmad,
+            "no-infs-fp-math" => Self::NoInfsFpMath,
+            "no-nans-fp-math" => Self::NoNansFpMath,
+            "no-signed-zeros-fp-math" => Self::NoSignedZerosFpMath,
+            "no-jump-tables" => Self::NoJumpTables,
+            "no-inline-line-tables" => Self::NoInlineLineTables,
+            "profile-sample-accurate" => Self::ProfileSampleAccurate,
+            "use-sample-profile" => Self::UseSampleProfile,
+            "loader-replaceable" => Self::LoaderReplaceable,
+            _ => return None,
+        })
     }
 }
 
@@ -640,15 +727,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Attribute<'ctx, B> {
         match self {
             Self::Enum(k) => f.write_str(k.name()),
             Self::Int(AttrKind::Alignment, v) => write!(f, "align {v}"),
-            Self::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
-            Self::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
+            Self::Int(AttrKind::UwTable, 2) => f.write_str("uwtable"),
+            Self::Int(AttrKind::UwTable, 1) => f.write_str("uwtable(sync)"),
             Self::Int(k, v) => write!(f, "{}({v})", k.name()),
             Self::Type(k, t) => write!(f, "{}({t})", k.name()),
             Self::Range { ty, lower, upper } => write!(
                 f,
                 "range({ty} {}, {})",
-                lower.to_string_radix(10, crate::ApIntSignedness::Signed),
-                upper.to_string_radix(10, crate::ApIntSignedness::Signed)
+                lower.to_string_radix(10, crate::Signedness::Signed),
+                upper.to_string_radix(10, crate::Signedness::Signed)
             ),
             Self::Memory(effects) => write!(f, "{effects}"),
             Self::NoFpClass(mask) => write!(f, "nofpclass({})", FpClassMaskNames(*mask)),
@@ -821,6 +908,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> FromIterator<Attribute<'ctx, B>> for Attribute
     }
 }
 
+/// `for attr in &set` — the borrowing counterpart of the
+/// [`FromIterator`] impl above, yielding exactly what
+/// [`AttributeSet::iter`] does.
+impl<'a, 'ctx, B: ModuleBrand + 'ctx> IntoIterator for &'a AttributeSet<'ctx, B> {
+    type Item = &'a Attribute<'ctx, B>;
+    type IntoIter = core::slice::Iter<'a, Attribute<'ctx, B>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.attrs.iter()
+    }
+}
+
 // --------------------------------------------------------------------------
 // AttributeList
 // --------------------------------------------------------------------------
@@ -866,7 +965,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AttributeList<'ctx, B> {
 
     /// Mutably borrow the set at `index`, creating an empty entry if
     /// none exists.
-    pub fn get_mut_or_default(&mut self, index: AttrIndex) -> &mut AttributeSet<'ctx, B> {
+    pub fn or_default_mut(&mut self, index: AttrIndex) -> &mut AttributeSet<'ctx, B> {
         if let Some(pos) = self.entries.iter().position(|(i, _)| *i == index) {
             return &mut self.entries[pos].1;
         }
@@ -878,14 +977,39 @@ impl<'ctx, B: ModuleBrand + 'ctx> AttributeList<'ctx, B> {
     }
 
     /// Add `attr` at `index`. Convenience wrapper around
-    /// [`get_mut_or_default`](Self::get_mut_or_default).
+    /// [`or_default_mut`](Self::or_default_mut).
     pub fn add(&mut self, index: AttrIndex, attr: Attribute<'ctx, B>) {
-        self.get_mut_or_default(index).add(attr);
+        self.or_default_mut(index).add(attr);
     }
 
     /// `true` if no index has any attributes.
     pub fn is_empty(&self) -> bool {
         self.entries.iter().all(|(_, s)| s.is_empty())
+    }
+}
+
+/// The projection [`AttributeList`]'s borrowing iterator applies: a stored
+/// entry becomes the `(index, set)` pair [`AttributeList::iter`] yields.
+///
+/// Spelled as a `fn` pointer, and named, because `IntoIterator::IntoIter` is
+/// an associated *type*: a closure's own type is unnameable and `impl Trait`
+/// is not allowed there.
+type AttributeListEntryProjection<'a, 'ctx, B> =
+    fn(&'a (AttrIndex, AttributeSet<'ctx, B>)) -> (AttrIndex, &'a AttributeSet<'ctx, B>);
+
+/// `for (index, set) in &list` — yields exactly what
+/// [`AttributeList::iter`] does.
+impl<'a, 'ctx, B: ModuleBrand + 'ctx> IntoIterator for &'a AttributeList<'ctx, B> {
+    type Item = (AttrIndex, &'a AttributeSet<'ctx, B>);
+    type IntoIter = core::iter::Map<
+        core::slice::Iter<'a, (AttrIndex, AttributeSet<'ctx, B>)>,
+        AttributeListEntryProjection<'a, 'ctx, B>,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        // The annotation is what coerces the closure to the `fn` pointer.
+        let project: AttributeListEntryProjection<'a, 'ctx, B> = |(index, set)| (*index, set);
+        self.entries.iter().map(project)
     }
 }
 
@@ -940,8 +1064,8 @@ impl fmt::Display for AttributeStored {
         match self {
             Self::Enum(k) => f.write_str(k.name()),
             Self::Int(AttrKind::Alignment, v) => write!(f, "align {v}"),
-            Self::Int(AttrKind::UWTable, 2) => f.write_str("uwtable"),
-            Self::Int(AttrKind::UWTable, 1) => f.write_str("uwtable(sync)"),
+            Self::Int(AttrKind::UwTable, 2) => f.write_str("uwtable"),
+            Self::Int(AttrKind::UwTable, 1) => f.write_str("uwtable(sync)"),
             Self::Int(k, v) => write!(f, "{}({v})", k.name()),
             Self::Type(_, _) | Self::Range { .. } => {
                 unreachable!("typed attributes need a module context to print")

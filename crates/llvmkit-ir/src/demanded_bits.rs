@@ -24,6 +24,7 @@ use super::value::{IntValue, Value, ValueKindData, ValueSlot, ValueUse};
 use super::value_id::IntValueId;
 use super::value_tracking::{ValueTrackingQuery, compute_known_bits, value_from_slot};
 use super::{ApInt, IrError, IrResult, KnownBits};
+use crate::Branded;
 use core::ops::Not;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -41,6 +42,8 @@ pub struct SimplifyDemandedBitsPass;
 /// Lifetime-free: the replacement it carries is a storable
 /// [`IntValueId`], not a borrowing constant handle, so a
 /// pass can hold the whole result across the mutation that consumes it.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct SimplifyDemandedBitsResult<B: ModuleBrand> {
     known: KnownBits,
     demanded: ApInt,
@@ -92,7 +95,7 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             demanded_bits_changed: false,
         });
     };
-    let demanded = demanded_bits.get_demanded_bits(value);
+    let demanded = demanded_bits.demanded_bits(value);
     let full = ApInt::low_bits_set(width, u32::MAX);
     let known = compute_known_bits(value, query)?;
     let known_mask = known.zero_mask().bitor(known.one_mask());
@@ -105,7 +108,7 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         // never has to re-narrow an erased id to use it as an int operand.
         let konst: IntValue<'ctx, IntDyn, B> = int_ty
             .const_ap_int(known.one_mask())?
-            .into_erased()
+            .as_erased()
             .try_into()?;
         Some(konst.id())
     } else {
@@ -120,6 +123,7 @@ pub fn simplify_demanded_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
 }
 
 /// Cached demanded-bits result for one function.
+#[derive(Debug)]
 pub struct DemandedBits {
     data_layout: DataLayout,
     alive_bits: HashMap<ValueSlot, ApInt>,
@@ -142,7 +146,7 @@ impl DemandedBits {
     }
 
     /// Return the bits demanded from an instruction value.
-    pub fn get_demanded_bits<'ctx, B: ModuleBrand + 'ctx>(&self, value: Value<'ctx, B>) -> ApInt {
+    pub fn demanded_bits<'ctx, B: ModuleBrand + 'ctx>(&self, value: Value<'ctx, B>) -> ApInt {
         if let Some(bits) = self.alive_bits.get(&value.slot()) {
             return bits.clone();
         }
@@ -153,7 +157,7 @@ impl DemandedBits {
     }
 
     /// Return the bits demanded from operand `operand_index` of instruction `user`.
-    pub fn get_operand_demanded_bits<'ctx, B: ModuleBrand + 'ctx>(
+    pub fn operand_demanded_bits<'ctx, B: ModuleBrand + 'ctx>(
         &self,
         user: Value<'ctx, B>,
         operand_index: usize,
@@ -177,7 +181,7 @@ impl DemandedBits {
         if self.is_use_dead(user, operand_index)? {
             return Ok(ApInt::zero(width));
         }
-        let a_out = self.get_demanded_bits(user);
+        let a_out = self.demanded_bits(user);
         self.determine_live_operand_bits(user, operand, operand_index, &a_out)
     }
 
@@ -247,7 +251,7 @@ impl DemandedBits {
     ) -> IrResult<()> {
         let mut worklist = VecDeque::new();
         let mut queued = HashSet::new();
-        let anchor = function.as_function().into_erased();
+        let anchor = function.as_function().as_erased();
 
         for block in function.as_function().basic_blocks() {
             for inst in block.instructions() {
@@ -365,10 +369,10 @@ impl DemandedBits {
             InstructionKindData::Shl(bin) => {
                 self.shift_left_operand_bits(user, bin, operand_index, alive_out)?
             }
-            InstructionKindData::LShr(bin) => {
+            InstructionKindData::Lshr(bin) => {
                 self.logical_shift_right_operand_bits(user, bin, operand_index, alive_out)?
             }
-            InstructionKindData::AShr(bin) => {
+            InstructionKindData::Ashr(bin) => {
                 self.arithmetic_shift_right_operand_bits(user, bin, operand_index, alive_out)?
             }
             InstructionKindData::And(bin) => {
@@ -408,30 +412,30 @@ impl DemandedBits {
             InstructionKindData::Invoke(invoke) => self
                 .intrinsic_invoke_operand_bits(user, invoke, operand_index, alive_out)?
                 .unwrap_or(all),
-            InstructionKindData::UDiv(_)
-            | InstructionKindData::SDiv(_)
-            | InstructionKindData::URem(_)
-            | InstructionKindData::SRem(_)
-            | InstructionKindData::FAdd(_)
-            | InstructionKindData::FSub(_)
-            | InstructionKindData::FMul(_)
-            | InstructionKindData::FDiv(_)
-            | InstructionKindData::FRem(_)
-            | InstructionKindData::ICmp(_)
-            | InstructionKindData::FCmp(_)
+            InstructionKindData::Udiv(_)
+            | InstructionKindData::Sdiv(_)
+            | InstructionKindData::Urem(_)
+            | InstructionKindData::Srem(_)
+            | InstructionKindData::Fadd(_)
+            | InstructionKindData::Fsub(_)
+            | InstructionKindData::Fmul(_)
+            | InstructionKindData::Fdiv(_)
+            | InstructionKindData::Frem(_)
+            | InstructionKindData::Icmp(_)
+            | InstructionKindData::Fcmp(_)
             | InstructionKindData::Alloca(_)
             | InstructionKindData::Load(_)
             | InstructionKindData::Store(_)
             | InstructionKindData::Gep(_)
             | InstructionKindData::Ret(_)
             | InstructionKindData::Br(_)
-            | InstructionKindData::FNeg(_)
-            | InstructionKindData::VAArg(_)
+            | InstructionKindData::Fneg(_)
+            | InstructionKindData::VaArg(_)
             | InstructionKindData::ExtractValue(_)
             | InstructionKindData::InsertValue(_)
             | InstructionKindData::Fence(_)
             | InstructionKindData::AtomicCmpXchg(_)
-            | InstructionKindData::AtomicRMW(_)
+            | InstructionKindData::AtomicRmw(_)
             | InstructionKindData::Switch(_)
             | InstructionKindData::IndirectBr(_)
             | InstructionKindData::CallBr(_)
@@ -613,7 +617,7 @@ impl DemandedBits {
         };
         let width = alive_out.bit_width();
         Ok(match semantic {
-            IntrinsicSemantic::BSwap if arg_index == 0 => Some(alive_out.byte_swap()),
+            IntrinsicSemantic::Bswap if arg_index == 0 => Some(alive_out.byte_swap()),
             IntrinsicSemantic::BitReverse if arg_index == 0 => Some(alive_out.reverse_bits()),
             IntrinsicSemantic::Ctlz if arg_index == 0 => {
                 let known = compute_known_bits(
@@ -638,13 +642,13 @@ impl DemandedBits {
                         .min(width),
                 ))
             }
-            IntrinsicSemantic::FShl | IntrinsicSemantic::FShr => {
+            IntrinsicSemantic::Fshl | IntrinsicSemantic::Fshr => {
                 self.funnel_shift_operand_bits(user, semantic, arg_index, alive_out)?
             }
-            IntrinsicSemantic::UMax
-            | IntrinsicSemantic::UMin
-            | IntrinsicSemantic::SMax
-            | IntrinsicSemantic::SMin
+            IntrinsicSemantic::Umax
+            | IntrinsicSemantic::Umin
+            | IntrinsicSemantic::Smax
+            | IntrinsicSemantic::Smin
                 if arg_index == 0 || arg_index == 1 =>
             {
                 Some(ApInt::bits_set_from(
@@ -676,7 +680,7 @@ impl DemandedBits {
             return Ok(None);
         };
         let mut shift = apint_unsigned_rem_u32(&shift, width);
-        if semantic == IntrinsicSemantic::FShr && shift != 0 {
+        if semantic == IntrinsicSemantic::Fshr && shift != 0 {
             shift = width.saturating_sub(shift);
         }
         Ok(match arg_index {
@@ -841,10 +845,10 @@ fn determine_live_operand_bits_add_carry(
 fn cast_operand_bits(cast: &CastOpData, src_width: u32, alive_out: &ApInt) -> ApInt {
     match cast.kind {
         CastOpcode::Trunc => alive_out.zext_or_trunc(src_width),
-        CastOpcode::ZExt => alive_out
+        CastOpcode::Zext => alive_out
             .trunc(src_width)
             .unwrap_or_else(|| ApInt::low_bits_set(src_width, u32::MAX)),
-        CastOpcode::SExt => {
+        CastOpcode::Sext => {
             let mut bits = alive_out
                 .trunc(src_width)
                 .unwrap_or_else(|| ApInt::low_bits_set(src_width, u32::MAX));
@@ -863,10 +867,10 @@ fn cast_operand_bits(cast: &CastOpData, src_width: u32, alive_out: &ApInt) -> Ap
         | CastOpcode::AddrSpaceCast => alive_out.zext_or_trunc(src_width),
         CastOpcode::FpTrunc
         | CastOpcode::FpExt
-        | CastOpcode::FpToUI
-        | CastOpcode::FpToSI
-        | CastOpcode::UIToFp
-        | CastOpcode::SIToFp => ApInt::low_bits_set(src_width, u32::MAX),
+        | CastOpcode::FpToUi
+        | CastOpcode::FpToSi
+        | CastOpcode::UiToFp
+        | CastOpcode::SiToFp => ApInt::low_bits_set(src_width, u32::MAX),
     }
 }
 
@@ -1023,7 +1027,7 @@ fn simplify_demanded_operands<'a, 'ctx, B: ModuleBrand + 'ctx>(
     demanded_bits: &DemandedBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<bool> {
-    let demanded = demanded_bits.get_demanded_bits(value);
+    let demanded = demanded_bits.demanded_bits(value);
     let ValueKindData::Instruction(inst) = &value.data().kind else {
         return Ok(false);
     };
@@ -1052,7 +1056,7 @@ fn demanded_value_replacement<'a, 'ctx, B: ModuleBrand + 'ctx>(
     demanded_bits: &DemandedBits,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<Option<Value<'ctx, B>>> {
-    let demanded = demanded_bits.get_demanded_bits(value);
+    let demanded = demanded_bits.demanded_bits(value);
     if !demanded.is_all_ones() && value.num_uses() != 1 {
         return Ok(None);
     }
@@ -1149,7 +1153,7 @@ fn drop_zext_nneg_for_replaced_operand<'ctx, B: ModuleBrand + 'ctx>(
     let InstructionKindData::Cast(cast) = &inst.kind else {
         return;
     };
-    if cast.kind == CastOpcode::ZExt && cast.src.get() == old_operand && cast.nneg.get() {
+    if cast.kind == CastOpcode::Zext && cast.src.get() == old_operand && cast.nneg.get() {
         cast.nneg.set(false);
     }
 }
@@ -1164,7 +1168,7 @@ fn mark_non_negative_zext<'a, 'ctx, B: ModuleBrand + 'ctx>(
     let InstructionKindData::Cast(cast) = &inst.kind else {
         return Ok(false);
     };
-    if cast.kind != CastOpcode::ZExt || cast.nneg.get() {
+    if cast.kind != CastOpcode::Zext || cast.nneg.get() {
         return Ok(false);
     }
     let src = value_from_slot(value, cast.src.get());
@@ -1211,7 +1215,7 @@ fn simplify_xor_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
     if rhs_bits.bitor(&demanded.not()).is_all_ones() {
         let int_ty = IntType::<IntDyn, B>::try_from(rhs.ty())?;
         let all_ones = int_ty.const_ap_int(&ApInt::all_ones(demanded.bit_width()))?;
-        return replace_instruction_operand(value, &bin.rhs, all_ones.into_erased());
+        return replace_instruction_operand(value, &bin.rhs, all_ones.as_erased());
     }
     shrink_demanded_constant_operand(value, &bin.rhs, demanded)
 }
@@ -1232,7 +1236,7 @@ fn shrink_demanded_constant_operand<'ctx, B: ModuleBrand + 'ctx>(
     }
     let int_ty = IntType::<IntDyn, B>::try_from(current.ty())?;
     let replacement = int_ty.const_ap_int(&shrunk)?;
-    replace_instruction_operand(user, operand, replacement.into_erased())
+    replace_instruction_operand(user, operand, replacement.as_erased())
 }
 
 fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
@@ -1308,11 +1312,11 @@ fn is_always_live(inst: &InstructionData) -> bool {
             InstructionKindData::Store(_)
                 | InstructionKindData::Fence(_)
                 | InstructionKindData::AtomicCmpXchg(_)
-                | InstructionKindData::AtomicRMW(_)
+                | InstructionKindData::AtomicRmw(_)
                 | InstructionKindData::Call(_)
                 | InstructionKindData::Invoke(_)
                 | InstructionKindData::CallBr(_)
-                | InstructionKindData::VAArg(_)
+                | InstructionKindData::VaArg(_)
         )
 }
 
@@ -1332,8 +1336,8 @@ fn is_simplify_candidate<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> 
             | InstructionKindData::Sub(_)
             | InstructionKindData::Mul(_)
             | InstructionKindData::Shl(_)
-            | InstructionKindData::LShr(_)
-            | InstructionKindData::AShr(_)
+            | InstructionKindData::Lshr(_)
+            | InstructionKindData::Ashr(_)
             | InstructionKindData::And(_)
             | InstructionKindData::Or(_)
             | InstructionKindData::Xor(_)
@@ -1341,7 +1345,7 @@ fn is_simplify_candidate<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> 
             | InstructionKindData::Select(_)
             | InstructionKindData::Phi(_)
             | InstructionKindData::Freeze(_)
-            | InstructionKindData::ICmp(_)
+            | InstructionKindData::Icmp(_)
     )
 }
 
@@ -1368,7 +1372,7 @@ fn int_scalar_bit_width<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Optio
         }
         TypeKind::Void
         | TypeKind::Half
-        | TypeKind::BFloat
+        | TypeKind::Bfloat
         | TypeKind::Float
         | TypeKind::Double
         | TypeKind::X86Fp80

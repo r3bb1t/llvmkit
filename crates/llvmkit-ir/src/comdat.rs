@@ -17,7 +17,9 @@
 
 use super::module::{Module, ModuleBrand, ModuleRef, Unverified};
 use crate::Branded;
+use crate::error::IrError;
 use core::fmt;
+use core::str::FromStr;
 
 /// Comdat arena index. Stable for the lifetime of the owning
 /// module.
@@ -57,6 +59,18 @@ pub enum SelectionKind {
 }
 
 impl SelectionKind {
+    /// Every variant, in declaration order. Exists so [`FromStr`] can invert
+    /// [`keyword`](Self::keyword) by searching this list instead of carrying
+    /// a second copy of the spelling table; keep it in step with the enum
+    /// (the in-file drift-lock test's exhaustive `match` is the tripwire).
+    pub const VARIANTS: [Self; 5] = [
+        Self::Any,
+        Self::ExactMatch,
+        Self::Largest,
+        Self::NoDeduplicate,
+        Self::SameSize,
+    ];
+
     /// `.ll` keyword for this selection kind. Mirrors
     /// `lib/IR/AsmWriter.cpp::Comdat::print`.
     pub const fn keyword(self) -> &'static str {
@@ -73,6 +87,24 @@ impl SelectionKind {
 impl fmt::Display for SelectionKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.keyword())
+    }
+}
+
+impl FromStr for SelectionKind {
+    type Err = IrError;
+
+    /// Inverse of [`Display`](fmt::Display) / [`SelectionKind::keyword`] over
+    /// [`VARIANTS`](Self::VARIANTS) — the spellings live only in `keyword`,
+    /// so the two directions cannot drift. Mirrors `LLParser::parseComdat`'s
+    /// selection-kind keyword block (`lib/AsmParser/LLParser.cpp`).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::VARIANTS
+            .into_iter()
+            .find(|kind| kind.keyword() == s)
+            .ok_or_else(|| IrError::InvalidKeyword {
+                target: "comdat selection kind",
+                keyword: s.to_string(),
+            })
     }
 }
 
@@ -121,7 +153,7 @@ impl<'ctx, B: ModuleBrand> ComdatRef<'ctx, B> {
     // No public `id()`. `ComdatId` is a bare `u32` index carrying neither a
     // `ModuleId` tag nor a brand, so it is not a member of the 2.0 id family
     // and `Module::view` cannot resolve it — which is exactly why
-    // `Module::get_comdat` returns this handle rather than an id. Handing the
+    // `Module::comdat` returns this handle rather than an id. Handing the
     // raw index out anyway would have published a token no public API accepts,
     // strictly weaker than the handle it came from. It is crate-internal
     // storage, reachable through `ComdatRef` and nothing else.
@@ -137,7 +169,7 @@ impl<'ctx, B: ModuleBrand> ComdatRef<'ctx, B> {
     /// crate, so `verify(self)` really does consume mutation capability. The
     /// selection kind is printed (`$name = comdat <kind>`), so without the
     /// token a [`Module<B, Verified>`](crate::Module)'s IR could be changed
-    /// after verification — `Module::get_comdat` is state-generic, so a
+    /// after verification — `Module::comdat` is state-generic, so a
     /// verified module does hand out a `ComdatRef`.
     pub fn set_selection_kind(self, _module_token: &Module<B, Unverified>, kind: SelectionKind) {
         self.data().selection_kind.set(kind);
@@ -149,5 +181,45 @@ impl<B: ModuleBrand> fmt::Debug for ComdatRef<'_, B> {
         f.debug_struct("ComdatRef")
             .field("name", &self.name())
             .finish()
+    }
+}
+
+/// Upstream provenance: mirrors `Comdat::SelectionKind` in
+/// `include/llvm/IR/Comdat.h`; the spellings are `Comdat::print`'s
+/// (`lib/IR/AsmWriter.cpp`) and `LLParser::parseComdat`'s.
+///
+/// The test below is **llvmkit-specific**: it is the `Display`/`FromStr`
+/// drift lock, the analogue of `attribute_td_drift.rs`. Upstream's printer
+/// and parser cannot drift apart because both switch on the same enum, so
+/// there is nothing to port.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// llvmkit-specific: Display/FromStr drift lock for [`SelectionKind`].
+    /// The exhaustive `match` makes a new variant a compile error here, which
+    /// is the prompt to extend `VARIANTS`; the count assertion then fails
+    /// until it is extended.
+    #[test]
+    fn selection_kind_display_and_from_str_round_trip() {
+        for kind in SelectionKind::VARIANTS {
+            match kind {
+                SelectionKind::Any
+                | SelectionKind::ExactMatch
+                | SelectionKind::Largest
+                | SelectionKind::NoDeduplicate
+                | SelectionKind::SameSize => {}
+            }
+            assert_eq!(kind.to_string().parse::<SelectionKind>(), Ok(kind));
+        }
+        // One entry per arm above.
+        assert_eq!(SelectionKind::VARIANTS.len(), 5);
+        assert_eq!(
+            "noduplicates".parse::<SelectionKind>(),
+            Err(IrError::InvalidKeyword {
+                target: "comdat selection kind",
+                keyword: "noduplicates".to_string(),
+            })
+        );
     }
 }

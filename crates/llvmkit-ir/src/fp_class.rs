@@ -624,6 +624,7 @@ impl KnownFpClass {
     /// of the two class masks — intersecting two facts weakens the claim, and
     /// a sign bit survives only when both agree on it.
     #[inline]
+    #[must_use]
     pub fn intersect_with(self, other: Self) -> Self {
         Self {
             classes: self.classes.union(other.classes),

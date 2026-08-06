@@ -322,11 +322,11 @@ impl<'a> Lexer<'a> {
         Some(ch)
     }
 
-    pub(crate) fn error<M>(&self, message: M) -> GenError
+    pub(crate) fn error<M>(&self, message: M) -> TableGenError
     where
         M: Into<String>,
     {
-        GenError::new(format!(
+        TableGenError::new(format!(
             "{}:{}:{}: {}",
             self.file,
             self.line,

@@ -81,6 +81,9 @@
 //! | 127 | `CHERIOT_LIBRARY_CALL`               | `CHERIoT_LibraryCall`            |
 
 use core::fmt;
+use core::str::FromStr;
+
+use crate::error::IrError;
 
 /// LLVM calling convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -309,6 +312,63 @@ impl fmt::Display for CallingConv {
     }
 }
 
+impl From<CallingConv> for u32 {
+    /// The raw `CallingConv::ID`. Infallible — the newtype *is* the id;
+    /// [`CallingConv::from_raw`] is the checked direction.
+    #[inline]
+    fn from(conv: CallingConv) -> Self {
+        conv.as_raw()
+    }
+}
+
+impl FromStr for CallingConv {
+    type Err = IrError;
+
+    /// Inverse of [`Display`](fmt::Display), branch for branch: the `cc <N>`
+    /// fallback numerically, the well-known mnemonics by searching
+    /// [`name`](CallingConv::name), and `riscv_vls_cc(<N>)` by searching
+    /// [`riscv_vls_vlen`](CallingConv::riscv_vls_vlen). Each spelling table
+    /// is consulted where it already lives — there is no second copy to drift
+    /// from `PrintCallingConv` (`lib/IR/AsmWriter.cpp`).
+    ///
+    /// The searches walk `0..=MAX` (1024 ids) rather than a hand-listed set
+    /// of the named constants, which is precisely the second table this
+    /// avoids; a new mnemonic in `name` is picked up with no change here.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let invalid = || IrError::InvalidKeyword {
+            target: "calling convention",
+            keyword: s.to_string(),
+        };
+
+        // `cc <N>` — AsmWriter's fallback for ids with no mnemonic. No
+        // mnemonic contains a space, so the shapes cannot collide.
+        if let Some(raw) = s.strip_prefix("cc ") {
+            return raw
+                .parse::<u32>()
+                .ok()
+                .and_then(Self::from_raw)
+                .ok_or_else(invalid);
+        }
+
+        // `riscv_vls_cc(<N>)` — the parameterised printer case.
+        if let Some(vlen) = s
+            .strip_prefix("riscv_vls_cc(")
+            .and_then(|rest| rest.strip_suffix(')'))
+        {
+            let vlen = vlen.parse::<u32>().map_err(|_| invalid())?;
+            return (0..=Self::MAX)
+                .filter_map(Self::from_raw)
+                .find(|conv| conv.riscv_vls_vlen() == Some(vlen))
+                .ok_or_else(invalid);
+        }
+
+        (0..=Self::MAX)
+            .filter_map(Self::from_raw)
+            .find(|conv| conv.name() == Some(s))
+            .ok_or_else(invalid)
+    }
+}
+
 /// Upstream provenance: mirrors `enum CallingConv::ID` from
 /// `include/llvm/IR/CallingConv.h`. Display assertions track
 /// `PrintCallingConv` in `lib/IR/AsmWriter.cpp`. Closest unit-test:
@@ -389,5 +449,58 @@ mod tests {
         // HiPE has an enum slot but no AsmWriter mnemonic.
         assert_eq!(format!("{}", CallingConv::HI_PE), "cc 11");
         assert!(CallingConv::HI_PE.name().is_none());
+    }
+
+    /// llvmkit-specific: the `Display`/`FromStr` drift lock — the analogue of
+    /// `attribute_td_drift.rs` for a hand-written keyword table. Upstream's
+    /// `LLLexer` and `AsmWriter` cannot drift apart (both are generated from
+    /// the same enum), so there is no upstream test to port; llvmkit spells
+    /// the mnemonics once, in `name`, and this pins that `parse ∘ display` is
+    /// the identity over the **entire** legal id space — all three printer
+    /// branches (mnemonic, `riscv_vls_cc(N)`, `cc N`) at once. No `VARIANTS`
+    /// list is needed, and none can go stale. Closest upstream reference:
+    /// `PrintCallingConv` in `lib/IR/AsmWriter.cpp`.
+    #[test]
+    fn display_and_from_str_round_trip_over_the_whole_id_space() {
+        for raw in 0..=CallingConv::MAX {
+            let conv = CallingConv::from_raw(raw).expect("in range by construction");
+            assert_eq!(
+                conv.to_string().parse::<CallingConv>(),
+                Ok(conv),
+                "round-trip failed for raw id {raw}"
+            );
+        }
+    }
+
+    /// llvmkit-specific: the negative half of the drift lock. An unknown
+    /// mnemonic, an out-of-range `cc <N>`, and a malformed parameterised form
+    /// are all errors, never a silently-defaulted `ccc`. Closest upstream:
+    /// `LLParser::parseOptionalCallingConv`'s failure path (`LLParser.cpp`)
+    /// and the `MaxID = 1023` bound in `include/llvm/IR/CallingConv.h`.
+    #[test]
+    fn unknown_calling_convention_text_is_rejected() {
+        for bad in ["nosuchcc", "cc 1024", "cc", "cc x", "riscv_vls_cc(48)", ""] {
+            assert_eq!(
+                bad.parse::<CallingConv>(),
+                Err(IrError::InvalidKeyword {
+                    target: "calling convention",
+                    keyword: bad.to_string(),
+                }),
+                "expected rejection for {bad:?}"
+            );
+        }
+    }
+
+    /// llvmkit-specific: `From<CallingConv> for u32` is the infallible
+    /// direction of `from_raw`. Closest upstream: `using ID = unsigned` in
+    /// `include/llvm/IR/CallingConv.h`.
+    #[test]
+    fn into_u32_is_the_raw_id() {
+        assert_eq!(u32::from(CallingConv::C), 0);
+        assert_eq!(u32::from(CallingConv::SWIFT_TAIL), 20);
+        assert_eq!(
+            CallingConv::from_raw(u32::from(CallingConv::AMDGPU_KERNEL)),
+            Some(CallingConv::AMDGPU_KERNEL)
+        );
     }
 }

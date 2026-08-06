@@ -15,7 +15,7 @@ const MINIMAL: &str = include_str!("fixtures/facade_minimal.ll");
 /// ParseAssemblyString)` to the Rust facade.
 #[test]
 fn parse_assembly_string_round_trips_module() {
-    parser::parse_assembly_string(MINIMAL, |module, _parsed| {
+    parser::parse_assembly(MINIMAL, |module, _parsed| {
         let printed = format!("{module}");
         assert!(printed.contains("target triple = \"x86_64-pc-linux-gnu\""));
         assert!(printed.contains("define i32 @main()"));
@@ -133,7 +133,7 @@ fn parse_assembly_file_reads_file() {
 fn parse_type_at_beginning_reports_read_count() {
     let module = module_new!("facade_type_prefix").expect("fresh module");
     let (ty, consumed) =
-        parser::parse_type_at_beginning(b"i32, rest", &module, None).expect("type prefix parses");
+        parser::parse_type_at_beginning(b"i32, rest", &module).expect("type prefix parses");
     assert_eq!(consumed, 3);
     assert!(matches!(AnyTypeEnum::from(ty), AnyTypeEnum::Int(t) if t.bit_width() == 32));
 }
@@ -142,8 +142,7 @@ fn parse_type_at_beginning_reports_read_count() {
 #[test]
 fn parse_type_requires_end() {
     let module = module_new!("facade_type_eof").expect("fresh module");
-    let err =
-        parser::parse_type(b"i32 trailing", &module, None).expect_err("trailing token rejected");
+    let err = parser::parse_type(b"i32 trailing", &module).expect_err("trailing token rejected");
     match err {
         ParseError::Expected { expected, .. } => assert_eq!(expected, "end of string"),
         other => panic!("unexpected error variant: {other:?}"),
@@ -155,7 +154,7 @@ fn parse_type_requires_end() {
 #[test]
 fn parse_target_extension_type() {
     let module = module_new!("facade_target_ext_type").expect("fresh module");
-    let ty = parser::parse_type(b"target(\"aarch64.svcount\")", &module, None)
+    let ty = parser::parse_type(b"target(\"aarch64.svcount\")", &module)
         .expect("target extension type parses");
     assert_eq!(format!("{ty}"), "target(\"aarch64.svcount\")");
     assert!(matches!(
@@ -163,7 +162,7 @@ fn parse_target_extension_type() {
         AnyTypeEnum::TargetExt(t) if t.name() == "aarch64.svcount"
     ));
 
-    let with_params = parser::parse_type(b"target(\"spirv.Image\", i32, 7)", &module, None)
+    let with_params = parser::parse_type(b"target(\"spirv.Image\", i32, 7)", &module)
         .expect("target extension type with parameters parses");
     assert_eq!(format!("{with_params}"), "target(\"spirv.Image\", i32, 7)");
 }
@@ -173,7 +172,7 @@ fn parse_target_extension_type() {
 #[test]
 fn parse_target_extension_rejects_type_after_integer_param() {
     let module = module_new!("facade_target_ext_bad_param_order").expect("fresh module");
-    let err = parser::parse_type(b"target(\"spirv.Image\", 7, i32)", &module, None)
+    let err = parser::parse_type(b"target(\"spirv.Image\", 7, i32)", &module)
         .expect_err("type parameter after integer parameter is malformed");
     match err {
         ParseError::Expected { expected, .. } => assert_eq!(expected, "target extension type"),
@@ -186,8 +185,7 @@ fn parse_target_extension_rejects_type_after_integer_param() {
 fn parse_constant_value_uses_slot_mapping() {
     let module = module_new!("facade_constant").expect("fresh module");
     let i32_ty = module.i32_type().as_type();
-    let constant =
-        parser::parse_constant_value(b"42", &module, i32_ty, None).expect("constant parses");
+    let constant = parser::parse_constant_value(b"42", &module, i32_ty).expect("constant parses");
     assert_eq!(constant.ty(), i32_ty);
 }
 

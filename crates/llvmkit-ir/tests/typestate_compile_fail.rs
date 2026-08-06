@@ -36,7 +36,7 @@ fn typestate_compile_fail() {
     t.compile_fail("tests/compile_fail/terminated_block_cannot_start_cursor.rs");
     // Slice 7 "the break": the raw typed-phi builders and the open-phi
     // `add_incoming`/`finish` mutators are `pub(crate)`, so block arguments
-    // (`append_block_with_params` + `build_*_with_args`) are the ONLY public
+    // (`append_block_with_params` + `*_with_args`) are the ONLY public
     // phi-authoring surface. This replaces the three former phi-typestate
     // fixtures (add-after-finish / retained-open / reopen-through-kind): once
     // the raw builders are unnameable, an external caller cannot even construct
@@ -157,7 +157,7 @@ fn typestate_compile_fail() {
     // across rustc versions.
     t.compile_fail("tests/compile_fail/block_call_wrong_arity.rs");
     t.compile_fail("tests/compile_fail/block_call_wrong_arg_type.rs");
-    // OP Slice 1 (typed `SwitchInst<W>`): `build_switch` pins the
+    // OP Slice 1 (typed `SwitchInst<W>`): `switch` pins the
     // condition width `W`, so `SwitchInst::add_case` carries an
     // `IntoIntValue<'ctx, W, B>` bound and a wrong-width case value is a
     // compile error. The primary error is our own `IntoIntValue<'_, i32, _>`
@@ -167,7 +167,7 @@ fn typestate_compile_fail() {
     // *specifically* — it would compile under a hypothetical `IsValue` bound.
     t.compile_fail("tests/compile_fail/switch_case_wrong_width.rs");
     t.compile_fail("tests/compile_fail/switch_case_wrong_width_value_handle.rs");
-    // OP Slice 2 (typed `indirectbr` address): `build_indirectbr` binds the
+    // OP Slice 2 (typed `indirectbr` address): `indirectbr` binds the
     // address by `IntoPointerValue<'ctx, B>`, so a typed non-pointer value
     // handle (an `IntValue<i32>`) is a compile error — the pointer-ness check
     // moves from `verify()` to build/compile time. The primary error is our
@@ -194,6 +194,12 @@ fn typestate_compile_fail() {
     // the mix-up a type error, and `module_ownership.rs` locks the runtime tag
     // for the same-brand / `DynBrand` case.
     t.compile_fail("tests/compile_fail/cross_module_metadata_attachment.rs");
+    // W6: the same law for the *named*-metadata currency. A named-metadata
+    // handle used to be a bare `usize` list index carrying neither a brand nor
+    // a `ModuleId` tag; `NamedMetadataId<B>` carries both, so two named brands
+    // make the mix-up a type error, and `module_ownership.rs` locks the
+    // runtime tag for the same-brand / `DynBrand` case.
+    t.compile_fail("tests/compile_fail/cross_module_named_metadata_id.rs");
     // Pins the premise of the `Send` compile-assert in `module_ownership.rs`:
     // the brand type used there really is `!Send`, so asserting that
     // `Module<NotSendBrand, S>: Send` is not vacuous.
@@ -203,6 +209,10 @@ fn typestate_compile_fail() {
     // a non-`Copy` field under the default full-six request is `E0204`,
     // never a silently wrong `Copy`.
     t.compile_fail("tests/compile_fail/branded_copy_needs_copy_fields.rs");
+    // W11a: the ordering pair is opt-in, and `Ord: Eq + PartialOrd` is a
+    // supertrait chain the derive checks in the attribute rather than leaving
+    // for the first `a < b` to discover somewhere else entirely.
+    t.compile_fail("tests/compile_fail/branded_ord_needs_eq_and_partial_ord.rs");
     // Cycle E: a module is an owned value that can be dropped, so a borrowing
     // handle minted from it cannot outlive it (`E0597`). The compile-time law
     // that makes the storable id family necessary rather than merely

@@ -24,8 +24,9 @@ use super::instruction::{Instruction, state};
 use super::marker::ReturnMarker;
 use super::module::ModuleBrand;
 use super::value::ValueSlot;
+use crate::Branded;
 
-/// Single-pass cursor over an instruction list. Each [`Self::next`]
+/// Single-pass cursor over an instruction list. Each [`Self::step`]
 /// call yields the instruction at the current position together with a
 /// fresh cursor pointing at what was the *next* instruction *at the
 /// time of the call*. The split happens before the caller has a chance
@@ -33,6 +34,8 @@ use super::value::ValueSlot;
 /// invalidate the cursor.
 ///
 /// Mirrors LLVM's `auto Next = std::next(I);` idiom.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct BlockCursor<'ctx, R: ReturnMarker, S: BlockTerminationState, B: ModuleBrand> {
     block: BasicBlock<'ctx, R, S, B>,
     /// Snapshot of the block's instruction list at cursor creation.
@@ -45,7 +48,7 @@ pub struct BlockCursor<'ctx, R: ReturnMarker, S: BlockTerminationState, B: Modul
     next_index: usize,
 }
 
-/// Result item yielded by [`BlockCursor::next`].
+/// Result item yielded by [`BlockCursor::step`].
 pub type BlockCursorStep<'ctx, R, S, B> = (
     Instruction<'ctx, state::Attached, B>,
     BlockCursor<'ctx, R, S, B>,
@@ -83,7 +86,7 @@ where
     /// Yield the instruction at the current position, returning `Some`
     /// of it together with a fresh cursor advanced past it. Returns
     /// `None` when the snapshot is exhausted.
-    pub fn next(self) -> Option<BlockCursorStep<'ctx, R, S, B>> {
+    pub fn step(self) -> Option<BlockCursorStep<'ctx, R, S, B>> {
         let id = *self.snapshot.get(self.next_index)?;
         let module = self.block.module_ref();
         let inst = Instruction::from_parts(id, module);

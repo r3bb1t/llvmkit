@@ -3,7 +3,7 @@
 //!
 //! Top-level container: module identity/name, source filename, data
 //! layout, target triple, and module-level asm; the full type-constructor
-//! surface required by `IRBuilder` and the `.ll` parser; and functions,
+//! surface required by `IrBuilder` and the `.ll` parser; and functions,
 //! globals, aliases, ifuncs, comdats, named metadata, and
 //! use-list-order records.
 //!
@@ -59,6 +59,7 @@ use super::constant::{
     BlockAddressPlaceholder, Constant, ConstantExprFlags, ConstantExprOpcode, IntoConstantValue,
     IsConstant,
 };
+use super::constant_range::metadata_constant_int;
 use super::constants::ConstantExprOptions;
 use super::data_layout::DataLayout;
 use super::derived_types::{
@@ -67,7 +68,7 @@ use super::derived_types::{
 };
 use super::element::{ElemDyn, StaticVecElem};
 use super::error::{IrError, IrResult, TypeKindLabel};
-use super::float_kind::{BFloat, Fp128, Half, PpcFp128, X86Fp80};
+use super::float_kind::{Bfloat, Fp128, Half, PpcFp128, X86Fp80};
 use super::function::FunctionData;
 use super::function::{FunctionBuilder, FunctionValue};
 use super::function_signature::TypedVarArgsFunctionValue;
@@ -75,7 +76,7 @@ use super::function_signature::{
     FunctionParamList, FunctionReturn, FunctionSignature, TypedFunctionValue,
 };
 use super::global_alias::{GlobalAlias, GlobalAliasBuilder};
-use super::global_ifunc::{GlobalIFunc, GlobalIFuncBuilder};
+use super::global_ifunc::{GlobalIfunc, GlobalIfuncBuilder};
 use super::global_value::{DllStorageClass, Linkage, ThreadLocalMode, Visibility};
 use super::global_variable::{GlobalBuilder, GlobalVariable};
 use super::inline_asm::{InlineAsm, InlineAsmData, InlineAsmOptions};
@@ -92,7 +93,12 @@ use super::metadata::{
     MetadataAttachmentSet, MetadataId, MetadataKind, MetadataSlot, MetadataStore,
     SpecializedMetadataNode, StoredBrand,
 };
-use super::named_md_node::NamedMDNode;
+use super::module_flags::{
+    ModuleFlagBehavior, ModuleFlagEntry, ModuleFlagKey, module_flag_tuple, resolve_metadata_ref,
+};
+use super::named_md_node::{
+    NamedMetadataId, NamedMetadataName, NamedMetadataNode, NamedMetadataSlot,
+};
 use super::pass_context::{FunctionView, ModuleFunctionViews};
 use super::struct_body_state::StructBodyDyn;
 use super::struct_body_state::{BodySet, Opaque};
@@ -102,7 +108,7 @@ use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{Value, ValueData, ValueKindData, ValueSlot, ValueUse};
 use super::value_id::{
-    FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, TypedFunctionId, TypedVarArgsFunctionId,
+    FunctionId, GlobalAliasId, GlobalId, GlobalIfuncId, TypedFunctionId, TypedVarArgsFunctionId,
     ValueId, ViewIn,
 };
 use super::vec_len::{Len, LenDyn};
@@ -134,7 +140,11 @@ fn reject_reserved_intrinsic_name(name: &str) -> IrResult<()> {
 /// index, and a 64-bit tag can never be re-issued within a process (a
 /// `u32` counter could in principle wrap after `u32::MAX` module
 /// creations and hand a live successor the tag of a dropped module).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Ordered by allocation: the counter is monotone, so `a < b` means `a`'s
+/// module was constructed first. That is what makes the id family's
+/// `(tag, slot)` ordering deterministic enough to key a `BTreeMap`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ModuleId(NonZeroU64);
 
 impl ModuleId {
@@ -747,13 +757,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAliasView<'ctx, B> {
 
 /// Read-only branded view of a global ifunc.
 #[derive(Branded)]
-pub struct GlobalIFuncView<'ctx, B: ModuleBrand> {
-    ifunc: GlobalIFunc<'ctx, B>,
+pub struct GlobalIfuncView<'ctx, B: ModuleBrand> {
+    ifunc: GlobalIfunc<'ctx, B>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> GlobalIFuncView<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncView<'ctx, B> {
     #[inline]
-    pub(super) fn new(ifunc: GlobalIFunc<'ctx, B>) -> Self {
+    pub(super) fn new(ifunc: GlobalIfunc<'ctx, B>) -> Self {
         Self { ifunc }
     }
 
@@ -977,7 +987,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
 
     /// `bfloat`.
     #[inline]
-    pub fn bfloat_type(self) -> FloatType<'ctx, BFloat, B> {
+    pub fn bfloat_type(self) -> FloatType<'ctx, Bfloat, B> {
         FloatType::new(self.core.ctx.bfloat(), ModuleRef::new(self.core))
     }
 
@@ -1141,23 +1151,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         ArrayType::new(id, ModuleRef::new(self.core))
     }
 
-    /// Fixed `<n x elem>` or scalable `<vscale x n x elem>` vector.
+    /// Fixed `<n x elem>` vector. Mirrors `FixedVectorType::get`.
     #[inline]
-    pub fn vector_type<T>(
-        self,
-        elem: T,
-        n: u32,
-        scalable: bool,
-    ) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+    pub fn vector_type<T>(self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B>
     where
         T: Into<Type<'ctx, B>>,
     {
-        let elem_id = elem.into().id();
-        let id = if scalable {
-            self.core.ctx.scalable_vector_type(elem_id, n)
-        } else {
-            self.core.ctx.fixed_vector_type(elem_id, n)
-        };
+        let id = self.core.ctx.fixed_vector_type(elem.into().id(), n);
+        VectorType::new(id, ModuleRef::new(self.core))
+    }
+
+    /// Scalable `<vscale x n x elem>` vector. Mirrors
+    /// `ScalableVectorType::get`.
+    #[inline]
+    pub fn scalable_vector_type<T>(self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+    where
+        T: Into<Type<'ctx, B>>,
+    {
+        let id = self.core.ctx.scalable_vector_type(elem.into().id(), n);
         VectorType::new(id, ModuleRef::new(self.core))
     }
 
@@ -1177,9 +1188,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         VectorType::new(id, ModuleRef::new(self.core))
     }
 
-    /// Literal (unnamed) struct type `{ .. }` / `<{ .. }>`.
+    /// Literal (unnamed) struct type `{ .. }`.
     #[inline]
-    pub fn struct_type<I, T>(self, elements: I, packed: bool) -> StructType<'ctx, StructBodyDyn, B>
+    pub fn struct_type<I, T>(self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+    {
+        self.literal_struct_type(elements, false)
+    }
+
+    /// Packed literal struct type `<{ .. }>`.
+    #[inline]
+    pub fn packed_struct_type<I, T>(self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+    {
+        self.literal_struct_type(elements, true)
+    }
+
+    #[inline]
+    fn literal_struct_type<I, T>(
+        self,
+        elements: I,
+        packed: bool,
+    ) -> StructType<'ctx, StructBodyDyn, B>
     where
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
@@ -1191,48 +1225,89 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         )
     }
 
-    /// Function type `ret (params...)`, variadic when `is_var_arg`.
+    /// Function type `ret (params...)`.
     #[inline]
-    pub fn fn_type<I, R, T>(self, ret: R, params: I, is_var_arg: bool) -> FunctionType<'ctx, B>
+    pub fn function_type<I, R, T>(self, return_type: R, parameters: I) -> FunctionType<'ctx, B>
     where
         I: IntoIterator<Item = T>,
         R: Into<Type<'ctx, B>>,
         T: Into<Type<'ctx, B>>,
     {
-        let ret = ret.into();
-        let params: Box<[TypeSlot]> = params.into_iter().map(|t| t.into().id()).collect();
+        self.raw_function_type(return_type, parameters, false)
+    }
+
+    /// Variadic function type `ret (params..., ...)`.
+    #[inline]
+    pub fn variadic_function_type<I, R, T>(
+        self,
+        return_type: R,
+        parameters: I,
+    ) -> FunctionType<'ctx, B>
+    where
+        I: IntoIterator<Item = T>,
+        R: Into<Type<'ctx, B>>,
+        T: Into<Type<'ctx, B>>,
+    {
+        self.raw_function_type(return_type, parameters, true)
+    }
+
+    #[inline]
+    fn raw_function_type<I, R, T>(
+        self,
+        return_type: R,
+        parameters: I,
+        is_var_arg: bool,
+    ) -> FunctionType<'ctx, B>
+    where
+        I: IntoIterator<Item = T>,
+        R: Into<Type<'ctx, B>>,
+        T: Into<Type<'ctx, B>>,
+    {
+        let ret = return_type.into();
+        let params: Box<[TypeSlot]> = parameters.into_iter().map(|t| t.into().id()).collect();
         FunctionType::new(
             self.core.ctx.function_type(ret.id(), params, is_var_arg),
             ModuleRef::new(self.core),
         )
     }
 
-    /// A function type with no parameters. Avoids the empty-`Vec::<Type>::new()`
-    /// inference cliff of [`fn_type`](Self::fn_type): with an empty iterator the
-    /// element type `T` cannot be inferred, so callers otherwise have to spell it
-    /// (`fn_type(ret, Vec::<Type>::new(), va)`). This pins the element type for
-    /// them — `fn_type_no_params(ret, is_var_arg)` is exactly
-    /// `fn_type(ret, [], is_var_arg)`.
+    /// A function type with no parameters. Avoids the empty-iterator
+    /// inference cliff of [`function_type`](Self::function_type): with an
+    /// empty iterator the element type `T` cannot be inferred, so callers
+    /// otherwise have to spell it. This pins the element type for them —
+    /// `function_type_no_parameters(ret)` is exactly
+    /// `function_type(ret, [] as [Type; 0])`.
     #[inline]
-    pub fn fn_type_no_params<R>(self, ret: R, is_var_arg: bool) -> FunctionType<'ctx, B>
+    pub fn function_type_no_parameters<R>(self, return_type: R) -> FunctionType<'ctx, B>
     where
         R: Into<Type<'ctx, B>>,
     {
-        self.fn_type(ret, core::iter::empty::<Type<'ctx, B>>(), is_var_arg)
+        self.function_type(return_type, core::iter::empty::<Type<'ctx, B>>())
+    }
+
+    /// Variadic sibling of
+    /// [`function_type_no_parameters`](Self::function_type_no_parameters):
+    /// `ret (...)`.
+    #[inline]
+    pub fn variadic_function_type_no_parameters<R>(self, return_type: R) -> FunctionType<'ctx, B>
+    where
+        R: Into<Type<'ctx, B>>,
+    {
+        self.variadic_function_type(return_type, core::iter::empty::<Type<'ctx, B>>())
     }
 
     /// Get or create the identified struct type `%name`, leaving its body
     /// unset. Pure type interning, so it belongs to the same
     /// preservation-neutral family as the primitive constructors above.
     #[inline]
-    pub fn named_struct(self, name: &str) -> StructType<'ctx, StructBodyDyn, B> {
+    pub fn get_or_insert_named_struct(self, name: &str) -> StructType<'ctx, StructBodyDyn, B> {
         let (id, _existed) = self.core.ctx.get_or_create_named_struct(name);
         StructType::new(id, ModuleRef::new(self.core))
     }
 
     /// Look up an existing identified struct type by name, or `None`.
     #[inline]
-    pub fn get_named_struct(self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
+    pub fn named_struct(self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
         self.core
             .ctx
             .get_named_struct(name)
@@ -1250,13 +1325,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     /// [`IrError::StructBodyMismatch`] rather than rewriting anything. That is
     /// what lets [`crate::StructSchema`] and [`crate::IrField`] be declared
     /// against a `ModuleView` instead of a `&Module<Unverified>` token —
-    /// which in turn is what lets [`crate::IRBuilder`] answer schema queries
+    /// which in turn is what lets [`crate::IrBuilder`] answer schema queries
     /// without fabricating a module token it does not own.
     ///
     /// The *typestate* body setters — [`Module::set_struct_body`] and
     /// [`Module::set_struct_body_dyn`], which drive an `Opaque` struct handle
     /// to `BodySet` — stay on the token alone.
-    pub fn get_or_set_named_struct_body<S>(self) -> IrResult<StructType<'ctx, BodySet, B>>
+    pub fn get_or_insert_struct_of<S>(self) -> IrResult<StructType<'ctx, BodySet, B>>
     where
         S: StructSchema,
     {
@@ -1353,11 +1428,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
     #[inline]
     pub fn ifuncs(
         self,
-    ) -> impl ExactSizeIterator<Item = GlobalIFuncView<'ctx, B>>
+    ) -> impl ExactSizeIterator<Item = GlobalIfuncView<'ctx, B>>
     + DoubleEndedIterator
     + FusedIterator
     + 'ctx {
-        self.core.iter_ifuncs::<B>().map(GlobalIFuncView::new)
+        self.core.iter_ifuncs::<B>().map(GlobalIfuncView::new)
     }
 
     /// Iterate COMDATs in insertion order.
@@ -1476,13 +1551,13 @@ impl UseListOrderRecord {
 
 /// Structured `uselistorder_bb @function, %block, { ... }` record.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UseListOrderBBRecord {
+pub struct UseListOrderBbRecord {
     function: ValueSlot,
     block: ValueSlot,
     indexes: Box<[u32]>,
 }
 
-impl UseListOrderBBRecord {
+impl UseListOrderBbRecord {
     pub fn new<Indexes>(function: ValueSlot, block: ValueSlot, indexes: Indexes) -> IrResult<Self>
     where
         Indexes: Into<Box<[u32]>>,
@@ -1568,13 +1643,13 @@ pub(super) struct ModuleCore {
     module_asm: core::cell::RefCell<String>,
     use_list_orders: core::cell::RefCell<Vec<UseListOrderRecord>>,
     attribute_groups: core::cell::RefCell<Vec<(u32, AttributeStorage)>>,
-    use_list_order_bbs: core::cell::RefCell<Vec<UseListOrderBBRecord>>,
+    use_list_order_bbs: core::cell::RefCell<Vec<UseListOrderBbRecord>>,
     /// Module-level metadata node arena. Mirrors `LLVMContextImpl`'s
     /// metadata store (scoped to the module for simplicity).
     metadata: core::cell::RefCell<MetadataStore>,
     /// Named metadata nodes (`!llvm.module.flags`, `!llvm.ident`, ...).
     /// Mirrors `Module::NamedMDList`. Insertion order is preserved.
-    named_metadata: core::cell::RefCell<Vec<NamedMDNode<StoredBrand>>>,
+    named_metadata: core::cell::RefCell<Vec<NamedMetadataNode<StoredBrand>>>,
     /// Uniquing cache for [`metadata_as_value`](Self::metadata_as_value):
     /// maps a metadata node to its wrapping value so repeated wraps of the
     /// same node return the identical `Value`. Mirrors LLVM's uniqued
@@ -1629,6 +1704,62 @@ pub struct Module<B: ModuleBrand, S = Unverified> {
     registration: Option<BrandGuard<B>>,
     _brand: Invariant<B>,
     _state: PhantomData<S>,
+}
+
+/// A **summary**, deliberately not the module's IR.
+///
+/// [`Display`](core::fmt::Display) already prints the whole `.ll` file; a `Debug`
+/// that forwarded to it would splice thousands of lines into every `dbg!`,
+/// every `assert_eq!` failure on a struct that happens to hold a module, and
+/// every `{:?}` on a `Result<Module<B>, _>`. So this prints the identity and
+/// the shape — name, id, counts, verification state — and nothing that grows
+/// with the IR.
+///
+/// The `S: 'static` bound is what lets the typestate be *named*: both
+/// typestate markers are `'static` uninhabited enums, so a [`TypeId`]
+/// comparison recovers which one is in play without a new trait or an `as`
+/// cast.
+///
+/// [`TypeId`]: core::any::TypeId
+impl<B: ModuleBrand, S: 'static> core::fmt::Debug for Module<B, S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use core::any::TypeId;
+
+        let state = if TypeId::of::<S>() == TypeId::of::<Verified>() {
+            "Verified"
+        } else if TypeId::of::<S>() == TypeId::of::<Unverified>() {
+            "Unverified"
+        } else {
+            // Unreachable in practice — no constructor mints a module in any
+            // other typestate — but a `Debug` impl must never panic, so name
+            // the type rather than assert about it.
+            core::any::type_name::<S>()
+        };
+
+        // `try_borrow`, not `borrow`: printing a module from inside a mutator
+        // that is holding one of these lists open must degrade to a marker,
+        // never panic. `Debug` is what a user reaches for *while* debugging.
+        struct Count(Option<usize>);
+        impl core::fmt::Debug for Count {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self.0 {
+                    Some(n) => core::fmt::Debug::fmt(&n, f),
+                    None => f.write_str("<borrowed>"),
+                }
+            }
+        }
+        fn count<T>(cell: &core::cell::RefCell<Vec<T>>) -> Count {
+            Count(cell.try_borrow().ok().map(|list| list.len()))
+        }
+
+        f.debug_struct("Module")
+            .field("name", &self.core.name())
+            .field("id", &self.core.id())
+            .field("functions", &count(&self.core.functions))
+            .field("globals", &count(&self.core.globals))
+            .field("state", &state)
+            .finish()
+    }
 }
 
 impl<'ctx> ModuleCore {
@@ -1743,7 +1874,7 @@ impl<'ctx> ModuleCore {
     }
 
     /// `bfloat`.
-    pub fn bfloat_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, BFloat, B> {
+    pub fn bfloat_type<B: ModuleBrand + 'ctx>(&'ctx self) -> FloatType<'ctx, Bfloat, B> {
         FloatType::new(self.ctx.bfloat(), self)
     }
 
@@ -2095,12 +2226,12 @@ impl<'ctx> ModuleCore {
 
     pub fn iter_ifuncs<B: ModuleBrand + 'ctx>(
         &'ctx self,
-    ) -> impl ExactSizeIterator<Item = GlobalIFunc<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
+    ) -> impl ExactSizeIterator<Item = GlobalIfunc<'ctx, B>> + DoubleEndedIterator + FusedIterator + 'ctx
     {
         let ids: Vec<ValueSlot> = self.ifuncs.borrow().clone();
         ids.into_iter().map(move |id| {
             let value_data = self.ctx.value_data(id);
-            GlobalIFunc::from_parts_unchecked(id, ModuleRef::<B>::new(self), value_data.ty)
+            GlobalIfunc::from_parts_unchecked(id, ModuleRef::<B>::new(self), value_data.ty)
         })
     }
 
@@ -2175,8 +2306,8 @@ impl<'ctx> ModuleCore {
 
     pub(super) fn install_global_ifunc<B: ModuleBrand + 'ctx>(
         &'ctx self,
-        builder: GlobalIFuncBuilder<'ctx, B>,
-    ) -> IrResult<GlobalIFunc<'ctx, B>> {
+        builder: GlobalIfuncBuilder<'ctx, B>,
+    ) -> IrResult<GlobalIfunc<'ctx, B>> {
         let (name, data, address_space) = builder.into_data();
         if !name.is_empty() && self.global_name_exists(&name) {
             return Err(IrError::DuplicateGlobalName { name });
@@ -2186,14 +2317,14 @@ impl<'ctx> ModuleCore {
             ty: pointer_ty,
             name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
             debug_loc: None,
-            kind: ValueKindData::GlobalIFunc(data),
+            kind: ValueKindData::GlobalIfunc(data),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
         self.ifuncs.borrow_mut().push(value_id);
         if !name.is_empty() {
             self.ifunc_by_name.borrow_mut().insert(name, value_id);
         }
-        Ok(GlobalIFunc::from_parts_unchecked(
+        Ok(GlobalIfunc::from_parts_unchecked(
             value_id,
             ModuleRef::<B>::new(self),
             pointer_ty,
@@ -2216,21 +2347,11 @@ impl<'ctx> ModuleCore {
         self.data_layout.borrow()
     }
 
-    /// Replace the data layout with a parsed copy of the given
-    /// string. Mirrors `Module::setDataLayout(StringRef)`.
-    pub fn set_data_layout<Layout>(&self, layout: Layout) -> IrResult<()>
-    where
-        Layout: AsRef<str>,
-    {
-        let parsed = DataLayout::parse(layout.as_ref())?;
-        *self.data_layout.borrow_mut() = parsed;
-        Ok(())
-    }
-
-    /// Replace the data layout with an already-parsed
-    /// [`DataLayout`](crate::data_layout::DataLayout). Mirrors
-    /// `Module::setDataLayout(const DataLayout &)`.
-    pub fn set_data_layout_value(&self, layout: DataLayout) {
+    /// Replace the data layout. Mirrors
+    /// `Module::setDataLayout(const DataLayout &)`; the string-directive
+    /// path parses first ([`DataLayout::parse`]) so this setter itself
+    /// cannot fail.
+    pub fn set_data_layout(&self, layout: DataLayout) {
         *self.data_layout.borrow_mut() = layout;
     }
 
@@ -2288,7 +2409,7 @@ impl<'ctx> ModuleCore {
         Ok(())
     }
 
-    pub fn append_use_list_order_bb(&self, record: UseListOrderBBRecord) -> IrResult<()> {
+    pub fn append_use_list_order_bb(&self, record: UseListOrderBbRecord) -> IrResult<()> {
         validate_use_list_order_indexes(record.indexes())?;
         self.use_list_order_bbs.borrow_mut().push(record);
         Ok(())
@@ -2298,7 +2419,7 @@ impl<'ctx> ModuleCore {
         self.use_list_orders.borrow().clone().into_iter()
     }
 
-    pub fn iter_use_list_order_bbs(&self) -> impl ExactSizeIterator<Item = UseListOrderBBRecord> {
+    pub fn iter_use_list_order_bbs(&self) -> impl ExactSizeIterator<Item = UseListOrderBbRecord> {
         self.use_list_order_bbs.borrow().clone().into_iter()
     }
 
@@ -2314,6 +2435,19 @@ impl<'ctx> ModuleCore {
 
     pub fn attribute_groups(&self) -> Vec<(u32, AttributeStorage)> {
         self.attribute_groups.borrow().clone()
+    }
+
+    /// The attribute group numbered `id`, or `None` if no such group was
+    /// registered. Scans from the back so a later registration wins, matching
+    /// what a caller walking [`Self::attribute_groups`] in reverse would see —
+    /// though [`Self::set_attribute_group`] replaces in place, so the ids are
+    /// unique and the direction only matters as a tie-break that cannot fire.
+    pub fn attribute_group(&self, id: u32) -> Option<AttributeStorage> {
+        self.attribute_groups
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|(slot, storage)| (*slot == id).then(|| storage.clone()))
     }
 
     // ---- Metadata ----
@@ -2552,48 +2686,69 @@ impl<'ctx> ModuleCore {
         self.metadata.borrow()
     }
 
-    /// Get or create a named metadata node with the given name.
-    /// Mirrors `Module::getOrInsertNamedMetadata`.
-    pub fn get_or_insert_named_metadata<Name>(&self, name: Name) -> usize
-    where
-        Name: Into<String>,
-    {
-        let name = name.into();
+    /// Get or create a named metadata node with the given name, minting its
+    /// stored-brand id. Mirrors `Module::getOrInsertNamedMetadata`.
+    pub fn get_or_insert_named_metadata(
+        &self,
+        name: NamedMetadataName,
+    ) -> NamedMetadataId<StoredBrand> {
         let mut nmd = self.named_metadata.borrow_mut();
         for (i, node) in nmd.iter().enumerate() {
-            if node.name() == name {
-                return i;
+            if *node.name() == name {
+                return NamedMetadataId::from_raw(self.id, NamedMetadataSlot(i));
             }
         }
-        let idx = nmd.len();
-        nmd.push(NamedMDNode::new(name));
-        idx
+        let slot = NamedMetadataSlot(nmd.len());
+        nmd.push(NamedMetadataNode::new(name));
+        NamedMetadataId::from_raw(self.id, slot)
     }
 
-    /// Append an operand to a named metadata node (by index).
+    /// Look up an existing named metadata node by name. Mirrors
+    /// `Module::getNamedMetadata`.
+    pub fn named_metadata(&self, name: &NamedMetadataName) -> Option<NamedMetadataId<StoredBrand>> {
+        let nmd = self.named_metadata.borrow();
+        let slot = nmd.iter().position(|node| node.name() == name)?;
+        Some(NamedMetadataId::from_raw(self.id, NamedMetadataSlot(slot)))
+    }
+
+    /// Append an operand to a named metadata node. Mirrors
+    /// `NamedMDNode::addOperand`.
     ///
-    /// `Err(IrError::ForeignMetadataId)` when `op` was minted by another
-    /// module. `Err(IrError::UnknownMetadataSlot)` when `index` names no node
-    /// here: the index comes from
-    /// [`get_or_insert_named_metadata`](Self::get_or_insert_named_metadata) and
-    /// is a plain position carrying no module tag, so an index minted against
-    /// another module used to panic (out of range) or silently append to the
-    /// wrong node (in range) — neither of which an infallible signature may
-    /// hide.
-    pub fn named_metadata_add_operand<B>(&self, index: usize, op: MetadataId<B>) -> IrResult<()>
+    /// `Err(IrError::ForeignNamedMetadataId)` when `id` was minted by another
+    /// module, `Err(IrError::ForeignMetadataId)` when `op` was. There is no
+    /// unknown-slot case: the named-metadata list is append-only, so a native
+    /// id's slot keeps naming the node it was minted for.
+    pub fn named_metadata_add_operand<B>(
+        &self,
+        id: NamedMetadataId<B>,
+        op: MetadataId<B>,
+    ) -> IrResult<()>
     where
         B: ModuleBrand,
     {
+        let slot = id.into_stored(self.id)?.slot();
         let op = op.into_stored(self.id)?;
         let mut nmd = self.named_metadata.borrow_mut();
-        let len = nmd.len();
-        match nmd.get_mut(index) {
-            Some(node) => {
-                node.add_operand(op);
-                Ok(())
-            }
-            None => Err(IrError::UnknownMetadataSlot { index, len }),
-        }
+        let node = nmd.get_mut(slot.0).unwrap_or_else(|| {
+            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+        });
+        node.add_operand(op);
+        Ok(())
+    }
+
+    /// Look up a named metadata node by id, cloning it out. `None` when `id`
+    /// belongs to another module — never another module's node. A native id
+    /// always resolves: the named-metadata list is append-only.
+    pub fn named_metadata_get<B>(&self, id: NamedMetadataId<B>) -> Option<NamedMetadataNode<B>>
+    where
+        B: ModuleBrand,
+    {
+        let slot = id.into_stored(self.id).ok()?.slot();
+        let nmd = self.named_metadata.borrow();
+        let node = nmd.get(slot.0).unwrap_or_else(|| {
+            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+        });
+        Some(NamedMetadataNode::from_stored(node))
     }
 
     /// Number of named metadata nodes.
@@ -2602,8 +2757,134 @@ impl<'ctx> ModuleCore {
     }
 
     /// Crate-internal: borrow named metadata list for printing.
-    pub(super) fn named_metadata_list(&self) -> core::cell::Ref<'_, Vec<NamedMDNode<StoredBrand>>> {
+    pub(super) fn named_metadata_list(
+        &self,
+    ) -> core::cell::Ref<'_, Vec<NamedMetadataNode<StoredBrand>>> {
         self.named_metadata.borrow()
+    }
+
+    // ---- Module flags ----
+    //
+    // Flags have no storage of their own: they are the three-operand tuples
+    // of the `llvm.module.flags` named metadata node, exactly as upstream
+    // stores them, so the printer and the parse/print round trip are
+    // untouched. Malformed tuples are skipped silently on this read path —
+    // upstream's `Module::getModuleFlagsMetadata` reads them unchecked with
+    // the comment "The verifier will catch errors"; the checking lives in
+    // `Verifier::visit_module_flags`.
+
+    /// The operand ids of the `llvm.module.flags` node, or an empty list
+    /// when the node is absent.
+    fn module_flag_operands(&self) -> Vec<MetadataId<StoredBrand>> {
+        let Some(id) = self.named_metadata(&NamedMetadataName::ModuleFlags) else {
+            return Vec::new();
+        };
+        let nmd = self.named_metadata.borrow();
+        let node = nmd.get(id.slot().0).unwrap_or_else(|| {
+            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+        });
+        node.operands().to_vec()
+    }
+
+    /// The value operand of the flag whose key string is `key`. Mirrors
+    /// `Module::getModuleFlag` (`lib/IR/Module.cpp`), which walks the flag
+    /// tuples comparing only the `!"key"` operand.
+    pub(super) fn module_flag_value(&self, key: &str) -> Option<MetadataId<StoredBrand>> {
+        let operands = self.module_flag_operands();
+        let store = self.metadata.borrow();
+        for op in operands {
+            let Some([_, key_id, value_id]) = module_flag_tuple(&store, op) else {
+                continue;
+            };
+            let Some(MetadataKind::String(s)) =
+                resolve_metadata_ref(&store, key_id.slot()).and_then(|slot| store.get(slot))
+            else {
+                continue;
+            };
+            if s.as_str() == key {
+                return Some(value_id);
+            }
+        }
+        None
+    }
+
+    /// Decode every well-formed flag tuple. Mirrors
+    /// `Module::getModuleFlagsMetadata(SmallVectorImpl<ModuleFlagEntry>&)`
+    /// (`lib/IR/Module.cpp`).
+    pub(super) fn module_flags_stored(&self) -> Vec<ModuleFlagEntry<StoredBrand>> {
+        let operands = self.module_flag_operands();
+        let store = self.metadata.borrow();
+        let mut entries = Vec::new();
+        for op in operands {
+            let Some([behavior_id, key_id, value_id]) = module_flag_tuple(&store, op) else {
+                continue;
+            };
+            let Some(behavior) = resolve_metadata_ref(&store, behavior_id.slot())
+                .and_then(|slot| metadata_constant_int(self, &store, slot))
+                .and_then(|(_, value)| ModuleFlagBehavior::from_raw(value.limited_value(u64::MAX)))
+            else {
+                continue;
+            };
+            let Some(MetadataKind::String(key)) =
+                resolve_metadata_ref(&store, key_id.slot()).and_then(|slot| store.get(slot))
+            else {
+                continue;
+            };
+            entries.push(ModuleFlagEntry {
+                behavior,
+                key: ModuleFlagKey::from_key(key),
+                value: value_id,
+            });
+        }
+        entries
+    }
+
+    /// The replace half of `Module::setModuleFlag` (`lib/IR/Module.cpp`):
+    /// overwrite the first flag whose key string is `key` with
+    /// `replacement`, preserving its position. `false` when no flag carries
+    /// that key — the caller then appends, exactly as upstream falls through
+    /// to `addModuleFlag`.
+    pub(super) fn replace_module_flag(
+        &self,
+        key: &str,
+        replacement: MetadataId<StoredBrand>,
+    ) -> bool {
+        let Some(id) = self.named_metadata(&NamedMetadataName::ModuleFlags) else {
+            return false;
+        };
+        let replace_at = {
+            let nmd = self.named_metadata.borrow();
+            let node = nmd.get(id.slot().0).unwrap_or_else(|| {
+                unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+            });
+            let store = self.metadata.borrow();
+            node.operands().iter().position(|op| {
+                matches!(
+                    module_flag_tuple(&store, *op).and_then(|[_, key_id, _]| {
+                        resolve_metadata_ref(&store, key_id.slot())
+                            .and_then(|slot| store.get(slot))
+                    }),
+                    Some(MetadataKind::String(s)) if s.as_str() == key
+                )
+            })
+        };
+        let Some(index) = replace_at else {
+            return false;
+        };
+        // `NamedMDNode` deliberately exposes no positional operand mutator
+        // (its public surface mirrors `NamedMDNode::addOperand`), so the
+        // replacement rebuilds the node with the one operand swapped —
+        // observable content is identical to upstream's `setOperand(i, ..)`.
+        let mut nmd = self.named_metadata.borrow_mut();
+        let node = nmd.get_mut(id.slot().0).unwrap_or_else(|| {
+            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+        });
+        let mut rebuilt = NamedMetadataNode::new(node.name().clone());
+        for (i, op) in node.operands().iter().enumerate() {
+            rebuilt.add_operand(if i == index { replacement } else { *op });
+        }
+        *node = rebuilt;
+        true
     }
 
     // ---- Comdats ----
@@ -2640,7 +2921,7 @@ impl<'ctx> ModuleCore {
 
     /// Look up an existing comdat by name. Returns `None` when not
     /// present.
-    pub fn get_comdat<B: ModuleBrand>(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
+    pub fn comdat<B: ModuleBrand>(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
         let id = *self.comdat_by_name.borrow().get(name)?;
         Some(ComdatRef {
             module: ModuleRef::new(self),
@@ -2876,8 +3157,27 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
         self.core().module_asm()
     }
 
-    pub fn attribute_groups(&self) -> Vec<(u32, AttributeStorage)> {
-        self.core().attribute_groups()
+    /// Every numbered attribute group in the module, in registration order.
+    ///
+    /// Most callers want a single group; [`attribute_group`](Self::attribute_group)
+    /// is the point lookup and copies only that one entry.
+    ///
+    /// The table lives behind a `RefCell`, so the iterator walks a snapshot
+    /// taken at call time rather than borrowing the module.
+    pub fn attribute_groups(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (u32, AttributeStorage)>
+    + DoubleEndedIterator
+    + core::iter::FusedIterator
+    + use<B, S> {
+        self.core().attribute_groups().into_iter()
+    }
+
+    /// The attribute group printed as `#id`, or `None` if the module has no
+    /// group with that number. Mirrors the `attributes #N = { … }` table a
+    /// function's `#N` references resolve against.
+    pub fn attribute_group(&self, id: u32) -> Option<AttributeStorage> {
+        self.core().attribute_group(id)
     }
 
     /// Iterate globals in declaration order with this module token's brand.
@@ -2904,21 +3204,21 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// blocks).
     ///
     /// ```
-    /// use llvmkit_ir::{Dyn, IRBuilder, IntValue, Linkage, Module};
+    /// use llvmkit_ir::{Dyn, IrBuilder, IntValue, Linkage, Module};
     ///
     /// # fn main() -> Result<(), llvmkit_ir::IrError> {
     /// let m = Module::dynamic("count");
     /// assert_eq!(m.instruction_count(), 0);
     ///
     /// let i32_ty = m.i32_type();
-    /// let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    /// let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     /// let entry = m.view(f).append_basic_block(&m, "entry");
     ///
-    /// let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     /// let n: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    /// let sum = b.build_int_add(n, 1_i32, "sum")?;
-    /// b.build_ret(m.view(sum))?;
+    /// let sum = b.int_add(n, 1_i32, "sum")?;
+    /// b.ret(m.view(sum))?;
     /// assert_eq!(m.instruction_count(), 2);
     /// # Ok(()) }
     /// ```
@@ -2942,7 +3242,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     ///
     /// The id borrows nothing, so this takes `&self` rather than `&'ctx self` —
     /// a lookup can be interleaved with other borrows of the module.
-    pub fn function_by_name_dyn(&self, name: &str) -> Option<FunctionId<Dyn, B>> {
+    pub fn function_dyn(&self, name: &str) -> Option<FunctionId<Dyn, B>> {
         let slot = self.core().function_by_name.borrow().get(name).copied()?;
         Some(FunctionId::from_raw(self.core().id, slot))
     }
@@ -2953,7 +3253,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// Symmetric with the `add_*` family. The marker check is unchanged: a
     /// signature that does not match `R` is
     /// [`IrError::ReturnTypeMismatch`], not a silently-widened id.
-    pub fn function_by_name<R>(&self, name: &str) -> IrResult<Option<FunctionId<R, B>>>
+    pub fn function<R>(&self, name: &str) -> IrResult<Option<FunctionId<R, B>>>
     where
         R: ReturnMarker,
     {
@@ -3054,7 +3354,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     // mutate — so restricting them to `Module<B, Unverified>` bought no safety
     // and left a verified module with no O(1) route to a symbol at all: the
     // only alternative was a linear scan of `as_view().globals()` comparing
-    // names. `function_by_name` / `function_by_name_dyn` already lived here.
+    // names. `function` / `function_dyn` already lived here.
 
     /// Look up a global variable by name, returning its storable
     /// [`GlobalId`].
@@ -3065,7 +3365,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// [`view`](Self::view).
     ///
     /// The id borrows nothing, so this takes `&self`.
-    pub fn get_global(&self, name: &str) -> Option<GlobalId<B>> {
+    pub fn global(&self, name: &str) -> Option<GlobalId<B>> {
         let slot = self.core().global_by_name.borrow().get(name).copied()?;
         Some(GlobalId::from_raw(self.core().id, slot))
     }
@@ -3073,16 +3373,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// Look up a global alias by name, returning its storable
     /// [`GlobalAliasId`]. Symmetric with
     /// [`alias_builder`](Self::alias_builder)'s `build()`.
-    pub fn get_alias(&self, name: &str) -> Option<GlobalAliasId<B>> {
+    pub fn alias(&self, name: &str) -> Option<GlobalAliasId<B>> {
         let slot = self.core().alias_by_name.borrow().get(name).copied()?;
         Some(GlobalAliasId::from_raw(self.core().id, slot))
     }
 
-    /// Look up an ifunc by name, returning its storable [`GlobalIFuncId`].
+    /// Look up an ifunc by name, returning its storable [`GlobalIfuncId`].
     /// Symmetric with [`ifunc_builder`](Self::ifunc_builder)'s `build()`.
-    pub fn get_ifunc(&self, name: &str) -> Option<GlobalIFuncId<B>> {
+    pub fn ifunc(&self, name: &str) -> Option<GlobalIfuncId<B>> {
         let slot = self.core().ifunc_by_name.borrow().get(name).copied()?;
-        Some(GlobalIFuncId::from_raw(self.core().id, slot))
+        Some(GlobalIfuncId::from_raw(self.core().id, slot))
     }
 
     /// Look up a comdat by name.
@@ -3094,8 +3394,8 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// family and [`view`](Self::view) cannot resolve it. Returning it here
     /// would hand back something strictly *weaker* than the handle — untagged,
     /// unbranded, and unresolvable — so the handle stays.
-    pub fn get_comdat(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
-        self.core().get_comdat::<B>(name)
+    pub fn comdat(&'ctx self, name: &str) -> Option<ComdatRef<'ctx, B>> {
+        self.core().comdat::<B>(name)
     }
 }
 
@@ -3262,7 +3562,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
 
     /// `bfloat`.
     #[inline]
-    pub fn bfloat_type(&'ctx self) -> FloatType<'ctx, BFloat, B> {
+    pub fn bfloat_type(&'ctx self) -> FloatType<'ctx, Bfloat, B> {
         FloatType::new(self.core().ctx.bfloat(), self.module_ref())
     }
 
@@ -3407,22 +3707,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         ArrayType::new(id, self.module_ref())
     }
 
-    pub fn vector_type<T>(
+    /// Fixed `<n x elem>` vector. Mirrors `FixedVectorType::get`.
+    pub fn vector_type<T>(&'ctx self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+    where
+        T: Into<Type<'ctx, B>>,
+    {
+        self.as_view().vector_type(elem, n)
+    }
+
+    /// Scalable `<vscale x n x elem>` vector. Mirrors
+    /// `ScalableVectorType::get`.
+    pub fn scalable_vector_type<T>(
         &'ctx self,
         elem: T,
         n: u32,
-        scalable: bool,
     ) -> VectorType<'ctx, ElemDyn, LenDyn, B>
     where
         T: Into<Type<'ctx, B>>,
     {
-        let elem_id = elem.into().id();
-        let id = if scalable {
-            self.core().ctx.scalable_vector_type(elem_id, n)
-        } else {
-            self.core().ctx.fixed_vector_type(elem_id, n)
-        };
-        VectorType::new(id, self.module_ref())
+        self.as_view().scalable_vector_type(elem, n)
     }
 
     /// Const-generic typed vector `<N x E>`. The element marker `E`
@@ -3442,26 +3745,31 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         VectorType::new(id, self.module_ref())
     }
 
-    pub fn struct_type<I, T>(
-        &'ctx self,
-        elements: I,
-        packed: bool,
-    ) -> StructType<'ctx, StructBodyDyn, B>
+    /// Literal (unnamed) struct type `{ .. }`.
+    pub fn struct_type<I, T>(&'ctx self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
     where
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
     {
-        let elems: Box<[TypeSlot]> = elements.into_iter().map(|t| t.into().id()).collect();
-        StructType::new(
-            self.core().ctx.literal_struct_type(elems, packed),
-            self.module_ref(),
-        )
+        self.as_view().struct_type(elements)
+    }
+
+    /// Packed literal struct type `<{ .. }>`.
+    pub fn packed_struct_type<I, T>(&'ctx self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+    {
+        self.as_view().packed_struct_type(elements)
     }
 
     /// Get or create the identified struct type `%name`, body unset.
-    /// Delegates to [`ModuleView::named_struct`].
-    pub fn named_struct(&'ctx self, name: &str) -> StructType<'ctx, StructBodyDyn, B> {
-        self.as_view().named_struct(name)
+    /// Delegates to [`ModuleView::get_or_insert_named_struct`].
+    pub fn get_or_insert_named_struct(
+        &'ctx self,
+        name: &str,
+    ) -> StructType<'ctx, StructBodyDyn, B> {
+        self.as_view().get_or_insert_named_struct(name)
     }
 
     pub fn opaque_struct(&'ctx self, name: &str) -> IrResult<StructType<'ctx, Opaque, B>> {
@@ -3483,19 +3791,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     }
 
     /// Look up an existing identified struct type by name. Delegates to
-    /// [`ModuleView::get_named_struct`].
-    pub fn get_named_struct(&'ctx self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
-        self.as_view().get_named_struct(name)
+    /// [`ModuleView::named_struct`].
+    pub fn named_struct(&'ctx self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
+        self.as_view().named_struct(name)
     }
 
     /// Idempotently intern schema `S`'s named struct type. Delegates to
-    /// [`ModuleView::get_or_set_named_struct_body`], which is where the schema
+    /// [`ModuleView::get_or_insert_struct_of`], which is where the schema
     /// traits reach it.
-    pub fn get_or_set_named_struct_body<S>(&'ctx self) -> IrResult<StructType<'ctx, BodySet, B>>
+    pub fn get_or_insert_struct_of<S>(&'ctx self) -> IrResult<StructType<'ctx, BodySet, B>>
     where
         S: StructSchema,
     {
-        self.as_view().get_or_set_named_struct_body::<S>()
+        self.as_view().get_or_insert_struct_of::<S>()
     }
 
     pub fn set_struct_body_dyn<I, T>(
@@ -3547,36 +3855,56 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Ok(opaque.retag::<BodySet>())
     }
 
-    pub fn fn_type<I, R, T>(
+    /// Function type `ret (params...)`.
+    pub fn function_type<I, R, T>(
         &'ctx self,
-        ret: R,
-        params: I,
-        is_var_arg: bool,
+        return_type: R,
+        parameters: I,
     ) -> FunctionType<'ctx, B>
     where
         I: IntoIterator<Item = T>,
         R: Into<Type<'ctx, B>>,
         T: Into<Type<'ctx, B>>,
     {
-        let ret = ret.into();
-        let params: Box<[TypeSlot]> = params.into_iter().map(|t| t.into().id()).collect();
-        FunctionType::new(
-            self.core().ctx.function_type(ret.id(), params, is_var_arg),
-            self.module_ref(),
-        )
+        self.as_view().function_type(return_type, parameters)
     }
 
-    /// A function type with no parameters. Avoids the empty-`Vec::<Type>::new()`
-    /// inference cliff of [`fn_type`](Self::fn_type): with an empty iterator the
-    /// element type `T` cannot be inferred, so callers otherwise have to spell it
-    /// (`fn_type(ret, Vec::<Type>::new(), va)`). This pins the element type for
-    /// them — `fn_type_no_params(ret, is_var_arg)` is exactly
-    /// `fn_type(ret, [], is_var_arg)`.
-    pub fn fn_type_no_params<R>(&'ctx self, ret: R, is_var_arg: bool) -> FunctionType<'ctx, B>
+    /// Variadic function type `ret (params..., ...)`.
+    pub fn variadic_function_type<I, R, T>(
+        &'ctx self,
+        return_type: R,
+        parameters: I,
+    ) -> FunctionType<'ctx, B>
+    where
+        I: IntoIterator<Item = T>,
+        R: Into<Type<'ctx, B>>,
+        T: Into<Type<'ctx, B>>,
+    {
+        self.as_view()
+            .variadic_function_type(return_type, parameters)
+    }
+
+    /// A function type with no parameters. Avoids the empty-iterator
+    /// inference cliff of [`function_type`](Self::function_type); see
+    /// [`ModuleView::function_type_no_parameters`].
+    pub fn function_type_no_parameters<R>(&'ctx self, return_type: R) -> FunctionType<'ctx, B>
     where
         R: Into<Type<'ctx, B>>,
     {
-        self.fn_type(ret, core::iter::empty::<Type<'ctx, B>>(), is_var_arg)
+        self.as_view().function_type_no_parameters(return_type)
+    }
+
+    /// Variadic sibling of
+    /// [`function_type_no_parameters`](Self::function_type_no_parameters).
+    pub fn variadic_function_type_no_parameters<R>(
+        &'ctx self,
+        return_type: R,
+    ) -> FunctionType<'ctx, B>
+    where
+        R: Into<Type<'ctx, B>>,
+    {
+        self.as_view()
+            .variadic_function_type_no_parameters(return_type)
     }
 
     /// Fixed-arity typed function type: `Ret (Params...)`.
@@ -3587,7 +3915,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     {
         let ret = Ret::ir_type(self.as_view())?;
         let params = Params::ir_types(self.as_view())?;
-        Ok(self.fn_type(ret, params, false))
+        Ok(self.function_type(ret, params))
     }
 
     /// Fixed-arity typed function type from a Rust function-pointer
@@ -3609,7 +3937,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     {
         let ret = Ret::ir_type(self.as_view())?;
         let params = Params::ir_types(self.as_view())?;
-        Ok(self.fn_type(ret, params, true))
+        Ok(self.variadic_function_type(ret, params))
     }
 
     /// Variadic typed function type from a Rust function-pointer schema.
@@ -3810,12 +4138,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Ok(function.id())
     }
 
-    pub fn get_or_insert_intrinsic_declaration_by_id(
+    pub fn get_or_insert_intrinsic_declaration_by_id<Overloads>(
         &'ctx self,
         id: IntrinsicId,
-        overloads: &[Type<'ctx, B>],
-    ) -> IrResult<FunctionId<Dyn, B>> {
-        let descriptor = IntrinsicDescriptor::new(id, overloads.to_vec())?;
+        overloads: Overloads,
+    ) -> IrResult<FunctionId<Dyn, B>>
+    where
+        Overloads: Into<Box<[Type<'ctx, B>]>>,
+    {
+        let descriptor = IntrinsicDescriptor::new(id, overloads)?;
         self.get_or_insert_intrinsic_declaration(&descriptor)
     }
 
@@ -3845,11 +4176,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// [`GlobalVariable`] with [`view`](Self::view).
     pub fn add_global<N, C>(&'ctx self, name: N, initializer: C) -> IrResult<GlobalId<B>>
     where
-        N: AsRef<str>,
+        N: Into<String>,
         C: IntoConstantValue<'ctx, B>,
     {
         let constant = initializer.into_constant(self.module_ref());
-        GlobalBuilder::<B>::new(self.module_ref(), name.as_ref().to_owned(), constant.ty())
+        GlobalBuilder::<B>::new(self.module_ref(), name, constant.ty())
             .initializer(constant)
             .build()
     }
@@ -3860,12 +4191,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     /// `constant` rather than mutable.
     pub fn add_global_constant<N, C>(&'ctx self, name: N, initializer: C) -> IrResult<GlobalId<B>>
     where
-        N: AsRef<str>,
+        N: Into<String>,
         C: IntoConstantValue<'ctx, B>,
     {
         let constant = initializer.into_constant(self.module_ref());
-        GlobalBuilder::<B>::new(self.module_ref(), name.as_ref().to_owned(), constant.ty())
-            .constant(true)
+        GlobalBuilder::<B>::new(self.module_ref(), name, constant.ty())
+            .constant()
             .initializer(constant)
             .build()
     }
@@ -3883,40 +4214,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         value_type: T,
     ) -> IrResult<GlobalId<B>>
     where
-        N: AsRef<str>,
+        N: Into<String>,
         T: Into<Type<'ctx, B>>,
     {
-        GlobalBuilder::<B>::new(
-            self.module_ref(),
-            name.as_ref().to_owned(),
-            value_type.into(),
-        )
-        .build()
+        GlobalBuilder::<B>::new(self.module_ref(), name, value_type.into()).build()
     }
 
     pub fn add_external_global<N, T>(&'ctx self, name: N, value_type: T) -> IrResult<GlobalId<B>>
     where
-        N: AsRef<str>,
+        N: Into<String>,
         T: Into<Type<'ctx, B>>,
     {
-        GlobalBuilder::<B>::new(
-            self.module_ref(),
-            name.as_ref().to_owned(),
-            value_type.into(),
-        )
-        .linkage(Linkage::External)
-        .build()
+        GlobalBuilder::<B>::new(self.module_ref(), name, value_type.into())
+            .linkage(Linkage::External)
+            .build()
     }
 
-    pub fn global_builder<N>(
-        &'ctx self,
-        name: N,
-        value_type: Type<'ctx, B>,
-    ) -> GlobalBuilder<'ctx, B>
+    pub fn global_builder<N, T>(&'ctx self, name: N, value_type: T) -> GlobalBuilder<'ctx, B>
     where
         N: Into<String>,
+        T: Into<Type<'ctx, B>>,
     {
-        GlobalBuilder::new(self.module_ref(), name, value_type)
+        GlobalBuilder::new(self.module_ref(), name, value_type.into())
     }
 
     pub fn alias_builder<C, Name>(
@@ -3941,12 +4260,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         name: Name,
         value_type: Type<'ctx, B>,
         resolver: C,
-    ) -> GlobalIFuncBuilder<'ctx, B>
+    ) -> GlobalIfuncBuilder<'ctx, B>
     where
         C: IsConstant<'ctx, B>,
         Name: Into<String>,
     {
-        GlobalIFuncBuilder::new(self.module_ref(), name, value_type, resolver)
+        GlobalIfuncBuilder::new(self.module_ref(), name, value_type, resolver)
     }
 
     pub fn ifunc_empty(&'ctx self) -> bool {
@@ -3968,15 +4287,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().clear_source_filename();
     }
 
-    pub fn set_data_layout<L>(&'ctx self, layout: L) -> IrResult<()>
-    where
-        L: AsRef<str>,
-    {
-        self.core().set_data_layout(layout)
-    }
-
-    pub fn set_data_layout_value(&'ctx self, layout: DataLayout) {
-        self.core().set_data_layout_value(layout);
+    /// Replace the data layout with an already-parsed [`DataLayout`].
+    /// Infallible: parse failures belong to [`DataLayout::parse`], not
+    /// to the setter.
+    pub fn set_data_layout(&'ctx self, layout: DataLayout) {
+        self.core().set_data_layout(layout);
     }
 
     pub fn set_target_triple<T>(&'ctx self, triple: T)
@@ -4004,7 +4319,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().append_module_asm(line);
     }
 
-    pub fn get_or_insert_comdat(&'ctx self, name: &str) -> ComdatRef<'ctx, B> {
+    pub fn get_or_insert_comdat<Name: AsRef<str>>(&'ctx self, name: Name) -> ComdatRef<'ctx, B> {
         self.core().get_or_insert_comdat::<B, _>(name)
     }
 
@@ -4172,34 +4487,166 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().metadata_count()
     }
 
-    pub fn get_or_insert_named_metadata<Name>(&'ctx self, name: Name) -> usize
+    /// Get or create a named metadata node with the given name, minting its
+    /// storable [`NamedMetadataId`]. Mirrors `Module::getOrInsertNamedMetadata`.
+    ///
+    /// The name is anything that converts into a [`NamedMetadataName`]: the
+    /// well-known variants directly, or any `&str` / `String` spelling (which
+    /// classifies itself, falling back to
+    /// [`NamedMetadataName::Custom`]).
+    pub fn get_or_insert_named_metadata<Name>(&'ctx self, name: Name) -> NamedMetadataId<B>
     where
-        Name: Into<String>,
+        Name: Into<NamedMetadataName>,
     {
-        self.core().get_or_insert_named_metadata(name)
+        NamedMetadataId::from_stored(self.core().get_or_insert_named_metadata(name.into()))
     }
 
-    /// Append an operand to a named metadata node.
+    /// Look up an existing named metadata node by name. `None` when this
+    /// module holds no node with that name. Mirrors
+    /// `Module::getNamedMetadata`.
+    pub fn named_metadata(&'ctx self, name: &NamedMetadataName) -> Option<NamedMetadataId<B>> {
+        self.core()
+            .named_metadata(name)
+            .map(NamedMetadataId::from_stored)
+    }
+
+    /// Append an operand to a named metadata node. Mirrors
+    /// `NamedMDNode::addOperand`.
     ///
-    /// `Err(IrError::ForeignMetadataId)` when `op` was minted by another
-    /// module. `Err(IrError::UnknownMetadataSlot)` when `index` names no node
-    /// here: the index comes from `get_or_insert_named_metadata` and carries no
-    /// module tag, so an index minted against another module used to panic (out
-    /// of range) or silently append to the wrong node (in range) — neither of
-    /// which an infallible signature may hide.
-    pub fn named_metadata_add_operand(&'ctx self, index: usize, op: MetadataId<B>) -> IrResult<()> {
-        self.core().named_metadata_add_operand(index, op)
+    /// `Err(IrError::ForeignNamedMetadataId)` when `id` was minted by another
+    /// module, `Err(IrError::ForeignMetadataId)` when `operand` was. There is
+    /// no unknown-slot case: the named-metadata list is append-only, so a
+    /// native id's slot keeps naming the node it was minted for.
+    pub fn named_metadata_add_operand(
+        &'ctx self,
+        id: NamedMetadataId<B>,
+        operand: MetadataId<B>,
+    ) -> IrResult<()> {
+        self.core().named_metadata_add_operand(id, operand)
+    }
+
+    /// Look up a named metadata node by id, cloning it out. `None` when `id`
+    /// belongs to another module — never another module's node. A native id
+    /// always resolves: the named-metadata list is append-only.
+    pub fn named_metadata_get(&'ctx self, id: NamedMetadataId<B>) -> Option<NamedMetadataNode<B>> {
+        self.core().named_metadata_get(id)
     }
 
     pub fn named_metadata_count(&'ctx self) -> usize {
         self.core().named_metadata_count()
     }
 
+    // ---- Module flags ----
+    //
+    // Backed entirely by the `llvm.module.flags` named metadata node — each
+    // flag is the three-operand tuple `!{i32 behavior, !"key", value}`
+    // upstream stores, so parsed IR, the printer, and the round-trip
+    // contract are untouched. The typed vocabulary lives in
+    // [`crate::module_flags`].
+
+    /// Append a module flag. Mirrors `Module::addModuleFlag`
+    /// (`lib/IR/Module.cpp`): builds the tuple
+    /// `!{i32 behavior, !"key", value}` and appends it to the
+    /// `llvm.module.flags` named metadata node, creating the node if absent.
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `value` was minted by another
+    /// module (checked before anything is interned);
+    /// `Err(IrError::UnknownMetadataSlot)` when it names nothing here.
+    pub fn add_module_flag<Key>(
+        &'ctx self,
+        behavior: ModuleFlagBehavior,
+        key: Key,
+        value: MetadataId<B>,
+    ) -> IrResult<()>
+    where
+        Key: Into<ModuleFlagKey>,
+    {
+        let tuple = self.module_flag_tuple_id(behavior, &key.into(), value)?;
+        let flags = self.get_or_insert_named_metadata(NamedMetadataName::ModuleFlags);
+        self.named_metadata_add_operand(flags, tuple)
+    }
+
+    /// Like [`add_module_flag`](Self::add_module_flag), but replaces the
+    /// existing flag with the same key in place (preserving its position)
+    /// instead of appending a duplicate. Mirrors `Module::setModuleFlag`
+    /// (`lib/IR/Module.cpp`).
+    ///
+    /// `Err(IrError::ForeignMetadataId)` when `value` was minted by another
+    /// module; `Err(IrError::UnknownMetadataSlot)` when it names nothing
+    /// here.
+    pub fn set_module_flag<Key>(
+        &'ctx self,
+        behavior: ModuleFlagBehavior,
+        key: Key,
+        value: MetadataId<B>,
+    ) -> IrResult<()>
+    where
+        Key: Into<ModuleFlagKey>,
+    {
+        let key = key.into();
+        let tuple = self.module_flag_tuple_id(behavior, &key, value)?;
+        if self
+            .core()
+            .replace_module_flag(key.key(), tuple.into_stored(self.core().id())?)
+        {
+            return Ok(());
+        }
+        let flags = self.get_or_insert_named_metadata(NamedMetadataName::ModuleFlags);
+        self.named_metadata_add_operand(flags, tuple)
+    }
+
+    /// The value operand of the flag named `key`, or `None` when no flag
+    /// carries that key. Mirrors `Module::getModuleFlag`
+    /// (`lib/IR/Module.cpp`). Resolve the returned id with
+    /// [`metadata_get`](Self::metadata_get).
+    pub fn module_flag(&'ctx self, key: &ModuleFlagKey) -> Option<MetadataId<B>> {
+        self.core()
+            .module_flag_value(key.key())
+            .map(MetadataId::from_stored)
+    }
+
+    /// Every well-formed module flag, in `llvm.module.flags` operand order.
+    /// Mirrors `Module::getModuleFlagsMetadata` (`lib/IR/Module.cpp`);
+    /// like upstream's read path, malformed tuples are skipped silently —
+    /// rejecting them is [`verify`](Self::verify)'s job.
+    ///
+    /// The flags live behind a `RefCell`, so the iterator walks a snapshot
+    /// taken at call time rather than borrowing the module.
+    pub fn module_flags(
+        &'ctx self,
+    ) -> impl ExactSizeIterator<Item = ModuleFlagEntry<B>>
+    + DoubleEndedIterator
+    + core::iter::FusedIterator
+    + use<B> {
+        self.core()
+            .module_flags_stored()
+            .into_iter()
+            .map(ModuleFlagEntry::from_stored)
+    }
+
+    /// Shared tuple constructor for
+    /// [`add_module_flag`](Self::add_module_flag) /
+    /// [`set_module_flag`](Self::set_module_flag) — the `Ops[3]` array of
+    /// `Module::addModuleFlag`. Tag-checks `value` *before* interning the
+    /// behavior constant and key string, so a foreign id leaves no junk
+    /// nodes behind.
+    fn module_flag_tuple_id(
+        &'ctx self,
+        behavior: ModuleFlagBehavior,
+        key: &ModuleFlagKey,
+        value: MetadataId<B>,
+    ) -> IrResult<MetadataId<B>> {
+        self.core().metadata_slot_of(value)?;
+        let behavior_md = self.metadata_constant(self.i32_type().const_int(behavior.raw()))?;
+        let key_md = self.metadata_string(key.key());
+        self.metadata_tuple([behavior_md, key_md, value])
+    }
+
     pub fn append_use_list_order(&'ctx self, record: UseListOrderRecord) -> IrResult<()> {
         self.core().append_use_list_order(record)
     }
 
-    pub fn append_use_list_order_bb(&'ctx self, record: UseListOrderBBRecord) -> IrResult<()> {
+    pub fn append_use_list_order_bb(&'ctx self, record: UseListOrderBbRecord) -> IrResult<()> {
         self.core().append_use_list_order_bb(record)
     }
 

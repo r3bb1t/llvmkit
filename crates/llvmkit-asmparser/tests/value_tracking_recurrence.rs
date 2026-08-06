@@ -30,7 +30,7 @@
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
-    ApIntSignedness, DynBrand, Module, Unverified, ValueTrackingQuery, compute_known_bits,
+    DynBrand, Module, Signedness, Unverified, ValueTrackingQuery, compute_known_bits,
 };
 
 const FIXTURE: &str =
@@ -113,7 +113,7 @@ fn folded_result(module: &Module<DynBrand, Unverified>, function: &str) -> Optio
     compute_known_bits(result, &query)
         .expect("known bits of %res")
         .constant()
-        .map(|value| value.to_string_radix(10, ApIntSignedness::Signed))
+        .map(|value| value.to_string_radix(10, Signedness::Signed))
 }
 
 /// Every function whose `; CHECK-NEXT: ret i64 …` line llvmkit reproduces.

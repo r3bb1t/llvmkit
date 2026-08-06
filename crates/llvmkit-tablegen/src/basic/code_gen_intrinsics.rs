@@ -29,7 +29,7 @@ pub(crate) fn positional_args(app: &Apply) -> GenResult<Vec<&Expr>> {
         match arg {
             TemplateArg::Pos(expr) => args.push(expr),
             TemplateArg::Named(name, _) => {
-                return Err(GenError::new(format!(
+                return Err(TableGenError::new(format!(
                     "synthetic evaluation of `{}` does not support named argument `{name}`",
                     app.name
                 )));
@@ -41,11 +41,11 @@ pub(crate) fn positional_args(app: &Apply) -> GenResult<Vec<&Expr>> {
 
 pub(crate) fn list_int_at(values: &[i64], index: i64, label: &str) -> GenResult<i64> {
     let index = usize::try_from(index)
-        .map_err(|_| GenError::new(format!("{label} negative index {index}")))?;
+        .map_err(|_| TableGenError::new(format!("{label} negative index {index}")))?;
     values
         .get(index)
         .copied()
-        .ok_or_else(|| GenError::new(format!("{label} index {index} out of bounds")))
+        .ok_or_else(|| TableGenError::new(format!("{label} index {index} out of bounds")))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -235,7 +235,7 @@ pub(crate) fn compute_attrs(properties: &[Value]) -> GenResult<AttrInfo> {
             _ if record.classes.contains("ArgInfo") => {
                 let arg_no = int_field(record, "ArgNo")?;
                 if arg_no < 1 {
-                    return Err(GenError::new("ArgInfo requires ArgNo >= 1"));
+                    return Err(TableGenError::new("ArgInfo requires ArgNo >= 1"));
                 }
                 let mut arg_name = String::new();
                 let mut func_name = String::new();
@@ -247,7 +247,7 @@ pub(crate) fn compute_attrs(properties: &[Value]) -> GenResult<AttrInfo> {
                     } else if prop.classes.contains("ImmArgPrinter") {
                         func_name = string_field(prop, "FuncName")?.unwrap_or_default();
                     } else {
-                        return Err(GenError::new(format!(
+                        return Err(TableGenError::new(format!(
                             "unknown ArgProperty {:?}",
                             prop.name
                         )));
@@ -260,7 +260,7 @@ pub(crate) fn compute_attrs(properties: &[Value]) -> GenResult<AttrInfo> {
                 });
             }
             _ => {
-                return Err(GenError::new(format!(
+                return Err(TableGenError::new(format!(
                     "unknown intrinsic property `{name}`"
                 )));
             }
@@ -385,7 +385,9 @@ pub(crate) fn memory_location(record: &RecordValue) -> GenResult<MemLoc> {
         "InaccessibleMem" => Ok(MemLoc::InaccessibleMem),
         "TargetMem0" => Ok(MemLoc::TargetMem0),
         "TargetMem1" => Ok(MemLoc::TargetMem1),
-        name => Err(GenError::new(format!("unknown memory location `{name}`"))),
+        name => Err(TableGenError::new(format!(
+            "unknown memory location `{name}`"
+        ))),
     }
 }
 

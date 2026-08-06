@@ -10,7 +10,7 @@
 //! their consumers do.
 
 use crate::instructions::{
-    AShrInst, AddInst, LShrInst, MulInst, SDivInst, ShlInst, SubInst, UDivInst,
+    AddInst, AshrInst, LshrInst, MulInst, SdivInst, ShlInst, SubInst, UdivInst,
 };
 use crate::module::ModuleBrand;
 
@@ -27,8 +27,8 @@ pub trait OverflowingBinaryOperator<'ctx> {
 }
 
 /// Common interface for the binary operators that carry the `exact` flag.
-/// Mirrors `PossiblyExactOperator` — implemented for [`UDivInst`],
-/// [`SDivInst`], [`LShrInst`], and [`AShrInst`].
+/// Mirrors `PossiblyExactOperator` — implemented for [`UdivInst`],
+/// [`SdivInst`], [`LshrInst`], and [`AshrInst`].
 pub trait PossiblyExactOperator<'ctx> {
     /// `exact` flag.
     fn is_exact(&self) -> bool;
@@ -78,27 +78,27 @@ impl<'ctx, B: ModuleBrand> OverflowingBinaryOperator<'ctx> for ShlInst<'ctx, B> 
     }
 }
 
-impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for UDivInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for UdivInst<'ctx, B> {
     #[inline]
     fn is_exact(&self) -> bool {
-        UDivInst::is_exact(*self)
+        UdivInst::is_exact(*self)
     }
 }
-impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for SDivInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for SdivInst<'ctx, B> {
     #[inline]
     fn is_exact(&self) -> bool {
-        SDivInst::is_exact(*self)
+        SdivInst::is_exact(*self)
     }
 }
-impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for LShrInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for LshrInst<'ctx, B> {
     #[inline]
     fn is_exact(&self) -> bool {
-        LShrInst::is_exact(*self)
+        LshrInst::is_exact(*self)
     }
 }
-impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for AShrInst<'ctx, B> {
+impl<'ctx, B: ModuleBrand> PossiblyExactOperator<'ctx> for AshrInst<'ctx, B> {
     #[inline]
     fn is_exact(&self) -> bool {
-        AShrInst::is_exact(*self)
+        AshrInst::is_exact(*self)
     }
 }

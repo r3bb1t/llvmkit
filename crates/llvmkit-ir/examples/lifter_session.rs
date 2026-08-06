@@ -367,22 +367,19 @@ impl<B: ModuleBrand> LifterSession<B> {
             Pseudo::Add { dst, lhs, rhs } => {
                 let a = b.use_int_var(regs[lhs])?;
                 let c = b.use_int_var(regs[rhs])?;
-                let sum = b.ins()?.build_int_add(a, c, "sum")?;
+                let sum = b.ins()?.int_add(a, c, "sum")?;
                 b.def_int_var(regs[dst], sum)?;
             }
             Pseudo::SubI { dst, src, imm } => {
                 let a = b.use_int_var(regs[src])?;
-                let next = b.ins()?.build_int_sub(a, imm, "next_i")?;
+                let next = b.ins()?.int_sub(a, imm, "next_i")?;
                 b.def_int_var(regs[dst], next)?;
             }
             Pseudo::BrZero { src, target } => {
                 let c = b.use_int_var(regs[src])?;
-                let is_zero = b.ins()?.build_int_cmp::<i32, _, _, _>(
-                    IntPredicate::Eq,
-                    c,
-                    0_i32,
-                    "is_zero",
-                )?;
+                let is_zero =
+                    b.ins()?
+                        .int_cmp::<i32, _, _, _>(IntPredicate::Eq, c, 0_i32, "is_zero")?;
                 let not_taken_addr =
                     fallthrough.expect("a conditional branch is never the last instruction");
                 let taken = block_at(&mut b, &mut self.blocks, target);

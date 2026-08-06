@@ -14,7 +14,7 @@
 //! so a `call` through it knows the argument / return shape. This module
 //! follows that split: the [`InlineAsm`] handle's [`Value::ty`] is the
 //! module's `ptr` type, and the wrapped [`FunctionType`]
-//! id is stored in the payload for the [`IRBuilder`](crate::ir_builder::IRBuilder)
+//! id is stored in the payload for the [`IrBuilder`](crate::ir_builder::IrBuilder)
 //! to consume when it emits the call.
 //!
 //! The textual form a `call` prints is, e.g.:
@@ -40,13 +40,13 @@ use crate::value::{Value, ValueSlot};
 /// `InlineAsm::AsmDialect` in `llvm/include/llvm/IR/InlineAsm.h`.
 ///
 /// In the textual IR, [`AsmDialect::Intel`] adds the `inteldialect`
-/// keyword after the `asm` token; [`AsmDialect::ATT`] (the default) adds
+/// keyword after the `asm` token; [`AsmDialect::Att`] (the default) adds
 /// nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AsmDialect {
     /// AT&T syntax (`$0`, `$1`, …; LLVM's default).
     #[default]
-    ATT,
+    Att,
     /// Intel syntax; prints the `inteldialect` keyword.
     Intel,
 }
@@ -64,23 +64,31 @@ impl InlineAsmOptions {
         Self::default()
     }
 
-    pub fn side_effects(mut self, value: bool) -> Self {
-        self.has_side_effects = value;
+    /// Mark the asm as having side effects. Default off.
+    #[must_use]
+    pub fn side_effects(mut self) -> Self {
+        self.has_side_effects = true;
         self
     }
 
-    pub fn align_stack(mut self, value: bool) -> Self {
-        self.is_align_stack = value;
+    /// Mark the asm as stack-aligning. Default off.
+    #[must_use]
+    pub fn align_stack(mut self) -> Self {
+        self.is_align_stack = true;
         self
     }
 
+    #[must_use]
     pub fn with_dialect(mut self, value: AsmDialect) -> Self {
         self.dialect = value;
         self
     }
 
-    pub fn with_can_unwind(mut self, value: bool) -> Self {
-        self.can_unwind = value;
+    /// Mark the asm as able to unwind (the `.ll` `unwind` keyword).
+    /// Default off. Accessor twin: [`Self::can_unwind`].
+    #[must_use]
+    pub fn unwind(mut self) -> Self {
+        self.can_unwind = true;
         self
     }
 
@@ -168,12 +176,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> core::fmt::Display for InlineAsm<'ctx, B> {
     /// Print the operand form `ptr asm [sideeffect] "<body>",
     /// "<constraints>"` -- the leading `ptr` is the value's IR type,
     /// matching LLVM's pointer typing of inline asm. Identical to what the
-    /// erased [`Value`] handle from [`InlineAsm::into_erased`] prints.
+    /// erased [`Value`] handle from [`InlineAsm::as_erased`] prints.
     ///
     /// A `call` whose callee is inline asm prints the `asm ...` body
     /// directly in the callee position and so does not go through this.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(&InlineAsm::into_erased(*self), f)
+        core::fmt::Display::fmt(&InlineAsm::as_erased(*self), f)
     }
 }
 
@@ -197,7 +205,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
     /// Widen to the erased [`Value`] handle. The widened value's type is
     /// the `ptr` type, matching LLVM's pointer typing of inline asm.
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -288,6 +296,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> InlineAsm<'ctx, B> {
 impl<'ctx, B: ModuleBrand + 'ctx> From<InlineAsm<'ctx, B>> for Value<'ctx, B> {
     #[inline]
     fn from(v: InlineAsm<'ctx, B>) -> Self {
-        v.into_erased()
+        v.as_erased()
     }
 }

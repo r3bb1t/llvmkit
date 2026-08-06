@@ -16,10 +16,10 @@ use crate::argument::Argument;
 use crate::basic_block::BasicBlock;
 use crate::block_state::Unterminated;
 use crate::error::{IrError, IrResult, TypeKindLabel};
-use crate::float_kind::{BFloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
+use crate::float_kind::{Bfloat, Fp128, Half, IntoFloatValue, PpcFp128, X86Fp80};
 use crate::function::FunctionValue;
 use crate::int_width::{IntoIntValue, Width};
-use crate::ir_builder::{IRBuilder, Unpositioned, constant_folder::ConstantFolder};
+use crate::ir_builder::{IrBuilder, Unpositioned, constant_folder::ConstantFolder};
 use crate::marker::{Ptr, ReturnMarker};
 use crate::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use crate::r#type::{Type, TypeKind};
@@ -66,7 +66,7 @@ use token::ValidatedFunctionParams;
 
 /// Lifetime-free schema token for a function return type.
 pub trait FunctionReturn: Sized + 'static {
-    /// Return-marker typestate used by [`FunctionValue`] and [`IRBuilder`].
+    /// Return-marker typestate used by [`FunctionValue`] and [`IrBuilder`].
     type Marker: ReturnMarker;
 
     /// Construct this schema's LLVM IR return type in `module`.
@@ -137,10 +137,10 @@ pub trait FunctionParam: Sized + 'static {
     /// the [`Value`]-sourced analog of [`Self::value_from_argument`]. A
     /// block's parameters are its leading head-phi *results* (plain
     /// [`Value`]s), not [`Argument`]s, so the typed block constructor
-    /// [`crate::IRBuilder::append_block_typed`] wraps each head-phi through
+    /// [`crate::IrBuilder::append_block_typed`] wraps each head-phi through
     /// this method. Reuses `from_value_unchecked` exactly as
     /// [`Self::value_from_argument`] does (that method is precisely this one
-    /// applied to `arg.into_erased()`), and carries the same capability gate:
+    /// applied to `arg.as_erased()`), and carries the same capability gate:
     /// the token is only minted by this crate after the phi types were built
     /// from this schema, so the unchecked wrap cannot mistype and safe
     /// downstream code cannot reach it.
@@ -186,7 +186,7 @@ pub trait FunctionParamList: Sized + 'static {
     /// result [`Value`]s (declaration order) — the block-argument analog of
     /// [`Self::values`], which sources from a function's [`Argument`]s.
     /// `phi_values[i]` must be the head-phi built for parameter `i` from this
-    /// schema's [`Self::ir_types`]; [`crate::IRBuilder::append_block_typed`]
+    /// schema's [`Self::ir_types`]; [`crate::IrBuilder::append_block_typed`]
     /// establishes that arity and ordering (one phi per `ir_types` entry, in
     /// order) before minting the capability token, so the per-position
     /// unchecked wraps cannot mistype.
@@ -355,15 +355,15 @@ where
     pub fn builder<'m>(
         self,
         module: &'ctx Module<B, Unverified>,
-    ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker> {
-        IRBuilder::new_for::<Ret::Marker>(module)
+    ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker> {
+        IrBuilder::new_for::<Ret::Marker>(module)
     }
 }
 
 /// Variadic twin of [`TypedFunctionValue`]: wraps a raw function whose
 /// signature is `(Params..., ...)` — the fixed-prefix parameters are
 /// statically typed via `Params`, and the `...` tail is accepted at
-/// each call site through [`crate::IRBuilder::build_varargs_call`]'s
+/// each call site through [`crate::IrBuilder::varargs_call`]'s
 /// erased trailing argument list. Mirrors LLVM's variadic-function
 /// convention (`FunctionType::isVarArg`); the fixed-arity
 /// [`TypedFunctionValue`] and this facade are mutually exclusive —
@@ -495,7 +495,7 @@ where
 
     /// Return typed fixed-prefix parameter values in declaration order.
     /// The `...` tail is not represented here — it is supplied
-    /// per-call through [`crate::IRBuilder::build_varargs_call`].
+    /// per-call through [`crate::IrBuilder::varargs_call`].
     #[inline]
     pub fn params(self) -> Params::Values<'ctx, B> {
         let validated = ValidatedFunctionParams::new();
@@ -520,8 +520,8 @@ where
     pub fn builder<'m>(
         self,
         module: &'ctx Module<B, Unverified>,
-    ) -> IRBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker> {
-        IRBuilder::new_for::<Ret::Marker>(module)
+    ) -> IrBuilder<'m, 'ctx, B, ConstantFolder, Unpositioned, Ret::Marker> {
+        IrBuilder::new_for::<Ret::Marker>(module)
     }
 }
 
@@ -542,8 +542,8 @@ mod typed_callee_sealed {
 }
 
 /// Values accepted where a builder names a **schema-typed** direct callee —
-/// the callee operand of [`build_call`](crate::IRBuilder::build_call),
-/// [`build_invoke`](crate::IRBuilder::build_invoke) and their `_with_config` /
+/// the callee operand of [`call`](crate::IrBuilder::call),
+/// [`invoke`](crate::IrBuilder::invoke) and their `_with_config` /
 /// chainable twins.
 ///
 /// The storable currency at these positions is [`TypedFunctionId`], which is
@@ -569,7 +569,7 @@ where
 }
 
 /// The variadic twin of [`IntoTypedCallee`], accepted at
-/// [`build_varargs_call`](crate::IRBuilder::build_varargs_call)'s callee
+/// [`varargs_call`](crate::IrBuilder::varargs_call)'s callee
 /// position. Separate from [`IntoTypedCallee`] because the two facades are
 /// exactly what separates a fixed-arity declaration from a `...` one — a
 /// single trait would let a non-variadic callee reach the varargs builder.
@@ -762,7 +762,7 @@ impl FunctionParam for Ptr {
     where
         B: ModuleBrand + 'ctx,
     {
-        PointerValue::from_value_unchecked(arg.into_erased())
+        PointerValue::from_value_unchecked(arg.as_erased())
     }
 
     #[inline]
@@ -857,7 +857,7 @@ macro_rules! impl_int_signature_marker {
             where
                 B: ModuleBrand + 'ctx,
             {
-                IntValue::<$marker, B>::from_value_unchecked(arg.into_erased())
+                IntValue::<$marker, B>::from_value_unchecked(arg.as_erased())
             }
 
             #[inline]
@@ -959,7 +959,7 @@ impl<const N: u32> FunctionParam for Width<N> {
     where
         B: ModuleBrand + 'ctx,
     {
-        IntValue::<Width<N>, B>::from_value_unchecked(arg.into_erased())
+        IntValue::<Width<N>, B>::from_value_unchecked(arg.as_erased())
     }
 
     #[inline]
@@ -1054,7 +1054,7 @@ macro_rules! impl_float_signature_marker {
             where
                 B: ModuleBrand + 'ctx,
             {
-                FloatValue::<$marker, B>::from_value_unchecked(arg.into_erased())
+                FloatValue::<$marker, B>::from_value_unchecked(arg.as_erased())
             }
 
             #[inline]
@@ -1074,7 +1074,7 @@ macro_rules! impl_float_signature_marker {
 impl_float_signature_marker!(f32, f32_type, TypeKind::Float, Float);
 impl_float_signature_marker!(f64, f64_type, TypeKind::Double, Double);
 impl_float_signature_marker!(Half, half_type, TypeKind::Half, Half);
-impl_float_signature_marker!(BFloat, bfloat_type, TypeKind::BFloat, BFloat);
+impl_float_signature_marker!(Bfloat, bfloat_type, TypeKind::Bfloat, Bfloat);
 impl_float_signature_marker!(Fp128, fp128_type, TypeKind::Fp128, Fp128);
 impl_float_signature_marker!(X86Fp80, x86_fp80_type, TypeKind::X86Fp80, X86Fp80);
 impl_float_signature_marker!(PpcFp128, ppc_fp128_type, TypeKind::PpcFp128, PpcFp128);
@@ -1341,7 +1341,7 @@ macro_rules! impl_into_call_arg_int {
         {
             #[inline]
             fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(self.into_int_value(module)?.into_erased())
+                Ok(self.into_int_value(module)?.as_erased())
             }
         }
     )+};
@@ -1355,7 +1355,7 @@ where
 {
     #[inline]
     fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_int_value(module)?.into_erased())
+        Ok(self.into_int_value(module)?.as_erased())
     }
 }
 
@@ -1368,12 +1368,12 @@ macro_rules! impl_into_call_arg_float {
         {
             #[inline]
             fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-                Ok(self.into_float_value(module)?.into_erased())
+                Ok(self.into_float_value(module)?.as_erased())
             }
         }
     )+};
 }
-impl_into_call_arg_float!(f32, f64, Half, BFloat, Fp128, X86Fp80, PpcFp128);
+impl_into_call_arg_float!(f32, f64, Half, Bfloat, Fp128, X86Fp80, PpcFp128);
 
 impl<'ctx, B, V> IntoCallArg<'ctx, Ptr, B> for V
 where
@@ -1382,7 +1382,7 @@ where
 {
     #[inline]
     fn into_call_arg(self, module: ModuleRef<'ctx, B>) -> IrResult<Value<'ctx, B>> {
-        Ok(self.into_pointer_value(module)?.into_erased())
+        Ok(self.into_pointer_value(module)?.as_erased())
     }
 }
 

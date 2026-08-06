@@ -38,7 +38,7 @@ impl<B: ModuleBrand> FunctionPass<B> for InstSimplifyPass {
         let patch = cx.mutate();
         let data_layout = patch.function().module().data_layout().clone();
         let scope = patch.worklist();
-        while let Some(inst) = scope.next() {
+        while let Some(inst) = scope.step() {
             let view = inst.as_view();
             // Upstream runImpl only simplifies instructions with uses (!use_empty);
             // this also makes the ordered-atomic-load-from-constant-global case

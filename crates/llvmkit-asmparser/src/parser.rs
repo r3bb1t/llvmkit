@@ -141,7 +141,7 @@ where
     P: AsRef<Path>,
 {
     let path = path.as_ref();
-    let bytes = read_file(path).map_err(|e| ParseError::Io(e.to_string()))?;
+    let bytes = read_file(path)?;
     parse_into(branded_module::<B>(module_name_for(path))?, bytes)
 }
 
@@ -157,7 +157,7 @@ where
     P: AsRef<Path>,
 {
     let path = path.as_ref();
-    let bytes = read_file(path).map_err(|e| ParseError::Io(e.to_string()))?;
+    let bytes = read_file(path)?;
     parse_into(Module::dynamic(module_name_for(path)), bytes)
 }
 
@@ -167,7 +167,14 @@ fn branded_module<B: ModuleBrand>(name: &str) -> ParseResult<Module<B, Unverifie
         IrError::BrandRetired { brand } => ParseError::BrandRetired { brand },
         // `Module::branded` reports exactly `BrandInUse` or `BrandRetired`.
         IrError::BrandInUse { brand } => ParseError::BrandInUse { brand },
-        other => ParseError::Io(other.to_string()),
+        // `IrError` is `#[non_exhaustive]`, so this arm exists for a variant
+        // the registry does not currently produce. It carries the message
+        // rather than panicking; `ErrorKind::Other` is the honest label for
+        // "not an I/O failure at all" until a variant is worth naming.
+        other => ParseError::Io {
+            kind: std::io::ErrorKind::Other,
+            message: other.to_string(),
+        },
     })
 }
 
@@ -216,16 +223,6 @@ where
     Ok(f(&module, parsed))
 }
 
-/// Parse a complete textual IR module from a UTF-8 string under a fresh brand.
-///
-/// The closure receives the module by reference; see [`parse_assembly`].
-pub fn parse_assembly_string<R, F>(src: &str, f: F) -> ParseResult<R>
-where
-    F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
-{
-    parse_assembly(src.as_bytes(), f)
-}
-
 /// Read and parse a complete textual IR module under a fresh module brand.
 ///
 /// The closure receives the module by reference; see [`parse_assembly`].
@@ -239,13 +236,13 @@ where
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("asm");
-    let bytes = read_file(path).map_err(|e| ParseError::Io(e.to_string()))?;
+    let bytes = read_file(path)?;
     parse_assembly_with_name(module_name, bytes, f)
 }
 
-/// Parse a textual LLVM module summary index from bytes.
-pub fn parse_summary_index_assembly(src: &[u8]) -> ParseResult<ModuleSummaryIndex> {
-    module_summary::parse_summary_index(src)
+/// Parse a textual LLVM module summary index.
+pub fn parse_summary_index_assembly<S: AsRef<[u8]>>(src: S) -> ParseResult<ModuleSummaryIndex> {
+    module_summary::parse_summary_index(src.as_ref())
 }
 
 /// Read and parse a textual LLVM module summary index.
@@ -253,7 +250,7 @@ pub fn parse_summary_index_assembly_file<P>(path: P) -> ParseResult<ModuleSummar
 where
     P: AsRef<Path>,
 {
-    let bytes = read_file(path).map_err(|e| ParseError::Io(e.to_string()))?;
+    let bytes = read_file(path)?;
     parse_summary_index_assembly(&bytes)
 }
 
@@ -277,16 +274,12 @@ where
     Ok(f(&module, parsed, context))
 }
 
-/// Parse a single LLVM type and require end-of-input.
-pub fn parse_type<'ctx, B: ModuleBrand + 'ctx>(
-    src: &[u8],
-    module: &'ctx Module<B, Unverified>,
-    slots: Option<&SlotMapping<'ctx, B>>,
+/// Map the standalone-type trailing-garbage lex error to the canonical
+/// "end of string" diagnostic. Shared by [`parse_type`] and
+/// [`parse_type_with_slots`].
+fn standalone_type_result<'ctx, B: ModuleBrand + 'ctx>(
+    parser: Parser<'_, 'ctx, B>,
 ) -> ParseResult<Type<'ctx, B>> {
-    let parser = match slots {
-        Some(slots) => Parser::with_slot_mapping(src, module, slots)?,
-        None => Parser::new(src, module)?,
-    };
     parser.parse_standalone_type().map_err(|err| match err {
         ParseError::Lex(LexError::UnknownToken { span, .. }) => ParseError::Expected {
             expected: "end of string".into(),
@@ -296,31 +289,58 @@ pub fn parse_type<'ctx, B: ModuleBrand + 'ctx>(
     })
 }
 
-/// Parse one LLVM type prefix and report the number of consumed bytes.
-pub fn parse_type_at_beginning<'ctx, B: ModuleBrand + 'ctx>(
-    src: &[u8],
+/// Parse a single LLVM type and require end-of-input.
+pub fn parse_type<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
+    src: S,
     module: &'ctx Module<B, Unverified>,
-    slots: Option<&SlotMapping<'ctx, B>>,
+) -> ParseResult<Type<'ctx, B>> {
+    standalone_type_result(Parser::new(src.as_ref(), module)?)
+}
+
+/// [`parse_type`], resolving numbered/named forward references through a
+/// caller-supplied slot mapping (parsed-IR workflows).
+pub fn parse_type_with_slots<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
+    src: S,
+    module: &'ctx Module<B, Unverified>,
+    slots: &SlotMapping<'ctx, B>,
+) -> ParseResult<Type<'ctx, B>> {
+    standalone_type_result(Parser::with_slot_mapping(src.as_ref(), module, slots)?)
+}
+
+/// Parse one LLVM type prefix and report the number of consumed bytes.
+pub fn parse_type_at_beginning<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
+    src: S,
+    module: &'ctx Module<B, Unverified>,
 ) -> ParseResult<(Type<'ctx, B>, usize)> {
-    let parser = match slots {
-        Some(slots) => Parser::with_slot_mapping(src, module, slots)?,
-        None => Parser::new(src, module)?,
-    };
-    parser.parse_type_at_beginning()
+    Parser::new(src.as_ref(), module)?.parse_type_at_beginning()
+}
+
+/// [`parse_type_at_beginning`] with a caller-supplied slot mapping.
+pub fn parse_type_at_beginning_with_slots<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
+    src: S,
+    module: &'ctx Module<B, Unverified>,
+    slots: &SlotMapping<'ctx, B>,
+) -> ParseResult<(Type<'ctx, B>, usize)> {
+    Parser::with_slot_mapping(src.as_ref(), module, slots)?.parse_type_at_beginning()
 }
 
 /// Parse one constant value of the supplied LLVM type and require EOF.
-pub fn parse_constant_value<'ctx, B: ModuleBrand + 'ctx>(
-    src: &[u8],
+pub fn parse_constant_value<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
+    src: S,
     module: &'ctx Module<B, Unverified>,
     ty: Type<'ctx, B>,
-    slots: Option<&SlotMapping<'ctx, B>>,
 ) -> ParseResult<Constant<'ctx, B>> {
-    let parser = match slots {
-        Some(slots) => Parser::with_slot_mapping(src, module, slots)?,
-        None => Parser::new(src, module)?,
-    };
-    parser.parse_standalone_constant_value(ty)
+    Parser::new(src.as_ref(), module)?.parse_standalone_constant_value(ty)
+}
+
+/// [`parse_constant_value`] with a caller-supplied slot mapping.
+pub fn parse_constant_value_with_slots<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
+    src: S,
+    module: &'ctx Module<B, Unverified>,
+    ty: Type<'ctx, B>,
+    slots: &SlotMapping<'ctx, B>,
+) -> ParseResult<Constant<'ctx, B>> {
+    Parser::with_slot_mapping(src.as_ref(), module, slots)?.parse_standalone_constant_value(ty)
 }
 
 fn record_parser_context<'ctx, B: ModuleBrand + 'ctx>(
@@ -331,7 +351,7 @@ fn record_parser_context<'ctx, B: ModuleBrand + 'ctx>(
     let lines = source_lines(src);
     for function_view in module.as_view().functions() {
         let Some(function) = module
-            .function_by_name_dyn(function_view.name())
+            .function_dyn(function_view.name())
             .map(|id| module.view(id))
         else {
             continue;

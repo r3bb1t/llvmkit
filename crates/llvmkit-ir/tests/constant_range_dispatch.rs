@@ -16,8 +16,8 @@
 use std::collections::BTreeSet;
 
 use llvmkit_ir::{
-    ApInt, ApIntSignedness, ApIntTruncation, BinaryOpcode, ConstantRange, NoWrapKind,
-    PreferredRangeType, RangeIntrinsic,
+    ApInt, ApIntTruncation, BinaryOpcode, ConstantRange, NoWrapKind, PreferredRangeType,
+    RangeIntrinsic, Signedness,
 };
 
 const BITS: u32 = 4;
@@ -30,7 +30,7 @@ fn ap(value: u64) -> ApInt {
     ApInt::new(
         BITS,
         value & MASK,
-        ApIntSignedness::Unsigned,
+        Signedness::Unsigned,
         ApIntTruncation::Truncate,
     )
     .expect("in-range constant")
@@ -80,22 +80,22 @@ fn binary_op_routes_every_opcode() {
         (BinaryOpcode::Add, lhs.add(&rhs)),
         (BinaryOpcode::Sub, lhs.sub(&rhs)),
         (BinaryOpcode::Mul, lhs.multiply(&rhs)),
-        (BinaryOpcode::UDiv, lhs.udiv(&rhs)),
-        (BinaryOpcode::SDiv, lhs.sdiv(&rhs)),
-        (BinaryOpcode::URem, lhs.urem(&rhs)),
-        (BinaryOpcode::SRem, lhs.srem(&rhs)),
+        (BinaryOpcode::Udiv, lhs.udiv(&rhs)),
+        (BinaryOpcode::Sdiv, lhs.sdiv(&rhs)),
+        (BinaryOpcode::Urem, lhs.urem(&rhs)),
+        (BinaryOpcode::Srem, lhs.srem(&rhs)),
         (BinaryOpcode::Shl, lhs.shl(&rhs)),
-        (BinaryOpcode::LShr, lhs.lshr(&rhs)),
-        (BinaryOpcode::AShr, lhs.ashr(&rhs)),
+        (BinaryOpcode::Lshr, lhs.lshr(&rhs)),
+        (BinaryOpcode::Ashr, lhs.ashr(&rhs)),
         (BinaryOpcode::And, lhs.binary_and(&rhs)),
         (BinaryOpcode::Or, lhs.binary_or(&rhs)),
         (BinaryOpcode::Xor, lhs.binary_xor(&rhs)),
         // Upstream forwards the float opcodes to the integer operations: a
         // range over floats is "an ideal integer operation with a lossy
         // representation", in its comment.
-        (BinaryOpcode::FAdd, lhs.add(&rhs)),
-        (BinaryOpcode::FSub, lhs.sub(&rhs)),
-        (BinaryOpcode::FMul, lhs.multiply(&rhs)),
+        (BinaryOpcode::Fadd, lhs.add(&rhs)),
+        (BinaryOpcode::Fsub, lhs.sub(&rhs)),
+        (BinaryOpcode::Fmul, lhs.multiply(&rhs)),
     ];
 
     for (opcode, expected) in cases {
@@ -107,7 +107,7 @@ fn binary_op_routes_every_opcode() {
     }
 
     // `fdiv` and `frem` have no integer counterpart, so they answer full.
-    for opcode in [BinaryOpcode::FDiv, BinaryOpcode::FRem] {
+    for opcode in [BinaryOpcode::Fdiv, BinaryOpcode::Frem] {
         assert!(
             lhs.binary_op(opcode, &rhs).is_full_set(),
             "binary_op({opcode:?}) must be conservative"
@@ -125,14 +125,14 @@ fn intrinsic_routes_every_supported_id() {
     let single = [lhs.clone()];
 
     let binary: &[(RangeIntrinsic, ConstantRange)] = &[
-        (RangeIntrinsic::UAddSat, lhs.uadd_sat(&rhs)),
-        (RangeIntrinsic::USubSat, lhs.usub_sat(&rhs)),
-        (RangeIntrinsic::SAddSat, lhs.sadd_sat(&rhs)),
-        (RangeIntrinsic::SSubSat, lhs.ssub_sat(&rhs)),
-        (RangeIntrinsic::UMin, lhs.umin(&rhs)),
-        (RangeIntrinsic::UMax, lhs.umax(&rhs)),
-        (RangeIntrinsic::SMin, lhs.smin(&rhs)),
-        (RangeIntrinsic::SMax, lhs.smax(&rhs)),
+        (RangeIntrinsic::UaddSat, lhs.uadd_sat(&rhs)),
+        (RangeIntrinsic::UsubSat, lhs.usub_sat(&rhs)),
+        (RangeIntrinsic::SaddSat, lhs.sadd_sat(&rhs)),
+        (RangeIntrinsic::SsubSat, lhs.ssub_sat(&rhs)),
+        (RangeIntrinsic::Umin, lhs.umin(&rhs)),
+        (RangeIntrinsic::Umax, lhs.umax(&rhs)),
+        (RangeIntrinsic::Smin, lhs.smin(&rhs)),
+        (RangeIntrinsic::Smax, lhs.smax(&rhs)),
     ];
     for (intrinsic, expected) in binary {
         assert_eq!(
@@ -181,10 +181,10 @@ fn intrinsic_routes_every_supported_id() {
     // A binary intrinsic with no second operand declines rather than panicking
     // — upstream asserts the arity instead.
     assert_eq!(
-        ConstantRange::intrinsic(RangeIntrinsic::UMin, &single),
+        ConstantRange::intrinsic(RangeIntrinsic::Umin, &single),
         None
     );
-    assert_eq!(ConstantRange::intrinsic(RangeIntrinsic::UMin, &[]), None);
+    assert_eq!(ConstantRange::intrinsic(RangeIntrinsic::Umin, &[]), None);
 }
 
 /// `overflowing_binary_op` routes the three wrap-carrying opcodes to their
@@ -310,14 +310,14 @@ fn smul_fast_covers_every_product_it_claims() {
 #[test]
 fn every_range_intrinsic_is_supported() {
     for intrinsic in [
-        RangeIntrinsic::UAddSat,
-        RangeIntrinsic::USubSat,
-        RangeIntrinsic::SAddSat,
-        RangeIntrinsic::SSubSat,
-        RangeIntrinsic::UMin,
-        RangeIntrinsic::UMax,
-        RangeIntrinsic::SMin,
-        RangeIntrinsic::SMax,
+        RangeIntrinsic::UaddSat,
+        RangeIntrinsic::UsubSat,
+        RangeIntrinsic::SaddSat,
+        RangeIntrinsic::SsubSat,
+        RangeIntrinsic::Umin,
+        RangeIntrinsic::Umax,
+        RangeIntrinsic::Smin,
+        RangeIntrinsic::Smax,
         RangeIntrinsic::Abs {
             int_min_is_poison: false,
         },

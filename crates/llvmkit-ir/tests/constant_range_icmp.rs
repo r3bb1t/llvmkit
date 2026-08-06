@@ -20,19 +20,14 @@
 
 use std::collections::BTreeSet;
 
-use llvmkit_ir::{ApInt, ApIntSignedness, ApIntTruncation, ConstantRange, IntPredicate};
+use llvmkit_ir::{ApInt, ApIntTruncation, ConstantRange, IntPredicate, Signedness};
 
 const BITS: u32 = 4;
 const DOMAIN: u64 = 1 << BITS;
 
 fn ap(value: u64) -> ApInt {
-    ApInt::new(
-        BITS,
-        value,
-        ApIntSignedness::Unsigned,
-        ApIntTruncation::Truncate,
-    )
-    .expect("in-range constant")
+    ApInt::new(BITS, value, Signedness::Unsigned, ApIntTruncation::Truncate)
+        .expect("in-range constant")
 }
 
 /// Ports `EnumerateConstantRanges` at 4 bits.

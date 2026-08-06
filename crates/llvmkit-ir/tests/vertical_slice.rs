@@ -1,52 +1,52 @@
-//! End-to-end smoke test exercising types + values + IRBuilder + AsmWriter.
+//! End-to-end smoke test exercising types + values + IrBuilder + AsmWriter.
 //!
 //! ## Upstream provenance
 //!
 //! llvmkit-specific integration test with no single upstream `TEST` analog.
 //! Closest upstream coverage: `unittests/IR/IRBuilderTest.cpp` exercises
-//! the IRBuilder family at runtime; `unittests/IR/InstructionsTest.cpp`
+//! the IrBuilder family at runtime; `unittests/IR/InstructionsTest.cpp`
 //! exercises Instruction construction. Per-test citations below note
 //! the closest functional reference for each.
 //!
-//! End-to-end test for the value-layer + minimal-IRBuilder slice.
+//! End-to-end test for the value-layer + minimal-IrBuilder slice.
 //!
 //! After Phase A1 / A2 (width-typed integers + kind-typed floats) and
-//! Phase A3 (return-type-safe IRBuilder) the vertical-slice asserts:
+//! Phase A3 (return-type-safe IrBuilder) the vertical-slice asserts:
 //!
 //! - The function has exactly one basic block after `append_basic_block`.
 //! - The entry block's terminator is a `Ret`.
 //! - The `add` instruction's operands are the function's two arguments.
-//! - The IRBuilder's binary-op generic enforces equal widths at compile
+//! - The IrBuilder's binary-op generic enforces equal widths at compile
 //!   time (no runtime `OperandWidthMismatch` for the in-test happy path).
 //! - Constant interning: two `i32_ty.const_int(42i32)` calls return
 //!   equal handles.
 //! - Cross-value-category narrowing (`Argument -> IntValue<i32>`) errors
 //!   cleanly when the argument's type is not integral.
 //! - The typed `m.add_typed_function::<i32, (), _>(...)` path produces a
-//!   `FunctionValue<i32>` whose IRBuilder accepts only matching
-//!   `IntValue<i32>` operands at `build_ret` (compile-time enforced).
+//!   `FunctionValue<i32>` whose IrBuilder accepts only matching
+//!   `IntValue<i32>` operands at `ret` (compile-time enforced).
 
 use llvmkit_ir::{
-    Argument, Dyn, IRBuilder, IntValue, IrError, Linkage, TerminatorKind, module_new,
+    Argument, Dyn, IntValue, IrBuilder, IrError, Linkage, TerminatorKind, module_new,
 };
 
 /// llvmkit-specific: end-to-end add+ret smoke test. Closest upstream
-/// reference: `unittests/IR/IRBuilderTest.cpp` (IRBuilder unit tests
+/// reference: `unittests/IR/IRBuilderTest.cpp` (IrBuilder unit tests
 /// build identical add+ret patterns).
 #[test]
 fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let sum = b.build_int_add(lhs, rhs, "sum")?;
-    let (entry, _) = b.build_ret(sum)?;
+    let sum = b.int_add(lhs, rhs, "sum")?;
+    let (entry, _) = b.ret(sum)?;
 
     // ---- Assertions ----
 
@@ -71,7 +71,7 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
     // The `add` instruction's operands are the function's two args.
     let arg0: Argument<'_, _> = m.view(f).param(0)?;
     let arg1: Argument<'_, _> = m.view(f).param(1)?;
-    let add_kind = m.view(sum).into_erased().name();
+    let add_kind = m.view(sum).as_erased().name();
     assert_eq!(add_kind.as_deref(), Some("sum"));
     let _ = arg0;
     let _ = arg1;
@@ -79,7 +79,7 @@ fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
 }
 
 /// llvmkit-specific: validates `IrError::OperandWidthMismatch` from the
-/// runtime-checked `Dyn` IRBuilder path. No upstream analog (C++ asserts).
+/// runtime-checked `Dyn` IrBuilder path. No upstream analog (C++ asserts).
 #[test]
 fn mismatched_widths_error_at_runtime_when_dyn() -> Result<(), IrError> {
     let m = module_new!("demo")?;
@@ -88,10 +88,10 @@ fn mismatched_widths_error_at_runtime_when_dyn() -> Result<(), IrError> {
     // intentionally erase the width.
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i64_ty.as_type()]);
     let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
 
     // Static narrowing rejects the i64 arg as an i32-typed IntValue.
     let _a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
@@ -124,7 +124,7 @@ fn const_int_interns() -> Result<(), IrError> {
     // Same value, different type: distinct handles.
     let i64_ty = m.i64_type();
     let d: llvmkit_ir::ConstantIntValue<'_, i64, _> = i64_ty.const_int(42_i64);
-    assert_ne!(a.into_erased().ty(), d.into_erased().ty());
+    assert_ne!(a.as_erased().ty(), d.as_erased().ty());
     Ok(())
 }
 
@@ -136,7 +136,7 @@ fn argument_to_int_value_narrowing_validates_type() -> Result<(), IrError> {
     // A `double` argument cannot narrow to `IntValue<i32>`.
     let f64_ty = m.f64_type();
     let void = m.void_type();
-    let fn_ty = m.fn_type(void.as_type(), [f64_ty.as_type()], false);
+    let fn_ty = m.function_type(void.as_type(), [f64_ty.as_type()]);
     let f = m.add_function_dyn("takes_double", fn_ty, Linkage::External)?;
     let arg = m.view(f).param(0)?;
     let err: Result<IntValue<'_, i32, _>, IrError> = IntValue::try_from(arg);
@@ -151,7 +151,7 @@ fn argument_to_int_value_narrowing_validates_type() -> Result<(), IrError> {
 fn duplicate_function_name_errors() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let void = m.void_type();
-    let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let _ = m.add_function_dyn("once", fn_ty, Linkage::External)?;
     let err = m
         .add_function_dyn("once", fn_ty, Linkage::External)
@@ -168,7 +168,7 @@ fn function_builder_chains_options() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     use llvmkit_ir::{AttrIndex, AttrKind, Attribute, CallingConv};
     let void = m.void_type();
-    let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m
         .function_builder::<(), _>("worker", fn_ty)
         .linkage(Linkage::Internal)
@@ -196,23 +196,23 @@ fn function_builder_chains_options() -> Result<(), IrError> {
 // independent `R` -- keeps its runtime gate, locked by
 // `return_marker_mismatch_diagnostic.rs::function_builder_rejects_mismatched_return_marker`.
 
-/// llvmkit-specific: runtime-checked `Dyn` builder still validates `build_ret`
+/// llvmkit-specific: runtime-checked `Dyn` builder still validates `ret`
 /// types. Closest upstream reference: assertion in `IRBuilderBase::CreateRet`.
 #[test]
 fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     // Building against the runtime-checked `Dyn` builder reproduces
-    // the pre-A3 behaviour: feeding `build_ret` a value of the wrong
+    // the pre-A3 behaviour: feeding `ret` a value of the wrong
     // type returns `IrError::ReturnTypeMismatch` at runtime.
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i32_ty, [i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i64_ty.as_type()]);
     let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new(&m).position_at_end(entry);
+    let b = IrBuilder::new(&m).position_at_end(entry);
     let arg = m.view(f).param(0)?; // i64
     let err = b
-        .build_ret(arg)
+        .ret(arg)
         .expect_err("returning i64 from i32-returning function must error");
     assert!(matches!(err, IrError::ReturnTypeMismatch { .. }));
     Ok(())
@@ -225,7 +225,7 @@ fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
 fn function_value_into_iter_yields_blocks_in_order() -> Result<(), IrError> {
     let m = module_new!("fv-into-iter")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     m.view(f).append_basic_block(&m, "entry");
     m.view(f).append_basic_block(&m, "mid");

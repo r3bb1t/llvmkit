@@ -247,6 +247,26 @@ fn operand_bundles_round_trip() {
     );
 }
 
+/// llvmkit-specific subset of
+/// `test/Transforms/PreISelIntrinsicLowering/protected-field-pointer.ll`
+/// (the `NOPAUTH`-lowered call shape): the `"deactivation-symbol"` operand
+/// bundle keeps upstream's tag spelling through a parse/print round trip.
+/// The tag is registered as `LLVMContext::OB_deactivation_symbol` and
+/// spelled by `knownBundleName` in `lib/IR/LLVMContext.cpp` — llvmkit
+/// printed it as `"deactivation"` until this test.
+#[test]
+fn deactivation_symbol_bundle_round_trips() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/deactivation-symbol/deactivation_symbol_bundle_round_trip.ll"
+    );
+
+    let text = parse_and_render_bytes("deactivation_symbol_bundle_round_trips", FIXTURE);
+    assert_check_lines(
+        &text,
+        &["call i64 @__emupac_autda(i64 %val, i64 1) [\"deactivation-symbol\"(ptr @ds1)]"],
+    );
+}
+
 fn assert_fixture_rejected(module_name: &str, src: &[u8], expected_message: &str) {
     let err = parse_fixture_err(module_name, src);
     match err {
@@ -356,7 +376,7 @@ fn call_vararg_extra_args_round_trips() {
 /// Crafted against `llvm/lib/AsmParser/LLParser.cpp::parseCall`'s argument
 /// loop, reached through an indirect (undef) callee so validation runs
 /// against the explicit call-site function type alone —
-/// `build_indirect_call_dyn`'s `validate_call_site_args` gate.
+/// `indirect_call_dyn`'s `validate_call_site_args` gate.
 #[test]
 fn indirect_call_arg_type_mismatch_rejected() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -608,7 +628,7 @@ fn callbr_explicit_type_vararg_round_trips() {
 /// expected type") with an explicit call-site type; no upstream lit or
 /// unittest coverage, rule shape is the anchor (D11). llvmkit routes the
 /// check through `validate_call_site_args` in
-/// `build_invoke_dyn_with_config`.
+/// `invoke_dyn_with_config`.
 #[test]
 fn invoke_explicit_type_arg_type_mismatch_rejected() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -625,7 +645,7 @@ fn invoke_explicit_type_arg_type_mismatch_rejected() {
 /// Crafted against `parseCallBr`'s argument loop with an explicit
 /// call-site type — same rule as
 /// [`invoke_explicit_type_arg_type_mismatch_rejected`], surfaced through
-/// `build_callbr_with_config`.
+/// `callbr_with_config`.
 #[test]
 fn callbr_explicit_type_arg_type_mismatch_rejected() {
     const FIXTURE: &[u8] = include_bytes!(

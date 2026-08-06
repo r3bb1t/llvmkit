@@ -28,28 +28,28 @@ use super::error::ValueCategoryLabel;
 use super::float_kind::FloatDyn;
 use super::function::FunctionValue;
 use super::instr_types::{
-    AllocaInstData, AtomicCmpXchgInstData, AtomicRMWInstData, CallBrInstData, CallInstData,
+    AllocaInstData, AtomicCmpXchgInstData, AtomicRmwInstData, CallBrInstData, CallInstData,
     CatchPadInstData, CatchReturnInstData, CatchSwitchInstData, CleanupPadInstData,
-    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FNegInstData,
-    FenceInstData, FreezeInstData, GepInstData, IndirectBrInstData, InsertElementInstData,
+    CleanupReturnInstData, ExtractElementInstData, ExtractValueInstData, FenceInstData,
+    FnegInstData, FreezeInstData, GepInstData, IndirectBrInstData, InsertElementInstData,
     InsertValueInstData, InvokeInstData, LandingPadInstData, LoadInstData, ResumeInstData,
-    SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VAArgInstData,
+    SelectInstData, ShuffleVectorInstData, StoreInstData, SwitchInstData, VaArgInstData,
 };
 use super::instr_types::{
     BinaryOpData, BinaryOpcode, BranchInstData, BranchKind, CastOpData, CastOpcode, CmpInstData,
-    FCmpInstData, Opcode, PhiData, ReturnOpData, UnreachableInstData,
+    FcmpInstData, Opcode, PhiData, ReturnOpData, UnreachableInstData,
 };
 use super::instructions::{
-    AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
+    AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AshrInst, AtomicCmpXchgInst, AtomicRmwInst,
     BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, CatchPadInst, CatchReturnInst,
     CatchSwitchInst, CleanupPadInst, CleanupReturnInst, Cmp, ExtractElementInst, ExtractValueInst,
-    FAddInst, FCmpInst, FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpExtInst,
-    FpPhiInst, FpToSIInst, FpToUIInst, FpTruncInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst,
-    InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst,
-    LoadInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
-    ResumeInst, RetInst, SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst,
-    ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TruncInst, UDivInst, UIToFpInst, URemInst,
-    UnreachableInst, VAArgInst, XorInst, ZExtInst,
+    FaddInst, FcmpInst, FdivInst, FenceInst, FmulInst, FnegInst, FpExtInst, FpPhiInst, FpToSiInst,
+    FpToUiInst, FpTruncInst, FreezeInst, FremInst, FsubInst, GepInst, IcmpInst, IndirectBrInst,
+    InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LandingPadInst, LoadInst,
+    LshrInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
+    ResumeInst, RetInst, SdivInst, SelectInst, SextInst, ShlInst, ShuffleVectorInst, SiToFpInst,
+    SremInst, StoreInst, SubInst, SwitchInst, TruncInst, UdivInst, UiToFpInst, UnreachableInst,
+    UremInst, VaArgInst, XorInst, ZextInst,
 };
 use super::int_width::IntDyn;
 use super::marker::{Dyn, ReturnMarker};
@@ -102,22 +102,22 @@ pub(super) enum InstructionKindData {
     Add(BinaryOpData),
     Sub(BinaryOpData),
     Mul(BinaryOpData),
-    UDiv(BinaryOpData),
-    SDiv(BinaryOpData),
-    URem(BinaryOpData),
-    SRem(BinaryOpData),
+    Udiv(BinaryOpData),
+    Sdiv(BinaryOpData),
+    Urem(BinaryOpData),
+    Srem(BinaryOpData),
     Shl(BinaryOpData),
-    LShr(BinaryOpData),
-    AShr(BinaryOpData),
+    Lshr(BinaryOpData),
+    Ashr(BinaryOpData),
     And(BinaryOpData),
     Or(BinaryOpData),
     Xor(BinaryOpData),
-    FAdd(BinaryOpData),
-    FSub(BinaryOpData),
-    FMul(BinaryOpData),
-    FDiv(BinaryOpData),
-    FRem(BinaryOpData),
-    FCmp(FCmpInstData),
+    Fadd(BinaryOpData),
+    Fsub(BinaryOpData),
+    Fmul(BinaryOpData),
+    Fdiv(BinaryOpData),
+    Frem(BinaryOpData),
+    Fcmp(FcmpInstData),
     Alloca(AllocaInstData),
     Load(LoadInstData),
     Store(StoreInstData),
@@ -125,11 +125,11 @@ pub(super) enum InstructionKindData {
     Call(CallInstData),
     Select(SelectInstData),
     Cast(CastOpData),
-    ICmp(CmpInstData),
+    Icmp(CmpInstData),
     Phi(PhiData),
-    FNeg(FNegInstData),
+    Fneg(FnegInstData),
     Freeze(FreezeInstData),
-    VAArg(VAArgInstData),
+    VaArg(VaArgInstData),
     ExtractValue(ExtractValueInstData),
     InsertValue(InsertValueInstData),
     ExtractElement(ExtractElementInstData),
@@ -137,7 +137,7 @@ pub(super) enum InstructionKindData {
     ShuffleVector(ShuffleVectorInstData),
     Fence(FenceInstData),
     AtomicCmpXchg(AtomicCmpXchgInstData),
-    AtomicRMW(AtomicRMWInstData),
+    AtomicRmw(AtomicRmwInstData),
     Switch(SwitchInstData),
     IndirectBr(IndirectBrInstData),
     Invoke(InvokeInstData),
@@ -165,21 +165,21 @@ impl InstructionKindData {
             Self::Add(b)
             | Self::Sub(b)
             | Self::Mul(b)
-            | Self::UDiv(b)
-            | Self::SDiv(b)
-            | Self::URem(b)
-            | Self::SRem(b)
+            | Self::Udiv(b)
+            | Self::Sdiv(b)
+            | Self::Urem(b)
+            | Self::Srem(b)
             | Self::Shl(b)
-            | Self::LShr(b)
-            | Self::AShr(b)
+            | Self::Lshr(b)
+            | Self::Ashr(b)
             | Self::And(b)
             | Self::Or(b)
             | Self::Xor(b)
-            | Self::FAdd(b)
-            | Self::FSub(b)
-            | Self::FMul(b)
-            | Self::FDiv(b)
-            | Self::FRem(b) => vec![b.lhs.get(), b.rhs.get()],
+            | Self::Fadd(b)
+            | Self::Fsub(b)
+            | Self::Fmul(b)
+            | Self::Fdiv(b)
+            | Self::Frem(b) => vec![b.lhs.get(), b.rhs.get()],
             Self::Cast(c) => vec![c.src.get()],
             Self::Alloca(a) => a.num_elements.get().into_iter().collect(),
             Self::Load(l) => vec![l.ptr.get()],
@@ -198,17 +198,17 @@ impl InstructionKindData {
                 v
             }
             Self::Select(s) => vec![s.cond.get(), s.true_val.get(), s.false_val.get()],
-            Self::ICmp(c) => vec![c.lhs.get(), c.rhs.get()],
-            Self::FCmp(c) => vec![c.lhs.get(), c.rhs.get()],
+            Self::Icmp(c) => vec![c.lhs.get(), c.rhs.get()],
+            Self::Fcmp(c) => vec![c.lhs.get(), c.rhs.get()],
             Self::Phi(p) => p.incoming.borrow().iter().map(|(v, _)| v.get()).collect(),
             Self::Ret(r) => r.value.get().into_iter().collect(),
             Self::Br(b) => match &*b.kind.borrow() {
                 BranchKind::Unconditional(_) => Vec::new(),
                 BranchKind::Conditional { cond, .. } => vec![cond.get()],
             },
-            Self::FNeg(u) => vec![u.src.get()],
+            Self::Fneg(u) => vec![u.src.get()],
             Self::Freeze(u) => vec![u.src.get()],
-            Self::VAArg(u) => vec![u.src.get()],
+            Self::VaArg(u) => vec![u.src.get()],
             Self::ExtractValue(e) => vec![e.aggregate.get()],
             Self::InsertValue(i) => vec![i.aggregate.get(), i.value.get()],
             Self::ExtractElement(e) => vec![e.vector.get(), e.index.get()],
@@ -216,7 +216,7 @@ impl InstructionKindData {
             Self::ShuffleVector(s) => vec![s.lhs.get(), s.rhs.get()],
             Self::Fence(_) => Vec::new(),
             Self::AtomicCmpXchg(c) => vec![c.ptr.get(), c.cmp.get(), c.new_val.get()],
-            Self::AtomicRMW(r) => vec![r.ptr.get(), r.value.get()],
+            Self::AtomicRmw(r) => vec![r.ptr.get(), r.value.get()],
             Self::Switch(s) => {
                 let mut v = vec![s.cond.get()];
                 v.extend(s.cases.borrow().iter().map(|(c, _)| c.get()));
@@ -280,22 +280,22 @@ impl InstructionKindData {
             Self::Add(_) => Opcode::Add,
             Self::Sub(_) => Opcode::Sub,
             Self::Mul(_) => Opcode::Mul,
-            Self::UDiv(_) => Opcode::UDiv,
-            Self::SDiv(_) => Opcode::SDiv,
-            Self::URem(_) => Opcode::URem,
-            Self::SRem(_) => Opcode::SRem,
+            Self::Udiv(_) => Opcode::Udiv,
+            Self::Sdiv(_) => Opcode::Sdiv,
+            Self::Urem(_) => Opcode::Urem,
+            Self::Srem(_) => Opcode::Srem,
             Self::Shl(_) => Opcode::Shl,
-            Self::LShr(_) => Opcode::LShr,
-            Self::AShr(_) => Opcode::AShr,
+            Self::Lshr(_) => Opcode::Lshr,
+            Self::Ashr(_) => Opcode::Ashr,
             Self::And(_) => Opcode::And,
             Self::Or(_) => Opcode::Or,
             Self::Xor(_) => Opcode::Xor,
-            Self::FAdd(_) => Opcode::FAdd,
-            Self::FSub(_) => Opcode::FSub,
-            Self::FMul(_) => Opcode::FMul,
-            Self::FDiv(_) => Opcode::FDiv,
-            Self::FRem(_) => Opcode::FRem,
-            Self::FCmp(_) => Opcode::FCmp,
+            Self::Fadd(_) => Opcode::Fadd,
+            Self::Fsub(_) => Opcode::Fsub,
+            Self::Fmul(_) => Opcode::Fmul,
+            Self::Fdiv(_) => Opcode::Fdiv,
+            Self::Frem(_) => Opcode::Frem,
+            Self::Fcmp(_) => Opcode::Fcmp,
             Self::Alloca(_) => Opcode::Alloca,
             Self::Load(_) => Opcode::Load,
             Self::Store(_) => Opcode::Store,
@@ -303,11 +303,11 @@ impl InstructionKindData {
             Self::Call(_) => Opcode::Call,
             Self::Select(_) => Opcode::Select,
             Self::Cast(data) => Opcode::from(data.kind),
-            Self::ICmp(_) => Opcode::ICmp,
+            Self::Icmp(_) => Opcode::Icmp,
             Self::Phi(_) => Opcode::Phi,
-            Self::FNeg(_) => Opcode::FNeg,
+            Self::Fneg(_) => Opcode::Fneg,
             Self::Freeze(_) => Opcode::Freeze,
-            Self::VAArg(_) => Opcode::VAArg,
+            Self::VaArg(_) => Opcode::VaArg,
             Self::ExtractValue(_) => Opcode::ExtractValue,
             Self::InsertValue(_) => Opcode::InsertValue,
             Self::ExtractElement(_) => Opcode::ExtractElement,
@@ -315,7 +315,7 @@ impl InstructionKindData {
             Self::ShuffleVector(_) => Opcode::ShuffleVector,
             Self::Fence(_) => Opcode::Fence,
             Self::AtomicCmpXchg(_) => Opcode::AtomicCmpXchg,
-            Self::AtomicRMW(_) => Opcode::AtomicRMW,
+            Self::AtomicRmw(_) => Opcode::AtomicRmw,
             Self::Switch(_) => Opcode::Switch,
             Self::IndirectBr(_) => Opcode::IndirectBr,
             Self::Invoke(_) => Opcode::Invoke,
@@ -386,7 +386,7 @@ pub mod state {
 ///
 /// The `S: InstructionState` parameter pins the lifecycle state at compile
 /// time (Doctrine D1). Defaults to [`state::Attached`] so existing call
-/// sites that build via the IRBuilder do not need to spell the state.
+/// sites that build via the IrBuilder do not need to spell the state.
 /// `Instruction` is intentionally **`!Copy` and `!Clone`** (Doctrine D2):
 /// methods that consume the lifecycle (`erase_from_parent`,
 /// `detach_from_parent`, `replace_all_uses_with`) take `self` by value,
@@ -514,8 +514,12 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand + 'ctx> Instruction<'ctx, 
         self.as_view().set_metadata(module_token, kind, id)
     }
 
-    /// Debug records attached ahead of this instruction.
-    pub fn debug_records(&self) -> Vec<DebugRecord<B>> {
+    /// Debug records attached ahead of this instruction, in attachment order.
+    /// See [`InstructionView::debug_records`].
+    pub fn debug_records(
+        &self,
+    ) -> impl ExactSizeIterator<Item = DebugRecord<B>> + DoubleEndedIterator + FusedIterator + use<S, B>
+    {
         self.as_view().debug_records()
     }
 
@@ -588,7 +592,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
     /// Widen to the erased [`Value`] handle.
     ///
     /// Borrows rather than consumes; the by-value
-    /// [`IsValue::into_erased`] form is also available on this type.
+    /// [`IsValue::as_erased`] form is also available on this type.
     #[inline]
     pub fn to_erased(&self) -> Value<'ctx, B> {
         Value {
@@ -663,14 +667,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
         Ok(())
     }
 
-    /// Debug records attached ahead of this instruction.
-    pub fn debug_records(&self) -> Vec<DebugRecord<B>> {
-        self.data()
-            .debug_records
-            .borrow()
-            .iter()
-            .map(DebugRecord::from_stored)
-            .collect()
+    /// Debug records attached ahead of this instruction, in attachment order.
+    ///
+    /// A snapshot, not a borrow: the records live behind a [`RefCell`], and
+    /// [`push_debug_record`](Self::push_debug_record) takes `&self`, so the
+    /// stored list is copied out once and the iterator owns it — the returned
+    /// iterator can never hold a borrow that a later append would clash with.
+    /// The `use<..>` bound then keeps `&self` out of the opaque type, so the
+    /// iterator chains freely off a borrowed instruction.
+    ///
+    /// [`RefCell`]: core::cell::RefCell
+    pub fn debug_records(
+        &self,
+    ) -> impl ExactSizeIterator<Item = DebugRecord<B>> + DoubleEndedIterator + FusedIterator + use<B>
+    {
+        let records = self.data().debug_records.borrow().clone();
+        records
+            .into_iter()
+            .map(|record| DebugRecord::from_stored(&record))
     }
 
     /// Crate-internal: the stored debug records, for the printer, which already
@@ -744,26 +758,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
             InstructionKindData::Mul(_) => {
                 Some(InstructionKind::Mul(MulInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::UDiv(_) => {
-                Some(InstructionKind::UDiv(UDivInst::from_raw(id, module, ty)))
+            InstructionKindData::Udiv(_) => {
+                Some(InstructionKind::Udiv(UdivInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::SDiv(_) => {
-                Some(InstructionKind::SDiv(SDivInst::from_raw(id, module, ty)))
+            InstructionKindData::Sdiv(_) => {
+                Some(InstructionKind::Sdiv(SdivInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::URem(_) => {
-                Some(InstructionKind::URem(URemInst::from_raw(id, module, ty)))
+            InstructionKindData::Urem(_) => {
+                Some(InstructionKind::Urem(UremInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::SRem(_) => {
-                Some(InstructionKind::SRem(SRemInst::from_raw(id, module, ty)))
+            InstructionKindData::Srem(_) => {
+                Some(InstructionKind::Srem(SremInst::from_raw(id, module, ty)))
             }
             InstructionKindData::Shl(_) => {
                 Some(InstructionKind::Shl(ShlInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::LShr(_) => {
-                Some(InstructionKind::LShr(LShrInst::from_raw(id, module, ty)))
+            InstructionKindData::Lshr(_) => {
+                Some(InstructionKind::Lshr(LshrInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::AShr(_) => {
-                Some(InstructionKind::AShr(AShrInst::from_raw(id, module, ty)))
+            InstructionKindData::Ashr(_) => {
+                Some(InstructionKind::Ashr(AshrInst::from_raw(id, module, ty)))
             }
             InstructionKindData::And(_) => {
                 Some(InstructionKind::And(AndInst::from_raw(id, module, ty)))
@@ -774,23 +788,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
             InstructionKindData::Xor(_) => {
                 Some(InstructionKind::Xor(XorInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::FAdd(_) => {
-                Some(InstructionKind::FAdd(FAddInst::from_raw(id, module, ty)))
+            InstructionKindData::Fadd(_) => {
+                Some(InstructionKind::Fadd(FaddInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::FSub(_) => {
-                Some(InstructionKind::FSub(FSubInst::from_raw(id, module, ty)))
+            InstructionKindData::Fsub(_) => {
+                Some(InstructionKind::Fsub(FsubInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::FMul(_) => {
-                Some(InstructionKind::FMul(FMulInst::from_raw(id, module, ty)))
+            InstructionKindData::Fmul(_) => {
+                Some(InstructionKind::Fmul(FmulInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::FDiv(_) => {
-                Some(InstructionKind::FDiv(FDivInst::from_raw(id, module, ty)))
+            InstructionKindData::Fdiv(_) => {
+                Some(InstructionKind::Fdiv(FdivInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::FRem(_) => {
-                Some(InstructionKind::FRem(FRemInst::from_raw(id, module, ty)))
+            InstructionKindData::Frem(_) => {
+                Some(InstructionKind::Frem(FremInst::from_raw(id, module, ty)))
             }
-            InstructionKindData::FCmp(_) => {
-                Some(InstructionKind::FCmp(FCmpInst::from_raw(id, module, ty)))
+            InstructionKindData::Fcmp(_) => {
+                Some(InstructionKind::Fcmp(FcmpInst::from_raw(id, module, ty)))
             }
             InstructionKindData::Alloca(_) => Some(InstructionKind::Alloca(AllocaInst::from_raw(
                 id, module, ty,
@@ -813,14 +827,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
             InstructionKindData::Cast(c) => {
                 let cast = match c.kind {
                     CastOpcode::Trunc => CastKind::Trunc(TruncInst::from_raw(id, module, ty)),
-                    CastOpcode::ZExt => CastKind::ZExt(ZExtInst::from_raw(id, module, ty)),
-                    CastOpcode::SExt => CastKind::SExt(SExtInst::from_raw(id, module, ty)),
+                    CastOpcode::Zext => CastKind::Zext(ZextInst::from_raw(id, module, ty)),
+                    CastOpcode::Sext => CastKind::Sext(SextInst::from_raw(id, module, ty)),
                     CastOpcode::FpTrunc => CastKind::FpTrunc(FpTruncInst::from_raw(id, module, ty)),
                     CastOpcode::FpExt => CastKind::FpExt(FpExtInst::from_raw(id, module, ty)),
-                    CastOpcode::FpToUI => CastKind::FpToUI(FpToUIInst::from_raw(id, module, ty)),
-                    CastOpcode::FpToSI => CastKind::FpToSI(FpToSIInst::from_raw(id, module, ty)),
-                    CastOpcode::UIToFp => CastKind::UIToFp(UIToFpInst::from_raw(id, module, ty)),
-                    CastOpcode::SIToFp => CastKind::SIToFp(SIToFpInst::from_raw(id, module, ty)),
+                    CastOpcode::FpToUi => CastKind::FpToUi(FpToUiInst::from_raw(id, module, ty)),
+                    CastOpcode::FpToSi => CastKind::FpToSi(FpToSiInst::from_raw(id, module, ty)),
+                    CastOpcode::UiToFp => CastKind::UiToFp(UiToFpInst::from_raw(id, module, ty)),
+                    CastOpcode::SiToFp => CastKind::SiToFp(SiToFpInst::from_raw(id, module, ty)),
                     CastOpcode::PtrToAddr => {
                         CastKind::PtrToAddr(PtrToAddrInst::from_raw(id, module, ty))
                     }
@@ -837,8 +851,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
                 };
                 Some(InstructionKind::Cast(cast))
             }
-            InstructionKindData::ICmp(_) => {
-                Some(InstructionKind::ICmp(ICmpInst::from_raw(id, module, ty)))
+            InstructionKindData::Icmp(_) => {
+                Some(InstructionKind::Icmp(IcmpInst::from_raw(id, module, ty)))
             }
             InstructionKindData::Phi(_) => {
                 // Choose the handle from the phi's result type so the
@@ -847,7 +861,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
                 let phi = match Type::new(ty, module).kind() {
                     TypeKind::Integer { .. } => PhiKind::Int(PhiInst::from_raw(id, module, ty)),
                     TypeKind::Half
-                    | TypeKind::BFloat
+                    | TypeKind::Bfloat
                     | TypeKind::Float
                     | TypeKind::Double
                     | TypeKind::X86Fp80
@@ -860,14 +874,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
                 };
                 Some(InstructionKind::Phi(phi))
             }
-            InstructionKindData::FNeg(_) => {
-                Some(InstructionKind::FNeg(FNegInst::from_raw(id, module, ty)))
+            InstructionKindData::Fneg(_) => {
+                Some(InstructionKind::Fneg(FnegInst::from_raw(id, module, ty)))
             }
             InstructionKindData::Freeze(_) => Some(InstructionKind::Freeze(FreezeInst::from_raw(
                 id, module, ty,
             ))),
-            InstructionKindData::VAArg(_) => {
-                Some(InstructionKind::VAArg(VAArgInst::from_raw(id, module, ty)))
+            InstructionKindData::VaArg(_) => {
+                Some(InstructionKind::VaArg(VaArgInst::from_raw(id, module, ty)))
             }
             InstructionKindData::ExtractValue(_) => Some(InstructionKind::ExtractValue(
                 ExtractValueInst::from_raw(id, module, ty),
@@ -890,8 +904,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionView<'ctx, B> {
             InstructionKindData::AtomicCmpXchg(_) => Some(InstructionKind::AtomicCmpXchg(
                 AtomicCmpXchgInst::from_raw(id, module, ty),
             )),
-            InstructionKindData::AtomicRMW(_) => Some(InstructionKind::AtomicRMW(
-                AtomicRMWInst::from_raw(id, module, ty),
+            InstructionKindData::AtomicRmw(_) => Some(InstructionKind::AtomicRmw(
+                AtomicRmwInst::from_raw(id, module, ty),
             )),
             InstructionKindData::LandingPad(_) => Some(InstructionKind::LandingPad(
                 LandingPadInst::from_raw(id, module, ty),
@@ -1037,7 +1051,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
         module_token: &'ctx Module<B, Unverified>,
         replacement: V,
     ) -> IrResult<()> {
-        let new_value = replacement.into_erased();
+        let new_value = replacement.as_erased();
         if new_value.id == self.id {
             // `self.replaceAllUsesWith(self)` is a no-op upstream; mirror.
             return Ok(());
@@ -1327,21 +1341,21 @@ pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueSlot,
         InstructionKindData::Add(b)
         | InstructionKindData::Sub(b)
         | InstructionKindData::Mul(b)
-        | InstructionKindData::UDiv(b)
-        | InstructionKindData::SDiv(b)
-        | InstructionKindData::URem(b)
-        | InstructionKindData::SRem(b)
+        | InstructionKindData::Udiv(b)
+        | InstructionKindData::Sdiv(b)
+        | InstructionKindData::Urem(b)
+        | InstructionKindData::Srem(b)
         | InstructionKindData::Shl(b)
-        | InstructionKindData::LShr(b)
-        | InstructionKindData::AShr(b)
+        | InstructionKindData::Lshr(b)
+        | InstructionKindData::Ashr(b)
         | InstructionKindData::And(b)
         | InstructionKindData::Or(b)
         | InstructionKindData::Xor(b)
-        | InstructionKindData::FAdd(b)
-        | InstructionKindData::FSub(b)
-        | InstructionKindData::FMul(b)
-        | InstructionKindData::FDiv(b)
-        | InstructionKindData::FRem(b) => {
+        | InstructionKindData::Fadd(b)
+        | InstructionKindData::Fsub(b)
+        | InstructionKindData::Fmul(b)
+        | InstructionKindData::Fdiv(b)
+        | InstructionKindData::Frem(b) => {
             swap(&b.lhs);
             swap(&b.rhs);
         }
@@ -1374,11 +1388,11 @@ pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueSlot,
             swap(&s.true_val);
             swap(&s.false_val);
         }
-        InstructionKindData::ICmp(c) => {
+        InstructionKindData::Icmp(c) => {
             swap(&c.lhs);
             swap(&c.rhs);
         }
-        InstructionKindData::FCmp(c) => {
+        InstructionKindData::Fcmp(c) => {
             swap(&c.lhs);
             swap(&c.rhs);
         }
@@ -1392,9 +1406,9 @@ pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueSlot,
             BranchKind::Unconditional(_) => {}
             BranchKind::Conditional { cond, .. } => swap(cond),
         },
-        InstructionKindData::FNeg(u) => swap(&u.src),
+        InstructionKindData::Fneg(u) => swap(&u.src),
         InstructionKindData::Freeze(u) => swap(&u.src),
-        InstructionKindData::VAArg(u) => swap(&u.src),
+        InstructionKindData::VaArg(u) => swap(&u.src),
         InstructionKindData::ExtractValue(e) => swap(&e.aggregate),
         InstructionKindData::InsertValue(i) => {
             swap(&i.aggregate);
@@ -1419,7 +1433,7 @@ pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueSlot,
             swap(&c.cmp);
             swap(&c.new_val);
         }
-        InstructionKindData::AtomicRMW(r) => {
+        InstructionKindData::AtomicRmw(r) => {
             swap(&r.ptr);
             swap(&r.value);
         }
@@ -1586,7 +1600,7 @@ impl<'ctx, S: state::InstructionState, B: ModuleBrand> sealed::Sealed for Instru
 impl<'ctx, B: ModuleBrand> sealed::Sealed for InstructionView<'ctx, B> {}
 impl<'ctx, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for InstructionView<'ctx, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
+    fn as_erased(self) -> Value<'ctx, B> {
         InstructionView::to_erased(&self)
     }
 }
@@ -1617,7 +1631,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> HasName<'ctx, B> for InstructionView<'ctx, B> 
 impl<B: ModuleBrand> HasDebugLoc for InstructionView<'_, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.into_erased().debug_loc()
+        self.as_erased().debug_loc()
     }
 }
 
@@ -1732,14 +1746,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> From<Instruction<'ctx, state::Attached, B>> fo
 #[branded(Debug)]
 pub enum CastKind<'ctx, B: ModuleBrand> {
     Trunc(TruncInst<'ctx, B>),
-    ZExt(ZExtInst<'ctx, B>),
-    SExt(SExtInst<'ctx, B>),
+    Zext(ZextInst<'ctx, B>),
+    Sext(SextInst<'ctx, B>),
     FpTrunc(FpTruncInst<'ctx, B>),
     FpExt(FpExtInst<'ctx, B>),
-    FpToUI(FpToUIInst<'ctx, B>),
-    FpToSI(FpToSIInst<'ctx, B>),
-    UIToFp(UIToFpInst<'ctx, B>),
-    SIToFp(SIToFpInst<'ctx, B>),
+    FpToUi(FpToUiInst<'ctx, B>),
+    FpToSi(FpToSiInst<'ctx, B>),
+    UiToFp(UiToFpInst<'ctx, B>),
+    SiToFp(SiToFpInst<'ctx, B>),
     PtrToAddr(PtrToAddrInst<'ctx, B>),
     PtrToInt(PtrToIntInst<'ctx, B>),
     IntToPtr(IntToPtrInst<'ctx, B>),
@@ -1752,14 +1766,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
     pub fn opcode(&self) -> CastOpcode {
         match self {
             Self::Trunc(_) => CastOpcode::Trunc,
-            Self::ZExt(_) => CastOpcode::ZExt,
-            Self::SExt(_) => CastOpcode::SExt,
+            Self::Zext(_) => CastOpcode::Zext,
+            Self::Sext(_) => CastOpcode::Sext,
             Self::FpTrunc(_) => CastOpcode::FpTrunc,
             Self::FpExt(_) => CastOpcode::FpExt,
-            Self::FpToUI(_) => CastOpcode::FpToUI,
-            Self::FpToSI(_) => CastOpcode::FpToSI,
-            Self::UIToFp(_) => CastOpcode::UIToFp,
-            Self::SIToFp(_) => CastOpcode::SIToFp,
+            Self::FpToUi(_) => CastOpcode::FpToUi,
+            Self::FpToSi(_) => CastOpcode::FpToSi,
+            Self::UiToFp(_) => CastOpcode::UiToFp,
+            Self::SiToFp(_) => CastOpcode::SiToFp,
             Self::PtrToAddr(_) => CastOpcode::PtrToAddr,
             Self::PtrToInt(_) => CastOpcode::PtrToInt,
             Self::IntToPtr(_) => CastOpcode::IntToPtr,
@@ -1773,19 +1787,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
     pub fn src(&self) -> Value<'ctx, B> {
         match self {
             Self::Trunc(i) => i.src(),
-            Self::ZExt(i) => i.src(),
-            Self::SExt(i) => i.src(),
+            Self::Zext(i) => i.src(),
+            Self::Sext(i) => i.src(),
             Self::FpTrunc(i) => i.src(),
             Self::FpExt(i) => i.src(),
-            Self::FpToUI(i) => i.src(),
-            Self::FpToSI(i) => i.src(),
-            Self::UIToFp(i) => i.src(),
-            Self::SIToFp(i) => i.src(),
-            Self::PtrToAddr(i) => i.src().into_erased(),
-            Self::PtrToInt(i) => i.src().into_erased(),
+            Self::FpToUi(i) => i.src(),
+            Self::FpToSi(i) => i.src(),
+            Self::UiToFp(i) => i.src(),
+            Self::SiToFp(i) => i.src(),
+            Self::PtrToAddr(i) => i.src().as_erased(),
+            Self::PtrToInt(i) => i.src().as_erased(),
             Self::IntToPtr(i) => i.src(),
             Self::BitCast(i) => i.src(),
-            Self::AddrSpaceCast(i) => i.src().into_erased(),
+            Self::AddrSpaceCast(i) => i.src().as_erased(),
         }
     }
 
@@ -1793,14 +1807,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
     pub fn as_view(&self) -> InstructionView<'ctx, B> {
         match self {
             Self::Trunc(i) => i.as_view(),
-            Self::ZExt(i) => i.as_view(),
-            Self::SExt(i) => i.as_view(),
+            Self::Zext(i) => i.as_view(),
+            Self::Sext(i) => i.as_view(),
             Self::FpTrunc(i) => i.as_view(),
             Self::FpExt(i) => i.as_view(),
-            Self::FpToUI(i) => i.as_view(),
-            Self::FpToSI(i) => i.as_view(),
-            Self::UIToFp(i) => i.as_view(),
-            Self::SIToFp(i) => i.as_view(),
+            Self::FpToUi(i) => i.as_view(),
+            Self::FpToSi(i) => i.as_view(),
+            Self::UiToFp(i) => i.as_view(),
+            Self::SiToFp(i) => i.as_view(),
             Self::PtrToAddr(i) => i.as_view(),
             Self::PtrToInt(i) => i.as_view(),
             Self::IntToPtr(i) => i.as_view(),
@@ -1815,14 +1829,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> CastKind<'ctx, B> {
     pub fn to_erased(&self) -> Value<'ctx, B> {
         match self {
             Self::Trunc(i) => i.to_erased(),
-            Self::ZExt(i) => i.to_erased(),
-            Self::SExt(i) => i.to_erased(),
+            Self::Zext(i) => i.to_erased(),
+            Self::Sext(i) => i.to_erased(),
             Self::FpTrunc(i) => i.to_erased(),
             Self::FpExt(i) => i.to_erased(),
-            Self::FpToUI(i) => i.to_erased(),
-            Self::FpToSI(i) => i.to_erased(),
-            Self::UIToFp(i) => i.to_erased(),
-            Self::SIToFp(i) => i.to_erased(),
+            Self::FpToUi(i) => i.to_erased(),
+            Self::FpToSi(i) => i.to_erased(),
+            Self::UiToFp(i) => i.to_erased(),
+            Self::SiToFp(i) => i.to_erased(),
             Self::PtrToAddr(i) => i.to_erased(),
             Self::PtrToInt(i) => i.to_erased(),
             Self::IntToPtr(i) => i.to_erased(),
@@ -1955,22 +1969,22 @@ pub enum InstructionKind<'ctx, B: ModuleBrand> {
     Add(AddInst<'ctx, B>),
     Sub(SubInst<'ctx, B>),
     Mul(MulInst<'ctx, B>),
-    UDiv(UDivInst<'ctx, B>),
-    SDiv(SDivInst<'ctx, B>),
-    URem(URemInst<'ctx, B>),
-    SRem(SRemInst<'ctx, B>),
+    Udiv(UdivInst<'ctx, B>),
+    Sdiv(SdivInst<'ctx, B>),
+    Urem(UremInst<'ctx, B>),
+    Srem(SremInst<'ctx, B>),
     Shl(ShlInst<'ctx, B>),
-    LShr(LShrInst<'ctx, B>),
-    AShr(AShrInst<'ctx, B>),
+    Lshr(LshrInst<'ctx, B>),
+    Ashr(AshrInst<'ctx, B>),
     And(AndInst<'ctx, B>),
     Or(OrInst<'ctx, B>),
     Xor(XorInst<'ctx, B>),
-    FAdd(FAddInst<'ctx, B>),
-    FSub(FSubInst<'ctx, B>),
-    FMul(FMulInst<'ctx, B>),
-    FDiv(FDivInst<'ctx, B>),
-    FRem(FRemInst<'ctx, B>),
-    FCmp(FCmpInst<'ctx, B>),
+    Fadd(FaddInst<'ctx, B>),
+    Fsub(FsubInst<'ctx, B>),
+    Fmul(FmulInst<'ctx, B>),
+    Fdiv(FdivInst<'ctx, B>),
+    Frem(FremInst<'ctx, B>),
+    Fcmp(FcmpInst<'ctx, B>),
     Alloca(AllocaInst<'ctx, B>),
     Load(LoadInst<'ctx, B>),
     Store(StoreInst<'ctx, B>),
@@ -1978,10 +1992,10 @@ pub enum InstructionKind<'ctx, B: ModuleBrand> {
     Call(CallInst<'ctx, Dyn, B>),
     Select(SelectInst<'ctx, B>),
     Cast(CastKind<'ctx, B>),
-    ICmp(ICmpInst<'ctx, B>),
-    FNeg(FNegInst<'ctx, B>),
+    Icmp(IcmpInst<'ctx, B>),
+    Fneg(FnegInst<'ctx, B>),
     Freeze(FreezeInst<'ctx, B>),
-    VAArg(VAArgInst<'ctx, B>),
+    VaArg(VaArgInst<'ctx, B>),
     ExtractValue(ExtractValueInst<'ctx, B>),
     InsertValue(InsertValueInst<'ctx, B>),
     ExtractElement(ExtractElementInst<'ctx, B>),
@@ -1992,7 +2006,7 @@ pub enum InstructionKind<'ctx, B: ModuleBrand> {
     LandingPad(LandingPadInst<'ctx, TermClosed, B>),
     CleanupPad(CleanupPadInst<'ctx, B>),
     CatchPad(CatchPadInst<'ctx, B>),
-    AtomicRMW(AtomicRMWInst<'ctx, B>),
+    AtomicRmw(AtomicRmwInst<'ctx, B>),
     Phi(PhiKind<'ctx, B>),
 }
 
@@ -2006,21 +2020,21 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionKind<'ctx, B> {
             Self::Add(h) => (h.to_erased(), BinaryOpcode::Add),
             Self::Sub(h) => (h.to_erased(), BinaryOpcode::Sub),
             Self::Mul(h) => (h.to_erased(), BinaryOpcode::Mul),
-            Self::UDiv(h) => (h.to_erased(), BinaryOpcode::UDiv),
-            Self::SDiv(h) => (h.to_erased(), BinaryOpcode::SDiv),
-            Self::URem(h) => (h.to_erased(), BinaryOpcode::URem),
-            Self::SRem(h) => (h.to_erased(), BinaryOpcode::SRem),
+            Self::Udiv(h) => (h.to_erased(), BinaryOpcode::Udiv),
+            Self::Sdiv(h) => (h.to_erased(), BinaryOpcode::Sdiv),
+            Self::Urem(h) => (h.to_erased(), BinaryOpcode::Urem),
+            Self::Srem(h) => (h.to_erased(), BinaryOpcode::Srem),
             Self::Shl(h) => (h.to_erased(), BinaryOpcode::Shl),
-            Self::LShr(h) => (h.to_erased(), BinaryOpcode::LShr),
-            Self::AShr(h) => (h.to_erased(), BinaryOpcode::AShr),
+            Self::Lshr(h) => (h.to_erased(), BinaryOpcode::Lshr),
+            Self::Ashr(h) => (h.to_erased(), BinaryOpcode::Ashr),
             Self::And(h) => (h.to_erased(), BinaryOpcode::And),
             Self::Or(h) => (h.to_erased(), BinaryOpcode::Or),
             Self::Xor(h) => (h.to_erased(), BinaryOpcode::Xor),
-            Self::FAdd(h) => (h.to_erased(), BinaryOpcode::FAdd),
-            Self::FSub(h) => (h.to_erased(), BinaryOpcode::FSub),
-            Self::FMul(h) => (h.to_erased(), BinaryOpcode::FMul),
-            Self::FDiv(h) => (h.to_erased(), BinaryOpcode::FDiv),
-            Self::FRem(h) => (h.to_erased(), BinaryOpcode::FRem),
+            Self::Fadd(h) => (h.to_erased(), BinaryOpcode::Fadd),
+            Self::Fsub(h) => (h.to_erased(), BinaryOpcode::Fsub),
+            Self::Fmul(h) => (h.to_erased(), BinaryOpcode::Fmul),
+            Self::Fdiv(h) => (h.to_erased(), BinaryOpcode::Fdiv),
+            Self::Frem(h) => (h.to_erased(), BinaryOpcode::Frem),
             _ => return None,
         };
         Some(BinaryOp::from_value(value, opcode))
@@ -2031,8 +2045,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> InstructionKind<'ctx, B> {
     /// `dyn_cast<CmpInst>`.
     pub fn as_cmp(&self) -> Option<Cmp<'ctx, B>> {
         match self {
-            Self::ICmp(h) => Some(Cmp::from_value(h.to_erased())),
-            Self::FCmp(h) => Some(Cmp::from_value(h.to_erased())),
+            Self::Icmp(h) => Some(Cmp::from_value(h.to_erased())),
+            Self::Fcmp(h) => Some(Cmp::from_value(h.to_erased())),
             _ => None,
         }
     }

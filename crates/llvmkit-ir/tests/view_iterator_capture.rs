@@ -24,7 +24,7 @@
 //! the file stops compiling rather than failing an assertion.
 
 use llvmkit_ir::{
-    Dyn, IRBuilder, InstructionKind, InstructionView, IntValue, IrError, IsValue, Linkage,
+    Dyn, InstructionKind, InstructionView, IntValue, IrBuilder, IrError, IsValue, Linkage,
     ModuleBrand, NoFolder, Value, module_new,
 };
 
@@ -41,26 +41,26 @@ use llvmkit_ir::{
 /// is `join`'s block parameter, so it heads the second block.
 fn two_block_function<B: ModuleBrand>(m: &llvmkit_ir::Module<B>) -> Result<Vec<String>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty.as_type(), [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
 
-    let scaffold = IRBuilder::new_for::<Dyn>(m);
+    let scaffold = IrBuilder::new_for::<Dyn>(m);
     let (join, params) =
         scaffold.append_block_with_params(m.view(f), &[i32_ty.as_type()], "join")?;
     let join_label = join.id();
 
-    let b = IRBuilder::with_folder(m, NoFolder).position_at_end(entry);
+    let b = IrBuilder::with_folder(m, NoFolder).position_at_end(entry);
     let a: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let sum = b.build_int_add::<i32, _, _, _>(a, a, "sum")?;
-    let sum_erased = b.view(sum).into_erased();
-    b.build_br_with_args(join_label, &[sum_erased])?;
+    let sum = b.int_add::<i32, _, _, _>(a, a, "sum")?;
+    let sum_erased = b.view(sum).as_erased();
+    b.br_with_args(join_label, &[sum_erased])?;
 
-    let b = IRBuilder::with_folder(m, NoFolder).position_at_end(join);
+    let b = IrBuilder::with_folder(m, NoFolder).position_at_end(join);
     let p: IntValue<'_, i32, _> = params[0].try_into()?;
-    let doubled = b.build_int_add::<i32, _, _, _>(p, p, "doubled")?;
-    let doubled_erased = b.view(doubled).into_erased();
-    b.build_ret(doubled_erased)?;
+    let doubled = b.int_add::<i32, _, _, _>(p, p, "doubled")?;
+    let doubled_erased = b.view(doubled).as_erased();
+    b.ret(doubled_erased)?;
 
     // The phi carries no name of its own (it is an anonymous block parameter),
     // so program order is: entry's `sum`, entry's `br`, join's phi, `doubled`,

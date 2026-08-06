@@ -102,20 +102,20 @@ impl SpeculationOptions {
     /// whose caller is about to swap an operand out, so anything learned from
     /// the current one is about to stop being true.
     #[must_use]
-    pub fn with_variable_info(mut self, use_variable_info: bool) -> Self {
-        self.use_variable_info = use_variable_info;
+    pub fn without_variable_info(mut self) -> Self {
+        self.use_variable_info = false;
         self
     }
 
     /// Whether attributes that make *particular* operand values UB (`noundef`,
     /// `dereferenceable`, `dereferenceable_or_null`) may be disregarded.
     #[must_use]
-    pub fn ignoring_ub_implying_attrs(mut self, ignore: bool) -> Self {
-        self.ignore_ub_implying_attrs = ignore;
+    pub fn ignoring_ub_implying_attrs(mut self) -> Self {
+        self.ignore_ub_implying_attrs = true;
         self
     }
 
-    /// See [`Self::with_variable_info`].
+    /// See [`Self::without_variable_info`].
     pub fn uses_variable_info(self) -> bool {
         self.use_variable_info
     }
@@ -162,14 +162,14 @@ pub fn is_safe_to_speculatively_execute_with_opcode<'ctx, B: ModuleBrand + 'ctx>
 
     match opcode {
         // x / y and x % y are undefined when y == 0.
-        Opcode::UDiv | Opcode::URem => {
+        Opcode::Udiv | Opcode::Urem => {
             let Some(denominator) = operand(1).and_then(int_constant) else {
                 return false;
             };
             !denominator.is_zero()
         }
         // Signed division adds INT_MIN / -1.
-        Opcode::SDiv | Opcode::SRem => {
+        Opcode::Sdiv | Opcode::Srem => {
             let Some(denominator) = operand(1).and_then(int_constant) else {
                 return false;
             };
@@ -218,29 +218,29 @@ pub fn is_safe_to_speculatively_execute_with_opcode<'ctx, B: ModuleBrand + 'ctx>
             options.ignores_ub_implying_attrs() || !has_ub_implying_attrs(&data.attrs)
         }
         // Upstream's `default: return true`.
-        Opcode::FNeg
+        Opcode::Fneg
         | Opcode::Add
-        | Opcode::FAdd
+        | Opcode::Fadd
         | Opcode::Sub
-        | Opcode::FSub
+        | Opcode::Fsub
         | Opcode::Mul
-        | Opcode::FMul
-        | Opcode::FDiv
-        | Opcode::FRem
+        | Opcode::Fmul
+        | Opcode::Fdiv
+        | Opcode::Frem
         | Opcode::Shl
-        | Opcode::LShr
-        | Opcode::AShr
+        | Opcode::Lshr
+        | Opcode::Ashr
         | Opcode::And
         | Opcode::Or
         | Opcode::Xor
         | Opcode::GetElementPtr
         | Opcode::Trunc
-        | Opcode::ZExt
-        | Opcode::SExt
-        | Opcode::FpToUI
-        | Opcode::FpToSI
-        | Opcode::UIToFp
-        | Opcode::SIToFp
+        | Opcode::Zext
+        | Opcode::Sext
+        | Opcode::FpToUi
+        | Opcode::FpToSi
+        | Opcode::UiToFp
+        | Opcode::SiToFp
         | Opcode::FpTrunc
         | Opcode::FpExt
         | Opcode::PtrToInt
@@ -248,8 +248,8 @@ pub fn is_safe_to_speculatively_execute_with_opcode<'ctx, B: ModuleBrand + 'ctx>
         | Opcode::IntToPtr
         | Opcode::BitCast
         | Opcode::AddrSpaceCast
-        | Opcode::ICmp
-        | Opcode::FCmp
+        | Opcode::Icmp
+        | Opcode::Fcmp
         | Opcode::Select
         | Opcode::ExtractElement
         | Opcode::InsertElement
@@ -258,7 +258,7 @@ pub fn is_safe_to_speculatively_execute_with_opcode<'ctx, B: ModuleBrand + 'ctx>
         | Opcode::InsertValue
         | Opcode::Freeze => true,
         // Upstream's explicit "misc instructions which have effects" list.
-        Opcode::VAArg
+        Opcode::VaArg
         | Opcode::Alloca
         | Opcode::Invoke
         | Opcode::CallBr
@@ -270,7 +270,7 @@ pub fn is_safe_to_speculatively_execute_with_opcode<'ctx, B: ModuleBrand + 'ctx>
         | Opcode::Switch
         | Opcode::Unreachable
         | Opcode::Fence
-        | Opcode::AtomicRMW
+        | Opcode::AtomicRmw
         | Opcode::AtomicCmpXchg
         | Opcode::LandingPad
         | Opcode::Resume
@@ -289,14 +289,9 @@ pub fn is_safe_to_speculatively_execute_with_opcode<'ctx, B: ModuleBrand + 'ctx>
 /// which is exactly the base call with `UseVariableInfo = false`.
 pub fn is_safe_to_speculatively_execute_with_variable_replaced<'ctx, B: ModuleBrand + 'ctx>(
     instruction: &InstructionView<'ctx, B>,
-    ignore_ub_implying_attrs: bool,
+    options: SpeculationOptions,
 ) -> bool {
-    is_safe_to_speculatively_execute(
-        instruction,
-        SpeculationOptions::new()
-            .with_variable_info(false)
-            .ignoring_ub_implying_attrs(ignore_ub_implying_attrs),
-    )
+    is_safe_to_speculatively_execute(instruction, options.without_variable_info())
 }
 
 /// Whether moving `instruction` relative to another one could change behaviour
@@ -889,7 +884,7 @@ where
         // `dereferenceable` implies `noundef`, so an atomic operation's pointer
         // is implicitly `noundef` too.
         InstructionKindData::AtomicCmpXchg(data) => handle(data.ptr.get()),
-        InstructionKindData::AtomicRMW(data) => handle(data.ptr.get()),
+        InstructionKindData::AtomicRmw(data) => handle(data.ptr.get()),
         InstructionKindData::Call(_) | InstructionKindData::Invoke(_) => {
             let Some(call) = call_parts(kind) else {
                 return false;
@@ -937,10 +932,10 @@ where
     }
     match instruction_kind(instruction) {
         Some(
-            InstructionKindData::UDiv(data)
-            | InstructionKindData::SDiv(data)
-            | InstructionKindData::URem(data)
-            | InstructionKindData::SRem(data),
+            InstructionKindData::Udiv(data)
+            | InstructionKindData::Sdiv(data)
+            | InstructionKindData::Urem(data)
+            | InstructionKindData::Srem(data),
         ) => handle(data.rhs.get()),
         _ => false,
     }
@@ -1051,10 +1046,10 @@ fn may_read_or_write_memory<'ctx, B: ModuleBrand + 'ctx>(
     let anchor = instruction.to_erased();
     let kind = view_kind(instruction);
     match kind {
-        InstructionKindData::VAArg(_)
+        InstructionKindData::VaArg(_)
         | InstructionKindData::Fence(_)
         | InstructionKindData::AtomicCmpXchg(_)
-        | InstructionKindData::AtomicRMW(_)
+        | InstructionKindData::AtomicRmw(_)
         | InstructionKindData::CatchPad(_)
         | InstructionKindData::CatchReturn(_)
         | InstructionKindData::Load(_)
@@ -1083,9 +1078,9 @@ fn may_write_to_memory<'ctx, B: ModuleBrand + 'ctx>(
         // `fence` arm; the conservative answer is inherited with it.
         InstructionKindData::Fence(_)
         | InstructionKindData::Store(_)
-        | InstructionKindData::VAArg(_)
+        | InstructionKindData::VaArg(_)
         | InstructionKindData::AtomicCmpXchg(_)
-        | InstructionKindData::AtomicRMW(_)
+        | InstructionKindData::AtomicRmw(_)
         | InstructionKindData::CatchPad(_)
         | InstructionKindData::CatchReturn(_) => true,
         InstructionKindData::Call(_)

@@ -66,7 +66,7 @@ fn parameter<'m>(module: &'m Module<DynBrand, Unverified>, index: usize) -> Valu
         .params()
         .nth(index)
         .expect("fixture has that many parameters")
-        .into_erased()
+        .as_erased()
 }
 
 /// A constant leaf pins the class and the sign exactly — the `ConstantFP` arm

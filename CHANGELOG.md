@@ -14,6 +14,508 @@ cut, entries accumulate under **Unreleased**.
 > past the 0.0.4 freeze, not two pending releases; they collapse into one entry
 > when the tag is cut.
 
+### API idiomatics program (Rust API Guidelines sweep)
+
+A coordinated set of breaking renames and reshapes bringing the whole public
+surface in line with the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
+(C-CASE, C-GETTER, C-CONV, C-CUSTOM-TYPE, C-ITER, C-BUILDER, ...). Pre-1.0,
+no users: one coherent break instead of a drip.
+
+Executed wave-by-wave, and the bullets below run **in wave order** — the
+program's own narrative, from renaming what things are called (W1–W3) through
+what their signatures promise (W4–W5), what types the API models instead of
+raw scalars (W6–W8), what its reads and constructions hand back (W9–W10), and
+finally the trait floor and the crate surfaces (W11a–W12). Landing order on the
+branch differed, because several waves ran in parallel; each bullet names its
+wave so a commit can be traced back to it.
+
+#### Changed
+
+- **Breaking (W1): strict RFC-430 acronym casing on type names.**
+  `IRBuilder` → `IrBuilder`, `IRBuilderFolder` → `IrBuilderFolder`,
+  `CFGAnalyses` → `CfgAnalyses`, `ICmpInst` → `IcmpInst`, `FCmpInst` →
+  `FcmpInst`, `FNegInst` → `FnegInst`, `VAArgInst` → `VaArgInst`, `ICmpFlags`
+  → `IcmpFlags`, `ZExtFlags` → `ZextFlags`, `UIToFpFlags` → `UiToFpFlags`,
+  and the crate-internal payload/id companions (`FcmpInstData`, `FnegInstData`,
+  `VaArgInstData`, `VaArgInstId`); asmparser's `GVarFlags` becomes
+  `GlobalVariableFlags` (casing + the full-words law). Aligns with the
+  existing `IrError` / `IrResult` / `CfgUpdate` spellings.
+
+- **Breaking (W1b): the same RFC-430 casing, now on enum variants and
+  macro-declared types.** W1 found its targets by grepping declaration
+  keywords, which sees neither `enum` bodies nor types minted inside
+  `decl_binop_handle!` / `decl_cast_handle!` / `decl_value_id!` /
+  `decl_struct_kind!` / `decl_exact_flags!` — so two whole categories survived
+  it. Both are converted now: **258 symbols, 2459 edits.** The opcode and
+  instruction-kind variants (`Opcode::ICmp` → `Icmp`, `CastOpcode::ZExt` →
+  `Zext`, `InstructionKind::AShr` → `Ashr`, `BinaryOpcode::UDiv` → `Udiv`,
+  `FAdd` → `Fadd`, `VAArg` → `VaArg`, `AtomicRMW` → `AtomicRmw`, asmparser's
+  `FPToSI` / `UIToFP` / `FPExt` → `FpToSi` / `UiToFp` / `FpExt`); the intrinsic
+  and `atomicrmw` mnemonics (`SMax` → `Smax`, `USubSat` → `UsubSat`, `BSwap` →
+  `Bswap`, `VScale` → `Vscale`, `FMaximum` → `Fmaximum`, `UIncWrap` →
+  `UincWrap`); attribute, linkage and layout variants (`StrictFP` → `StrictFp`,
+  `UWTable` → `UwTable`, `VScaleRange` → `VscaleRange`, `WeakODR` → `WeakOdr`,
+  `LinkOnceODR` → `LinkOnceOdr`, `XCoff` → `Xcoff`, `ATT` → `Att`);
+  `ConstantData::DSOLocalEquivalent` → `DsoLocalEquivalent`; the 18
+  `SpecializedMetadataKind::DI*` node kinds → `Di*`; and the macro-declared
+  handles, flag structs and markers (`AShrInst` → `AshrInst`, `ZExtInst` →
+  `ZextInst`, `FAddInst` → `FaddInst`, `UDivFlags` → `UdivFlags`,
+  `AtomicRMWInst` / `Data` / `Id` / `Config` / `Flags` / `BinOp` →
+  `AtomicRmw*`, `GlobalIFunc*` → `GlobalIfunc*`, the `BFloat` float-kind marker
+  → `Bfloat`). Two names also shed an abbreviation, exactly as `GVarFlags` did
+  in W1: `NamedMDNode` → `NamedMetadataNode` (its three sibling types already
+  spell `NamedMetadata` in full) and `UseListOrderBBRecord` →
+  `UseListOrderBbRecord` (matching asmparser's existing `Keyword::UselistorderBb`).
+
+  **Printed IR is byte-identical.** Every `.ll` spelling lives in a string
+  literal, not in a variant name — `SpecializedMetadataKind::DiLocation` still
+  prints `DILocation`, `AtomicRmwBinOp::UincWrap` still prints `uinc_wrap` — so
+  the round-trip corpus and the byte-lock examples are untouched. Deliberately
+  left alone: upstream C++ citations in comments (`AtomicRMWInst`,
+  `Instruction::FPToSI`, `NamedMDNode *`), `.ll` keyword strings,
+  `PunctKind::LBrace`-style Left/Right punctuation names, and
+  `PhiViolation::NotAPredecessor` — in those the second capital opens an
+  ordinary word, not an acronym.
+
+- **Breaking (W2): the `build_` prefix is gone from every `IrBuilder` method.**
+  All 265 emitters lose the C++ `CreateAdd`-heritage prefix: `build_int_add` →
+  `int_add`, `build_ret` → `ret`, `build_br` → `br`, `build_call` → `call`,
+  `build_gep` → `gep`, and so on — call sites now read
+  `b.int_add(lhs, rhs, "sum")?`, and the `IrBuilder` and `SsaBuilder` layers
+  spell their instruction vocabulary identically
+  (`ssa.ins()?.int_mul(a, b, "x")`). Folded-in normalizations: the two
+  `float_neg` stragglers join the `fp_` family as `fp_neg` / `fp_neg_fmf`
+  (the FMF variant also swaps its misleading `_with_flags` suffix for the
+  `_fmf` the rest of the fast-math family uses); the abbreviated `vec_*` /
+  `arr_*` typed vector/array emitters become `vector_*` / `array_*` (full-words
+  law); and the confusing near-duplicate splat pair is resolved as
+  `vector_splat` (typed, was `build_vec_splat`) vs `vector_splat_dyn` (erased,
+  was `build_vector_splat`). Chainable builders keep their `.build()`
+  terminals (C-BUILDER); test function names keep their historical spellings.
+
+- **Breaking (W3): lookups are bare nouns; `get_` is reserved for
+  get-or-insert.** `Module::get_global` → `global`, `get_alias` → `alias`,
+  `get_ifunc` → `ifunc`, `get_comdat` → `comdat`, `function_by_name::<R>` →
+  `function::<R>`, `function_by_name_dyn` → `function_dyn` (C-GETTER). The
+  named-struct pair untangles: the get-or-create former `named_struct`
+  becomes `get_or_insert_named_struct`, freeing `named_struct(name)` for the
+  pure lookup; the bespoke `get_or_set_named_struct_body::<S>` becomes
+  `get_or_insert_struct_of::<S>`. Also de-prefixed: `Type::get_undef`/
+  `get_poison` → `undef`/`poison`; the free functions `splat_value`,
+  `select_pattern`, `underlying_object{,_aggressive,s,s_for_code_gen}`,
+  `constant_data_array_info`, `constant_string_info`, `string_length`;
+  `DemandedBits::{demanded_bits, operand_demanded_bits}`; the analysis
+  managers' `result::<A>` / `cached_result::<A>`; asmparser
+  `NumberedValues::next_unused_id` (was `get_next`);
+  `AttributeStorage::or_default_mut` (was `get_mut_or_default`).
+  The `get_or_insert_*` family keeps its std-consistent names.
+
+- **Breaking (W3): conversion-name honesty (C-CONV).**
+  `Value::as_const_int` → `to_const_int` (it allocates an `ApInt`);
+  `AtomicOrdering::to_ir_string` and `IntPredicate`/`FloatPredicate::name`
+  unify on `as_str`; the `IsValue` widening accessor and every inherent
+  twin rename `into_erased` → `as_erased`, joining the `as_dyn`/`as_view`
+  family (the operand-lift trait method `into_erased_value` is unchanged);
+  `BlockCursor::next` → `step` (it is deliberately not an `Iterator`; the
+  old name invited `for`-loop attempts that failed confusingly).
+  `set_data_layout` is now the single, infallible setter taking a parsed
+  `DataLayout`; the string-parsing overload is gone — parse explicitly with
+  `DataLayout::parse(...)` (fallibility lives where the failure is).
+
+- **Breaking (W4): signature generics tell the truth about ownership
+  (C-GENERIC).** Names that are stored take `Into<String>` — the
+  `add_global` family (was `AsRef<str>` + a hidden copy), the chainable
+  call-builders' `.name(..)`, `PassPipelineTextName::try_new`; conditional
+  get-or-insert keys stay borrow-generic (`get_or_insert_comdat` is now
+  `AsRef<str>`). `get_or_insert_intrinsic_declaration_by_id` threads
+  `Into<Box<[Type]>>` through (no forced `.to_vec()`);
+  `append_block_with_named_params` takes any
+  `IntoIterator<Item = (Type, impl Into<String>)>` instead of a
+  `&[(Type, &str)]` borrow sandwich; `StructLayoutInfo::new` and
+  `PassPipelineElement::new` accept `Into<Vec<u64>>` / `IntoIterator`.
+  `Module::global_builder` accepts `impl Into<Type>` like its siblings.
+  asmparser: `parse_type`, `parse_type_at_beginning`,
+  `parse_constant_value`, `parse_summary_index_assembly` now take
+  `impl AsRef<[u8]>` like the rest of the entry points; the
+  `slots: Option<&SlotMapping>` mode parameters split into explicit
+  `*_with_slots` twins; the redundant `parse_assembly_string` is gone
+  (`parse_assembly` already accepts `&str`).
+
+- **Breaking (W5): booleans become methods, flag structs, and `Signedness`
+  (C-CUSTOM-TYPE).** Type constructors split instead of taking mode bools:
+  `vector_type(elem, n)` / `scalable_vector_type(elem, n)` (was
+  `vector_type(elem, n, scalable)`), `struct_type(elements)` /
+  `packed_struct_type(elements)`, and — fixing the `fn_` abbreviation too —
+  `function_type(ret, params)` / `variadic_function_type(ret, params)`
+  (+ `_no_parameters` twins; were `fn_type(.., is_var_arg)` /
+  `fn_type_no_params`). Builder toggles are zero-arg: `GlobalBuilder::
+  constant()` / `externally_initialized()` (plus a `set_/clear_` pair on the
+  `GlobalVariable` view), `InlineAsmOptions::side_effects()` /
+  `align_stack()` / `unwind()` (the odd `with_can_unwind(bool)` is gone),
+  `SpecializedMetadataNode::distinct()`, and `SpeculationOptions::
+  without_variable_info()` / `ignoring_ub_implying_attrs()` (upstream's
+  defaults are the defaults; the pair is the clearing side).
+  `is_safe_to_speculatively_execute_with_variable_replaced` takes
+  `SpeculationOptions` instead of a bare bool. `ApIntSignedness` is renamed
+  `Signedness` and replaces every `is_signed` / `sign_extend` /
+  `for_signed` bool (`const_int_raw`, `constant_fold_integer_cast`,
+  `ConstantRange::from_known_bits`, `compute_constant_range{,_including_
+  known_bits}`). `KnownBits` transfer functions take the per-opcode flag
+  structs the crate already ships — `add_with_flags(.., AddFlags)`,
+  `sub_with_flags(.., SubFlags)`, `shl_with_flags(.., ShlFlags,
+  ShiftAmountKnowledge)`, `lshr`/`ashr` with `LShrFlags`/`AShrFlags`,
+  `udiv`/`sdiv_with_exact(.., UDivFlags/SDivFlags)`, and
+  `compute_for_add_sub(AddSubOperation, OverflowFlags, ..)` — which also
+  kills a live footgun: `shl_with_flags` used to take `(nuw, nsw)` in the
+  opposite order from `add_with_flags`'s `(nsw, nuw)`. New public enums:
+  `AddSubOperation`, `ShiftAmountKnowledge` (an analysis-side fact no `.ll`
+  keyword spells, deliberately not part of the IR flag structs).
+
+- **Breaking (W6): `NamedMetadataId<B>` + `NamedMetadataName` replace the raw
+  `usize`/`String` named-metadata surface (D7).**
+  `Module::get_or_insert_named_metadata` mints a module-tagged, branded
+  `NamedMetadataId<B>` instead of a bare list index, and
+  `named_metadata_add_operand` takes that id — a foreign id is
+  `Err(IrError::ForeignNamedMetadataId)` (new variant), replacing the old
+  index's out-of-range `UnknownMetadataSlot` arm (an in-range foreign index
+  used to be undetectable in principle; the tag makes it impossible). New
+  bare-noun lookup `Module::named_metadata(&NamedMetadataName) ->
+  Option<NamedMetadataId<B>>` and clone-out reader
+  `Module::named_metadata_get(id) -> Option<NamedMDNode<B>>` (`None` only for
+  a foreign id). Node names are the new `#[non_exhaustive]`
+  `NamedMetadataName` enum spelling the well-known upstream set
+  (`llvm.module.flags`, `llvm.dbg.cu`, `llvm.ident`, `llvm.linker.options`,
+  ...) as variants with `Custom(String)` for the open rest;
+  `From<&str>`/`From<String>` keep call sites one-liners.
+  `NamedMDNode::new` takes `impl Into<NamedMetadataName>`, `name()` returns
+  `&NamedMetadataName`, and the printed spelling moves to `name_str()`.
+  Printed `.ll` output is unchanged.
+
+- **Breaking (W7): typed module flags — `ModuleFlagBehavior` /
+  `ModuleFlagKey` / `ModuleFlagEntry`, module accessors, and the verifier
+  port (C-CUSTOM-TYPE).** New `module_flags` module mirroring
+  `Module::ModFlagBehavior` (`Module.h`, discriminants 1–8 with
+  `from_raw`/`raw` spelling `isValidModFlagBehavior`'s range check) and a
+  `#[non_exhaustive]` `ModuleFlagKey` naming the 27 well-known keys with
+  their exact `lib/IR/Module.cpp` spellings (`"Dwarf Version"`,
+  `"PIC Level"`, `"wchar_size"`, `"CG Profile"`, ...), `Custom(String)` for
+  the open rest, and `default_behavior()` giving the `Module.cpp` setter
+  pairing (`setPICLevel`→`Min`, `setUwtable`→`Max`, `setCodeModel`→`Error`,
+  `setSDKVersion`→`Warning`, ...; `None` where `Module.cpp` has no setter).
+  `Module` gains `add_module_flag` / `set_module_flag` (append vs
+  replace-in-place, mirroring `addModuleFlag`/`setModuleFlag`),
+  `module_flag(&ModuleFlagKey)`, and `module_flags() ->
+  Vec<ModuleFlagEntry>` — all backed by the `llvm.module.flags` named node
+  as ordinary `!{i32 behavior, !"key", value}` tuples, so printed IR and
+  the round-trip contract are untouched. The breaking half is the verifier:
+  `Verifier::visitModuleFlags` / `visitModuleFlag` /
+  `visitModuleFlagCGProfileEntry` are ported (tuple shape, behavior
+  validity, `MDString` ID, `min`/`max`/`require`/`append` value
+  constraints, ID uniqueness, requirement resolution, the
+  `aarch64-elf-pauthabi-*` pairing, and the `wchar_size` /
+  `Linker Options` / `SemanticInterposition` / `CG Profile` per-key
+  checks), so `verify` now rejects malformed `!llvm.module.flags` it
+  previously accepted — nine new `VerifierRule::ModuleFlag*` variants. One
+  deliberate deviation, documented in the verifier: upstream's `require`
+  comparison is uniqued-pointer identity; llvmkit compares structurally
+  because tuples and integer constants are not yet uniqued.
+
+- **W8: ADT leftovers — the fixed metadata kinds close their drift, the
+  `deactivation-symbol` bundle tag is spelled right, and string-attribute
+  reading gets typed (C-CUSTOM-TYPE).** `MetadataAttachmentKind` gains the 17
+  fixed kinds it was missing (`IrrLoop` through `ImplicitRef`, values 24–46 of
+  `FixedMetadataKinds.def`), a `fixed_id()` accessor returning the upstream
+  kind ID, and `#[non_exhaustive]` (like `AttrKind`) so future upstream kinds
+  are additive; a new drift test parses the now-vendored
+  `FixedMetadataKinds.def` so the enum can never silently lag again. The
+  `OB_deactivation_symbol` operand-bundle tag now parses **and prints** as
+  `"deactivation-symbol"` (upstream's `knownBundleName` spelling,
+  `lib/IR/LLVMContext.cpp`) — printed IR changes for that tag, which llvmkit
+  previously misspelled `"deactivation"`. A source-level `syncscope("system")`
+  is preserved as `SyncScope::Named("system")` instead of collapsing to the
+  default: upstream seeds only `"singlethread"` and the empty string (the
+  canonical `System` name), so `"system"` is an ordinary named scope and now
+  round-trips as text. New `gc_strategy` module spells the five built-in GC
+  strategy names from `BuiltinGCs.cpp` as `&str` constants (`ERLANG`, `OCAML`,
+  `SHADOW_STACK`, `STATEPOINT_EXAMPLE`, `CORECLR`) — constants, not an enum,
+  because the upstream registry is designed for out-of-tree collectors;
+  `set_gc` still takes any string. New `#[non_exhaustive]` `StrBoolAttrKind`
+  enum (the 11 `StrBoolAttr` declarations of `Attributes.td`, with
+  `key()`/`from_key()`) and reader
+  `FunctionValue::str_bool_attribute(kind) -> Option<bool>` with upstream's
+  `getValueAsBool` semantics (`Some(value == "true")`, `None` when absent);
+  `Attribute::String { key, value }` construction is unchanged — the
+  string-attribute namespace stays open. The attribute drift test now also
+  locks the `StrBoolAttr` set against the reader enum and pins the
+  `ComplexStrAttr` set to the two `DenormalMode`-typed keys.
+
+- **Breaking (W9): read APIs that allocated a `Vec` return iterators
+  (C-ITER).** `FunctionCfg::successors` / `predecessors`,
+  `BasicBlock::successors`, `Instruction::debug_records` /
+  `InstructionView::debug_records`, `FnReshape::pending_cfg_updates`,
+  `AssumptionCache::assumptions`, `DomConditionCache::conditions_for`, and
+  `DataLayout::non_standard_address_spaces` / `non_integral_address_spaces`
+  no longer build a `Vec` per call. A `for x in …` call site is unaffected; a
+  site that asked a `Vec` question (`.is_empty()`, `.len()`, indexing,
+  comparing against a `vec![…]`) becomes `.next().is_none()`, `.count()`, or
+  `.collect()`. Which of two shapes each one takes follows what the data
+  lives behind: the `FunctionCfg` and `DataLayout` methods **borrow**, since
+  both types own their tables outright with no interior mutability; the rest
+  **snapshot** the `RefCell` they read and hand back an owning iterator,
+  which therefore can never be alive across the next edit — with a `use<..>`
+  bound keeping `&self` out of the opaque type so the result still chains off
+  a borrowed receiver. Three are deliberately **not** `ExactSizeIterator`,
+  because they filter and the count is known only after the walk: both
+  `DataLayout` address-space methods (which are `+ Clone` instead, being
+  borrowing iterators) and `AssumptionCache::assumptions`, which skips slots
+  that no longer resolve as instructions — the llvmkit counterpart of
+  upstream's dead `WeakVH` entries. Also new: `IntoIterator for
+  &AttributeSet` / `&AttributeList` / `&MetadataAttachmentSet`, each yielding
+  exactly what that type's `iter()` does, so `for … in &set` works;
+  `MetadataAttachmentSet::iter` gains the `ExactSizeIterator +
+  DoubleEndedIterator + FusedIterator` bounds its siblings already carried;
+  and `Module::attribute_group(id) -> Option<AttributeStorage>` is the point
+  lookup most callers of `attribute_groups` actually wanted — the verifier
+  and `FunctionValue`'s string-attribute reader use it now instead of
+  deep-cloning the whole table once per query. `Module::attribute_groups`
+  itself, the whole-table read, became an iterator in the same wave.
+  `Module::module_flags` joins them: it shipped one wave earlier than this
+  sweep, so the sweep's list never contained it, and it was the last
+  `Vec`-returning read API on the public surface. It snapshots, like its
+  `RefCell`-backed siblings.
+
+- **Breaking (W10): `LoadBuilder` / `StoreBuilder` / `AllocaBuilder` — one
+  spelling per memory op (C-BUILDER).** `load`, `store` and `alloca` each carry
+  several *orthogonal* optional knobs, and the flat surface had grown one method
+  per combination. Three builders replace those combinations:
+
+  ```rust
+  let n = b.load_from(p).volatile().atomic(AtomicOrdering::Acquire)
+      .align(align).int::<i32>("n")?;
+  b.store_to(v, p).atomic(AtomicOrdering::Release).align(align).build()?;
+  let buf = b.alloca_builder(ty).array(n).align(align).name("buf").build()?;
+  ```
+
+  A `LoadBuilder` ends in a **typed terminal**, so the result shape is still
+  chosen by the caller rather than fixed by the knob spelling (D4 survives the
+  move to a builder): `.int::<W>(name)`, `.fp::<K>(name)`, `.pointer(name)`,
+  `.typed::<T>(name)` (the `TypedPointerValue` schema route) and
+  `.erased(ty, name)`. The marker is each terminal's only generic argument, so
+  `.int::<i32>("n")` needs no placeholder turbofish — which is why the terminals
+  take `name: &str` rather than the `impl AsRef<str>` the flat forms take
+  (explicit generic arguments and `impl Trait` arguments cannot coexist).
+  `StoreBuilder` and `AllocaBuilder` have a single `.build()`, and
+  `AllocaBuilder` takes its name through `.name(..)`. All three builder types
+  are `#[must_use]`, which covers the entry method *and* every setter: a chain
+  that forgets its terminal is a warning, not a silent no-op.
+
+  **Retired** — every one of them reachable through a builder:
+  `load_volatile`, `load_volatile_with_align`, `store_volatile`,
+  `store_volatile_with_align`, `int_load_atomic`, `load_atomic`, `store_atomic`,
+  and `alloca_dyn`, whose two `Option` mode-parameters are now `.array(n)` and
+  `.addr_space(n)` — present or absent, rather than passed as `None`. The
+  `AtomicLoadConfig` / `AtomicStoreConfig` bags the atomic forms took are
+  **deleted**: the builder carries that state, and keeping them would leave two
+  public spellings for one instruction. `AtomicCmpXchgConfig` /
+  `AtomicRmwConfig` are untouched — `cmpxchg` and `atomicrmw` are single
+  operations with no orthogonal-knob explosion and keep their config-bag
+  spelling.
+
+  **Kept, unchanged:** the plain flats `load`, `load_with_align`, `int_load`,
+  `int_load_dyn`, `int_load_with_align`, `fp_load`, `fp_load_dyn`,
+  `pointer_load`, `typed_load`, `typed_load_with_align`, `store`,
+  `store_with_align`, `typed_store`, `typed_store_with_align`, `alloca`,
+  `alloca_with_align`, `array_alloca`, `array_alloca_with_align` and
+  `typed_alloca`. The common case does not pay for the general one.
+
+  Two semantics worth stating: `.atomic(ordering)` leaves the sync scope at
+  `SyncScope::System` unless `.sync_scope(..)` is also called, in either chain
+  order; and an atomic load/store with no explicit `.align(..)` is filled with
+  the DataLayout ABI alignment on the way out — never zero, so LangRef's
+  non-zero-alignment requirement holds — which is exactly what upstream's own
+  builder path produces (`computeLoadStoreDefaultAlign` at construction, with
+  `setAtomic` leaving the alignment alone). The retired config bags demanded an
+  `Align` in their constructor; nothing else in the tree enforced it, and no
+  error variant ever described its absence.
+
+- **Breaking (W11a): the std-trait floor — `Debug` everywhere, `Hash`,
+  `FromStr`, `#[must_use]` (C-COMMON-TRAITS).** `Module<B, S>` had no `Debug`
+  at all, so `dbg!(&module)` did not compile and no user struct holding a
+  module could derive `Debug`. It has one now, hand-written as a **summary** —
+  `Module { name, id, functions: N, globals: N, state }` — deliberately *not*
+  forwarding to `Display`, which prints the entire `.ll` file. The typestate
+  is named (`"Verified"` / `"Unverified"`) through a `TypeId` comparison,
+  which is why the impl carries an `S: 'static` bound.
+
+  Seventy more public types across `llvmkit-ir`, `llvmkit-support` and
+  `llvmkit-macros` gained `Debug`, taking a scripted sweep of every
+  `pub struct` / `pub enum` in those crates from 70 missing to **0 of 387**.
+  Derived where it derives cleanly (through `#[derive(Branded)]` wherever a
+  brand or marker parameter is involved, so no spurious `B: Debug` bound
+  appears); hand-written where a field is a closure, a `dyn` trait object, or
+  an associated type with no `Debug` bound — the analysis managers print
+  registered/cached counts, `PassInstrumentationCallbacks` prints per-hook
+  callback counts, the erased pipelines print member counts, `SsaBuilder`
+  prints its function and whether the cursor is positioned,
+  `ValueTrackingQuery` prints which facts the query may use. Every impl that
+  reaches through a `RefCell` uses `try_borrow`, so printing a structure a
+  mutator is holding open degrades to a marker rather than panicking — a
+  `Debug` is what a caller reaches for *while* debugging. `ValueCategory`
+  gained the full `Debug, Clone, Copy, PartialEq, Eq, Hash` set; it had no
+  derives at all.
+
+  `#[must_use]` on the 58 remaining consuming builder methods
+  (`FunctionBuilder` 14, `GlobalBuilder` 11, `ValueTrackingQuery` 9,
+  `GlobalAliasBuilder` 6, the metadata builders 5, `InlineAsmOptions` 4,
+  `GlobalIFuncBuilder` 3, `ConstantExprOptions` 2, plus the pure combinators
+  in `fp_class.rs`, `gep_no_wrap_flags.rs` and `instructions.rs`). The
+  convention already existed on ~50 siblings and was unevenly applied, so
+  `builder.align(a);` used to compile and silently do nothing.
+
+  `IrError` and `DataLayout` gain `Hash` beside the `Eq` they already had:
+  errors de-duplicate in a `HashSet`, and a layout is a natural cache key.
+  New conversions, with each type's `from_raw` / `as_raw` `const fn` kept as
+  the const path: `TryFrom<u8>` for `IntPredicate` / `FloatPredicate`,
+  `From<IntPredicate>` and `From<FloatPredicate>` for `u8`, and
+  `From<CallingConv>` for `u32`. `TryFrom` reports a new
+  `IrError::InvalidDiscriminant { target, value }`.
+
+  **`FromStr` for the keyword types** — thirteen new impls where the crate had
+  two, all with `Err = IrError` and a new
+  `IrError::InvalidKeyword { target, keyword }` (both variants are additive:
+  `IrError` is `#[non_exhaustive]`): `Linkage`, `Visibility`,
+  `DllStorageClass`, `DsoLocality`, `ThreadLocalMode`, `UnnamedAddr`,
+  `SelectionKind`, `AtomicOrdering`, `CallingConv`, `IntPredicate`,
+  `FloatPredicate`, `SyncScope`, and `DataLayout` (which delegates to
+  `DataLayout::parse`, so its error stays the specific `InvalidDataLayout`).
+  Each `from_str` **inverts the type's own spelling table** — searching a new
+  `pub const VARIANTS`, the existing `all()`, or, for `CallingConv`, the whole
+  `0..=MAX` id space — rather than carrying a second table that could drift
+  from `Display`. For the keyword-optional enums, `""` resolves to the default
+  variant, so `parse(display(v)) == v` holds for *every* variant; that
+  identity is locked by a per-type in-file drift-lock test (the
+  `attribute_td_drift.rs` analogue) whose exhaustive `match` makes a new
+  variant a compile error. `SyncScope` is the documented exception: its
+  `Display` prints the `syncscope("…")` wrapper, so its `FromStr` takes a bare
+  scope *name* and is the inverse of `LLVMContext::getOrInsertSyncScopeID`,
+  not of `Display`.
+
+  `llvmkit-support`: `SourceMap` gains `Clone` and a hand-written `Debug` that
+  prints byte and line counts rather than the buffer. `Spanned<T>`'s `Ord` /
+  `PartialOrd` are now **hand-written span-first**; the derived versions
+  compared `value` before `span` (field order), so sorting spanned tokens gave
+  token order rather than source order. `Span` gains `contains(u32)` and
+  `join(Span)`, both `const fn` — the parsers were hand-rolling both.
+
+  `llvmkit-macros`: `#[derive(Branded)]` accepts opt-in `PartialOrd` and `Ord`
+  (field-order lexicographic for structs, declaration-order-then-payload for
+  enums, with the variant rank spelled as a `match` rather than an `as` cast,
+  and the `Ord: Eq + PartialOrd` supertrait chain checked at the attribute).
+  `BlockId` now takes its impls from that derive instead of ~35 lines of
+  hand-written ones, and the `decl_value_id!` family — `ValueId` and its typed
+  siblings — gains the same lexicographic `(ModuleId, slot)` order, with
+  `ModuleId` and `ValueSlot` gaining `PartialOrd`/`Ord` to support it. The
+  point is `BTreeMap` / `BTreeSet` keys: a pass that wants deterministic
+  output needs a total order that does not vary run to run, which a `HashMap`
+  does not give.
+
+  **Also breaking for `.err().expect(…)` callers**: giving the
+  terminator-edit handles a `Debug` newly enables `clippy::err_expect` at such
+  sites, which are now spelled `.expect_err(…)`.
+
+- **Breaking (W11b): `llvmkit-asmparser` exports its own surface, and its
+  errors say what went wrong (C-GOOD-ERR).** The crate root now re-exports
+  every parsing entry point (the `parse_assembly*`, `parse_type*`,
+  `parse_constant_value*` and summary-index families join the owned-module
+  ones) plus the types they speak: `ParseError`, `ParseResult`, `DiagLoc`,
+  `SymbolId`, `SymbolKind`, `ParsedModule`, `SlotMapping`, `GlobalRef`, and
+  `ModuleSummaryIndex`. `ParseError` — the error type of the headline API —
+  was previously only nameable as
+  `llvmkit_asmparser::parse_error::ParseError`, and through the umbrella as
+  `llvmkit::asmparser::parse_error::ParseError`. `Lexer`, `Token` and
+  `Parser` stay module-scoped: they mirror LLVM's `LLLexer` / `LLParser`
+  plumbing, not the surface a caller drives.
+  **User-visible: the rendered error text changed.** Messages no longer
+  splice a `Debug`-formatted location into the prose — `expected type at
+  DiagLoc { span: Span { start: 5, end: 9 }, file: None }` is now
+  `expected type`, and the location is read from `ParseError::loc()`, where
+  a renderer should get it (upstream is the same shape: `LLParser::error`
+  carries its `LocTy` beside the `Twine`). `SymbolKind` gains a `Display`
+  and a `sigil()`, so symbol diagnostics match `LLParser.cpp` word for
+  word — `redefinition of global '@foo'` and `use of undefined metadata
+  '!0'` instead of `redefinition of Global '@foo'` and `use of undefined
+  Metadata '%0'`; `Display for SymbolId` correspondingly prints the bare
+  identity and lets the namespace supply the sigil.
+  `ParseError::Expected::expected` is a `Cow<'static, str>` (nearly every
+  site passes a literal, so the common diagnostic no longer allocates), and
+  `Io(String)` becomes `Io { kind: std::io::ErrorKind, message: String }`,
+  so `NotFound` and `PermissionDenied` are matchable without parsing the
+  message back — `ErrorKind` is `Copy + Eq + Hash`, so the enum keeps its
+  derives. Also: `Token` implements `Display` (replacing the allocating,
+  callerless `ll_parser::describe`, same wording), `Lexer` implements
+  `FusedIterator` with the `next_token`-returns-`Eof`-forever vs
+  `Iterator::next`-returns-`None` contract now documented, and `Parser` has
+  a manual `Debug` printing a cursor summary rather than every slot table it
+  has filled.
+
+- **Breaking (W11c): the umbrella forwards features; `llvmkit-tablegen`
+  becomes a real library.** `llvmkit` gains `[features] default = ["macros"]`
+  forwarding to `llvmkit-ir/macros`; the `llvmkit-ir` dependency is
+  `default-features = false` there and in `llvmkit-asmparser` (which never
+  used the gated re-exports), so the umbrella's feature is the one switch.
+  The umbrella's three module re-exports are `#[doc(inline)]` so docs.rs
+  renders the items. `llvmkit-tablegen` exposes a library API: public
+  `TableGenError` (was the private `GenError`),
+  `generate(llvm_root, generated_file) -> Result<Generated, TableGenError>`
+  with `Generated::inputs()` listing every `.td` file read (for
+  `cargo:rerun-if-changed`), `verify_generated` (the `--check` half as its
+  own function), `vendored_llvm_root()`, and `GENERATED_FILE_NAME`.
+  `table_gen_main()` shrinks to the CLI driver, and the empty-argv `OUT_DIR`
+  build-script inference mode is gone — `llvmkit-ir`'s `build.rs` calls
+  `generate` directly and replays the returned inputs as rerun lines.
+
+- **Breaking (W12): the prose meets the tree, and the carried-forward gaps
+  close.** Three small API items the parallel waves left open, plus the
+  documentation reconciliation the program owed.
+
+  `AllocaFlags` is now `pub(crate)` and no longer re-exported from the crate
+  root. W10's `AllocaBuilder` toggles replaced it as the way *in*, which left
+  a public type reachable from no public signature. The way *out* was the real
+  gap and is now filled: `AllocaInst::is_inalloca()` and
+  `AllocaInst::is_swifterror()` join `allocated_type` / `array_size` / `align`
+  / `addr_space` on the read handle, mirroring `AllocaInst::isUsedWithInAlloca`
+  and `isSwiftError` (`Instructions.h`) — two bool predicates, as upstream
+  spells them, so the flags carrier itself stays internal plumbing.
+
+  `Debug` for the seven builder types in `ir_builder.rs` that W11a's sweep
+  could not reach: `IrBuilder`, `CallBuilder`, `TypedCallBuilder`,
+  `IntrinsicCallBuilder`, `LoadBuilder`, `StoreBuilder`, `AllocaBuilder`. All
+  hand-written — a `derive` would bound the folder parameter `F: Debug`, and a
+  folder is a strategy type with no obligation to be printable, so the folder
+  (and `TypedCallBuilder`'s lowered argument tuple) is reported by type name.
+  `#[must_use]` likewise reaches the setters W11a could not: every consuming
+  setter on `CallBuilder` / `TypedCallBuilder` / `IntrinsicCallBuilder`,
+  `CallSiteConfig::calling_conv` / `attrs`, and
+  `IrBuilder::with_fast_math_flags` / `clear_fast_math_flags`. The three memory
+  builders are `#[must_use]` at the *type*, which already covers their setters
+  and which `clippy::double_must_use` forbids restating.
+
+  `IntoIterator for &NumberedValues<T>` (asmparser) completes W9's set, so
+  `for (id, value) in &values` works alongside `&AttributeSet` /
+  `&AttributeList` / `&MetadataAttachmentSet`; it yields exactly what
+  `NumberedValues::iter` does, in the same unspecified order.
+
+  Documentation: `AGENTS.md`'s Builder-A1 workstream entry described
+  `int_load_atomic` / `load_atomic` / `store_atomic` and the
+  `AtomicLoadConfig` / `AtomicStoreConfig` bags as shipped API — all five were
+  deleted in W10 — and now describes the builders that replaced them, next to
+  a new **builder-entry naming law** (`*_builder()` or a preposition phrase in,
+  `.build()` or a typed terminal out; never `build_*`). `docs/future-work.md`'s
+  "Load/store variant explosion" entry is struck as shipped, the crate READMEs
+  drop `parse_assembly_string`, `BlockCursor::next`, `build_*_phi` and
+  `build_{br,cond_br}_with_args`, and `UPSTREAM.md`'s row prose picks up the
+  W2/W3 renames (its *test* names, as always, are frozen).
+
 ### `llvmkit-tablegen`: the generator becomes a crate that mirrors LLVM
 
 #### Added

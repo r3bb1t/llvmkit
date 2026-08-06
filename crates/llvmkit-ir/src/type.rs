@@ -82,7 +82,7 @@ pub(crate) enum TypeData {
     // ---- Primitive / sized-but-childless ----
     Void,
     Half,
-    BFloat,
+    Bfloat,
     Float,
     Double,
     X86Fp80,
@@ -394,7 +394,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
         match self.data() {
             TypeData::Void => TypeKind::Void,
             TypeData::Half => TypeKind::Half,
-            TypeData::BFloat => TypeKind::BFloat,
+            TypeData::Bfloat => TypeKind::Bfloat,
             TypeData::Float => TypeKind::Float,
             TypeData::Double => TypeKind::Double,
             TypeData::X86Fp80 => TypeKind::X86Fp80,
@@ -424,7 +424,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
         match self.data() {
             TypeData::Void => TypeKindLabel::Void,
             TypeData::Half => TypeKindLabel::Half,
-            TypeData::BFloat => TypeKindLabel::BFloat,
+            TypeData::Bfloat => TypeKindLabel::Bfloat,
             TypeData::Float => TypeKindLabel::Float,
             TypeData::Double => TypeKindLabel::Double,
             TypeData::X86Fp80 => TypeKindLabel::X86Fp80,
@@ -512,7 +512,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
         matches!(
             self.data(),
             TypeData::Half
-                | TypeData::BFloat
+                | TypeData::Bfloat
                 | TypeData::Float
                 | TypeData::Double
                 | TypeData::Fp128
@@ -563,7 +563,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
 pub enum TypeKind {
     Void,
     Half,
-    BFloat,
+    Bfloat,
     Float,
     Double,
     X86Fp80,
@@ -597,7 +597,7 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
         match self.data() {
             TypeData::Void => f.write_str("void"),
             TypeData::Half => f.write_str("half"),
-            TypeData::BFloat => f.write_str("bfloat"),
+            TypeData::Bfloat => f.write_str("bfloat"),
             TypeData::Float => f.write_str("float"),
             TypeData::Double => f.write_str("double"),
             TypeData::X86Fp80 => f.write_str("x86_fp80"),
@@ -710,7 +710,7 @@ fn is_sized(module: &ModuleCore, id: TypeSlot) -> bool {
         | TypeData::WasmExnRef
         | TypeData::Function { .. } => false,
         TypeData::Half
-        | TypeData::BFloat
+        | TypeData::Bfloat
         | TypeData::Float
         | TypeData::Double
         | TypeData::X86Fp80

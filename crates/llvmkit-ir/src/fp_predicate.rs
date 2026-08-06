@@ -20,6 +20,7 @@
 //! too, because it is the function holding the *comparison*, which is not
 //! always the one holding the value being asked about.
 
+use crate::Branded;
 use crate::ap_float::ApFloatSemantics;
 use crate::cmp_predicate::FloatPredicate;
 use crate::constant::ConstantData;
@@ -42,6 +43,8 @@ use crate::{ApFloat, ApInt};
 /// the value before reading the masks; that sentinel becomes `None` on the
 /// functions returning this type, so a value in hand always carries a real
 /// answer.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct ImpliedFpClasses<'ctx, B: ModuleBrand> {
     tested: Value<'ctx, B>,
     if_true: FpClassTest,
@@ -778,7 +781,7 @@ fn scalar_semantics<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<Ap
     };
     Some(match kind {
         TypeKind::Half => ApFloatSemantics::IeeeHalf,
-        TypeKind::BFloat => ApFloatSemantics::BFloat,
+        TypeKind::Bfloat => ApFloatSemantics::Bfloat,
         TypeKind::Float => ApFloatSemantics::IeeeSingle,
         TypeKind::Double => ApFloatSemantics::IeeeDouble,
         TypeKind::Fp128 => ApFloatSemantics::IeeeQuad,

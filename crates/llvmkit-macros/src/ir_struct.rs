@@ -106,7 +106,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
         quote! {
             let __llvmkit_ty = <#ident as #ir::StructSchema>::ir_type(#module_param)?;
             let __llvmkit_raw = <#ir::StructValue<'ctx, B> as ::core::convert::TryFrom<#ir::Constant<'ctx, B>>>::try_from(
-                __llvmkit_ty.as_type().get_poison().as_constant(),
+                __llvmkit_ty.as_type().poison().as_constant(),
             )?;
             Ok(Self { raw: __llvmkit_raw })
         }
@@ -131,14 +131,14 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 #[inline]
                 #vis fn #field_ident<'m, F, R>(
                     self,
-                    builder: &#ir::IRBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
+                    builder: &#ir::IrBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
                 ) -> #ir::IrResult<<#ty as #ir::IrField>::Value<'ctx, B>>
                 where
-                    F: #ir::IRBuilderFolder<'ctx, B>,
+                    F: #ir::IrBuilderFolder<'ctx, B>,
                     R: #ir::ReturnMarker,
                     #ty: #ir::IrField,
                 {
-                    builder.build_extract_field::<#ident, #ty, _, _>(self, #idx, #field_name)
+                    builder.extract_field::<#ident, #ty, _, _>(self, #idx, #field_name)
                 }
             }
         });
@@ -215,8 +215,8 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             }
 
             #[inline]
-            #vis fn into_erased(self) -> #ir::Value<'ctx, B> {
-                self.raw.into_erased()
+            #vis fn as_erased(self) -> #ir::Value<'ctx, B> {
+                self.raw.as_erased()
             }
 
             #(#accessors)*
@@ -224,12 +224,12 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
             #[inline]
             #vis fn build<'m, F, R, Name, #(#build_generics,)*>(
                 #module_param: #ir::ModuleView<'ctx, B>,
-                #builder_param: &#ir::IRBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
+                #builder_param: &#ir::IrBuilder<'m, 'ctx, B, F, #ir::Positioned, R>,
                 #(#build_params,)*
                 #name_param: Name,
             ) -> #ir::IrResult<Self>
             where
-                F: #ir::IRBuilderFolder<'ctx, B>,
+                F: #ir::IrBuilderFolder<'ctx, B>,
                 R: #ir::ReturnMarker,
                 Name: ::core::convert::AsRef<str>,
                 #(#build_bounds,)*
@@ -353,7 +353,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 self,
                 _module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                Ok(self.raw.into_erased())
+                Ok(self.raw.as_erased())
             }
         }
 
@@ -365,7 +365,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 self,
                 _module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                Ok(self.as_struct_value().into_erased())
+                Ok(self.as_struct_value().as_erased())
             }
         }
 
@@ -378,7 +378,7 @@ fn expand(input: DeriveInput) -> Result<TokenStream2> {
                 self,
                 _module: #ir::ModuleRef<'ctx, B>,
             ) -> #ir::IrResult<#ir::Value<'ctx, B>> {
-                Ok(self.raw.into_erased())
+                Ok(self.raw.as_erased())
             }
         }
     })
@@ -407,7 +407,7 @@ fn build_value_steps(
             quote! {
                 <#schema_ident as #ir::StructSchema>::ir_type(#module_param)?
                     .as_type()
-                    .get_poison()
+                    .poison()
                     .as_constant()
             }
         } else {
@@ -428,7 +428,7 @@ fn build_value_steps(
             } else {
                 ::std::format!("{}.{}", #base_name_ident, #field_name)
             };
-            let #value_ident = #builder_param.build_insert_field::<#schema_ident, #ty, _, _, _>(
+            let #value_ident = #builder_param.insert_field::<#schema_ident, #ty, _, _, _>(
                 #aggregate,
                 #field_ident,
                 #idx,

@@ -22,6 +22,7 @@
 use std::collections::BTreeSet;
 
 use llvmkit_asmparser::parse_dynamic;
+use llvmkit_ir::StrBoolAttrKind;
 
 const ATTRIBUTES_TD: &str = include_str!("../tablegen/llvm-22.1.4/include/llvm/IR/Attributes.td");
 
@@ -88,9 +89,10 @@ struct TdAttribute {
 }
 
 /// Parse the `def <Name> : <Kind>Attr<"<keyword>", …, [<positions>]>;` lines.
-/// `StrBoolAttr` carries no positions and is a string-valued attribute
-/// (`"no-inline-line-tables"`), which the parser already accepts generically,
-/// so those are skipped.
+/// `StrBoolAttr` carries no positions (`Attr<S, IntersectPreserve, []>`), so
+/// the position-probing tests below cannot exercise it and it is skipped
+/// here; `str_bool_attributes_have_typed_readers` covers those declarations
+/// against the `StrBoolAttrKind` reader enum instead.
 fn parse_attributes_td(src: &str) -> Vec<TdAttribute> {
     let mut out = Vec::new();
     for line in src.lines() {
@@ -220,6 +222,109 @@ fn no_unmodeled_attribute_is_silently_missing() {
          listed in NOT_YET_MODELED — implement them, or add them to the list \
          with intent:\n  {}",
         missing_and_unlisted.join("\n  ")
+    );
+}
+
+/// Extract the keyword of every `def ... : <Kind><"keyword">;` declaration
+/// for a string-attribute `Kind` (`StrBoolAttr` / `ComplexStrAttr`). These
+/// defs may put the `: Kind<...>` on a continuation line
+/// (`MarkedForWindowsSecureHotPatching` does), so this scans the whole text
+/// rather than lines. The `class Kind<string S>` declaration itself is not
+/// followed by a `"` and falls out naturally.
+fn string_attr_keywords(src: &str, kind: &str) -> Vec<String> {
+    let needle = format!("{kind}<\"");
+    let mut out = Vec::new();
+    let mut rest = src;
+    while let Some(open) = rest.find(&needle) {
+        rest = &rest[open + needle.len()..];
+        let Some(close) = rest.find('"') else { break };
+        out.push(rest[..close].to_string());
+        rest = &rest[close + 1..];
+    }
+    out
+}
+
+/// Every `StrBoolAttr` declaration in `Attributes.td` must have a
+/// `StrBoolAttrKind` variant whose `key` round-trips it, every variant must
+/// still name a declared attribute (no stale entries), and the parser must
+/// accept the `"key"="true"` spelling as a function attribute. A new
+/// upstream `StrBoolAttr` fails here until the reader enum covers it.
+///
+/// llvmkit-specific drift guard (no upstream counterpart — upstream's
+/// `getFnAttribute(...).getValueAsBool()` readers take the raw string);
+/// `Attributes.td` is the anchor (D11).
+#[test]
+fn str_bool_attributes_have_typed_readers() {
+    let declared = string_attr_keywords(ATTRIBUTES_TD, "StrBoolAttr");
+    assert_eq!(
+        declared.len(),
+        11,
+        "expected the LLVM 22.1.4 StrBoolAttr set, got {declared:?}"
+    );
+
+    // Forward: every declaration is covered and parseable.
+    let mut missing = Vec::new();
+    for keyword in &declared {
+        match StrBoolAttrKind::from_key(keyword) {
+            Some(kind) => assert_eq!(kind.key(), keyword, "key() must round-trip"),
+            None => missing.push(keyword.clone()),
+        }
+        let src = format!(
+            "define void @f() #0 {{ ret void }}\nattributes #0 = {{ \"{keyword}\"=\"true\" }}\n"
+        );
+        assert!(
+            parse_dynamic(src.as_str()).is_ok(),
+            "parser rejects string attribute \"{keyword}\"=\"true\""
+        );
+    }
+    assert!(
+        missing.is_empty(),
+        "these Attributes.td StrBoolAttr declarations have no StrBoolAttrKind \
+         variant — extend the reader enum:\n  {}",
+        missing.join("\n  ")
+    );
+
+    // Reverse: no variant names an attribute upstream no longer declares.
+    let declared_set: BTreeSet<&str> = declared.iter().map(String::as_str).collect();
+    const ALL_VARIANTS: [StrBoolAttrKind; 11] = [
+        StrBoolAttrKind::MarkedForWindowsHotPatching,
+        StrBoolAttrKind::AllowDirectAccessInHotPatchFunction,
+        StrBoolAttrKind::LessPreciseFpmad,
+        StrBoolAttrKind::NoInfsFpMath,
+        StrBoolAttrKind::NoNansFpMath,
+        StrBoolAttrKind::NoSignedZerosFpMath,
+        StrBoolAttrKind::NoJumpTables,
+        StrBoolAttrKind::NoInlineLineTables,
+        StrBoolAttrKind::ProfileSampleAccurate,
+        StrBoolAttrKind::UseSampleProfile,
+        StrBoolAttrKind::LoaderReplaceable,
+    ];
+    for variant in ALL_VARIANTS {
+        assert!(
+            declared_set.contains(variant.key()),
+            "StrBoolAttrKind::{variant:?} names {:?}, which LLVM 22.1.4 does \
+             not declare as a StrBoolAttr (typo, or upstream removed it)",
+            variant.key()
+        );
+    }
+}
+
+/// The `ComplexStrAttr` set is exactly the two denormal modes, which llvmkit
+/// types via `DenormalMode` (`FunctionValue::denormal_mode_raw` /
+/// `denormal_mode_f32_raw`) rather than a reader enum. A new upstream
+/// `ComplexStrAttr` fails here until it gets a typed reader of its own.
+/// The generic string-attribute probe in
+/// `no_unmodeled_attribute_is_silently_missing` already covers parser
+/// acceptance for these.
+///
+/// llvmkit-specific drift guard; `Attributes.td` is the anchor (D11).
+#[test]
+fn complex_str_attributes_are_typed() {
+    let declared = string_attr_keywords(ATTRIBUTES_TD, "ComplexStrAttr");
+    assert_eq!(
+        declared,
+        ["denormal-fp-math", "denormal-fp-math-f32"],
+        "ComplexStrAttr set changed — give the new attribute a typed reader"
     );
 }
 

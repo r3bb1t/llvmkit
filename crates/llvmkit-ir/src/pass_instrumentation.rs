@@ -27,6 +27,27 @@ pub struct PassInstrumentationCallbacks {
     storage: Rc<RefCell<CallbackStorage>>,
 }
 
+/// Prints how many callbacks are registered on each hook, never the
+/// callbacks: they are `Box<dyn FnMut>`, which has no `Debug` and nothing
+/// meaningful to show. The registry is shared through `Rc<RefCell<…>>`, so a
+/// callback that is mid-fire holds the cell open — `try_borrow` keeps `Debug`
+/// from panicking in exactly the situation a caller is most likely to print
+/// one.
+impl core::fmt::Debug for PassInstrumentationCallbacks {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut out = f.debug_struct("PassInstrumentationCallbacks");
+        match self.storage.try_borrow() {
+            Ok(storage) => out
+                .field("before_pass", &storage.before_pass.len())
+                .field("after_pass", &storage.after_pass.len())
+                .field("before_analysis", &storage.before_analysis.len())
+                .field("after_analysis", &storage.after_analysis.len()),
+            Err(_) => out.field("callbacks", &"<firing>"),
+        }
+        .finish()
+    }
+}
+
 impl PassInstrumentationCallbacks {
     pub fn new() -> Self {
         Self::default()

@@ -69,7 +69,7 @@ use crate::value_tracking::{
     is_known_not_undef, is_sign_bit_check, logical_op_parts, not_operand, parent_block,
     shuffle_source_demands,
 };
-use crate::vector_utils::get_splat_value;
+use crate::vector_utils::splat_value;
 use crate::{ApFloat, ApInt};
 
 /// Which floating-point classes `value` may belong to.
@@ -209,7 +209,7 @@ fn dispatch<'a, 'ctx, B: ModuleBrand + 'ctx>(
     depth: u32,
 ) -> KnownFpClass {
     match kind {
-        InstructionKindData::FNeg(data) => {
+        InstructionKindData::Fneg(data) => {
             let source = value_from_slot(value, data.src.get());
             let mut known = known_fp_class(source, interested_classes, query, depth + 1);
             known.negate();
@@ -233,7 +233,7 @@ fn dispatch<'a, 'ctx, B: ModuleBrand + 'ctx>(
             // Only known if known in both the true and the false arm.
             for_arm(data.true_val.get(), false).intersect_with(for_arm(data.false_val.get(), true))
         }
-        InstructionKindData::FAdd(data) => add_or_subtract_fp_class(
+        InstructionKindData::Fadd(data) => add_or_subtract_fp_class(
             value,
             data.lhs.get(),
             data.rhs.get(),
@@ -242,7 +242,7 @@ fn dispatch<'a, 'ctx, B: ModuleBrand + 'ctx>(
             query,
             depth,
         ),
-        InstructionKindData::FSub(data) => add_or_subtract_fp_class(
+        InstructionKindData::Fsub(data) => add_or_subtract_fp_class(
             value,
             data.lhs.get(),
             data.rhs.get(),
@@ -251,10 +251,10 @@ fn dispatch<'a, 'ctx, B: ModuleBrand + 'ctx>(
             query,
             depth,
         ),
-        InstructionKindData::FMul(data) => {
+        InstructionKindData::Fmul(data) => {
             multiply_fp_class(value, data.lhs.get(), data.rhs.get(), query, depth)
         }
-        InstructionKindData::FDiv(data) => divide_or_remainder_fp_class(
+        InstructionKindData::Fdiv(data) => divide_or_remainder_fp_class(
             value,
             data.lhs.get(),
             data.rhs.get(),
@@ -263,7 +263,7 @@ fn dispatch<'a, 'ctx, B: ModuleBrand + 'ctx>(
             query,
             depth,
         ),
-        InstructionKindData::FRem(data) => divide_or_remainder_fp_class(
+        InstructionKindData::Frem(data) => divide_or_remainder_fp_class(
             value,
             data.lhs.get(),
             data.rhs.get(),
@@ -391,7 +391,7 @@ fn insert_element_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
 fn is_ieee_like(semantics: ApFloatSemantics) -> bool {
     match semantics {
         ApFloatSemantics::IeeeHalf
-        | ApFloatSemantics::BFloat
+        | ApFloatSemantics::Bfloat
         | ApFloatSemantics::IeeeSingle
         | ApFloatSemantics::IeeeDouble
         | ApFloatSemantics::IeeeQuad => true,
@@ -518,7 +518,7 @@ fn shuffle_vector_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
     // no `DemandedElts`, resetting the demanded set. `query` is passed along
     // unchanged here because the answer is the same: the splat is a scalar, and
     // `demanded_elements_for` yields `None` for anything that is not a vector.
-    if let Some(splat) = get_splat_value(value) {
+    if let Some(splat) = splat_value(value) {
         return known_fp_class(splat, interested_classes, query, depth + 1);
     }
 
@@ -1043,7 +1043,7 @@ fn cast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
         }
         CastOpcode::FpTrunc => fp_trunc_class(source, interested_classes, query, depth),
         CastOpcode::BitCast => bitcast_fp_class(value, source, query, depth),
-        CastOpcode::SIToFp | CastOpcode::UIToFp => {
+        CastOpcode::SiToFp | CastOpcode::UiToFp => {
             let mut known = KnownFpClass::unknown();
             // An integer conversion cannot produce a NaN, and an integer is
             // never subnormal.
@@ -1051,7 +1051,7 @@ fn cast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
             known.known_not(FpClassTest::SUBNORMAL);
             // Both turn a zero into `+0`.
             known.known_not(FpClassTest::NEGATIVE_ZERO);
-            if opcode == CastOpcode::UIToFp {
+            if opcode == CastOpcode::UiToFp {
                 known.sign_bit_must_be_zero();
             }
 
@@ -1066,7 +1066,7 @@ fn cast_fp_class<'a, 'ctx, B: ModuleBrand + 'ctx>(
                 let Ok(mut integer_size) = i32::try_from(bits) else {
                     return known;
                 };
-                if opcode == CastOpcode::SIToFp {
+                if opcode == CastOpcode::SiToFp {
                     integer_size -= 1;
                 }
                 // Upstream asks `ilogb(APFloat::getLargest(sem)) >= IntSize`;
@@ -1586,9 +1586,9 @@ pub fn can_ignore_sign_bit_of_zero<'ctx, B: ModuleBrand + 'ctx>(use_edge: Use<'c
     match kind {
         // A conversion to integer, and `fcmp`, treat both zeros as equal.
         InstructionKindData::Cast(data) => {
-            matches!(data.kind, CastOpcode::FpToSI | CastOpcode::FpToUI)
+            matches!(data.kind, CastOpcode::FpToSi | CastOpcode::FpToUi)
         }
-        InstructionKindData::FCmp(_) => true,
+        InstructionKindData::Fcmp(_) => true,
         InstructionKindData::Call(_) => {
             sign_indifferent_intrinsic(user, kind, use_edge.index(), SignOf::Zero)
         }
@@ -1620,17 +1620,17 @@ pub fn can_ignore_sign_bit_of_nan<'ctx, B: ModuleBrand + 'ctx>(use_edge: Use<'ct
             data.kind,
             // A conversion to integer discards the sign with everything else,
             // and the two float conversions are proper FP math.
-            CastOpcode::FpToSI | CastOpcode::FpToUI | CastOpcode::FpTrunc | CastOpcode::FpExt
+            CastOpcode::FpToSi | CastOpcode::FpToUi | CastOpcode::FpTrunc | CastOpcode::FpExt
         ),
         // Proper FP math ignores the sign bit of a NaN.
-        InstructionKindData::FAdd(_)
-        | InstructionKindData::FSub(_)
-        | InstructionKindData::FMul(_)
-        | InstructionKindData::FDiv(_)
-        | InstructionKindData::FRem(_)
-        | InstructionKindData::FCmp(_) => true,
+        InstructionKindData::Fadd(_)
+        | InstructionKindData::Fsub(_)
+        | InstructionKindData::Fmul(_)
+        | InstructionKindData::Fdiv(_)
+        | InstructionKindData::Frem(_)
+        | InstructionKindData::Fcmp(_) => true,
         // Bitwise FP operations preserve it.
-        InstructionKindData::FNeg(_)
+        InstructionKindData::Fneg(_)
         | InstructionKindData::Select(_)
         | InstructionKindData::Phi(_) => false,
         InstructionKindData::Call(_) | InstructionKindData::Invoke(_) => {
@@ -1705,7 +1705,7 @@ fn is_fpclass_mask_zero_agnostic<'ctx, B: ModuleBrand + 'ctx>(user: Value<'ctx, 
 fn float_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<(FloatPredicate, Value<'ctx, B>, Value<'ctx, B>)> {
-    let InstructionKindData::FCmp(data) = instruction_kind(value)? else {
+    let InstructionKindData::Fcmp(data) = instruction_kind(value)? else {
         return None;
     };
     Some((
@@ -1720,7 +1720,7 @@ fn float_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
 fn int_compare_parts<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Option<(IntPredicate, Value<'ctx, B>, Value<'ctx, B>)> {
-    let InstructionKindData::ICmp(data) = instruction_kind(value)? else {
+    let InstructionKindData::Icmp(data) = instruction_kind(value)? else {
         return None;
     };
     Some((
@@ -1848,13 +1848,13 @@ fn constant_fp_class<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Opti
 /// The fast-math flags an operator carries, where it carries any.
 fn fast_math_flags(kind: &InstructionKindData) -> Option<FastMathFlags> {
     match kind {
-        InstructionKindData::FAdd(data)
-        | InstructionKindData::FSub(data)
-        | InstructionKindData::FMul(data)
-        | InstructionKindData::FDiv(data)
-        | InstructionKindData::FRem(data) => Some(data.fmf),
-        InstructionKindData::FNeg(data) => Some(data.fmf),
-        InstructionKindData::FCmp(data) => Some(data.fmf),
+        InstructionKindData::Fadd(data)
+        | InstructionKindData::Fsub(data)
+        | InstructionKindData::Fmul(data)
+        | InstructionKindData::Fdiv(data)
+        | InstructionKindData::Frem(data) => Some(data.fmf),
+        InstructionKindData::Fneg(data) => Some(data.fmf),
+        InstructionKindData::Fcmp(data) => Some(data.fmf),
         InstructionKindData::Call(data) => Some(data.attrs.fast_math_flags_value()),
         _ => None,
     }
@@ -1870,7 +1870,7 @@ fn is_multi_unit_float_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> b
 fn scalar_semantics<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<ApFloatSemantics> {
     Some(match scalar_kind(ty) {
         TypeKind::Half => ApFloatSemantics::IeeeHalf,
-        TypeKind::BFloat => ApFloatSemantics::BFloat,
+        TypeKind::Bfloat => ApFloatSemantics::Bfloat,
         TypeKind::Float => ApFloatSemantics::IeeeSingle,
         TypeKind::Double => ApFloatSemantics::IeeeDouble,
         TypeKind::Fp128 => ApFloatSemantics::IeeeQuad,

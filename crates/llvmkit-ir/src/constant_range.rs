@@ -4,6 +4,7 @@ use core::cmp::Ordering;
 use core::ops::Not;
 
 use crate::ApInt;
+use crate::ap_int::Signedness;
 use crate::cmp_predicate::IntPredicate;
 use crate::constant::ConstantData;
 use crate::error::{IrError, IrResult};
@@ -69,7 +70,7 @@ fn preferred_range(
 /// Upstream's `getEquivalentICmp` fills three out-parameters; a Rust caller
 /// wants all three together, so they are returned as one value.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct EquivalentICmp {
+pub struct EquivalentIcmp {
     /// The comparison predicate.
     pub predicate: IntPredicate,
     /// The value to compare against.
@@ -183,21 +184,21 @@ impl NoWrapKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RangeIntrinsic {
     /// `llvm.uadd.sat`
-    UAddSat,
+    UaddSat,
     /// `llvm.usub.sat`
-    USubSat,
+    UsubSat,
     /// `llvm.sadd.sat`
-    SAddSat,
+    SaddSat,
     /// `llvm.ssub.sat`
-    SSubSat,
+    SsubSat,
     /// `llvm.umin`
-    UMin,
+    Umin,
     /// `llvm.umax`
-    UMax,
+    Umax,
     /// `llvm.smin`
-    SMin,
+    Smin,
     /// `llvm.smax`
-    SMax,
+    Smax,
     /// `llvm.abs`, carrying its `immarg` poison flag.
     Abs {
         /// Whether the signed minimum is poison rather than wrapping to itself.
@@ -337,7 +338,7 @@ impl ConstantRange {
         }
         if lower.eq_ap_int(&upper) && !lower.is_min_value() && !lower.is_max_value() {
             return Err(IrError::DegenerateConstantRange {
-                value: lower.to_string_radix(10, crate::ap_int::ApIntSignedness::Unsigned),
+                value: lower.to_string_radix(10, crate::ap_int::Signedness::Unsigned),
                 bit_width: lower.bit_width(),
             });
         }
@@ -590,8 +591,9 @@ impl ConstantRange {
     /// The range a known-bits constraint describes. Mirrors
     /// `ConstantRange::fromKnownBits`.
     ///
-    /// `is_signed` picks which domain the result must not wrap in.
-    pub fn from_known_bits(known: &KnownBits, is_signed: bool) -> Self {
+    /// `signedness` picks which domain the result must not wrap in.
+    pub fn from_known_bits(known: &KnownBits, signedness: Signedness) -> Self {
+        let is_signed = matches!(signedness, Signedness::Signed);
         let bit_width = known.bit_width();
         if known.has_conflict() {
             return Self::empty(bit_width);
@@ -1305,12 +1307,12 @@ impl ConstantRange {
     ///
     /// Upstream fills three out-parameters; llvmkit returns them, since a
     /// caller always wants all three together.
-    pub fn equivalent_icmp_with_offset(&self) -> EquivalentICmp {
+    pub fn equivalent_icmp_with_offset(&self) -> EquivalentIcmp {
         let bit_width = self.bit_width();
         let zero = ApInt::zero(bit_width);
 
         if self.is_full_set() || self.is_empty_set() {
-            return EquivalentICmp {
+            return EquivalentIcmp {
                 predicate: if self.is_empty_set() {
                     // Nothing is unsigned-less-than zero.
                     IntPredicate::Ult
@@ -1323,21 +1325,21 @@ impl ConstantRange {
             };
         }
         if let Some(only) = self.single_element() {
-            return EquivalentICmp {
+            return EquivalentIcmp {
                 predicate: IntPredicate::Eq,
                 rhs: only.clone(),
                 offset: zero,
             };
         }
         if let Some(missing) = self.single_missing_element() {
-            return EquivalentICmp {
+            return EquivalentIcmp {
                 predicate: IntPredicate::Ne,
                 rhs: missing.clone(),
                 offset: zero,
             };
         }
         if self.lower.is_min_signed_value() || self.lower.is_min_value() {
-            return EquivalentICmp {
+            return EquivalentIcmp {
                 predicate: if self.lower.is_min_signed_value() {
                     IntPredicate::Slt
                 } else {
@@ -1348,7 +1350,7 @@ impl ConstantRange {
             };
         }
         if self.upper.is_min_signed_value() || self.upper.is_min_value() {
-            return EquivalentICmp {
+            return EquivalentIcmp {
                 predicate: if self.upper.is_min_signed_value() {
                     IntPredicate::Sge
                 } else {
@@ -1360,7 +1362,7 @@ impl ConstantRange {
         }
         // A range with neither endpoint at a domain edge becomes an unsigned
         // compare against its width, once the value is shifted down to zero.
-        EquivalentICmp {
+        EquivalentIcmp {
             predicate: IntPredicate::Ult,
             rhs: self.upper.wrapping_sub(&self.lower),
             offset: zero.wrapping_sub(&self.lower),
@@ -2030,7 +2032,7 @@ impl ConstantRange {
 
         let known_bits_range = Self::from_known_bits(
             &KnownBits::bitand(&self.to_known_bits(), &other.to_known_bits()),
-            false,
+            Signedness::Unsigned,
         );
         let lower_bound = estimate_bit_masked_and_lower_bound(self, other);
         let self_max = self.unsigned_max();
@@ -2058,7 +2060,7 @@ impl ConstantRange {
 
         let known_bits_range = Self::from_known_bits(
             &KnownBits::bitor(&self.to_known_bits(), &other.to_known_bits()),
-            false,
+            Signedness::Unsigned,
         );
 
         // De Morgan turns the OR's upper bound into the AND's lower bound:
@@ -2102,7 +2104,10 @@ impl ConstantRange {
 
         let lhs_known = self.to_known_bits();
         let rhs_known = other.to_known_bits();
-        let mut result = Self::from_known_bits(&KnownBits::bitxor(&lhs_known, &rhs_known), false);
+        let mut result = Self::from_known_bits(
+            &KnownBits::bitxor(&lhs_known, &rhs_known),
+            Signedness::Unsigned,
+        );
         // At one bit the refinement below does not improve on the known bits.
         if bit_width == 1 {
             return result;
@@ -2705,21 +2710,21 @@ impl ConstantRange {
     /// representation", in its words. Anything else answers the full set.
     pub fn binary_op(&self, opcode: BinaryOpcode, other: &Self) -> Self {
         match opcode {
-            BinaryOpcode::Add | BinaryOpcode::FAdd => self.add(other),
-            BinaryOpcode::Sub | BinaryOpcode::FSub => self.sub(other),
-            BinaryOpcode::Mul | BinaryOpcode::FMul => self.multiply(other),
-            BinaryOpcode::UDiv => self.udiv(other),
-            BinaryOpcode::SDiv => self.sdiv(other),
-            BinaryOpcode::URem => self.urem(other),
-            BinaryOpcode::SRem => self.srem(other),
+            BinaryOpcode::Add | BinaryOpcode::Fadd => self.add(other),
+            BinaryOpcode::Sub | BinaryOpcode::Fsub => self.sub(other),
+            BinaryOpcode::Mul | BinaryOpcode::Fmul => self.multiply(other),
+            BinaryOpcode::Udiv => self.udiv(other),
+            BinaryOpcode::Sdiv => self.sdiv(other),
+            BinaryOpcode::Urem => self.urem(other),
+            BinaryOpcode::Srem => self.srem(other),
             BinaryOpcode::Shl => self.shl(other),
-            BinaryOpcode::LShr => self.lshr(other),
-            BinaryOpcode::AShr => self.ashr(other),
+            BinaryOpcode::Lshr => self.lshr(other),
+            BinaryOpcode::Ashr => self.ashr(other),
             BinaryOpcode::And => self.binary_and(other),
             BinaryOpcode::Or => self.binary_or(other),
             BinaryOpcode::Xor => self.binary_xor(other),
             // `fdiv` and `frem` have no integer counterpart to borrow.
-            BinaryOpcode::FDiv | BinaryOpcode::FRem => Self::full(self.bit_width()),
+            BinaryOpcode::Fdiv | BinaryOpcode::Frem => Self::full(self.bit_width()),
         }
     }
 
@@ -2767,14 +2772,14 @@ impl ConstantRange {
         let first = operands.first()?;
         let second = operands.get(1);
         Some(match intrinsic {
-            RangeIntrinsic::UAddSat => first.uadd_sat(second?),
-            RangeIntrinsic::USubSat => first.usub_sat(second?),
-            RangeIntrinsic::SAddSat => first.sadd_sat(second?),
-            RangeIntrinsic::SSubSat => first.ssub_sat(second?),
-            RangeIntrinsic::UMin => first.umin(second?),
-            RangeIntrinsic::UMax => first.umax(second?),
-            RangeIntrinsic::SMin => first.smin(second?),
-            RangeIntrinsic::SMax => first.smax(second?),
+            RangeIntrinsic::UaddSat => first.uadd_sat(second?),
+            RangeIntrinsic::UsubSat => first.usub_sat(second?),
+            RangeIntrinsic::SaddSat => first.sadd_sat(second?),
+            RangeIntrinsic::SsubSat => first.ssub_sat(second?),
+            RangeIntrinsic::Umin => first.umin(second?),
+            RangeIntrinsic::Umax => first.umax(second?),
+            RangeIntrinsic::Smin => first.smin(second?),
+            RangeIntrinsic::Smax => first.smax(second?),
             RangeIntrinsic::Abs { int_min_is_poison } => first.abs(int_min_is_poison),
             RangeIntrinsic::Ctlz { zero_is_poison } => first.ctlz(zero_is_poison),
             RangeIntrinsic::Cttz { zero_is_poison } => first.cttz(zero_is_poison),

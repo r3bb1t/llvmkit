@@ -27,7 +27,7 @@
 
 A typed handle's marker is a claim about its runtime type: an `IntValue<'ctx, i32, B>`
 asserts "this value's IR type is `i32`". The crate's guarantees rest on that claim being
-true — `build_int_add(a, b)` emits `add i32` because the handles say `i32`.
+true — `int_add(a, b)` emits `add i32` because the handles say `i32`.
 
 **In-crate the claim is forgeable.** `from_value_unchecked` — one per wrapper type in
 `value.rs` (`IntValue`, `FloatValue`, `PointerValue`, `ArrayValue`, `StructValue`,
@@ -147,13 +147,13 @@ Goal: after migration, `from_value_unchecked` is unreachable outside the constru
 the path in `pub(in ..)` must be an *ancestor* of the item's module, and `crate::ir_builder`
 is not an ancestor of `crate::value`. So a *hard* seal requires **co-locating** the wrap
 with its constructors (e.g. the constructors become associated fns in `value.rs` taking
-`&IRBuilder`, letting `from_value_unchecked` drop to `pub(super)`).
+`&IrBuilder`, letting `from_value_unchecked` drop to `pub(super)`).
 
 **This is the one open implementation question.** Two acceptable outcomes:
 
 - **Hard seal** — co-location is clean ⇒ `from_value_unchecked` becomes private to
   `value.rs`; forging outside the family is `E0624`, a compile error.
-- **Audited seal** — co-location is contorted (the `IRBuilder` generics are heavy:
+- **Audited seal** — co-location is contorted (the `IrBuilder` generics are heavy:
   `<'m,'ctx,B,F,S,R>`) ⇒ `from_value_unchecked` stays `pub(crate)`, but its callers drop
   from ~100 to ~8, each with a local total proof, and the definition's doc names the family
   as its only legitimate callers.

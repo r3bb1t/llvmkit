@@ -144,11 +144,10 @@ pub struct PassPipelineTextName {
 
 impl PassPipelineTextName {
     /// Validates a pass-pipeline element name.
-    pub fn try_new(name: &str) -> IrResult<Self> {
-        validate_pipeline_name(name)?;
-        Ok(Self {
-            text: name.to_owned(),
-        })
+    pub fn try_new<Name: Into<String>>(name: Name) -> IrResult<Self> {
+        let text = name.into();
+        validate_pipeline_name(&text)?;
+        Ok(Self { text })
     }
 
     /// Returns the validated name as text.
@@ -232,10 +231,13 @@ pub struct PassPipelineElement {
 
 impl PassPipelineElement {
     /// Constructs an element from an already-validated name.
-    pub fn new(name: PassPipelineTextName, inner_pipeline: Vec<Self>) -> Self {
+    pub fn new<Inner>(name: PassPipelineTextName, inner_pipeline: Inner) -> Self
+    where
+        Inner: IntoIterator<Item = Self>,
+    {
         Self {
             name,
-            inner_pipeline,
+            inner_pipeline: inner_pipeline.into_iter().collect(),
         }
     }
 

@@ -20,7 +20,7 @@ const DOUBLE: ApFloatSemantics = ApFloatSemantics::IeeeDouble;
 const QUAD: ApFloatSemantics = ApFloatSemantics::IeeeQuad;
 const X87: ApFloatSemantics = ApFloatSemantics::X87DoubleExtended;
 const PPC: ApFloatSemantics = ApFloatSemantics::PpcDoubleDouble;
-const BFLOAT: ApFloatSemantics = ApFloatSemantics::BFloat;
+const BFLOAT: ApFloatSemantics = ApFloatSemantics::Bfloat;
 
 /// Every modeled semantics, in the order `APFloat::Semantics` enumerates the
 /// ones llvmkit shares with it.

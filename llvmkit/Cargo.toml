@@ -11,7 +11,14 @@ rust-version.workspace = true
 keywords.workspace     = true
 categories.workspace   = true
 
+[features]
+default = ["macros"]
+# Forwards to `llvmkit-ir/macros`: the user-facing macro re-exports
+# (`IrStruct`, `#[function_pass]`, `#[module_pass]`). The proc-macro crate is
+# compiled either way; this only gates the re-export surface.
+macros = ["llvmkit-ir/macros"]
+
 [dependencies]
 llvmkit-support   = { workspace = true }
 llvmkit-asmparser = { workspace = true }
-llvmkit-ir        = { workspace = true }
+llvmkit-ir        = { workspace = true, default-features = false }

@@ -1,8 +1,8 @@
 error[E0308]: mismatched types
-  --> tests/compile_fail/array_insert_wrong_element.rs:33:32
+  --> tests/compile_fail/array_insert_wrong_element.rs:31:28
    |
-33 |         .build_arr_insert(arr, wrong, 0, "x") //~ ERROR mismatched types
-   |          ----------------      ^^^^^ expected `IntValue<'_, i32, DynBrand>`, found `FloatValue<'_, f32, DynBrand>`
+31 |         .array_insert(arr, wrong, 0, "x") //~ ERROR mismatched types
+   |          ------------      ^^^^^ expected `IntValue<'_, i32, DynBrand>`, found `FloatValue<'_, f32, DynBrand>`
    |          |
    |          arguments to this method are incorrect
    |
@@ -11,5 +11,5 @@ error[E0308]: mismatched types
 note: method defined here
   --> src/ir_builder.rs
    |
-   |     pub fn build_arr_insert<E, L, Name>(
-   |            ^^^^^^^^^^^^^^^^
+   |     pub fn array_insert<E, L, Name>(
+   |            ^^^^^^^^^^^^

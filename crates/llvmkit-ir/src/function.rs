@@ -14,7 +14,7 @@
 //!   record per slot), so an `Argument<'ctx, B>` can be `Copy` and
 //!   round-trip through the user/use machinery exactly like any other
 //!   value.
-//! - Basic blocks live in a `RefCell<Vec<ValueSlot>>` so the IRBuilder
+//! - Basic blocks live in a `RefCell<Vec<ValueSlot>>` so the IrBuilder
 //!   can append while holding a `&'ctx ModuleCore` borrow.
 //!
 //! ## Return-type safety
@@ -24,8 +24,8 @@
 //! `FunctionValue<'ctx, i32>`; one that returns `void` is
 //! `FunctionValue<'ctx, ()>`; parsed / runtime IR uses
 //! `FunctionValue<'ctx, Dyn>`. The marker propagates to the function's
-//! basic blocks and to any [`IRBuilder`](crate::IRBuilder) positioned
-//! inside them, so the builder's `build_ret` can be statically typed.
+//! basic blocks and to any [`IrBuilder`](crate::IrBuilder) positioned
+//! inside them, so the builder's `ret` can be statically typed.
 
 use core::cell::{Cell, RefCell};
 use core::iter::FusedIterator;
@@ -36,7 +36,7 @@ use super::DebugLoc;
 use super::align::MaybeAlign;
 use super::ap_float::ApFloatSemantics;
 use super::argument::Argument;
-use super::attributes::{AttrKind, Attribute, AttributeStorage, AttributeStored};
+use super::attributes::{AttrKind, Attribute, AttributeStorage, AttributeStored, StrBoolAttrKind};
 use super::basic_block::{BasicBlock, BasicBlockData};
 use super::block_state::{BlockTerminationState, Terminated, Unterminated};
 use super::calling_conv::CallingConv;
@@ -69,6 +69,7 @@ use super::value::{
 use super::value_id::ViewIn;
 use super::value_id::{FunctionId, TypedFunctionId};
 use super::value_symbol_table::ValueSymbolTable;
+use crate::Branded;
 
 // --------------------------------------------------------------------------
 // Storage payload
@@ -228,7 +229,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// LLVM 17+ pointers are opaque (so the signature is the only
     /// useful per-value type-side information).
     #[inline]
-    pub fn into_erased(self) -> Value<'ctx, B> {
+    pub fn as_erased(self) -> Value<'ctx, B> {
         Value {
             id: self.id,
             module: self.module,
@@ -266,7 +267,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     /// Borrow the storage payload.
     pub(super) fn data(self) -> &'ctx FunctionData {
-        match &self.into_erased().data().kind {
+        match &self.as_erased().data().kind {
             ValueKindData::Function(f) => f,
             _ => unreachable!("FunctionValue handle invariant: kind is Function"),
         }
@@ -559,7 +560,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 
     pub fn comdat(self) -> Option<ComdatRef<'ctx, B>> {
         let name = self.data().comdat.borrow().clone()?;
-        self.module.module().get_comdat::<B>(&name)
+        self.module.module().comdat::<B>(&name)
     }
 
     pub fn set_comdat(
@@ -670,6 +671,20 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             })
     }
 
+    /// The parsed value of the boolean string attribute `kind`, or `None`
+    /// when the function (and its referenced attribute groups) do not carry
+    /// it.
+    ///
+    /// Mirrors `Attribute::getValueAsBool` (`lib/IR/Attributes.cpp`): the
+    /// attribute is `true` exactly when its value text is `"true"` (upstream
+    /// asserts the stored text is `""`, `"false"`, or `"true"`). Upstream
+    /// folds an absent attribute into `false`; the `Option` keeps absence
+    /// distinguishable from an explicit `"false"`.
+    pub fn str_bool_attribute(self, kind: StrBoolAttrKind) -> Option<bool> {
+        self.function_string_attribute(kind.key())
+            .map(|value| value == "true")
+    }
+
     fn function_string_attribute(self, key: &str) -> Option<String> {
         {
             let attrs = self.data().attributes.borrow();
@@ -678,10 +693,10 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
             }
         }
 
-        let module_attr_groups = self.module.module().attribute_groups();
+        let module = self.module.module();
         for group in self.data().function_attr_groups.borrow().iter().rev() {
-            if let Some((_, storage)) = module_attr_groups.iter().rev().find(|(id, _)| id == group)
-                && let Some(value) = Self::string_attribute_in_storage(storage, key)
+            if let Some(storage) = module.attribute_group(*group)
+                && let Some(value) = Self::string_attribute_in_storage(&storage, key)
             {
                 return Some(value);
             }
@@ -807,7 +822,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     /// Crate-internal. The token on the public entry point is a *capability
     /// proof* only — it is bound to `_module` and never read. This variant
     /// exists for callers that have already discharged that proof but cannot
-    /// re-present it: [`crate::IRBuilder`] stores only `&ModuleCore` (its
+    /// re-present it: [`crate::IrBuilder`] stores only `&ModuleCore` (its
     /// `at_end` constructor is handed a block, not a token), and since a
     /// `Module` now owns its core, the ephemeral token it can reconstruct is a
     /// *local* whose region is too short to satisfy `&'ctx Module<…>`.
@@ -1008,6 +1023,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
 /// named form of [`FunctionValue::basic_blocks`]'s walk, returned by
 /// [`FunctionValue`]'s `IntoIterator`: it snapshots the function's block ids
 /// up front, so IR mutation during the walk does not disturb it.
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct FunctionBasicBlocks<'ctx, R: ReturnMarker, B: ModuleBrand> {
     ids: std::vec::IntoIter<ValueSlot>,
     module: ModuleRef<'ctx, B>,
@@ -1097,7 +1114,7 @@ pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
         ExpectedRetKind::IntDyn => matches!(ret, TypeData::Integer { .. }),
         ExpectedRetKind::FloatStatic(label) => match label {
             "half" => matches!(ret, TypeData::Half),
-            "bfloat" => matches!(ret, TypeData::BFloat),
+            "bfloat" => matches!(ret, TypeData::Bfloat),
             "float" => matches!(ret, TypeData::Float),
             "double" => matches!(ret, TypeData::Double),
             "fp128" => matches!(ret, TypeData::Fp128),
@@ -1108,7 +1125,7 @@ pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
         ExpectedRetKind::FloatDyn => matches!(
             ret,
             TypeData::Half
-                | TypeData::BFloat
+                | TypeData::Bfloat
                 | TypeData::Float
                 | TypeData::Double
                 | TypeData::Fp128
@@ -1121,8 +1138,8 @@ pub(super) fn signature_matches_marker<R: ReturnMarker>(ret: &TypeData) -> bool 
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> sealed::Sealed for FunctionValue<'ctx, R, B> {}
 impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IsValue<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
-    fn into_erased(self) -> Value<'ctx, B> {
-        FunctionValue::into_erased(self)
+    fn as_erased(self) -> Value<'ctx, B> {
+        FunctionValue::as_erased(self)
     }
 }
 crate::value::impl_into_erased_value_for_handle!(FunctionValue[R: ReturnMarker]);
@@ -1135,7 +1152,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> Typed<'ctx, B> for FunctionVa
 impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'ctx, R, B> {
     #[inline]
     fn name(self) -> Option<String> {
-        self.into_erased().name()
+        self.as_erased().name()
     }
     #[inline]
     fn set_name<Name>(self, _module_token: &'ctx Module<B, Unverified>, _name: Name)
@@ -1152,7 +1169,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand> HasName<'ctx, B> for FunctionValue<'
 impl<R: ReturnMarker, B: ModuleBrand> HasDebugLoc for FunctionValue<'_, R, B> {
     #[inline]
     fn debug_loc(self) -> Option<DebugLoc> {
-        self.into_erased().debug_loc()
+        self.as_erased().debug_loc()
     }
 }
 
@@ -1161,7 +1178,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> From<FunctionValue<'ctx, R, B
 {
     #[inline]
     fn from(f: FunctionValue<'ctx, R, B>) -> Self {
-        f.into_erased()
+        f.as_erased()
     }
 }
 
@@ -1256,6 +1273,8 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> IntoCallee<'ctx, R, B> for Fu
 ///     .return_attribute(AttrKind::NoUndef)
 ///     .build()?;
 /// ```
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct FunctionBuilder<'ctx, R: ReturnMarker, B: ModuleBrand> {
     module: ModuleRef<'ctx, B>,
     name: String,
@@ -1321,38 +1340,45 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
     }
 
     /// Override the linkage.
+    #[must_use]
     pub fn linkage(mut self, linkage: Linkage) -> Self {
         self.linkage = linkage;
         self
     }
 
+    #[must_use]
     pub fn visibility(mut self, visibility: Visibility) -> Self {
         self.visibility = visibility;
         self
     }
 
+    #[must_use]
     pub fn dll_storage_class(mut self, cls: DllStorageClass) -> Self {
         self.dll_storage_class = cls;
         self
     }
 
+    #[must_use]
     pub fn dso_locality(mut self, locality: DsoLocality) -> Self {
         self.dso_locality = locality;
         self
     }
 
     /// Override the calling convention.
+    #[must_use]
     pub fn calling_conv(mut self, cc: CallingConv) -> Self {
         self.calling_conv = cc;
         self
     }
 
     /// Set the unnamed-address marker. Default is [`UnnamedAddr::None`].
+    #[must_use]
     pub fn unnamed_addr(mut self, value: UnnamedAddr) -> Self {
         self.unnamed_addr = value;
         self
     }
 
+    #[must_use]
     pub fn address_space(mut self, address_space: u32) -> Self {
         self.address_space = address_space;
         self
@@ -1374,6 +1400,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         self
     }
 
+    #[must_use]
     pub fn align(mut self, align: MaybeAlign) -> Self {
         self.align = align;
         self
@@ -1410,21 +1437,25 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         self
     }
 
+    #[must_use]
     pub fn comdat(mut self, comdat: ComdatRef<'ctx, B>) -> Self {
         self.comdat = Some(comdat);
         self
     }
 
+    #[must_use]
     pub fn attribute(mut self, index: AttrIndex, attr: Attribute<'ctx, B>) -> Self {
         self.attributes.add(index, attr);
         self
     }
 
+    #[must_use]
     pub fn attribute_storage(mut self, attributes: AttributeStorage) -> Self {
         self.attributes = attributes;
         self
     }
 
+    #[must_use]
     pub fn function_attr_group(mut self, group: u32) -> Self {
         if !self.function_attr_groups.contains(&group) {
             self.function_attr_groups.push(group);
@@ -1434,6 +1465,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
 
     /// Convenience: add an enum-flavored attribute on the function's
     /// return slot. Mirrors `Function::addRetAttr(AttrKind)`.
+    #[must_use]
     pub fn return_attribute(self, kind: AttrKind) -> Self {
         let attr = crate::Attribute::enum_attr(kind)
             .unwrap_or_else(|| unreachable!("return_attribute called with non-enum kind"));
@@ -1442,6 +1474,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
 
     /// Convenience: add an enum-flavored attribute on parameter
     /// `slot`. Mirrors `Function::addParamAttr(slot, AttrKind)`.
+    #[must_use]
     pub fn param_attribute(self, slot: u32, kind: AttrKind) -> Self {
         let attr = crate::Attribute::enum_attr(kind)
             .unwrap_or_else(|| unreachable!("param_attribute called with non-enum kind"));
@@ -1525,7 +1558,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
 //
 // `FunctionValue<'ctx, W>` and friends need integer-typed
 // return-type accessors. The relevant per-marker accessors live on
-// the type-state-aware impl blocks where the IRBuilder constructs
+// the type-state-aware impl blocks where the IrBuilder constructs
 // them; here we expose only what's universally needed.
 
 impl<'ctx, W: IntWidth + ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, W, B> {
@@ -1557,7 +1590,7 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> core::fmt::Display
     ///
     /// Note this is the *definition*, not the operand form: to print a
     /// function the way it appears as a call operand (`ptr @name`), go
-    /// through [`FunctionValue::into_erased`] instead.
+    /// through [`FunctionValue::as_erased`] instead.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         crate::asm_writer::fmt_function(f, self.as_dyn())
     }

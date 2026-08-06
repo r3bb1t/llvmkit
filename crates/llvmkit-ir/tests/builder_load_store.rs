@@ -5,10 +5,10 @@
 //!
 //! Positive print-form checks are llvmkit-specific subsets. The upstream
 //! `test/Assembler/align-inst-load.ll` and `align-inst-store.ll` files are
-//! negative alignment fixtures; IRBuilder load/store construction is exercised
+//! negative alignment fixtures; IrBuilder load/store construction is exercised
 //! throughout `unittests/IR/IRBuilderTest.cpp`.
 
-use llvmkit_ir::{Align, Dyn, IRBuilder, IrError, Linkage, module_new};
+use llvmkit_ir::{Align, Dyn, IrBuilder, IrError, Linkage, module_new};
 
 /// llvmkit-specific: positive no-align `load <ty>, ptr %x` print-form check.
 /// Upstream `align-inst-load.ll` is a negative alignment fixture.
@@ -17,13 +17,13 @@ fn load_plain() -> Result<(), IrError> {
     let m = module_new!("ls")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()]);
     let f = m.add_function_dyn("ld", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_int_load::<i32, _, _>(p, "v")?;
-    b.build_ret(r)?;
+    let r = b.int_load::<i32, _, _>(p, "v")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%v = load i32, ptr %0, align 4\n"),
@@ -39,13 +39,13 @@ fn load_aligned() -> Result<(), IrError> {
     let m = module_new!("ls")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()]);
     let f = m.add_function_dyn("ld", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let r = b.build_int_load_with_align::<i32, _, _>(p, Align::new(4)?, "v")?;
-    b.build_ret(r)?;
+    let r = b.int_load_with_align::<i32, _, _>(p, Align::new(4)?, "v")?;
+    b.ret(r)?;
     let text = format!("{m}");
     assert!(
         text.contains("%v = load i32, ptr %0, align 4\n"),
@@ -61,18 +61,17 @@ fn store_plain() -> Result<(), IrError> {
     let m = module_new!("ls")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(
+    let fn_ty = m.function_type(
         m.void_type().as_type(),
         [i32_ty.as_type(), ptr_ty.as_type()],
-        false,
     );
     let f = m.add_function_dyn("st", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
-    b.build_store(v, p)?;
-    b.build_ret_void()?;
+    b.store(v, p)?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("store i32 %0, ptr %1, align 4\n"),
@@ -88,18 +87,17 @@ fn store_aligned() -> Result<(), IrError> {
     let m = module_new!("ls")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(
+    let fn_ty = m.function_type(
         m.void_type().as_type(),
         [i32_ty.as_type(), ptr_ty.as_type()],
-        false,
     );
     let f = m.add_function_dyn("st", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let v: llvmkit_ir::IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(1)?.try_into()?;
-    b.build_store_with_align(v, p, Align::new(4)?)?;
-    b.build_ret_void()?;
+    b.store_with_align(v, p, Align::new(4)?)?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("store i32 %0, ptr %1, align 4\n"),
@@ -116,15 +114,15 @@ fn store_aligned() -> Result<(), IrError> {
 fn load_add_store_round_trip() -> Result<(), IrError> {
     let m = module_new!("ls")?;
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(m.void_type().as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let v = b.build_int_load::<i32, _, _>(p, "v")?;
-    let n = b.build_int_add(v, 1_i32, "n")?;
-    b.build_store(n, p)?;
-    b.build_ret_void()?;
+    let v = b.int_load::<i32, _, _>(p, "v")?;
+    let n = b.int_add(v, 1_i32, "n")?;
+    b.store(n, p)?;
+    b.ret_void()?;
     let text = format!("{m}");
     assert!(
         text.contains("%v = load i32, ptr %0, align 4\n"),

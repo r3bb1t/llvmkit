@@ -41,7 +41,7 @@
 //!
 //! # Where to look
 //!
-//! - [`Module`] + [`IRBuilder`] — build and print IR (the crate README has a
+//! - [`Module`] + [`IrBuilder`] — build and print IR (the crate README has a
 //!   guided tour of the builder and typed-handle surface).
 //! - [`pass_manager`] — author and run passes (start here for passes).
 //! - [`pass_access`] — the capability rungs and the derived verified-state lattice.
@@ -94,6 +94,7 @@ pub mod fp_class;
 pub mod fp_predicate;
 pub mod function;
 pub mod function_signature;
+pub mod gc_strategy;
 pub mod gep_no_wrap_flags;
 pub mod global_alias;
 pub mod global_ifunc;
@@ -117,6 +118,7 @@ pub mod marker;
 pub mod matchers;
 pub mod metadata;
 pub mod module;
+pub mod module_flags;
 pub mod named_md_node;
 pub mod operator;
 pub mod optimization_level;
@@ -154,7 +156,7 @@ pub mod worklist;
 pub mod unnamed_addr;
 pub use analysis::{
     AllAnalysesOnFunction, AllAnalysesOnModule, Analyses, AnalysisKeyId, AnalysisSelector,
-    AnalysisSetKeyId, CFGAnalyses, CfgIncremental, FunctionAnalysis, FunctionAnalysisInvalidator,
+    AnalysisSetKeyId, CfgAnalyses, CfgIncremental, FunctionAnalysis, FunctionAnalysisInvalidator,
     FunctionAnalysisList, FunctionAnalysisManager, FunctionAnalysisManagerModuleProxy,
     FunctionAnalysisResult, Idx0, Idx1, Idx2, Idx3, Idx4, Idx5, Idx6, Idx7, ModuleAnalysis,
     ModuleAnalysisInvalidator, ModuleAnalysisList, ModuleAnalysisManager, ModuleAnalysisResult,
@@ -165,14 +167,14 @@ pub use ap_float::{
     ApFloat, ApFloatCategory, ApFloatCmpResult, ApFloatNextDirection, ApFloatSemantics,
     ApFloatSign, ApFloatStatus, BinaryExponent, Exactness, LosesInfo, NanPayload, RoundingMode,
 };
-pub use ap_int::{ApInt, ApIntDivRem, ApIntRounding, ApIntSignedness, ApIntTruncation};
+pub use ap_int::{ApInt, ApIntDivRem, ApIntRounding, ApIntTruncation, Signedness};
 pub use argument::Argument;
 pub use atomic_ordering::AtomicOrdering;
-pub use atomicrmw_binop::AtomicRMWBinOp;
+pub use atomicrmw_binop::AtomicRmwBinOp;
 pub use attribute_mask::AttributeMask;
 pub use attributes::{
     AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet, AttributeStorage, MemoryEffects,
-    MemoryLocation, ModRefInfo,
+    MemoryLocation, ModRefInfo, StrBoolAttrKind,
 };
 pub use basic_block::{BasicBlock, BasicBlockLabel, BlockCall, IntoBasicBlockLabel};
 pub use block_params::{BlockParams, BlockParamsDyn};
@@ -207,7 +209,7 @@ pub use constant_folding::{
     lossless_unsigned_trunc,
 };
 pub use constant_range::{
-    ConstantRange, EquivalentICmp, NoWrapKind, OverflowResult, PreferredRangeType, RangeIntrinsic,
+    ConstantRange, EquivalentIcmp, NoWrapKind, OverflowResult, PreferredRangeType, RangeIntrinsic,
 };
 pub use constants::{
     ConstantAggregate, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
@@ -238,33 +240,33 @@ pub use function_signature::{
 };
 pub use gep_no_wrap_flags::GepNoWrapFlags;
 pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
-pub use global_ifunc::{GlobalIFunc, GlobalIFuncBuilder};
+pub use global_ifunc::{GlobalIfunc, GlobalIfuncBuilder};
 pub use global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 pub use global_variable::{GlobalBuilder, GlobalVariable};
 pub use inline_asm::{AsmDialect, InlineAsm, InlineAsmOptions};
 pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
-    AShrFlags, AddFlags, AllocaFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig,
-    AtomicRMWFlags, AtomicStoreConfig, BinaryOpcode, CallAttributeData, CmpXchgFlags, ICmpFlags,
-    IntBinOpFlags, IntCastFlags, LShrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags,
-    OverflowFlags, SDivFlags, ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags,
-    UDivFlags, UIToFpFlags, UnaryOpcode, ZExtFlags,
+    AddFlags, AshrFlags, AtomicCmpXchgConfig, AtomicRmwConfig, AtomicRmwFlags, BinaryOpcode,
+    CallAttributeData, CmpXchgFlags, IcmpFlags, IntBinOpFlags, IntCastFlags, LshrFlags, MulFlags,
+    OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SdivFlags, ShlFlags,
+    ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags, UdivFlags, UiToFpFlags, UnaryOpcode,
+    ZextFlags,
 };
 pub use instruction::{
     CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,
     TerminatorKind,
 };
 pub use instructions::{
-    AShrInst, AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AtomicCmpXchgInst, AtomicRMWInst,
+    AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AshrInst, AtomicCmpXchgInst, AtomicRmwInst,
     BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, Callee, CatchPadInst, CatchReturnInst,
     CatchSwitchInst, CleanupPadInst, CleanupReturnInst, Cmp, ExtractElementInst, ExtractValueInst,
-    FAddInst, FCmpInst, FDivInst, FMulInst, FNegInst, FRemInst, FSubInst, FenceInst, FpExtInst,
-    FpPhiInst, FpToSIInst, FpToUIInst, FpTruncInst, FreezeInst, GepInst, ICmpInst, IndirectBrInst,
-    InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LShrInst, LandingPadInst,
-    LoadInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
-    ResumeInst, RetInst, SDivInst, SExtInst, SIToFpInst, SRemInst, SelectInst, ShlInst,
-    ShuffleVectorInst, StoreInst, SubInst, SwitchInst, TruncInst, TypedCallInst, UDivInst,
-    UIToFpInst, URemInst, UnreachableInst, VAArgInst, XorInst, ZExtInst,
+    FaddInst, FcmpInst, FdivInst, FenceInst, FmulInst, FnegInst, FpExtInst, FpPhiInst, FpToSiInst,
+    FpToUiInst, FpTruncInst, FreezeInst, FremInst, FsubInst, GepInst, IcmpInst, IndirectBrInst,
+    InsertElementInst, InsertValueInst, IntToPtrInst, InvokeInst, LandingPadInst, LoadInst,
+    LshrInst, MulInst, OrInst, OtherPhiInst, PhiInst, PointerPhiInst, PtrToAddrInst, PtrToIntInst,
+    ResumeInst, RetInst, SdivInst, SelectInst, SextInst, ShlInst, ShuffleVectorInst, SiToFpInst,
+    SremInst, StoreInst, SubInst, SwitchInst, TruncInst, TypedCallInst, UdivInst, UiToFpInst,
+    UnreachableInst, UremInst, VaArgInst, XorInst, ZextInst,
 };
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{
@@ -272,23 +274,25 @@ pub use intrinsics::{
     descriptor_for_callee, resolve_intrinsic_name,
 };
 pub use ir_builder::constant_folder::ConstantFolder;
-pub use ir_builder::folder::IRBuilderFolder;
+pub use ir_builder::folder::IrBuilderFolder;
 pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{
-    BuilderPositionState, CallBuilder, CallSiteConfig, IRBuilder, InsertPoint, Positioned,
-    SelectArm, SelectNarrow, Unpositioned,
+    AllocaBuilder, BuilderPositionState, CallBuilder, CallSiteConfig, InsertPoint, IrBuilder,
+    LoadBuilder, Positioned, SelectArm, SelectNarrow, StoreBuilder, Unpositioned,
 };
-pub use known_bits::KnownBits;
+pub use known_bits::{AddSubOperation, KnownBits, ShiftAmountKnowledge};
 pub use marker::{Dyn, Ptr, ReturnMarker};
 pub use metadata::{
     MetadataAttachmentKind, MetadataAttachmentSet, MetadataField, MetadataFieldValue, MetadataId,
     MetadataKind, SpecializedMetadataKind, SpecializedMetadataNode,
 };
 pub use module::{
-    ComdatView, DynBrand, GlobalAliasView, GlobalIFuncView, GlobalVariableView, Module,
-    ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord,
+    ComdatView, DynBrand, GlobalAliasView, GlobalIfuncView, GlobalVariableView, Module,
+    ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBbRecord,
     UseListOrderRecord, Verified,
 };
+pub use module_flags::{ModuleFlagBehavior, ModuleFlagEntry, ModuleFlagKey};
+pub use named_md_node::{NamedMetadataId, NamedMetadataName};
 pub use operator::{OverflowingBinaryOperator, PossiblyExactOperator};
 pub use optimization_level::{
     OptLevelO0, OptLevelO1, OptLevelO2, OptLevelO3, OptLevelOs, OptLevelOz, OptimizationLevel,
@@ -355,16 +359,16 @@ pub use value::{
     VectorValue,
 };
 pub use value_id::{
-    AtomicCmpXchgInstId, AtomicRMWInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
-    FreezeInstId, FunctionId, GlobalAliasId, GlobalIFuncId, GlobalId, IntValueId, IntrinsicInstId,
+    AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,
+    FreezeInstId, FunctionId, GlobalAliasId, GlobalId, GlobalIfuncId, IntValueId, IntrinsicInstId,
     OtherPhiInstId, PhiInstId, PointerPhiInstId, PointerValueId, TypedCallInstId, TypedFunctionId,
-    TypedVarArgsFunctionId, VAArgInstId, ValueId, ViewIn,
+    TypedVarArgsFunctionId, VaArgInstId, ValueId, ViewIn,
 };
 pub use worklist::Worklist;
 
 pub use align::{Align, MaybeAlign};
 pub use float_kind::{
-    BFloat, FloatDyn, FloatKind, FloatWiderThan, Fp128, Half, IntoConstantFloat, IntoFloatValue,
+    Bfloat, FloatDyn, FloatKind, FloatWiderThan, Fp128, Half, IntoConstantFloat, IntoFloatValue,
     PpcFp128, StaticFloatKind, X86Fp80,
 };
 // `f32`/`f64` are std types — no re-export needed.
@@ -396,18 +400,17 @@ pub use int_width::{
 };
 pub use pointer_analysis::{
     BytewiseValue, ConstantDataArraySlice, MAX_LOOKUP_SEARCH_DEPTH,
-    argument_aliasing_to_returned_pointer, find_alloca_for_value, find_inserted_value,
-    get_constant_data_array_info, get_constant_string_info, get_string_length,
-    get_underlying_object, get_underlying_object_aggressive, get_underlying_objects,
-    get_underlying_objects_for_code_gen, is_bytewise_value,
+    argument_aliasing_to_returned_pointer, constant_data_array_info, constant_string_info,
+    find_alloca_for_value, find_inserted_value, is_bytewise_value,
     is_intrinsic_returning_pointer_aliasing_argument_without_capturing,
     only_used_by_lifetime_markers, only_used_by_lifetime_markers_or_droppable_instructions,
-    pointer_base_with_constant_offset,
+    pointer_base_with_constant_offset, string_length, underlying_object,
+    underlying_object_aggressive, underlying_objects, underlying_objects_for_code_gen,
 };
 pub use select_pattern::{
     MinMaxIntrinsic, MinMaxOperation, SelectPatternFlavor, SelectPatternMatch,
-    SelectPatternNaNBehavior, SelectPatternResult, can_convert_to_min_or_max_intrinsic,
-    get_select_pattern, match_decomposed_select_pattern, match_select_pattern,
+    SelectPatternNanBehavior, SelectPatternResult, can_convert_to_min_or_max_intrinsic,
+    match_decomposed_select_pattern, match_select_pattern, select_pattern,
 };
 pub use speculation::{
     DEFAULT_TRANSFER_SCAN_LIMIT, SpeculationOptions, block_transfers_execution_to_successor,
@@ -439,13 +442,13 @@ pub use vec_len::{Len, LenDyn, StaticVecLen, VecLen};
 pub use vector_utils::{
     MaskedSlide, ShuffleSource, create_interleave_mask, create_replicated_mask,
     create_sequential_mask, create_stride_mask, create_unary_mask, deinterleave_intrinsic_factor,
-    find_scalar_element, get_splat_value, horizontal_demanded_elements_for_first_operand,
+    find_scalar_element, horizontal_demanded_elements_for_first_operand,
     interleave_intrinsic_factor, is_splat_value, is_trivially_scalarizable,
     is_trivially_vectorizable, is_vector_intrinsic_with_struct_return_overload_at_field,
     mask_contains_all_one_or_undefined, mask_is_all_one_or_undefined,
     mask_is_all_zero_or_undefined, masked_slide_pair, narrow_shuffle_mask_elements,
     possibly_demanded_elements_in_mask, scale_shuffle_mask_elements, shuffle_demanded_elements,
-    shuffle_mask_with_widest_elements, splat_index, widen_shuffle_mask_elements,
+    shuffle_mask_with_widest_elements, splat_index, splat_value, widen_shuffle_mask_elements,
     widen_shuffle_mask_elements_in_pairs,
 };
 // `bool`/`i8`/`i16`/`i32`/`i64`/`i128` are std types — no re-export.

@@ -22,6 +22,7 @@
 //! a composite concatenates its children's bindings via [`Combine`]. Flat
 //! tuples are provided for up to four bound values.
 
+use crate::Branded;
 use crate::ap_int::ApInt;
 use crate::instr_types::BinaryOpcode;
 use crate::instruction::{InstructionKind, InstructionView, PhiKind};
@@ -181,6 +182,8 @@ pub fn m_value<B: ModuleBrand>() -> MValue<B> {
 }
 
 /// Matcher returned by [`m_value`].
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct MValue<B>(core::marker::PhantomData<fn() -> B>);
 
 impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MValue<B> {
@@ -197,6 +200,8 @@ pub fn m_specific<'ctx, B: ModuleBrand>(expected: Value<'ctx, B>) -> MSpecific<'
 }
 
 /// Matcher returned by [`m_specific`].
+#[derive(Branded)]
+#[branded(Debug)]
 pub struct MSpecific<'ctx, B: ModuleBrand>(Value<'ctx, B>);
 
 impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MSpecific<'ctx, B> {
@@ -213,6 +218,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MSpecific<'ctx, B> {
 
 /// A constant-integer predicate matcher; binds nothing. Backs `m_zero`,
 /// `m_one`, `m_all_ones`, ... Scalar only (vector splats are not unwrapped).
+#[derive(Debug)]
 pub struct MConstIntPred {
     pred: fn(&ApInt) -> bool,
 }
@@ -221,7 +227,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MConstIntPred {
     type Bindings = ();
     #[inline]
     fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
-        let ap = value.as_const_int()?;
+        let ap = value.to_const_int()?;
         (self.pred)(&ap).then_some(())
     }
 }
@@ -269,13 +275,14 @@ pub fn m_ap_int() -> MApInt {
 }
 
 /// Matcher returned by [`m_ap_int`].
+#[derive(Debug)]
 pub struct MApInt;
 
 impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MApInt {
     type Bindings = (ApInt,);
     #[inline]
     fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
-        value.as_const_int().map(|ap| (ap,))
+        value.to_const_int().map(|ap| (ap,))
     }
 }
 
@@ -286,13 +293,14 @@ pub fn m_specific_int(n: i128) -> MSpecificInt {
 }
 
 /// Matcher returned by [`m_specific_int`].
+#[derive(Debug)]
 pub struct MSpecificInt(i128);
 
 impl<'ctx, B: ModuleBrand + 'ctx> Matcher<'ctx, B> for MSpecificInt {
     type Bindings = ();
     #[inline]
     fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
-        let ap = value.as_const_int()?;
+        let ap = value.to_const_int()?;
         (ap.try_sext_i128() == Some(self.0)).then_some(())
     }
 }
@@ -309,6 +317,7 @@ pub fn m_one_use<M>(inner: M) -> MOneUse<M> {
 }
 
 /// Matcher returned by [`m_one_use`].
+#[derive(Debug)]
 pub struct MOneUse<M>(M);
 
 impl<'ctx, B, M> Matcher<'ctx, B> for MOneUse<M>
@@ -333,6 +342,7 @@ where
 /// A binary-operator matcher over a fixed opcode with sub-matchers for the
 /// two operands. When `commutative` is set, the swapped operand order is
 /// tried too (built by the `m_c_*` factories).
+#[derive(Debug)]
 pub struct MBinOp<L, R> {
     opcode: BinaryOpcode,
     lhs: L,
@@ -400,19 +410,19 @@ binop_matcher!(
 );
 binop_matcher!(
     /// `udiv`. Mirrors `m_UDiv`.
-    m_udiv, UDiv
+    m_udiv, Udiv
 );
 binop_matcher!(
     /// `sdiv`. Mirrors `m_SDiv`.
-    m_sdiv, SDiv
+    m_sdiv, Sdiv
 );
 binop_matcher!(
     /// `urem`. Mirrors `m_URem`.
-    m_urem, URem
+    m_urem, Urem
 );
 binop_matcher!(
     /// `srem`. Mirrors `m_SRem`.
-    m_srem, SRem
+    m_srem, Srem
 );
 binop_matcher!(
     /// `shl`. Mirrors `m_Shl`.
@@ -420,11 +430,11 @@ binop_matcher!(
 );
 binop_matcher!(
     /// `lshr`. Mirrors `m_LShr`.
-    m_lshr, LShr
+    m_lshr, Lshr
 );
 binop_matcher!(
     /// `ashr`. Mirrors `m_AShr`.
-    m_ashr, AShr
+    m_ashr, Ashr
 );
 binop_matcher!(
     /// `and`. Mirrors `m_And`.
@@ -440,23 +450,23 @@ binop_matcher!(
 );
 binop_matcher!(
     /// `fadd`. Mirrors `m_FAdd`.
-    m_fadd, FAdd
+    m_fadd, Fadd
 );
 binop_matcher!(
     /// `fsub`. Mirrors `m_FSub`.
-    m_fsub, FSub
+    m_fsub, Fsub
 );
 binop_matcher!(
     /// `fmul`. Mirrors `m_FMul`.
-    m_fmul, FMul
+    m_fmul, Fmul
 );
 binop_matcher!(
     /// `fdiv`. Mirrors `m_FDiv`.
-    m_fdiv, FDiv
+    m_fdiv, Fdiv
 );
 binop_matcher!(
     /// `frem`. Mirrors `m_FRem`.
-    m_frem, FRem
+    m_frem, Frem
 );
 
 commutative_binop_matcher!(
@@ -481,11 +491,11 @@ commutative_binop_matcher!(
 );
 commutative_binop_matcher!(
     /// Commutative `fadd`. Mirrors `m_c_FAdd`.
-    m_c_fadd, FAdd
+    m_c_fadd, Fadd
 );
 commutative_binop_matcher!(
     /// Commutative `fmul`. Mirrors `m_c_FMul`.
-    m_c_fmul, FMul
+    m_c_fmul, Fmul
 );
 
 // --------------------------------------------------------------------------
@@ -515,6 +525,7 @@ pub fn m_combine_or<A, C>(a: A, b: C) -> MCombineOr<A, C> {
 }
 
 /// Matcher returned by [`m_combine_or`].
+#[derive(Debug)]
 pub struct MCombineOr<A, C>(A, C);
 
 impl<'ctx, B, A, C> Matcher<'ctx, B> for MCombineOr<A, C>
@@ -537,6 +548,7 @@ pub fn m_combine_and<A, C>(a: A, b: C) -> MCombineAnd<A, C> {
 }
 
 /// Matcher returned by [`m_combine_and`].
+#[derive(Debug)]
 pub struct MCombineAnd<A, C>(A, C);
 
 impl<'ctx, B, A, C> Matcher<'ctx, B> for MCombineAnd<A, C>
@@ -566,6 +578,7 @@ pub fn m_load<P>(ptr: P) -> MLoad<P> {
 }
 
 /// Matcher returned by [`m_load`].
+#[derive(Debug)]
 pub struct MLoad<P>(P);
 
 impl<'ctx, B, P> Matcher<'ctx, B> for MLoad<P>
@@ -578,7 +591,7 @@ where
     fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
         let view = InstructionView::try_from(value).ok()?;
         match view.kind()? {
-            InstructionKind::Load(load) => self.0.try_match(load.pointer().into_erased()),
+            InstructionKind::Load(load) => self.0.try_match(load.pointer().as_erased()),
             _ => None,
         }
     }
@@ -593,6 +606,7 @@ pub fn m_phi() -> MPhi {
 }
 
 /// Matcher returned by [`m_phi`].
+#[derive(Debug)]
 pub struct MPhi;
 
 impl<'ctx, B> Matcher<'ctx, B> for MPhi
@@ -617,6 +631,7 @@ pub fn m_gep<P>(ptr: P) -> MGep<P> {
 }
 
 /// Matcher returned by [`m_gep`].
+#[derive(Debug)]
 pub struct MGep<P>(P);
 
 impl<'ctx, B, P> Matcher<'ctx, B> for MGep<P>
@@ -629,7 +644,7 @@ where
     fn try_match(&self, value: Value<'ctx, B>) -> Option<Self::Bindings> {
         let view = InstructionView::try_from(value).ok()?;
         match view.kind()? {
-            InstructionKind::Gep(gep) => self.0.try_match(gep.pointer().into_erased()),
+            InstructionKind::Gep(gep) => self.0.try_match(gep.pointer().as_erased()),
             _ => None,
         }
     }

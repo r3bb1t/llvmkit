@@ -22,11 +22,11 @@ impl<T> Located<T> {
         }
     }
 
-    pub(crate) fn error<M>(&self, message: M) -> GenError
+    pub(crate) fn error<M>(&self, message: M) -> TableGenError
     where
         M: Into<String>,
     {
-        GenError::new(format!(
+        TableGenError::new(format!(
             "{}:{}:{}: {}",
             self.file,
             self.line,
@@ -183,7 +183,7 @@ impl Parser {
     pub(crate) fn parse_stmt(&mut self) -> GenResult<Located<Stmt>> {
         let token = self
             .peek()
-            .ok_or_else(|| GenError::new("unexpected EOF"))?
+            .ok_or_else(|| TableGenError::new("unexpected EOF"))?
             .clone();
         let stmt = if self.eat_ident("include") {
             let path = self.expect_string()?;
@@ -544,7 +544,7 @@ impl Parser {
     pub(crate) fn parse_primary(&mut self) -> GenResult<Expr> {
         let token = self
             .next()
-            .ok_or_else(|| GenError::new("unexpected EOF in expression"))?;
+            .ok_or_else(|| TableGenError::new("unexpected EOF in expression"))?;
         match token.kind.clone() {
             TokenKind::Ident(name) => {
                 if name == "true" {
@@ -762,12 +762,12 @@ impl Parser {
         self.pos >= self.tokens.len()
     }
 
-    pub(crate) fn error_here<M>(&self, message: M) -> GenError
+    pub(crate) fn error_here<M>(&self, message: M) -> TableGenError
     where
         M: Into<String>,
     {
         if let Some(tok) = self.peek() {
-            GenError::new(format!(
+            TableGenError::new(format!(
                 "{}:{}:{}: {}",
                 tok.file,
                 tok.line,
@@ -775,7 +775,7 @@ impl Parser {
                 message.into()
             ))
         } else {
-            GenError::new(message.into())
+            TableGenError::new(message.into())
         }
     }
 }

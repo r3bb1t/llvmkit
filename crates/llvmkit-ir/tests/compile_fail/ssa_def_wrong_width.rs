@@ -19,7 +19,7 @@ use llvmkit_ir::{Linkage, Module, SsaState};
 fn main() {
     let m = Module::dynamic("ssa-def-wrong-width");
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type<_>>::new(), false);
+    let fn_ty = m.function_type(void_ty, Vec::<llvmkit_ir::Type<_>>::new());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let mut state = SsaState::for_function(&m, m.view(f)).unwrap();
     let mut b = llvmkit_ir::SsaBuilder::for_function(&m, m.view(f), &mut state).unwrap();

@@ -211,7 +211,7 @@ fn named_struct_forward_reference_resolves() {
 fn array_and_vector_types_parse() {
     let m = module_new!("aggregate_types").expect("fresh module");
     parse_into("declare void @takes([4 x i32], <8 x float>)\n", &m);
-    let f = m.view(m.function_by_name_dyn("takes").expect("function present"));
+    let f = m.view(m.function_dyn("takes").expect("function present"));
     let params: Vec<_> = f.signature().params().collect();
     assert_eq!(params.len(), 2);
     assert!(matches!(
@@ -230,7 +230,7 @@ fn array_and_vector_types_parse() {
 fn scalable_vector_type_parses() {
     let m = module_new!("scalable_vec").expect("fresh module");
     parse_into("declare void @sv(<vscale x 4 x i32>)\n", &m);
-    let f = m.view(m.function_by_name_dyn("sv").expect("function present"));
+    let f = m.view(m.function_dyn("sv").expect("function present"));
     let params: Vec<_> = f.signature().params().collect();
     let v = match AnyTypeEnum::from(params[0]) {
         AnyTypeEnum::Vector(v) => v,
@@ -263,7 +263,7 @@ fn numbered_global_records_in_slot_mapping() {
     let m = module_new!("numbered_globals").expect("fresh module");
     let parser = Parser::new(b"@0 = global i32 0\n@1 = global i32 1\n", &m).unwrap();
     let parsed = parser.parse_module().expect("parser succeeds");
-    assert_eq!(parsed.slot_mapping.global_values.get_next(), 2);
+    assert_eq!(parsed.slot_mapping.global_values.next_unused_id(), 2);
     assert!(parsed.slot_mapping.global_values.get(0).is_some());
     assert!(parsed.slot_mapping.global_values.get(1).is_some());
 }

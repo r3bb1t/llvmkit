@@ -18,12 +18,15 @@
 //! signedness-irrelevant predicates (`Eq`, `Ne`) from the unsigned
 //! family (`Ult`/`Ule`/`Ugt`/`Uge`) and the signed family
 //! (`Slt`/`Sle`/`Sgt`/`Sge`). For ergonomics,
-//! [`crate::IRBuilder`] also ships per-predicate convenience methods
-//! (`build_icmp_eq`, `build_icmp_slt`, ...) that bake the predicate
+//! [`crate::IrBuilder`] also ships per-predicate convenience methods
+//! (`icmp_eq`, `icmp_slt`, ...) that bake the predicate
 //! into the method name --- see `IRBuilder::CreateICmp{EQ,SLT,...}` in
 //! `IRBuilder.h` for the upstream parallel.
 
 use core::fmt;
+use core::str::FromStr;
+
+use crate::error::IrError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CmpPredicate {
@@ -134,7 +137,7 @@ impl PredicateWithSameSign {
     /// predicate unchanged.
     ///
     /// Ports `CmpPredicate::getPreferredSignedPredicate`, whose body is
-    /// `HasSameSign ? ICmpInst::getSignedPredicate(Pred) : Pred`.
+    /// `HasSameSign ? IcmpInst::getSignedPredicate(Pred) : Pred`.
     #[inline]
     pub const fn preferred_signed_predicate(self) -> CmpPredicate {
         match self.predicate {
@@ -179,7 +182,7 @@ impl PredicateWithSameSign {
     /// Whether `first` being true forces `second` to be true, false, or neither,
     /// for two comparisons over the *same* operands.
     ///
-    /// Ports `ICmpInst::isImpliedByMatchingCmp` together with the two static
+    /// Ports `IcmpInst::isImpliedByMatchingCmp` together with the two static
     /// helpers it delegates to, `isImpliedTrueByMatchingCmp` and
     /// `isImpliedFalseByMatchingCmp` (`Instructions.cpp`) — the latter is the
     /// former against the inverse of `second`.
@@ -360,7 +363,7 @@ impl FloatPredicate {
     /// Mnemonic suffix as it appears in `.ll` syntax (`oeq`, `ord`, …).
     /// Mirrors `CmpInst::getPredicateName` (`Instructions.cpp`).
     #[inline]
-    pub const fn name(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::False => "false",
             Self::Oeq => "oeq",
@@ -466,7 +469,50 @@ impl FloatPredicate {
 
 impl fmt::Display for FloatPredicate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<FloatPredicate> for u8 {
+    /// The `FCMP_*` discriminant. Infallible in this direction — every
+    /// variant has one, by construction of the `0..=15` layout upstream gives
+    /// `CmpInst::Predicate` (`InstrTypes.h`).
+    #[inline]
+    fn from(predicate: FloatPredicate) -> Self {
+        predicate.as_raw()
+    }
+}
+
+impl TryFrom<u8> for FloatPredicate {
+    type Error = IrError;
+
+    /// The `?`-friendly twin of [`FloatPredicate::from_raw`], which stays the
+    /// `const fn` path. Rejects anything outside
+    /// `FIRST_FCMP_PREDICATE..=LAST_FCMP_PREDICATE` (`InstrTypes.h`).
+    #[inline]
+    fn try_from(raw: u8) -> Result<Self, Self::Error> {
+        Self::from_raw(raw).ok_or(IrError::InvalidDiscriminant {
+            target: "fcmp predicate",
+            value: u64::from(raw),
+        })
+    }
+}
+
+impl FromStr for FloatPredicate {
+    type Err = IrError;
+
+    /// Inverse of [`Display`](fmt::Display) / [`FloatPredicate::as_str`],
+    /// found by searching [`all()`](FloatPredicate::all) rather than a second
+    /// keyword table — the mnemonics live in exactly one place, so the two
+    /// directions cannot drift. The lexer half upstream is `LLLexer.cpp`'s
+    /// `fcmp` keyword block.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::all()
+            .find(|p| p.as_str() == s)
+            .ok_or_else(|| IrError::InvalidKeyword {
+                target: "fcmp predicate",
+                keyword: s.to_string(),
+            })
     }
 }
 
@@ -544,7 +590,7 @@ impl IntPredicate {
     /// Mnemonic suffix as it appears in `.ll` syntax (`eq`, `slt`, …).
     /// Mirrors `CmpInst::getPredicateName`.
     #[inline]
-    pub const fn name(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Eq => "eq",
             Self::Ne => "ne",
@@ -615,7 +661,7 @@ impl IntPredicate {
     }
 
     /// The signed reading of this predicate; `eq`/`ne` and the already-signed
-    /// predicates are returned unchanged. Mirrors `ICmpInst::getSignedPredicate`.
+    /// predicates are returned unchanged. Mirrors `IcmpInst::getSignedPredicate`.
     #[inline]
     pub const fn signed_predicate(self) -> Self {
         match self {
@@ -629,7 +675,7 @@ impl IntPredicate {
 
     /// If signed, return the unsigned counterpart (and vice versa).
     /// `eq`/`ne` are returned unchanged. Mirrors the
-    /// `getSignedPredicate` / `getUnsignedPredicate` pair on `ICmpInst`.
+    /// `getSignedPredicate` / `getUnsignedPredicate` pair on `IcmpInst`.
     #[inline]
     pub const fn flip_signedness(self) -> Self {
         match self {
@@ -653,19 +699,60 @@ impl IntPredicate {
 
 impl fmt::Display for IntPredicate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<IntPredicate> for u8 {
+    /// The `ICMP_*` discriminant (`32..=41`, `InstrTypes.h`). Infallible:
+    /// every variant has one.
+    #[inline]
+    fn from(predicate: IntPredicate) -> Self {
+        predicate.as_raw()
+    }
+}
+
+impl TryFrom<u8> for IntPredicate {
+    type Error = IrError;
+
+    /// The `?`-friendly twin of [`IntPredicate::from_raw`], which stays the
+    /// `const fn` path. Rejects anything outside
+    /// `FIRST_ICMP_PREDICATE..=LAST_ICMP_PREDICATE` (`InstrTypes.h`) — note
+    /// that includes `0..=15`, which are the *float* predicates.
+    #[inline]
+    fn try_from(raw: u8) -> Result<Self, Self::Error> {
+        Self::from_raw(raw).ok_or(IrError::InvalidDiscriminant {
+            target: "icmp predicate",
+            value: u64::from(raw),
+        })
+    }
+}
+
+impl FromStr for IntPredicate {
+    type Err = IrError;
+
+    /// Inverse of [`Display`](fmt::Display) / [`IntPredicate::as_str`], found
+    /// by searching [`all()`](IntPredicate::all) rather than a second keyword
+    /// table. The lexer half upstream is `LLLexer.cpp`'s `icmp` keyword block.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::all()
+            .find(|p| p.as_str() == s)
+            .ok_or_else(|| IrError::InvalidKeyword {
+                target: "icmp predicate",
+                keyword: s.to_string(),
+            })
     }
 }
 
 /// Upstream provenance: mirrors `CmpInst::Predicate` /
-/// `ICmpInst::Predicate` / `FCmpInst::Predicate` from
+/// `IcmpInst::Predicate` / `FcmpInst::Predicate` from
 /// `include/llvm/IR/InstrTypes.h` and `lib/IR/Instructions.cpp`,
 /// exercised at runtime by `unittests/IR/InstructionsTest.cpp`.
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// llvmkit-specific: enum round-trip. Mirrors `FCmpInst::Predicate`
+    /// llvmkit-specific: enum round-trip. Mirrors `FcmpInst::Predicate`
     /// numeric stability in `include/llvm/IR/InstrTypes.h`.
     #[test]
     fn float_round_trip() {
@@ -674,7 +761,7 @@ mod tests {
         }
     }
 
-    /// llvmkit-specific: enum round-trip. Mirrors `ICmpInst::Predicate`
+    /// llvmkit-specific: enum round-trip. Mirrors `IcmpInst::Predicate`
     /// numeric stability in `include/llvm/IR/InstrTypes.h`.
     #[test]
     fn int_round_trip() {
@@ -753,5 +840,114 @@ mod tests {
         assert_eq!(FloatPredicate::from_raw(16), None);
         assert_eq!(IntPredicate::from_raw(31), None);
         assert_eq!(IntPredicate::from_raw(42), None);
+    }
+
+    /// llvmkit-specific: the `Display`/`FromStr` drift lock — the analogue of
+    /// `attribute_td_drift.rs` for a hand-written keyword table. Upstream's
+    /// `LLLexer` and `AsmWriter` cannot drift apart because both consume the
+    /// same `InstrTypes.h` enum; llvmkit spells the mnemonics once, in
+    /// `as_str`, and this test pins that `parse ∘ display` is the identity
+    /// over every variant. Closest upstream reference:
+    /// `CmpInst::getPredicateName` (`lib/IR/Instructions.cpp`).
+    #[test]
+    fn float_predicate_display_and_from_str_round_trip() {
+        for p in FloatPredicate::all() {
+            // Exhaustive match: a new variant is a compile error here, which
+            // is the prompt to check `MAX_RAW`, `from_raw`, and `as_str`.
+            match p {
+                FloatPredicate::False
+                | FloatPredicate::Oeq
+                | FloatPredicate::Ogt
+                | FloatPredicate::Oge
+                | FloatPredicate::Olt
+                | FloatPredicate::Ole
+                | FloatPredicate::One
+                | FloatPredicate::Ord
+                | FloatPredicate::Uno
+                | FloatPredicate::Ueq
+                | FloatPredicate::Ugt
+                | FloatPredicate::Uge
+                | FloatPredicate::Ult
+                | FloatPredicate::Ule
+                | FloatPredicate::Une
+                | FloatPredicate::True => {}
+            }
+            assert_eq!(p.to_string().parse::<FloatPredicate>(), Ok(p));
+        }
+        // One entry per arm above.
+        assert_eq!(FloatPredicate::all().count(), 16);
+    }
+
+    /// llvmkit-specific: the same drift lock for the integer family. See
+    /// [`float_predicate_display_and_from_str_round_trip`].
+    #[test]
+    fn int_predicate_display_and_from_str_round_trip() {
+        for p in IntPredicate::all() {
+            // Exhaustive match: a new variant is a compile error here.
+            match p {
+                IntPredicate::Eq
+                | IntPredicate::Ne
+                | IntPredicate::Ugt
+                | IntPredicate::Uge
+                | IntPredicate::Ult
+                | IntPredicate::Ule
+                | IntPredicate::Sgt
+                | IntPredicate::Sge
+                | IntPredicate::Slt
+                | IntPredicate::Sle => {}
+            }
+            assert_eq!(p.to_string().parse::<IntPredicate>(), Ok(p));
+        }
+        // One entry per arm above.
+        assert_eq!(IntPredicate::all().count(), 10);
+    }
+
+    /// llvmkit-specific: the negative half of the drift lock — an unknown
+    /// mnemonic is an error, never a silently-defaulted predicate. Closest
+    /// upstream: `LLParser::parseCompare`'s failure path (`LLParser.cpp`).
+    #[test]
+    fn unknown_predicate_keywords_are_rejected() {
+        assert_eq!(
+            "sgt".parse::<FloatPredicate>(),
+            Err(IrError::InvalidKeyword {
+                target: "fcmp predicate",
+                keyword: "sgt".to_string(),
+            })
+        );
+        assert_eq!(
+            "oeq".parse::<IntPredicate>(),
+            Err(IrError::InvalidKeyword {
+                target: "icmp predicate",
+                keyword: "oeq".to_string(),
+            })
+        );
+    }
+
+    /// llvmkit-specific: the `TryFrom`/`From` pair agrees with the `from_raw`
+    /// / `as_raw` const path it wraps, and rejects the same values.
+    /// Closest upstream: the `CmpInst::Predicate` discriminants in
+    /// `include/llvm/IR/InstrTypes.h`.
+    #[test]
+    fn try_from_u8_matches_from_raw() {
+        for p in FloatPredicate::all() {
+            assert_eq!(FloatPredicate::try_from(u8::from(p)), Ok(p));
+        }
+        for p in IntPredicate::all() {
+            assert_eq!(IntPredicate::try_from(u8::from(p)), Ok(p));
+        }
+        assert_eq!(
+            FloatPredicate::try_from(16),
+            Err(IrError::InvalidDiscriminant {
+                target: "fcmp predicate",
+                value: 16,
+            })
+        );
+        assert_eq!(
+            IntPredicate::try_from(0),
+            Err(IrError::InvalidDiscriminant {
+                target: "icmp predicate",
+                value: 0,
+            })
+        );
     }
 }

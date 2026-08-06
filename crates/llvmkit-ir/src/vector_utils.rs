@@ -8,7 +8,7 @@
 //! those names are ported (26 functions, since `widenShuffleMaskElts` has two
 //! overloads), and the remaining 12 are blocked on something named below.
 //!
-//! - **The splat family** — [`get_splat_value`], [`splat_index`],
+//! - **The splat family** — [`splat_value`], [`splat_index`],
 //!   [`is_splat_value`], [`find_scalar_element`].
 //! - **The mask transforms** — [`narrow_shuffle_mask_elements`],
 //!   [`widen_shuffle_mask_elements`],
@@ -43,7 +43,7 @@
 //! therefore have no llvmkit spelling.
 //!
 //! The two splat *questions* are deliberately separate and neither subsumes
-//! the other. [`get_splat_value`] must name the broadcast scalar, so it only
+//! the other. [`splat_value`] must name the broadcast scalar, so it only
 //! recognises two shapes and answers with a value. [`is_splat_value`] only has
 //! to decide whether all lanes agree, so it sees through binary operators and
 //! `select`s whose operands are independently splats — cases with no single
@@ -78,7 +78,7 @@
 //!   `intersectAccessGroups`, `getMetadataToPropagate` and
 //!   `propagateMetadata`.
 //! - **Three need construction machinery** — `concatenateVectors` and
-//!   `createBitMaskForGaps` need an `IRBuilder`, and
+//!   `createBitMaskForGaps` need an `IrBuilder`, and
 //!   `getDeinterleavedVectorType` needs `IntrinsicInst`.
 //! - **Two are permanently out of scope, not pending.** llvmkit models no
 //!   target: code generation and target backends are excluded by charter, not
@@ -160,9 +160,7 @@ pub fn splat_index(mask: &[ShuffleMaskElem]) -> Option<u32> {
 /// [`is_splat_value`] answers a *weaker* question — "are all lanes equal" —
 /// without needing to name the scalar, and so succeeds in cases this returns
 /// `None` for. Neither subsumes the other; upstream ships both.
-pub fn get_splat_value<'ctx, B: ModuleBrand + 'ctx>(
-    value: Value<'ctx, B>,
-) -> Option<Value<'ctx, B>> {
+pub fn splat_value<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
     // `isa<VectorType>(V->getType())` guarding `dyn_cast<Constant>(V)`. The
     // `return` is upstream's: a vector-typed constant answers here whatever
     // `Constant::getSplatValue` says, including `None`, and never falls
@@ -173,7 +171,7 @@ pub fn get_splat_value<'ctx, B: ModuleBrand + 'ctx>(
         // `C->getSplatValue()` — the `AllowPoison` default, which is `false`.
         return Constant::from_parts(value)
             .splat_value(false)
-            .map(Constant::into_erased);
+            .map(Constant::as_erased);
     }
 
     let InstructionKindData::ShuffleVector(shuffle) = instruction_kind(value)? else {
@@ -328,13 +326,13 @@ pub fn find_scalar_element<'ctx, B: ModuleBrand + 'ctx>(
 
     // For fixed-length vector, return poison for out of range access.
     if !scalable && element >= lanes {
-        return Some(element_ty.get_poison().as_constant().into_erased());
+        return Some(element_ty.poison().as_constant().as_erased());
     }
 
     if let ValueKindData::Constant(_) = &value.data().kind {
         return Constant::from_parts(value)
             .aggregate_element(element)
-            .map(Constant::into_erased);
+            .map(Constant::as_erased);
     }
 
     if let Some(InstructionKindData::InsertElement(insert)) = instruction_kind(value) {
@@ -366,7 +364,7 @@ pub fn find_scalar_element<'ctx, B: ModuleBrand + 'ctx>(
             let (_, source_lanes, _) = source.ty().data().as_vector()?;
             let position = usize::try_from(element).ok()?;
             let Some(&ShuffleMaskElem::Lane(selected)) = shuffle.mask.get(position) else {
-                return Some(element_ty.get_poison().as_constant().into_erased());
+                return Some(element_ty.poison().as_constant().as_erased());
             };
             return if selected < source_lanes {
                 find_scalar_element(source, selected)
@@ -394,7 +392,7 @@ pub fn find_scalar_element<'ctx, B: ModuleBrand + 'ctx>(
 
     // If the vector is a splat then we can trivially find the scalar element.
     if scalable
-        && let Some(splat) = get_splat_value(value)
+        && let Some(splat) = splat_value(value)
         && element < lanes
     {
         return Some(splat);
@@ -610,7 +608,7 @@ fn constant_mask_lanes_satisfy<'ctx, B: ModuleBrand + 'ctx>(
     let lane_qualifies = |lane: u32| {
         constant.aggregate_element(lane).is_some_and(|element| {
             let element_undefined = matches!(
-                &element.into_erased().data().kind,
+                &element.as_erased().data().kind,
                 ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison)
             );
             element_undefined

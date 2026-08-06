@@ -851,8 +851,8 @@ impl<'src> Lexer<'src> {
                 Token::FloatLit(FpLit::HexHalf(digits))
             }
             b'R' => {
-                self.check_hex16_fits(digits, HexFpKind::BFloat)?;
-                Token::FloatLit(FpLit::HexBFloat(digits))
+                self.check_hex16_fits(digits, HexFpKind::Bfloat)?;
+                Token::FloatLit(FpLit::HexBfloat(digits))
             }
             _ => unreachable!(),
         };
@@ -1003,7 +1003,7 @@ impl<'src> Lexer<'src> {
                 Some("VIRTUALITY") => Token::DwarfVirtuality(s),
                 Some("LANG") => Token::DwarfLang(s),
                 Some("LNAME") => Token::DwarfSourceLangName(s),
-                Some("CC") => Token::DwarfCC(s),
+                Some("CC") => Token::DwarfCc(s),
                 Some("OP") => Token::DwarfOp(s),
                 Some("MACINFO") => Token::DwarfMacinfo(s),
                 Some("APPLE") if rest.starts_with("APPLE_ENUM_KIND_") => Token::DwarfEnumKind(s),
@@ -1101,6 +1101,22 @@ impl<'src> From<&'src str> for Lexer<'src> {
     }
 }
 
+/// The two ways to drive the lexer differ **only** at end of input, and
+/// deliberately so:
+///
+/// * [`Lexer::next_token`] mirrors `LLLexer::Lex` — it yields a real
+///   `Ok(Token::Eof)` at end of input, and keeps yielding it for every later
+///   call ("another call to lex will return EOF again", `LLLexer::LexToken`).
+///   That is what a recursive-descent parser wants: `Eof` is a token it can
+///   match on, and over-reading past it is not a bug.
+/// * This `Iterator` translates that terminator into `None`, so `Eof` never
+///   appears as an item. A `for` loop therefore sees exactly the tokens the
+///   source contains.
+///
+/// A lex error is *not* a terminator on either side: `next` yields
+/// `Some(Err(..))` and the cursor stays where it was, so a caller that keeps
+/// iterating gets the same error again rather than a silent skip. Stop on the
+/// first `Err` unless you have a reason not to.
 impl<'src> Iterator for Lexer<'src> {
     type Item = Result<Spanned<Token<'src>>, LexError>;
 
@@ -1111,6 +1127,10 @@ impl<'src> Iterator for Lexer<'src> {
         }
     }
 }
+
+/// Once end of input is reached the cursor cannot move again, so `next`
+/// answers `None` forever — the fused contract holds without a `Fuse` wrapper.
+impl core::iter::FusedIterator for Lexer<'_> {}
 
 // ─── Free helpers (LLLexer.cpp top-level statics) ─────────────────────────────
 

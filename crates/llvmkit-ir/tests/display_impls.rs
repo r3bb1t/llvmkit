@@ -4,7 +4,7 @@
 //! module-level globals, prints its own definition line). This file locks the
 //! invariant that a handle's `Display` **agrees** with the path it delegates
 //! to -- printing through `IntValue<i32>` must produce the same bytes as
-//! printing through its `.into_erased()`, and printing a `FunctionValue` or
+//! printing through its `.as_erased()`, and printing a `FunctionValue` or
 //! `GlobalVariable` must produce exactly the text that appears for it in
 //! `format!("{m}")` module output. Non-empty output is not the property under
 //! test; byte-for-byte agreement is.
@@ -18,7 +18,7 @@
 //! mirrors `APInt::toString` in `llvm/lib/Support/APInt.cpp`.
 
 use llvmkit_ir::{
-    ApInt, ApIntSignedness, Dyn, IRBuilder, IntValue, IrError, Linkage, PointerValue, module_new,
+    ApInt, Dyn, IntValue, IrBuilder, IrError, Linkage, PointerValue, Signedness, module_new,
 };
 
 // --------------------------------------------------------------------------
@@ -31,7 +31,7 @@ use llvmkit_ir::{
 fn function_value_prints_declare_line() -> Result<(), IrError> {
     let m = module_new!("declare_display")?;
     let void = m.void_type();
-    let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
 
     assert_eq!(format!("{}", m.view(f)), "declare void @ext()\n");
@@ -44,15 +44,15 @@ fn function_value_prints_declare_line() -> Result<(), IrError> {
 fn function_value_define_matches_module_output() -> Result<(), IrError> {
     let m = module_new!("define_display")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let lhs: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
     let rhs: IntValue<'_, i32, _> = m.view(f).param(1)?.try_into()?;
-    let sum = b.build_int_add(lhs, rhs, "sum")?;
-    b.build_ret(sum)?;
+    let sum = b.int_add(lhs, rhs, "sum")?;
+    b.ret(sum)?;
 
     let printed = format!("{}", m.view(f));
     let expected = "define i32 @add(i32 %0, i32 %1) {\n\
@@ -70,7 +70,7 @@ fn function_value_define_matches_module_output() -> Result<(), IrError> {
 }
 
 // --------------------------------------------------------------------------
-// GlobalVariable -- definition line, matching its GlobalAlias/GlobalIFunc
+// GlobalVariable -- definition line, matching its GlobalAlias/GlobalIfunc
 // siblings rather than the `ptr @g` operand form
 // --------------------------------------------------------------------------
 
@@ -92,12 +92,12 @@ fn global_variable_prints_definition_line() -> Result<(), IrError> {
 
     // The operand form stays available through the erased handle and is
     // deliberately different from the definition form.
-    assert_eq!(format!("{}", m.view(g).into_erased()), "ptr @g1");
+    assert_eq!(format!("{}", m.view(g).as_erased()), "ptr @g1");
     Ok(())
 }
 
 // --------------------------------------------------------------------------
-// Value handles -- Display must agree with the erased `.into_erased()` path
+// Value handles -- Display must agree with the erased `.as_erased()` path
 // --------------------------------------------------------------------------
 
 /// The core invariant: each typed handle prints exactly what its erased
@@ -110,50 +110,47 @@ fn typed_handles_agree_with_erased_value() -> Result<(), IrError> {
     let f32_ty = m.f32_type();
     let ptr_ty = m.ptr_type(0);
 
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
-    let b = IRBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
-    let doubled = b.build_int_add(x, x, "doubled")?;
-    b.build_ret(doubled)?;
+    let doubled = b.int_add(x, x, "doubled")?;
+    b.ret(doubled)?;
 
     // Argument.
     let arg = m.view(f).param(0)?;
-    assert_eq!(format!("{arg}"), format!("{}", arg.into_erased()));
+    assert_eq!(format!("{arg}"), format!("{}", arg.as_erased()));
 
     // IntValue<W> -- both an instruction result and a parameter.
     let doubled_v = m.view(doubled);
-    assert_eq!(
-        format!("{doubled_v}"),
-        format!("{}", doubled_v.into_erased())
-    );
-    assert_eq!(format!("{x}"), format!("{}", x.into_erased()));
+    assert_eq!(format!("{doubled_v}"), format!("{}", doubled_v.as_erased()));
+    assert_eq!(format!("{x}"), format!("{}", x.as_erased()));
 
     // ConstantIntValue<W>.
     let c_int = i32_ty.const_int(42_i32);
-    assert_eq!(format!("{c_int}"), format!("{}", c_int.into_erased()));
+    assert_eq!(format!("{c_int}"), format!("{}", c_int.as_erased()));
 
     // ConstantFloatValue<K>.
     let c_float = f32_ty.const_float(3.5_f32);
-    assert_eq!(format!("{c_float}"), format!("{}", c_float.into_erased()));
+    assert_eq!(format!("{c_float}"), format!("{}", c_float.as_erased()));
 
     // ConstantPointerNull / UndefValue / PoisonValue -- the
     // `decl_constant_handle!` family.
     let null = ptr_ty.const_null();
-    assert_eq!(format!("{null}"), format!("{}", null.into_erased()));
-    let undef = i32_ty.as_type().get_undef();
-    assert_eq!(format!("{undef}"), format!("{}", undef.into_erased()));
-    let poison = i32_ty.as_type().get_poison();
-    assert_eq!(format!("{poison}"), format!("{}", poison.into_erased()));
+    assert_eq!(format!("{null}"), format!("{}", null.as_erased()));
+    let undef = i32_ty.as_type().undef();
+    assert_eq!(format!("{undef}"), format!("{}", undef.as_erased()));
+    let poison = i32_ty.as_type().poison();
+    assert_eq!(format!("{poison}"), format!("{}", poison.as_erased()));
 
     // PointerValue -- the `decl_value_handle!` family.
-    let p = PointerValue::try_from(null.into_erased())?;
-    assert_eq!(format!("{p}"), format!("{}", p.into_erased()));
+    let p = PointerValue::try_from(null.as_erased())?;
+    assert_eq!(format!("{p}"), format!("{}", p.as_erased()));
 
     // The erased `Constant` handle agrees with the erased `Value` too.
     let c_erased = c_int.as_constant();
-    assert_eq!(format!("{c_erased}"), format!("{}", c_erased.into_erased()));
+    assert_eq!(format!("{c_erased}"), format!("{}", c_erased.as_erased()));
     Ok(())
 }
 
@@ -169,8 +166,8 @@ fn constant_handles_print_expected_operand_text() -> Result<(), IrError> {
     assert_eq!(format!("{}", i32_ty.const_int(-7_i32)), "i32 -7");
     assert_eq!(format!("{}", i32_ty.const_zero()), "i32 0");
     assert_eq!(format!("{}", ptr_ty.const_null()), "ptr null");
-    assert_eq!(format!("{}", i32_ty.as_type().get_undef()), "i32 undef");
-    assert_eq!(format!("{}", i32_ty.as_type().get_poison()), "i32 poison");
+    assert_eq!(format!("{}", i32_ty.as_type().undef()), "i32 undef");
+    assert_eq!(format!("{}", i32_ty.as_type().poison()), "i32 poison");
 
     // `i1` constants print as `true`/`false`, not `1`/`0`. Mirrors the
     // `bits == 1` special case in the assembly writer.
@@ -207,10 +204,7 @@ fn ap_int_prints_signed_decimal() -> Result<(), IrError> {
 
     // Display is exactly `to_string_radix(10, Signed)` -- one source of truth.
     let v = ApInt::from_string(64, "12345", 10)?;
-    assert_eq!(
-        format!("{v}"),
-        v.to_string_radix(10, ApIntSignedness::Signed)
-    );
+    assert_eq!(format!("{v}"), v.to_string_radix(10, Signedness::Signed));
     assert_eq!(format!("{v}"), "12345");
 
     Ok(())

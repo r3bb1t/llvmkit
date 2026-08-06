@@ -11,5 +11,5 @@ error[E0308]: mismatched types
 note: method defined here
   --> src/module.rs
    |
-   |     pub fn named_metadata_add_operand(&'ctx self, index: usize, op: MetadataId<B>) -> IrResult<()> {
+   |     pub fn named_metadata_add_operand(
    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^
