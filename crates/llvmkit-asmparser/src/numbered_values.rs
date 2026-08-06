@@ -114,6 +114,30 @@ impl<T> NumberedValues<T> {
     }
 }
 
+/// The projection [`NumberedValues`]'s borrowing iterator applies: a stored
+/// slot becomes the `(id, &value)` pair [`NumberedValues::iter`] yields.
+///
+/// Spelled as a `fn` pointer, and named, because `IntoIterator::IntoIter` is
+/// an associated *type*: a closure's own type is unnameable and `impl Trait`
+/// is not allowed there.
+type NumberedValuesEntryProjection<'a, T> = fn((&'a u32, &'a T)) -> (u32, &'a T);
+
+/// `for (id, value) in &values` — yields exactly what
+/// [`NumberedValues::iter`] does, in the same unspecified order.
+impl<'a, T> IntoIterator for &'a NumberedValues<T> {
+    type Item = (u32, &'a T);
+    type IntoIter = core::iter::Map<
+        std::collections::hash_map::Iter<'a, u32, T>,
+        NumberedValuesEntryProjection<'a, T>,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        // The annotation is what coerces the closure to the `fn` pointer.
+        let project: NumberedValuesEntryProjection<'a, T> = |(&id, value)| (id, value);
+        self.vals.iter().map(project)
+    }
+}
+
 /// Forward-reference resolution typestate (Roadmap section 10.5).
 ///
 /// The parser keeps slots that hold either a not-yet-defined forward

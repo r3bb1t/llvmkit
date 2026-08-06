@@ -1713,31 +1713,40 @@ impl IcmpFlags {
 /// The `inalloca` / `swifterror` markers on an `alloca` (mirrors
 /// `AllocaInst::isUsedWithInAlloca` / `isSwiftError`). A typed carrier rather
 /// than trailing bool parameters.
+///
+/// Crate-internal: the public spellings are
+/// [`AllocaBuilder::inalloca`](crate::AllocaBuilder::inalloca) /
+/// [`AllocaBuilder::swifterror`](crate::AllocaBuilder::swifterror) going in and
+/// [`AllocaInst::is_inalloca`](crate::AllocaInst::is_inalloca) /
+/// [`AllocaInst::is_swifterror`](crate::AllocaInst::is_swifterror) coming back
+/// out — one spelling per direction, as with every other `alloca` knob.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct AllocaFlags {
+pub(crate) struct AllocaFlags {
     inalloca: bool,
     swifterror: bool,
 }
 
 impl AllocaFlags {
     /// No markers.
-    pub fn none() -> Self {
+    pub(crate) fn none() -> Self {
         Self::default()
     }
     /// Set `inalloca`.
-    pub fn with_inalloca(mut self) -> Self {
+    #[must_use]
+    pub(crate) fn with_inalloca(mut self) -> Self {
         self.inalloca = true;
         self
     }
     /// Set `swifterror`.
-    pub fn with_swifterror(mut self) -> Self {
+    #[must_use]
+    pub(crate) fn with_swifterror(mut self) -> Self {
         self.swifterror = true;
         self
     }
-    pub fn is_inalloca(self) -> bool {
+    pub(crate) fn is_inalloca(self) -> bool {
         self.inalloca
     }
-    pub fn is_swifterror(self) -> bool {
+    pub(crate) fn is_swifterror(self) -> bool {
         self.swifterror
     }
 }

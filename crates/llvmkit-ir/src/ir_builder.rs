@@ -296,11 +296,13 @@ impl CallSiteConfig {
         }
     }
 
+    #[must_use]
     pub fn calling_conv(mut self, calling_conv: CallingConv) -> Self {
         self.calling_conv = calling_conv;
         self
     }
 
+    #[must_use]
     pub fn attrs(mut self, attrs: CallAttributeData) -> Self {
         self.attrs = attrs;
         self
@@ -367,6 +369,27 @@ where
     folder: F,
     fmf: super::fmf::FastMathFlags,
     _state: PhantomData<S>,
+}
+
+/// Hand-written rather than derived: a `derive` would bound the folder
+/// parameter `F: Debug`, and a folder is a strategy type with no obligation
+/// to be printable. The folder is reported by type name instead.
+impl<'m, 'ctx, B, F, S, R> core::fmt::Debug for IrBuilder<'m, 'ctx, B, F, S, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    S: BuilderPositionState,
+    R: ReturnMarker,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("IrBuilder")
+            .field("module", &self.module.id())
+            .field("insert_block", &self.insert_block)
+            .field("insert_before", &self.insert_before)
+            .field("fast_math_flags", &self.fmf)
+            .field("folder", &core::any::type_name::<F>())
+            .finish()
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -1156,12 +1179,14 @@ where
     /// Set the builder's default FMF. Subsequent FP-math instructions
     /// (fadd / fsub / fmul / fdiv / frem / fneg / fcmp) carry these flags.
     /// Mirrors `IRBuilderBase::setFastMathFlags(FastMathFlags)`.
+    #[must_use]
     pub fn with_fast_math_flags(self, fmf: FastMathFlags) -> Self {
         Self { fmf, ..self }
     }
 
     /// Reset the builder's default FMF to empty. Mirrors
     /// `IRBuilderBase::clearFastMathFlags()`.
+    #[must_use]
     pub fn clear_fast_math_flags(self) -> Self {
         Self {
             fmf: super::fmf::FastMathFlags::empty(),
@@ -9340,6 +9365,29 @@ where
     _rc: PhantomData<RC>,
 }
 
+/// Hand-written for the same reason as [`IrBuilder`]'s: a `derive` would
+/// bound the folder parameter `F: Debug`. Arguments are summarised by count —
+/// the accumulated slots are arena indices, not something a reader can act on.
+impl<'a, 'm, 'ctx, B, F, RP, RC> core::fmt::Debug for CallBuilder<'a, 'm, 'ctx, B, F, RP, RC>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    RP: ReturnMarker,
+    RC: ReturnMarker,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CallBuilder")
+            .field("callee", &self.callee_id)
+            .field("arguments", &self.args.len())
+            .field("calling_conv", &self.calling_conv)
+            .field("tail_kind", &self.tail_kind)
+            .field("name", &self.name)
+            .field("intrinsic_descriptor", &self.intrinsic_descriptor)
+            .field("arg_error", &self.arg_error)
+            .finish()
+    }
+}
+
 impl<'a, 'm, 'ctx, B, F, RP, RC> CallBuilder<'a, 'm, 'ctx, B, F, RP, RC>
 where
     B: ModuleBrand + 'ctx,
@@ -9354,6 +9402,7 @@ where
     /// Infallible for every value handle. An id from a foreign module is the
     /// one input that can fail; because the chain returns `Self`, that error
     /// is parked in `arg_error` and reported by [`build`](Self::build).
+    #[must_use]
     pub fn arg<V: IntoErasedValue<'ctx, B>>(mut self, value: V) -> Self {
         match value.into_erased_value(ModuleRef::<B>::new(self.parent.module)) {
             Ok(v) => self.args.push(v.id),
@@ -9364,30 +9413,36 @@ where
         self
     }
 
+    #[must_use]
     pub fn tail(mut self) -> Self {
         self.tail_kind = TailCallKind::Tail;
         self
     }
 
+    #[must_use]
     pub fn must_tail(mut self) -> Self {
         self.tail_kind = TailCallKind::MustTail;
         self
     }
 
+    #[must_use]
     pub fn no_tail(mut self) -> Self {
         self.tail_kind = TailCallKind::NoTail;
         self
     }
 
+    #[must_use]
     pub fn calling_conv(mut self, cc: CallingConv) -> Self {
         self.calling_conv = cc;
         self
     }
+    #[must_use]
     pub fn call_attributes(mut self, attrs: CallAttributeData) -> Self {
         self.attrs = attrs;
         self
     }
 
+    #[must_use]
     pub fn name<Name>(mut self, name: Name) -> Self
     where
         Name: Into<String>,
@@ -9474,6 +9529,7 @@ where
     /// resolves the callee as a bare pointer). Offered only on the erased
     /// (`Dyn`) builder, where overriding the result type cannot desync a
     /// static return marker.
+    #[must_use]
     pub fn call_site_type(mut self, fn_ty: FunctionType<'ctx, B>) -> Self {
         self.return_ty = fn_ty.return_type().id();
         self.fn_ty = fn_ty.as_type().id();
@@ -9516,6 +9572,33 @@ where
     name: String,
 }
 
+/// Hand-written for the same reason as [`IrBuilder`]'s, plus one more: the
+/// lowered argument tuple `A` is a user-supplied schema type with no `Debug`
+/// obligation, so it is reported by type name rather than by value.
+impl<'a, 'm, 'ctx, B, F, RP, Ret, Params, A> core::fmt::Debug
+    for TypedCallBuilder<'a, 'm, 'ctx, B, F, RP, Ret, Params, A>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    RP: ReturnMarker,
+    Ret: FunctionReturn,
+    Params: FunctionParamList,
+    A: CallArgs<'ctx, Params, B>,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TypedCallBuilder")
+            .field(
+                "callee",
+                &self.callee.as_ref().map(|c| c.as_function().slot()),
+            )
+            .field("arguments", &core::any::type_name::<A>())
+            .field("calling_conv", &self.calling_conv)
+            .field("tail_kind", &self.tail_kind)
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
 impl<'a, 'm, 'ctx, B, F, RP, Ret, Params, A>
     TypedCallBuilder<'a, 'm, 'ctx, B, F, RP, Ret, Params, A>
 where
@@ -9526,31 +9609,37 @@ where
     Params: FunctionParamList,
     A: CallArgs<'ctx, Params, B>,
 {
+    #[must_use]
     pub fn tail(mut self) -> Self {
         self.tail_kind = TailCallKind::Tail;
         self
     }
 
+    #[must_use]
     pub fn must_tail(mut self) -> Self {
         self.tail_kind = TailCallKind::MustTail;
         self
     }
 
+    #[must_use]
     pub fn no_tail(mut self) -> Self {
         self.tail_kind = TailCallKind::NoTail;
         self
     }
 
+    #[must_use]
     pub fn calling_conv(mut self, cc: CallingConv) -> Self {
         self.calling_conv = Some(cc);
         self
     }
 
+    #[must_use]
     pub fn call_attributes(mut self, attrs: CallAttributeData) -> Self {
         self.attrs = attrs;
         self
     }
 
+    #[must_use]
     pub fn name<Name>(mut self, name: Name) -> Self
     where
         Name: Into<String>,
@@ -9595,6 +9684,22 @@ where
     inner: CallBuilder<'a, 'm, 'ctx, B, F, RP, Dyn>,
 }
 
+/// Hand-written for the same reason as [`CallBuilder`]'s (`F: Debug` would be
+/// forced by a `derive`); the wrapped builder carries the whole state, so this
+/// forwards to it under this type's own name.
+impl<'a, 'm, 'ctx, B, F, RP> core::fmt::Debug for IntrinsicCallBuilder<'a, 'm, 'ctx, B, F, RP>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    RP: ReturnMarker,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("IntrinsicCallBuilder")
+            .field(&self.inner)
+            .finish()
+    }
+}
+
 impl<'a, 'm, 'ctx, B, F, RP> IntrinsicCallBuilder<'a, 'm, 'ctx, B, F, RP>
 where
     B: ModuleBrand + 'ctx,
@@ -9605,36 +9710,43 @@ where
     /// mixed-type argument lists work without homogeneity, and a storable id
     /// is accepted alongside a borrowing handle. A foreign-module id surfaces
     /// from [`build`](Self::build), as on the wrapped [`CallBuilder`].
+    #[must_use]
     pub fn arg<V: IntoErasedValue<'ctx, B>>(mut self, value: V) -> Self {
         self.inner = self.inner.arg(value);
         self
     }
 
+    #[must_use]
     pub fn tail(mut self) -> Self {
         self.inner = self.inner.tail();
         self
     }
 
+    #[must_use]
     pub fn must_tail(mut self) -> Self {
         self.inner = self.inner.must_tail();
         self
     }
 
+    #[must_use]
     pub fn no_tail(mut self) -> Self {
         self.inner = self.inner.no_tail();
         self
     }
 
+    #[must_use]
     pub fn calling_conv(mut self, cc: CallingConv) -> Self {
         self.inner = self.inner.calling_conv(cc);
         self
     }
 
+    #[must_use]
     pub fn call_attributes(mut self, attrs: CallAttributeData) -> Self {
         self.inner = self.inner.call_attributes(attrs);
         self
     }
 
+    #[must_use]
     pub fn name<Name>(mut self, name: Name) -> Self
     where
         Name: Into<String>,
@@ -9710,6 +9822,25 @@ where
     volatile: bool,
     ordering: AtomicOrdering,
     sync_scope: SyncScope,
+}
+
+/// Hand-written for the same reason as [`IrBuilder`]'s: a `derive` would
+/// bound the folder parameter `F: Debug`.
+impl<'a, 'm, 'ctx, B, F, R> core::fmt::Debug for LoadBuilder<'a, 'm, 'ctx, B, F, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    R: ReturnMarker,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LoadBuilder")
+            .field("pointer", &self.ptr)
+            .field("align", &self.align)
+            .field("volatile", &self.volatile)
+            .field("ordering", &self.ordering)
+            .field("sync_scope", &self.sync_scope)
+            .finish()
+    }
 }
 
 impl<'a, 'm, 'ctx, B, F, R> LoadBuilder<'a, 'm, 'ctx, B, F, R>
@@ -9860,6 +9991,25 @@ where
     sync_scope: SyncScope,
 }
 
+/// Hand-written for the same reason as [`IrBuilder`]'s: a `derive` would
+/// bound the folder parameter `F: Debug`.
+impl<'a, 'm, 'ctx, B, F, R> core::fmt::Debug for StoreBuilder<'a, 'm, 'ctx, B, F, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    R: ReturnMarker,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("StoreBuilder")
+            .field("operands", &self.operands)
+            .field("align", &self.align)
+            .field("volatile", &self.volatile)
+            .field("ordering", &self.ordering)
+            .field("sync_scope", &self.sync_scope)
+            .finish()
+    }
+}
+
 impl<'a, 'm, 'ctx, B, F, R> StoreBuilder<'a, 'm, 'ctx, B, F, R>
 where
     B: ModuleBrand + 'ctx,
@@ -9943,6 +10093,26 @@ where
     addr_space: u32,
     flags: AllocaFlags,
     name: String,
+}
+
+/// Hand-written for the same reason as [`IrBuilder`]'s: a `derive` would
+/// bound the folder parameter `F: Debug`.
+impl<'a, 'm, 'ctx, B, F, R> core::fmt::Debug for AllocaBuilder<'a, 'm, 'ctx, B, F, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    R: ReturnMarker,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AllocaBuilder")
+            .field("allocated_type", &self.allocated_ty)
+            .field("num_elements", &self.num_elements)
+            .field("align", &self.align)
+            .field("addr_space", &self.addr_space)
+            .field("flags", &self.flags)
+            .field("name", &self.name)
+            .finish()
+    }
 }
 
 impl<'a, 'm, 'ctx, B, F, R> AllocaBuilder<'a, 'm, 'ctx, B, F, R>

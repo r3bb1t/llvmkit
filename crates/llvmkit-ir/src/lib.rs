@@ -246,11 +246,11 @@ pub use global_variable::{GlobalBuilder, GlobalVariable};
 pub use inline_asm::{AsmDialect, InlineAsm, InlineAsmOptions};
 pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
-    AddFlags, AllocaFlags, AshrFlags, AtomicCmpXchgConfig, AtomicRmwConfig, AtomicRmwFlags,
-    BinaryOpcode, CallAttributeData, CmpXchgFlags, IcmpFlags, IntBinOpFlags, IntCastFlags,
-    LshrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SdivFlags,
-    ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags, UdivFlags, UiToFpFlags,
-    UnaryOpcode, ZextFlags,
+    AddFlags, AshrFlags, AtomicCmpXchgConfig, AtomicRmwConfig, AtomicRmwFlags, BinaryOpcode,
+    CallAttributeData, CmpXchgFlags, IcmpFlags, IntBinOpFlags, IntCastFlags, LshrFlags, MulFlags,
+    OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SdivFlags, ShlFlags,
+    ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags, UdivFlags, UiToFpFlags, UnaryOpcode,
+    ZextFlags,
 };
 pub use instruction::{
     CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,

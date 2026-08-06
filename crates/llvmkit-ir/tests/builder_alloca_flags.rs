@@ -3,11 +3,13 @@
 //! pointer allocation).
 
 use llvmkit_ir::{
-    IntDyn, IntValue, IrBuilder, IrError, Linkage, NoFolder, VerifierRule, module_new,
+    InstructionKind, InstructionView, IntDyn, IntValue, IrBuilder, IrError, Linkage, NoFolder,
+    VerifierRule, module_new,
 };
 
 /// A swifterror alloca on a pointer type verifies and prints
-/// `alloca swifterror ptr`. Constructed through the
+/// `alloca swifterror ptr`, and reads back through
+/// `AllocaInst::isSwiftError` / `isUsedWithInAlloca`. Constructed through the
 /// [`llvmkit_ir::AllocaBuilder`] chain.
 #[test]
 fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
@@ -16,12 +18,20 @@ fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    b.alloca_builder(m.ptr_type(0))
+    let e = b
+        .alloca_builder(m.ptr_type(0))
         .swifterror()
         .name("e")
         .build()?;
     b.ret_void()?;
     m.verify_borrowed()?;
+    let Some(InstructionKind::Alloca(alloca)) =
+        InstructionView::try_from(m.view(e).as_erased())?.kind()
+    else {
+        panic!("expected %e to be an alloca");
+    };
+    assert!(alloca.is_swifterror());
+    assert!(!alloca.is_inalloca());
     let text = format!("{m}");
     assert!(
         text.contains("%e = alloca swifterror ptr, align 8"),
@@ -30,7 +40,8 @@ fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
     Ok(())
 }
 
-/// An inalloca alloca prints `alloca inalloca <ty>`. Constructed through
+/// An inalloca alloca prints `alloca inalloca <ty>`, and reads back through
+/// `AllocaInst::isUsedWithInAlloca` / `isSwiftError`. Constructed through
 /// the [`llvmkit_ir::AllocaBuilder`] chain.
 #[test]
 fn inalloca_alloca_prints() -> Result<(), IrError> {
@@ -39,11 +50,19 @@ fn inalloca_alloca_prints() -> Result<(), IrError> {
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
-    b.alloca_builder(m.i32_type())
+    let i = b
+        .alloca_builder(m.i32_type())
         .inalloca()
         .name("i")
         .build()?;
     b.ret_void()?;
+    let Some(InstructionKind::Alloca(alloca)) =
+        InstructionView::try_from(m.view(i).as_erased())?.kind()
+    else {
+        panic!("expected %i to be an alloca");
+    };
+    assert!(alloca.is_inalloca());
+    assert!(!alloca.is_swifterror());
     let text = format!("{m}");
     assert!(text.contains("%i = alloca inalloca i32, align 4"), "{text}");
     Ok(())

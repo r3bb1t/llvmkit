@@ -43,15 +43,18 @@ let m = m.verify()?;
 assert!(m.to_string().contains("define void @f()"));
 ```
 
-The `parse_assembly` / `parse_assembly_string` / `parse_assembly_file` family
-still takes a closure. That is not a brand restriction: the `ParsedModule`
-by-product holds borrowing handles into the module (slot mapping, summary
-index), so returning both would be a self-reference. Use these when you need
-the slot mapping; use the closure-free forms otherwise.
+The `parse_assembly` / `parse_assembly_file` / `parse_assembly_with_context`
+family still takes a closure. That is not a brand restriction: the
+`ParsedModule` by-product holds borrowing handles into the module (slot
+mapping, summary index), so returning both would be a self-reference. Use these
+when you need the slot mapping; use the closure-free forms otherwise.
+`parse_assembly` takes `impl AsRef<[u8]>`, so a `&str` source goes straight in —
+the separate `parse_assembly_string` it used to need is gone.
 
 Also public: `parse_type` / `parse_type_at_beginning` / `parse_constant_value`
-for single fragments, and `parse_summary_index_assembly*` for a standalone
-summary index.
+for single fragments (each with a `_with_slots` twin that threads a
+`SlotMapping`), and `parse_summary_index_assembly*` for a standalone summary
+index.
 
 ## Lexer usage
 

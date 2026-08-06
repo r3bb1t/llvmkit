@@ -534,6 +534,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> AllocaInst<'ctx, B> {
     pub fn addr_space(self) -> u32 {
         self.payload().addr_space
     }
+    /// `true` when this allocation carries the `inalloca` marker. Mirrors
+    /// `AllocaInst::isUsedWithInAlloca` in `Instructions.h`.
+    pub fn is_inalloca(self) -> bool {
+        self.payload().flags.is_inalloca()
+    }
+    /// `true` when this allocation carries the `swifterror` marker. Mirrors
+    /// `AllocaInst::isSwiftError` in `Instructions.h`.
+    pub fn is_swifterror(self) -> bool {
+        self.payload().flags.is_swifterror()
+    }
 }
 
 /// `load` instruction. Mirrors `LoadInst` (`Instructions.h`).

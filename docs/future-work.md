@@ -915,10 +915,20 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   rustdoc, as the value handles now do.
 - `atomic_cmpxchg` / `atomicrmw` builder-pattern variants (mirror
   `CallBuilder`).
-- Load/store variant explosion (base / `_with_align` / `_volatile` /
+- ~~Load/store variant explosion (base / `_with_align` / `_volatile` /
   `_volatile_with_align` / `_atomic` = 10+ methods per op) -- consolidate
   behind `LoadBuilder`/`StoreBuilder` chainables while keeping the flat
-  forms.
+  forms.~~ **Done (2026-08-06, W10 of the 0.0.4 API-idioms program):**
+  `IrBuilder::load_from(ptr)` and `store_to(value, ptr)` open the two
+  chainables (`.volatile()` / `.align()` / `.atomic()` / `.sync_scope()`, with
+  a typed terminal — `.int::<W>(name)` / `.fp::<K>(name)` / `.pointer(name)` /
+  `.typed::<T>(name)` / `.erased(ty, name)` — picking the load's result shape),
+  and `alloca_builder(ty)` does the same for `alloca`. The flat forms stayed;
+  the seven flag-*combination* forms (`load_volatile`,
+  `load_volatile_with_align`, `store_volatile`, `store_volatile_with_align`,
+  `int_load_atomic`, `load_atomic`, `store_atomic`), `alloca_dyn`, and the
+  `AtomicLoadConfig` / `AtomicStoreConfig` bags were deleted, so each knob has
+  one spelling.
 - Per-flag convenience wrappers (`int_add_nsw` etc.) mirroring upstream
   `CreateNSWAdd`.
 - Folder trait ergonomics for third-party folders (default method bodies
