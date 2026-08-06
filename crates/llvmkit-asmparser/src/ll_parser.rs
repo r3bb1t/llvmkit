@@ -9809,6 +9809,28 @@ impl<'ctx, B: ModuleBrand + 'ctx> IntoTypeEnum<'ctx, B> for Type<'ctx, B> {
     }
 }
 
+/// The one legitimate runtime-variadic consumer: parsed IR discovers
+/// `...` at run time, so this private choke point dispatches between
+/// [`Module::function_type`] and [`Module::variadic_function_type`].
+fn function_type_with_variadic<'ctx, B, I, R, T>(
+    module: &'ctx Module<B, Unverified>,
+    return_type: R,
+    parameters: I,
+    var_args: bool,
+) -> llvmkit_ir::FunctionType<'ctx, B>
+where
+    B: ModuleBrand + 'ctx,
+    I: IntoIterator<Item = T>,
+    R: Into<llvmkit_ir::Type<'ctx, B>>,
+    T: Into<llvmkit_ir::Type<'ctx, B>>,
+{
+    if var_args {
+        module.variadic_function_type(return_type, parameters)
+    } else {
+        module.function_type(return_type, parameters)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9906,27 +9928,5 @@ mod tests {
     #[test]
     fn parses_source_filename_directive() {
         parse("source_filename = \"a.c\"\n").unwrap();
-    }
-}
-
-/// The one legitimate runtime-variadic consumer: parsed IR discovers
-/// `...` at run time, so this private choke point dispatches between
-/// [`Module::function_type`] and [`Module::variadic_function_type`].
-fn function_type_with_variadic<'ctx, B, I, R, T>(
-    module: &'ctx Module<B, Unverified>,
-    return_type: R,
-    parameters: I,
-    var_args: bool,
-) -> llvmkit_ir::FunctionType<'ctx, B>
-where
-    B: ModuleBrand + 'ctx,
-    I: IntoIterator<Item = T>,
-    R: Into<llvmkit_ir::Type<'ctx, B>>,
-    T: Into<llvmkit_ir::Type<'ctx, B>>,
-{
-    if var_args {
-        module.variadic_function_type(return_type, parameters)
-    } else {
-        module.function_type(return_type, parameters)
     }
 }
