@@ -44,7 +44,7 @@ pub(crate) fn compute_type_signature(
             sig.push(
                 (n - 2)
                     .try_into()
-                    .map_err(|_| GenError::new("too many return values"))?,
+                    .map_err(|_| TableGenError::new("too many return values"))?,
             );
         }
     }
@@ -152,7 +152,7 @@ pub(crate) fn constrain_vector_slot(
 ) -> GenResult<()> {
     let slot = overload_slot_for_any_index(any_positions, any_index)?;
     let Some(constraint) = constraints.get_mut(slot) else {
-        return Err(GenError::new("sample overload slot is out of range"));
+        return Err(TableGenError::new("sample overload slot is out of range"));
     };
     constraint.requires_vector = true;
     constraint.lane_multiple = lcm_nonzero(constraint.lane_multiple.max(1), lane_multiple.max(1))?;
@@ -164,11 +164,10 @@ pub(crate) fn overload_slot_for_any_index(
     any_index: u32,
 ) -> GenResult<usize> {
     let index = usize::try_from(any_index)
-        .map_err(|_| GenError::new("sample overload index exceeds usize"))?;
-    any_positions
-        .get(index)
-        .copied()
-        .ok_or_else(|| GenError::new(format!("sample overload index {any_index} is out of range")))
+        .map_err(|_| TableGenError::new("sample overload index exceeds usize"))?;
+    any_positions.get(index).copied().ok_or_else(|| {
+        TableGenError::new(format!("sample overload index {any_index} is out of range"))
+    })
 }
 
 pub(crate) fn sample_for_overload_slot(
@@ -220,7 +219,7 @@ pub(crate) fn sample_for_overload_slot(
         | IntrType::Pointer(_)
         | IntrType::Match { .. }
         | IntrType::SameVecWidth { .. }
-        | IntrType::OneNthElements { .. } => Err(GenError::new(
+        | IntrType::OneNthElements { .. } => Err(TableGenError::new(
             "non-overload intrinsic type cannot produce a sample overload",
         )),
     }
@@ -236,7 +235,7 @@ pub(crate) fn sample_int_vector(lanes: u32) -> SampleTypeOut {
 pub(crate) fn sample_vector_lanes(sample: &SampleTypeOut) -> GenResult<u32> {
     match sample {
         SampleTypeOut::FixedVector { lanes, .. } => Ok(*lanes),
-        _ => Err(GenError::new(
+        _ => Err(TableGenError::new(
             "vector-of-pointers sample reference is not a vector",
         )),
     }
@@ -248,11 +247,13 @@ pub(crate) fn constrained_sample_lanes(lane_multiple: u32) -> GenResult<u32> {
 
 pub(crate) fn lcm_nonzero(a: u32, b: u32) -> GenResult<u32> {
     if a == 0 || b == 0 {
-        return Err(GenError::new("sample vector lane multiple must be nonzero"));
+        return Err(TableGenError::new(
+            "sample vector lane multiple must be nonzero",
+        ));
     }
     a.checked_div(gcd(a, b))
         .and_then(|quotient| quotient.checked_mul(b))
-        .ok_or_else(|| GenError::new("sample vector lane multiple overflowed"))
+        .ok_or_else(|| TableGenError::new("sample vector lane multiple overflowed"))
 }
 
 pub(crate) fn gcd(mut a: u32, mut b: u32) -> u32 {
@@ -282,7 +283,7 @@ pub(crate) fn emit_type_sig(
                 out.push(
                     (*addr)
                         .try_into()
-                        .map_err(|_| GenError::new("address space exceeds u8"))?,
+                        .map_err(|_| TableGenError::new("address space exceeds u8"))?,
                 );
             }
             Ok(())
@@ -292,8 +293,8 @@ pub(crate) fn emit_type_sig(
         | IntrType::AnyFloat
         | IntrType::AnyVector
         | IntrType::AnyPointer => {
-            let ac =
-                ac_idxs[all_index].ok_or_else(|| GenError::new("missing overload AC index"))?;
+            let ac = ac_idxs[all_index]
+                .ok_or_else(|| TableGenError::new("missing overload AC index"))?;
             out.push(15);
             out.push(((ac as u8) << 3) | ty.arg_code()?);
             Ok(())
@@ -301,7 +302,7 @@ pub(crate) fn emit_type_sig(
         IntrType::Match { index, kind } => {
             out.push(kind.iit_code());
             let mapped = any_positions.get(*index as usize).copied().ok_or_else(|| {
-                GenError::new(format!("match type index {index} has no overload slot"))
+                TableGenError::new(format!("match type index {index} has no overload slot"))
             })?;
             out.push(((mapped as u8) << 3) | 7);
             Ok(())
@@ -309,7 +310,7 @@ pub(crate) fn emit_type_sig(
         IntrType::SameVecWidth { index, element } => {
             out.push(28);
             let mapped = any_positions.get(*index as usize).copied().ok_or_else(|| {
-                GenError::new(format!("same-width index {index} has no overload slot"))
+                TableGenError::new(format!("same-width index {index} has no overload slot"))
             })?;
             out.push(((mapped as u8) << 3) | arg_codes[mapped]);
             emit_type_sig(element, all_index, ac_idxs, any_positions, arg_codes, out)
@@ -317,21 +318,21 @@ pub(crate) fn emit_type_sig(
         IntrType::OneNthElements { index, n } => {
             out.push(27);
             let mapped = any_positions.get(*index as usize).copied().ok_or_else(|| {
-                GenError::new(format!("one-nth index {index} has no overload slot"))
+                TableGenError::new(format!("one-nth index {index} has no overload slot"))
             })?;
             out.push(mapped as u8);
             out.push(
                 (*n).try_into()
-                    .map_err(|_| GenError::new("one-nth n exceeds u8"))?,
+                    .map_err(|_| TableGenError::new("one-nth n exceeds u8"))?,
             );
             Ok(())
         }
         IntrType::VectorOfAnyPointersToElt { index } => {
             out.push(29);
-            let ac =
-                ac_idxs[all_index].ok_or_else(|| GenError::new("missing next-arg AC index"))?;
+            let ac = ac_idxs[all_index]
+                .ok_or_else(|| TableGenError::new("missing next-arg AC index"))?;
             let mapped = any_positions.get(*index as usize).copied().ok_or_else(|| {
-                GenError::new(format!("vec-of-ptrs index {index} has no overload slot"))
+                TableGenError::new(format!("vec-of-ptrs index {index} has no overload slot"))
             })?;
             out.push(ac as u8);
             out.push(mapped as u8);
@@ -349,7 +350,7 @@ pub(crate) fn emit_fixed_sig(fixed: &FixedType, out: &mut Vec<u8>) -> GenResult<
         let elem = fixed
             .element
             .as_ref()
-            .ok_or_else(|| GenError::new("vector type missing element"))?;
+            .ok_or_else(|| TableGenError::new("vector type missing element"))?;
         emit_fixed_sig(elem, out)?;
         return Ok(());
     }
@@ -380,7 +381,7 @@ pub(crate) fn emit_fixed_sig(fixed: &FixedType, out: &mut Vec<u8>) -> GenResult<
         "aarch64svcount" => 49,
         "exnref" => CUSTOM_IIT_WASM_EXNREF,
         other => {
-            return Err(GenError::new(format!(
+            return Err(TableGenError::new(format!(
                 "no IIT encoding for fixed type `{other}`"
             )));
         }
@@ -406,7 +407,7 @@ pub(crate) fn vector_iit(lanes: u32) -> GenResult<u8> {
         1024 => Ok(32),
         2048 => Ok(52),
         4096 => Ok(53),
-        other => Err(GenError::new(format!(
+        other => Err(TableGenError::new(format!(
             "no IIT vector encoding for v{other}"
         ))),
     }
@@ -447,7 +448,7 @@ impl IntrType {
             IntrType::AnyVector => Ok(3),
             IntrType::AnyPointer => Ok(4),
             IntrType::VectorOfAnyPointersToElt { .. } => Ok(4),
-            other => Err(GenError::new(format!("type {other:?} has no ArgKind"))),
+            other => Err(TableGenError::new(format!("type {other:?} has no ArgKind"))),
         }
     }
 }
@@ -508,7 +509,9 @@ pub(crate) fn type_from_value(value: &Value) -> GenResult<IntrType> {
             "fAny" => Ok(IntrType::AnyFloat),
             "vAny" => Ok(IntrType::AnyVector),
             "pAny" => Ok(IntrType::AnyPointer),
-            other => Err(GenError::new(format!("unknown any ValueType `{other}`"))),
+            other => Err(TableGenError::new(format!(
+                "unknown any ValueType `{other}`"
+            ))),
         };
     }
     if record.classes.contains("LLVMQualPointerType") {
@@ -584,7 +587,7 @@ pub(crate) fn type_from_value(value: &Value) -> GenResult<IntrType> {
         let vt = record_field_record(record, "VT")?;
         return Ok(IntrType::Fixed(fixed_type_from_value_type(&vt)?));
     }
-    Err(GenError::new(format!(
+    Err(TableGenError::new(format!(
         "record {:?} is not an LLVMType; classes={:?}",
         record.name, record.classes
     )))
@@ -594,7 +597,7 @@ pub(crate) fn fixed_type_from_value_type(record: &RecordValue) -> GenResult<Fixe
     let name = record
         .name
         .clone()
-        .ok_or_else(|| GenError::new("anonymous ValueType"))?;
+        .ok_or_else(|| TableGenError::new("anonymous ValueType"))?;
     if field_bool(record, "isVector")?.unwrap_or(false) {
         let element = record_field_record(record, "ElementType")?;
         Ok(FixedType {
@@ -801,7 +804,7 @@ pub(crate) fn build_iit_tables(
                 offset
             };
             if offset > 0x7fff {
-                return Err(GenError::new(
+                return Err(TableGenError::new(
                     "IIT long encoding table offset exceeds 15 bits",
                 ));
             }
@@ -867,7 +870,7 @@ pub(crate) fn semantic_ids(intrinsics: &[IntrinsicOut]) -> GenResult<Vec<(String
             .iter()
             .position(|intrinsic| intrinsic.enum_name == enum_name)
             .ok_or_else(|| {
-                GenError::new(format!("missing required semantic intrinsic `{enum_name}`"))
+                TableGenError::new(format!("missing required semantic intrinsic `{enum_name}`"))
             })?;
         out.push((const_name.to_owned(), idx + 1));
     }

@@ -24,6 +24,22 @@ bullet below names its wave.
 
 #### Changed
 
+- **Breaking (W11c): the umbrella forwards features; `llvmkit-tablegen`
+  becomes a real library.** `llvmkit` gains `[features] default = ["macros"]`
+  forwarding to `llvmkit-ir/macros`; the `llvmkit-ir` dependency is
+  `default-features = false` there and in `llvmkit-asmparser` (which never
+  used the gated re-exports), so the umbrella's feature is the one switch.
+  The umbrella's three module re-exports are `#[doc(inline)]` so docs.rs
+  renders the items. `llvmkit-tablegen` exposes a library API: public
+  `TableGenError` (was the private `GenError`),
+  `generate(llvm_root, generated_file) -> Result<Generated, TableGenError>`
+  with `Generated::inputs()` listing every `.td` file read (for
+  `cargo:rerun-if-changed`), `verify_generated` (the `--check` half as its
+  own function), `vendored_llvm_root()`, and `GENERATED_FILE_NAME`.
+  `table_gen_main()` shrinks to the CLI driver, and the empty-argv `OUT_DIR`
+  build-script inference mode is gone — `llvmkit-ir`'s `build.rs` calls
+  `generate` directly and replays the returned inputs as rerun lines.
+
 - **Breaking (W5): booleans become methods, flag structs, and `Signedness`
   (C-CUSTOM-TYPE).** Type constructors split instead of taking mode bools:
   `vector_type(elem, n)` / `scalable_vector_type(elem, n)` (was

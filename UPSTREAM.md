@@ -19,15 +19,24 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 1517. Recounted on 2026-07-16 at the
-`feature-22/generic-narrowing` tip via the documented attribute-anchored grep
-below (`crates/llvmkit-ir` 1079 + `crates/llvmkit-asmparser` 430 +
-`crates/llvmkit-support` 8). This branch's own contribution: the four
-`accept_folded_*` hostile-folder tests, the two `def_*_var` forged-handle tests,
-and the pointer address-space rows, all in
+Total `#[test]` functions: 2117. Recounted on 2026-08-06 in the
+`feature-70/api-idioms` Wave 11c working tree via the documented
+attribute-anchored grep below (`crates/llvmkit-ir` 1454 +
+`crates/llvmkit-asmparser` 645 + `crates/llvmkit-support` 8 +
+`crates/llvmkit-tablegen` 9 + `llvmkit` 1). Wave 11c itself retired the two
+`OUT_DIR`-inference packaging guards in
+`crates/llvmkit-tablegen/src/lib.rs::tests` (their build-script mode is gone
+with the library API) and added `generate_verifies_until_corrupted` there plus
+`llvmkit/tests/umbrella_surface.rs`'s umbrella smoke test (rows below); the
+rest of the growth since the 1517 point is the API-idioms program's earlier
+waves landing their tests. The 1517 point was recounted on 2026-07-16 at the
+`feature-22/generic-narrowing` tip (`crates/llvmkit-ir` 1079 +
+`crates/llvmkit-asmparser` 430 + `crates/llvmkit-support` 8); that branch's
+own contribution was the four `accept_folded_*` hostile-folder tests, the two
+`def_*_var` forged-handle tests, and the pointer address-space rows, all in
 `crates/llvmkit-ir/src/{ir_builder,ssa_builder}.rs::tests`, plus
 `tests/constant_folder_builder.rs::external_narrow_override_wrong_width_rejected_by_accept_folded_int`,
-which drives the same acceptor from outside the crate (rows below).
+which drives the same acceptor from outside the crate.
 
 **Recount on touch; never do incremental arithmetic.** The evidence that this
 rule is load-bearing, rather than pedantry: the prior 1372 header was genuine on
@@ -995,10 +1004,10 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/src/intrinsics.rs::tests::all_generated_intrinsics_decode_iit_entries` | `llvm/lib/IR/Intrinsics.cpp::getIntrinsicInfoTableEntries`; `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp` IIT table emission | mirror |
 | `crates/llvmkit-ir/src/intrinsics.rs::tests::generated_all_intrinsic_names_lookup_and_decode` | `llvm/lib/IR/Intrinsics.cpp::lookupIntrinsicID`; `llvm/lib/IR/Intrinsics.cpp::getIntrinsicInfoTableEntries`; `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp` declaration generator and overload table emission | mirror |
 | `crates/llvmkit-ir/src/intrinsics.rs::tests::generated_sample_overloads_decode_and_match` | `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp` sample overload and IIT table emission; `llvm/lib/IR/Intrinsics.cpp::getMangledTypeStr`; `llvm/lib/IR/Intrinsics.cpp::getIntrinsicInfoTableEntries` | mirror |
-| `crates/llvmkit-tablegen/src/lib.rs::tests::no_args_without_out_dir_requires_explicit_output` | llvmkit-specific packaging guard for the checked-in generator around LLVM TableGen input `llvm/include/llvm/IR/Intrinsics.td`; manual invocation requires an explicit output file so generated Rust tables are not recreated under `src/` by default | llvmkit-specific |
-| `crates/llvmkit-tablegen/src/lib.rs::tests::no_args_with_out_dir_use_checked_in_tablegen_sources` | llvmkit-specific build-script packaging guard for vendored LLVM 22.1.4 TableGen input `llvm/include/llvm/IR/Intrinsics.td`; Cargo `OUT_DIR` mode writes generated Rust to build output | llvmkit-specific |
 | `crates/llvmkit-tablegen/src/lib.rs::tests::basename_output_does_not_require_parent_dir` | llvmkit-specific generator CLI packaging guard around `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp`-style file emission: basename output paths write directly to the current directory instead of requiring a parent component | llvmkit-specific |
 | `crates/llvmkit-tablegen/src/lib.rs::tests::one_arg_keeps_default_tablegen_root` | llvmkit-specific generator CLI packaging guard for the vendored LLVM TableGen root containing `llvm/include/llvm/IR/Intrinsics.td`; an explicit generated-file argument keeps that default root | llvmkit-specific |
+| `crates/llvmkit-tablegen/src/lib.rs::tests::generate_verifies_until_corrupted` | llvmkit-specific packaging guard for the `generate` / `verify_generated` library pair over vendored LLVM TableGen input `llvm/include/llvm/IR/Intrinsics.td`: a fresh generation verifies clean and a one-byte corruption fails verification; no upstream unit-test counterpart — upstream drives TableGen output checking through lit tool tests (closest shape `llvm/lib/TableGen/Main.cpp::TableGenMain`) | llvmkit-specific |
+| `llvmkit/tests/umbrella_surface.rs::umbrella_reexports_build_print_and_reparse` | llvmkit-specific packaging guard with no upstream counterpart: the `llvmkit` umbrella's `ir` / `asmparser` re-exports alone build, print, and re-parse a module; closest functional reference is the `llvm/IR` + `llvm/AsmParser` link surface a C++ tool consumes | llvmkit-specific |
 | `crates/llvmkit-tablegen/src/basic/intrinsic_emitter.rs::tests::fixed_iit_encoding_packs_nibbles_in_decoder_order` | `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp::encodePacked`; `llvm/utils/TableGen/Basic/IntrinsicEmitter.cpp::EmitGenerator` IIT fixed/long table split | mirror |
 | `crates/llvmkit-tablegen/src/basic/code_gen_intrinsics.rs::tests::semantic_name_derivation_matches_llvm_rule` | `llvm/utils/TableGen/Basic/CodeGenIntrinsics.cpp::CodeGenIntrinsic` default `llvm.` name derivation from `int_*` records | mirror |
 | `crates/llvmkit-tablegen/src/basic/code_gen_intrinsics.rs::tests::throws_property_preserves_throwing_intrinsic` | `llvm/include/llvm/IR/Intrinsics.td::Throws`; `llvm/utils/TableGen/Basic/CodeGenIntrinsics.cpp::CodeGenIntrinsic::setProperty` | mirror |

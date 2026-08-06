@@ -24,7 +24,7 @@ categories   = ["compilers", "parser-implementations", "development-tools"]
 [workspace.dependencies]
 llvmkit-support   = { version = "0.0.4", path = "crates/llvmkit-support" }
 llvmkit-asmparser = { version = "0.0.4", path = "crates/llvmkit-asmparser" }
-llvmkit-ir        = { version = "0.0.4", path = "crates/llvmkit-ir" }
+llvmkit-ir        = { version = "0.0.4", path = "crates/llvmkit-ir", default-features = false }
 llvmkit-macros    = { version = "0.0.4", path = "crates/llvmkit-macros" }
 llvmkit-tablegen  = { version = "0.0.4", path = "crates/llvmkit-tablegen" }
 thiserror         = "2"

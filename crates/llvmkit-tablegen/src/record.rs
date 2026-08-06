@@ -139,7 +139,7 @@ impl Engine {
         }
         let path = self.resolve_include(include);
         let text = fs::read_to_string(&path).map_err(|source| {
-            GenError::new(format!("failed to read {}: {source}", path.display()))
+            TableGenError::new(format!("failed to read {}: {source}", path.display()))
         })?;
         let tokens = Lexer::new(include, &text).tokenize()?;
         let stmts = Parser::new(tokens).parse()?;
@@ -375,7 +375,7 @@ impl Engine {
             .classes
             .get(&app.name)
             .cloned()
-            .ok_or_else(|| GenError::new(format!("unknown class `{}`", app.name)))?;
+            .ok_or_else(|| TableGenError::new(format!("unknown class `{}`", app.name)))?;
         env.push();
         let name_value = record_name.unwrap_or(&app.name).to_owned();
         env.set("NAME", Value::String(name_value.clone()));
@@ -455,7 +455,7 @@ impl Engine {
                         continue;
                     }
                     let value = self.eval(expr, env).map_err(|err| {
-                        GenError::new(format!(
+                        TableGenError::new(format!(
                             "{} while evaluating field `{}` on `{}`",
                             err.message,
                             name,
@@ -500,21 +500,21 @@ impl Engine {
 
     pub(crate) fn synthesize_type_info(&self, env: &mut EnvStack) -> GenResult<Value> {
         let ret_types = match env.get("RetTypes").ok_or_else(|| {
-            GenError::new("TypeInfo synthesis requires RetTypes to be evaluated first")
+            TableGenError::new("TypeInfo synthesis requires RetTypes to be evaluated first")
         })? {
             Value::List(items) => items,
             other => {
-                return Err(GenError::new(format!(
+                return Err(TableGenError::new(format!(
                     "TypeInfo synthesis expected RetTypes list, got {other:?}"
                 )));
             }
         };
         let param_types = match env.get("ParamTypes").ok_or_else(|| {
-            GenError::new("TypeInfo synthesis requires ParamTypes to be evaluated first")
+            TableGenError::new("TypeInfo synthesis requires ParamTypes to be evaluated first")
         })? {
             Value::List(items) => items,
             other => {
-                return Err(GenError::new(format!(
+                return Err(TableGenError::new(format!(
                     "TypeInfo synthesis expected ParamTypes list, got {other:?}"
                 )));
             }
@@ -574,11 +574,11 @@ impl Engine {
         }
         let args = positional_args(app)?;
         if args.len() != 4 {
-            return Err(GenError::new("ResolveArgCode requires four arguments"));
+            return Err(TableGenError::new("ResolveArgCode requires four arguments"));
         }
 
         let ax = self.eval_int(args[3], env).map_err(|err| {
-            GenError::new(format!(
+            TableGenError::new(format!(
                 "{} while resolving ResolveArgCode encoded operand",
                 err.message
             ))
@@ -588,7 +588,7 @@ impl Engine {
         let ret = match ah {
             0x100 => {
                 let ac_idx = self.eval_int(args[2], env).map_err(|err| {
-                    GenError::new(format!(
+                    TableGenError::new(format!(
                         "{} while resolving EncAnyType ACIdx for ax {ax:#x}",
                         err.message
                     ))
@@ -602,13 +602,13 @@ impl Engine {
             }
             0x300 => {
                 let mapping = self.eval_int_list(args[0], env).map_err(|err| {
-                    GenError::new(format!(
+                    TableGenError::new(format!(
                         "{} while evaluating ResolveArgCode Mapping",
                         err.message
                     ))
                 })?;
                 let arg_codes = self.eval_int_list(args[1], env).map_err(|err| {
-                    GenError::new(format!(
+                    TableGenError::new(format!(
                         "{} while evaluating ResolveArgCode ArgCodes",
                         err.message
                     ))
@@ -617,7 +617,7 @@ impl Engine {
                 (num << 3) | list_int_at(&arg_codes, num, "ResolveArgCode ArgCodes")?
             }
             0x400 => self.eval_int(args[2], env).map_err(|err| {
-                GenError::new(format!(
+                TableGenError::new(format!(
                     "{} while resolving EncNextArgA ACIdx for ax {ax:#x}",
                     err.message
                 ))
@@ -798,7 +798,9 @@ impl Engine {
         match value {
             Value::Int(i) => Ok(i),
             Value::Bool(b) => Ok(if b { 1 } else { 0 }),
-            other => Err(GenError::new(format!("expected integer, got {other:?}"))),
+            other => Err(TableGenError::new(format!(
+                "expected integer, got {other:?}"
+            ))),
         }
     }
 
@@ -901,13 +903,17 @@ impl Engine {
             "size" => match self.eval(&args[0], env)? {
                 Value::List(items) => Ok(Value::Int(items.len() as i64)),
                 Value::String(s) => Ok(Value::Int(s.len() as i64)),
-                other => Err(GenError::new(format!("!size unsupported for {other:?}"))),
+                other => Err(TableGenError::new(format!(
+                    "!size unsupported for {other:?}"
+                ))),
             },
             "empty" => match self.eval(&args[0], env)? {
                 Value::List(items) => Ok(Value::Bool(items.is_empty())),
                 Value::String(s) => Ok(Value::Bool(s.is_empty())),
                 Value::Unset => Ok(Value::Bool(true)),
-                other => Err(GenError::new(format!("!empty unsupported for {other:?}"))),
+                other => Err(TableGenError::new(format!(
+                    "!empty unsupported for {other:?}"
+                ))),
             },
             "range" => {
                 if args.len() == 1 {
@@ -916,7 +922,9 @@ impl Engine {
                             (0..items.len() as i64).map(Value::Int).collect(),
                         )),
                         Value::Int(end) => Ok(Value::List((0..end).map(Value::Int).collect())),
-                        other => Err(GenError::new(format!("!range unsupported for {other:?}"))),
+                        other => Err(TableGenError::new(format!(
+                            "!range unsupported for {other:?}"
+                        ))),
                     }
                 } else {
                     let start = self.eval_int(&args[0], env)?;
@@ -956,16 +964,18 @@ impl Engine {
                 ))
             }
             "isa" => {
-                let ty = type_arg.ok_or_else(|| GenError::new("!isa requires a type argument"))?;
+                let ty =
+                    type_arg.ok_or_else(|| TableGenError::new("!isa requires a type argument"))?;
                 let value = self.eval(&args[0], env)?;
                 Ok(Value::Bool(self.value_is_a(&value, ty)))
             }
             "cast" => {
-                let ty = type_arg.ok_or_else(|| GenError::new("!cast requires a type argument"))?;
+                let ty =
+                    type_arg.ok_or_else(|| TableGenError::new("!cast requires a type argument"))?;
                 let value = self.eval(&args[0], env)?;
                 self.cast_value(value, ty)
             }
-            other => Err(GenError::new(format!(
+            other => Err(TableGenError::new(format!(
                 "unsupported bang operator `!{other}`"
             ))),
         }
@@ -974,29 +984,30 @@ impl Engine {
     pub(crate) fn field_value(&self, value: Value, field: &str) -> GenResult<Value> {
         match value {
             Value::Record(record) => record.fields.get(field).cloned().ok_or_else(|| {
-                GenError::new(format!("record {:?} has no field `{field}`", record.name))
+                TableGenError::new(format!("record {:?} has no field `{field}`", record.name))
             }),
             Value::SelfRef(name, _) if field == "NAME" => Ok(Value::String(name)),
             Value::String(s) if field == "NAME" => Ok(Value::String(s)),
-            other => Err(GenError::new(format!(
+            other => Err(TableGenError::new(format!(
                 "cannot read field `{field}` from {other:?}"
             ))),
         }
     }
 
     pub(crate) fn index_value(&self, value: Value, index: i64) -> GenResult<Value> {
-        let index = usize::try_from(index).map_err(|_| GenError::new("negative list index"))?;
+        let index =
+            usize::try_from(index).map_err(|_| TableGenError::new("negative list index"))?;
         match value {
             Value::List(items) => items
                 .get(index)
                 .cloned()
-                .ok_or_else(|| GenError::new(format!("list index {index} out of bounds"))),
+                .ok_or_else(|| TableGenError::new(format!("list index {index} out of bounds"))),
             Value::String(s) => s
                 .chars()
                 .nth(index)
                 .map(|ch| Value::String(ch.to_string()))
-                .ok_or_else(|| GenError::new(format!("string index {index} out of bounds"))),
-            other => Err(GenError::new(format!("cannot index {other:?}"))),
+                .ok_or_else(|| TableGenError::new(format!("string index {index} out of bounds"))),
+            other => Err(TableGenError::new(format!("cannot index {other:?}"))),
         }
     }
 
@@ -1006,7 +1017,7 @@ impl Engine {
                 if record.classes.contains(ty) || record.name.as_deref() == Some(ty) {
                     Ok(Value::Record(record))
                 } else {
-                    Err(GenError::new(format!(
+                    Err(TableGenError::new(format!(
                         "record {:?} is not a `{ty}`",
                         record.name
                     )))
@@ -1017,13 +1028,17 @@ impl Engine {
                     if record.classes.contains(ty) || record.name.as_deref() == Some(ty) {
                         Ok(Value::Record(record.clone()))
                     } else {
-                        Err(GenError::new(format!("record `{name}` is not a `{ty}`")))
+                        Err(TableGenError::new(format!(
+                            "record `{name}` is not a `{ty}`"
+                        )))
                     }
                 } else {
                     Ok(Value::SelfRef(name, ty.to_owned()))
                 }
             }
-            other => Err(GenError::new(format!("cannot !cast {other:?} to `{ty}`"))),
+            other => Err(TableGenError::new(format!(
+                "cannot !cast {other:?} to `{ty}`"
+            ))),
         }
     }
 
@@ -1052,10 +1067,12 @@ impl Engine {
         match self.eval(expr, env)? {
             Value::Int(i) => Ok(i),
             Value::Bool(b) => Ok(if b { 1 } else { 0 }),
-            Value::String(s) => s
-                .parse::<i64>()
-                .map_err(|source| GenError::new(format!("expected integer, got `{s}`: {source}"))),
-            other => Err(GenError::new(format!("expected integer, got {other:?}"))),
+            Value::String(s) => s.parse::<i64>().map_err(|source| {
+                TableGenError::new(format!("expected integer, got `{s}`: {source}"))
+            }),
+            other => Err(TableGenError::new(format!(
+                "expected integer, got {other:?}"
+            ))),
         }
     }
 
@@ -1078,13 +1095,12 @@ impl Engine {
             Value::String(s) => Ok(s),
             Value::Int(i) => Ok(i.to_string()),
             Value::Bool(b) => Ok(if b { "1" } else { "0" }.to_owned()),
-            Value::Record(record) => record
-                .name
-                .clone()
-                .ok_or_else(|| GenError::new("anonymous record cannot be converted to string")),
+            Value::Record(record) => record.name.clone().ok_or_else(|| {
+                TableGenError::new("anonymous record cannot be converted to string")
+            }),
             Value::SelfRef(name, _) => Ok(name),
             Value::Unset => Ok(String::new()),
-            Value::List(_) => Err(GenError::new("list cannot be converted to string")),
+            Value::List(_) => Err(TableGenError::new("list cannot be converted to string")),
         }
     }
 
@@ -1095,7 +1111,7 @@ impl Engine {
     ) -> GenResult<Vec<Value>> {
         match self.eval(expr, env)? {
             Value::List(values) => Ok(values),
-            other => Err(GenError::new(format!("expected list, got {other:?}"))),
+            other => Err(TableGenError::new(format!("expected list, got {other:?}"))),
         }
     }
 
@@ -1176,7 +1192,7 @@ impl Engine {
             .map(|set| set.prefix.as_str())
             .collect::<Vec<_>>();
         if actual_targets != required_targets {
-            return Err(GenError::new(format!(
+            return Err(TableGenError::new(format!(
                 "target partition mismatch: expected {:?}, got {:?}",
                 required_targets, actual_targets
             )));
@@ -1205,9 +1221,9 @@ impl Engine {
             let record_name = record
                 .name
                 .as_deref()
-                .ok_or_else(|| GenError::new("anonymous intrinsic record"))?;
+                .ok_or_else(|| TableGenError::new("anonymous intrinsic record"))?;
             if !record_name.starts_with("int_") {
-                return Err(GenError::new(format!(
+                return Err(TableGenError::new(format!(
                     "intrinsic record `{record_name}` does not start with int_"
                 )));
             }
@@ -1219,7 +1235,7 @@ impl Engine {
                 default_name
             } else {
                 if !explicit_name.starts_with("llvm.") {
-                    return Err(GenError::new(format!(
+                    return Err(TableGenError::new(format!(
                         "intrinsic `{record_name}` explicit name `{explicit_name}` does not start with llvm."
                     )));
                 }
@@ -1228,7 +1244,7 @@ impl Engine {
             if !target_prefix.is_empty() {
                 let expected = format!("llvm.{target_prefix}.");
                 if !name.starts_with(&expected) {
-                    return Err(GenError::new(format!(
+                    return Err(TableGenError::new(format!(
                         "target intrinsic `{record_name}` name `{name}` does not start with `{expected}`"
                     )));
                 }
@@ -1266,7 +1282,7 @@ impl Engine {
     pub(crate) fn check_duplicates(&self, intrinsics: &[IntrinsicOut]) -> GenResult<()> {
         for pair in intrinsics.windows(2) {
             if pair[0].name == pair[1].name {
-                return Err(GenError::new(format!(
+                return Err(TableGenError::new(format!(
                     "duplicate intrinsic name `{}` from `{}` and `{}`",
                     pair[0].name, pair[0].enum_name, pair[1].enum_name
                 )));
@@ -1279,7 +1295,9 @@ impl Engine {
 pub(crate) fn as_record(value: &Value) -> GenResult<Rc<RecordValue>> {
     match value {
         Value::Record(record) => Ok(record.clone()),
-        other => Err(GenError::new(format!("expected record, got {other:?}"))),
+        other => Err(TableGenError::new(format!(
+            "expected record, got {other:?}"
+        ))),
     }
 }
 
@@ -1290,7 +1308,7 @@ pub(crate) fn field_list(record: &RecordValue, field: &str) -> GenResult<Vec<Val
 pub(crate) fn list_field(record: &RecordValue, field: &str) -> GenResult<Vec<Value>> {
     match record.fields.get(field) {
         Some(Value::List(items)) => Ok(items.clone()),
-        Some(other) => Err(GenError::new(format!(
+        Some(other) => Err(TableGenError::new(format!(
             "field `{field}` of {:?} is not a list: {other:?}",
             record.name
         ))),
@@ -1303,7 +1321,7 @@ pub(crate) fn field_bool(record: &RecordValue, field: &str) -> GenResult<Option<
         Some(Value::Bool(b)) => Ok(Some(*b)),
         Some(Value::Int(i)) => Ok(Some(*i != 0)),
         Some(Value::Unset) | None => Ok(None),
-        Some(other) => Err(GenError::new(format!(
+        Some(other) => Err(TableGenError::new(format!(
             "field `{field}` of {:?} is not bool: {other:?}",
             record.name
         ))),
@@ -1318,7 +1336,7 @@ pub(crate) fn string_field(record: &RecordValue, field: &str) -> GenResult<Optio
     match record.fields.get(field) {
         Some(Value::String(s)) => Ok(Some(s.clone())),
         Some(Value::Unset) | None => Ok(None),
-        Some(other) => Err(GenError::new(format!(
+        Some(other) => Err(TableGenError::new(format!(
             "field `{field}` of {:?} is not string: {other:?}",
             record.name
         ))),
@@ -1329,11 +1347,11 @@ pub(crate) fn int_field(record: &RecordValue, field: &str) -> GenResult<i64> {
     match record.fields.get(field) {
         Some(Value::Int(i)) => Ok(*i),
         Some(Value::Bool(b)) => Ok(if *b { 1 } else { 0 }),
-        Some(other) => Err(GenError::new(format!(
+        Some(other) => Err(TableGenError::new(format!(
             "field `{field}` of {:?} is not int: {other:?}",
             record.name
         ))),
-        None => Err(GenError::new(format!(
+        None => Err(TableGenError::new(format!(
             "field `{field}` of {:?} is missing",
             record.name
         ))),
@@ -1343,11 +1361,11 @@ pub(crate) fn int_field(record: &RecordValue, field: &str) -> GenResult<i64> {
 pub(crate) fn record_field_record(record: &RecordValue, field: &str) -> GenResult<Rc<RecordValue>> {
     match record.fields.get(field) {
         Some(Value::Record(value)) => Ok(value.clone()),
-        Some(other) => Err(GenError::new(format!(
+        Some(other) => Err(TableGenError::new(format!(
             "field `{field}` of {:?} is not record: {other:?}",
             record.name
         ))),
-        None => Err(GenError::new(format!(
+        None => Err(TableGenError::new(format!(
             "field `{field}` of {:?} is missing",
             record.name
         ))),
