@@ -10,7 +10,7 @@ fn main() {
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type<_>>::new(), false);
+    let fn_ty = m.function_type(void_ty, Vec::<llvmkit_ir::Type<_>>::new());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let null_ptr = ptr_ty.const_null();

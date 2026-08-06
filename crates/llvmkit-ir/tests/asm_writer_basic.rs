@@ -18,7 +18,7 @@ use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, module_new};
 fn module_prints_simple_add_function() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -52,7 +52,7 @@ fn module_prints_blank_line_between_type_identities_and_first_function() -> Resu
     let point_ty = m.get_or_insert_named_struct("Point");
     m.set_struct_body_dyn(point_ty, [i32_ty.as_type(), i32_ty.as_type()], false)?;
 
-    let fn_ty = m.fn_type(m.void_type(), [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(m.void_type(), [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     IrBuilder::new_for::<Dyn>(&m)
@@ -78,7 +78,7 @@ fn module_prints_blank_line_between_type_identities_and_first_function() -> Resu
 fn dollar_names_print_without_quotes() -> Result<(), IrError> {
     let m = module_new!("dollar_names")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("foo$bar", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry$bb");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -99,7 +99,7 @@ fn dollar_names_print_without_quotes() -> Result<(), IrError> {
 fn function_local_names_share_argument_block_and_instruction_namespace() -> Result<(), IrError> {
     let m = module_new!("local_names")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m
         .function_builder::<i32, _>("f", fn_ty)
         .param_name(0, "entry")
@@ -133,7 +133,7 @@ fn function_local_names_share_argument_block_and_instruction_namespace() -> Resu
 fn set_name_reinserts_and_frees_old_binding() -> Result<(), IrError> {
     let m = module_new!("rename")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -166,7 +166,7 @@ fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
     // Two integer constants fed through the constant folder produce a
     // pre-folded ConstantInt operand for `ret`.
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("answer", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -198,7 +198,7 @@ fn module_prints_const_folded_arithmetic() -> Result<(), IrError> {
 fn function_print_standalone_matches_module_section() -> Result<(), IrError> {
     let m = module_new!("standalone")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("identity", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -221,7 +221,7 @@ fn function_print_standalone_matches_module_section() -> Result<(), IrError> {
 fn declare_form_for_empty_function() -> Result<(), IrError> {
     let m = module_new!("declare_only")?;
     let void = m.void_type();
-    let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let _ = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
     let text = format!("{m}");
     assert!(text.contains("declare void @ext()\n"), "got:\n{text}");
@@ -236,7 +236,7 @@ fn declare_form_for_empty_function() -> Result<(), IrError> {
 fn unnamed_basic_block_uses_slot_label() -> Result<(), IrError> {
     let m = module_new!("slots")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("anon", fn_ty, Linkage::External)?;
     // No name on the entry block.
     let entry = m.view(f).append_basic_block(&m, "");

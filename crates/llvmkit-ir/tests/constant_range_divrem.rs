@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 
-use llvmkit_ir::{ApInt, ApIntSignedness, ApIntTruncation, ConstantRange};
+use llvmkit_ir::{ApInt, ApIntTruncation, ConstantRange, Signedness};
 
 const BITS: u32 = 4;
 const DOMAIN: u64 = 1 << BITS;
@@ -22,7 +22,7 @@ fn ap(value: u64) -> ApInt {
     ApInt::new(
         BITS,
         value & MASK,
-        ApIntSignedness::Unsigned,
+        Signedness::Unsigned,
         ApIntTruncation::Truncate,
     )
     .expect("in-range constant")

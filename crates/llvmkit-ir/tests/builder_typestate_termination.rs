@@ -18,7 +18,7 @@ fn cond_br_terminator_terminates_block() -> Result<(), IrError> {
     let m = module_new!("cb")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(void_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("cb", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let then_bb = m.view(f).append_basic_block(&m, "then");
@@ -62,7 +62,7 @@ fn cond_br_terminator_terminates_block() -> Result<(), IrError> {
 fn termination_typestate_does_not_change_asm_output() -> Result<(), IrError> {
     let m = module_new!("termination_asm")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(void_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let exit = m.view(f).append_basic_block(&m, "exit");

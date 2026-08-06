@@ -4,11 +4,34 @@
 
 use crate::ap_int::ApInt;
 use crate::constants::ConstantIntValue;
+use crate::instr_types::{
+    AShrFlags, AddFlags, LShrFlags, OverflowFlags, SDivFlags, ShlFlags, SubFlags, UDivFlags,
+};
 use crate::int_width::IntWidth;
 use crate::module::ModuleBrand;
 use crate::{IrError, IrResult};
 use core::fmt;
 use core::ops::Not;
+
+/// Which twin [`KnownBits::compute_for_add_sub`] computes. Ports the
+/// `bool Add` parameter of `KnownBits::computeForAddSub` (`KnownBits.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AddSubOperation {
+    Add,
+    Sub,
+}
+
+/// Whether the caller has independently proven a shift amount non-zero.
+/// Ports the `ShAmtNonZero` parameter of `KnownBits::shl` / `lshr` / `ashr`
+/// (`KnownBits.h`). Deliberately not part of [`ShlFlags`] /
+/// [`LShrFlags`] / [`AShrFlags`]: no `.ll` keyword spells it — it is an
+/// analysis-side fact, not an IR flag.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ShiftAmountKnowledge {
+    #[default]
+    MaybeZero,
+    NonZero,
+}
 
 /// Struct for tracking known zeros and ones of a value.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -596,7 +619,7 @@ impl KnownBits {
     /// Add transfer.
     #[inline]
     pub fn add(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::add_with_flags(lhs, rhs, false, false)
+        Self::add_with_flags(lhs, rhs, AddFlags::new())
     }
 
     pub fn compute_for_add_carry(lhs: &KnownBits, rhs: &KnownBits, carry: &KnownBits) -> KnownBits {
@@ -607,13 +630,18 @@ impl KnownBits {
     }
 
     pub fn compute_for_add_sub(
-        add: bool,
-        nsw: bool,
-        nuw: bool,
+        operation: AddSubOperation,
+        flags: OverflowFlags,
         lhs: &KnownBits,
         rhs: &KnownBits,
     ) -> KnownBits {
-        compute_for_add_sub_impl(add, nsw, nuw, lhs, rhs)
+        compute_for_add_sub_impl(
+            matches!(operation, AddSubOperation::Add),
+            flags.nsw,
+            flags.nuw,
+            lhs,
+            rhs,
+        )
     }
 
     pub fn compute_for_sub_borrow(
@@ -628,18 +656,18 @@ impl KnownBits {
         compute_for_add_carry_raw(lhs, &rhs, borrow.one.bool_value(), borrow.zero.bool_value())
     }
 
-    pub fn add_with_flags(lhs: &KnownBits, rhs: &KnownBits, nsw: bool, nuw: bool) -> KnownBits {
-        Self::compute_for_add_sub(true, nsw, nuw, lhs, rhs)
+    pub fn add_with_flags(lhs: &KnownBits, rhs: &KnownBits, flags: AddFlags) -> KnownBits {
+        compute_for_add_sub_impl(true, flags.nsw, flags.nuw, lhs, rhs)
     }
 
     /// Sub transfer.
     #[inline]
     pub fn sub(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::sub_with_flags(lhs, rhs, false, false)
+        Self::sub_with_flags(lhs, rhs, SubFlags::new())
     }
 
-    pub fn sub_with_flags(lhs: &KnownBits, rhs: &KnownBits, nsw: bool, nuw: bool) -> KnownBits {
-        Self::compute_for_add_sub(false, nsw, nuw, lhs, rhs)
+    pub fn sub_with_flags(lhs: &KnownBits, rhs: &KnownBits, flags: SubFlags) -> KnownBits {
+        compute_for_add_sub_impl(false, flags.nsw, flags.nuw, lhs, rhs)
     }
 
     /// Multiply transfer.
@@ -677,57 +705,72 @@ impl KnownBits {
     /// Shift-left transfer.
     #[inline]
     pub fn shl(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::shl_with_flags(lhs, rhs, false, false, false)
+        Self::shl_with_flags(lhs, rhs, ShlFlags::new(), ShiftAmountKnowledge::MaybeZero)
     }
 
     pub fn shl_with_flags(
         lhs: &KnownBits,
         rhs: &KnownBits,
-        nuw: bool,
-        nsw: bool,
-        shift_amount_non_zero: bool,
+        flags: ShlFlags,
+        shift_amount: ShiftAmountKnowledge,
     ) -> KnownBits {
-        compute_for_shl(lhs, rhs, nuw, nsw, shift_amount_non_zero)
+        compute_for_shl(
+            lhs,
+            rhs,
+            flags.nuw,
+            flags.nsw,
+            matches!(shift_amount, ShiftAmountKnowledge::NonZero),
+        )
     }
 
     /// Logical-shift-right transfer.
     #[inline]
     pub fn lshr(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::lshr_with_flags(lhs, rhs, false, false)
+        Self::lshr_with_flags(lhs, rhs, LShrFlags::new(), ShiftAmountKnowledge::MaybeZero)
     }
 
     pub fn lshr_with_flags(
         lhs: &KnownBits,
         rhs: &KnownBits,
-        shift_amount_non_zero: bool,
-        exact: bool,
+        flags: LShrFlags,
+        shift_amount: ShiftAmountKnowledge,
     ) -> KnownBits {
-        compute_for_lshr(lhs, rhs, shift_amount_non_zero, exact)
+        compute_for_lshr(
+            lhs,
+            rhs,
+            matches!(shift_amount, ShiftAmountKnowledge::NonZero),
+            flags.exact,
+        )
     }
 
     /// Arithmetic-shift-right transfer.
     #[inline]
     pub fn ashr(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::ashr_with_flags(lhs, rhs, false, false)
+        Self::ashr_with_flags(lhs, rhs, AShrFlags::new(), ShiftAmountKnowledge::MaybeZero)
     }
 
     pub fn ashr_with_flags(
         lhs: &KnownBits,
         rhs: &KnownBits,
-        shift_amount_non_zero: bool,
-        exact: bool,
+        flags: AShrFlags,
+        shift_amount: ShiftAmountKnowledge,
     ) -> KnownBits {
-        compute_for_ashr(lhs, rhs, shift_amount_non_zero, exact)
+        compute_for_ashr(
+            lhs,
+            rhs,
+            matches!(shift_amount, ShiftAmountKnowledge::NonZero),
+            flags.exact,
+        )
     }
 
     /// Unsigned division transfer.
     #[inline]
     pub fn udiv(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::udiv_with_exact(lhs, rhs, false)
+        Self::udiv_with_exact(lhs, rhs, UDivFlags::new())
     }
 
-    pub fn udiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, exact: bool) -> KnownBits {
-        compute_for_udiv(lhs, rhs, exact)
+    pub fn udiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, flags: UDivFlags) -> KnownBits {
+        compute_for_udiv(lhs, rhs, flags.exact)
     }
 
     /// Signed division transfer. The `exact`-taking twin of upstream's
@@ -735,11 +778,11 @@ impl KnownBits {
     /// so it matches [`Self::udiv`] / [`Self::udiv_with_exact`].
     #[inline]
     pub fn sdiv(lhs: &KnownBits, rhs: &KnownBits) -> KnownBits {
-        Self::sdiv_with_exact(lhs, rhs, false)
+        Self::sdiv_with_exact(lhs, rhs, SDivFlags::new())
     }
 
-    pub fn sdiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, exact: bool) -> KnownBits {
-        compute_for_sdiv(lhs, rhs, exact)
+    pub fn sdiv_with_exact(lhs: &KnownBits, rhs: &KnownBits, flags: SDivFlags) -> KnownBits {
+        compute_for_sdiv(lhs, rhs, flags.exact)
     }
 
     /// Unsigned remainder transfer.
@@ -845,8 +888,11 @@ impl KnownBits {
         if rhs.min_value().uge(&lhs.max_value()) {
             return Self::sub(rhs, lhs);
         }
-        Self::sub_with_flags(lhs, rhs, false, true)
-            .intersect_with(&Self::sub_with_flags(rhs, lhs, false, true))
+        Self::sub_with_flags(lhs, rhs, SubFlags::new().nuw()).intersect_with(&Self::sub_with_flags(
+            rhs,
+            lhs,
+            SubFlags::new().nuw(),
+        ))
     }
 
     /// Signed absolute difference transfer.
@@ -860,8 +906,8 @@ impl KnownBits {
         }
         let lhs_flipped = flip_sign_bit(lhs);
         let rhs_flipped = flip_sign_bit(rhs);
-        Self::sub_with_flags(&lhs_flipped, &rhs_flipped, false, true).intersect_with(
-            &Self::sub_with_flags(&rhs_flipped, &lhs_flipped, false, true),
+        Self::sub_with_flags(&lhs_flipped, &rhs_flipped, SubFlags::new().nuw()).intersect_with(
+            &Self::sub_with_flags(&rhs_flipped, &lhs_flipped, SubFlags::new().nuw()),
         )
     }
 

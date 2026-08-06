@@ -465,8 +465,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
     /// Toggle the `externally_initialized` marker. Mirrors
     /// `GlobalVariable::setExternallyInitialized`.
     #[inline]
-    pub fn set_externally_initialized(self, _module: &'ctx Module<B, Unverified>, value: bool) {
-        self.data().externally_initialized.set(value);
+    pub fn set_externally_initialized(self, _module: &'ctx Module<B, Unverified>) {
+        self.data().externally_initialized.set(true);
+    }
+
+    /// Clearing twin of
+    /// [`set_externally_initialized`](Self::set_externally_initialized).
+    #[inline]
+    pub fn clear_externally_initialized(self, _module: &'ctx Module<B, Unverified>) {
+        self.data().externally_initialized.set(false);
     }
 
     /// Comdat reference, if attached. Mirrors `GlobalValue::getComdat`.
@@ -667,9 +674,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
     }
 
     /// Mark as `constant` (vs `global`). Mirrors
-    /// `GlobalVariable::setConstant`.
-    pub fn constant(mut self, value: bool) -> Self {
-        self.is_constant = value;
+    /// `GlobalVariable::setConstant`. Default is a mutable `global`.
+    pub fn constant(mut self) -> Self {
+        self.is_constant = true;
         self
     }
 
@@ -751,9 +758,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
     }
 
     /// Mark as `externally_initialized`. Mirrors
-    /// `GlobalVariable::setExternallyInitialized`.
-    pub fn externally_initialized(mut self, value: bool) -> Self {
-        self.externally_initialized = value;
+    /// `GlobalVariable::setExternallyInitialized`. Default off.
+    pub fn externally_initialized(mut self) -> Self {
+        self.externally_initialized = true;
         self
     }
 

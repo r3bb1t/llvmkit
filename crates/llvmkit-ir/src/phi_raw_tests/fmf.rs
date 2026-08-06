@@ -18,7 +18,7 @@ fn phi_add_incoming_from_value_rejects_type_mismatch() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
     let i32_ty = m.i32_type();
     let f64_ty = m.f64_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -45,7 +45,7 @@ fn phi_add_incoming_from_value_rejects_type_mismatch() -> Result<(), IrError> {
 fn phi_add_incoming_from_value_rejects_differing_duplicate() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let _a = m.view(f).append_basic_block(&m, "a");
@@ -81,7 +81,7 @@ fn phi_add_incoming_from_value_rejects_differing_duplicate() -> Result<(), IrErr
 fn typed_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let a = m.view(f).append_basic_block(&m, "a");
@@ -107,7 +107,7 @@ fn typed_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
 fn fp_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
     let f64_ty = m.f64_type();
-    let fn_ty = m.fn_type(f64_ty, [f64_ty.as_type()], false);
+    let fn_ty = m.function_type(f64_ty, [f64_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let a = m.view(f).append_basic_block(&m, "a");
@@ -137,7 +137,7 @@ fn fp_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
 fn pointer_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type(), ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(ptr_ty, [ptr_ty.as_type(), ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let a = m.view(f).append_basic_block(&m, "a");
@@ -166,7 +166,7 @@ fn pointer_phi_add_incoming_rejects_differing_duplicate() -> Result<(), IrError>
 fn same_value_duplicate_incoming_is_legal() -> Result<(), IrError> {
     let m = crate::module_new!("a")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let a = m.view(f).append_basic_block(&m, "a");

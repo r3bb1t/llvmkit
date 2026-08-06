@@ -19,8 +19,8 @@ fn extract_value_struct_field0() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
-    let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("instructions.aggregateops", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -44,7 +44,7 @@ fn extract_value_array_index() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let arr_ty = m.array_type(i8_ty, 3);
-    let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -68,9 +68,9 @@ fn extract_value_nested_indices() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let inner = m.struct_type([i32_ty.as_type()], false);
-    let outer = m.struct_type([i8_ty.as_type(), inner.as_type()], false);
-    let fn_ty = m.fn_type(void_ty.as_type(), [outer.as_type()], false);
+    let inner = m.struct_type([i32_ty.as_type()]);
+    let outer = m.struct_type([i8_ty.as_type(), inner.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [outer.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -97,8 +97,8 @@ fn extract_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
-    let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -129,7 +129,7 @@ fn extract_value_rejects_out_of_range_array_index() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
     let arr_ty = m.array_type(i32_ty, 0);
-    let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()]);
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -158,8 +158,8 @@ fn extract_value_rejects_out_of_range_struct_index() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
-    let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -188,8 +188,8 @@ fn insert_value_struct_field0() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
-    let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -213,7 +213,7 @@ fn insert_value_array_index_zero() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
     let arr_ty = m.array_type(i8_ty, 3);
-    let fn_ty = m.fn_type(void_ty.as_type(), [arr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [arr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -242,8 +242,8 @@ fn insert_value_dyn_rejects_empty_indices() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
-    let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -275,8 +275,8 @@ fn extract_element_vector_i8_index() -> Result<(), IrError> {
     let f32_ty = m.f32_type();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
-    let vec_ty = m.vector_type(f32_ty, 4, false);
-    let fn_ty = m.fn_type(void_ty.as_type(), [vec_ty.as_type()], false);
+    let vec_ty = m.vector_type(f32_ty, 4);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type()]);
     let f = m.add_function_dyn("instructions.vectorops", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -304,8 +304,8 @@ fn insert_element_vector_float_at_i8() -> Result<(), IrError> {
     let f32_ty = m.f32_type();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
-    let vec_ty = m.vector_type(f32_ty, 4, false);
-    let fn_ty = m.fn_type(void_ty.as_type(), [vec_ty.as_type()], false);
+    let vec_ty = m.vector_type(f32_ty, 4);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -334,12 +334,8 @@ fn shuffle_vector_zeroinitializer_mask() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
     let void_ty = m.void_type();
-    let vec_ty = m.vector_type(f32_ty, 4, false);
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        [vec_ty.as_type(), vec_ty.as_type()],
-        false,
-    );
+    let vec_ty = m.vector_type(f32_ty, 4);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -367,12 +363,8 @@ fn shuffle_vector_explicit_mask_print() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let vec_ty = m.vector_type(i32_ty, 4, false);
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        [vec_ty.as_type(), vec_ty.as_type()],
-        false,
-    );
+    let vec_ty = m.vector_type(i32_ty, 4);
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

@@ -17,7 +17,7 @@ fn load_pointer_operand_is_typed() -> Result<(), IrError> {
     let m = module_new!("typed_load_ptr")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -39,9 +39,9 @@ fn load_pointer_operand_is_typed() -> Result<(), IrError> {
 fn direct_call_callee_is_direct() -> Result<(), IrError> {
     let m = module_new!("direct_call")?;
     let i32_ty = m.i32_type();
-    let callee_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let callee_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -63,7 +63,7 @@ fn direct_call_callee_is_direct() -> Result<(), IrError> {
 fn classify_is_total() -> Result<(), IrError> {
     let m = module_new!("classify_total")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -100,7 +100,7 @@ fn classify_is_total() -> Result<(), IrError> {
 fn binop_and_cmp_groupings() -> Result<(), IrError> {
     let m = module_new!("groupings")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -139,12 +139,12 @@ fn indirect_call_callee_is_indirect() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     // define i32 @caller(ptr %fp) { %r = call i32 %fp(); ret ... }
-    let caller_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty, [ptr_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let fp: PointerValue<'_, _> = m.view(caller).param(0)?.try_into()?;
-    let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let callee_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let call = b.indirect_call_dyn::<i32, _, Value<'_, _>, _, _>(
         callee_ty,
         fp,

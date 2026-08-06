@@ -27,7 +27,7 @@ use crate::{
 fn fp_and_pointer_phi_ids_view_back_to_typed_handles() -> Result<(), IrError> {
     let m = crate::module_new!("phi_view_fp_ptr")?;
     let f64_ty = m.f64_type();
-    let fn_ty = m.fn_type_no_params(f64_ty, false);
+    let fn_ty = m.function_type_no_parameters(f64_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let bb = m.view(f).append_basic_block(&m, "bb");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
@@ -51,7 +51,7 @@ fn fp_and_pointer_phi_ids_view_back_to_typed_handles() -> Result<(), IrError> {
 fn phi_reads_back_all_incomings() -> Result<(), IrError> {
     let m = crate::module_new!("phi_finish")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let other = m.view(f).append_basic_block(&m, "other");
@@ -94,7 +94,7 @@ fn phi_reads_back_all_incomings() -> Result<(), IrError> {
 fn rediscovered_phi_narrows_to_result_type() -> Result<(), IrError> {
     let m = crate::module_new!("phi_kind_rediscovery")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let bb = m.view(f).append_basic_block(&m, "bb");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
@@ -130,7 +130,7 @@ fn rediscovered_phi_narrows_to_result_type() -> Result<(), IrError> {
 fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
     let m = crate::module_new!("phi_head")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let other = m.view(f).append_basic_block(&m, "other");
@@ -182,7 +182,7 @@ fn build_phi_inserts_at_phi_head_not_cursor() -> Result<(), IrError> {
 fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
     let m = crate::module_new!("phi_head_order")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let other = m.view(f).append_basic_block(&m, "other");
@@ -242,7 +242,7 @@ fn two_phis_built_after_nonphi_keep_relative_order() -> Result<(), IrError> {
 fn phi_range_iterates_three_phis() -> Result<(), IrError> {
     let m = crate::module_new!("p")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<crate::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(i32_ty, Vec::<crate::Type<'_, _>>::new());
     let f = m.add_function_dyn("p", fn_ty, Linkage::External)?;
     let bb = m.view(f).append_basic_block(&m, "bb");
     let bb_label = bb.id();
@@ -282,7 +282,7 @@ fn phi_range_iterates_three_phis() -> Result<(), IrError> {
 fn phi_incomings_match_indexed_access() -> Result<(), IrError> {
     let m = crate::module_new!("phi_incomings")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let other = m.view(f).append_basic_block(&m, "other");

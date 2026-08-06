@@ -55,7 +55,7 @@ use llvmkit_ir::{
 
 pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m
         .view(
             m.function_builder::<i32, _>("factorial", fn_ty)

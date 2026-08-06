@@ -19,7 +19,7 @@ fn module_with_pred(pred: FloatPredicate, name: &str) -> Result<String, IrError>
     let m = Module::dynamic("fcmp");
     let f64_ty = m.f64_type();
     let bool_ty = m.bool_type();
-    let fn_ty = m.fn_type(bool_ty, [f64_ty.as_type(), f64_ty.as_type()], false);
+    let fn_ty = m.function_type(bool_ty, [f64_ty.as_type(), f64_ty.as_type()]);
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -95,7 +95,7 @@ fn default_constant_folder_folds_float_compare() -> Result<(), IrError> {
     let m = module_new!("fcmp-fold")?;
     let f64_ty = m.f64_type();
     let bool_ty = m.bool_type();
-    let fn_ty = m.fn_type(bool_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(bool_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("cmp", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

@@ -681,7 +681,7 @@ fn struct_layout_simple() {
     let dl = DataLayout::default();
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let st = m.struct_type([i32_ty.as_type(), i64_ty.as_type()], false);
+    let st = m.struct_type([i32_ty.as_type(), i64_ty.as_type()]);
     let layout = dl.struct_layout(st.as_type());
     assert_eq!(layout.element_offset(0), 0);
     // i64 default ABI alignment is 4, so i64 placed at offset 4.
@@ -697,7 +697,7 @@ fn struct_layout_packed() {
     let dl = DataLayout::default();
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
-    let st = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], true);
+    let st = m.packed_struct_type([i8_ty.as_type(), i32_ty.as_type()]);
     let layout = dl.struct_layout(st.as_type());
     assert_eq!(layout.element_offset(0), 0);
     assert_eq!(layout.element_offset(1), 1);

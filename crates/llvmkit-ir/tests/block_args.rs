@@ -14,7 +14,7 @@ use llvmkit_ir::{Dyn, IntPredicate, IntValue, IrBuilder, IrError, Linkage, modul
 fn append_block_with_params_creates_head_phi() -> Result<(), IrError> {
     let m = module_new!("block_args")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
     // No positioning required: the block is created against `f`, not the
@@ -48,7 +48,7 @@ fn append_block_with_params_preserves_param_order() -> Result<(), IrError> {
     let m = module_new!("block_args_order")?;
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 
     let b = IrBuilder::new_for::<Dyn>(&m);
@@ -79,7 +79,7 @@ fn append_block_with_params_preserves_param_order() -> Result<(), IrError> {
 fn block_args_br_round_trips_and_verifies() -> Result<(), IrError> {
     let m = module_new!("block_args_br")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -122,7 +122,7 @@ fn block_args_br_round_trips_and_verifies() -> Result<(), IrError> {
 fn block_args_cond_br_diamond_verifies() -> Result<(), IrError> {
     let m = module_new!("block_args_diamond")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let then_bb = m.view(f).append_basic_block(&m, "then");
@@ -179,7 +179,7 @@ fn block_args_cond_br_diamond_verifies() -> Result<(), IrError> {
 fn block_args_cond_br_with_args_carries_both_edges() -> Result<(), IrError> {
     let m = module_new!("block_args_condbr")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -238,7 +238,7 @@ fn block_args_cond_br_with_args_carries_both_edges() -> Result<(), IrError> {
 fn block_args_br_arity_mismatch_errors() -> Result<(), IrError> {
     let m = module_new!("block_args_arity")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -269,7 +269,7 @@ fn block_args_br_type_mismatch_errors() -> Result<(), IrError> {
     let m = module_new!("block_args_type")?;
     let i32_ty = m.i32_type();
     let f64_ty = m.f64_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), f64_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), f64_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -296,7 +296,7 @@ fn block_args_br_type_mismatch_errors() -> Result<(), IrError> {
 fn append_block_with_named_params_names_head_phis() -> Result<(), IrError> {
     let m = module_new!("block_args_named")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 

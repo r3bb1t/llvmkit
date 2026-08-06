@@ -23,7 +23,7 @@ fn call_int_returning_function() -> Result<(), IrError> {
         .add_typed_function::<i32, (i32, i32), _>("callee", Linkage::External)?
         .as_function();
     // define i32 @caller(i32 %x, i32 %y) { %r = call i32 @callee(i32 %x, i32 %y); ret i32 %r }
-    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -53,18 +53,10 @@ fn call_void_returning_function() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let void_ty = m.void_type();
     // declare void @sink()
-    let callee_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let callee = m.add_function_dyn("sink", callee_ty, Linkage::External)?;
     // define void @caller() { call void @sink(); ret void }
-    let caller_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -87,13 +79,9 @@ fn call_builder_mixed_arg_types() -> Result<(), IrError> {
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let callee_ty = m.fn_type(
-        void_ty.as_type(),
-        [i32_ty.as_type(), ptr_ty.as_type()],
-        false,
-    );
+    let callee_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type(), ptr_ty.as_type()]);
     let callee = m.add_function_dyn("with_ptr", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let caller_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -123,7 +111,7 @@ fn call_tail() -> Result<(), IrError> {
     let callee = m
         .add_typed_function::<i32, (), _>("g", Linkage::External)?
         .as_function();
-    let caller_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let caller_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let caller = m.add_function_dyn("f", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -142,7 +130,7 @@ fn call_tail() -> Result<(), IrError> {
 fn intrinsic_call_inserts_declaration_and_emits_direct_call() -> Result<(), IrError> {
     let m = module_new!("intrinsic-call")?;
     let f32_ty = m.f32_type();
-    let caller_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
+    let caller_ty = m.function_type(f32_ty, [f32_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -179,7 +167,7 @@ fn intrinsic_call_rejects_wrong_argument_type() -> Result<(), IrError> {
     let m = module_new!("intrinsic-call-mismatch")?;
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let caller_ty = m.fn_type(m.void_type().as_type(), [i32_ty.as_type()], false);
+    let caller_ty = m.function_type(m.void_type().as_type(), [i32_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -208,11 +196,7 @@ fn call_to_pointer_returning_function() -> Result<(), IrError> {
     let callee = m
         .add_typed_function::<Ptr, (), _>("alloc_ptr", Linkage::External)?
         .as_function();
-    let caller_ty = m.fn_type(
-        ptr_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let caller_ty = m.function_type(ptr_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let caller = m.add_function_dyn("g", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -309,7 +293,7 @@ fn typed_call_builder_chains_tail() -> Result<(), IrError> {
 fn typed_build_indirect_call_derives_function_type_from_schema() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let ptr_ty = m.ptr_type(0);
-    let host_ty = m.fn_type(ptr_ty.as_type(), [ptr_ty.as_type()], false);
+    let host_ty = m.function_type(ptr_ty.as_type(), [ptr_ty.as_type()]);
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -342,9 +326,9 @@ fn typed_build_indirect_call_derives_function_type_from_schema() -> Result<(), I
 fn call_builder_rejects_too_few_arguments() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let i32_ty = m.i32_type();
-    let callee_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let callee_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -377,9 +361,9 @@ fn call_builder_rejects_wrong_argument_type() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let callee_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let callee_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(i32_ty, [f32_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty, [f32_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -413,7 +397,7 @@ fn call_builder_accepts_extra_arguments_for_vararg_callee() -> Result<(), IrErro
     let callee = m
         .add_typed_varargs_function::<i32, (i32,), _>("callee", Linkage::External)?
         .as_function();
-    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -445,17 +429,13 @@ fn indirect_call_rejects_too_many_arguments() -> Result<(), IrError> {
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let host_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let host_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let host = m.add_function_dyn("host", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let callee_ptr =
         llvmkit_ir::PointerValue::try_from(m.view(host).param(0).expect("callee ptr"))?;
-    let callee_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let extra_arg = i32_ty.const_int(1_i32);
     let err = b
         .indirect_call_dyn::<(), _, _, _, _>(callee_ty, callee_ptr, [extra_arg], "bad")

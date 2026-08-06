@@ -11,10 +11,10 @@ use llvmkit_ir::{Dyn, IrBuilder, Len, Linkage, Module, VectorValue};
 fn main() {
     let m = Module::dynamic("vec-len-mismatch");
     let i32_ty = m.i32_type();
-    let v4 = m.vector_type(i32_ty.as_type(), 4, false);
-    let v2 = m.vector_type(i32_ty.as_type(), 2, false);
+    let v4 = m.vector_type(i32_ty.as_type(), 4);
+    let v2 = m.vector_type(i32_ty.as_type(), 2);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [v4.as_type(), v2.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [v4.as_type(), v2.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

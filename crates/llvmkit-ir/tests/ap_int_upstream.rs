@@ -12,7 +12,7 @@
 //! `ApInt::new(width, value, signedness)`, sign-extending the `u64` when the
 //! signedness says so.
 
-use llvmkit_ir::{ApInt, ApIntSignedness, ApIntTruncation};
+use llvmkit_ir::{ApInt, ApIntTruncation, Signedness};
 
 /// Upstream's `APInt(width, value, isSigned)` truncates implicitly, so the
 /// ports below use `ApIntTruncation::Truncate` to match.
@@ -20,7 +20,7 @@ fn signed(bit_width: u32, value: i64) -> ApInt {
     ApInt::new(
         bit_width,
         u64::from_ne_bytes(value.to_ne_bytes()),
-        ApIntSignedness::Signed,
+        Signedness::Signed,
         ApIntTruncation::Truncate,
     )
     .expect("truncating construction cannot overflow")
@@ -30,7 +30,7 @@ fn unsigned(bit_width: u32, value: u64) -> ApInt {
     ApInt::new(
         bit_width,
         value,
-        ApIntSignedness::Unsigned,
+        Signedness::Unsigned,
         ApIntTruncation::Truncate,
     )
     .expect("truncating construction cannot overflow")
@@ -361,8 +361,8 @@ fn splat() {
 /// `UpperCase = true` default.
 #[test]
 fn to_string() {
-    let unsigned_ = ApIntSignedness::Unsigned;
-    let signed_ = ApIntSignedness::Signed;
+    let unsigned_ = Signedness::Unsigned;
+    let signed_ = Signedness::Signed;
 
     assert_eq!(unsigned(8, 0).to_string_radix(2, unsigned_), "0");
     assert_eq!(unsigned(8, 0).to_string_radix(8, unsigned_), "0");
@@ -399,7 +399,7 @@ fn from_string_round_trips_to_string() {
     for radix in [2u8, 8, 10, 16, 36] {
         for value in [0u64, 1, 2, 7, 8, 15, 16, 100, 254, 255] {
             let original = unsigned(8, value);
-            let text = original.to_string_radix(radix, ApIntSignedness::Unsigned);
+            let text = original.to_string_radix(radix, Signedness::Unsigned);
             let parsed = ApInt::from_string(8, &text, radix)
                 .unwrap_or_else(|e| panic!("radix {radix} {text:?} must parse: {e}"));
             assert_eq!(

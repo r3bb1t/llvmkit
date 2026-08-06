@@ -22,11 +22,9 @@ fn main() {
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
+    let fn_ty = m.function_type(
         void_ty.as_type(),
-        [i32_ty.as_type(), i64_ty.as_type()],
-        false,
-    );
+        [i32_ty.as_type(), i64_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let dest = m.view(f).append_basic_block(&m, "dest");

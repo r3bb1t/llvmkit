@@ -21,6 +21,7 @@
 //!   conservative direction.
 
 use crate::ApInt;
+use crate::ap_int::Signedness;
 use crate::assumptions::{single_predecessor, terminator_of_block};
 use crate::cmp_predicate::{CmpPredicate, IntPredicate, PredicateWithSameSign};
 use crate::constant::ConstantData;
@@ -366,7 +367,16 @@ impl<'ctx, B: ModuleBrand + 'ctx> CompareOperand<'ctx, B> {
             Self::Value(value) => {
                 let query: ValueTrackingQuery<'_, 'ctx, B> = ValueTrackingQuery::new(data_layout)
                     .with_max_depth(MAX_ANALYSIS_RECURSION_DEPTH.saturating_sub(1));
-                compute_constant_range(*value, for_signed, &query).ok()
+                compute_constant_range(
+                    *value,
+                    if for_signed {
+                        Signedness::Signed
+                    } else {
+                        Signedness::Unsigned
+                    },
+                    &query,
+                )
+                .ok()
             }
             Self::Literal(bits) => Some(ConstantRange::single(bits.clone())),
         }

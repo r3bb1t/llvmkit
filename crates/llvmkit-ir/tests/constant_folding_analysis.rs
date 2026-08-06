@@ -182,7 +182,7 @@ fn fp_vector_fadd_folds_elementwise_through_analysis_path() -> Result<(), IrErro
     let dl = DataLayout::default();
     let f32_ty = m.f32_type();
     let i64_ty = m.i64_type();
-    let vec_ty = m.vector_type(f32_ty.as_type(), 2, false);
+    let vec_ty = m.vector_type(f32_ty.as_type(), 2);
 
     let lhs = vec_ty
         .const_vector::<ConstantFloatValue<'_, f32, _>, _>([
@@ -523,7 +523,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
         .is_some()
     );
     assert_eq!(
-        constant_fold_integer_cast(c7, i16_ty.as_type(), false, &dl)?,
+        constant_fold_integer_cast(c7, i16_ty.as_type(), llvmkit_ir::Signedness::Unsigned, &dl)?,
         Some(i16_ty.const_int(7_i16).as_constant())
     );
     assert_eq!(
@@ -565,7 +565,7 @@ fn public_analysis_constant_folding_api_surface_is_usable() -> Result<(), IrErro
     assert_eq!(signed_trunc, i8_ty.const_int(127_i8).as_constant());
     assert_eq!(signed_flags, PreservedCastFlags::none());
 
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("api_fold_inst", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -609,7 +609,7 @@ fn freeze_folds_only_non_undef_non_poison_constants() -> Result<(), IrError> {
     let m = module_new!("analysis-freeze")?;
     let dl = DataLayout::default();
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("freeze_fold", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -687,7 +687,7 @@ fn non_integral_pointer_load_through_bitcast_declines() -> Result<(), IrError> {
     let ptr1_ty = m.ptr_type(1);
     let g = m
         .global_builder("ni_global", i8_ty.as_type())
-        .constant(true)
+        .constant()
         .address_space(1)
         .initializer(i8_ty.const_int(0_i8))
         .build()?;
@@ -721,7 +721,7 @@ fn function_denormal_f32_attribute_overrides_generic_mode() -> Result<(), IrErro
     let m = module_new!("analysis-denormal-attrs")?;
     let dl = DataLayout::default();
     let f32_ty = m.f32_type();
-    let fn_ty = m.fn_type_no_params(f32_ty, false);
+    let fn_ty = m.function_type_no_parameters(f32_ty);
     let f = m.add_function_dyn("denormal_attr", fn_ty, Linkage::External)?;
     m.view(f)
         .set_string_attribute(&m, AttrIndex::Function, "denormal-fp-math", "ieee,ieee");
@@ -756,7 +756,7 @@ fn function_denormal_attribute_group_overrides_generic_mode() -> Result<(), IrEr
     let m = module_new!("analysis-denormal-attr-group")?;
     let dl = DataLayout::default();
     let f32_ty = m.f32_type();
-    let fn_ty = m.fn_type_no_params(f32_ty, false);
+    let fn_ty = m.function_type_no_parameters(f32_ty);
     let mut group = AttributeStorage::new();
     group.add(
         AttrIndex::Function,
@@ -857,7 +857,7 @@ fn deny_declines_fp_binop_with_nsz_flag() -> Result<(), IrError> {
     let m = module_new!("analysis-fp-determinism-nsz")?;
     let dl = DataLayout::default();
     let f32_ty = m.f32_type();
-    let fn_ty = m.fn_type_no_params(f32_ty, false);
+    let fn_ty = m.function_type_no_parameters(f32_ty);
     let f = m.add_function_dyn("nsz_fadd", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);

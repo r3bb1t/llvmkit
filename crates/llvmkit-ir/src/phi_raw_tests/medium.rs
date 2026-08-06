@@ -18,7 +18,7 @@ use crate::{Dyn, IrBuilder, IrError, Linkage};
 fn build_int_phi_two_predecessors_emits_phi() -> Result<(), IrError> {
     let m = crate::module_new!("p")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("phi2", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let other = m.view(f).append_basic_block(&m, "other");
@@ -61,7 +61,7 @@ fn phi_with_post_creation_add_incoming() -> Result<(), IrError> {
     // emit `ret`. Mirrors the factorial-loop flow.
     let m = crate::module_new!("p")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("late", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let other = m.view(f).append_basic_block(&m, "other");

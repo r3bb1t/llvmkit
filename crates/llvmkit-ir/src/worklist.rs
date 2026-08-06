@@ -148,7 +148,7 @@ mod tests {
     fn push_dedups_and_pop_is_lifo() -> Result<(), IrError> {
         let m = crate::module_new!("wl-basic")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -183,7 +183,7 @@ mod tests {
     fn remove_pulls_from_stack_and_set() -> Result<(), IrError> {
         let m = crate::module_new!("wl-remove")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -212,7 +212,7 @@ mod tests {
     fn pop_skips_non_instruction_id_without_panicking() -> Result<(), IrError> {
         let m = crate::module_new!("wl-non-inst")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -257,7 +257,7 @@ mod tests {
     fn pop_skips_terminator_id() -> Result<(), IrError> {
         let m = crate::module_new!("wl-term")?;
         let i32_ty = m.i32_type();
-        let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);

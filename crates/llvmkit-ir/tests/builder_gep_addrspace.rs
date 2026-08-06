@@ -18,7 +18,7 @@ fn gep_result_preserves_base_pointer_address_space() -> Result<(), IrError> {
     let m = module_new!("gep_addrspace")?;
     let i32_ty = m.i32_type();
     let ptr_as33 = m.ptr_type(33);
-    let fn_ty = m.fn_type(m.void_type().as_type(), [ptr_as33.as_type()], false);
+    let fn_ty = m.function_type(m.void_type().as_type(), [ptr_as33.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

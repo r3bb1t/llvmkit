@@ -486,8 +486,9 @@ impl<B: ModuleBrand> SpecializedMetadataNode<B> {
         }
     }
 
-    pub fn distinct(mut self, distinct: bool) -> Self {
-        self.distinct = distinct;
+    /// Mark the node `distinct`. Default off.
+    pub fn distinct(mut self) -> Self {
+        self.distinct = true;
         self
     }
 

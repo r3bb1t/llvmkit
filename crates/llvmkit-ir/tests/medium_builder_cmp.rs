@@ -17,7 +17,7 @@ fn build_eq_module() -> Result<String, IrError> {
     let m = Module::dynamic("c");
     let bool_ty = m.bool_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(bool_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("is_zero", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -43,7 +43,7 @@ fn build_int_cmp_slt_emits_icmp_slt() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let bool_ty = m.bool_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("lt", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -68,7 +68,7 @@ fn build_int_cmp_returns_i1_for_chaining() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let bool_ty = m.bool_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(bool_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("ne", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -85,7 +85,7 @@ fn build_int_cmp_ule_emits_icmp_ule() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let bool_ty = m.bool_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("ule", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -105,7 +105,7 @@ fn build_int_cmp_ule_emits_icmp_ule() -> Result<(), IrError> {
 fn default_constant_folder_folds_integer_compare() -> Result<(), IrError> {
     let m = module_new!("cmp-fold")?;
     let bool_ty = m.bool_type();
-    let fn_ty = m.fn_type_no_params(bool_ty, false);
+    let fn_ty = m.function_type_no_parameters(bool_ty);
     let f = m.add_function_dyn("cmp", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -130,7 +130,7 @@ fn typed_icmp_samesign_prints_flag() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let bool_ty = m.bool_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(bool_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("test_icmp_samesign", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

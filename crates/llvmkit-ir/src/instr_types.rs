@@ -1235,6 +1235,13 @@ macro_rules! decl_overflowing_flags {
             #[inline]
             #[must_use]
             pub const fn nsw(mut self) -> Self { self.nsw = true; self }
+
+            // Crate-internal per the no-bool-params convention: analyses
+            // holding runtime flag bits (value_tracking) lift them here.
+            #[inline]
+            pub(crate) const fn from_parts(nuw: bool, nsw: bool) -> Self {
+                Self { nuw, nsw }
+            }
         }
     };
 }
@@ -1250,6 +1257,12 @@ macro_rules! decl_exact_flags {
         impl $name {
             #[inline]
             pub const fn new() -> Self { Self { exact: false } }
+
+            // Crate-internal per the no-bool-params convention.
+            #[inline]
+            pub(crate) const fn from_parts(exact: bool) -> Self {
+                Self { exact }
+            }
 
             /// Set the `exact` flag.
             #[inline]
@@ -1341,8 +1354,8 @@ impl_exact_flags_writer!(AShrFlags);
 /// convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct OverflowFlags {
-    nuw: bool,
-    nsw: bool,
+    pub(crate) nuw: bool,
+    pub(crate) nsw: bool,
 }
 
 impl OverflowFlags {

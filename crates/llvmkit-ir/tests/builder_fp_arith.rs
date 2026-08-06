@@ -19,7 +19,7 @@ use llvmkit_ir::{
 fn build_f32_fn(op: &str) -> Result<String, IrError> {
     let m = Module::dynamic("fp");
     let f32_ty = m.f32_type();
-    let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type(), f32_ty.as_type()], false);
+    let fn_ty = m.function_type(f32_ty, [f32_ty.as_type(), f32_ty.as_type()]);
     let f = m.add_function_dyn(op, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -89,7 +89,7 @@ fn frem_f32() -> Result<(), IrError> {
 fn fadd_f64() -> Result<(), IrError> {
     let m = module_new!("fp")?;
     let f64_ty = m.f64_type();
-    let fn_ty = m.fn_type(f64_ty, [f64_ty.as_type(), f64_ty.as_type()], false);
+    let fn_ty = m.function_type(f64_ty, [f64_ty.as_type(), f64_ty.as_type()]);
     let f = m.add_function_dyn("fadd", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -109,7 +109,7 @@ fn fadd_f64() -> Result<(), IrError> {
 fn default_constant_folder_folds_fadd_to_constant() -> Result<(), IrError> {
     let m = module_new!("fp-fold")?;
     let ty = m.f64_type();
-    let fn_ty = m.fn_type(ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("sum", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

@@ -14,11 +14,11 @@
 
 use llvmkit_asmparser::parser;
 use llvmkit_ir::{
-    ConstantRange, DynBrand, Module, OverflowResult, Unverified, Value, ValueTrackingQuery,
-    compute_constant_range_including_known_bits, compute_overflow_for_signed_add,
-    compute_overflow_for_signed_mul, compute_overflow_for_signed_sub,
-    compute_overflow_for_unsigned_add, compute_overflow_for_unsigned_mul,
-    compute_overflow_for_unsigned_sub,
+    ConstantRange, DynBrand, Module, OverflowResult, Signedness, Unverified, Value,
+    ValueTrackingQuery, compute_constant_range_including_known_bits,
+    compute_overflow_for_signed_add, compute_overflow_for_signed_mul,
+    compute_overflow_for_signed_sub, compute_overflow_for_unsigned_add,
+    compute_overflow_for_unsigned_mul, compute_overflow_for_unsigned_sub,
 };
 
 fn parse(source: &str) -> Module<DynBrand, Unverified> {
@@ -72,8 +72,12 @@ fn masking_narrows_the_computed_range() {
     let data_layout = module.data_layout();
     let query = ValueTrackingQuery::new(&data_layout);
 
-    let a = compute_constant_range_including_known_bits(named(&module, "a"), false, &query)
-        .expect("range");
+    let a = compute_constant_range_including_known_bits(
+        named(&module, "a"),
+        Signedness::Unsigned,
+        &query,
+    )
+    .expect("range");
     // `x & 15` cannot exceed 15.
     assert!(
         a.unsigned_max().try_zext_u64() <= Some(15),
@@ -81,8 +85,12 @@ fn masking_narrows_the_computed_range() {
         a.unsigned_max()
     );
 
-    let b = compute_constant_range_including_known_bits(named(&module, "b"), false, &query)
-        .expect("range");
+    let b = compute_constant_range_including_known_bits(
+        named(&module, "b"),
+        Signedness::Unsigned,
+        &query,
+    )
+    .expect("range");
     assert!(
         b.unsigned_max().try_zext_u64() <= Some(3),
         "%b = y & 3 should be bounded by 3, got max {:?}",
@@ -270,8 +278,12 @@ define void @test() {
     );
     let data_layout = module.data_layout();
     let query = ValueTrackingQuery::new(&data_layout);
-    let range = compute_constant_range_including_known_bits(named(&module, "c"), false, &query)
-        .expect("range");
+    let range = compute_constant_range_including_known_bits(
+        named(&module, "c"),
+        Signedness::Unsigned,
+        &query,
+    )
+    .expect("range");
     assert!(
         range.is_single_element(),
         "a folded constant should be a single-element range, got {range:?}"

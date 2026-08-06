@@ -35,7 +35,7 @@ impl<B: ModuleBrand> FunctionPass<B> for DcePass {
         // the rung's CFG-preserved floor otherwise.
         let patch = cx.mutate();
         let scope = patch.worklist();
-        while let Some(inst) = scope.next() {
+        while let Some(inst) = scope.step() {
             if is_trivially_dead(&inst.as_view()) {
                 patch.erase(&inst); // auto-pushes operand-defs, self-removes
             }

@@ -9,7 +9,7 @@ fn main() {
     let m = Module::dynamic("retained-indirectbr");
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty, [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty, [ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let dest = m.view(f).append_basic_block(&m, "dest");

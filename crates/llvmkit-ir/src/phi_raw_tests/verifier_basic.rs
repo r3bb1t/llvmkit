@@ -19,7 +19,7 @@ use crate::{Dyn, IntValue, IrBuilder, IrError, Linkage, VerifierRule};
 fn verify_phi_predecessors_through_switch_passes() -> Result<(), IrError> {
     let m = crate::module_new!("phi_switch_ok")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
@@ -51,7 +51,7 @@ fn verify_phi_predecessors_through_switch_passes() -> Result<(), IrError> {
 fn verify_phi_predecessors_through_switch_rejects_missing_edge() -> Result<(), IrError> {
     let m = crate::module_new!("phi_switch_bad")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
@@ -95,9 +95,9 @@ fn verify_phi_predecessors_through_invoke_passes() -> Result<(), IrError> {
     let m = crate::module_new!("phi_invoke_ok")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let callee_ty = m.fn_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new(), false);
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
@@ -137,9 +137,9 @@ fn verify_phi_predecessors_through_invoke_rejects_wrong_block() -> Result<(), Ir
     let m = crate::module_new!("phi_invoke_bad")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let callee_ty = m.fn_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new(), false);
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
@@ -195,9 +195,9 @@ fn verify_phi_predecessors_through_callbr_passes() -> Result<(), IrError> {
     let m = crate::module_new!("phi_callbr_ok")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let callee_ty = m.fn_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new(), false);
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
@@ -233,9 +233,9 @@ fn verify_phi_predecessors_through_callbr_rejects_missing_edge() -> Result<(), I
     let m = crate::module_new!("phi_callbr_bad")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let callee_ty = m.fn_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new(), false);
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<crate::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let join = m.view(f).append_basic_block(&m, "join");
@@ -283,7 +283,7 @@ fn verify_phi_incoming_edge_dominance_fails() -> Result<(), IrError> {
     let m = crate::module_new!("dom_phi_bad")?;
     let i32_ty = m.i32_type();
     let bool_ty = m.bool_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let then_bb = m.view(f).append_basic_block(&m, "then");

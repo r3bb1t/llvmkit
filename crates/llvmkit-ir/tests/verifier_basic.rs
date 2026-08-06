@@ -195,13 +195,9 @@ fn intrinsic_declaration_used_as_non_callee_operand_is_rejected() -> Result<(), 
     let m = module_new!("intrinsic-noncallee-use")?;
     let void_ty = m.void_type();
     let intrinsic = m.get_or_insert_intrinsic_declaration_by_name("llvm.bswap.i32")?;
-    let sink_ty = m.fn_type(
-        void_ty.as_type(),
-        [m.view(intrinsic).signature().as_type()],
-        false,
-    );
+    let sink_ty = m.function_type(void_ty.as_type(), [m.view(intrinsic).signature().as_type()]);
     let sink = m.add_function_dyn("sink", sink_ty, Linkage::External)?;
-    let caller_ty = m.fn_type_no_params(void_ty.as_type(), false);
+    let caller_ty = m.function_type_no_parameters(void_ty.as_type());
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -227,7 +223,7 @@ fn direct_represented_intrinsic_declaration_is_rejected() -> Result<(), IrError>
     let m = module_new!("intrinsic_mismatch")?;
     let i32_ty = m.i32_type().as_type();
     let i64_ty = m.i64_type().as_type();
-    let fn_ty = m.fn_type(i64_ty, [i32_ty], false);
+    let fn_ty = m.function_type(i64_ty, [i32_ty]);
     let err = m
         .add_function_dyn("llvm.bswap.i32", fn_ty, Linkage::External)
         .expect_err("direct intrinsic declaration is rejected");
@@ -248,7 +244,7 @@ fn direct_represented_intrinsic_declaration_is_rejected() -> Result<(), IrError>
 fn verify_identity_function() -> Result<(), IrError> {
     let m = module_new!("id")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("id", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -266,7 +262,7 @@ fn verify_identity_function() -> Result<(), IrError> {
 fn verify_int_arithmetic_full() -> Result<(), IrError> {
     let m = module_new!("ia")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("k", fn_ty, Linkage::External)?;
     let bb = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
@@ -298,7 +294,7 @@ fn verify_int_arithmetic_full() -> Result<(), IrError> {
 fn verify_float_arithmetic_full() -> Result<(), IrError> {
     let m = module_new!("fa")?;
     let f32_ty = m.f32_type();
-    let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type(), f32_ty.as_type()], false);
+    let fn_ty = m.function_type(f32_ty, [f32_ty.as_type(), f32_ty.as_type()]);
     let f = m.add_function_dyn("k", fn_ty, Linkage::External)?;
     let bb = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(bb);
@@ -329,7 +325,7 @@ fn verify_casts_full() -> Result<(), IrError> {
     let f32_ty = m.f32_type();
     let f64_ty = m.f64_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(
+    let fn_ty = m.function_type(
         i64_ty,
         [
             i64_ty.as_type(),
@@ -337,7 +333,6 @@ fn verify_casts_full() -> Result<(), IrError> {
             ptr_ty.as_type(),
             m.i8_type().as_type(),
         ],
-        false,
     );
     let f = m.add_function_dyn("c", fn_ty, Linkage::External)?;
     let bb = m.view(f).append_basic_block(&m, "entry");
@@ -376,7 +371,7 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
     let m = module_new!("mem")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("k", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let then_bb = m.view(f).append_basic_block(&m, "then");
@@ -430,7 +425,7 @@ fn verify_memory_gep_select_control() -> Result<(), IrError> {
 fn verify_call() -> Result<(), IrError> {
     let m = module_new!("c")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let callee = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
     let cb = m.view(callee).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(cb);
@@ -465,7 +460,7 @@ fn verify_void_return_and_unreachable() -> Result<(), IrError> {
     let m = module_new!("v")?;
     let void = m.void_type();
     let i1 = m.bool_type();
-    let fn_ty = m.fn_type(void, [i1.as_type()], false);
+    let fn_ty = m.function_type(void, [i1.as_type()]);
     let f = m.add_function_dyn("trap", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let then_bb = m.view(f).append_basic_block(&m, "then");
@@ -497,7 +492,7 @@ fn verify_void_return_and_unreachable() -> Result<(), IrError> {
 fn verify_consuming_returns_branded_module() -> Result<(), IrError> {
     let m = module_new!("brand")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("k", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -540,7 +535,7 @@ fn verifier_rule_matchable() {
 fn verify_function_with_empty_block_fails_missing_terminator() -> Result<(), IrError> {
     let m = module_new!("nt")?;
     let void = m.void_type();
-    let fn_ty = m.fn_type_no_params(void, false);
+    let fn_ty = m.function_type_no_parameters(void);
     let f = m.add_function_dyn("empty", fn_ty, Linkage::External)?;
     let _entry = m.view(f).append_basic_block(&m, "entry");
     // Deliberately no IrBuilder calls -- block stays empty.
@@ -566,7 +561,7 @@ fn verify_function_with_empty_block_fails_missing_terminator() -> Result<(), IrE
 fn verify_cross_block_dominated_use_passes() -> Result<(), IrError> {
     let m = module_new!("dom_use_ok")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let next = m.view(f).append_basic_block(&m, "next");
@@ -591,7 +586,7 @@ fn verify_cross_block_branch_value_used_after_join_fails() -> Result<(), IrError
     let m = module_new!("dom_use_bad")?;
     let i32_ty = m.i32_type();
     let bool_ty = m.bool_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let then_bb = m.view(f).append_basic_block(&m, "then");
@@ -640,7 +635,7 @@ fn verify_phi_incoming_edge_dominance_passes() -> Result<(), IrError> {
     let m = module_new!("dom_phi_ok")?;
     let i32_ty = m.i32_type();
     let bool_ty = m.bool_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let then_bb = m.view(f).append_basic_block(&m, "then");
@@ -677,9 +672,9 @@ fn verify_phi_incoming_edge_dominance_passes() -> Result<(), IrError> {
 fn verify_invoke_result_used_on_unwind_edge_fails() -> Result<(), IrError> {
     let m = module_new!("dom_invoke_bad")?;
     let i32_ty = m.i32_type();
-    let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let callee_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let normal = m.view(f).append_basic_block(&m, "normal");

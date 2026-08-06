@@ -728,12 +728,14 @@ fn shuffle_result_type<'ctx, B: ModuleBrand + 'ctx>(
         message: "shufflevector mask too large",
     })?;
     let elem_ty = Type::new(elem, lhs_ty.module());
-    Ok(Some(
+    Ok(Some(if scalable {
         lhs_ty
             .module()
-            .vector_type(elem_ty, lanes, scalable)
-            .as_type(),
-    ))
+            .scalable_vector_type(elem_ty, lanes)
+            .as_type()
+    } else {
+        lhs_ty.module().vector_type(elem_ty, lanes).as_type()
+    }))
 }
 
 fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
@@ -759,10 +761,13 @@ fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
     let lanes = u32::try_from(mask.len()).map_err(|_| IrError::InvalidOperation {
         message: "shufflevector mask too large",
     })?;
-    ModuleView::<B>::new(module.module())
-        .vector_type(i32_ty.as_type(), lanes, scalable)
-        .const_vector(elements)
-        .map(|constant| constant.as_constant())
+    (if scalable {
+        ModuleView::<B>::new(module.module()).scalable_vector_type(i32_ty.as_type(), lanes)
+    } else {
+        ModuleView::<B>::new(module.module()).vector_type(i32_ty.as_type(), lanes)
+    })
+    .const_vector(elements)
+    .map(|constant| constant.as_constant())
 }
 
 fn type_contains_scalable_vector<B: ModuleBrand>(ty: Type<'_, B>) -> bool {

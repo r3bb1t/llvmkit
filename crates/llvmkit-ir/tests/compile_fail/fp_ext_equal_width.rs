@@ -14,7 +14,7 @@ fn main() -> Result<(), IrError> {
     let m = Module::dynamic("m");
     let fp128_ty = m.fp128_type();
     let ppc_ty = m.ppc_fp128_type();
-    let fn_ty = m.fn_type(ppc_ty, [fp128_ty.as_type()], false);
+    let fn_ty = m.function_type(ppc_ty, [fp128_ty.as_type()]);
     let f = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = llvmkit_ir::IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);

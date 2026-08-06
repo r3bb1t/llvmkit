@@ -60,7 +60,7 @@ use super::module::{
 use super::sync_scope::SyncScope;
 use super::r#type::{StructBody, Type, TypeData, TypeSlot};
 use super::value::{IsValue, Value, ValueKindData, ValueSlot};
-use super::{ApInt, ApIntSignedness, AttrIndex};
+use super::{ApInt, AttrIndex, Signedness};
 
 // --------------------------------------------------------------------------
 // SlotTracker
@@ -2442,8 +2442,8 @@ fn fmt_attribute_stored<'ctx, B: ModuleBrand + 'ctx>(
             f,
             "range({} {}, {})",
             Type::new(*ty, module),
-            lower.to_string_radix(10, ApIntSignedness::Signed),
-            upper.to_string_radix(10, ApIntSignedness::Signed)
+            lower.to_string_radix(10, Signedness::Signed),
+            upper.to_string_radix(10, Signedness::Signed)
         ),
         AttributeStored::Memory(effects) => write!(f, "{effects}"),
         AttributeStored::NoFpClass(_) => write!(f, "{attr}"),

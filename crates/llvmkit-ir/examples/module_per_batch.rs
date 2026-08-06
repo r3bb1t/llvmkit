@@ -44,7 +44,7 @@ pub fn compile_batch<B: ModuleBrand>(
     n: i32,
 ) -> Result<Module<B, Verified>, IrError> {
     let i32_ty = module.i32_type();
-    let fn_ty = module.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = module.function_type(i32_ty, [i32_ty.as_type()]);
     let f = module.add_function_dyn("batch", fn_ty, Linkage::External)?;
     let entry = module.view(f).append_basic_block(&module, "entry");
 

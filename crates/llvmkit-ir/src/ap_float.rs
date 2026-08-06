@@ -6,7 +6,7 @@
 //! narrow through host `f64`; narrower helper-only operations are still ported
 //! incrementally.
 
-use crate::ap_int::{ApInt, ApIntSignedness};
+use crate::ap_int::{ApInt, Signedness};
 use crate::{IrError, IrResult};
 use core::cmp::Ordering;
 
@@ -770,7 +770,7 @@ impl ApFloat {
     pub fn convert_to_integer(
         &self,
         width: u32,
-        signedness: ApIntSignedness,
+        signedness: Signedness,
         rounding: RoundingMode,
     ) -> (ApInt, ApFloatStatus, Exactness) {
         let (value, status, exact) =
@@ -784,8 +784,8 @@ impl ApFloat {
     /// The `fs == opInvalidOp` tail of `IEEEFloat::convertToInteger`: set the
     /// low `bits` bits, then move the single sign bit up for a negative
     /// signed result.
-    fn saturated_integer(&self, width: u32, signedness: ApIntSignedness) -> ApInt {
-        let is_signed = matches!(signedness, ApIntSignedness::Signed);
+    fn saturated_integer(&self, width: u32, signedness: Signedness) -> ApInt {
+        let is_signed = matches!(signedness, Signedness::Signed);
         if self.is_nan() || width == 0 {
             return ApInt::zero(width);
         }
@@ -806,7 +806,7 @@ impl ApFloat {
     fn convert_to_integer_unsaturated(
         &self,
         width: u32,
-        signedness: ApIntSignedness,
+        signedness: Signedness,
         rounding: RoundingMode,
     ) -> (ApInt, ApFloatStatus, Exactness) {
         if self.is_nan() || self.is_infinity() {
@@ -833,7 +833,7 @@ impl ApFloat {
     fn convert_binary_float_to_integer(
         &self,
         width: u32,
-        signedness: ApIntSignedness,
+        signedness: Signedness,
         rounding: RoundingMode,
     ) -> Option<(ApInt, ApFloatStatus, Exactness)> {
         let components = self.binary_components()?;
@@ -887,7 +887,7 @@ impl ApFloat {
             ));
         }
         rounded_magnitude = ApInt::from_words(width, rounded_magnitude.words());
-        let int = if matches!(signedness, ApIntSignedness::Signed) && components.negative {
+        let int = if matches!(signedness, Signedness::Signed) && components.negative {
             rounded_magnitude.negate()
         } else {
             rounded_magnitude
@@ -906,7 +906,7 @@ impl ApFloat {
     fn convert_ppc_double_double_to_integer(
         &self,
         width: u32,
-        signedness: ApIntSignedness,
+        signedness: Signedness,
         rounding: RoundingMode,
     ) -> Option<(ApInt, ApFloatStatus, Exactness)> {
         if !matches!(self.semantics, ApFloatSemantics::PpcDoubleDouble) {
@@ -1004,7 +1004,7 @@ impl ApFloat {
             ));
         }
         rounded_magnitude = ApInt::from_words(width, rounded_magnitude.words());
-        let int = if matches!(signedness, ApIntSignedness::Signed) && result_negative {
+        let int = if matches!(signedness, Signedness::Signed) && result_negative {
             rounded_magnitude.negate()
         } else {
             rounded_magnitude
@@ -1083,10 +1083,10 @@ impl ApFloat {
     pub fn convert_from_ap_int(
         semantics: ApFloatSemantics,
         input: &ApInt,
-        signedness: ApIntSignedness,
+        signedness: Signedness,
         rounding: RoundingMode,
     ) -> (ApFloat, ApFloatStatus) {
-        let negative = matches!(signedness, ApIntSignedness::Signed) && input.is_negative();
+        let negative = matches!(signedness, Signedness::Signed) && input.is_negative();
         let magnitude = if negative {
             input.negate()
         } else {
@@ -1335,7 +1335,7 @@ impl ApFloat {
         if matches!(self.semantics, ApFloatSemantics::PpcDoubleDouble) {
             let Some((_, status, exact)) = self.convert_ppc_double_double_to_integer(
                 2048,
-                ApIntSignedness::Signed,
+                Signedness::Signed,
                 RoundingMode::TowardZero,
             ) else {
                 return false;
@@ -3095,7 +3095,7 @@ fn round_power_of_two_div(
 fn integer_magnitude_out_of_range(
     magnitude: &ApInt,
     width: u32,
-    signedness: ApIntSignedness,
+    signedness: Signedness,
     negative: bool,
 ) -> bool {
     if width == 0 {
@@ -3105,8 +3105,8 @@ fn integer_magnitude_out_of_range(
         return false;
     }
     match signedness {
-        ApIntSignedness::Unsigned => negative || magnitude.active_bits() > width,
-        ApIntSignedness::Signed => {
+        Signedness::Unsigned => negative || magnitude.active_bits() > width,
+        Signedness::Signed => {
             let Some(limit_bit) = width.checked_sub(1) else {
                 return true;
             };

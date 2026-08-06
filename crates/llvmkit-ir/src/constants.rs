@@ -610,13 +610,8 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> IntType<'ctx, W, B> {
     pub fn const_int_raw(
         self,
         value: u64,
-        sign_extend: bool,
+        signedness: crate::Signedness,
     ) -> IrResult<ConstantIntValue<'ctx, W, B>> {
-        let signedness = if sign_extend {
-            crate::ApIntSignedness::Signed
-        } else {
-            crate::ApIntSignedness::Unsigned
-        };
         let ap = ApInt::new(
             self.bit_width(),
             value,

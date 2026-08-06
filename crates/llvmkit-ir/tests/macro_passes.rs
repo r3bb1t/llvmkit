@@ -36,7 +36,7 @@ fn build_dead_add<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, Unverified>,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let b = IrBuilder::with_folder(m, NoFolder).position_at_end(entry);
@@ -51,7 +51,7 @@ fn build_ret_i32<'ctx, B: ModuleBrand + 'ctx>(
     m: &'ctx Module<B, Unverified>,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);

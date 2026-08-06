@@ -24,6 +24,36 @@ bullet below names its wave.
 
 #### Changed
 
+- **Breaking (W5): booleans become methods, flag structs, and `Signedness`
+  (C-CUSTOM-TYPE).** Type constructors split instead of taking mode bools:
+  `vector_type(elem, n)` / `scalable_vector_type(elem, n)` (was
+  `vector_type(elem, n, scalable)`), `struct_type(elements)` /
+  `packed_struct_type(elements)`, and — fixing the `fn_` abbreviation too —
+  `function_type(ret, params)` / `variadic_function_type(ret, params)`
+  (+ `_no_parameters` twins; were `fn_type(.., is_var_arg)` /
+  `fn_type_no_params`). Builder toggles are zero-arg: `GlobalBuilder::
+  constant()` / `externally_initialized()` (plus a `set_/clear_` pair on the
+  `GlobalVariable` view), `InlineAsmOptions::side_effects()` /
+  `align_stack()` / `unwind()` (the odd `with_can_unwind(bool)` is gone),
+  `SpecializedMetadataNode::distinct()`, and `SpeculationOptions::
+  without_variable_info()` / `ignoring_ub_implying_attrs()` (upstream's
+  defaults are the defaults; the pair is the clearing side).
+  `is_safe_to_speculatively_execute_with_variable_replaced` takes
+  `SpeculationOptions` instead of a bare bool. `ApIntSignedness` is renamed
+  `Signedness` and replaces every `is_signed` / `sign_extend` /
+  `for_signed` bool (`const_int_raw`, `constant_fold_integer_cast`,
+  `ConstantRange::from_known_bits`, `compute_constant_range{,_including_
+  known_bits}`). `KnownBits` transfer functions take the per-opcode flag
+  structs the crate already ships — `add_with_flags(.., AddFlags)`,
+  `sub_with_flags(.., SubFlags)`, `shl_with_flags(.., ShlFlags,
+  ShiftAmountKnowledge)`, `lshr`/`ashr` with `LShrFlags`/`AShrFlags`,
+  `udiv`/`sdiv_with_exact(.., UDivFlags/SDivFlags)`, and
+  `compute_for_add_sub(AddSubOperation, OverflowFlags, ..)` — which also
+  kills a live footgun: `shl_with_flags` used to take `(nuw, nsw)` in the
+  opposite order from `add_with_flags`'s `(nsw, nuw)`. New public enums:
+  `AddSubOperation`, `ShiftAmountKnowledge` (an analysis-side fact no `.ll`
+  keyword spells, deliberately not part of the IR flag structs).
+
 - **Breaking (W4): signature generics tell the truth about ownership
   (C-GENERIC).** Names that are stored take `Into<String>` — the
   `add_global` family (was `AsRef<str>` + a hidden copy), the chainable

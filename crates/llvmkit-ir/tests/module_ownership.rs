@@ -115,7 +115,7 @@ fn a_half_authored_module_is_finished_on_another_thread() -> Result<(), IrError>
 
     // --- thread A: declare, open a block, emit part of the body ---
     let i32_ty = module.i32_type();
-    let fn_ty = module.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = module.function_type(i32_ty, [i32_ty.as_type()]);
     let f: FunctionId<Dyn, Handoff> = module.add_function_dyn("half", fn_ty, Linkage::External)?;
     let entry: BlockId<Dyn, Handoff> = module.view(f).append_basic_block(&module, "entry").id();
 
@@ -166,7 +166,7 @@ fn splitting_authoring_across_threads_emits_identical_ir() -> Result<(), IrError
 
     fn author_first_half(module: &Module<DynBrand, Unverified>) -> Result<Resume, IrError> {
         let i32_ty = module.i32_type();
-        let fn_ty = module.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let fn_ty = module.function_type(i32_ty, [i32_ty.as_type()]);
         let f = module.add_function_dyn("split", fn_ty, Linkage::External)?;
         let entry = module.view(f).append_basic_block(module, "entry").id();
         let builder = IrBuilder::new_for::<Dyn>(module).position_at_end_dyn(entry)?;
@@ -322,7 +322,7 @@ fn a_stale_id_from_a_dead_generation_is_refused_by_its_successor() -> Result<(),
     let (stale, stale_block): (FunctionId<Dyn, Generation>, BlockId<Dyn, Generation>) = {
         let gen1 = Module::branded::<Generation, _>("gen1")?;
         let void_ty = gen1.void_type();
-        let fn_ty = gen1.fn_type_no_params(void_ty, false);
+        let fn_ty = gen1.function_type_no_parameters(void_ty);
         let f = gen1.add_function_dyn("predecessor", fn_ty, Linkage::External)?;
         let bb = gen1.view(f).append_basic_block(&gen1, "entry").id();
         (f, bb)
@@ -334,7 +334,7 @@ fn a_stale_id_from_a_dead_generation_is_refused_by_its_successor() -> Result<(),
     // Occupy the same arena slot shape, so a tag-blind resolver would find
     // *something* plausible rather than an empty slot.
     let void_ty = gen2.void_type();
-    let fn_ty = gen2.fn_type_no_params(void_ty, false);
+    let fn_ty = gen2.function_type_no_parameters(void_ty);
     let fresh = gen2.add_function_dyn("successor", fn_ty, Linkage::External)?;
     let _fresh_block = gen2.view(fresh).append_basic_block(&gen2, "entry");
 
@@ -367,7 +367,7 @@ fn viewing_a_stale_id_panics_rather_than_mis_resolving() {
     let stale: FunctionId<Dyn, GenerationPanic> = {
         let gen1 = Module::branded::<GenerationPanic, _>("gen1").expect("fresh brand");
         let void_ty = gen1.void_type();
-        let fn_ty = gen1.fn_type_no_params(void_ty, false);
+        let fn_ty = gen1.function_type_no_parameters(void_ty);
         gen1.add_function_dyn("predecessor", fn_ty, Linkage::External)
             .expect("declaration succeeds")
     };
@@ -385,7 +385,7 @@ fn branded_once_retires_the_brand_so_no_successor_can_exist() -> Result<(), IrEr
     let stale: FunctionId<Dyn, OnceOnly> = {
         let only = Module::branded_once::<OnceOnly, _>("only")?;
         let void_ty = only.void_type();
-        let fn_ty = only.fn_type_no_params(void_ty, false);
+        let fn_ty = only.function_type_no_parameters(void_ty);
         only.add_function_dyn("gone", fn_ty, Linkage::External)?
     };
 
@@ -491,7 +491,7 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
 
     // ---- attachment + debug-record setters on an instruction ----
     let void_ty = b.void_type();
-    let fn_ty = b.fn_type_no_params(void_ty, false);
+    let fn_ty = b.function_type_no_parameters(void_ty);
     let f = b.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = b.view(f).append_basic_block(&b, "entry");
     let builder = IrBuilder::with_folder(&b, NoFolder).position_at_end(entry);
@@ -519,7 +519,7 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     ));
     // ...including when only the *value* operand is foreign.
     let a_void_ty = a.void_type();
-    let a_fn_ty = a.fn_type_no_params(a_void_ty, false);
+    let a_fn_ty = a.function_type_no_parameters(a_void_ty);
     let a_fn = a.add_function_dyn("a_fn", a_fn_ty, Linkage::External)?;
     let a_entry = a.view(a_fn).append_basic_block(&a, "entry");
     let a_builder = IrBuilder::with_folder(&a, NoFolder).position_at_end(a_entry);

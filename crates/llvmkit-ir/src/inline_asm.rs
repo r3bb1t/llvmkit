@@ -64,13 +64,15 @@ impl InlineAsmOptions {
         Self::default()
     }
 
-    pub fn side_effects(mut self, value: bool) -> Self {
-        self.has_side_effects = value;
+    /// Mark the asm as having side effects. Default off.
+    pub fn side_effects(mut self) -> Self {
+        self.has_side_effects = true;
         self
     }
 
-    pub fn align_stack(mut self, value: bool) -> Self {
-        self.is_align_stack = value;
+    /// Mark the asm as stack-aligning. Default off.
+    pub fn align_stack(mut self) -> Self {
+        self.is_align_stack = true;
         self
     }
 
@@ -79,8 +81,10 @@ impl InlineAsmOptions {
         self
     }
 
-    pub fn with_can_unwind(mut self, value: bool) -> Self {
-        self.can_unwind = value;
+    /// Mark the asm as able to unwind (the `.ll` `unwind` keyword).
+    /// Default off. Accessor twin: [`Self::can_unwind`].
+    pub fn unwind(mut self) -> Self {
+        self.can_unwind = true;
         self
     }
 

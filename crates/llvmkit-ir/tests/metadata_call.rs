@@ -62,7 +62,7 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
     let write = m.get_or_insert_intrinsic_declaration_by_name("llvm.write_register.i64")?;
 
     // define i64 @get_sp() { %rsp = call ...; call void ...; ret i64 %rsp }
-    let host_ty = m.fn_type(i64_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let host_ty = m.function_type(i64_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let host = m.add_function_dyn("get_sp", host_ty, Linkage::External)?;
     let entry = m.view(host).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -120,11 +120,7 @@ fn call_with_metadata_argument() -> Result<(), IrError> {
 fn post_construction_function_attributes() -> Result<(), IrError> {
     let m = module_new!("attrs")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
 
     // Forward declaration via `add_function_dyn` (no builder).
     let f = m.add_function_dyn("trampoline", fn_ty, Linkage::External)?;
@@ -181,13 +177,9 @@ fn metadata_string_as_value_prints_inline() -> Result<(), IrError> {
     let m = module_new!("md_string_value")?;
     let void_ty = m.void_type();
     let md_ty = m.metadata_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [md_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [md_ty.as_type()]);
     let g = m.add_function_dyn("g", fn_ty, Linkage::External)?;
-    let host_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let host_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("f", host_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -247,7 +239,7 @@ fn range_metadata_on_load_verifies_and_prints() -> Result<(), IrError> {
     let m = module_new!("range_ok")?;
     let i8_ty = m.i8_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(i8_ty, [ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -274,7 +266,7 @@ fn range_metadata_rejects_odd_operand_count() -> Result<(), IrError> {
     let m = module_new!("range_odd")?;
     let i8_ty = m.i8_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(i8_ty, [ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -313,7 +305,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
     let hi = m.metadata_constant(i8_ty.const_int(1_i8))?;
     let range = m.metadata_tuple([lo, hi])?;
 
-    let call_host_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
+    let call_host_ty = m.function_type(i8_ty, [ptr_ty.as_type()]);
     let call_host = m.add_function_dyn("call_host", call_host_ty, Linkage::External)?;
     let call_entry = m.view(call_host).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(call_entry);
@@ -324,7 +316,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
     let ret = call.return_int_value();
     b.ret(ret)?;
 
-    let invoke_host_ty = m.fn_type(i8_ty, [ptr_ty.as_type()], false);
+    let invoke_host_ty = m.function_type(i8_ty, [ptr_ty.as_type()]);
     let invoke_host = m.add_function_dyn("invoke_host", invoke_host_ty, Linkage::External)?;
     let entry = m.view(invoke_host).append_basic_block(&m, "entry");
     let normal = m.view(invoke_host).append_basic_block(&m, "normal");
@@ -361,7 +353,7 @@ fn range_metadata_on_call_and_invoke_verifies() -> Result<(), IrError> {
 fn range_metadata_rejects_non_load_call_invoke_user() -> Result<(), IrError> {
     let m = module_new!("range_bad_user")?;
     let i8_ty = m.i8_type();
-    let fn_ty = m.fn_type(i8_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(i8_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);

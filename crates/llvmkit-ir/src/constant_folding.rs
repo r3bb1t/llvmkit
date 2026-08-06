@@ -6,6 +6,7 @@
 //! availability.
 
 use super::ap_float::{ApFloat, ApFloatSemantics, ApFloatSign};
+use super::ap_int::Signedness;
 use super::cmp_predicate::{CmpPredicate, IntPredicate};
 use super::constant::{
     Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
@@ -348,10 +349,15 @@ pub fn constant_fold_cast_operand<'ctx, B: ModuleBrand + 'ctx>(
 pub fn constant_fold_integer_cast<'ctx, B: ModuleBrand + 'ctx>(
     constant: Constant<'ctx, B>,
     dest_ty: Type<'ctx, B>,
-    is_signed: bool,
+    signedness: Signedness,
     dl: &DataLayout,
 ) -> IrResult<Option<Constant<'ctx, B>>> {
-    fold_integer_cast_constant(constant, dest_ty, is_signed, dl)
+    fold_integer_cast_constant(
+        constant,
+        dest_ty,
+        matches!(signedness, Signedness::Signed),
+        dl,
+    )
 }
 
 /// Fold an instruction using DataLayout-aware analysis rules.

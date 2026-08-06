@@ -17,7 +17,7 @@ fn load_plain() -> Result<(), IrError> {
     let m = module_new!("ls")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()]);
     let f = m.add_function_dyn("ld", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -39,7 +39,7 @@ fn load_aligned() -> Result<(), IrError> {
     let m = module_new!("ls")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type()]);
     let f = m.add_function_dyn("ld", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -61,10 +61,9 @@ fn store_plain() -> Result<(), IrError> {
     let m = module_new!("ls")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(
+    let fn_ty = m.function_type(
         m.void_type().as_type(),
         [i32_ty.as_type(), ptr_ty.as_type()],
-        false,
     );
     let f = m.add_function_dyn("st", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -88,10 +87,9 @@ fn store_aligned() -> Result<(), IrError> {
     let m = module_new!("ls")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(
+    let fn_ty = m.function_type(
         m.void_type().as_type(),
         [i32_ty.as_type(), ptr_ty.as_type()],
-        false,
     );
     let f = m.add_function_dyn("st", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -116,7 +114,7 @@ fn store_aligned() -> Result<(), IrError> {
 fn load_add_store_round_trip() -> Result<(), IrError> {
     let m = module_new!("ls")?;
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(m.void_type().as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(m.void_type().as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

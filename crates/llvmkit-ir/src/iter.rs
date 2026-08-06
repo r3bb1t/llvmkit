@@ -25,7 +25,7 @@ use super::marker::ReturnMarker;
 use super::module::ModuleBrand;
 use super::value::ValueSlot;
 
-/// Single-pass cursor over an instruction list. Each [`Self::next`]
+/// Single-pass cursor over an instruction list. Each [`Self::step`]
 /// call yields the instruction at the current position together with a
 /// fresh cursor pointing at what was the *next* instruction *at the
 /// time of the call*. The split happens before the caller has a chance
@@ -45,7 +45,7 @@ pub struct BlockCursor<'ctx, R: ReturnMarker, S: BlockTerminationState, B: Modul
     next_index: usize,
 }
 
-/// Result item yielded by [`BlockCursor::next`].
+/// Result item yielded by [`BlockCursor::step`].
 pub type BlockCursorStep<'ctx, R, S, B> = (
     Instruction<'ctx, state::Attached, B>,
     BlockCursor<'ctx, R, S, B>,

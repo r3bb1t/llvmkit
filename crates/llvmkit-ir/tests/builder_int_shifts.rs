@@ -16,7 +16,7 @@ use llvmkit_ir::{
 fn shl_plain() -> Result<(), IrError> {
     let m = module_new!("shifts")?;
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()]);
     let f = m.add_function_dyn("shl_plain", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -34,7 +34,7 @@ fn shl_plain() -> Result<(), IrError> {
 fn lshr_plain() -> Result<(), IrError> {
     let m = module_new!("shifts")?;
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()]);
     let f = m.add_function_dyn("lshr_plain", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -52,7 +52,7 @@ fn lshr_plain() -> Result<(), IrError> {
 fn ashr_plain() -> Result<(), IrError> {
     let m = module_new!("shifts")?;
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()]);
     let f = m.add_function_dyn("ashr_plain", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -71,7 +71,7 @@ fn ashr_plain() -> Result<(), IrError> {
 fn shl_nuw_nsw() -> Result<(), IrError> {
     let m = module_new!("shifts")?;
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()]);
     let f = m.add_function_dyn("shl_both", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -89,7 +89,7 @@ fn shl_nuw_nsw() -> Result<(), IrError> {
 fn lshr_exact() -> Result<(), IrError> {
     let m = module_new!("shifts")?;
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()]);
     let f = m.add_function_dyn("lshr_exact", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -107,7 +107,7 @@ fn lshr_exact() -> Result<(), IrError> {
 fn ashr_exact() -> Result<(), IrError> {
     let m = module_new!("shifts")?;
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()]);
     let f = m.add_function_dyn("ashr_exact", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

@@ -102,20 +102,20 @@ impl SpeculationOptions {
     /// whose caller is about to swap an operand out, so anything learned from
     /// the current one is about to stop being true.
     #[must_use]
-    pub fn with_variable_info(mut self, use_variable_info: bool) -> Self {
-        self.use_variable_info = use_variable_info;
+    pub fn without_variable_info(mut self) -> Self {
+        self.use_variable_info = false;
         self
     }
 
     /// Whether attributes that make *particular* operand values UB (`noundef`,
     /// `dereferenceable`, `dereferenceable_or_null`) may be disregarded.
     #[must_use]
-    pub fn ignoring_ub_implying_attrs(mut self, ignore: bool) -> Self {
-        self.ignore_ub_implying_attrs = ignore;
+    pub fn ignoring_ub_implying_attrs(mut self) -> Self {
+        self.ignore_ub_implying_attrs = true;
         self
     }
 
-    /// See [`Self::with_variable_info`].
+    /// See [`Self::without_variable_info`].
     pub fn uses_variable_info(self) -> bool {
         self.use_variable_info
     }
@@ -289,14 +289,9 @@ pub fn is_safe_to_speculatively_execute_with_opcode<'ctx, B: ModuleBrand + 'ctx>
 /// which is exactly the base call with `UseVariableInfo = false`.
 pub fn is_safe_to_speculatively_execute_with_variable_replaced<'ctx, B: ModuleBrand + 'ctx>(
     instruction: &InstructionView<'ctx, B>,
-    ignore_ub_implying_attrs: bool,
+    options: SpeculationOptions,
 ) -> bool {
-    is_safe_to_speculatively_execute(
-        instruction,
-        SpeculationOptions::new()
-            .with_variable_info(false)
-            .ignoring_ub_implying_attrs(ignore_ub_implying_attrs),
-    )
+    is_safe_to_speculatively_execute(instruction, options.without_variable_info())
 }
 
 /// Whether moving `instruction` relative to another one could change behaviour

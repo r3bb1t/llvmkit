@@ -14,7 +14,7 @@ use llvmkit_ir::{Dyn, IntValue, IrBuilder, IrError, Linkage, Module};
 fn module_with(op: &str) -> Result<String, IrError> {
     let m = Module::dynamic("logical");
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn(op, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

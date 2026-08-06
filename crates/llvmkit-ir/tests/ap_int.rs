@@ -3,7 +3,7 @@
 //! The Rust surface returns `Option`/`IrResult` for LLVM assertion-preconditioned
 //! operations, but the bit-level results mirror APInt.
 
-use llvmkit_ir::{ApInt, ApIntSignedness, ApIntTruncation, IrError};
+use llvmkit_ir::{ApInt, ApIntTruncation, IrError, Signedness};
 
 /// Port of `llvm/unittests/ADT/APIntTest.cpp` construction and bit-count checks.
 #[test]
@@ -27,7 +27,7 @@ fn arithmetic_wraps_past_128_bits() -> Result<(), IrError> {
     let one = ApInt::new(
         257,
         1,
-        ApIntSignedness::Unsigned,
+        Signedness::Unsigned,
         ApIntTruncation::RejectOverflow,
     )?;
 
@@ -48,7 +48,7 @@ fn division_remainder_and_signed_min_overflow() -> Result<(), IrError> {
     let qr = n.udivrem(&d).expect("non-zero divisor");
 
     assert_eq!(
-        qr.quotient().to_string_radix(10, ApIntSignedness::Unsigned),
+        qr.quotient().to_string_radix(10, Signedness::Unsigned),
         "113427455640312821154458202477256070485"
     );
     assert_eq!(qr.remainder().try_zext_u64(), Some(1));

@@ -84,8 +84,8 @@ fn array_and_vector_intern() {
     assert_eq!(a1.element(), i32.as_type());
     assert_eq!(a1.len(), 8);
 
-    let v_fixed = m.vector_type(i32, 4, false);
-    let v_scalable = m.vector_type(i32, 4, true);
+    let v_fixed = m.vector_type(i32, 4);
+    let v_scalable = m.scalable_vector_type(i32, 4);
     assert_ne!(v_fixed.as_type(), v_scalable.as_type());
     assert!(!v_fixed.is_scalable());
     assert!(v_scalable.is_scalable());
@@ -102,17 +102,17 @@ fn function_type_round_trip() {
     let i32 = m.i32_type();
     let i64 = m.i64_type();
     let void = m.void_type();
-    let ft = m.fn_type(void.as_type(), [i32.as_type(), i64.as_type()], false);
+    let ft = m.function_type(void.as_type(), [i32.as_type(), i64.as_type()]);
     assert_eq!(ft.return_type(), void.as_type());
     assert_eq!(ft.params().count(), 2);
     assert!(!ft.is_var_arg());
 
     // Same shape interns to the same handle.
-    let ft2 = m.fn_type(void.as_type(), [i32.as_type(), i64.as_type()], false);
+    let ft2 = m.function_type(void.as_type(), [i32.as_type(), i64.as_type()]);
     assert_eq!(ft.as_type(), ft2.as_type());
 
     // varargs differs.
-    let ft_va = m.fn_type(void.as_type(), [i32.as_type(), i64.as_type()], true);
+    let ft_va = m.variadic_function_type(void.as_type(), [i32.as_type(), i64.as_type()]);
     assert_ne!(ft.as_type(), ft_va.as_type());
     assert!(ft_va.is_var_arg());
 }
@@ -124,14 +124,14 @@ fn literal_struct_intern() {
     let m = module_new!("t").expect("fresh module");
     let i32 = m.i32_type();
     let i64 = m.i64_type();
-    let s1 = m.struct_type([i32.as_type(), i64.as_type()], false);
-    let s2 = m.struct_type([i32.as_type(), i64.as_type()], false);
+    let s1 = m.struct_type([i32.as_type(), i64.as_type()]);
+    let s2 = m.struct_type([i32.as_type(), i64.as_type()]);
     assert_eq!(s1.as_type(), s2.as_type());
     assert_eq!(s1.field_count(), 2);
     assert!(!s1.is_packed());
     assert!(s1.name().is_none());
 
-    let s_packed = m.struct_type([i32.as_type(), i64.as_type()], true);
+    let s_packed = m.packed_struct_type([i32.as_type(), i64.as_type()]);
     assert_ne!(s1.as_type(), s_packed.as_type());
     assert!(s_packed.is_packed());
 }
@@ -220,7 +220,7 @@ fn sized_refinement_accepts_sized_rejects_unsized() {
         m.metadata_type().as_type(),
         m.token_type().as_type(),
         m.wasm_exnref_type().as_type(),
-        m.fn_type_no_params(m.void_type().as_type(), false)
+        m.function_type_no_parameters(m.void_type().as_type())
             .as_type(),
         m.get_or_insert_named_struct("Opaque").as_type(),
     ];
@@ -238,7 +238,7 @@ fn first_class_predicate_rejects_function_void_opaque() {
     let m = module_new!("t").expect("fresh module");
     assert!(!m.void_type().as_type().is_first_class());
     assert!(
-        !m.fn_type_no_params(m.void_type().as_type(), false)
+        !m.function_type_no_parameters(m.void_type().as_type())
             .as_type()
             .is_first_class()
     );
@@ -305,8 +305,8 @@ fn aggregate_excludes_vector() {
     let m = module_new!("t").expect("fresh module");
     let i32 = m.i32_type();
     let arr = m.array_type(i32, 4);
-    let vec = m.vector_type(i32, 4, false);
-    let lit = m.struct_type([i32.as_type()], false);
+    let vec = m.vector_type(i32, 4);
+    let lit = m.struct_type([i32.as_type()]);
 
     assert!(AggregateType::try_from(arr.as_type()).is_ok());
     assert!(AggregateType::try_from(lit.as_type()).is_ok());

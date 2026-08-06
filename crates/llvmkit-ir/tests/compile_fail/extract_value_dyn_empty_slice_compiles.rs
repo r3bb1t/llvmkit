@@ -15,8 +15,8 @@ fn main() -> Result<(), IrError> {
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()], false);
-    let fn_ty = m.fn_type(void_ty.as_type(), [s_ty.as_type()], false);
+    let s_ty = m.struct_type([i8_ty.as_type(), i32_ty.as_type()]);
+    let fn_ty = m.function_type(void_ty.as_type(), [s_ty.as_type()]);
     m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let f = m.view(m.function::<()>("g")?.expect("declared above"));
     let entry = f.append_basic_block(&m, "entry");

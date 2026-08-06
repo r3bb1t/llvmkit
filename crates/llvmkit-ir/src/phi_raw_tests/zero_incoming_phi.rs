@@ -104,7 +104,7 @@ fn build_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     m: &'ctx Module<B, crate::Unverified>,
 ) -> IrResult<(crate::FunctionId<Dyn, B>, BlockId<Dyn, B>)> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let to = m.view(f).append_basic_block(m, "to");
@@ -193,7 +193,7 @@ fn build_redirect_single_pred_phi<'ctx, B: crate::ModuleBrand + 'ctx>(
     m: &'ctx Module<B, crate::Unverified>,
 ) -> IrResult<RedirectFixture<'ctx, B>> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let old_to = m.view(f).append_basic_block(m, "old_to");
@@ -298,7 +298,7 @@ fn redirect_edge_emptying_phi_erases_it_with_poison() -> Result<(), IrError> {
 fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
     let m = crate::module_new!("zero_incoming_reachable")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = m.view(f).append_basic_block(&m, "b");
@@ -339,7 +339,7 @@ fn zero_incoming_phi_in_reachable_block_is_rejected() -> Result<(), IrError> {
 fn zero_incoming_phi_in_unreachable_block_is_accepted() -> Result<(), IrError> {
     let m = crate::module_new!("zero_incoming_unreachable")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     // `u` has no edge into it — unreachable from entry.

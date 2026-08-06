@@ -57,7 +57,7 @@
 //!     let m = module_new!("pass-doc")?;
 //!     // Build `i32 @f()` returning a constant.
 //!     let i32_ty = m.i32_type();
-//!     let fn_ty = m.fn_type_no_params(i32_ty, false);
+//!     let fn_ty = m.function_type_no_parameters(i32_ty);
 //!     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
 //!     let entry = m.view(f).append_basic_block(&m, "entry");
 //!     let b = IrBuilder::at_end(entry);

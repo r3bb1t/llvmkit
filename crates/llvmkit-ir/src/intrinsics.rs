@@ -709,7 +709,7 @@ fn ap_int_from_i64(bits: u32, value: i64) -> IrResult<crate::ApInt> {
     crate::ApInt::new(
         bits,
         u64::from_ne_bytes(value.to_ne_bytes()),
-        crate::ApIntSignedness::Signed,
+        crate::Signedness::Signed,
         crate::ApIntTruncation::Truncate,
     )
 }

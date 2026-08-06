@@ -43,7 +43,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     let i64_ty = m.i64_type();
 
     // ---- `add`: 4 i64 inputs (rax/rbx/rcx/rdx), returns i32. ----
-    let add_sig = m.fn_type(
+    let add_sig = m.function_type(
         i32_ty,
         [
             i64_ty.as_type(),
@@ -51,7 +51,6 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
             i64_ty.as_type(),
             i64_ty.as_type(),
         ],
-        false,
     );
     let add_fn = m
         .function_builder::<i32, _>("add", add_sig)
@@ -82,7 +81,7 @@ pub fn build<B: ModuleBrand>(m: &Module<B>) -> Result<(), IrError> {
     b.ret(s2)?;
 
     // ---- `main`: no params, returns i32, ret-attr `noundef`. ----
-    let main_sig = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let main_sig = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let main_fn = m
         .function_builder::<i32, _>("main", main_sig)
         .linkage(Linkage::External)

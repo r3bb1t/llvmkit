@@ -121,7 +121,7 @@ impl<'ctx, B: ModuleBrand> ComdatRef<'ctx, B> {
     // No public `id()`. `ComdatId` is a bare `u32` index carrying neither a
     // `ModuleId` tag nor a brand, so it is not a member of the 2.0 id family
     // and `Module::view` cannot resolve it — which is exactly why
-    // `Module::get_comdat` returns this handle rather than an id. Handing the
+    // `Module::comdat` returns this handle rather than an id. Handing the
     // raw index out anyway would have published a token no public API accepts,
     // strictly weaker than the handle it came from. It is crate-internal
     // storage, reachable through `ComdatRef` and nothing else.
@@ -137,7 +137,7 @@ impl<'ctx, B: ModuleBrand> ComdatRef<'ctx, B> {
     /// crate, so `verify(self)` really does consume mutation capability. The
     /// selection kind is printed (`$name = comdat <kind>`), so without the
     /// token a [`Module<B, Verified>`](crate::Module)'s IR could be changed
-    /// after verification — `Module::get_comdat` is state-generic, so a
+    /// after verification — `Module::comdat` is state-generic, so a
     /// verified module does hand out a `ComdatRef`.
     pub fn set_selection_kind(self, _module_token: &Module<B, Unverified>, kind: SelectionKind) {
         self.data().selection_kind.set(kind);

@@ -25,7 +25,7 @@ impl ModuleBrand for Right {}
 fn main() -> Result<(), IrError> {
     let left = Module::branded::<Left, _>("left")?;
     let point_ty = <Point as llvmkit_ir::StructSchema>::ir_type(left.as_view())?;
-    let fn_ty = left.fn_type(left.void_type(), [point_ty.as_type()], false);
+    let fn_ty = left.function_type(left.void_type(), [point_ty.as_type()]);
     let left_fn = left.add_function_dyn("left", fn_ty, Linkage::External)?;
     let left_point = PointValue::try_from(left.view(left_fn).param(0)?)?;
 

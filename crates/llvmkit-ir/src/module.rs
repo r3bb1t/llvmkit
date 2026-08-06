@@ -1141,23 +1141,24 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         ArrayType::new(id, ModuleRef::new(self.core))
     }
 
-    /// Fixed `<n x elem>` or scalable `<vscale x n x elem>` vector.
+    /// Fixed `<n x elem>` vector. Mirrors `FixedVectorType::get`.
     #[inline]
-    pub fn vector_type<T>(
-        self,
-        elem: T,
-        n: u32,
-        scalable: bool,
-    ) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+    pub fn vector_type<T>(self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B>
     where
         T: Into<Type<'ctx, B>>,
     {
-        let elem_id = elem.into().id();
-        let id = if scalable {
-            self.core.ctx.scalable_vector_type(elem_id, n)
-        } else {
-            self.core.ctx.fixed_vector_type(elem_id, n)
-        };
+        let id = self.core.ctx.fixed_vector_type(elem.into().id(), n);
+        VectorType::new(id, ModuleRef::new(self.core))
+    }
+
+    /// Scalable `<vscale x n x elem>` vector. Mirrors
+    /// `ScalableVectorType::get`.
+    #[inline]
+    pub fn scalable_vector_type<T>(self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+    where
+        T: Into<Type<'ctx, B>>,
+    {
+        let id = self.core.ctx.scalable_vector_type(elem.into().id(), n);
         VectorType::new(id, ModuleRef::new(self.core))
     }
 
@@ -1177,9 +1178,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         VectorType::new(id, ModuleRef::new(self.core))
     }
 
-    /// Literal (unnamed) struct type `{ .. }` / `<{ .. }>`.
+    /// Literal (unnamed) struct type `{ .. }`.
     #[inline]
-    pub fn struct_type<I, T>(self, elements: I, packed: bool) -> StructType<'ctx, StructBodyDyn, B>
+    pub fn struct_type<I, T>(self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+    {
+        self.literal_struct_type(elements, false)
+    }
+
+    /// Packed literal struct type `<{ .. }>`.
+    #[inline]
+    pub fn packed_struct_type<I, T>(self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+    {
+        self.literal_struct_type(elements, true)
+    }
+
+    #[inline]
+    fn literal_struct_type<I, T>(
+        self,
+        elements: I,
+        packed: bool,
+    ) -> StructType<'ctx, StructBodyDyn, B>
     where
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
@@ -1191,34 +1215,75 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         )
     }
 
-    /// Function type `ret (params...)`, variadic when `is_var_arg`.
+    /// Function type `ret (params...)`.
     #[inline]
-    pub fn fn_type<I, R, T>(self, ret: R, params: I, is_var_arg: bool) -> FunctionType<'ctx, B>
+    pub fn function_type<I, R, T>(self, return_type: R, parameters: I) -> FunctionType<'ctx, B>
     where
         I: IntoIterator<Item = T>,
         R: Into<Type<'ctx, B>>,
         T: Into<Type<'ctx, B>>,
     {
-        let ret = ret.into();
-        let params: Box<[TypeSlot]> = params.into_iter().map(|t| t.into().id()).collect();
+        self.raw_function_type(return_type, parameters, false)
+    }
+
+    /// Variadic function type `ret (params..., ...)`.
+    #[inline]
+    pub fn variadic_function_type<I, R, T>(
+        self,
+        return_type: R,
+        parameters: I,
+    ) -> FunctionType<'ctx, B>
+    where
+        I: IntoIterator<Item = T>,
+        R: Into<Type<'ctx, B>>,
+        T: Into<Type<'ctx, B>>,
+    {
+        self.raw_function_type(return_type, parameters, true)
+    }
+
+    #[inline]
+    fn raw_function_type<I, R, T>(
+        self,
+        return_type: R,
+        parameters: I,
+        is_var_arg: bool,
+    ) -> FunctionType<'ctx, B>
+    where
+        I: IntoIterator<Item = T>,
+        R: Into<Type<'ctx, B>>,
+        T: Into<Type<'ctx, B>>,
+    {
+        let ret = return_type.into();
+        let params: Box<[TypeSlot]> = parameters.into_iter().map(|t| t.into().id()).collect();
         FunctionType::new(
             self.core.ctx.function_type(ret.id(), params, is_var_arg),
             ModuleRef::new(self.core),
         )
     }
 
-    /// A function type with no parameters. Avoids the empty-`Vec::<Type>::new()`
-    /// inference cliff of [`fn_type`](Self::fn_type): with an empty iterator the
-    /// element type `T` cannot be inferred, so callers otherwise have to spell it
-    /// (`fn_type(ret, Vec::<Type>::new(), va)`). This pins the element type for
-    /// them — `fn_type_no_params(ret, is_var_arg)` is exactly
-    /// `fn_type(ret, [], is_var_arg)`.
+    /// A function type with no parameters. Avoids the empty-iterator
+    /// inference cliff of [`function_type`](Self::function_type): with an
+    /// empty iterator the element type `T` cannot be inferred, so callers
+    /// otherwise have to spell it. This pins the element type for them —
+    /// `function_type_no_parameters(ret)` is exactly
+    /// `function_type(ret, [] as [Type; 0])`.
     #[inline]
-    pub fn fn_type_no_params<R>(self, ret: R, is_var_arg: bool) -> FunctionType<'ctx, B>
+    pub fn function_type_no_parameters<R>(self, return_type: R) -> FunctionType<'ctx, B>
     where
         R: Into<Type<'ctx, B>>,
     {
-        self.fn_type(ret, core::iter::empty::<Type<'ctx, B>>(), is_var_arg)
+        self.function_type(return_type, core::iter::empty::<Type<'ctx, B>>())
+    }
+
+    /// Variadic sibling of
+    /// [`function_type_no_parameters`](Self::function_type_no_parameters):
+    /// `ret (...)`.
+    #[inline]
+    pub fn variadic_function_type_no_parameters<R>(self, return_type: R) -> FunctionType<'ctx, B>
+    where
+        R: Into<Type<'ctx, B>>,
+    {
+        self.variadic_function_type(return_type, core::iter::empty::<Type<'ctx, B>>())
     }
 
     /// Get or create the identified struct type `%name`, leaving its body
@@ -2901,7 +2966,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     /// assert_eq!(m.instruction_count(), 0);
     ///
     /// let i32_ty = m.i32_type();
-    /// let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    /// let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     /// let entry = m.view(f).append_basic_block(&m, "entry");
     ///
@@ -3044,7 +3109,7 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     // mutate — so restricting them to `Module<B, Unverified>` bought no safety
     // and left a verified module with no O(1) route to a symbol at all: the
     // only alternative was a linear scan of `as_view().globals()` comparing
-    // names. `function_by_name` / `function_by_name_dyn` already lived here.
+    // names. `function` / `function_dyn` already lived here.
 
     /// Look up a global variable by name, returning its storable
     /// [`GlobalId`].
@@ -3397,22 +3462,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         ArrayType::new(id, self.module_ref())
     }
 
-    pub fn vector_type<T>(
+    /// Fixed `<n x elem>` vector. Mirrors `FixedVectorType::get`.
+    pub fn vector_type<T>(&'ctx self, elem: T, n: u32) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+    where
+        T: Into<Type<'ctx, B>>,
+    {
+        self.as_view().vector_type(elem, n)
+    }
+
+    /// Scalable `<vscale x n x elem>` vector. Mirrors
+    /// `ScalableVectorType::get`.
+    pub fn scalable_vector_type<T>(
         &'ctx self,
         elem: T,
         n: u32,
-        scalable: bool,
     ) -> VectorType<'ctx, ElemDyn, LenDyn, B>
     where
         T: Into<Type<'ctx, B>>,
     {
-        let elem_id = elem.into().id();
-        let id = if scalable {
-            self.core().ctx.scalable_vector_type(elem_id, n)
-        } else {
-            self.core().ctx.fixed_vector_type(elem_id, n)
-        };
-        VectorType::new(id, self.module_ref())
+        self.as_view().scalable_vector_type(elem, n)
     }
 
     /// Const-generic typed vector `<N x E>`. The element marker `E`
@@ -3432,24 +3500,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         VectorType::new(id, self.module_ref())
     }
 
-    pub fn struct_type<I, T>(
-        &'ctx self,
-        elements: I,
-        packed: bool,
-    ) -> StructType<'ctx, StructBodyDyn, B>
+    /// Literal (unnamed) struct type `{ .. }`.
+    pub fn struct_type<I, T>(&'ctx self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
     where
         I: IntoIterator<Item = T>,
         T: Into<Type<'ctx, B>>,
     {
-        let elems: Box<[TypeSlot]> = elements.into_iter().map(|t| t.into().id()).collect();
-        StructType::new(
-            self.core().ctx.literal_struct_type(elems, packed),
-            self.module_ref(),
-        )
+        self.as_view().struct_type(elements)
+    }
+
+    /// Packed literal struct type `<{ .. }>`.
+    pub fn packed_struct_type<I, T>(&'ctx self, elements: I) -> StructType<'ctx, StructBodyDyn, B>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<Type<'ctx, B>>,
+    {
+        self.as_view().packed_struct_type(elements)
     }
 
     /// Get or create the identified struct type `%name`, body unset.
-    /// Delegates to [`ModuleView::named_struct`].
+    /// Delegates to [`ModuleView::get_or_insert_named_struct`].
     pub fn get_or_insert_named_struct(
         &'ctx self,
         name: &str,
@@ -3476,13 +3546,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     }
 
     /// Look up an existing identified struct type by name. Delegates to
-    /// [`ModuleView::get_named_struct`].
+    /// [`ModuleView::named_struct`].
     pub fn named_struct(&'ctx self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
         self.as_view().named_struct(name)
     }
 
     /// Idempotently intern schema `S`'s named struct type. Delegates to
-    /// [`ModuleView::get_or_set_named_struct_body`], which is where the schema
+    /// [`ModuleView::get_or_insert_struct_of`], which is where the schema
     /// traits reach it.
     pub fn get_or_insert_struct_of<S>(&'ctx self) -> IrResult<StructType<'ctx, BodySet, B>>
     where
@@ -3540,36 +3610,56 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         Ok(opaque.retag::<BodySet>())
     }
 
-    pub fn fn_type<I, R, T>(
+    /// Function type `ret (params...)`.
+    pub fn function_type<I, R, T>(
         &'ctx self,
-        ret: R,
-        params: I,
-        is_var_arg: bool,
+        return_type: R,
+        parameters: I,
     ) -> FunctionType<'ctx, B>
     where
         I: IntoIterator<Item = T>,
         R: Into<Type<'ctx, B>>,
         T: Into<Type<'ctx, B>>,
     {
-        let ret = ret.into();
-        let params: Box<[TypeSlot]> = params.into_iter().map(|t| t.into().id()).collect();
-        FunctionType::new(
-            self.core().ctx.function_type(ret.id(), params, is_var_arg),
-            self.module_ref(),
-        )
+        self.as_view().function_type(return_type, parameters)
     }
 
-    /// A function type with no parameters. Avoids the empty-`Vec::<Type>::new()`
-    /// inference cliff of [`fn_type`](Self::fn_type): with an empty iterator the
-    /// element type `T` cannot be inferred, so callers otherwise have to spell it
-    /// (`fn_type(ret, Vec::<Type>::new(), va)`). This pins the element type for
-    /// them — `fn_type_no_params(ret, is_var_arg)` is exactly
-    /// `fn_type(ret, [], is_var_arg)`.
-    pub fn fn_type_no_params<R>(&'ctx self, ret: R, is_var_arg: bool) -> FunctionType<'ctx, B>
+    /// Variadic function type `ret (params..., ...)`.
+    pub fn variadic_function_type<I, R, T>(
+        &'ctx self,
+        return_type: R,
+        parameters: I,
+    ) -> FunctionType<'ctx, B>
+    where
+        I: IntoIterator<Item = T>,
+        R: Into<Type<'ctx, B>>,
+        T: Into<Type<'ctx, B>>,
+    {
+        self.as_view()
+            .variadic_function_type(return_type, parameters)
+    }
+
+    /// A function type with no parameters. Avoids the empty-iterator
+    /// inference cliff of [`function_type`](Self::function_type); see
+    /// [`ModuleView::function_type_no_parameters`].
+    pub fn function_type_no_parameters<R>(&'ctx self, return_type: R) -> FunctionType<'ctx, B>
     where
         R: Into<Type<'ctx, B>>,
     {
-        self.fn_type(ret, core::iter::empty::<Type<'ctx, B>>(), is_var_arg)
+        self.as_view().function_type_no_parameters(return_type)
+    }
+
+    /// Variadic sibling of
+    /// [`function_type_no_parameters`](Self::function_type_no_parameters).
+    pub fn variadic_function_type_no_parameters<R>(
+        &'ctx self,
+        return_type: R,
+    ) -> FunctionType<'ctx, B>
+    where
+        R: Into<Type<'ctx, B>>,
+    {
+        self.as_view()
+            .variadic_function_type_no_parameters(return_type)
     }
 
     /// Fixed-arity typed function type: `Ret (Params...)`.
@@ -3580,7 +3670,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     {
         let ret = Ret::ir_type(self.as_view())?;
         let params = Params::ir_types(self.as_view())?;
-        Ok(self.fn_type(ret, params, false))
+        Ok(self.function_type(ret, params))
     }
 
     /// Fixed-arity typed function type from a Rust function-pointer
@@ -3602,7 +3692,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     {
         let ret = Ret::ir_type(self.as_view())?;
         let params = Params::ir_types(self.as_view())?;
-        Ok(self.fn_type(ret, params, true))
+        Ok(self.variadic_function_type(ret, params))
     }
 
     /// Variadic typed function type from a Rust function-pointer schema.
@@ -3861,7 +3951,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
     {
         let constant = initializer.into_constant(self.module_ref());
         GlobalBuilder::<B>::new(self.module_ref(), name, constant.ty())
-            .constant(true)
+            .constant()
             .initializer(constant)
             .build()
     }

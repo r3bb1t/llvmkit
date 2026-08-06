@@ -20,7 +20,7 @@ fn view_of<'ctx, B: llvmkit_ir::ModuleBrand + 'ctx>(
 fn add_sub_allones_binds_operands() -> Result<(), IrError> {
     let m = module_new!("m_add_sub")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -45,7 +45,7 @@ fn add_sub_allones_binds_operands() -> Result<(), IrError> {
 fn one_use_gate_rejects_multi_use_subexpr() -> Result<(), IrError> {
     let m = module_new!("m_one_use")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -78,7 +78,7 @@ fn one_use_gate_rejects_multi_use_subexpr() -> Result<(), IrError> {
 fn commutative_add_matches_swapped_operands() -> Result<(), IrError> {
     let m = module_new!("m_c_add")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -107,7 +107,7 @@ fn commutative_add_matches_swapped_operands() -> Result<(), IrError> {
 fn not_and_neg_sugar() -> Result<(), IrError> {
     let m = module_new!("m_not_neg")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -134,7 +134,7 @@ fn load_of_gep_binds_base() -> Result<(), IrError> {
     let m = module_new!("m_load_gep")?;
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(i32_ty, [ptr_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [ptr_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -155,7 +155,7 @@ fn load_of_gep_binds_base() -> Result<(), IrError> {
 fn constant_predicates() -> Result<(), IrError> {
     let m = module_new!("m_const")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
@@ -192,7 +192,7 @@ fn constant_predicates() -> Result<(), IrError> {
 fn two_step_specific_reuse() -> Result<(), IrError> {
     let m = module_new!("m_two_step")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -220,7 +220,7 @@ fn two_step_specific_reuse() -> Result<(), IrError> {
 fn m_phi_binds_phi_kind() -> Result<(), IrError> {
     let m = module_new!("m_phi_bind")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let other = m.view(f).append_basic_block(&m, "other");
@@ -249,7 +249,7 @@ fn m_phi_binds_phi_kind() -> Result<(), IrError> {
 fn m_phi_rejects_non_phi() -> Result<(), IrError> {
     let m = module_new!("m_phi_reject")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -268,7 +268,7 @@ fn m_phi_rejects_non_phi() -> Result<(), IrError> {
 fn m_phi_composes_with_m_one_use() -> Result<(), IrError> {
     let m = module_new!("m_phi_one_use")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let other = m.view(f).append_basic_block(&m, "other");

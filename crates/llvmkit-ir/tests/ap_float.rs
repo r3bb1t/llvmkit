@@ -6,8 +6,8 @@
 
 use llvmkit_ir::{
     ApFloat, ApFloatCategory, ApFloatCmpResult, ApFloatNextDirection, ApFloatSemantics,
-    ApFloatSign, ApFloatStatus, ApInt, ApIntSignedness, ApIntTruncation, Exactness, IrError,
-    LosesInfo, NanPayload, RoundingMode,
+    ApFloatSign, ApFloatStatus, ApInt, ApIntTruncation, Exactness, IrError, LosesInfo, NanPayload,
+    RoundingMode, Signedness,
 };
 
 fn ap_f32(value: f32) -> Result<ApFloat, IrError> {
@@ -33,7 +33,7 @@ fn ap_ppc_double_double(high_bits: u64, low_bits: u64) -> Result<ApFloat, IrErro
 
 fn assert_convert_from_apint_matches(
     input: &ApInt,
-    signedness: ApIntSignedness,
+    signedness: Signedness,
     rounding: RoundingMode,
     expected: &ApInt,
 ) {
@@ -229,10 +229,10 @@ fn modulo_keeps_negative_dividend_sign() -> Result<(), IrError> {
 #[test]
 fn convert_from_apint_halfway_rounding_matches_upstream() {
     let precision = ApFloatSemantics::IeeeQuad.precision();
-    for signedness in [ApIntSignedness::Unsigned, ApIntSignedness::Signed] {
+    for signedness in [Signedness::Unsigned, Signedness::Signed] {
         let bit_width = precision
             + 1
-            + if matches!(signedness, ApIntSignedness::Signed) {
+            + if matches!(signedness, Signedness::Signed) {
                 1
             } else {
                 0
@@ -281,7 +281,7 @@ fn bitcast_round_trips_and_unordered_compare() -> Result<(), IrError> {
     let bits = ApInt::new(
         32,
         0x3f80_0000,
-        ApIntSignedness::Unsigned,
+        Signedness::Unsigned,
         ApIntTruncation::RejectOverflow,
     )?;
     let one = ApFloat::from_bits(ApFloatSemantics::IeeeSingle, &bits)?;
@@ -478,7 +478,7 @@ fn sitofp_i257_to_quad_uses_apint_encoder() {
     let (converted, status) = ApFloat::convert_from_ap_int(
         ApFloatSemantics::IeeeQuad,
         &input,
-        ApIntSignedness::Signed,
+        Signedness::Signed,
         RoundingMode::NearestTiesToEven,
     );
 
@@ -500,7 +500,7 @@ fn ppc_convert_from_ap_int_keeps_residual_low_component() {
     let (converted, status) = ApFloat::convert_from_ap_int(
         ApFloatSemantics::PpcDoubleDouble,
         &input,
-        ApIntSignedness::Unsigned,
+        Signedness::Unsigned,
         RoundingMode::NearestTiesToEven,
     );
 
@@ -519,13 +519,13 @@ fn ppc_convert_to_integer_uses_low_component() -> Result<(), IrError> {
     let value = ap_ppc_double_double(0x3ff0_0000_0000_0000, 0x3c30_0000_0000_0000)?;
 
     let (rounded_up, status, exact) =
-        value.convert_to_integer(2, ApIntSignedness::Unsigned, RoundingMode::TowardPositive);
+        value.convert_to_integer(2, Signedness::Unsigned, RoundingMode::TowardPositive);
     assert_eq!(rounded_up, ApInt::from_words(2, &[2]));
     assert_eq!(status, ApFloatStatus::INEXACT);
     assert_eq!(exact, Exactness::Inexact);
 
     let (truncated, status, exact) =
-        value.convert_to_integer(2, ApIntSignedness::Unsigned, RoundingMode::TowardZero);
+        value.convert_to_integer(2, Signedness::Unsigned, RoundingMode::TowardZero);
     assert_eq!(truncated, ApInt::from_words(2, &[1]));
     assert_eq!(status, ApFloatStatus::INEXACT);
     assert_eq!(exact, Exactness::Inexact);
@@ -544,7 +544,7 @@ fn quad_convert_to_integer_keeps_wide_significand_bits() -> Result<(), IrError> 
     let expected = ApInt::bitor(&ApInt::one_bit_set(257, 112), &ApInt::from_words(257, &[1]));
 
     let (converted, status, exact) =
-        value.convert_to_integer(257, ApIntSignedness::Unsigned, RoundingMode::TowardZero);
+        value.convert_to_integer(257, Signedness::Unsigned, RoundingMode::TowardZero);
 
     assert_eq!(converted, expected);
     assert_eq!(status, ApFloatStatus::OK);

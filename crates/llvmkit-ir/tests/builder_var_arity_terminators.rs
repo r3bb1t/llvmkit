@@ -17,7 +17,7 @@ fn switch_three_cases_print_form() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [i8_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [i8_ty.as_type()]);
     let f = m.add_function_dyn("instructions.terminators", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let default_bb = m.view(f).append_basic_block(&m, "defaultdest");
@@ -70,7 +70,7 @@ fn switch_cases_reader_round_trips() -> Result<(), IrError> {
     let m = module_new!("switch_cases")?;
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [i8_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [i8_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let default_bb = m.view(f).append_basic_block(&m, "default");
@@ -114,7 +114,7 @@ fn switch_no_cases_only_default() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()]);
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let dest = m.view(f).append_basic_block(&m, "dest");
@@ -146,7 +146,7 @@ fn switch_typed_i32_matching_cases() -> Result<(), IrError> {
     let m = module_new!("switch_typed")?;
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let default_bb = m.view(f).append_basic_block(&m, "default");
@@ -195,7 +195,7 @@ fn switch_erased_dyn_wrong_width_case_is_runtime_type_mismatch() -> Result<(), I
     let i32_ty = m.i32_type();
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let default_bb = m.view(f).append_basic_block(&m, "default");
@@ -239,7 +239,7 @@ fn indirectbr_single_destination() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let dest = m.view(f).append_basic_block(&m, "dest");
@@ -269,7 +269,7 @@ fn indirectbr_multiple_destinations() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let bb1 = m.view(f).append_basic_block(&m, "bb1");
@@ -303,7 +303,7 @@ fn indirectbr_typed_pointer_address_builds_and_verifies() -> Result<(), IrError>
     let m = module_new!("a")?;
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let dest = m.view(f).append_basic_block(&m, "dest");
@@ -336,7 +336,7 @@ fn indirectbr_erased_value_pointer_address_builds_and_verifies() -> Result<(), I
     let m = module_new!("a")?;
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let dest = m.view(f).append_basic_block(&m, "dest");

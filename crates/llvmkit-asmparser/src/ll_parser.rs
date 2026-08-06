@@ -40,15 +40,15 @@ use llvmkit_ir::metadata::{
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    Align, AllocaFlags, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, ApIntSignedness,
-    AtomicLoadConfig, AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, CallingConv, Constant,
-    ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions,
-    DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType, FpClassTest,
-    GepNoWrapFlags, IntCastFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution, IrBuilder,
-    IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
-    Positioned, RoundingMode, SelectionKind, ShuffleMaskElem, StructType, SyncScope,
-    ThreadLocalMode, Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord,
-    UseListOrderRecord, Visibility, constant_fold_select_instruction, derived_types::PointerType,
+    Align, AllocaFlags, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, AtomicLoadConfig,
+    AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, CallingConv, Constant, ConstantExprFlags,
+    ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions, DllStorageClass, Dyn,
+    FastMathFlags, FloatDyn, FloatPredicate, FloatType, FpClassTest, GepNoWrapFlags, IntCastFlags,
+    IntDyn, IntType, IntValue, IntrinsicNameResolution, IrBuilder, IrError, IrResult, Linkage,
+    MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue, Positioned, RoundingMode,
+    SelectionKind, ShuffleMaskElem, Signedness, StructType, SyncScope, ThreadLocalMode, Type,
+    TypeKind, UiToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord,
+    Visibility, constant_fold_select_instruction, derived_types::PointerType,
     resolve_intrinsic_name, shufflevector_mask_from_constant,
 };
 use llvmkit_macros::Branded;
@@ -386,7 +386,7 @@ enum ParsedApsInt {
         magnitude: ApInt,
     },
     Hex {
-        signedness: ApIntSignedness,
+        signedness: Signedness,
         value: ApInt,
     },
 }
@@ -436,8 +436,8 @@ fn lower_parsed_apsint(parsed: &ParsedApsInt, dest_width: u32) -> ApInt {
             }
         }
         ParsedApsInt::Hex { signedness, value } => match signedness {
-            ApIntSignedness::Unsigned => value.zext_or_trunc(dest_width),
-            ApIntSignedness::Signed => value.sext_or_trunc(dest_width),
+            Signedness::Unsigned => value.zext_or_trunc(dest_width),
+            Signedness::Signed => value.sext_or_trunc(dest_width),
         },
     }
 }
@@ -454,8 +454,8 @@ fn parsed_apsint_to_i128(parsed: &ParsedApsInt) -> Option<i128> {
             })
         }
         ParsedApsInt::Hex { signedness, value } => match signedness {
-            ApIntSignedness::Unsigned => i128::try_from(value.try_zext_u128()?).ok(),
-            ApIntSignedness::Signed => value.try_sext_i128(),
+            Signedness::Unsigned => i128::try_from(value.try_zext_u128()?).ok(),
+            Signedness::Signed => value.try_sext_i128(),
         },
     }
 }
@@ -1587,9 +1587,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let value = ApInt::from_string(width, lit.digits, 16)
                     .map_err(|_| self.expected("valid hexadecimal integer literal"))?;
                 let signedness = if matches!(lit.base, NumBase::HexSigned) {
-                    ApIntSignedness::Signed
+                    Signedness::Signed
                 } else {
-                    ApIntSignedness::Unsigned
+                    Signedness::Unsigned
                 };
                 ParsedApsInt::Hex { signedness, value }
             }
@@ -2209,11 +2209,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                 }
                 self.expect_punct(PunctKind::RParen, "')' closing specialized metadata")?;
-                Ok(llvmkit_ir::metadata::MetadataKind::Specialized(
-                    llvmkit_ir::metadata::SpecializedMetadataNode::new(kind)
-                        .distinct(distinct)
-                        .with_fields(fields),
-                ))
+                Ok(llvmkit_ir::metadata::MetadataKind::Specialized({
+                    let mut node = llvmkit_ir::metadata::SpecializedMetadataNode::new(kind);
+                    if distinct {
+                        node = node.distinct();
+                    }
+                    node.with_fields(fields)
+                }))
             }
             Token::MetadataVar(bytes) => {
                 let name = std::str::from_utf8(bytes.as_ref())
@@ -2240,11 +2242,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                 }
                 self.expect_punct(PunctKind::RParen, "')' closing specialized metadata")?;
-                Ok(llvmkit_ir::metadata::MetadataKind::Specialized(
-                    llvmkit_ir::metadata::SpecializedMetadataNode::new(kind)
-                        .distinct(distinct)
-                        .with_fields(fields),
-                ))
+                Ok(llvmkit_ir::metadata::MetadataKind::Specialized({
+                    let mut node = llvmkit_ir::metadata::SpecializedMetadataNode::new(kind);
+                    if distinct {
+                        node = node.distinct();
+                    }
+                    node.with_fields(fields)
+                }))
             }
             Token::StringConstant(_) => {
                 let s = self.parse_string_constant("metadata string")?;
@@ -2544,7 +2548,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // Numbered types are anonymous in the IR; we still create a
                 // fresh literal struct slot to represent the body.
                 self.module
-                    .struct_type(core::iter::empty::<Type<'ctx, B>>(), false)
+                    .struct_type(core::iter::empty::<Type<'ctx, B>>())
             }
             _ => unreachable!("parse_struct_definition called without a name xor slot"),
         };
@@ -2569,7 +2573,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     // upstream never re-uses the name slot, so we keep the
                     // freshly built handle and the literal struct produced
                     // by `module.struct_type` as the table entry below.
-                    let lit = self.module.struct_type(elements, packed);
+                    let lit = if packed {
+                        self.module.packed_struct_type(elements)
+                    } else {
+                        self.module.struct_type(elements)
+                    };
                     self.numbered_types.insert(
                         match slot {
                             Some(slot) => slot,
@@ -2657,7 +2665,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                     Token::LBrace => {
                         let (elems, packed) = self.parse_struct_body()?;
-                        self.module.struct_type(elems, packed).as_type()
+                        if packed {
+                            self.module.packed_struct_type(elems).as_type()
+                        } else {
+                            self.module.struct_type(elems).as_type()
+                        }
                     }
                     Token::Less => {
                         // `<` introduces vector or `<{ packed-struct }>`.
@@ -2665,7 +2677,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         if matches!(self.peek(), Token::LBrace) {
                             let (elems, _was_packed_redundant) = self.parse_struct_body_braces()?;
                             self.expect_punct(PunctKind::Greater, "'>' at end of packed struct")?;
-                            self.module.struct_type(elems, true).as_type()
+                            self.module.packed_struct_type(elems).as_type()
                         } else {
                             self.parse_array_or_vector_after_open(true)?
                         }
@@ -2947,7 +2959,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 expected: "vector element count fits in u32".into(),
                 loc: DiagLoc::span(self.loc()),
             })?;
-            let v = self.module.vector_type(elem, n32, scalable);
+            let v = if scalable {
+                self.module.scalable_vector_type(elem, n32)
+            } else {
+                self.module.vector_type(elem, n32)
+            };
             Ok(v.as_type())
         } else {
             self.expect_punct(PunctKind::RSquare, "']' at end of array type")?;
@@ -2996,7 +3012,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
         }
         self.expect_punct(PunctKind::RParen, "')' to close function type")?;
-        let fn_ty = self.module.fn_type(ret, params, var_args);
+        let fn_ty = function_type_with_variadic(self.module, ret, params, var_args);
         Ok(fn_ty.as_type())
     }
 
@@ -3053,7 +3069,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // definition to update the table entry.
         let st = self
             .module
-            .struct_type(core::iter::empty::<Type<'ctx, B>>(), false);
+            .struct_type(core::iter::empty::<Type<'ctx, B>>());
         self.numbered_types
             .insert(id, TypeEntry { ty: st.as_type() });
         st.as_type()
@@ -3246,9 +3262,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .thread_local_mode(thread_local_mode)
             .unnamed_addr(unnamed_addr)
             .address_space(address_space)
-            .externally_initialized(externally_initialized)
-            .align(align)
-            .constant(is_constant);
+            .align(align);
+        if externally_initialized {
+            builder = builder.externally_initialized();
+        }
+        if is_constant {
+            builder = builder.constant();
+        }
         if let Some(c) = initializer {
             builder = builder.initializer(c);
         }
@@ -5556,7 +5576,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let suffix = self.parse_optional_function_suffix(&mut attrs)?;
 
-        let fn_ty = self.module.fn_type(ret_ty, params, var_args);
+        let fn_ty = function_type_with_variadic(self.module, ret_ty, params, var_args);
         match resolve_intrinsic_name(&name) {
             IntrinsicNameResolution::NonIntrinsic => {}
             IntrinsicNameResolution::UnknownIntrinsic => {
@@ -5845,7 +5865,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let suffix = self.parse_optional_function_suffix(&mut attrs)?;
 
-        let fn_ty = self.module.fn_type(ret_ty, param_types, var_args);
+        let fn_ty = function_type_with_variadic(self.module, ret_ty, param_types, var_args);
         let existing_by_id = match &name_id {
             NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
                 GlobalRef::Function(f) => Some(*f),
@@ -7807,7 +7827,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         .fast_math_flags(fmf);
         let parsed_fn_ty = match callee_ty.into_type_enum() {
             AnyTypeEnum::Function(fn_ty) => fn_ty,
-            _ => self.module.fn_type(callee_ty, arg_tys, var_args),
+            _ => function_type_with_variadic(self.module, callee_ty, arg_tys, var_args),
         };
         // `LLParser::parseCall`: "fast-math-flags specified for call without
         // floating-point scalar or vector return type".
@@ -8068,16 +8088,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     loc: DiagLoc::span(loc),
                 }),
             ParsedDirectCallee::InlineAsm(data) => Ok(ParsedCallee::InlineAsm(
-                self.module.inline_asm(
-                    parsed_fn_ty,
-                    data.asm,
-                    data.constraints,
-                    llvmkit_ir::InlineAsmOptions::new()
-                        .side_effects(data.has_side_effects)
-                        .align_stack(data.is_align_stack)
-                        .with_dialect(data.dialect)
-                        .with_can_unwind(data.can_unwind),
-                ),
+                self.module
+                    .inline_asm(parsed_fn_ty, data.asm, data.constraints, {
+                        let mut options =
+                            llvmkit_ir::InlineAsmOptions::new().with_dialect(data.dialect);
+                        if data.has_side_effects {
+                            options = options.side_effects();
+                        }
+                        if data.is_align_stack {
+                            options = options.align_stack();
+                        }
+                        if data.can_unwind {
+                            options = options.unwind();
+                        }
+                        options
+                    }),
             )),
             ParsedDirectCallee::Value { v, loc } => {
                 // Mirrors `PerFunctionState::getVal`'s type check: whatever
@@ -8638,7 +8663,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // type IS the call-site type; otherwise infer from the arguments.
         let parsed_fn_ty = match callee_ty.into_type_enum() {
             AnyTypeEnum::Function(fn_ty) => fn_ty,
-            _ => self.module.fn_type(callee_ty, arg_tys, var_args),
+            _ => function_type_with_variadic(self.module, callee_ty, arg_tys, var_args),
         };
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty)?;
         let name = result_name.as_str();
@@ -8777,7 +8802,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // type IS the call-site type; otherwise infer from the arguments.
         let parsed_fn_ty = match callee_ty.into_type_enum() {
             AnyTypeEnum::Function(fn_ty) => fn_ty,
-            _ => self.module.fn_type(callee_ty, arg_tys, var_args),
+            _ => function_type_with_variadic(self.module, callee_ty, arg_tys, var_args),
         };
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty)?;
         let name = result_name.as_str();
@@ -9881,5 +9906,27 @@ mod tests {
     #[test]
     fn parses_source_filename_directive() {
         parse("source_filename = \"a.c\"\n").unwrap();
+    }
+}
+
+/// The one legitimate runtime-variadic consumer: parsed IR discovers
+/// `...` at run time, so this private choke point dispatches between
+/// [`Module::function_type`] and [`Module::variadic_function_type`].
+fn function_type_with_variadic<'ctx, B, I, R, T>(
+    module: &'ctx Module<B, Unverified>,
+    return_type: R,
+    parameters: I,
+    var_args: bool,
+) -> llvmkit_ir::FunctionType<'ctx, B>
+where
+    B: ModuleBrand + 'ctx,
+    I: IntoIterator<Item = T>,
+    R: Into<llvmkit_ir::Type<'ctx, B>>,
+    T: Into<llvmkit_ir::Type<'ctx, B>>,
+{
+    if var_args {
+        module.variadic_function_type(return_type, parameters)
+    } else {
+        module.function_type(return_type, parameters)
     }
 }

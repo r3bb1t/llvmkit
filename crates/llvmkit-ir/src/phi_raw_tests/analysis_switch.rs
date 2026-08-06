@@ -108,7 +108,7 @@ fn build_switch_merge<'ctx, B: crate::ModuleBrand + 'ctx>(
     m: &'ctx Module<B, crate::Unverified>,
 ) -> SwitchMergeBuild<B> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let dflt = m.view(f).append_basic_block(m, "dflt");
@@ -287,7 +287,7 @@ fn build_switch_default_parallel<'ctx, B: crate::ModuleBrand + 'ctx>(
     m: &'ctx Module<B, crate::Unverified>,
 ) -> SwitchDefaultParallelBuild<B> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let mid = m.view(f).append_basic_block(m, "mid");

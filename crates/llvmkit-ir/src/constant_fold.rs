@@ -4,7 +4,7 @@
 
 use super::align::Align;
 use super::ap_float::{ApFloatCmpResult, ApFloatSemantics, ApFloatSign, NanPayload};
-use super::ap_int::{ApInt, ApIntSignedness};
+use super::ap_int::{ApInt, Signedness};
 use super::array_len::ArrLenDyn;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::constant::{
@@ -675,8 +675,8 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
                 return Ok(None);
             };
             let signedness = match opcode {
-                CastOpcode::FpToSI => ApIntSignedness::Signed,
-                _ => ApIntSignedness::Unsigned,
+                CastOpcode::FpToSI => Signedness::Signed,
+                _ => Signedness::Unsigned,
             };
             let (result, status, _) = src.ap_float().convert_to_integer(
                 dst_ty.bit_width(),
@@ -696,8 +696,8 @@ pub fn constant_fold_cast_instruction<'ctx, B: ModuleBrand + 'ctx>(
                 return Ok(None);
             };
             let signedness = match opcode {
-                CastOpcode::SIToFp => ApIntSignedness::Signed,
-                _ => ApIntSignedness::Unsigned,
+                CastOpcode::SIToFp => Signedness::Signed,
+                _ => Signedness::Unsigned,
             };
             let (result, _) = crate::ApFloat::convert_from_ap_int(
                 dst_ty.semantics(),
@@ -1684,11 +1684,9 @@ pub fn constant_fold_shuffle_vector_instruction<'ctx, B: ModuleBrand + 'ctx>(
     let Ok(result_lanes) = u32::try_from(mask.len()) else {
         return Ok(None);
     };
-    let result_ty = lhs
-        .as_erased()
-        .module()
-        .vector_type(element_ty, result_lanes, scalable)
-        .as_type();
+    let result_ty =
+        vector_type_with_scalability(lhs.as_erased().module(), element_ty, result_lanes, scalable)
+            .as_type();
     if mask
         .iter()
         .all(|element| *element == ShuffleMaskElem::Poison)
@@ -1884,10 +1882,7 @@ pub(crate) fn gep_result_type<'ctx, B: ModuleBrand + 'ctx>(
     let Some((lanes, scalable)) = gep_operand_vector_shape(pointer_ty, indices)? else {
         return Ok(scalar_ptr_ty);
     };
-    Ok(pointer_ty
-        .module()
-        .vector_type(scalar_ptr_ty, lanes, scalable)
-        .as_type())
+    Ok(vector_type_with_scalability(pointer_ty.module(), scalar_ptr_ty, lanes, scalable).as_type())
 }
 
 fn gep_operand_vector_shape<'ctx, B: ModuleBrand + 'ctx>(
@@ -2375,10 +2370,7 @@ fn fold_bitcast<'ctx, B: ModuleBrand + 'ctx>(
         && (ConstantIntValue::<IntDyn, B>::try_from(operand).is_ok()
             || ConstantFloatValue::<FloatDyn, B>::try_from(operand).is_ok())
     {
-        let vector_ty = operand
-            .as_erased()
-            .module()
-            .vector_type(operand.ty(), 1, false);
+        let vector_ty = operand.as_erased().module().vector_type(operand.ty(), 1);
         let vector = vector_ty.const_vector::<Constant<'ctx, B>, _>([operand])?;
         return match operand.as_erased().module().core_ref().constant_expr(
             dest_ty,
@@ -2558,7 +2550,7 @@ fn null_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
         let Ok(lane_count) = usize::try_from(lanes) else {
             return Ok(None);
         };
-        let vector_ty = module.vector_type(element_ty, lanes, scalable);
+        let vector_ty = vector_type_with_scalability(module, element_ty, lanes, scalable);
         return vector_ty
             .const_vector((0..lane_count).map(|_| element))
             .map(|constant| Some(constant.as_constant()));
@@ -2648,9 +2640,7 @@ fn compare_result_type<'ctx, B: ModuleBrand + 'ctx>(operand_ty: Type<'ctx, B>) -
     let module = operand_ty.module();
     let bool_ty: IntType<'ctx, bool, B> = IntType::new(module.context().int_type(1), module);
     if let Some((_, lanes, scalable)) = operand_ty.data().as_vector() {
-        module
-            .vector_type(bool_ty.as_type(), lanes, scalable)
-            .as_type()
+        vector_type_with_scalability(module, bool_ty.as_type(), lanes, scalable).as_type()
     } else {
         bool_ty.as_type()
     }
@@ -2872,7 +2862,7 @@ fn all_ones_constant_for_type<'ctx, B: ModuleBrand + 'ctx>(
         let Ok(lane_count) = usize::try_from(lanes) else {
             return Ok(None);
         };
-        let vector_ty = module.vector_type(element_ty, lanes, scalable);
+        let vector_ty = vector_type_with_scalability(module, element_ty, lanes, scalable);
         return vector_ty
             .const_vector((0..lane_count).map(|_| element))
             .map(|constant| Some(constant.as_constant()));
@@ -3181,4 +3171,23 @@ fn is_zero_int_constant<'ctx, B: ModuleBrand + 'ctx>(constant: Constant<'ctx, B>
 
 fn poison_for<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Constant<'ctx, B> {
     ty.poison().as_constant()
+}
+
+/// Runtime-scalability choke point for the folder's vector rebuilds: parsed
+/// or analyzed vectors carry `scalable` as data, so this dispatches between
+/// [`ModuleView::vector_type`] and [`ModuleView::scalable_vector_type`].
+fn vector_type_with_scalability<'ctx, B: ModuleBrand + 'ctx, T>(
+    module: ModuleView<'ctx, B>,
+    element: T,
+    lanes: u32,
+    scalable: bool,
+) -> VectorType<'ctx, ElemDyn, LenDyn, B>
+where
+    T: Into<Type<'ctx, B>>,
+{
+    if scalable {
+        module.scalable_vector_type(element, lanes)
+    } else {
+        module.vector_type(element, lanes)
+    }
 }

@@ -37,7 +37,7 @@ use llvmkit_ir::{
 fn vertical_slice_compiles_and_runs() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -88,7 +88,7 @@ fn mismatched_widths_error_at_runtime_when_dyn() -> Result<(), IrError> {
     // intentionally erase the width.
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i64_ty.as_type()]);
     let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -136,7 +136,7 @@ fn argument_to_int_value_narrowing_validates_type() -> Result<(), IrError> {
     // A `double` argument cannot narrow to `IntValue<i32>`.
     let f64_ty = m.f64_type();
     let void = m.void_type();
-    let fn_ty = m.fn_type(void.as_type(), [f64_ty.as_type()], false);
+    let fn_ty = m.function_type(void.as_type(), [f64_ty.as_type()]);
     let f = m.add_function_dyn("takes_double", fn_ty, Linkage::External)?;
     let arg = m.view(f).param(0)?;
     let err: Result<IntValue<'_, i32, _>, IrError> = IntValue::try_from(arg);
@@ -151,7 +151,7 @@ fn argument_to_int_value_narrowing_validates_type() -> Result<(), IrError> {
 fn duplicate_function_name_errors() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     let void = m.void_type();
-    let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let _ = m.add_function_dyn("once", fn_ty, Linkage::External)?;
     let err = m
         .add_function_dyn("once", fn_ty, Linkage::External)
@@ -168,7 +168,7 @@ fn function_builder_chains_options() -> Result<(), IrError> {
     let m = module_new!("demo")?;
     use llvmkit_ir::{AttrIndex, AttrKind, Attribute, CallingConv};
     let void = m.void_type();
-    let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m
         .function_builder::<(), _>("worker", fn_ty)
         .linkage(Linkage::Internal)
@@ -206,7 +206,7 @@ fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
     // type returns `IrError::ReturnTypeMismatch` at runtime.
     let i32_ty = m.i32_type();
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i32_ty, [i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i64_ty.as_type()]);
     let f = m.add_function_dyn("mix", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new(&m).position_at_end(entry);
@@ -225,7 +225,7 @@ fn dyn_path_keeps_runtime_return_check() -> Result<(), IrError> {
 fn function_value_into_iter_yields_blocks_in_order() -> Result<(), IrError> {
     let m = module_new!("fv-into-iter")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     m.view(f).append_basic_block(&m, "entry");
     m.view(f).append_basic_block(&m, "mid");

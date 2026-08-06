@@ -21,14 +21,10 @@ use llvmkit_ir::{Dyn, IntValue, IrBuilder, Len, Linkage, VectorValue, module_new
 fn typed_vector_binops_match_dyn_golden() {
     let m = module_new!("vtyped").expect("fresh module");
     let i64_ty = m.i64_type();
-    let vec_ty = m.vector_type(i64_ty.as_type(), 2, false);
+    let vec_ty = m.vector_type(i64_ty.as_type(), 2);
 
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        [vec_ty.as_type(), vec_ty.as_type()],
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
@@ -89,9 +85,9 @@ fn typed_vector_binops_match_dyn_golden() {
 fn typed_extract_returns_typed_element() {
     let m = module_new!("vextract").expect("fresh module");
     let i64_ty = m.i64_type();
-    let vec_ty = m.vector_type(i64_ty.as_type(), 2, false);
+    let vec_ty = m.vector_type(i64_ty.as_type(), 2);
 
-    let fn_ty = m.fn_type(i64_ty.as_type(), [vec_ty.as_type()], false);
+    let fn_ty = m.function_type(i64_ty.as_type(), [vec_ty.as_type()]);
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
@@ -130,7 +126,7 @@ fn typed_splat_element_from_scalar_length_free() {
     let m = module_new!("vsplat").expect("fresh module");
     let i32_ty = m.i32_type();
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [i32_ty.as_type()]);
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");

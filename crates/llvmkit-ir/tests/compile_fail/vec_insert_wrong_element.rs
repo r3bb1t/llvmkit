@@ -13,8 +13,8 @@ fn main() {
     let m = Module::dynamic("vec-insert-wrong-elem");
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
-    let v_i32 = m.vector_type(i32_ty.as_type(), 4, false);
-    let fn_ty = m.fn_type(v_i32.as_type(), [v_i32.as_type(), f32_ty.as_type()], false);
+    let v_i32 = m.vector_type(i32_ty.as_type(), 4);
+    let fn_ty = m.function_type(v_i32.as_type(), [v_i32.as_type(), f32_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);

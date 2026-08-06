@@ -37,7 +37,7 @@ use llvmkit_ir::{
 fn plain_br_into_param_block_errors() -> Result<(), IrError> {
     let m = module_new!("plain_br_guard")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -73,7 +73,7 @@ fn plain_br_into_param_block_errors() -> Result<(), IrError> {
 fn plain_cond_br_into_param_block_errors_on_either_arm() -> Result<(), IrError> {
     let m = module_new!("plain_cond_br_guard")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let then_entry = m.view(f).append_basic_block(&m, "then_entry");
     let else_entry = m.view(f).append_basic_block(&m, "else_entry");
@@ -114,7 +114,7 @@ fn plain_cond_br_into_param_block_errors_on_either_arm() -> Result<(), IrError> 
 fn plain_switch_into_param_block_errors_on_default_and_case() -> Result<(), IrError> {
     let m = module_new!("plain_switch_guard")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let default_entry = m.view(f).append_basic_block(&m, "default_entry");
     let case_entry = m.view(f).append_basic_block(&m, "case_entry");
@@ -166,13 +166,9 @@ fn plain_invoke_into_param_block_errors_on_either_edge() -> Result<(), IrError> 
     let m = module_new!("plain_invoke_guard")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let callee_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let normal_entry = m.view(f).append_basic_block(&m, "normal_entry");
     let unwind_entry = m.view(f).append_basic_block(&m, "unwind_entry");
@@ -236,7 +232,7 @@ fn indirectbr_destination_into_param_block_errors() -> Result<(), IrError> {
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -270,17 +266,9 @@ fn plain_callbr_into_param_block_errors() -> Result<(), IrError> {
     let m = module_new!("callbr_guard")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let callee_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let default_entry = m.view(f).append_basic_block(&m, "default_entry");
     let indirect_entry = m.view(f).append_basic_block(&m, "indirect_entry");
@@ -341,7 +329,7 @@ fn plain_callbr_into_param_block_errors() -> Result<(), IrError> {
 fn plain_branch_into_auto_ssa_phi_block_still_builds() -> Result<(), IrError> {
     let m = module_new!("auto_ssa_not_parameterised")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let mut state = SsaState::for_function(&m, m.view(f))?;
     let mut b = SsaBuilder::for_function(&m, m.view(f), &mut state)?;
@@ -396,7 +384,7 @@ fn plain_branch_into_auto_ssa_phi_block_still_builds() -> Result<(), IrError> {
 fn switch_with_args_authors_a_sil_style_loop() -> Result<(), IrError> {
     let m = module_new!("switch_block_args_loop")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -467,7 +455,7 @@ fn switch_with_args_authors_a_sil_style_loop() -> Result<(), IrError> {
 fn switch_with_args_arity_mismatch_errors() -> Result<(), IrError> {
     let m = module_new!("switch_block_args_arity")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let default_entry = m.view(f).append_basic_block(&m, "default_entry");
     let case_entry = m.view(f).append_basic_block(&m, "case_entry");
@@ -519,7 +507,7 @@ fn switch_with_args_type_mismatch_errors() -> Result<(), IrError> {
     let m = module_new!("switch_block_args_type")?;
     let i32_ty = m.i32_type();
     let f64_ty = m.f64_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), f64_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), f64_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let plain = m.view(f).append_basic_block(&m, "plain");
@@ -552,7 +540,7 @@ fn switch_with_args_type_mismatch_errors() -> Result<(), IrError> {
 fn switch_dyn_with_args_seeds_default_and_case() -> Result<(), IrError> {
     let m = module_new!("switch_dyn_block_args")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -607,7 +595,7 @@ fn invoke_with_args_seeds_both_edges() -> Result<(), IrError> {
     let m = module_new!("invoke_block_args")?;
     let i32_ty = m.i32_type();
     let callee = m.add_typed_function::<(), (), _>("callee", Linkage::External)?;
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -658,13 +646,9 @@ fn invoke_dyn_with_args_seeds_edges_and_checks_arity() -> Result<(), IrError> {
     let m = module_new!("invoke_dyn_block_args")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
-    let callee_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let bad_entry = m.view(f).append_basic_block(&m, "bad_entry");

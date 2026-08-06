@@ -15,8 +15,8 @@
 //! definition, not a second implementation of the analysis.
 
 use llvmkit_ir::{
-    ApInt, ApIntSignedness, ApIntTruncation, Dyn, IntValue, IrBuilder, IrError, Linkage, Module,
-    NoFolder, Value, ValueTrackingQuery, compute_max_significant_bits, compute_num_sign_bits,
+    ApInt, ApIntTruncation, Dyn, IntValue, IrBuilder, IrError, Linkage, Module, NoFolder,
+    Signedness, Value, ValueTrackingQuery, compute_max_significant_bits, compute_num_sign_bits,
 };
 
 /// An `i32` constant, built the way the fixtures spell one.
@@ -24,7 +24,7 @@ fn i32_const(value: i64) -> ApInt {
     ApInt::new(
         32,
         value as u64,
-        ApIntSignedness::Signed,
+        Signedness::Signed,
         ApIntTruncation::Truncate,
     )
     .expect("32-bit constant")
@@ -41,7 +41,7 @@ where
 {
     let m = Module::dynamic(name);
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty.as_type(), [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty.as_type(), [i32_ty.as_type()]);
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -260,7 +260,7 @@ fn sext_and_trunc_arms_never_over_report() -> Result<(), IrError> {
     let m = Module::dynamic("nsb-casts");
     let i8_ty = m.i8_type();
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty.as_type(), false);
+    let fn_ty = m.function_type_no_parameters(i32_ty.as_type());
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -287,7 +287,7 @@ fn sext_and_trunc_arms_never_over_report() -> Result<(), IrError> {
     let trunc_truth = ApInt::new(
         8,
         (-8_i64) as u64,
-        ApIntSignedness::Signed,
+        Signedness::Signed,
         ApIntTruncation::Truncate,
     )
     .expect("8-bit constant")

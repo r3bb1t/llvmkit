@@ -12,7 +12,7 @@
 //!
 //! # What is not modeled, and why
 //!
-//! - [`get_underlying_objects`] takes no `LoopInfo`. Upstream uses it for one
+//! - [`underlying_objects`] takes no `LoopInfo`. Upstream uses it for one
 //!   refinement — refusing to look through a loop-header phi whose underlying
 //!   object changes every iteration — and llvmkit has no loop analysis, so the
 //!   phi is always looked through. That is also upstream's behaviour at its own
@@ -25,7 +25,7 @@
 //!   parameter lets it *synthesise* `insertvalue` instructions to rebuild a
 //!   sub-aggregate; an analysis that edits the IR it is asked about has no
 //!   place here, and `std::nullopt` is upstream's own default.
-//! - [`get_constant_data_array_info`] does not port `ReadByteArrayFromGlobal`,
+//! - [`constant_data_array_info`] does not port `ReadByteArrayFromGlobal`,
 //!   the `ConstantFolding.cpp` helper that re-reads an arbitrary initializer as
 //!   bytes. Only initializers that are already an array of the requested
 //!   element width, or a zeroinitializer, are read. Declining to read narrows
@@ -46,13 +46,13 @@ use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::value_tracking::value_from_slot;
 use std::collections::HashSet;
 
-/// How many layers [`get_underlying_object`] peels before giving up.
+/// How many layers [`underlying_object`] peels before giving up.
 ///
 /// Ports `llvm::MaxLookupSearchDepth` (`ValueTracking.h`), the default of every
 /// `MaxLookup` parameter in this family.
 pub const MAX_LOOKUP_SEARCH_DEPTH: u32 = 10;
 
-/// How many distinct objects [`get_underlying_object_aggressive`] visits before
+/// How many distinct objects [`underlying_object_aggressive`] visits before
 /// falling back. Ports its local `MaxVisited`.
 const MAX_VISITED_AGGRESSIVE: usize = 8;
 
@@ -68,7 +68,7 @@ const MAX_VISITED_AGGRESSIVE: usize = 8;
 ///
 /// The result is not guaranteed to be an *identifiable* object — the walk stops
 /// at whatever it cannot peel, which may be a `load`, an argument, or `value`
-/// itself. [`get_underlying_objects_for_code_gen`] is the variant that insists
+/// itself. [`underlying_objects_for_code_gen`] is the variant that insists
 /// on identifiability.
 pub fn underlying_object<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
@@ -86,7 +86,7 @@ pub fn underlying_object<'ctx, B: ModuleBrand + 'ctx>(
     current
 }
 
-/// One step of [`get_underlying_object`]'s loop, or `None` when nothing peels.
+/// One step of [`underlying_object`]'s loop, or `None` when nothing peels.
 fn peel_one_layer<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<Value<'ctx, B>> {
     // `dyn_cast<GEPOperator>`: a `getelementptr` instruction or the constant
     // expression of the same name. Only a scalar pointer base peels — a vector
@@ -134,12 +134,12 @@ fn peel_one_layer<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> Option<
     }
 }
 
-/// Try harder than [`get_underlying_object`] to name a *single* object,
+/// Try harder than [`underlying_object`] to name a *single* object,
 /// following `select` and `phi` when every path agrees.
 ///
 /// Ports `llvm::getUnderlyingObjectAggressive`. When the paths disagree, or
 /// more than eight distinct objects turn up, the answer falls back to
-/// `get_underlying_object(value)`.
+/// `underlying_object(value)`.
 pub fn underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
 ) -> Value<'ctx, B> {
@@ -195,7 +195,7 @@ pub fn underlying_object_aggressive<'ctx, B: ModuleBrand + 'ctx>(
 /// Every object `value` may refer to, following `select` and `phi`.
 ///
 /// Ports `llvm::getUnderlyingObjects`. Where
-/// [`get_underlying_object_aggressive`] gives up on disagreement, this collects
+/// [`underlying_object_aggressive`] gives up on disagreement, this collects
 /// each answer: given `select %c, ptr %a, ptr %b` it returns both.
 pub fn underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
@@ -231,7 +231,7 @@ pub fn underlying_objects<'ctx, B: ModuleBrand + 'ctx>(
     objects
 }
 
-/// [`get_underlying_objects`] plus `inttoptr` chasing, insisting every result
+/// [`underlying_objects`] plus `inttoptr` chasing, insisting every result
 /// is an identifiable object.
 ///
 /// Ports `llvm::getUnderlyingObjectsForCodeGen`. Upstream returns a `bool` and
@@ -1115,7 +1115,7 @@ pub(crate) fn strip_pointer_casts_same_representation<'ctx, B: ModuleBrand + 'ct
 ///
 /// Not public: it belongs to `AliasAnalysis.h`, a surface the ValueTracking
 /// parity ledger does not track, and only
-/// [`get_underlying_objects_for_code_gen`] reads it.
+/// [`underlying_objects_for_code_gen`] reads it.
 fn is_identified_object<'ctx, B: ModuleBrand + 'ctx>(value: Value<'ctx, B>) -> bool {
     if matches!(
         instruction_kind(value),

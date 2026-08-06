@@ -3811,7 +3811,7 @@ mod tests {
         let callee = m
             .add_typed_function::<i32, (), _>("callee", Linkage::External)?
             .as_function();
-        let caller_ty = m.fn_type_no_params(m.i32_type(), false);
+        let caller_ty = m.function_type_no_parameters(m.i32_type());
         let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
         let entry = m.view(caller).append_basic_block(&m, "entry");
         let b = crate::IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

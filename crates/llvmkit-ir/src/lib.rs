@@ -165,7 +165,7 @@ pub use ap_float::{
     ApFloat, ApFloatCategory, ApFloatCmpResult, ApFloatNextDirection, ApFloatSemantics,
     ApFloatSign, ApFloatStatus, BinaryExponent, Exactness, LosesInfo, NanPayload, RoundingMode,
 };
-pub use ap_int::{ApInt, ApIntDivRem, ApIntRounding, ApIntSignedness, ApIntTruncation};
+pub use ap_int::{ApInt, ApIntDivRem, ApIntRounding, ApIntTruncation, Signedness};
 pub use argument::Argument;
 pub use atomic_ordering::AtomicOrdering;
 pub use atomicrmw_binop::AtomicRMWBinOp;
@@ -278,7 +278,7 @@ pub use ir_builder::{
     BuilderPositionState, CallBuilder, CallSiteConfig, InsertPoint, IrBuilder, Positioned,
     SelectArm, SelectNarrow, Unpositioned,
 };
-pub use known_bits::KnownBits;
+pub use known_bits::{AddSubOperation, KnownBits, ShiftAmountKnowledge};
 pub use marker::{Dyn, Ptr, ReturnMarker};
 pub use metadata::{
     MetadataAttachmentKind, MetadataAttachmentSet, MetadataField, MetadataFieldValue, MetadataId,

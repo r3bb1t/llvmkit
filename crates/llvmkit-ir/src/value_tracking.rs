@@ -7,6 +7,7 @@ use crate::analysis::{
     AllAnalysesOnFunction, CfgAnalyses, FunctionAnalysis, FunctionAnalysisInvalidator,
     FunctionAnalysisManager, FunctionAnalysisResult, PrefetchableAnalysis, PreservedAnalyses,
 };
+use crate::ap_int::Signedness;
 use crate::assumptions::{
     AssumptionCache, AssumptionSource, DomConditionCache, find_values_affected_by_condition,
     is_valid_assume_for_context,
@@ -20,9 +21,9 @@ use crate::constant_range::{
 use crate::data_layout::DataLayout;
 use crate::dominator_tree::{DominatorTree, DominatorTreeAnalysis};
 use crate::instr_types::{
-    AllocaInstData, BinaryOpData, BinaryOpcode, BranchKind, CastOpData, CastOpcode, CmpInstData,
-    ExtractElementInstData, GepInstData, InsertElementInstData, PhiData, ShuffleMaskElem,
-    ShuffleVectorInstData,
+    AShrFlags, AddFlags, AllocaInstData, BinaryOpData, BinaryOpcode, BranchKind, CastOpData,
+    CastOpcode, CmpInstData, ExtractElementInstData, GepInstData, InsertElementInstData, LShrFlags,
+    PhiData, SDivFlags, ShlFlags, ShuffleMaskElem, ShuffleVectorInstData, SubFlags, UDivFlags,
 };
 use crate::instruction::{InstructionData, InstructionKindData, InstructionView};
 use crate::intrinsics::{IntrinsicSemantic, semantic_for_callee};
@@ -34,7 +35,7 @@ use crate::speculation::program_undefined_for_value;
 use crate::r#type::{Type, TypeData, TypeKind, TypeSlot};
 use crate::value::{Value, ValueKindData, ValueSlot};
 use crate::vector_utils::splat_value;
-use crate::{ApInt, IrResult, KnownBits};
+use crate::{ApInt, IrResult, KnownBits, ShiftAmountKnowledge};
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use core::ops::Not;
@@ -629,8 +630,10 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             Ok(KnownBits::add_with_flags(
                 &lhs,
                 &rhs,
-                query.uses_instruction_info() && data.no_signed_wrap,
-                query.uses_instruction_info() && data.no_unsigned_wrap,
+                AddFlags::from_parts(
+                    query.uses_instruction_info() && data.no_unsigned_wrap,
+                    query.uses_instruction_info() && data.no_signed_wrap,
+                ),
             ))
         }
         InstructionKindData::Sub(data) => {
@@ -638,8 +641,10 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             Ok(KnownBits::sub_with_flags(
                 &lhs,
                 &rhs,
-                query.uses_instruction_info() && data.no_signed_wrap,
-                query.uses_instruction_info() && data.no_unsigned_wrap,
+                SubFlags::from_parts(
+                    query.uses_instruction_info() && data.no_unsigned_wrap,
+                    query.uses_instruction_info() && data.no_signed_wrap,
+                ),
             ))
         }
         InstructionKindData::Mul(data) => mul_known(value, data, query, depth, stack),
@@ -648,7 +653,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             Ok(KnownBits::udiv_with_exact(
                 &lhs,
                 &rhs,
-                query.uses_instruction_info() && data.is_exact,
+                UDivFlags::from_parts(query.uses_instruction_info() && data.is_exact),
             ))
         }
         InstructionKindData::SDiv(data) => {
@@ -656,7 +661,7 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             Ok(KnownBits::sdiv_with_exact(
                 &lhs,
                 &rhs,
-                query.uses_instruction_info() && data.is_exact,
+                SDivFlags::from_parts(query.uses_instruction_info() && data.is_exact),
             ))
         }
         InstructionKindData::URem(data) => {
@@ -670,9 +675,11 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             Ok(KnownBits::shl_with_flags(
                 &lhs,
                 &rhs,
-                query.uses_instruction_info() && data.no_unsigned_wrap,
-                query.uses_instruction_info() && data.no_signed_wrap,
-                false,
+                ShlFlags::from_parts(
+                    query.uses_instruction_info() && data.no_unsigned_wrap,
+                    query.uses_instruction_info() && data.no_signed_wrap,
+                ),
+                ShiftAmountKnowledge::MaybeZero,
             ))
         }
         InstructionKindData::LShr(data) => {
@@ -680,8 +687,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             Ok(KnownBits::lshr_with_flags(
                 &lhs,
                 &rhs,
-                false,
-                query.uses_instruction_info() && data.is_exact,
+                LShrFlags::from_parts(query.uses_instruction_info() && data.is_exact),
+                ShiftAmountKnowledge::MaybeZero,
             ))
         }
         InstructionKindData::AShr(data) => {
@@ -689,8 +696,8 @@ fn compute_instruction_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
             Ok(KnownBits::ashr_with_flags(
                 &lhs,
                 &rhs,
-                false,
-                query.uses_instruction_info() && data.is_exact,
+                AShrFlags::from_parts(query.uses_instruction_info() && data.is_exact),
+                ShiftAmountKnowledge::MaybeZero,
             ))
         }
         InstructionKindData::And(data) => {
@@ -4821,10 +4828,10 @@ pub fn is_known_not_undef_or_poison<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// `call` returns. Each omission only widens the answer.
 pub fn compute_constant_range<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
-    for_signed: bool,
+    signedness: Signedness,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<ConstantRange> {
-    compute_constant_range_inner(value, for_signed, query, 0)
+    compute_constant_range_inner(value, matches!(signedness, Signedness::Signed), query, 0)
 }
 
 fn compute_constant_range_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
@@ -4889,11 +4896,12 @@ fn compute_constant_range_inner<'a, 'ctx, B: ModuleBrand + 'ctx>(
 /// intersects them, and so does this.
 pub fn compute_constant_range_including_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
     value: Value<'ctx, B>,
-    for_signed: bool,
+    signedness: Signedness,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<ConstantRange> {
-    let from_bits = ConstantRange::from_known_bits(&compute_known_bits(value, query)?, for_signed);
-    let from_range = compute_constant_range(value, for_signed, query)?;
+    let for_signed = matches!(signedness, Signedness::Signed);
+    let from_bits = ConstantRange::from_known_bits(&compute_known_bits(value, query)?, signedness);
+    let from_range = compute_constant_range(value, signedness, query)?;
     Ok(from_bits.intersect_with(&from_range, preferred_for(for_signed)))
 }
 
@@ -4913,8 +4921,8 @@ pub fn compute_overflow_for_unsigned_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
     rhs: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<OverflowResult> {
-    let lhs_range = compute_constant_range_including_known_bits(lhs, false, query)?;
-    let rhs_range = compute_constant_range_including_known_bits(rhs, false, query)?;
+    let lhs_range = compute_constant_range_including_known_bits(lhs, Signedness::Unsigned, query)?;
+    let rhs_range = compute_constant_range_including_known_bits(rhs, Signedness::Unsigned, query)?;
     Ok(lhs_range.unsigned_add_may_overflow(&rhs_range))
 }
 
@@ -4931,8 +4939,8 @@ pub fn compute_overflow_for_signed_add<'a, 'ctx, B: ModuleBrand + 'ctx>(
     rhs: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<OverflowResult> {
-    let lhs_range = compute_constant_range_including_known_bits(lhs, true, query)?;
-    let rhs_range = compute_constant_range_including_known_bits(rhs, true, query)?;
+    let lhs_range = compute_constant_range_including_known_bits(lhs, Signedness::Signed, query)?;
+    let rhs_range = compute_constant_range_including_known_bits(rhs, Signedness::Signed, query)?;
     Ok(lhs_range.signed_add_may_overflow(&rhs_range))
 }
 
@@ -4943,8 +4951,8 @@ pub fn compute_overflow_for_unsigned_sub<'a, 'ctx, B: ModuleBrand + 'ctx>(
     rhs: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<OverflowResult> {
-    let lhs_range = compute_constant_range_including_known_bits(lhs, false, query)?;
-    let rhs_range = compute_constant_range_including_known_bits(rhs, false, query)?;
+    let lhs_range = compute_constant_range_including_known_bits(lhs, Signedness::Unsigned, query)?;
+    let rhs_range = compute_constant_range_including_known_bits(rhs, Signedness::Unsigned, query)?;
     Ok(lhs_range.unsigned_sub_may_overflow(&rhs_range))
 }
 
@@ -4955,8 +4963,8 @@ pub fn compute_overflow_for_signed_sub<'a, 'ctx, B: ModuleBrand + 'ctx>(
     rhs: Value<'ctx, B>,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<OverflowResult> {
-    let lhs_range = compute_constant_range_including_known_bits(lhs, true, query)?;
-    let rhs_range = compute_constant_range_including_known_bits(rhs, true, query)?;
+    let lhs_range = compute_constant_range_including_known_bits(lhs, Signedness::Signed, query)?;
+    let rhs_range = compute_constant_range_including_known_bits(rhs, Signedness::Signed, query)?;
     Ok(lhs_range.signed_sub_may_overflow(&rhs_range))
 }
 
@@ -4971,8 +4979,8 @@ pub fn compute_overflow_for_unsigned_mul<'a, 'ctx, B: ModuleBrand + 'ctx>(
     is_nsw: bool,
     query: &ValueTrackingQuery<'a, 'ctx, B>,
 ) -> IrResult<OverflowResult> {
-    let lhs_range = compute_constant_range_including_known_bits(lhs, false, query)?;
-    let rhs_range = compute_constant_range_including_known_bits(rhs, false, query)?;
+    let lhs_range = compute_constant_range_including_known_bits(lhs, Signedness::Unsigned, query)?;
+    let rhs_range = compute_constant_range_including_known_bits(rhs, Signedness::Unsigned, query)?;
     if is_nsw && lhs_range.is_all_non_negative() && rhs_range.is_all_non_negative() {
         return Ok(OverflowResult::NeverOverflows);
     }
@@ -5987,8 +5995,8 @@ mod tests {
         let i8_ty = m.i8_type();
         let i32_ty = m.i32_type();
         let ptr1_ty = m.ptr_type(1);
-        let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2, false);
-        let fn_ty = m.fn_type_no_params(m.void_type(), false);
+        let ptr_vec_ty = m.vector_type(ptr1_ty.as_type(), 2);
+        let fn_ty = m.function_type_no_parameters(m.void_type());
         let f = m.add_function_dyn("f", fn_ty, crate::Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 

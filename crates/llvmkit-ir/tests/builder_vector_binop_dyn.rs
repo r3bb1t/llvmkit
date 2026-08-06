@@ -12,14 +12,10 @@ use llvmkit_ir::{Dyn, IrBuilder, Linkage, module_new};
 fn vector_binops_emit_elementwise_ir() {
     let m = module_new!("vbinop").expect("fresh module");
     let i64_ty = m.i64_type();
-    let vec_ty = m.vector_type(i64_ty.as_type(), 2, false);
+    let vec_ty = m.vector_type(i64_ty.as_type(), 2);
 
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        [vec_ty.as_type(), vec_ty.as_type()],
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), [vec_ty.as_type(), vec_ty.as_type()]);
     let f = m
         .add_function_dyn("g", fn_ty, Linkage::External)
         .expect("g");
@@ -62,11 +58,7 @@ fn vector_binops_emit_elementwise_ir() {
 fn scalar_binop_dyn_still_works() {
     let m = module_new!("sbinop").expect("fresh module");
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(
-        i64_ty.as_type(),
-        [i64_ty.as_type(), i64_ty.as_type()],
-        false,
-    );
+    let fn_ty = m.function_type(i64_ty.as_type(), [i64_ty.as_type(), i64_ty.as_type()]);
     let f = m
         .add_function_dyn("h", fn_ty, Linkage::External)
         .expect("h");

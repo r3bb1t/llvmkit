@@ -14,11 +14,9 @@ fn main() {
     let i32_ty = m.i32_type();
     let f32_ty = m.f32_type();
     let arr_i32 = m.array_type_n::<i32, 4>();
-    let fn_ty = m.fn_type(
+    let fn_ty = m.function_type(
         arr_i32.as_type(),
-        [arr_i32.as_type(), f32_ty.as_type()],
-        false,
-    );
+        [arr_i32.as_type(), f32_ty.as_type()]);
     let f = m.add_function_dyn("g", fn_ty, Linkage::External).unwrap();
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<llvmkit_ir::marker::Dyn>(&m).position_at_end(entry);

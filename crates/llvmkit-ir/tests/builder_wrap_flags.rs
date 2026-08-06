@@ -22,7 +22,7 @@ use llvmkit_ir::{
 fn add_nuw_nsw_flags_round_trip() -> Result<(), IrError> {
     let m = module_new!("flags")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("addf", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -50,7 +50,7 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
     // verifying the flags propagate to the per-opcode handle.
     let m = module_new!("f")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
 
     let sub_fn = m.add_function_dyn("sub_f", fn_ty, Linkage::External)?;
     let entry = m.view(sub_fn).append_basic_block(&m, "entry");
@@ -106,7 +106,7 @@ fn sub_mul_shl_flags_round_trip() -> Result<(), IrError> {
 fn div_shr_exact_round_trip() -> Result<(), IrError> {
     let m = module_new!("e")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
 
     let udiv_fn = m.add_function_dyn("udiv_f", fn_ty, Linkage::External)?;
     let entry = m.view(udiv_fn).append_basic_block(&m, "entry");

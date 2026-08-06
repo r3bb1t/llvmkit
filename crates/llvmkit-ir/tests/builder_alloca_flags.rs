@@ -12,7 +12,7 @@ use llvmkit_ir::{
 #[test]
 fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
     let m = module_new!("se")?;
-    let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -38,7 +38,7 @@ fn swifterror_pointer_alloca_verifies_and_prints() -> Result<(), IrError> {
 #[test]
 fn inalloca_alloca_prints() -> Result<(), IrError> {
     let m = module_new!("ia")?;
-    let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -60,7 +60,7 @@ fn inalloca_alloca_prints() -> Result<(), IrError> {
 #[test]
 fn swifterror_non_pointer_alloca_rejected() -> Result<(), IrError> {
     let m = module_new!("se")?;
-    let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -89,7 +89,7 @@ fn swifterror_non_pointer_alloca_rejected() -> Result<(), IrError> {
 fn swifterror_array_alloca_rejected() -> Result<(), IrError> {
     let m = module_new!("se")?;
     let i32_ty = m.custom_width_int_type(32)?;
-    let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
@@ -120,7 +120,7 @@ fn swifterror_array_alloca_rejected() -> Result<(), IrError> {
 fn swifterror_size_one_alloca_verifies_and_drops_canonical_size() -> Result<(), IrError> {
     let m = module_new!("se1")?;
     let i32_ty = m.custom_width_int_type(32)?;
-    let fn_ty = m.fn_type_no_params(m.void_type().as_type(), false);
+    let fn_ty = m.function_type_no_parameters(m.void_type().as_type());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);

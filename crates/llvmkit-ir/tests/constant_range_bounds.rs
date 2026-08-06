@@ -7,17 +7,12 @@
 //! the wrap-around cases. Upstream calls that pairing
 //! `EnumerateInterestingConstantRanges` and uses it throughout the file.
 
-use llvmkit_ir::{ApInt, ApIntSignedness, ApIntTruncation, ConstantRange};
+use llvmkit_ir::{ApInt, ApIntTruncation, ConstantRange, Signedness};
 
 /// An `n`-bit value from a `u64`.
 fn ap(bits: u32, value: u64) -> ApInt {
-    ApInt::new(
-        bits,
-        value,
-        ApIntSignedness::Unsigned,
-        ApIntTruncation::Truncate,
-    )
-    .expect("in-range constant")
+    ApInt::new(bits, value, Signedness::Unsigned, ApIntTruncation::Truncate)
+        .expect("in-range constant")
 }
 
 /// Ports `EnumerateConstantRanges`: every legal range at `bits` wide.
@@ -253,12 +248,15 @@ fn known_bits_conversions_are_sound_exhaustively() {
 
         // fromKnownBits: the range built from those bits still holds every
         // member, in both the signed and unsigned domain.
-        for is_signed in [false, true] {
-            let rebuilt = ConstantRange::from_known_bits(&known, is_signed);
+        for signedness in [
+            llvmkit_ir::Signedness::Unsigned,
+            llvmkit_ir::Signedness::Signed,
+        ] {
+            let rebuilt = ConstantRange::from_known_bits(&known, signedness);
             foreach_member(range, |n| {
                 assert!(
                     rebuilt.contains(n),
-                    "{range:?}: from_known_bits(signed={is_signed}) dropped member {n:?}"
+                    "{range:?}: from_known_bits({signedness:?}) dropped member {n:?}"
                 );
             });
         }

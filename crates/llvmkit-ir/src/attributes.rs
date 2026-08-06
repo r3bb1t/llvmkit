@@ -647,8 +647,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Attribute<'ctx, B> {
             Self::Range { ty, lower, upper } => write!(
                 f,
                 "range({ty} {}, {})",
-                lower.to_string_radix(10, crate::ApIntSignedness::Signed),
-                upper.to_string_radix(10, crate::ApIntSignedness::Signed)
+                lower.to_string_radix(10, crate::Signedness::Signed),
+                upper.to_string_radix(10, crate::Signedness::Signed)
             ),
             Self::Memory(effects) => write!(f, "{effects}"),
             Self::NoFpClass(mask) => write!(f, "nofpclass({})", FpClassMaskNames(*mask)),
@@ -878,7 +878,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AttributeList<'ctx, B> {
     }
 
     /// Add `attr` at `index`. Convenience wrapper around
-    /// [`get_mut_or_default`](Self::get_mut_or_default).
+    /// [`or_default_mut`](Self::or_default_mut).
     pub fn add(&mut self, index: AttrIndex, attr: Attribute<'ctx, B>) {
         self.or_default_mut(index).add(attr);
     }

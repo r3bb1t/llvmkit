@@ -17,11 +17,7 @@ use llvmkit_ir::{Dyn, IrBuilder, IrError, Linkage, module_new};
 fn catchswitch_within_none_unwind_to_caller() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("instructions.funclets", fn_ty, Linkage::External)?;
     let cs1_block = m.view(f).append_basic_block(&m, "catchswitch1");
     let cp1_block = m.view(f).append_basic_block(&m, "catchpad1");
@@ -48,11 +44,7 @@ fn catchswitch_within_none_unwind_to_caller() -> Result<(), IrError> {
 fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let cs_block = m.view(f).append_basic_block(&m, "cs");
     let cp_block = m.view(f).append_basic_block(&m, "cp");
@@ -84,11 +76,7 @@ fn catchpad_within_catchswitch_empty_args() -> Result<(), IrError> {
 fn cleanuppad_within_none_empty_args() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -109,11 +97,7 @@ fn cleanuppad_within_none_empty_args() -> Result<(), IrError> {
 fn cleanupret_unwind_to_caller() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -139,11 +123,7 @@ fn cleanupret_unwind_to_caller() -> Result<(), IrError> {
 fn catchret_to_label() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("g", fn_ty, Linkage::External)?;
     let cs_block = m.view(f).append_basic_block(&m, "cs_block");
     let cp_block = m.view(f).append_basic_block(&m, "cp_block");

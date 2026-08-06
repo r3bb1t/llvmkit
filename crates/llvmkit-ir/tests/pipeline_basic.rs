@@ -33,7 +33,7 @@ fn build_ret_i32_named<'ctx, B: ModuleBrand + 'ctx>(
     name: &str,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let b = IrBuilder::new_for::<Dyn>(m).position_at_end(entry);
@@ -49,7 +49,7 @@ fn build_dead_add_named<'ctx, B: ModuleBrand + 'ctx>(
     name: &str,
 ) -> Result<FunctionId<Dyn, B>, IrError> {
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn(name, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(m, "entry");
     let b = IrBuilder::with_folder(m, NoFolder).position_at_end(entry);
@@ -361,7 +361,7 @@ fn for_each_function_mutating_downgrades_and_visits_defs() -> Result<(), IrError
     let f2 = build_dead_add_named(&m, "f2")?;
     // A declaration (no body) — must be skipped by `for_each_function`.
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let _decl = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
 
     assert_eq!(

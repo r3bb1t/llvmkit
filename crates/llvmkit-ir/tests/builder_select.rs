@@ -15,10 +15,9 @@ fn select_int_arms() -> Result<(), IrError> {
     let m = module_new!("s")?;
     let i32_ty = m.i32_type();
     let bool_ty = m.bool_type();
-    let fn_ty = m.fn_type(
+    let fn_ty = m.function_type(
         i32_ty,
         [bool_ty.as_type(), i32_ty.as_type(), i32_ty.as_type()],
-        false,
     );
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -42,10 +41,9 @@ fn select_fp_arms() -> Result<(), IrError> {
     let m = module_new!("s")?;
     let f64_ty = m.f64_type();
     let bool_ty = m.bool_type();
-    let fn_ty = m.fn_type(
+    let fn_ty = m.function_type(
         f64_ty,
         [bool_ty.as_type(), f64_ty.as_type(), f64_ty.as_type()],
-        false,
     );
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -69,10 +67,9 @@ fn select_pointer_arms() -> Result<(), IrError> {
     let m = module_new!("s")?;
     let ptr_ty = m.ptr_type(0);
     let bool_ty = m.bool_type();
-    let fn_ty = m.fn_type(
+    let fn_ty = m.function_type(
         ptr_ty.as_type(),
         [bool_ty.as_type(), ptr_ty.as_type(), ptr_ty.as_type()],
-        false,
     );
     let f = m.add_function_dyn("test", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
@@ -97,7 +94,7 @@ fn select_pointer_arms() -> Result<(), IrError> {
 fn default_constant_folder_folds_select_to_chosen_arm() -> Result<(), IrError> {
     let m = module_new!("select-fold")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("pick", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

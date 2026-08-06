@@ -19,7 +19,7 @@ fn inst<'ctx, B: ModuleBrand + 'ctx>(
 fn reachable_and_unreachable_block_dominance() -> Result<(), IrError> {
     let m = module_new!("dt_blocks")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let then_bb = m.view(f).append_basic_block(&m, "then");
@@ -74,7 +74,7 @@ fn reachable_and_unreachable_block_dominance() -> Result<(), IrError> {
 fn same_block_instruction_order_and_unreachable_use_semantics() -> Result<(), IrError> {
     let m = module_new!("dt_inst_order")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let dead = m.view(f).append_basic_block(&m, "dead");
@@ -115,7 +115,7 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
     let m = module_new!("dt_phi_use")?;
     let i32_ty = m.i32_type();
     let bool_ty = m.bool_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let then_bb = m.view(f).append_basic_block(&m, "then");
@@ -166,9 +166,9 @@ fn phi_operands_are_dominated_on_incoming_edges() -> Result<(), IrError> {
 fn invoke_result_dominates_normal_destination_but_not_unwind() -> Result<(), IrError> {
     let m = module_new!("dt_invoke")?;
     let i32_ty = m.i32_type();
-    let callee_ty = m.fn_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let callee_ty = m.function_type(i32_ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let caller_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", caller_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let normal = m.view(f).append_basic_block(&m, "normal");
@@ -213,7 +213,7 @@ fn duplicate_edges_do_not_dominate_successor() -> Result<(), IrError> {
     let m = module_new!("dt_non_unique_edge")?;
     let i32_ty = m.i32_type();
     let bool_ty = m.bool_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), bool_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;

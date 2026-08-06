@@ -337,7 +337,7 @@ fn a_named_brand_emits_byte_identical_ir() -> Result<(), IrError> {
         module: &'ctx Module<B, Unverified>,
     ) -> Result<String, IrError> {
         let i32_ty = module.i32_type();
-        let fn_ty = module.fn_type(i32_ty, [i32_ty.as_type()], false);
+        let fn_ty = module.function_type(i32_ty, [i32_ty.as_type()]);
         let f = module.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = module.view(f).append_basic_block(module, "entry");
         let builder = IrBuilder::new_for::<Dyn>(module).position_at_end(entry);

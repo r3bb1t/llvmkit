@@ -41,7 +41,10 @@
 
 use std::collections::BTreeSet;
 
-use llvmkit_ir::{ApInt, KnownBits};
+use llvmkit_ir::{
+    AShrFlags, AddFlags, AddSubOperation, ApInt, KnownBits, LShrFlags, OverflowFlags, SDivFlags,
+    ShiftAmountKnowledge, ShlFlags, SubFlags, UDivFlags,
+};
 
 /// The LLVM release the gap lists below were derived from. Bump it in the same
 /// commit that reconciles them against a newer `KnownBits.h` /
@@ -625,25 +628,25 @@ fn exercises_every_modeled_known_bits_operation() {
     let _ = KnownBits::bitor(&a, &b);
     let _ = KnownBits::bitxor(&a, &b);
     let _ = KnownBits::add(&a, &b);
-    let _ = KnownBits::add_with_flags(&a, &b, false, false);
+    let _ = KnownBits::add_with_flags(&a, &b, AddFlags::new());
     let _ = KnownBits::compute_for_add_carry(&a, &b, &one_bit);
-    let _ = KnownBits::compute_for_add_sub(true, false, false, &a, &b);
+    let _ = KnownBits::compute_for_add_sub(AddSubOperation::Add, OverflowFlags::new(), &a, &b);
     let _ = KnownBits::compute_for_sub_borrow(&a, b.clone(), &one_bit);
     let _ = KnownBits::sub(&a, &b);
-    let _ = KnownBits::sub_with_flags(&a, &b, false, false);
+    let _ = KnownBits::sub_with_flags(&a, &b, SubFlags::new());
     let _ = KnownBits::mul(&a, &b);
     let _ = KnownBits::mulhs(&a, &b);
     let _ = KnownBits::mulhu(&a, &b);
     let _ = KnownBits::shl(&a, &b);
-    let _ = KnownBits::shl_with_flags(&a, &b, false, false, false);
+    let _ = KnownBits::shl_with_flags(&a, &b, ShlFlags::new(), ShiftAmountKnowledge::MaybeZero);
     let _ = KnownBits::lshr(&a, &b);
-    let _ = KnownBits::lshr_with_flags(&a, &b, false, false);
+    let _ = KnownBits::lshr_with_flags(&a, &b, LShrFlags::new(), ShiftAmountKnowledge::MaybeZero);
     let _ = KnownBits::ashr(&a, &b);
-    let _ = KnownBits::ashr_with_flags(&a, &b, false, false);
+    let _ = KnownBits::ashr_with_flags(&a, &b, AShrFlags::new(), ShiftAmountKnowledge::MaybeZero);
     let _ = KnownBits::udiv(&a, &b);
-    let _ = KnownBits::udiv_with_exact(&a, &b, false);
+    let _ = KnownBits::udiv_with_exact(&a, &b, UDivFlags::new());
     let _ = KnownBits::sdiv(&a, &b);
-    let _ = KnownBits::sdiv_with_exact(&a, &b, false);
+    let _ = KnownBits::sdiv_with_exact(&a, &b, SDivFlags::new());
     let _ = KnownBits::urem(&a, &b);
     let _ = KnownBits::srem(&a, &b);
 
@@ -815,9 +818,7 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _intrinsic_propagates_poison = intrinsic_propagates_poison;
     // The options record `isSafeToSpeculativelyExecute`'s two defaulted `bool`
     // parameters; `Default` is upstream's no-argument call.
-    let _speculation_options = SpeculationOptions::new()
-        .with_variable_info(false)
-        .ignoring_ub_implying_attrs(false);
+    let _speculation_options = SpeculationOptions::new().without_variable_info();
     let _default_transfer_scan_limit = llvmkit_ir::DEFAULT_TRANSFER_SCAN_LIMIT;
 
     // Pointer and object analysis (tranche 5).
@@ -838,8 +839,8 @@ fn exercises_every_modeled_value_tracking_entry_point() {
     let _get_string_length = string_length::<DynBrand>;
     let _is_bytewise_value = is_bytewise_value::<DynBrand>;
     let _find_inserted_value = find_inserted_value::<DynBrand>;
-    // A type rather than a function: what `get_constant_data_array_info`
-    // returns, and the window `get_string_length` reads through.
+    // A type rather than a function: what `constant_data_array_info`
+    // returns, and the window `string_length` reads through.
     let _slice_accessors = (
         ConstantDataArraySlice::<DynBrand>::array,
         ConstantDataArraySlice::<DynBrand>::offset,

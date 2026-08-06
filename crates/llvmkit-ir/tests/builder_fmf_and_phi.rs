@@ -24,7 +24,7 @@ use llvmkit_ir::{
 fn fmf_propagates_from_builder_to_fadd() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
-    let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
+    let fn_ty = m.function_type(f32_ty, [f32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m)
@@ -56,7 +56,7 @@ fn fmf_propagates_from_builder_to_fadd() -> Result<(), IrError> {
 fn clear_fast_math_flags_drops_flags_from_subsequent_ops() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
-    let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
+    let fn_ty = m.function_type(f32_ty, [f32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m)
@@ -80,7 +80,7 @@ fn clear_fast_math_flags_drops_flags_from_subsequent_ops() -> Result<(), IrError
 fn fmf_allow_reciprocal_propagates_to_fdiv() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
-    let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
+    let fn_ty = m.function_type(f32_ty, [f32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let fmf = FastMathFlags::ALLOW_RECIPROCAL;
@@ -108,7 +108,7 @@ fn fmf_propagates_to_fcmp_oeq() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
     let i1_ty = m.bool_type();
-    let fn_ty = m.fn_type(i1_ty, [f32_ty.as_type()], false);
+    let fn_ty = m.function_type(i1_ty, [f32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -142,7 +142,7 @@ fn fmf_propagates_to_fcmp_oeq() -> Result<(), IrError> {
 fn fmf_save_and_restore_round_trip() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
-    let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
+    let fn_ty = m.function_type(f32_ty, [f32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -177,7 +177,7 @@ fn fmf_save_and_restore_round_trip() -> Result<(), IrError> {
 fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
-    let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
+    let fn_ty = m.function_type(f32_ty, [f32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -218,7 +218,7 @@ fn fneg_emits_default_then_fmf_form() -> Result<(), IrError> {
 fn fmf_accumulates_contract_approx_reassoc_on_fmul() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f32_ty = m.f32_type();
-    let fn_ty = m.fn_type(f32_ty, [f32_ty.as_type()], false);
+    let fn_ty = m.function_type(f32_ty, [f32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -277,7 +277,7 @@ macro_rules! fcmp_predicate_emits {
         let m = module_new!("a")?;
         let f32_ty = m.f32_type();
         let i1_ty = m.bool_type();
-        let fn_ty = m.fn_type(i1_ty, [f32_ty.as_type(), f32_ty.as_type()], false);
+        let fn_ty = m.function_type(i1_ty, [f32_ty.as_type(), f32_ty.as_type()]);
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
         let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -384,7 +384,7 @@ fn build_fcmp_ueq_emits_ueq() -> Result<(), IrError> {
 fn build_fp_phi_emits_phi_with_double_kind() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let f64_ty = m.f64_type();
-    let fn_ty = m.fn_type(f64_ty, [f64_ty.as_type()], false);
+    let fn_ty = m.function_type(f64_ty, [f64_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     // join(%p: double): a block whose single f64 parameter is the head-phi.
@@ -416,7 +416,7 @@ fn build_fp_phi_emits_phi_with_double_kind() -> Result<(), IrError> {
 fn build_pointer_phi_emits_phi_with_ptr() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let ptr_ty = m.ptr_type(0);
-    let fn_ty = m.fn_type(ptr_ty, [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(ptr_ty, [ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     // join(%p: ptr): a block whose single pointer parameter is the head-phi.

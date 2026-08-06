@@ -7,8 +7,8 @@
 //! `f32`/`f64` round-trip through their own bits losslessly.
 
 use llvmkit_ir::{
-    ApFloat, ApFloatSemantics, ApFloatSign, ApFloatStatus as S, ApInt, ApIntSignedness, Exactness,
-    NanPayload, RoundingMode,
+    ApFloat, ApFloatSemantics, ApFloatSign, ApFloatStatus as S, ApInt, Exactness, NanPayload,
+    RoundingMode, Signedness,
 };
 
 const HALF: ApFloatSemantics = ApFloatSemantics::IeeeHalf;
@@ -323,41 +323,41 @@ fn upstream_round_to_integral() {
 /// Port of `TEST(APFloatTest, toInteger)`.
 #[test]
 fn upstream_to_integer() {
-    let to_integer = |text: &str, signedness: ApIntSignedness| {
+    let to_integer = |text: &str, signedness: Signedness| {
         parse(DOUBLE, text).convert_to_integer(5, signedness, RoundingMode::TowardZero)
     };
 
-    let (value, status, exact) = to_integer("10", ApIntSignedness::Unsigned);
+    let (value, status, exact) = to_integer("10", Signedness::Unsigned);
     assert_eq!(status, S::OK);
     assert_eq!(exact, Exactness::Exact);
     assert_eq!(value.try_zext_u64(), Some(10));
 
-    let (value, status, exact) = to_integer("-10", ApIntSignedness::Unsigned);
+    let (value, status, exact) = to_integer("-10", Signedness::Unsigned);
     assert_eq!(status, S::INVALID_OP);
     assert_eq!(exact, Exactness::Inexact);
     assert_eq!(value.try_zext_u64(), Some(0), "unsigned minimum");
 
-    let (value, status, exact) = to_integer("32", ApIntSignedness::Unsigned);
+    let (value, status, exact) = to_integer("32", Signedness::Unsigned);
     assert_eq!(status, S::INVALID_OP);
     assert_eq!(exact, Exactness::Inexact);
     assert_eq!(value.try_zext_u64(), Some(31), "unsigned maximum");
 
-    let (value, status, exact) = to_integer("7.9", ApIntSignedness::Unsigned);
+    let (value, status, exact) = to_integer("7.9", Signedness::Unsigned);
     assert_eq!(status, S::INEXACT);
     assert_eq!(exact, Exactness::Inexact);
     assert_eq!(value.try_zext_u64(), Some(7));
 
-    let (value, status, exact) = to_integer("-10", ApIntSignedness::Signed);
+    let (value, status, exact) = to_integer("-10", Signedness::Signed);
     assert_eq!(status, S::OK);
     assert_eq!(exact, Exactness::Exact);
     assert_eq!(value.try_zext_u64(), Some(0b10110), "-10 in five bits");
 
-    let (value, status, exact) = to_integer("-17", ApIntSignedness::Signed);
+    let (value, status, exact) = to_integer("-17", Signedness::Signed);
     assert_eq!(status, S::INVALID_OP);
     assert_eq!(exact, Exactness::Inexact);
     assert_eq!(value.try_zext_u64(), Some(0b10000), "signed minimum, -16");
 
-    let (value, status, exact) = to_integer("16", ApIntSignedness::Signed);
+    let (value, status, exact) = to_integer("16", Signedness::Signed);
     assert_eq!(status, S::INVALID_OP);
     assert_eq!(exact, Exactness::Inexact);
     assert_eq!(value.try_zext_u64(), Some(15), "signed maximum");

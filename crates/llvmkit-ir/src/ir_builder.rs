@@ -3983,7 +3983,7 @@ where
             });
         }
         let module_view = ModuleView::<B>::new(self.module);
-        let result_ty = module_view.struct_type([c.ty(), module_view.bool_type().as_type()], false);
+        let result_ty = module_view.struct_type([c.ty(), module_view.bool_type().as_type()]);
         let payload = AtomicCmpXchgInstData::new(p.id, c.id, n.id, config);
         let result_id = result_ty.as_type().id();
         let inst =
@@ -5472,7 +5472,7 @@ where
         let module = self.schema_view();
         let ret = <Sig::Ret as FunctionReturn>::ir_type(module)?;
         let params = <Sig::Params as FunctionParamList>::ir_types(module)?;
-        let fn_ty = module.fn_type(ret, params, false);
+        let fn_ty = module.function_type(ret, params);
         let callee_v = IsValue::as_erased(callee);
         let arg_ids = args.lower(ModuleRef::new(self.module))?;
         let payload = CallInstData::new(
@@ -5572,7 +5572,7 @@ where
         let fn_ty = asm.function_type();
         // Reject a return-marker / signature mismatch up front, mirroring
         // the `signature_matches_marker` gate on the typed lookup path
-        // (`Module::function_by_name`).
+        // (`Module::function`).
         let ret_data = self.module.context().type_data(fn_ty.return_type().id());
         if !crate::function::signature_matches_marker::<R2>(ret_data) {
             return Err(IrError::ReturnTypeMismatch {
@@ -6576,7 +6576,7 @@ where
         }
         let scalar_value = scalar.into_erased_value(ModuleRef::new(self.module))?;
         let elem_ty = scalar_value.ty();
-        let vec_ty = ModuleView::<B>::new(self.module).vector_type(elem_ty, count, false);
+        let vec_ty = ModuleView::<B>::new(self.module).vector_type(elem_ty, count);
         let poison = vec_ty.as_type().poison();
         let i64_ty = ModuleView::<B>::new(self.module).i64_type();
         let zero_idx = i64_ty.const_int(0_u32);
@@ -10170,7 +10170,7 @@ mod tests {
         let m = crate::module_new!("hostile-typed-folder")?;
         let i32_dyn_ty = m.custom_width_int_type(32)?;
         let i64_dyn_ty = m.custom_width_int_type(64)?;
-        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.i32_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -10213,7 +10213,7 @@ mod tests {
         let m = crate::module_new!("hostile-typed-folder-static")?;
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
-        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.i32_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -10260,7 +10260,7 @@ mod tests {
         let m = crate::module_new!("hostile-typed-folder-cast-int")?;
         let i32_ty = m.i32_type();
         let i64_ty = m.i64_type();
-        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.i32_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -10293,7 +10293,7 @@ mod tests {
         let m = crate::module_new!("hostile-typed-fp-folder")?;
         let f32_ty = m.f32_type();
         let f64_ty = m.f64_type();
-        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.i32_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -10334,7 +10334,7 @@ mod tests {
         let m = crate::module_new!("hostile-typed-fp-folder-cast")?;
         let f32_ty = m.f32_type();
         let f64_ty = m.f64_type();
-        let fn_ty = m.fn_type_no_params(m.i32_type(), false);
+        let fn_ty = m.function_type_no_parameters(m.i32_type());
         let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
         let entry = m.view(f).append_basic_block(&m, "entry");
 

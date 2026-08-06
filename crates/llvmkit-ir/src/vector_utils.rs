@@ -8,7 +8,7 @@
 //! those names are ported (26 functions, since `widenShuffleMaskElts` has two
 //! overloads), and the remaining 12 are blocked on something named below.
 //!
-//! - **The splat family** — [`get_splat_value`], [`splat_index`],
+//! - **The splat family** — [`splat_value`], [`splat_index`],
 //!   [`is_splat_value`], [`find_scalar_element`].
 //! - **The mask transforms** — [`narrow_shuffle_mask_elements`],
 //!   [`widen_shuffle_mask_elements`],
@@ -43,7 +43,7 @@
 //! therefore have no llvmkit spelling.
 //!
 //! The two splat *questions* are deliberately separate and neither subsumes
-//! the other. [`get_splat_value`] must name the broadcast scalar, so it only
+//! the other. [`splat_value`] must name the broadcast scalar, so it only
 //! recognises two shapes and answers with a value. [`is_splat_value`] only has
 //! to decide whether all lanes agree, so it sees through binary operators and
 //! `select`s whose operands are independently splats — cases with no single

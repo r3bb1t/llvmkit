@@ -13,7 +13,7 @@ const WORD_MASK_U128: u128 = 0xffff_ffff_ffff_ffff;
 const TWO_64: u128 = 1u128 << 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ApIntSignedness {
+pub enum Signedness {
     Unsigned,
     Signed,
 }
@@ -80,7 +80,7 @@ impl core::fmt::Display for ApInt {
     /// Use [`ApInt::to_string_radix`] for other radices or for an
     /// unsigned reading of the same bits.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(&self.to_string_radix(10, ApIntSignedness::Signed))
+        f.write_str(&self.to_string_radix(10, Signedness::Signed))
     }
 }
 
@@ -88,13 +88,13 @@ impl ApInt {
     pub fn new(
         bit_width: u32,
         value: u64,
-        signedness: ApIntSignedness,
+        signedness: Signedness,
         truncation: ApIntTruncation,
     ) -> IrResult<Self> {
         if matches!(truncation, ApIntTruncation::RejectOverflow) {
             let fits = match signedness {
-                ApIntSignedness::Unsigned => unsigned_u64_fits(bit_width, value),
-                ApIntSignedness::Signed => signed_u64_pattern_fits(bit_width, value),
+                Signedness::Unsigned => unsigned_u64_fits(bit_width, value),
+                Signedness::Signed => signed_u64_pattern_fits(bit_width, value),
             };
             if !fits {
                 return Err(IrError::ImmediateOverflow {
@@ -104,10 +104,7 @@ impl ApInt {
             }
         }
 
-        if matches!(signedness, ApIntSignedness::Signed)
-            && bit_width > WORD_BITS
-            && (value >> 63) != 0
-        {
+        if matches!(signedness, Signedness::Signed) && bit_width > WORD_BITS && (value >> 63) != 0 {
             let len = words_for_bits_usize(bit_width);
             let mut words = vec![u64::MAX; len];
             if let Some(first) = words.first_mut() {
@@ -1718,11 +1715,11 @@ impl ApInt {
         }
     }
 
-    pub fn to_string_radix(&self, radix: u8, signedness: ApIntSignedness) -> String {
+    pub fn to_string_radix(&self, radix: u8, signedness: Signedness) -> String {
         if !matches!(radix, 2 | 8 | 10 | 16 | 36) {
             return String::new();
         }
-        if matches!(signedness, ApIntSignedness::Signed) && self.is_negative() {
+        if matches!(signedness, Signedness::Signed) && self.is_negative() {
             let mut out = String::from("-");
             out.push_str(&self.negate().to_unsigned_string(radix));
             out

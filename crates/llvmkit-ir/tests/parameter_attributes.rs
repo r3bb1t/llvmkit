@@ -19,7 +19,7 @@ use llvmkit_ir::{
 fn function_with_noundef_param_and_return() -> Result<(), IrError> {
     let m = module_new!("p")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m
         .function_builder::<i32, _>("identity", fn_ty)
         .linkage(Linkage::External)
@@ -49,7 +49,7 @@ fn function_with_noundef_param_and_return() -> Result<(), IrError> {
 fn attribute_added_via_attribute_method_path() -> Result<(), IrError> {
     let m = module_new!("p")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m
         .function_builder::<i32, _>("zext_arg", fn_ty)
         .attribute(

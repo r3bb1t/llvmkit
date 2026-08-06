@@ -4,6 +4,7 @@ use core::cmp::Ordering;
 use core::ops::Not;
 
 use crate::ApInt;
+use crate::ap_int::Signedness;
 use crate::cmp_predicate::IntPredicate;
 use crate::constant::ConstantData;
 use crate::error::{IrError, IrResult};
@@ -337,7 +338,7 @@ impl ConstantRange {
         }
         if lower.eq_ap_int(&upper) && !lower.is_min_value() && !lower.is_max_value() {
             return Err(IrError::DegenerateConstantRange {
-                value: lower.to_string_radix(10, crate::ap_int::ApIntSignedness::Unsigned),
+                value: lower.to_string_radix(10, crate::ap_int::Signedness::Unsigned),
                 bit_width: lower.bit_width(),
             });
         }
@@ -590,8 +591,9 @@ impl ConstantRange {
     /// The range a known-bits constraint describes. Mirrors
     /// `ConstantRange::fromKnownBits`.
     ///
-    /// `is_signed` picks which domain the result must not wrap in.
-    pub fn from_known_bits(known: &KnownBits, is_signed: bool) -> Self {
+    /// `signedness` picks which domain the result must not wrap in.
+    pub fn from_known_bits(known: &KnownBits, signedness: Signedness) -> Self {
+        let is_signed = matches!(signedness, Signedness::Signed);
         let bit_width = known.bit_width();
         if known.has_conflict() {
             return Self::empty(bit_width);
@@ -2030,7 +2032,7 @@ impl ConstantRange {
 
         let known_bits_range = Self::from_known_bits(
             &KnownBits::bitand(&self.to_known_bits(), &other.to_known_bits()),
-            false,
+            Signedness::Unsigned,
         );
         let lower_bound = estimate_bit_masked_and_lower_bound(self, other);
         let self_max = self.unsigned_max();
@@ -2058,7 +2060,7 @@ impl ConstantRange {
 
         let known_bits_range = Self::from_known_bits(
             &KnownBits::bitor(&self.to_known_bits(), &other.to_known_bits()),
-            false,
+            Signedness::Unsigned,
         );
 
         // De Morgan turns the OR's upper bound into the AND's lower bound:
@@ -2102,7 +2104,10 @@ impl ConstantRange {
 
         let lhs_known = self.to_known_bits();
         let rhs_known = other.to_known_bits();
-        let mut result = Self::from_known_bits(&KnownBits::bitxor(&lhs_known, &rhs_known), false);
+        let mut result = Self::from_known_bits(
+            &KnownBits::bitxor(&lhs_known, &rhs_known),
+            Signedness::Unsigned,
+        );
         // At one bit the refinement below does not improve on the known bits.
         if bit_width == 1 {
             return result;

@@ -35,11 +35,7 @@ fn assert_predecessors<'ctx, R, B: ModuleBrand>(
 fn unconditional_branch_cfg_edges() -> Result<(), IrError> {
     let m = module_new!("cfg_br")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let exit = m.view(f).append_basic_block(&m, "exit");
@@ -67,7 +63,7 @@ fn conditional_branch_preserves_duplicate_edges() -> Result<(), IrError> {
     let m = module_new!("cfg_condbr")?;
     let bool_ty = m.bool_type();
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [bool_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [bool_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let target = m.view(f).append_basic_block(&m, "target");
@@ -95,7 +91,7 @@ fn switch_cfg_edges_include_default_then_cases() -> Result<(), IrError> {
     let m = module_new!("cfg_switch")?;
     let i8_ty = m.i8_type();
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [i8_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [i8_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let default_bb = m.view(f).append_basic_block(&m, "default");
@@ -139,7 +135,7 @@ fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
     let m = module_new!("cfg_indirectbr")?;
     let ptr_ty = m.ptr_type(0);
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(void_ty.as_type(), [ptr_ty.as_type()], false);
+    let fn_ty = m.function_type(void_ty.as_type(), [ptr_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let bb1 = m.view(f).append_basic_block(&m, "bb1");
@@ -175,17 +171,9 @@ fn indirectbr_cfg_edges_are_listed_destinations() -> Result<(), IrError> {
 fn invoke_cfg_edges_are_normal_then_unwind() -> Result<(), IrError> {
     let m = module_new!("cfg_invoke")?;
     let void_ty = m.void_type();
-    let callee_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let normal = m.view(caller).append_basic_block(&m, "normal");
@@ -222,17 +210,9 @@ fn invoke_cfg_edges_are_normal_then_unwind() -> Result<(), IrError> {
 fn callbr_cfg_edges_are_default_then_indirect_dests() -> Result<(), IrError> {
     let m = module_new!("cfg_callbr")?;
     let void_ty = m.void_type();
-    let callee_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
-    let caller_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let caller_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let caller = m.add_function_dyn("caller", caller_ty, Linkage::External)?;
     let entry = m.view(caller).append_basic_block(&m, "entry");
     let dflt = m.view(caller).append_basic_block(&m, "default");
@@ -269,11 +249,7 @@ fn callbr_cfg_edges_are_default_then_indirect_dests() -> Result<(), IrError> {
 fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
     let m = module_new!("cfg_catchret")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let cs_block = m.view(f).append_basic_block(&m, "cs");
     let cp_block = m.view(f).append_basic_block(&m, "cp");
@@ -310,11 +286,7 @@ fn catchret_cfg_edge_is_target_block() -> Result<(), IrError> {
 fn cleanupret_cfg_edge_is_optional_unwind_dest() -> Result<(), IrError> {
     let m = module_new!("cfg_cleanupret")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let unwind = m.view(f).append_basic_block(&m, "unwind");
@@ -340,11 +312,7 @@ fn cleanupret_cfg_edge_is_optional_unwind_dest() -> Result<(), IrError> {
 fn catchswitch_cfg_edges_are_handlers_then_unwind_dest() -> Result<(), IrError> {
     let m = module_new!("cfg_catchswitch")?;
     let void_ty = m.void_type();
-    let fn_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let fn_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let handler0 = m.view(f).append_basic_block(&m, "handler0");

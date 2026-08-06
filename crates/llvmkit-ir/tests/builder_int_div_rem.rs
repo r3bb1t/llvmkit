@@ -16,7 +16,7 @@ use llvmkit_ir::{
 fn module_for(op: &str) -> Result<String, IrError> {
     let m = Module::dynamic("dr");
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()]);
     let f = m.add_function_dyn(op, fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -72,7 +72,7 @@ fn srem_plain() -> Result<(), IrError> {
 fn udiv_exact() -> Result<(), IrError> {
     let m = module_new!("ex")?;
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()]);
     let f = m.add_function_dyn("udiv_exact", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -90,7 +90,7 @@ fn udiv_exact() -> Result<(), IrError> {
 fn sdiv_exact() -> Result<(), IrError> {
     let m = module_new!("ex")?;
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i64_ty, [i64_ty.as_type(), i64_ty.as_type()]);
     let f = m.add_function_dyn("sdiv_exact", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

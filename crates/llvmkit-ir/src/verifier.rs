@@ -3306,7 +3306,7 @@ mod tests {
         params: &[crate::Type<'ctx, B>],
         name: &str,
     ) -> (ValueSlot, ValueSlot) {
-        let fn_ty = m.fn_type(ret_ty, params.iter().copied(), false);
+        let fn_ty = m.function_type(ret_ty, params.iter().copied());
         let f = m.add_function_dyn(name, fn_ty, Linkage::External).unwrap();
         let bb = m.view(f).append_basic_block(m, "entry");
         // Reach the value-id pair without leaking the return marker.
@@ -3698,7 +3698,7 @@ mod tests {
         let void_ty = m.void_type().as_type();
         // Callee: `define i32 @callee(i32, i32)` -- empty body, terminator
         // fabricated to make it valid.
-        let callee_fn_ty = m.fn_type(i32_ty, [i32_ty, i32_ty], false);
+        let callee_fn_ty = m.function_type(i32_ty, [i32_ty, i32_ty]);
         let callee = m
             .add_function_dyn("callee", callee_fn_ty, Linkage::External)
             .unwrap();
@@ -3711,7 +3711,7 @@ mod tests {
             InstructionKindData::Ret(ReturnOpData::new(Some(zero))),
         );
         // Caller: passes only ONE arg.
-        let caller_fn_ty = m.fn_type(void_ty, [i32_ty], false);
+        let caller_fn_ty = m.function_type(void_ty, [i32_ty]);
         let caller = m
             .add_function_dyn("caller", caller_fn_ty, Linkage::External)
             .unwrap();

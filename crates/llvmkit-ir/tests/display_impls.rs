@@ -18,7 +18,7 @@
 //! mirrors `APInt::toString` in `llvm/lib/Support/APInt.cpp`.
 
 use llvmkit_ir::{
-    ApInt, ApIntSignedness, Dyn, IntValue, IrBuilder, IrError, Linkage, PointerValue, module_new,
+    ApInt, Dyn, IntValue, IrBuilder, IrError, Linkage, PointerValue, Signedness, module_new,
 };
 
 // --------------------------------------------------------------------------
@@ -31,7 +31,7 @@ use llvmkit_ir::{
 fn function_value_prints_declare_line() -> Result<(), IrError> {
     let m = module_new!("declare_display")?;
     let void = m.void_type();
-    let fn_ty = m.fn_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(void.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("ext", fn_ty, Linkage::External)?;
 
     assert_eq!(format!("{}", m.view(f)), "declare void @ext()\n");
@@ -44,7 +44,7 @@ fn function_value_prints_declare_line() -> Result<(), IrError> {
 fn function_value_define_matches_module_output() -> Result<(), IrError> {
     let m = module_new!("define_display")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type(), i32_ty.as_type()]);
     let f = m.add_function_dyn("add", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
 
@@ -110,7 +110,7 @@ fn typed_handles_agree_with_erased_value() -> Result<(), IrError> {
     let f32_ty = m.f32_type();
     let ptr_ty = m.ptr_type(0);
 
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -204,10 +204,7 @@ fn ap_int_prints_signed_decimal() -> Result<(), IrError> {
 
     // Display is exactly `to_string_radix(10, Signed)` -- one source of truth.
     let v = ApInt::from_string(64, "12345", 10)?;
-    assert_eq!(
-        format!("{v}"),
-        v.to_string_radix(10, ApIntSignedness::Signed)
-    );
+    assert_eq!(format!("{v}"), v.to_string_radix(10, Signedness::Signed));
     assert_eq!(format!("{v}"), "12345");
 
     Ok(())

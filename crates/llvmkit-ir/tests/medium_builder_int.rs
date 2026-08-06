@@ -23,7 +23,7 @@ use llvmkit_ir::{
 fn build_int_add_accepts_int_value_and_rust_literal() -> Result<(), IrError> {
     let m = module_new!("a")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("inc", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -45,7 +45,7 @@ fn build_int_add_accepts_int_value_and_rust_literal() -> Result<(), IrError> {
 fn build_int_ops_unique_duplicate_requested_names() -> Result<(), IrError> {
     let m = module_new!("names")?;
     let i64_ty = m.i64_type();
-    let fn_ty = m.fn_type(i64_ty, [i64_ty.as_type()], false);
+    let fn_ty = m.function_type(i64_ty, [i64_ty.as_type()]);
     let f = m.add_function_dyn("names", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -82,7 +82,7 @@ fn build_int_ops_unique_duplicate_requested_names() -> Result<(), IrError> {
 fn build_int_sub_accepts_constant_and_argument() -> Result<(), IrError> {
     let m = module_new!("s")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type(i32_ty, [i32_ty.as_type()], false);
+    let fn_ty = m.function_type(i32_ty, [i32_ty.as_type()]);
     let f = m.add_function_dyn("dec", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -126,7 +126,7 @@ fn build_ret_accepts_rust_literal_directly() -> Result<(), IrError> {
 fn default_constant_folder_preserves_wide_apint_add() -> Result<(), IrError> {
     let m = module_new!("wide-fold")?;
     let ty = m.int_type_n::<257>();
-    let fn_ty = m.fn_type(ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("wide", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -146,7 +146,7 @@ fn default_constant_folder_preserves_wide_apint_add() -> Result<(), IrError> {
 fn default_constant_folder_folds_udiv_to_constant() -> Result<(), IrError> {
     let m = module_new!("udiv-fold")?;
     let ty = m.i32_type();
-    let fn_ty = m.fn_type(ty, Vec::<llvmkit_ir::Type<'_, _>>::new(), false);
+    let fn_ty = m.function_type(ty, Vec::<llvmkit_ir::Type<'_, _>>::new());
     let f = m.add_function_dyn("quotient", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

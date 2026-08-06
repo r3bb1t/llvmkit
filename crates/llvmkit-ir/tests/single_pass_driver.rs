@@ -64,7 +64,7 @@ impl<B: ModuleBrand> ModulePass<B> for CountFunctionsPass {
 fn inspect_module_pass_stays_verified_and_runs() -> Result<(), IrError> {
     let m = module_new!("inspect-module-pass")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -121,7 +121,7 @@ impl<B: ModuleBrand> ModulePass<B> for AddGlobalPass {
 fn rewrite_module_pass_downgrades_and_mutates() -> Result<(), IrError> {
     let m = module_new!("rewrite-module-pass")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
@@ -188,7 +188,7 @@ impl<B: ModuleBrand> FunctionPass<B> for InspectFnPass {
 fn inspect_function_pass_stays_verified_and_runs() -> Result<(), IrError> {
     let m = module_new!("inspect-function-pass")?;
     let i32_ty = m.i32_type();
-    let fn_ty = m.fn_type_no_params(i32_ty, false);
+    let fn_ty = m.function_type_no_parameters(i32_ty);
     let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);

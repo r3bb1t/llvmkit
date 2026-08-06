@@ -11,7 +11,7 @@ use llvmkit_ir::{
 
 fn exercise_tables<'ctx, B: ModuleBrand + 'ctx>(module: Module<B, Unverified>) -> IrResult<()> {
     let i64_ty = module.i64_type();
-    let fn_ty = module.fn_type(i64_ty.as_type(), [i64_ty.as_type()], false);
+    let fn_ty = module.function_type(i64_ty.as_type(), [i64_ty.as_type()]);
     let function = module.add_function_dyn("f", fn_ty, Linkage::External)?;
     let entry = module.view(function).append_basic_block(&module, "entry");
     let parameter: IntValue<'_, i64, _> = module.view(function).param(0)?.try_into()?;

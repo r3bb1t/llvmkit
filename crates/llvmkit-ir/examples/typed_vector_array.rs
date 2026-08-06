@@ -42,7 +42,7 @@ fn build() -> Result<(), IrError> {
     // compile-time `const {}` error.
     let v4i32 = m.vector_type_n::<i32, 4>();
 
-    let fn_ty = m.fn_type(i32_ty.as_type(), [v4i32.as_type(), v4i32.as_type()], false);
+    let fn_ty = m.function_type(i32_ty.as_type(), [v4i32.as_type(), v4i32.as_type()]);
     let vadd = m.add_function_dyn("vadd", fn_ty, Linkage::External)?;
     let entry = m.view(vadd).append_basic_block(&m, "entry");
     let b = IrBuilder::at_end(entry);
@@ -82,7 +82,7 @@ fn build() -> Result<(), IrError> {
     // ---- Typed arrays: `[4 x i32]` -------------------------------------
     let a4i32 = m.array_type_n::<i32, 4>();
 
-    let fn_ty = m.fn_type(i32_ty.as_type(), [a4i32.as_type()], false);
+    let fn_ty = m.function_type(i32_ty.as_type(), [a4i32.as_type()]);
     let apack = m.add_function_dyn("apack", fn_ty, Linkage::External)?;
     let entry = m.view(apack).append_basic_block(&m, "entry");
     let b = IrBuilder::at_end(entry);

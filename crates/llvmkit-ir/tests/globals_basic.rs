@@ -363,7 +363,7 @@ fn externally_initialized_declaration() {
     let m = module_new!("m").expect("fresh module");
     let i32_ty = m.i32_type();
     m.global_builder("g.externally_initialized", i32_ty.as_type())
-        .externally_initialized(true)
+        .externally_initialized()
         .build()
         .expect("build");
     assert!(
@@ -545,7 +545,7 @@ fn const_struct_initializer() {
     let i32_ty = m.i32_type();
     let i8_ty = m.i8_type();
     let i64_ty = m.i64_type();
-    let st = m.struct_type([i32_ty.as_type(), i8_ty.as_type(), i64_ty.as_type()], false);
+    let st = m.struct_type([i32_ty.as_type(), i8_ty.as_type(), i64_ty.as_type()]);
     let neg_one = i32_ty.const_int(-1i32);
     let undef_i8 = i8_ty.as_type().undef();
     let poison_i64 = i64_ty.as_type().poison();
@@ -640,7 +640,7 @@ fn appending_global_cstring() {
 fn const_vector_initializer() {
     let m = module_new!("m").expect("fresh module");
     let i32_ty = m.i32_type();
-    let vec_ty = m.vector_type(i32_ty.as_type(), 3, false);
+    let vec_ty = m.vector_type(i32_ty.as_type(), 3);
     let zero = i32_ty.const_int(0i32);
     let one = i32_ty.const_int(1i32);
     let v = vec_ty
@@ -662,11 +662,7 @@ fn const_vector_initializer() {
 fn function_pointer_global_initializer_verifies() -> Result<(), IrError> {
     let m = module_new!("fnptr_init")?;
     let void_ty = m.void_type();
-    let callee_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
     let init = m.view(callee).as_global_constant_ptr();
     m.add_global_constant("slot", init)?;
@@ -687,11 +683,7 @@ fn function_pointer_aggregate_initializer_prints_ptr_base() -> Result<(), IrErro
     let m = module_new!("fnptr_agg")?;
     let void_ty = m.void_type();
     let ptr_ty = m.ptr_type(0);
-    let callee_ty = m.fn_type(
-        void_ty.as_type(),
-        Vec::<llvmkit_ir::Type<'_, _>>::new(),
-        false,
-    );
+    let callee_ty = m.function_type(void_ty.as_type(), Vec::<llvmkit_ir::Type<'_, _>>::new());
     let callee = m.add_function_dyn("callee", callee_ty, Linkage::External)?;
     let arr_ty = m.array_type(ptr_ty.as_type(), 1);
     let elem = m.view(callee).as_aggregate_ptr(0);
@@ -880,7 +872,7 @@ fn common_linkage_constant_rejected() {
     let zero = i32_ty.const_int(0i32);
     m.global_builder("c", i32_ty.as_type())
         .linkage(Linkage::Common)
-        .constant(true)
+        .constant()
         .initializer(zero)
         .build()
         .expect("build");
@@ -903,7 +895,7 @@ fn common_linkage_constant_rejected() {
 fn scalable_vector_global_rejected() {
     let m = module_new!("m").expect("fresh module");
     let i32_ty = m.i32_type();
-    let scalable = m.vector_type(i32_ty.as_type(), 4, true);
+    let scalable = m.scalable_vector_type(i32_ty.as_type(), 4);
     m.global_builder("s", scalable.as_type())
         .build()
         .expect("build");
@@ -927,7 +919,7 @@ fn scalable_vector_global_rejected() {
 /// Mirrors `unittests/IR/ModuleTest.cpp::TEST(ModuleTest, GlobalList)`
 /// (the `M->getNamedValue("GV")` round-trip and the
 /// `M->global_size()` increment-after-insert pattern). Our equivalent
-/// API is `Module::get_global(name)`.
+/// API is `Module::global(name)`.
 #[test]
 fn module_named_global_lookup_round_trip() {
     let m = module_new!("m").expect("fresh module");
