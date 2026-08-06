@@ -807,8 +807,8 @@ sweep for an upstream fixture that exercises them.
 - **`llvmkit-macros` is the permanent home of the `Branded` derive, not a
   stopgap.** Upstream LLVM's answer to drift-prone repetitive definitions is
   build-time generation (its lexer and parser both `#include` the
-  TableGen-generated `Attributes.inc` — `LLLexer.cpp:701-704`,
-  `LLParser.cpp:1547-1551` in the vendored 22.1.4 tree); the
+  TableGen-generated `Attributes.inc` — `LLLexer::LexIdentifier`
+  (`LLLexer.cpp`), `tokenToAttribute` (`LLParser.cpp`)); the
   `llvmkit-tablegen` crate and the macros crate are this project's two arms of
   the same philosophy. The ecosystem norm agrees (`serde_derive`, `thiserror-impl` are
   permanent companion crates).
@@ -876,8 +876,7 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
 (`orig_cpp/llvm-project-llvmorg-22.1.4/llvm/include/llvm/IR/IRBuilder.h`).
 
 - Convenience casts: `CreateZExtOrTrunc`, `CreateSExtOrTrunc`,
-  `CreateIntCast`, `CreateFPCast`, `CreateBitOrPointerCast`
-  (IRBuilder.h ~1951-2038).
+  `CreateIntCast`, `CreateFPCast`, `CreateBitOrPointerCast`.
 - Memory intrinsics: `CreateMemCpy` / `CreateMemSet` / `CreateMemMove` (each
   with `uint64_t` + `Value*` size overloads, plus `*Inline` and
   element-atomic variants); lifetime intrinsics `CreateLifetimeStart/End` --
@@ -1273,7 +1272,8 @@ deliberately deferred; each cites its upstream anchor.
   also counts debug-record uses upstream ignores (upstream salvages debug info
   instead). (Unordered atomic loads are now removed.)
 - **InstSimplify unreachable-block skip** -- the pass still folds in
-  unreachable blocks that upstream skips (`InstSimplifyPass.cpp:33-37`), a
+  unreachable blocks that upstream skips (`runImpl` in
+  `InstSimplifyPass.cpp`, via `DT->isReachableFromEntry`), a
   textual-only divergence in dead code; needs reachability (a dominator tree)
   threaded into the pass. No InstSimplify tests cover freeze folds or
   unreachable-block behavior yet (the latter blocked on this skip). (The
