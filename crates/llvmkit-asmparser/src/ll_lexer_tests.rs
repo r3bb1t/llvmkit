@@ -1062,6 +1062,33 @@ mod whitespace {
         let t = lex.next_token().unwrap().value;
         assert_eq!(t, Token::Eof);
     }
+
+    /// Mirrors `LLLexer::getNextChar`'s rewind — "Another call to lex will
+    /// return EOF again" (`lib/AsmParser/LLLexer.cpp`) — and pins the
+    /// llvmkit-specific half that has no upstream counterpart, since LLVM's
+    /// lexer is not an iterator: [`Lexer`]'s `Iterator` translates that
+    /// terminator into `None` (so `Eof` is never an item) and, being fused,
+    /// keeps answering `None` afterwards.
+    #[test]
+    fn eof_repeats_while_the_iterator_fuses() {
+        let mut lex = Lexer::from("@x");
+        assert!(matches!(
+            lex.next_token().unwrap().value,
+            Token::GlobalVar(_)
+        ));
+        for _ in 0..3 {
+            assert_eq!(lex.next_token().unwrap().value, Token::Eof);
+        }
+
+        let mut lex = Lexer::from("@x");
+        assert!(matches!(
+            lex.next().unwrap().unwrap().value,
+            Token::GlobalVar(_)
+        ));
+        for _ in 0..3 {
+            assert!(lex.next().is_none());
+        }
+    }
 }
 
 /// Upstream provenance: span fidelity tracked by

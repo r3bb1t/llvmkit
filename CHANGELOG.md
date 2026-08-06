@@ -24,6 +24,37 @@ bullet below names its wave.
 
 #### Changed
 
+- **Breaking (W9): read APIs that allocated a `Vec` return iterators
+  (C-ITER).** `FunctionCfg::successors` / `predecessors`,
+  `BasicBlock::successors`, `Instruction::debug_records` /
+  `InstructionView::debug_records`, `FnReshape::pending_cfg_updates`,
+  `AssumptionCache::assumptions`, `DomConditionCache::conditions_for`, and
+  `DataLayout::non_standard_address_spaces` / `non_integral_address_spaces`
+  no longer build a `Vec` per call. A `for x in …` call site is unaffected; a
+  site that asked a `Vec` question (`.is_empty()`, `.len()`, indexing,
+  comparing against a `vec![…]`) becomes `.next().is_none()`, `.count()`, or
+  `.collect()`. Which of two shapes each one takes follows what the data
+  lives behind: the `FunctionCfg` and `DataLayout` methods **borrow**, since
+  both types own their tables outright with no interior mutability; the rest
+  **snapshot** the `RefCell` they read and hand back an owning iterator,
+  which therefore can never be alive across the next edit — with a `use<..>`
+  bound keeping `&self` out of the opaque type so the result still chains off
+  a borrowed receiver. Three are deliberately **not** `ExactSizeIterator`,
+  because they filter and the count is known only after the walk: both
+  `DataLayout` address-space methods (which are `+ Clone` instead, being
+  borrowing iterators) and `AssumptionCache::assumptions`, which skips slots
+  that no longer resolve as instructions — the llvmkit counterpart of
+  upstream's dead `WeakVH` entries. Also new: `IntoIterator for
+  &AttributeSet` / `&AttributeList` / `&MetadataAttachmentSet`, each yielding
+  exactly what that type's `iter()` does, so `for … in &set` works;
+  `MetadataAttachmentSet::iter` gains the `ExactSizeIterator +
+  DoubleEndedIterator + FusedIterator` bounds its siblings already carried;
+  and `Module::attribute_group(id) -> Option<AttributeStorage>` is the point
+  lookup most callers of `attribute_groups` actually wanted — the verifier
+  and `FunctionValue`'s string-attribute reader use it now instead of
+  deep-cloning the whole table once per query. `Module::attribute_groups`
+  itself, the whole-table read, is unchanged.
+
 - **Breaking (W7): typed module flags — `ModuleFlagBehavior` /
   `ModuleFlagKey` / `ModuleFlagEntry`, module accessors, and the verifier
   port (C-CUSTOM-TYPE).** New `module_flags` module mirroring

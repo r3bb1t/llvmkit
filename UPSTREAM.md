@@ -19,7 +19,16 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2166. Recounted on 2026-08-06 at the
+Total `#[test]` functions: 2170. Recounted on 2026-08-06 at the
+`feature-70/api-idioms` Wave 11b point via the documented attribute-anchored
+grep below (`crates/llvmkit-ir` 1497 + `crates/llvmkit-asmparser` 655 +
+`crates/llvmkit-support` 8 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1).
+Wave 11b's own contribution is the +4 over the 2166 Wave 7 point, all in
+`crates/llvmkit-asmparser`: `parse_error.rs::tests`'
+`diagnostics_match_upstream_wording` and `io_errors_keep_their_kind`,
+`ll_token.rs::tests::token_display_names_the_family`, and
+`ll_lexer_tests.rs::eof_repeats_while_the_iterator_fuses` (rows below). The
+2166 point was recounted on 2026-08-06 at the
 `feature-70/api-idioms` Wave 7 point via the documented attribute-anchored
 grep below (`crates/llvmkit-ir` 1497 + `crates/llvmkit-asmparser` 651 +
 `crates/llvmkit-support` 8 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1) —
@@ -434,6 +443,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::nul_byte_is_whitespace` | `-` | mirror |
 | `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::crlf_handled` | `lib/AsmParser/LLLexer.cpp` | mirror |
 | `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::empty_input_is_eof` | `lib/AsmParser/LLLexer.cpp` | mirror |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::eof_repeats_while_the_iterator_fuses` | `lib/AsmParser/LLLexer.cpp::LLLexer::getNextChar` ("Another call to lex will return EOF again"); the `Iterator`/`FusedIterator` half has no upstream counterpart — `LLLexer` is not an iterator | llvmkit-specific |
 | `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::integer_lit_span_excludes_following_whitespace` | `lib/AsmParser/LLLexer.cpp` | mirror |
 | `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::keyword_span_matches_keyword` | `lib/AsmParser/LLLexer.cpp` | mirror |
 | `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::quoted_global_span_includes_sigil_and_quotes` | `lib/AsmParser/LLLexer.cpp` | mirror |
@@ -755,6 +765,9 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/src/parse_error.rs::tests::redefinition_records_symbol` | `llvm/lib/AsmParser/LLParser.cpp` "redefinition of ..." diagnostic family | mirror |
 | `crates/llvmkit-asmparser/src/parse_error.rs::tests::lex_error_passes_through` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::error` propagation of `Lex.Error(...)` | llvmkit-specific |
 | `crates/llvmkit-asmparser/src/parse_error.rs::tests::integer_width_out_of_range_is_typed` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` integer-width range check (`MAX_INT_BITS`) | mirror |
+| `crates/llvmkit-asmparser/src/parse_error.rs::tests::diagnostics_match_upstream_wording` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseNamedGlobal` (`"redefinition of global '@" + Name + "'"`); `llvm/lib/AsmParser/LLParser.cpp::LLParser::validateEndOfModule` (`"use of undefined metadata '!" + ...`); `llvm/lib/AsmParser/LLParser.cpp::LLParser::tokError` (`"expected ..."`) | mirror |
+| `crates/llvmkit-asmparser/src/parse_error.rs::tests::io_errors_keep_their_kind` | `llvm/lib/AsmParser/Parser.cpp::llvm::parseAssemblyFile`, which flattens its `std::error_code` into `"Could not open input file: " + EC.message()` and drops the code; llvmkit keeps the `std::io::ErrorKind` beside the message, so there is no upstream counterpart to port | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/ll_token.rs::tests::token_display_names_the_family` | `llvm/include/llvm/AsmParser/LLToken.h::lltok::Kind` families and the phrases `llvm/lib/AsmParser/LLParser.cpp::LLParser::tokError` writes inline; LLVM 22.1.4 has no `lltok::describe` function to port | llvmkit-specific |
 | `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_target_datalayout` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseTargetDefinition` (`datalayout` arm) | mirror |
 | `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_target_triple` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseTargetDefinition` (`triple` arm) | mirror |
 | `crates/llvmkit-asmparser/src/ll_parser.rs::tests::parses_module_asm` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseModuleAsm` | mirror |

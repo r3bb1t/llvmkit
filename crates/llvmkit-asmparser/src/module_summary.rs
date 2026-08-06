@@ -4,6 +4,7 @@
 //! `llvm/lib/AsmParser/LLParser.cpp` (`parseSummaryEntry`, `parseModuleEntry`,
 //! `parseGVEntry`, and the basic function/variable/alias summary forms).
 
+use std::borrow::Cow;
 use std::fmt;
 
 use llvmkit_support::Spanned;
@@ -758,7 +759,7 @@ impl<'src> SummaryParser<'src> {
         }
     }
 
-    fn parse_uint32(&mut self, expected: &str) -> ParseResult<u32> {
+    fn parse_uint32(&mut self, expected: &'static str) -> ParseResult<u32> {
         let n = self.parse_uint64(expected)?;
         u32::try_from(n).map_err(|_| ParseError::Expected {
             expected: expected.into(),
@@ -766,7 +767,7 @@ impl<'src> SummaryParser<'src> {
         })
     }
 
-    fn parse_uint64(&mut self, expected: &str) -> ParseResult<u64> {
+    fn parse_uint64(&mut self, expected: &'static str) -> ParseResult<u64> {
         let (sign, digits) = match &self.current.value {
             Token::IntegerLit(IntLit { sign, digits, .. }) => (*sign, (*digits).to_owned()),
             _ => return Err(self.expected(expected)),
@@ -781,7 +782,7 @@ impl<'src> SummaryParser<'src> {
         })
     }
 
-    fn parse_string(&mut self, expected: &str) -> ParseResult<String> {
+    fn parse_string(&mut self, expected: &'static str) -> ParseResult<String> {
         let s = match &self.current.value {
             Token::StringConstant(bytes) => std::str::from_utf8(bytes.as_ref())
                 .map_err(|_| self.expected(expected))?
@@ -792,7 +793,7 @@ impl<'src> SummaryParser<'src> {
         Ok(s)
     }
 
-    fn expect_keyword(&mut self, kw: Keyword, expected: &str) -> ParseResult<()> {
+    fn expect_keyword(&mut self, kw: Keyword, expected: &'static str) -> ParseResult<()> {
         match &self.current.value {
             Token::Kw(k) if *k == kw => {
                 self.bump()?;
@@ -812,7 +813,7 @@ impl<'src> SummaryParser<'src> {
         }
     }
 
-    fn expect(&mut self, tok: Token<'static>, expected: &str) -> ParseResult<()> {
+    fn expect(&mut self, tok: Token<'static>, expected: &'static str) -> ParseResult<()> {
         if same_token_kind(&self.current.value, &tok) {
             self.bump()?;
             Ok(())
@@ -835,7 +836,7 @@ impl<'src> SummaryParser<'src> {
         Ok(())
     }
 
-    fn expected<E: Into<String>>(&self, expected: E) -> ParseError {
+    fn expected<E: Into<Cow<'static, str>>>(&self, expected: E) -> ParseError {
         ParseError::Expected {
             expected: expected.into(),
             loc: DiagLoc::span(self.current.span),

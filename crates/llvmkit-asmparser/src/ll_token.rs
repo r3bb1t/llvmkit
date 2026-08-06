@@ -132,6 +132,112 @@ pub enum Token<'src> {
     Kw(Keyword),
 }
 
+/// One-phrase description of the token *kind*, for "expected ..." diagnostics.
+///
+/// Mirrors `lltok::Kind`-describing usage in `LLParser.cpp`: upstream embeds
+/// the phrase inline in `tokError("expected X")`, so the phrase is the same
+/// vocabulary a `.ll` author reads in `llvm-as` output. Writing straight to
+/// the formatter keeps a diagnostic from allocating a description it may only
+/// ever discard.
+///
+/// This describes the family, not the lexeme — payload-bearing tokens render
+/// as `global identifier`, not as the identifier itself. The payload is on
+/// the variant for a caller that wants it.
+impl core::fmt::Display for Token<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let text = match self {
+            Token::Eof => "<eof>",
+            Token::DotDotDot => "'...'",
+            Token::Equal => "'='",
+            Token::Comma => "','",
+            Token::Star => "'*'",
+            Token::LSquare => "'['",
+            Token::RSquare => "']'",
+            Token::LBrace => "'{'",
+            Token::RBrace => "'}'",
+            Token::Less => "'<'",
+            Token::Greater => "'>'",
+            Token::LParen => "'('",
+            Token::RParen => "')'",
+            Token::Exclaim => "'!'",
+            Token::Bar => "'|'",
+            Token::Colon => "':'",
+            Token::Hash => "'#'",
+            Token::LabelStr(_) => "label",
+            Token::GlobalVar(_) | Token::GlobalId(_) => "global identifier",
+            Token::LocalVar(_) | Token::LocalVarId(_) => "local identifier",
+            Token::ComdatVar(_) => "comdat identifier",
+            Token::MetadataVar(_) => "metadata reference",
+            Token::StringConstant(_) => "string constant",
+            Token::AttrGrpId(_) => "attribute group id",
+            Token::SummaryId(_) => "summary id",
+            Token::IntegerLit(_) => "integer constant",
+            Token::FloatLit(_) => "floating-point constant",
+            Token::PrimitiveType(_) => "primitive type",
+            Token::Instruction(_) => "instruction opcode",
+            Token::Kw(k) => return write!(f, "keyword '{}'", keyword_text(*k)),
+            // The DWARF-flavoured tokens are intentionally minimal — they only
+            // appear inside metadata, which the parser does not yet cover.
+            // Naming the family is sufficient for the diagnostics callers
+            // currently see.
+            Token::DwarfTag(_) => "DWARF tag",
+            Token::DwarfAttEncoding(_) => "DWARF attribute encoding",
+            Token::DwarfVirtuality(_) => "DWARF virtuality",
+            Token::DwarfLang(_) => "DWARF language",
+            Token::DwarfSourceLangName(_) => "DWARF source language name",
+            Token::DwarfCC(_) => "DWARF calling convention",
+            Token::DwarfOp(_) => "DWARF operation",
+            Token::DwarfMacinfo(_) => "DWARF macinfo",
+            Token::DwarfEnumKind(_) => "DWARF enum kind",
+            Token::DiFlag(_) => "DI flag",
+            Token::DiSpFlag(_) => "DI subprogram flag",
+            Token::ChecksumKind(_) => "checksum kind",
+            Token::EmissionKind(_) => "emission kind",
+            Token::NameTableKind(_) => "name-table kind",
+            Token::FixedPointKind(_) => "fixed-point kind",
+            Token::SpecializedMetadata(_) => "specialized metadata kind",
+            Token::DbgRecordType(_) => "dbg record type",
+        };
+        f.write_str(text)
+    }
+}
+
+/// The `.ll` spelling of the keywords a diagnostic can currently name.
+///
+/// Only the keywords the parser reaches by name; other arms fall back to a
+/// generic label rather than claiming a spelling nobody checked. Later
+/// revisions extend the table opportunistically.
+fn keyword_text(k: Keyword) -> &'static str {
+    match k {
+        Keyword::Target => "target",
+        Keyword::Triple => "triple",
+        Keyword::Datalayout => "datalayout",
+        Keyword::SourceFilename => "source_filename",
+        Keyword::Module => "module",
+        Keyword::Asm => "asm",
+        Keyword::Type => "type",
+        Keyword::Declare => "declare",
+        Keyword::Define => "define",
+        Keyword::Global => "global",
+        Keyword::Constant => "constant",
+        Keyword::External => "external",
+        Keyword::Internal => "internal",
+        Keyword::Private => "private",
+        Keyword::Common => "common",
+        Keyword::Addrspace => "addrspace",
+        Keyword::Opaque => "opaque",
+        Keyword::Zeroinitializer => "zeroinitializer",
+        Keyword::Null => "null",
+        Keyword::None => "none",
+        Keyword::Undef => "undef",
+        Keyword::Poison => "poison",
+        Keyword::True => "true",
+        Keyword::False => "false",
+        Keyword::X => "x",
+        _ => "<keyword>",
+    }
+}
+
 /// Type-keyword tokens that resolve to a stateless primitive type.
 ///
 /// Mirrors `TYPEKEYWORD(...)` entries in `LLLexer.cpp` plus the `i[0-9]+`
@@ -803,4 +909,46 @@ pub enum Keyword {
     Versions,
     MemProf,
     Notcold,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// llvmkit-specific (no upstream counterpart): LLVM 22.1.4 has no
+    /// `lltok::describe` to port — `LLParser.cpp` writes each phrase inline
+    /// in its `tokError("expected ...")` calls, so the closest reference is
+    /// that call vocabulary plus the `lltok::Kind` families in `LLToken.h`.
+    /// This pins the phrases llvmkit renders for them: punctuation quotes
+    /// itself, a payload-bearing token names its *family* rather than its
+    /// lexeme, and a keyword the diagnostic table does not spell out falls
+    /// back to `<keyword>` rather than inventing a spelling.
+    #[test]
+    fn token_display_names_the_family() {
+        assert_eq!(Token::Eof.to_string(), "<eof>");
+        assert_eq!(Token::Comma.to_string(), "','");
+        assert_eq!(Token::DotDotDot.to_string(), "'...'");
+        assert_eq!(Token::LBrace.to_string(), "'{'");
+        assert_eq!(
+            Token::GlobalVar(Cow::Borrowed(b"foo")).to_string(),
+            "global identifier"
+        );
+        assert_eq!(Token::GlobalId(7).to_string(), "global identifier");
+        assert_eq!(Token::LocalVarId(7).to_string(), "local identifier");
+        assert_eq!(
+            Token::MetadataVar(Cow::Borrowed(b"dbg")).to_string(),
+            "metadata reference"
+        );
+        assert_eq!(
+            Token::PrimitiveType(PrimitiveTy::Void).to_string(),
+            "primitive type"
+        );
+        assert_eq!(
+            Token::Instruction(Opcode::Add).to_string(),
+            "instruction opcode"
+        );
+        assert_eq!(Token::DwarfTag("DW_TAG_member").to_string(), "DWARF tag");
+        assert_eq!(Token::Kw(Keyword::Define).to_string(), "keyword 'define'");
+        assert_eq!(Token::Kw(Keyword::Nuw).to_string(), "keyword '<keyword>'");
+    }
 }

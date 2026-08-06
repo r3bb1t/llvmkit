@@ -24,7 +24,7 @@ fn assert_expected_error(src: &str, expected: &str) {
     match parse_err(src) {
         ParseError::Expected {
             expected: actual, ..
-        } => assert_eq!(actual.as_str(), expected),
+        } => assert_eq!(actual, expected),
         other => panic!("unexpected error variant: {other:?}"),
     }
 }

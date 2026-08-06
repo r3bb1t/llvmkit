@@ -29,6 +29,8 @@
 //!   `'ctx` brand on [`llvmkit_ir::Module`].
 
 use core::marker::PhantomData;
+use std::borrow::Cow;
+
 use llvmkit_ir::DataLayout;
 use llvmkit_ir::attributes::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, MemoryEffects, MemoryLocation, ModRefInfo,
@@ -87,103 +89,6 @@ type ParsedValueOrDeferredLocal<'ctx, B> = (
     llvmkit_ir::Value<'ctx, B>,
     Option<(DeferredLocalValueRef, Span)>,
 );
-
-// ── Identity of the next lookahead token ────────────────────────────────────
-
-/// One-byte description of a `Token` kind for "expected ..." diagnostics.
-///
-/// Mirrors `lltok::describe`-style usage in `LLParser.cpp` -- upstream
-/// embeds the description inline in `tokError("expected X")`; we keep the
-/// description on the static side so structured errors stay matchable
-/// without locale-sensitive string comparisons.
-pub fn describe(t: &Token<'_>) -> String {
-    match t {
-        Token::Eof => "<eof>".into(),
-        Token::DotDotDot => "'...'".into(),
-        Token::Equal => "'='".into(),
-        Token::Comma => "','".into(),
-        Token::Star => "'*'".into(),
-        Token::LSquare => "'['".into(),
-        Token::RSquare => "']'".into(),
-        Token::LBrace => "'{'".into(),
-        Token::RBrace => "'}'".into(),
-        Token::Less => "'<'".into(),
-        Token::Greater => "'>'".into(),
-        Token::LParen => "'('".into(),
-        Token::RParen => "')'".into(),
-        Token::Exclaim => "'!'".into(),
-        Token::Bar => "'|'".into(),
-        Token::Colon => "':'".into(),
-        Token::Hash => "'#'".into(),
-        Token::LabelStr(_) => "label".into(),
-        Token::GlobalVar(_) | Token::GlobalId(_) => "global identifier".into(),
-        Token::LocalVar(_) | Token::LocalVarId(_) => "local identifier".into(),
-        Token::ComdatVar(_) => "comdat identifier".into(),
-        Token::MetadataVar(_) => "metadata reference".into(),
-        Token::StringConstant(_) => "string constant".into(),
-        Token::AttrGrpId(_) => "attribute group id".into(),
-        Token::SummaryId(_) => "summary id".into(),
-        Token::IntegerLit(_) => "integer constant".into(),
-        Token::FloatLit(_) => "floating-point constant".into(),
-        Token::PrimitiveType(_) => "primitive type".into(),
-        Token::Instruction(_) => "instruction opcode".into(),
-        Token::Kw(k) => format!("keyword '{}'", keyword_text(*k)),
-        // The DWARF-flavoured tokens are intentionally minimal — they only
-        // appear inside metadata, which the parser does not yet cover.
-        // Naming the family is sufficient for the diagnostics callers
-        // currently see.
-        Token::DwarfTag(_) => "DWARF tag".into(),
-        Token::DwarfAttEncoding(_) => "DWARF attribute encoding".into(),
-        Token::DwarfVirtuality(_) => "DWARF virtuality".into(),
-        Token::DwarfLang(_) => "DWARF language".into(),
-        Token::DwarfSourceLangName(_) => "DWARF source language name".into(),
-        Token::DwarfCC(_) => "DWARF calling convention".into(),
-        Token::DwarfOp(_) => "DWARF operation".into(),
-        Token::DwarfMacinfo(_) => "DWARF macinfo".into(),
-        Token::DwarfEnumKind(_) => "DWARF enum kind".into(),
-        Token::DiFlag(_) => "DI flag".into(),
-        Token::DiSpFlag(_) => "DI subprogram flag".into(),
-        Token::ChecksumKind(_) => "checksum kind".into(),
-        Token::EmissionKind(_) => "emission kind".into(),
-        Token::NameTableKind(_) => "name-table kind".into(),
-        Token::FixedPointKind(_) => "fixed-point kind".into(),
-        Token::SpecializedMetadata(_) => "specialized metadata kind".into(),
-        Token::DbgRecordType(_) => "dbg record type".into(),
-    }
-}
-
-fn keyword_text(k: Keyword) -> &'static str {
-    // Only the keywords the parser currently reaches; other arms fall back to
-    // a generic label. Later revisions extend the table opportunistically.
-    match k {
-        Keyword::Target => "target",
-        Keyword::Triple => "triple",
-        Keyword::Datalayout => "datalayout",
-        Keyword::SourceFilename => "source_filename",
-        Keyword::Module => "module",
-        Keyword::Asm => "asm",
-        Keyword::Type => "type",
-        Keyword::Declare => "declare",
-        Keyword::Define => "define",
-        Keyword::Global => "global",
-        Keyword::Constant => "constant",
-        Keyword::External => "external",
-        Keyword::Internal => "internal",
-        Keyword::Private => "private",
-        Keyword::Common => "common",
-        Keyword::Addrspace => "addrspace",
-        Keyword::Opaque => "opaque",
-        Keyword::Zeroinitializer => "zeroinitializer",
-        Keyword::Null => "null",
-        Keyword::None => "none",
-        Keyword::Undef => "undef",
-        Keyword::Poison => "poison",
-        Keyword::True => "true",
-        Keyword::False => "false",
-        Keyword::X => "x",
-        _ => "<keyword>",
-    }
-}
 
 // ── Type pre-resolution table (mirrors LLParser::NamedTypes / NumberedTypes) ─
 
@@ -279,6 +184,27 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     deferred_intrinsic_attribute_checks: Vec<DeferredIntrinsicAttributeCheck>,
     forward_function_decls: HashMap<String, Span>,
     _brand: PhantomData<B>,
+}
+
+/// A cursor summary, not a dump. The parser owns every module-level slot
+/// table it has filled so far, so a derived `Debug` would print each parsed
+/// type, numbered global, and metadata slot at every `dbg!`. What a caller
+/// debugging a parse actually wants is where the cursor is, what it is
+/// looking at, and how much has resolved — table *sizes*, not contents.
+impl<B: ModuleBrand> core::fmt::Debug for Parser<'_, '_, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Parser")
+            .field("module", &self.module.name())
+            .field("module_id", &self.module.id())
+            .field("source_len", &self.src.len())
+            .field("position", &self.lex.position())
+            .field("token", &format_args!("{}", self.current.value))
+            .field("token_span", &self.current.span)
+            .field("named_types", &self.named_types.len())
+            .field("numbered_types", &self.numbered_types.len())
+            .field("metadata_slots", &self.metadata_slots.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// What the parser produces at end-of-module. Successful runs return the
@@ -1448,7 +1374,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     /// Consume `t`, or return [`ParseError::Expected`] with the supplied
     /// description. Mirrors `LLParser::parseToken`.
-    fn expect_punct(&mut self, t: PunctKind, expected: &str) -> ParseResult<Span> {
+    fn expect_punct(&mut self, t: PunctKind, expected: &'static str) -> ParseResult<Span> {
         if t.matches(self.peek()) {
             self.bump()
         } else {
@@ -1466,7 +1392,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn expect_keyword(&mut self, k: Keyword, expected: &str) -> ParseResult<Span> {
+    fn expect_keyword(&mut self, k: Keyword, expected: &'static str) -> ParseResult<Span> {
         if matches!(self.peek(), Token::Kw(got) if *got == k) {
             self.bump()
         } else {
@@ -1474,7 +1400,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn expect_primitive(&mut self, p: PrimitiveTy, expected: &str) -> ParseResult<Span> {
+    fn expect_primitive(&mut self, p: PrimitiveTy, expected: &'static str) -> ParseResult<Span> {
         if matches!(self.peek(), Token::PrimitiveType(got) if *got == p) {
             self.bump()
         } else {
@@ -1482,11 +1408,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn token_error(&self, expected: &str) -> ParseError {
+    fn token_error(&self, expected: impl Into<Cow<'static, str>>) -> ParseError {
         self.expected(expected)
     }
 
-    fn expected(&self, expected: &str) -> ParseError {
+    fn expected(&self, expected: impl Into<Cow<'static, str>>) -> ParseError {
         ParseError::Expected {
             expected: expected.into(),
             loc: DiagLoc::span(self.loc()),
@@ -1495,7 +1421,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     /// Consume a `STRINGCONSTANT` token and decode it as UTF-8. Mirrors
     /// `LLParser::parseStringConstant`.
-    fn parse_string_constant(&mut self, expected: &str) -> ParseResult<String> {
+    fn parse_string_constant(&mut self, expected: &'static str) -> ParseResult<String> {
         let s = match self.peek() {
             Token::StringConstant(bytes) => {
                 let s = std::str::from_utf8(bytes.as_ref())
@@ -1523,7 +1449,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(n)
     }
 
-    fn parse_uint32(&mut self, expected: &str) -> ParseResult<u32> {
+    fn parse_uint32(&mut self, expected: &'static str) -> ParseResult<u32> {
         let n = match self.peek() {
             Token::IntegerLit(IntLit {
                 sign: Sign::Pos,
@@ -1541,7 +1467,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn parse_uint64(&mut self, expected: &str) -> ParseResult<u64> {
+    fn parse_uint64(&mut self, expected: &'static str) -> ParseResult<u64> {
         let n = match self.peek() {
             Token::IntegerLit(IntLit {
                 sign: Sign::Pos,
@@ -1650,7 +1576,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_keyword(Keyword::Align, "'align'")?;
         let n = self.parse_uint64("alignment (bytes)")?;
         Align::new(n).map_err(|_| ParseError::Expected {
-            expected: format!("alignment must be non-zero power of two, got {n}"),
+            expected: format!("alignment must be non-zero power of two, got {n}").into(),
             loc: DiagLoc::span(self.loc()),
         })
     }
@@ -1675,7 +1601,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     /// Parse an atomic ordering keyword.
     /// Mirrors `LLParser::parseOrdering` (LLParser.cpp ~2810).
-    fn parse_atomic_ordering(&mut self, expected: &str) -> ParseResult<AtomicOrdering> {
+    fn parse_atomic_ordering(&mut self, expected: &'static str) -> ParseResult<AtomicOrdering> {
         let ord = match self.peek() {
             Token::Kw(Keyword::Unordered) => AtomicOrdering::Unordered,
             Token::Kw(Keyword::Monotonic) => AtomicOrdering::Monotonic,
@@ -1741,11 +1667,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let s = self.parse_string_constant("target-datalayout string constant")?;
                 let parsed = DataLayout::parse(&s).map_err(|e| match e {
                     IrError::InvalidDataLayout { reason } => ParseError::Expected {
-                        expected: format!("valid datalayout: {reason}"),
+                        expected: format!("valid datalayout: {reason}").into(),
                         loc: DiagLoc::span(loc),
                     },
                     other => ParseError::Expected {
-                        expected: format!("valid datalayout: {other}"),
+                        expected: format!("valid datalayout: {other}").into(),
                         loc: DiagLoc::span(loc),
                     },
                 })?;
@@ -2353,7 +2279,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     }
 
     /// Consume a `!` token (Token::Exclaim). Helper for metadata parsing.
-    fn expect_exclaim(&mut self, expected: &str) -> ParseResult<Span> {
+    fn expect_exclaim(&mut self, expected: &'static str) -> ParseResult<Span> {
         if matches!(self.peek(), Token::Exclaim) {
             self.bump()
         } else {
@@ -2545,7 +2471,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         expected: format!(
                             "monotonic numbered type id %{}",
                             self.next_unnamed_type_id
-                        ),
+                        )
+                        .into(),
                         loc: DiagLoc::span(decl_loc),
                     });
                 }
@@ -2570,7 +2497,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     self.module
                         .set_struct_body_dyn(handle, elements, packed)
                         .map_err(|e| ParseError::Expected {
-                            expected: format!("valid struct body: {e}"),
+                            expected: format!("valid struct body: {e}").into(),
                             loc: DiagLoc::span(decl_loc),
                         })?;
                 } else {
@@ -3211,7 +3138,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 return Err(ParseError::Expected {
                     expected: format!(
                         "no initializer: a global with '{spelled}' linkage is a declaration"
-                    ),
+                    )
+                    .into(),
                     loc: DiagLoc::span(self.loc()),
                 });
             }
@@ -3288,7 +3216,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             builder = builder.comdat(comdat);
         }
         let g = builder.build().map_err(|e| ParseError::Expected {
-            expected: format!("valid global definition: {e}"),
+            expected: format!("valid global definition: {e}").into(),
             loc: DiagLoc::span(decl_loc),
         })?;
         // The parser threads borrowing handles through its deferred-fixup and
@@ -3422,7 +3350,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 builder = builder.partition(p);
             }
             let a = builder.build().map_err(|e| ParseError::Expected {
-                expected: format!("valid alias definition: {e}"),
+                expected: format!("valid alias definition: {e}").into(),
                 loc: DiagLoc::span(decl_loc),
             })?;
             let a_view = self.module.view(a);
@@ -3453,7 +3381,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 builder = builder.partition(p);
             }
             let i = builder.build().map_err(|e| ParseError::Expected {
-                expected: format!("valid ifunc definition: {e}"),
+                expected: format!("valid ifunc definition: {e}").into(),
                 loc: DiagLoc::span(decl_loc),
             })?;
             let i_view = self.module.view(i);
@@ -3654,7 +3582,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return self.unsupported_constant_value_form_at(loc),
         };
         ParseError::Expected {
-            expected: format!("{opcode} constexprs are no longer supported"),
+            expected: format!("{opcode} constexprs are no longer supported").into(),
             loc: DiagLoc::span(loc),
         }
     }
@@ -3691,7 +3619,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     for b in &bytes {
                         let c = elem_ty.const_int_checked(u64::from(*b)).map_err(|e| {
                             ParseError::Expected {
-                                expected: format!("i8 array element for c\"...\" constant: {e}"),
+                                expected: format!("i8 array element for c\"...\" constant: {e}")
+                                    .into(),
                                 loc: DiagLoc::span(self.loc()),
                             }
                         })?;
@@ -3700,7 +3629,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let c = array_ty
                         .const_array(values)
                         .map_err(|e| ParseError::Expected {
-                            expected: format!("valid c\"...\" constant: {e}"),
+                            expected: format!("valid c\"...\" constant: {e}").into(),
                             loc: DiagLoc::span(self.loc()),
                         })?;
                     return Ok(ValId::Constant(c.as_constant()));
@@ -3716,7 +3645,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let c = array_ty
                         .const_array(values)
                         .map_err(|e| ParseError::Expected {
-                            expected: format!("valid array constant: {e}"),
+                            expected: format!("valid array constant: {e}").into(),
                             loc: DiagLoc::span(self.loc()),
                         })?;
                     return Ok(ValId::Constant(c.as_constant()));
@@ -3732,7 +3661,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let c = vec_ty
                         .const_vector(values)
                         .map_err(|e| ParseError::Expected {
-                            expected: format!("valid vector constant: {e}"),
+                            expected: format!("valid vector constant: {e}").into(),
                             loc: DiagLoc::span(self.loc()),
                         })?;
                     return Ok(ValId::Constant(c.as_constant()));
@@ -3763,7 +3692,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let c = struct_ty
                         .const_struct(values)
                         .map_err(|e| ParseError::Expected {
-                            expected: format!("valid struct constant: {e}"),
+                            expected: format!("valid struct constant: {e}").into(),
                             loc: DiagLoc::span(self.loc()),
                         })?;
                     return Ok(ValId::Constant(c.as_constant()));
@@ -4085,7 +4014,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let c = int_ty
                     .const_ap_int(&bits)
                     .map_err(|e| ParseError::Expected {
-                        expected: format!("valid integer constant: {e}"),
+                        expected: format!("valid integer constant: {e}").into(),
                         loc: DiagLoc::span(self.loc()),
                     })?;
                 Ok(c.as_constant())
@@ -5651,7 +5580,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             loc: DiagLoc::span(decl_loc),
                         })?;
                         let arg = f.param(slot).map_err(|e| ParseError::Expected {
-                            expected: format!("function parameter slot {slot}: {e}"),
+                            expected: format!("function parameter slot {slot}: {e}").into(),
                             loc: DiagLoc::span(decl_loc),
                         })?;
                         arg.set_name(self.module, &name);
@@ -5695,7 +5624,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .module
                 .add_function_dyn(&name, fn_ty, linkage)
                 .map_err(|e| ParseError::Expected {
-                    expected: format!("valid function declaration: {e}"),
+                    expected: format!("valid function declaration: {e}").into(),
                     loc: DiagLoc::span(decl_loc),
                 })?;
             let f = self.module.view(f);
@@ -5713,7 +5642,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         loc: DiagLoc::span(decl_loc),
                     })?;
                     let arg = f.param(slot).map_err(|e| ParseError::Expected {
-                        expected: format!("function parameter slot {slot}: {e}"),
+                        expected: format!("function parameter slot {slot}: {e}").into(),
                         loc: DiagLoc::span(decl_loc),
                     })?;
                     arg.set_name(self.module, &name);
@@ -5908,7 +5837,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .module
                 .add_function_dyn(&name, fn_ty, linkage)
                 .map_err(|e| ParseError::Expected {
-                    expected: format!("valid function definition: {e}"),
+                    expected: format!("valid function definition: {e}").into(),
                     loc: DiagLoc::span(decl_loc),
                 })?;
             let f = self.module.view(f);
@@ -5928,7 +5857,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     loc: DiagLoc::span(decl_loc),
                 })?;
                 let arg = f.param(slot_u32).map_err(|e| ParseError::Expected {
-                    expected: format!("function parameter slot {slot}: {e}"),
+                    expected: format!("function parameter slot {slot}: {e}").into(),
                     loc: DiagLoc::span(decl_loc),
                 })?;
                 arg.set_name(self.module, n);
@@ -5999,7 +5928,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(decl_loc),
             })?;
             let arg = f.param(slot_u32).map_err(|e| ParseError::Expected {
-                expected: format!("function parameter slot {slot}: {e}"),
+                expected: format!("function parameter slot {slot}: {e}").into(),
                 loc: DiagLoc::span(decl_loc),
             })?;
             let v = arg.as_erased();
@@ -6326,7 +6255,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     return Err(ParseError::Expected {
                         expected: format!(
                             "instruction opcode supported by this parser (got {opcode:?})"
-                        ),
+                        )
+                        .into(),
                         loc: DiagLoc::span(result_loc),
                     });
                 }
@@ -6369,7 +6299,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if let Token::PrimitiveType(PrimitiveTy::Void) = self.peek() {
             self.bump()?;
             let _ = b.ret_void().map_err(|e| ParseError::Expected {
-                expected: format!("valid ret void: {e}"),
+                expected: format!("valid ret void: {e}").into(),
                 loc: DiagLoc::span(self.loc()),
             })?;
             return Ok(());
@@ -6377,7 +6307,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let ty = self.parse_type(false)?;
         let v = self.parse_value(state, ty)?;
         let _ = b.ret(v).map_err(|e| ParseError::Expected {
-            expected: format!("valid ret: {e}"),
+            expected: format!("valid ret: {e}").into(),
             loc: DiagLoc::span(self.loc()),
         })?;
         Ok(())
@@ -6395,7 +6325,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.bump()?;
             let target = self.parse_block_ref(state)?;
             let _ = b.br(target).map_err(|e| ParseError::Expected {
-                expected: format!("valid br: {e}"),
+                expected: format!("valid br: {e}").into(),
                 loc: DiagLoc::span(self.loc()),
             })?;
             return Ok(());
@@ -6424,7 +6354,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let _ = b
             .cond_br(cond_i1, then_bb, else_bb)
             .map_err(|e| ParseError::Expected {
-                expected: format!("valid cond_br: {e}"),
+                expected: format!("valid cond_br: {e}").into(),
                 loc: DiagLoc::span(self.loc()),
             })?;
         Ok(())
@@ -8073,7 +8003,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             .module
                             .add_function_dyn(&name, parsed_fn_ty, Linkage::External)
                             .map_err(|e| ParseError::Expected {
-                                expected: format!("forward function declaration: {e}"),
+                                expected: format!("forward function declaration: {e}").into(),
                                 loc: DiagLoc::span(loc),
                             })?;
                         self.forward_function_decls.entry(name).or_insert(loc);
@@ -8116,7 +8046,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 // value form the callee took, it must be pointer-typed.
                 let callee =
                     llvmkit_ir::PointerValue::try_from(v).map_err(|e| ParseError::Expected {
-                        expected: format!("pointer callee: {e}"),
+                        expected: format!("pointer callee: {e}").into(),
                         loc: DiagLoc::span(loc),
                     })?;
                 Ok(ParsedCallee::Indirect(callee))
@@ -8901,7 +8831,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn builder_err(&self, label: &str, e: IrError) -> ParseError {
         ParseError::Expected {
-            expected: format!("valid {label}: {e}"),
+            expected: format!("valid {label}: {e}").into(),
             loc: DiagLoc::span(self.loc()),
         }
     }
@@ -9314,7 +9244,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         self.func
             .move_basic_block_to_end(module, bb)
             .map_err(|e| ParseError::Expected {
-                expected: format!("numbered basic block definition: {e}"),
+                expected: format!("numbered basic block definition: {e}").into(),
                 loc: DiagLoc::span(loc),
             })?;
         self.local_numbered.insert(id, bb_value);
@@ -9497,7 +9427,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 .inst
                 .set_value_operand(module, val)
                 .map_err(|e| ParseError::Expected {
-                    expected: format!("valid atomicrmw forward value: {e}"),
+                    expected: format!("valid atomicrmw forward value: {e}").into(),
                     loc: DiagLoc::span(deferred.loc),
                 })?;
         }
@@ -9540,7 +9470,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             tmp_b
                 .phi_add_incoming_from_value(edge.phi_val, val, bb)
                 .map_err(|e| ParseError::Expected {
-                    expected: format!("valid phi add_incoming: {e}"),
+                    expected: format!("valid phi add_incoming: {e}").into(),
                     loc: DiagLoc::span(edge.loc),
                 })?;
         }
@@ -9557,7 +9487,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 .map(|(_, span)| DiagLoc::span(*span))
                 .unwrap_or_else(|| DiagLoc::span(Span::default()));
             return Err(ParseError::Expected {
-                expected: e.message,
+                expected: e.message.into(),
                 loc,
             });
         }

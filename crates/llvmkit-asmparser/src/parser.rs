@@ -141,7 +141,7 @@ where
     P: AsRef<Path>,
 {
     let path = path.as_ref();
-    let bytes = read_file(path).map_err(|e| ParseError::Io(e.to_string()))?;
+    let bytes = read_file(path)?;
     parse_into(branded_module::<B>(module_name_for(path))?, bytes)
 }
 
@@ -157,7 +157,7 @@ where
     P: AsRef<Path>,
 {
     let path = path.as_ref();
-    let bytes = read_file(path).map_err(|e| ParseError::Io(e.to_string()))?;
+    let bytes = read_file(path)?;
     parse_into(Module::dynamic(module_name_for(path)), bytes)
 }
 
@@ -167,7 +167,10 @@ fn branded_module<B: ModuleBrand>(name: &str) -> ParseResult<Module<B, Unverifie
         IrError::BrandRetired { brand } => ParseError::BrandRetired { brand },
         // `Module::branded` reports exactly `BrandInUse` or `BrandRetired`.
         IrError::BrandInUse { brand } => ParseError::BrandInUse { brand },
-        other => ParseError::Io(other.to_string()),
+        other => ParseError::Io {
+            kind: std::io::ErrorKind::Other,
+            message: other.to_string(),
+        },
     })
 }
 
@@ -229,7 +232,7 @@ where
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("asm");
-    let bytes = read_file(path).map_err(|e| ParseError::Io(e.to_string()))?;
+    let bytes = read_file(path)?;
     parse_assembly_with_name(module_name, bytes, f)
 }
 
@@ -243,7 +246,7 @@ pub fn parse_summary_index_assembly_file<P>(path: P) -> ParseResult<ModuleSummar
 where
     P: AsRef<Path>,
 {
-    let bytes = read_file(path).map_err(|e| ParseError::Io(e.to_string()))?;
+    let bytes = read_file(path)?;
     parse_summary_index_assembly(&bytes)
 }
 
