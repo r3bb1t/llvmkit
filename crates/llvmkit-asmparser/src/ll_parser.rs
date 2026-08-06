@@ -42,15 +42,14 @@ use llvmkit_ir::metadata::{
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    Align, AllocaFlags, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, AtomicLoadConfig,
-    AtomicOrdering, AtomicRMWBinOp, AtomicStoreConfig, CallingConv, Constant, ConstantExprFlags,
-    ConstantExprInRange, ConstantExprOpcode, ConstantExprOptions, DllStorageClass, Dyn,
-    FastMathFlags, FloatDyn, FloatPredicate, FloatType, FpClassTest, GepNoWrapFlags, IntCastFlags,
-    IntDyn, IntType, IntValue, IntrinsicNameResolution, IrBuilder, IrError, IrResult, Linkage,
-    MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue, Positioned, RoundingMode,
-    SelectionKind, ShuffleMaskElem, Signedness, StructType, SyncScope, ThreadLocalMode, Type,
-    TypeKind, UiToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord, UseListOrderRecord,
-    Visibility, constant_fold_select_instruction, derived_types::PointerType,
+    Align, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, AtomicOrdering, AtomicRMWBinOp,
+    CallingConv, Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode,
+    ConstantExprOptions, DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType,
+    FpClassTest, GepNoWrapFlags, IntCastFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution,
+    IrBuilder, IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
+    Positioned, RoundingMode, SelectionKind, ShuffleMaskElem, Signedness, StructType, SyncScope,
+    ThreadLocalMode, Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, UseListOrderBBRecord,
+    UseListOrderRecord, Visibility, constant_fold_select_instruction, derived_types::PointerType,
     resolve_intrinsic_name, shufflevector_mask_from_constant,
 };
 use llvmkit_macros::Branded;
@@ -6816,24 +6815,34 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         // `inalloca` / `swifterror` markers precede the type
         // (`LLParser::parseAlloc`).
-        let mut flags = AllocaFlags::none();
-        if self.eat_keyword(Keyword::Inalloca)? {
-            flags = flags.with_inalloca();
-        }
-        if self.eat_keyword(Keyword::Swifterror)? {
-            flags = flags.with_swifterror();
-        }
+        let inalloca = self.eat_keyword(Keyword::Inalloca)?;
+        let swifterror = self.eat_keyword(Keyword::Swifterror)?;
         let ty = self.parse_type(false)?;
         // Upstream parses size, then alignment, then address space.
         let size = self.parse_optional_comma_array_size(state)?;
-        let align = self
-            .parse_optional_comma_align()?
-            .map(MaybeAlign::new)
-            .unwrap_or(MaybeAlign::NONE);
+        let align = self.parse_optional_comma_align()?;
         let addr_space = self.parse_optional_comma_addrspace()?;
-        let r = b
-            .alloca_dyn(ty, size, align, addr_space, flags, result_name.as_str())
-            .map_err(|e| self.builder_err("alloca", e))?;
+        // Runtime-clause dispatch: every optional slot is an `Option` /
+        // `bool` decided by the source text, so the builder chain is
+        // assembled with explicit ifs (the same shape
+        // [`Self::function_type_with_variadic`] uses for its runtime split).
+        let mut alloca = b.alloca_builder(ty).name(result_name.as_str());
+        if let Some(size) = size {
+            alloca = alloca.array(size);
+        }
+        if let Some(align) = align {
+            alloca = alloca.align(align);
+        }
+        if let Some(addr_space) = addr_space {
+            alloca = alloca.addr_space(addr_space);
+        }
+        if inalloca {
+            alloca = alloca.inalloca();
+        }
+        if swifterror {
+            alloca = alloca.swifterror();
+        }
+        let r = alloca.build().map_err(|e| self.builder_err("alloca", e))?;
         Ok(b.view(r).as_erased())
     }
 
@@ -6911,33 +6920,30 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .try_into()
             .map_err(|_| self.expected("ptr-typed load operand"))?;
 
+        // Runtime-clause dispatch: `volatile` / `atomic` / the align and
+        // syncscope clauses are all decided by the source text, so the
+        // builder chain is assembled with explicit ifs (the same shape
+        // [`Self::function_type_with_variadic`] uses for its runtime split).
+        let mut load = b.load_from(ptr);
+        if volatile {
+            load = load.volatile();
+        }
         if is_atomic {
             let sync_scope = self.parse_optional_syncscope()?;
             let ordering = self.parse_atomic_ordering("atomic ordering")?;
             self.expect_punct(PunctKind::Comma, "',' after atomic ordering")?;
+            // Upstream requires the align clause on an atomic load
+            // ("atomic load must have explicit non-zero alignment",
+            // `LLParser::parseLoad`), so this is not optional here.
             let align = self.parse_align_val()?;
-            let config = AtomicLoadConfig::new(ordering, sync_scope, align);
-            let config = if volatile { config.volatile() } else { config };
-            let v = b
-                .load_atomic(ty, ptr, config, result_name.as_str())
-                .map_err(|e| self.builder_err("load", e))?;
-            Ok(b.view(v))
-        } else {
-            let align = self.parse_optional_comma_align()?;
-            let v = if volatile {
-                match align {
-                    Some(a) => b.load_volatile_with_align(ty, ptr, a, result_name.as_str()),
-                    None => b.load_volatile(ty, ptr, result_name.as_str()),
-                }
-            } else {
-                match align {
-                    Some(a) => b.load_with_align(ty, ptr, a, result_name.as_str()),
-                    None => b.load(ty, ptr, result_name.as_str()),
-                }
-            }
-            .map_err(|e| self.builder_err("load", e))?;
-            Ok(b.view(v))
+            load = load.atomic(ordering).sync_scope(sync_scope).align(align);
+        } else if let Some(align) = self.parse_optional_comma_align()? {
+            load = load.align(align);
         }
+        let v = load
+            .erased(ty, result_name.as_str())
+            .map_err(|e| self.builder_err("load", e))?;
+        Ok(b.view(v))
     }
 
     /// `store [volatile] TYPE VALUE, ptr PTR [, align N]` or
@@ -6958,25 +6964,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
             .try_into()
             .map_err(|_| self.expected("ptr-typed store target"))?;
+        // Runtime-clause dispatch, mirroring [`Self::parse_load`].
+        let mut store = b.store_to(val_v, ptr);
+        if volatile {
+            store = store.volatile();
+        }
         if is_atomic {
             let sync_scope = self.parse_optional_syncscope()?;
             let ordering = self.parse_atomic_ordering("atomic ordering")?;
             self.expect_punct(PunctKind::Comma, "',' after atomic ordering")?;
+            // Upstream requires the align clause on an atomic store
+            // ("atomic store must have explicit non-zero alignment",
+            // `LLParser::parseStore`), so this is not optional here.
             let align = self.parse_align_val()?;
-            let config = AtomicStoreConfig::new(ordering, sync_scope, align);
-            let config = if volatile { config.volatile() } else { config };
-            b.store_atomic(val_v, ptr, config)
-                .map_err(|e| self.builder_err("store", e))?;
-        } else {
-            let align = self.parse_optional_comma_align()?;
-            match (volatile, align) {
-                (true, Some(a)) => b.store_volatile_with_align(val_v, ptr, a),
-                (true, None) => b.store_volatile(val_v, ptr),
-                (false, Some(a)) => b.store_with_align(val_v, ptr, a),
-                (false, None) => b.store(val_v, ptr),
-            }
-            .map_err(|e| self.builder_err("store", e))?;
+            store = store.atomic(ordering).sync_scope(sync_scope).align(align);
+        } else if let Some(align) = self.parse_optional_comma_align()? {
+            store = store.align(align);
         }
+        store.build().map_err(|e| self.builder_err("store", e))?;
         Ok(())
     }
 

@@ -246,11 +246,11 @@ pub use global_variable::{GlobalBuilder, GlobalVariable};
 pub use inline_asm::{AsmDialect, InlineAsm, InlineAsmOptions};
 pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
-    AShrFlags, AddFlags, AllocaFlags, AtomicCmpXchgConfig, AtomicLoadConfig, AtomicRMWConfig,
-    AtomicRMWFlags, AtomicStoreConfig, BinaryOpcode, CallAttributeData, CmpXchgFlags, IcmpFlags,
-    IntBinOpFlags, IntCastFlags, LShrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags,
-    OverflowFlags, SDivFlags, ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags,
-    UDivFlags, UiToFpFlags, UnaryOpcode, ZextFlags,
+    AShrFlags, AddFlags, AllocaFlags, AtomicCmpXchgConfig, AtomicRMWConfig, AtomicRMWFlags,
+    BinaryOpcode, CallAttributeData, CmpXchgFlags, IcmpFlags, IntBinOpFlags, IntCastFlags,
+    LShrFlags, MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SDivFlags,
+    ShlFlags, ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags, UDivFlags, UiToFpFlags,
+    UnaryOpcode, ZextFlags,
 };
 pub use instruction::{
     CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,
@@ -277,8 +277,8 @@ pub use ir_builder::constant_folder::ConstantFolder;
 pub use ir_builder::folder::IrBuilderFolder;
 pub use ir_builder::no_folder::NoFolder;
 pub use ir_builder::{
-    BuilderPositionState, CallBuilder, CallSiteConfig, InsertPoint, IrBuilder, Positioned,
-    SelectArm, SelectNarrow, Unpositioned,
+    AllocaBuilder, BuilderPositionState, CallBuilder, CallSiteConfig, InsertPoint, IrBuilder,
+    LoadBuilder, Positioned, SelectArm, SelectNarrow, StoreBuilder, Unpositioned,
 };
 pub use known_bits::{AddSubOperation, KnownBits, ShiftAmountKnowledge};
 pub use marker::{Dyn, Ptr, ReturnMarker};

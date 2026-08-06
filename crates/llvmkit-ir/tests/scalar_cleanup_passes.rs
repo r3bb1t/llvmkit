@@ -1,7 +1,7 @@
 use llvmkit_ir::{
-    Align, Analyses, AtomicLoadConfig, AtomicOrdering, DcePass, Dyn, InstSimplifyPass,
-    IntPredicate, IntValue, IrBuilder, IrError, Linkage, NoFolder, PointerValue, SyncScope, Value,
-    module_new, run_function_pass,
+    Align, Analyses, AtomicOrdering, DcePass, Dyn, InstSimplifyPass, IntPredicate, IntValue,
+    IrBuilder, IrError, Linkage, NoFolder, PointerValue, SyncScope, Value, module_new,
+    run_function_pass,
 };
 
 /// Port of `llvm/lib/Transforms/Scalar/InstSimplifyPass.cpp::runImpl` and
@@ -199,7 +199,8 @@ fn instsimplify_pass_keeps_load_from_interposable_constant_global() -> Result<()
 /// Matches `wouldInstructionBeTriviallyDead` via `LoadInst::isUnordered`: an
 /// unused unordered atomic load has no memory-ordering side effects and is
 /// removed, while an ordered (monotonic) atomic load and a volatile load are
-/// kept.
+/// kept. The three loads are constructed through the
+/// [`llvmkit_ir::LoadBuilder`] chain.
 #[test]
 fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), IrError> {
     let m = module_new!("dce-loads")?;
@@ -210,13 +211,19 @@ fn dce_removes_unordered_atomic_load_keeps_ordered_and_volatile() -> Result<(), 
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let p: PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let unordered =
-        AtomicLoadConfig::new(AtomicOrdering::Unordered, SyncScope::System, Align::new(4)?);
-    let _u = b.int_load_atomic::<i32, _, _>(p, unordered, "u")?;
-    let monotonic =
-        AtomicLoadConfig::new(AtomicOrdering::Monotonic, SyncScope::System, Align::new(4)?);
-    let _mo = b.int_load_atomic::<i32, _, _>(p, monotonic, "mo")?;
-    let _v = b.load_volatile(i32_ty, p, "v")?;
+    let _u = b
+        .load_from(p)
+        .atomic(AtomicOrdering::Unordered)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(4)?)
+        .int::<i32>("u")?;
+    let _mo = b
+        .load_from(p)
+        .atomic(AtomicOrdering::Monotonic)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(4)?)
+        .int::<i32>("mo")?;
+    let _v = b.load_from(p).volatile().erased(i32_ty, "v")?;
     b.ret_void()?;
 
     let verified = m.verify()?;
@@ -279,7 +286,8 @@ fn dce_keeps_store_fence_and_call() -> Result<(), IrError> {
 /// but is not trivially dead (its ordering is a side effect), so it is RAUW'd
 /// but kept; without upstream's use-empty guard the restart loop re-folded it
 /// forever. Mirrors `InstSimplifyPass::runImpl` only simplifying use-having
-/// instructions.
+/// instructions. The load is constructed through the
+/// [`llvmkit_ir::LoadBuilder`] chain.
 #[test]
 fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), IrError> {
     let m = module_new!("is-atomic")?;
@@ -290,8 +298,12 @@ fn instsimplify_terminates_on_ordered_atomic_load_from_constant() -> Result<(), 
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::with_folder(&m, NoFolder).position_at_end(entry);
     let gp = PointerValue::try_from(m.view(g).as_global_constant_ptr().as_erased())?;
-    let cfg = AtomicLoadConfig::new(AtomicOrdering::Monotonic, SyncScope::System, Align::new(4)?);
-    let s = b.int_load_atomic::<i32, _, _>(gp, cfg, "s")?;
+    let s = b
+        .load_from(gp)
+        .atomic(AtomicOrdering::Monotonic)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(4)?)
+        .int::<i32>("s")?;
     b.ret(s)?;
 
     let verified = m.verify()?;

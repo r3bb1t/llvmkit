@@ -7,14 +7,16 @@
 //! atomic-rule rejection paths.
 
 use llvmkit_ir::{
-    Align, AtomicLoadConfig, AtomicOrdering, AtomicStoreConfig, Constant, ConstantFloatValue, Dyn,
-    IntValue, IrBuilder, IrError, Linkage, SyncScope, VerifierRule, module_new,
+    Align, AtomicOrdering, Constant, ConstantFloatValue, Dyn, IntValue, IrBuilder, IrError,
+    Linkage, SyncScope, VerifierRule, module_new,
 };
 
 // --- Atomic load shapes (compatibility.ll lines 902-906) ---------------
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 902:
 /// `%ld.1 = load atomic i32, ptr %word monotonic, align 4`.
+/// Constructed through the [`llvmkit_ir::LoadBuilder`] chain
+/// (`load_from(..).atomic(..)`), the single spelling for an atomic load.
 #[test]
 fn load_atomic_monotonic_align4() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -25,12 +27,12 @@ fn load_atomic_monotonic_align4() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let cfg = AtomicLoadConfig::new(
-        AtomicOrdering::Monotonic,
-        SyncScope::System,
-        Align::new(4).expect("align 4"),
-    );
-    let ld = b.int_load_atomic::<i32, _, _>(word, cfg, "ld.1")?;
+    let ld = b
+        .load_from(word)
+        .atomic(AtomicOrdering::Monotonic)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(4).expect("align 4"))
+        .int::<i32>("ld.1")?;
     b.ret(ld)?;
     let text = format!("{m}");
     assert!(
@@ -42,6 +44,8 @@ fn load_atomic_monotonic_align4() -> Result<(), IrError> {
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 904:
 /// `%ld.2 = load atomic volatile i32, ptr %word acquire, align 8`.
+/// Constructed through the [`llvmkit_ir::LoadBuilder`] chain
+/// (`load_from(..).volatile().atomic(..)`).
 #[test]
 fn load_atomic_volatile_acquire_align8() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -52,13 +56,13 @@ fn load_atomic_volatile_acquire_align8() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let cfg = AtomicLoadConfig::new(
-        AtomicOrdering::Acquire,
-        SyncScope::System,
-        Align::new(8).expect("align 8"),
-    )
-    .volatile();
-    let ld = b.int_load_atomic::<i32, _, _>(word, cfg, "ld.2")?;
+    let ld = b
+        .load_from(word)
+        .volatile()
+        .atomic(AtomicOrdering::Acquire)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(8).expect("align 8"))
+        .int::<i32>("ld.2")?;
     b.ret(ld)?;
     let text = format!("{m}");
     assert!(
@@ -70,6 +74,8 @@ fn load_atomic_volatile_acquire_align8() -> Result<(), IrError> {
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 906:
 /// `%ld.3 = load atomic volatile i32, ptr %word syncscope("singlethread") seq_cst, align 16`.
+/// Constructed through the [`llvmkit_ir::LoadBuilder`] chain
+/// (`load_from(..).volatile().atomic(..).sync_scope(..)`).
 #[test]
 fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -80,13 +86,13 @@ fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let cfg = AtomicLoadConfig::new(
-        AtomicOrdering::SequentiallyConsistent,
-        SyncScope::SingleThread,
-        Align::new(16).expect("align 16"),
-    )
-    .volatile();
-    let ld = b.int_load_atomic::<i32, _, _>(word, cfg, "ld.3")?;
+    let ld = b
+        .load_from(word)
+        .volatile()
+        .atomic(AtomicOrdering::SequentiallyConsistent)
+        .sync_scope(SyncScope::SingleThread)
+        .align(Align::new(16).expect("align 16"))
+        .int::<i32>("ld.3")?;
     b.ret(ld)?;
     let text = format!("{m}");
     assert!(
@@ -102,6 +108,8 @@ fn load_atomic_volatile_singlethread_seq_cst_align16() -> Result<(), IrError> {
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 909:
 /// `store atomic i32 23, ptr %word monotonic, align 4`.
+/// Constructed through the [`llvmkit_ir::StoreBuilder`] chain
+/// (`store_to(..).atomic(..)`), the single spelling for an atomic store.
 #[test]
 fn store_atomic_monotonic_align4() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -113,12 +121,11 @@ fn store_atomic_monotonic_align4() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(23_i32);
-    let cfg = AtomicStoreConfig::new(
-        AtomicOrdering::Monotonic,
-        SyncScope::System,
-        Align::new(4).expect("align 4"),
-    );
-    b.store_atomic(val, word, cfg)?;
+    b.store_to(val, word)
+        .atomic(AtomicOrdering::Monotonic)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(4).expect("align 4"))
+        .build()?;
     b.ret_void()?;
     let text = format!("{m}");
     assert!(
@@ -130,6 +137,8 @@ fn store_atomic_monotonic_align4() -> Result<(), IrError> {
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 911:
 /// `store atomic volatile i32 24, ptr %word monotonic, align 4`.
+/// Constructed through the [`llvmkit_ir::StoreBuilder`] chain
+/// (`store_to(..).volatile().atomic(..)`).
 #[test]
 fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -141,13 +150,12 @@ fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(24_i32);
-    let cfg = AtomicStoreConfig::new(
-        AtomicOrdering::Monotonic,
-        SyncScope::System,
-        Align::new(4).expect("align 4"),
-    )
-    .volatile();
-    b.store_atomic(val, word, cfg)?;
+    b.store_to(val, word)
+        .volatile()
+        .atomic(AtomicOrdering::Monotonic)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(4).expect("align 4"))
+        .build()?;
     b.ret_void()?;
     let text = format!("{m}");
     assert!(
@@ -159,6 +167,8 @@ fn store_atomic_volatile_monotonic_align4() -> Result<(), IrError> {
 
 /// Mirrors `test/Bitcode/compatibility.ll` line 913:
 /// `store atomic volatile i32 25, ptr %word syncscope("singlethread") monotonic, align 4`.
+/// Constructed through the [`llvmkit_ir::StoreBuilder`] chain
+/// (`store_to(..).volatile().atomic(..).sync_scope(..)`).
 #[test]
 fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -170,13 +180,12 @@ fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(25_i32);
-    let cfg = AtomicStoreConfig::new(
-        AtomicOrdering::Monotonic,
-        SyncScope::SingleThread,
-        Align::new(4).expect("align 4"),
-    )
-    .volatile();
-    b.store_atomic(val, word, cfg)?;
+    b.store_to(val, word)
+        .volatile()
+        .atomic(AtomicOrdering::Monotonic)
+        .sync_scope(SyncScope::SingleThread)
+        .align(Align::new(4).expect("align 4"))
+        .build()?;
     b.ret_void()?;
     let text = format!("{m}");
     assert!(
@@ -192,6 +201,7 @@ fn store_atomic_volatile_singlethread_monotonic() -> Result<(), IrError> {
 
 /// Mirrors `Verifier::visitLoadInst` ("Load cannot have Release ordering").
 /// Negative test: builder allows construction; verifier rejects.
+/// Constructed through the [`llvmkit_ir::LoadBuilder`] chain.
 #[test]
 fn verifier_rejects_atomic_load_release_ordering() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -202,12 +212,12 @@ fn verifier_rejects_atomic_load_release_ordering() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let cfg = AtomicLoadConfig::new(
-        AtomicOrdering::Release,
-        SyncScope::System,
-        Align::new(4).expect("align 4"),
-    );
-    let ld = b.int_load_atomic::<i32, _, _>(word, cfg, "ld")?;
+    let ld = b
+        .load_from(word)
+        .atomic(AtomicOrdering::Release)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(4).expect("align 4"))
+        .int::<i32>("ld")?;
     b.ret(ld)?;
     let err = m
         .verify_borrowed()
@@ -220,6 +230,7 @@ fn verifier_rejects_atomic_load_release_ordering() -> Result<(), IrError> {
 }
 
 /// Mirrors `Verifier::visitStoreInst` ("Store cannot have Acquire ordering").
+/// Constructed through the [`llvmkit_ir::StoreBuilder`] chain.
 #[test]
 fn verifier_rejects_atomic_store_acquire_ordering() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -231,12 +242,11 @@ fn verifier_rejects_atomic_store_acquire_ordering() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     let val = i32_ty.const_int(42_i32);
-    let cfg = AtomicStoreConfig::new(
-        AtomicOrdering::Acquire,
-        SyncScope::System,
-        Align::new(4).expect("align 4"),
-    );
-    b.store_atomic(val, word, cfg)?;
+    b.store_to(val, word)
+        .atomic(AtomicOrdering::Acquire)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(4).expect("align 4"))
+        .build()?;
     b.ret_void()?;
     let err = m
         .verify_borrowed()
@@ -251,6 +261,7 @@ fn verifier_rejects_atomic_store_acquire_ordering() -> Result<(), IrError> {
 /// Mirrors `Verifier::checkAtomicMemAccessSize` ("atomic memory access'
 /// operand must have a power-of-two size"): atomic load of `i17` (a width
 /// neither byte-sized nor a power of two) must be rejected.
+/// Constructed through the [`llvmkit_ir::LoadBuilder`] chain.
 #[test]
 fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -263,12 +274,12 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let word: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
     // i17 → bit width 17, not power-of-two.
-    let cfg = AtomicLoadConfig::new(
-        AtomicOrdering::Monotonic,
-        SyncScope::System,
-        Align::new(4).expect("align 4"),
-    );
-    let _ = b.int_load_atomic::<llvmkit_ir::Width<17>, _, _>(word, cfg, "ld")?;
+    let _ = b
+        .load_from(word)
+        .atomic(AtomicOrdering::Monotonic)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(4).expect("align 4"))
+        .int::<llvmkit_ir::Width<17>>("ld")?;
     b.ret_void()?;
     let err = m
         .verify_borrowed()
@@ -283,7 +294,8 @@ fn verifier_rejects_atomic_load_non_power_of_two_size() -> Result<(), IrError> {
 /// Mirrors `test/Verifier/atomics.ll` (lines 1-15): an atomic load/store of a
 /// struct type must be rejected with "atomic load/store operand must have
 /// integer, pointer, floating point, or vector type!". Direct port of the
-/// upstream `; CHECK:` negative-test fixture.
+/// upstream `; CHECK:` negative-test fixture. Constructed through the
+/// [`llvmkit_ir::LoadBuilder`] chain's erased terminal.
 #[test]
 fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
     let m = module_new!("a")?;
@@ -295,12 +307,12 @@ fn verifier_rejects_atomic_load_struct_operand() -> Result<(), IrError> {
     let entry = m.view(f).append_basic_block(&m, "entry");
     let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
     let ptr: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
-    let cfg = AtomicLoadConfig::new(
-        AtomicOrdering::Unordered,
-        SyncScope::System,
-        Align::new(8).expect("align 8"),
-    );
-    let _ = b.load_atomic(struct_ty, ptr, cfg, "v")?;
+    let _ = b
+        .load_from(ptr)
+        .atomic(AtomicOrdering::Unordered)
+        .sync_scope(SyncScope::System)
+        .align(Align::new(8).expect("align 8"))
+        .erased(struct_ty, "v")?;
     b.ret_void()?;
     let err = m
         .verify_borrowed()

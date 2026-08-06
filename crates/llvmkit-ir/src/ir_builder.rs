@@ -4518,27 +4518,52 @@ where
             .id())
     }
 
-    /// Erased `alloca` construction (D3 dyn twin of the typed
-    /// [`Self::alloca`] family): array size, alignment, and
-    /// `inalloca`/`swifterror` flags in one call, with the DataLayout's
-    /// alloca address space and default alignment filled in. Used by the
-    /// parser, which reconstructs any spelled combination.
-    pub fn alloca_dyn<T, Name>(
-        &self,
-        ty: T,
-        num_elements: Option<IntValue<'ctx, IntDyn, B>>,
-        align: MaybeAlign,
-        addr_space: Option<u32>,
-        flags: AllocaFlags,
-        name: Name,
-    ) -> IrResult<PointerValueId<B>>
+    /// Builder-pattern `alloca` construction: array size, alignment,
+    /// address space, and the `inalloca` / `swifterror` markers are
+    /// orthogonal optional knobs, each spelled by its own chainable
+    /// setter, emitted by [`AllocaBuilder::build`]. Mirrors
+    /// `IRBuilder::CreateAlloca` with every optional slot of
+    /// `AllocaInst` reachable; the DataLayout's alloca address space and
+    /// preferred alignment are filled in unless overridden, exactly as the
+    /// flat [`Self::alloca`] family does. Used by the parser, which
+    /// reconstructs any spelled combination.
+    ///
+    /// ```
+    /// use llvmkit_ir::{Align, Dyn, IrBuilder, IrError, Linkage, module_new};
+    ///
+    /// let m = module_new!("allocas")?;
+    /// let i32_ty = m.i32_type();
+    /// let fn_ty = m.function_type(m.void_type(), [i32_ty.as_type()]);
+    /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    /// let entry = m.view(f).append_basic_block(&m, "entry");
+    /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    /// let n: llvmkit_ir::IntValue<'_, llvmkit_ir::IntDyn, _> = m.view(f).param(0)?.try_into()?;
+    ///
+    /// let buf = b
+    ///     .alloca_builder(i32_ty)
+    ///     .array(n)
+    ///     .align(Align::new(16)?)
+    ///     .name("buf")
+    ///     .build()?;
+    /// b.ret_void()?;
+    ///
+    /// assert!(format!("{m}").contains("%buf = alloca i32, i32 %0, align 16\n"));
+    /// # let _ = buf;
+    /// # Ok::<(), IrError>(())
+    /// ```
+    pub fn alloca_builder<T>(&self, ty: T) -> AllocaBuilder<'_, 'm, 'ctx, B, F, R>
     where
-        Name: AsRef<str>,
         T: IrType<'ctx, B>,
     {
-        let size = num_elements.map(|n| n.slot());
-        let addr_space = addr_space.unwrap_or_else(|| self.alloca_addr_space());
-        self.alloca_inner(ty.as_type().id(), size, align, addr_space, flags, name)
+        AllocaBuilder {
+            parent: self,
+            allocated_ty: ty.as_type().id(),
+            num_elements: Ok(None),
+            align: MaybeAlign::NONE,
+            addr_space: self.alloca_addr_space(),
+            flags: AllocaFlags::none(),
+            name: String::new(),
+        }
     }
 
     /// `alloca` for schema `T`, returning a pointee-typed pointer. The
@@ -4797,54 +4822,66 @@ where
         Ok(self.append_instruction(pointee_ty, InstructionKindData::Load(payload), name))
     }
 
-    /// `load volatile <ty>, ptr <ptr>`. Non-atomic volatile load.
-    /// Mirrors `IRBuilder::CreateLoad` with `isVolatile = true`.
-    pub fn load_volatile<T, P, Name>(&self, ty: T, ptr: P, name: Name) -> IrResult<ValueId<B>>
+    /// Builder-pattern `load` construction: `volatile`, alignment, atomic
+    /// ordering, and sync scope are orthogonal optional knobs, each
+    /// spelled by its own chainable setter; a typed terminal
+    /// ([`LoadBuilder::int`] / [`LoadBuilder::fp`] /
+    /// [`LoadBuilder::pointer`] / [`LoadBuilder::typed`] /
+    /// [`LoadBuilder::erased`]) picks the result shape and emits the
+    /// instruction. Mirrors `IRBuilder::CreateAlignedLoad` and the 5-arg
+    /// `LoadInst::LoadInst(Type*, Value*, const Twine&, bool isVolatile,
+    /// Align, AtomicOrdering, SyncScope::ID)` constructor
+    /// (`lib/IR/Instructions.cpp`) — the single spelling for a volatile
+    /// and/or atomic load. The flat [`Self::load`] / [`Self::int_load`]
+    /// family remains for the plain non-volatile non-atomic case.
+    ///
+    /// ```
+    /// use llvmkit_ir::{Align, AtomicOrdering, Dyn, IrBuilder, IrError, Linkage, module_new};
+    ///
+    /// let m = module_new!("loads")?;
+    /// let ptr_ty = m.ptr_type(0);
+    /// let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()]);
+    /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    /// let entry = m.view(f).append_basic_block(&m, "entry");
+    /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    /// let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    ///
+    /// // Every terminal picks the result shape; the knobs are shared.
+    /// let n = b
+    ///     .load_from(p)
+    ///     .volatile()
+    ///     .atomic(AtomicOrdering::Acquire)
+    ///     .align(Align::new(4)?)
+    ///     .int::<i32>("n")?;
+    /// let x = b.load_from(p).fp::<f32>("x")?;
+    /// let q = b.load_from(p).pointer("q")?;
+    /// let s = b.load_from(p).typed::<i32>("s")?;
+    /// let e = b.load_from(p).align(Align::new(8)?).erased(m.i64_type(), "e")?;
+    /// b.ret_void()?;
+    ///
+    /// let text = format!("{m}");
+    /// assert!(text.contains("%n = load atomic volatile i32, ptr %0 acquire, align 4\n"));
+    /// assert!(text.contains("%x = load float, ptr %0, align 4\n"));
+    /// assert!(text.contains("%q = load ptr, ptr %0, align 8\n"));
+    /// assert!(text.contains("%s = load i32, ptr %0, align 4\n"));
+    /// assert!(text.contains("%e = load i64, ptr %0, align 8\n"));
+    /// # let _ = (n, x, q, s, e);
+    /// # Ok::<(), IrError>(())
+    /// ```
+    pub fn load_from<P>(&self, ptr: P) -> LoadBuilder<'_, 'm, 'ctx, B, F, R>
     where
-        Name: AsRef<str>,
-        T: IrType<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
     {
-        let ty_id = ty.as_type().id();
-        let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
-        let payload = LoadInstData::new(
-            ty_id,
-            p.slot(),
-            MaybeAlign::NONE,
-            true,
-            AtomicOrdering::NotAtomic,
-            SyncScope::System,
-        );
-        let inst = self.load_inner(payload, name)?;
-        Ok(inst.to_erased().id())
-    }
-
-    /// `load volatile <ty>, ptr <ptr>, align N`. Volatile load with explicit
-    /// alignment.
-    pub fn load_volatile_with_align<T, P, Name>(
-        &self,
-        ty: T,
-        ptr: P,
-        align: Align,
-        name: Name,
-    ) -> IrResult<ValueId<B>>
-    where
-        Name: AsRef<str>,
-        T: IrType<'ctx, B>,
-        P: IntoPointerValue<'ctx, B>,
-    {
-        let ty_id = ty.as_type().id();
-        let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
-        let payload = LoadInstData::new(
-            ty_id,
-            p.slot(),
-            MaybeAlign::new(align),
-            true,
-            AtomicOrdering::NotAtomic,
-            SyncScope::System,
-        );
-        let inst = self.load_inner(payload, name)?;
-        Ok(inst.to_erased().id())
+        LoadBuilder {
+            parent: self,
+            ptr: ptr
+                .into_pointer_value(ModuleRef::new(self.module))
+                .map(|p| p.slot()),
+            align: MaybeAlign::NONE,
+            volatile: false,
+            ordering: AtomicOrdering::NotAtomic,
+            sync_scope: SyncScope::System,
+        }
     }
 
     /// Produce `store <value>, ptr <ptr>`. Mirrors
@@ -4918,45 +4955,60 @@ where
         self.store_with_align(v, ptr.as_pointer_value(), align)
     }
 
-    /// `store volatile <value>, ptr <ptr>`. Non-atomic volatile store.
-    /// Mirrors `IRBuilder::CreateStore(V, P, /*isVolatile=*/true)`.
-    pub fn store_volatile<V, P>(&self, value: V, ptr: P) -> IrResult<StoreInst<'ctx, B>>
+    /// Builder-pattern `store` construction: `volatile`, alignment,
+    /// atomic ordering, and sync scope are orthogonal optional knobs,
+    /// each spelled by its own chainable setter, emitted by
+    /// [`StoreBuilder::build`]. Mirrors `IRBuilder::CreateAlignedStore`
+    /// and the 6-arg `StoreInst::StoreInst(Value*, Value*, bool
+    /// isVolatile, Align, AtomicOrdering, SyncScope::ID)` constructor
+    /// (`lib/IR/Instructions.cpp`) — the single spelling for a volatile
+    /// and/or atomic store. The flat [`Self::store`] /
+    /// [`Self::store_with_align`] pair remains for the plain
+    /// non-volatile non-atomic case.
+    ///
+    /// ```
+    /// use llvmkit_ir::{
+    ///     Align, AtomicOrdering, Dyn, IrBuilder, IrError, Linkage, SyncScope, module_new,
+    /// };
+    ///
+    /// let m = module_new!("stores")?;
+    /// let i32_ty = m.i32_type();
+    /// let ptr_ty = m.ptr_type(0);
+    /// let fn_ty = m.function_type(m.void_type(), [ptr_ty.as_type()]);
+    /// let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    /// let entry = m.view(f).append_basic_block(&m, "entry");
+    /// let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    /// let p: llvmkit_ir::PointerValue<'_, _> = m.view(f).param(0)?.try_into()?;
+    ///
+    /// b.store_to(i32_ty.const_int(7_i32), p)
+    ///     .volatile()
+    ///     .atomic(AtomicOrdering::Release)
+    ///     .sync_scope(SyncScope::SingleThread)
+    ///     .align(Align::new(4)?)
+    ///     .build()?;
+    /// b.ret_void()?;
+    ///
+    /// assert!(format!("{m}").contains(
+    ///     "store atomic volatile i32 7, ptr %0 syncscope(\"singlethread\") release, align 4\n"
+    /// ));
+    /// # Ok::<(), IrError>(())
+    /// ```
+    pub fn store_to<V, P>(&self, value: V, ptr: P) -> StoreBuilder<'_, 'm, 'ctx, B, F, R>
     where
         V: IntoErasedValue<'ctx, B>,
         P: IntoPointerValue<'ctx, B>,
     {
-        let payload = self.store_payload(
-            value,
-            ptr,
-            MaybeAlign::NONE,
-            true,
-            AtomicOrdering::NotAtomic,
-            SyncScope::System,
-        )?;
-        self.store_inner(payload)
-    }
-
-    /// `store volatile <value>, ptr <ptr>, align N`. Volatile store with
-    /// explicit alignment.
-    pub fn store_volatile_with_align<V, P>(
-        &self,
-        value: V,
-        ptr: P,
-        align: Align,
-    ) -> IrResult<StoreInst<'ctx, B>>
-    where
-        V: IntoErasedValue<'ctx, B>,
-        P: IntoPointerValue<'ctx, B>,
-    {
-        let payload = self.store_payload(
-            value,
-            ptr,
-            MaybeAlign::new(align),
-            true,
-            AtomicOrdering::NotAtomic,
-            SyncScope::System,
-        )?;
-        self.store_inner(payload)
+        let module = ModuleRef::new(self.module);
+        StoreBuilder {
+            parent: self,
+            operands: value
+                .into_erased_value(module)
+                .and_then(|v| ptr.into_pointer_value(module).map(|p| (v, p.slot()))),
+            align: MaybeAlign::NONE,
+            volatile: false,
+            ordering: AtomicOrdering::NotAtomic,
+            sync_scope: SyncScope::System,
+        }
     }
 
     /// Inner store: caller has already computed the payload and validated
@@ -4987,113 +5039,31 @@ where
     {
         let v = value.into_erased_value(ModuleRef::new(self.module))?;
         let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
+        Ok(self.store_payload_lifted(v, p.slot(), align, volatile, ordering, sync_scope))
+    }
+
+    /// Payload assembly for operands that are already lifted and
+    /// module-checked (the [`StoreBuilder`] path, which lifts at
+    /// [`Self::store_to`] so the chain can stay infallible).
+    fn store_payload_lifted(
+        &self,
+        value: Value<'ctx, B>,
+        ptr: ValueSlot,
+        align: MaybeAlign,
+        volatile: bool,
+        ordering: AtomicOrdering,
+        sync_scope: SyncScope,
+    ) -> StoreInstData {
         // Materialise the DataLayout default off the stored value's type,
         // like upstream (`computeLoadStoreDefaultAlign` /
         // `getABITypeAlign(Val->getType())`). Every store funnels through
         // here, so an omitted alignment is filled once.
         let align = if align.align().is_none() {
-            self.default_abi_align(v.ty().id())
+            self.default_abi_align(value.ty().id())
         } else {
             align
         };
-        Ok(StoreInstData::new(
-            v.id,
-            p.slot(),
-            align,
-            volatile,
-            ordering,
-            sync_scope,
-        ))
-    }
-
-    /// Atomic load: `load atomic [volatile] iN, ptr <ptr> [syncscope(\"...\")]
-    /// <ordering>, align N`. Mirrors the 5-arg upstream constructor
-    /// `LoadInst::LoadInst(Type*, Value*, Twine&, bool isVolatile, Align,
-    /// AtomicOrdering, SyncScope::ID)` (see `lib/IR/Instructions.cpp`)
-    /// inserted via the IrBuilder's standard insert-point. Atomic loads
-    /// require an explicit alignment per LangRef. The atomic-specific
-    /// state (ordering, sync scope, align, volatile) is bundled into
-    /// [`super::instr_types::AtomicLoadConfig`] (parallel to the existing
-    /// [`super::instr_types::AtomicCmpXchgConfig`] /
-    /// [`super::instr_types::AtomicRMWConfig`] shapes).
-    pub fn int_load_atomic<W, P, Name>(
-        &self,
-        ptr: P,
-        config: super::instr_types::AtomicLoadConfig,
-        name: Name,
-    ) -> IrResult<IntValueId<W, B>>
-    where
-        Name: AsRef<str>,
-        W: super::int_width::StaticIntWidth,
-        P: IntoPointerValue<'ctx, B>,
-    {
-        let ty = W::ir_type(ModuleRef::<B>::new(self.module));
-        let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
-        let payload = LoadInstData::new(
-            ty.as_type().id(),
-            p.slot(),
-            MaybeAlign::new(config.align_value()),
-            config.is_volatile(),
-            config.ordering_value(),
-            config.sync_scope_value().clone(),
-        );
-        self.append_int_load(ty, payload, name).map(|v| v.id())
-    }
-
-    /// Erased atomic load. Same upstream constructor as
-    /// [`Self::int_load_atomic`] but with an explicit pointee type
-    /// (caller narrows the returned [`ValueId`] by viewing it).
-    pub fn load_atomic<T, P, Name>(
-        &self,
-        ty: T,
-        ptr: P,
-        config: super::instr_types::AtomicLoadConfig,
-        name: Name,
-    ) -> IrResult<ValueId<B>>
-    where
-        Name: AsRef<str>,
-        T: IrType<'ctx, B>,
-        P: IntoPointerValue<'ctx, B>,
-    {
-        let ty_id = ty.as_type().id();
-        let p = ptr.into_pointer_value(ModuleRef::new(self.module))?;
-        let payload = LoadInstData::new(
-            ty_id,
-            p.slot(),
-            MaybeAlign::new(config.align_value()),
-            config.is_volatile(),
-            config.ordering_value(),
-            config.sync_scope_value().clone(),
-        );
-        let inst = self.load_inner(payload, name)?;
-        Ok(inst.to_erased().id())
-    }
-
-    /// Atomic store: `store atomic [volatile] <ty> <val>, ptr <ptr>
-    /// [syncscope("...")] <ordering>, align N`. Mirrors the 6-arg upstream
-    /// `StoreInst::StoreInst(Value*, Value*, bool isVolatile, Align,
-    /// AtomicOrdering, SyncScope::ID)` constructor (see
-    /// `lib/IR/Instructions.cpp`). Atomic stores require an explicit
-    /// alignment carried in [`super::instr_types::AtomicStoreConfig`].
-    pub fn store_atomic<V, P>(
-        &self,
-        value: V,
-        ptr: P,
-        config: super::instr_types::AtomicStoreConfig,
-    ) -> IrResult<StoreInst<'ctx, B>>
-    where
-        V: IntoErasedValue<'ctx, B>,
-        P: IntoPointerValue<'ctx, B>,
-    {
-        let payload = self.store_payload(
-            value,
-            ptr,
-            MaybeAlign::new(config.align_value()),
-            config.is_volatile(),
-            config.ordering_value(),
-            config.sync_scope_value().clone(),
-        )?;
-        self.store_inner(payload)
+        StoreInstData::new(value.id, ptr, align, volatile, ordering, sync_scope)
     }
 
     /// Ports the `CallInst::init` / `CallBrInst::init` assertions
@@ -9701,6 +9671,354 @@ fn intrinsic_descriptor_error_name<B: ModuleBrand>(
     match descriptor.mangled_name() {
         Ok(name) => name,
         Err(_) => descriptor.base_name().to_owned(),
+    }
+}
+
+// --------------------------------------------------------------------------
+// LoadBuilder / StoreBuilder / AllocaBuilder
+// --------------------------------------------------------------------------
+
+/// Builder for [`crate::IrBuilder::load_from`]. Accumulates the four
+/// orthogonal optional knobs an upstream `LoadInst` carries — `volatile`,
+/// `Align`, `AtomicOrdering`, `SyncScope::ID` (`Instructions.h`) — via
+/// chainable setters, then emits through a **typed terminal** that picks
+/// the result shape: [`int`](Self::int), [`fp`](Self::fp),
+/// [`pointer`](Self::pointer), [`typed`](Self::typed), or
+/// [`erased`](Self::erased). Mirrors the 5-arg
+/// `LoadInst::LoadInst(Type*, Value*, const Twine&, bool isVolatile,
+/// Align, AtomicOrdering, SyncScope::ID)` constructor
+/// (`lib/IR/Instructions.cpp`) inserted at the builder's insert point.
+///
+/// The terminal, not a setter, carries the result name — the width /
+/// kind / schema marker it takes is the only generic argument, so
+/// `.int::<i32>("x")` needs no placeholder turbofish.
+#[must_use = "a LoadBuilder emits nothing until a terminal (int / fp / pointer / typed / erased) is called"]
+pub struct LoadBuilder<'a, 'm, 'ctx, B, F, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    R: ReturnMarker,
+{
+    parent: &'a IrBuilder<'m, 'ctx, B, F, Positioned, R>,
+    /// Lifted pointer operand, or the error its lift produced — replayed by
+    /// the terminal. [`crate::IrBuilder::load_from`] returns `Self` to keep
+    /// the chain spellable, so a failed lift has nowhere to surface until
+    /// then. Only an id from a *foreign* module can set it: every pointer
+    /// handle lifts infallibly.
+    ptr: IrResult<ValueSlot>,
+    align: MaybeAlign,
+    volatile: bool,
+    ordering: AtomicOrdering,
+    sync_scope: SyncScope,
+}
+
+impl<'a, 'm, 'ctx, B, F, R> LoadBuilder<'a, 'm, 'ctx, B, F, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    R: ReturnMarker,
+{
+    /// Mark the load `volatile`. Mirrors `LoadInst::setVolatile(true)`.
+    pub fn volatile(mut self) -> Self {
+        self.volatile = true;
+        self
+    }
+
+    /// Set an explicit alignment. Left unset, the DataLayout ABI
+    /// alignment of the loaded type is materialised
+    /// (`computeLoadStoreDefaultAlign`), exactly as the flat
+    /// [`crate::IrBuilder::load`] does.
+    pub fn align(mut self, align: Align) -> Self {
+        self.align = MaybeAlign::new(align);
+        self
+    }
+
+    /// Make the load atomic with `ordering`. Mirrors
+    /// `LoadInst::setAtomic(AtomicOrdering, SyncScope::ID)`, whose scope
+    /// argument defaults to `SyncScope::System`; [`sync_scope`](Self::sync_scope)
+    /// overrides it, in either chain order.
+    ///
+    /// LangRef requires an atomic load to carry a non-zero alignment. An
+    /// unset [`align`](Self::align) is filled with the DataLayout ABI
+    /// alignment on the way out — never zero — which is what upstream's
+    /// own builder path produces for an atomic load
+    /// (`computeLoadStoreDefaultAlign` at construction, `setAtomic`
+    /// leaving the alignment alone).
+    pub fn atomic(mut self, ordering: AtomicOrdering) -> Self {
+        self.ordering = ordering;
+        self
+    }
+
+    /// Set the synchronisation scope. Mirrors `LoadInst::setSyncScopeID`.
+    /// Only meaningful on an atomic load — the verifier rejects a
+    /// non-default scope on a non-atomic one
+    /// (`Verifier::visitLoadInst`).
+    pub fn sync_scope(mut self, sync_scope: SyncScope) -> Self {
+        self.sync_scope = sync_scope;
+        self
+    }
+
+    /// Emit with the result typed by the static width marker `W`:
+    /// `b.load_from(p).atomic(ordering).align(a).int::<i32>("x")`.
+    pub fn int<W>(self, name: &str) -> IrResult<IntValueId<W, B>>
+    where
+        W: StaticIntWidth,
+    {
+        let parent = self.parent;
+        let ty = W::ir_type(ModuleRef::<B>::new(parent.module));
+        let payload = self.payload(ty.as_type().id())?;
+        parent.append_int_load(ty, payload, name).map(|v| v.id())
+    }
+
+    /// Emit with the result typed by the static float-kind marker `K`.
+    pub fn fp<K>(self, name: &str) -> IrResult<FloatValueId<K, B>>
+    where
+        K: StaticFloatKind,
+    {
+        let parent = self.parent;
+        let ty = K::ir_type(ModuleRef::<B>::new(parent.module));
+        let payload = self.payload(ty.as_type().id())?;
+        parent.append_fp_load(ty, payload, name).map(|v| v.id())
+    }
+
+    /// Emit a `ptr`-typed load in the default address space. Other
+    /// address spaces go through [`erased`](Self::erased) with the
+    /// matching pointer type, exactly as
+    /// [`crate::IrBuilder::pointer_load`] documents.
+    pub fn pointer(self, name: &str) -> IrResult<PointerValueId<B>> {
+        let parent = self.parent;
+        let ty = ModuleView::<B>::new(parent.module).ptr_type(0);
+        let payload = self.payload(ty.as_type().id())?;
+        parent.append_ptr_load(ty, payload, name).map(|v| v.id())
+    }
+
+    /// Emit with the result type derived from the pointee schema `T`,
+    /// the [`TypedPointerValue`] route (the flat
+    /// [`crate::IrBuilder::typed_load`]'s knob-carrying twin).
+    pub fn typed<T>(self, name: &str) -> IrResult<T::Value<'ctx, B>>
+    where
+        T: IrField,
+    {
+        let parent = self.parent;
+        let ty = parent.schema_ir_type::<T>()?;
+        let payload = self.payload(ty.id())?;
+        let inst = parent.load_inner(payload, name)?;
+        T::value_from_ir_value(inst.to_erased())
+    }
+
+    /// Emit with an explicit pointee type; the caller narrows the
+    /// returned [`ValueId`] by viewing it.
+    pub fn erased<T>(self, ty: T, name: &str) -> IrResult<ValueId<B>>
+    where
+        T: IrType<'ctx, B>,
+    {
+        let parent = self.parent;
+        let payload = self.payload(ty.as_type().id())?;
+        let inst = parent.load_inner(payload, name)?;
+        Ok(inst.to_erased().id())
+    }
+
+    /// Replay the parked pointer-lift error, then assemble the payload at
+    /// `pointee_ty`. The default-alignment fill happens downstream in
+    /// `load_inner`, so every terminal inherits it.
+    fn payload(self, pointee_ty: TypeSlot) -> IrResult<LoadInstData> {
+        Ok(LoadInstData::new(
+            pointee_ty,
+            self.ptr?,
+            self.align,
+            self.volatile,
+            self.ordering,
+            self.sync_scope,
+        ))
+    }
+}
+
+/// Builder for [`crate::IrBuilder::store_to`]. The store counterpart of
+/// [`LoadBuilder`]: the same four orthogonal knobs `StoreInst` carries —
+/// `volatile`, `Align`, `AtomicOrdering`, `SyncScope::ID`
+/// (`Instructions.h`) — set by chainable setters and emitted by
+/// [`build`](Self::build). Mirrors the 6-arg
+/// `StoreInst::StoreInst(Value*, Value*, bool isVolatile, Align,
+/// AtomicOrdering, SyncScope::ID)` constructor
+/// (`lib/IR/Instructions.cpp`). A store produces no value, so there is
+/// one terminal rather than a typed family.
+#[must_use = "a StoreBuilder emits nothing until build() is called"]
+pub struct StoreBuilder<'a, 'm, 'ctx, B, F, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    R: ReturnMarker,
+{
+    parent: &'a IrBuilder<'m, 'ctx, B, F, Positioned, R>,
+    /// Lifted `(value, pointer)` operands, or the first error their lift
+    /// produced — replayed by [`build`](Self::build), on the same grounds
+    /// as [`LoadBuilder::ptr`].
+    operands: IrResult<(Value<'ctx, B>, ValueSlot)>,
+    align: MaybeAlign,
+    volatile: bool,
+    ordering: AtomicOrdering,
+    sync_scope: SyncScope,
+}
+
+impl<'a, 'm, 'ctx, B, F, R> StoreBuilder<'a, 'm, 'ctx, B, F, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    R: ReturnMarker,
+{
+    /// Mark the store `volatile`. Mirrors `StoreInst::setVolatile(true)`.
+    pub fn volatile(mut self) -> Self {
+        self.volatile = true;
+        self
+    }
+
+    /// Set an explicit alignment. Left unset, the DataLayout ABI
+    /// alignment of the *stored value's* type is materialised
+    /// (`computeLoadStoreDefaultAlign` / `getABITypeAlign(Val->getType())`),
+    /// exactly as the flat [`crate::IrBuilder::store`] does.
+    pub fn align(mut self, align: Align) -> Self {
+        self.align = MaybeAlign::new(align);
+        self
+    }
+
+    /// Make the store atomic with `ordering`. Mirrors
+    /// `StoreInst::setAtomic(AtomicOrdering, SyncScope::ID)`, whose scope
+    /// argument defaults to `SyncScope::System`;
+    /// [`sync_scope`](Self::sync_scope) overrides it, in either chain
+    /// order. The alignment rule is
+    /// [`LoadBuilder::atomic`]'s, applied to the stored value's type.
+    pub fn atomic(mut self, ordering: AtomicOrdering) -> Self {
+        self.ordering = ordering;
+        self
+    }
+
+    /// Set the synchronisation scope. Mirrors
+    /// `StoreInst::setSyncScopeID`. Only meaningful on an atomic store —
+    /// the verifier rejects a non-default scope on a non-atomic one
+    /// (`Verifier::visitStoreInst`).
+    pub fn sync_scope(mut self, sync_scope: SyncScope) -> Self {
+        self.sync_scope = sync_scope;
+        self
+    }
+
+    /// Emit the store.
+    pub fn build(self) -> IrResult<StoreInst<'ctx, B>> {
+        let parent = self.parent;
+        let (value, ptr) = self.operands?;
+        let payload = parent.store_payload_lifted(
+            value,
+            ptr,
+            self.align,
+            self.volatile,
+            self.ordering,
+            self.sync_scope,
+        );
+        parent.store_inner(payload)
+    }
+}
+
+/// Builder for [`crate::IrBuilder::alloca_builder`]. Accumulates the
+/// optional slots of an upstream `AllocaInst` — array size, `Align`,
+/// address space, and the `inalloca` / `swifterror` markers
+/// (`Instructions.h`) — via chainable setters, emitted by
+/// [`build`](Self::build). Mirrors `IRBuilder::CreateAlloca`, whose
+/// address space comes from `DataLayout::getAllocaAddrSpace` and whose
+/// alignment defaults to `computeAllocaDefaultAlign`
+/// (`getPrefTypeAlign`) unless overridden.
+#[must_use = "an AllocaBuilder emits nothing until build() is called"]
+pub struct AllocaBuilder<'a, 'm, 'ctx, B, F, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    R: ReturnMarker,
+{
+    parent: &'a IrBuilder<'m, 'ctx, B, F, Positioned, R>,
+    allocated_ty: TypeSlot,
+    /// Lifted array-size operand, or the first error a
+    /// [`array`](Self::array) lift produced — replayed by
+    /// [`build`](Self::build), on the same grounds as
+    /// [`LoadBuilder::ptr`].
+    num_elements: IrResult<Option<ValueSlot>>,
+    align: MaybeAlign,
+    addr_space: u32,
+    flags: AllocaFlags,
+    name: String,
+}
+
+impl<'a, 'm, 'ctx, B, F, R> AllocaBuilder<'a, 'm, 'ctx, B, F, R>
+where
+    B: ModuleBrand + 'ctx,
+    F: IrBuilderFolder<'ctx, B>,
+    R: ReturnMarker,
+{
+    /// Allocate `num_elements` of the type instead of one:
+    /// `alloca <ty>, <size-ty> <n>`. Mirrors the `ArraySize` operand of
+    /// `IRBuilder::CreateAlloca`.
+    pub fn array<N>(mut self, num_elements: N) -> Self
+    where
+        N: IntoIntValue<'ctx, IntDyn, B>,
+    {
+        let lifted = num_elements.into_int_value(ModuleRef::new(self.parent.module));
+        // Keep the FIRST failure, like `CallBuilder::arg`: the chain returns
+        // `Self`, so an error has nowhere to surface until `build`.
+        if self.num_elements.is_ok() {
+            self.num_elements = lifted.map(|n| Some(n.slot()));
+        }
+        self
+    }
+
+    /// Set an explicit alignment. Left unset, the DataLayout preferred
+    /// alignment of the allocated type is materialised
+    /// (`computeAllocaDefaultAlign`).
+    pub fn align(mut self, align: Align) -> Self {
+        self.align = MaybeAlign::new(align);
+        self
+    }
+
+    /// Override the result pointer's address space. Defaults to
+    /// `DataLayout::getAllocaAddrSpace`, which is what
+    /// `IRBuilder::CreateAlloca` uses.
+    pub fn addr_space(mut self, addr_space: u32) -> Self {
+        self.addr_space = addr_space;
+        self
+    }
+
+    /// Mark the allocation `inalloca`. Mirrors
+    /// `AllocaInst::setUsedWithInAlloca(true)`.
+    pub fn inalloca(mut self) -> Self {
+        self.flags = self.flags.with_inalloca();
+        self
+    }
+
+    /// Mark the allocation `swifterror`. Mirrors
+    /// `AllocaInst::setSwiftError(true)`; the verifier constrains it to a
+    /// non-array pointer allocation (`Verifier::visitAllocaInst`).
+    pub fn swifterror(mut self) -> Self {
+        self.flags = self.flags.with_swifterror();
+        self
+    }
+
+    /// Name the result value.
+    pub fn name<Name>(mut self, name: Name) -> Self
+    where
+        Name: Into<String>,
+    {
+        self.name = name.into();
+        self
+    }
+
+    /// Emit the alloca, named by the storable
+    /// [`PointerValueId<B>`](crate::PointerValueId).
+    pub fn build(self) -> IrResult<PointerValueId<B>> {
+        let num_elements = self.num_elements?;
+        self.parent.alloca_inner(
+            self.allocated_ty,
+            num_elements,
+            self.align,
+            self.addr_space,
+            self.flags,
+            &self.name,
+        )
     }
 }
 

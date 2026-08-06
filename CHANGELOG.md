@@ -24,6 +24,60 @@ bullet below names its wave.
 
 #### Changed
 
+- **Breaking (W10): `LoadBuilder` / `StoreBuilder` / `AllocaBuilder` — one
+  spelling per memory op (C-BUILDER).** `load`, `store` and `alloca` each carry
+  several *orthogonal* optional knobs, and the flat surface had grown one method
+  per combination. Three builders replace those combinations:
+
+  ```rust
+  let n = b.load_from(p).volatile().atomic(AtomicOrdering::Acquire)
+      .align(align).int::<i32>("n")?;
+  b.store_to(v, p).atomic(AtomicOrdering::Release).align(align).build()?;
+  let buf = b.alloca_builder(ty).array(n).align(align).name("buf").build()?;
+  ```
+
+  A `LoadBuilder` ends in a **typed terminal**, so the result shape is still
+  chosen by the caller rather than fixed by the knob spelling (D4 survives the
+  move to a builder): `.int::<W>(name)`, `.fp::<K>(name)`, `.pointer(name)`,
+  `.typed::<T>(name)` (the `TypedPointerValue` schema route) and
+  `.erased(ty, name)`. The marker is each terminal's only generic argument, so
+  `.int::<i32>("n")` needs no placeholder turbofish — which is why the terminals
+  take `name: &str` rather than the `impl AsRef<str>` the flat forms take
+  (explicit generic arguments and `impl Trait` arguments cannot coexist).
+  `StoreBuilder` and `AllocaBuilder` have a single `.build()`, and
+  `AllocaBuilder` takes its name through `.name(..)`. All three builder types
+  are `#[must_use]`, which covers the entry method *and* every setter: a chain
+  that forgets its terminal is a warning, not a silent no-op.
+
+  **Retired** — every one of them reachable through a builder:
+  `load_volatile`, `load_volatile_with_align`, `store_volatile`,
+  `store_volatile_with_align`, `int_load_atomic`, `load_atomic`, `store_atomic`,
+  and `alloca_dyn`, whose two `Option` mode-parameters are now `.array(n)` and
+  `.addr_space(n)` — present or absent, rather than passed as `None`. The
+  `AtomicLoadConfig` / `AtomicStoreConfig` bags the atomic forms took are
+  **deleted**: the builder carries that state, and keeping them would leave two
+  public spellings for one instruction. `AtomicCmpXchgConfig` /
+  `AtomicRMWConfig` are untouched — `cmpxchg` and `atomicrmw` are single
+  operations with no orthogonal-knob explosion and keep their config-bag
+  spelling.
+
+  **Kept, unchanged:** the plain flats `load`, `load_with_align`, `int_load`,
+  `int_load_dyn`, `int_load_with_align`, `fp_load`, `fp_load_dyn`,
+  `pointer_load`, `typed_load`, `typed_load_with_align`, `store`,
+  `store_with_align`, `typed_store`, `typed_store_with_align`, `alloca`,
+  `alloca_with_align`, `array_alloca`, `array_alloca_with_align` and
+  `typed_alloca`. The common case does not pay for the general one.
+
+  Two semantics worth stating: `.atomic(ordering)` leaves the sync scope at
+  `SyncScope::System` unless `.sync_scope(..)` is also called, in either chain
+  order; and an atomic load/store with no explicit `.align(..)` is filled with
+  the DataLayout ABI alignment on the way out — never zero, so LangRef's
+  non-zero-alignment requirement holds — which is exactly what upstream's own
+  builder path produces (`computeLoadStoreDefaultAlign` at construction, with
+  `setAtomic` leaving the alignment alone). The retired config bags demanded an
+  `Align` in their constructor; nothing else in the tree enforced it, and no
+  error variant ever described its absence.
+
 - **Breaking (W11b): `llvmkit-asmparser` exports its own surface, and its
   errors say what went wrong (C-GOOD-ERR).** The crate root now re-exports
   every parsing entry point (the `parse_assembly*`, `parse_type*`,
