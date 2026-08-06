@@ -167,6 +167,10 @@ fn branded_module<B: ModuleBrand>(name: &str) -> ParseResult<Module<B, Unverifie
         IrError::BrandRetired { brand } => ParseError::BrandRetired { brand },
         // `Module::branded` reports exactly `BrandInUse` or `BrandRetired`.
         IrError::BrandInUse { brand } => ParseError::BrandInUse { brand },
+        // `IrError` is `#[non_exhaustive]`, so this arm exists for a variant
+        // the registry does not currently produce. It carries the message
+        // rather than panicking; `ErrorKind::Other` is the honest label for
+        // "not an I/O failure at all" until a variant is worth naming.
         other => ParseError::Io {
             kind: std::io::ErrorKind::Other,
             message: other.to_string(),
