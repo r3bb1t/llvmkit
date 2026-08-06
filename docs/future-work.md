@@ -77,8 +77,8 @@ where it landed.
 "float-typed lhs": the parser narrowed operands through the scalar-only
 `IntoFloatValue`, exactly as it used to for integers. Closed by three erased
 builders beside their integer siblings —
-`IRBuilder::build_fp_binop_erased`, `build_fp_cmp_erased` and
-`build_fp_neg_erased` — with `parse_fp_binop`, `parse_fcmp` and `parse_fneg`
+`IrBuilder::fp_binop_erased`, `fp_cmp_erased` and
+`fp_neg_erased` — with `parse_fp_binop`, `parse_fcmp` and `parse_fneg`
 routed through them. Covered by
 `crates/llvmkit-asmparser/tests/parser_vector_fp_ops.rs` (parse → verify →
 print).
@@ -256,8 +256,8 @@ The fix completed a pattern the vector binop work had started rather than
 inventing one. `TryFrom<Value> for IntValue<IntDyn>` requires
 `TypeData::Integer`, so a vector converts to no typed integer handle at all;
 binops and compares had already grown erased builders for exactly that reason
-(`build_int_binop_erased`, `build_int_cmp_erased`), and the casts had not.
-`build_int_cast_erased` is the third, with `IntCastFlags` as the runtime-opcode
+(`int_binop_erased`, `int_cmp_erased`), and the casts had not.
+`int_cast_erased` is the third, with `IntCastFlags` as the runtime-opcode
 counterpart of `IntBinOpFlags`, and the parser branches on
 `is_vector_type` the way `parse_int_binop` already did.
 
@@ -375,7 +375,7 @@ the value. Deriving it from the value instead silently fails whenever the value
 is an argument, which is the common case.
 
 **Fast-math flags on a `call` were unrepresentable end to end.** `parse_call`
-did not accept them, the AsmWriter did not print them, and `IRBuilder`'s flags
+did not accept them, the AsmWriter did not print them, and `IrBuilder`'s flags
 apply only to the FP binops — so `CallAttributeData::fmf` could never become
 non-empty, and the `nsz` arm of `computeKnownFPClass`'s `sqrt` case was dead
 code. Both halves are now ported (`LLParser::parseCall` eats the flags before
@@ -706,18 +706,18 @@ one-literal-one-width story still holds where it can.
 
 What it took, beyond the routing itself:
 
-- Four missing erased builders — `build_int_udiv_dyn`, `build_int_sdiv_dyn`,
-  `build_int_urem_dyn`, `build_int_srem_dyn`. The family had stopped at the
+- Four missing erased builders — `int_udiv_dyn`, `int_sdiv_dyn`,
+  `int_urem_dyn`, `int_srem_dyn`. The family had stopped at the
   shifts.
 - **Flag plumbing.** The erased builders built `BinaryOpData::new(..)` and left
   every flag false, so routing the parser through them as-written would have
   made `add nuw <2 x i32>` parse and print as a plain `add`. `IntBinOpFlags`
   carries all four flags for a caller holding a runtime opcode, and
   `BinaryOpcode::accepted_flags` drops the ones the opcode cannot express.
-- **A vector-capable `icmp`.** `build_int_cmp_with_flags_dyn` is *not* part of
+- **A vector-capable `icmp`.** `int_cmp_with_flags_dyn` is *not* part of
   the erased family — its `_dyn` means dynamic *width*, it routes through the
   scalar-only `IntoIntValue`, and it mints an `IntValueId<bool, B>` that cannot
-  describe `<N x i1>`. `build_int_cmp_erased` computes the lane-matched result
+  describe `<N x i1>`. `int_cmp_erased` computes the lane-matched result
   type and returns an erased id.
 - **Operand-type validation** in the erased path, which previously left it to
   the verifier. A caller reaching it has a runtime type in hand and no
@@ -727,11 +727,19 @@ One follow-on fidelity fix in `value_tracking.rs`: `m_AllOnes` matching was
 scalar-only, so `xor %v, splat (i32 -1)` was not recognised as a `not` and the
 `(A & B) op ~(A | B)` case of `haveNoCommonBitsSet` failed on vectors.
 
-Note the `_dyn` suffix now carries two meanings in `ir_builder.rs` — *erased
-value* (`build_int_add_dyn`) and *dynamic width* (`build_int_cmp_with_flags_dyn`).
+~~Note the `_dyn` suffix now carries two meanings in `ir_builder.rs` — *erased
+value* (`int_add_dyn`) and *dynamic width* (`int_cmp_with_flags_dyn`).
 The repo's naming law reserves `_dyn` for the erased half of a typed/erased
 pair, so the compare family is the misnamed one. Renaming it is a breaking
-change and was left out of this fix.
+change and was left out of this fix.~~ **Resolved (2026-08-06)** by the
+three-tier suffix vocabulary that landed with the 0.0.4 API-idioms renames:
+`_dyn` means exactly one thing again — the `Dyn`-marker member of a
+typed/erased pair (`int_add_dyn` and `int_cmp_with_flags_dyn` both qualify;
+their operands lift at `IntDyn`) — and the fully-erased, vector-capable family
+is spelled `_erased` (`int_binop_erased`, `int_cmp_erased`: erased `Value`
+operands plus a runtime opcode). No rename of the compare family was needed;
+what was missing was the vocabulary's third tier, now stated in the naming law
+(`AGENTS.md`, Code Conventions).
 
 ## ~~KnownBits — operations not modeled~~ — closed (2026-08-01)
 
@@ -852,7 +860,7 @@ supertrait drop above), three resolved by record — reality wins:
   builder calls at compile time, with typed Rust splices (`#lhs`)
   type-checked against the spelled IR types. Reuses `llvmkit-asmparser`'s
   lexer at proc-macro time for tokenization fidelity. Design sketch: parse to
-  the existing instruction payload shapes, emit `build_*` calls; unsupported
+  the existing instruction payload shapes, emit builder calls; unsupported
   constructs fall back to a clear compile error naming the LangRef construct.
 - **Rustc-quality diagnostics** -- when runtime checks do fail (dyn paths,
   parsed IR, verifier), render labeled spans into the printed IR with
@@ -888,7 +896,7 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   `CreateFPExtFMF` analogs (llvmkit has binop/fcmp `_fmf` variants already);
   consider an `FMFSource`-style "inherit FMF from instruction" helper.
 - Const-index GEP shortcuts (`CreateConstGEP1_32` etc.).
-- Named `build_icmp_*` per-predicate wrappers already exist; audit found no
+- Named `icmp_*` per-predicate wrappers already exist; audit found no
   gap there.
 - Debug-loc threading and operand-bundle infrastructure (deferred with
   metadata work).
@@ -905,13 +913,13 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   the operand form for consistency with the value handles) rather than a
   mechanical sweep. Whichever is chosen should be stated in each impl's
   rustdoc, as the value handles now do.
-- `build_atomic_cmpxchg` / `build_atomicrmw` builder-pattern variants (mirror
+- `atomic_cmpxchg` / `atomicrmw` builder-pattern variants (mirror
   `CallBuilder`).
 - Load/store variant explosion (base / `_with_align` / `_volatile` /
   `_volatile_with_align` / `_atomic` = 10+ methods per op) -- consolidate
   behind `LoadBuilder`/`StoreBuilder` chainables while keeping the flat
   forms.
-- Per-flag convenience wrappers (`build_int_add_nsw` etc.) mirroring upstream
+- Per-flag convenience wrappers (`int_add_nsw` etc.) mirroring upstream
   `CreateNSWAdd`.
 - Folder trait ergonomics for third-party folders (default method bodies
   landed in this session's hardening workstream; a
@@ -963,13 +971,13 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   silently were not.
 
   1. **A plain branch into a parameterised block is now rejected.**
-     `IRBuilder::build_br` / `build_cond_br` / `build_switch(_dyn)` (default
-     edge) / `SwitchInst::add_case` / every `build_invoke*` (both edges) /
-     `build_callbr*` (default and indirect edges) /
+     `IrBuilder::br` / `cond_br` / `switch(_dyn)` (default
+     edge) / `SwitchInst::add_case` / every `invoke*` (both edges) /
+     `callbr*` (default and indirect edges) /
      `IndirectBrInst::add_destination` all route their successors through one
      guard, `basic_block.rs::require_no_block_parameters`, which reports the
      existing `IrError::PhiArgArityMismatch` — the same error a wrong argument
-     *count* already got from `build_br_with_args`, so one mistake reads the
+     *count* already got from `br_with_args`, so one mistake reads the
      same wherever it is caught. The check runs before the terminator is
      emitted, so a rejected edge leaves no half-formed instruction.
 
@@ -994,16 +1002,16 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
      (`tests/block_args_terminators.rs`) pins the distinction.
 
   2. **`switch` and `invoke` have argument-carrying forms.**
-     `build_switch_with_args` / `build_switch_dyn_with_args` take the default
+     `switch_with_args` / `switch_dyn_with_args` take the default
      edge as a `(target, args)` pair plus a `(case_value, target, args)` triple
      per case — the whole case list at the call, so the returned `SwitchInst`
      is already `TermClosed` and no later `add_case` can bolt on an unseeded
-     edge. `build_invoke_with_args` / `build_invoke_dyn_with_args` take a
+     edge. `invoke_with_args` / `invoke_dyn_with_args` take a
      `(destination, args)` pair for each of the two mandatory edges. All four
      bundle each edge with its arguments into one parameter (the case list
      forces that shape, and it keeps `invoke`'s call arguments and result name
      out of an eight-parameter signature), and all four validate arity and
-     argument types up front, per edge, exactly as `build_cond_br_with_args`
+     argument types up front, per edge, exactly as `cond_br_with_args`
      does — sharing its documented non-atomicity across edges.
 
   **Residual, deliberately reject-only:** `indirectbr`, `callbr`, and the
@@ -1021,7 +1029,7 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   unconditionally — "not anything else" — and a `cfg_attr` wrapper does not
   exempt it. All six sat on the crate-internal raw-phi authoring surface
   (`PhiInst`/`FpPhiInst`/`PointerPhiInst::add_incoming` in `instructions.rs`,
-  and `IRBuilder::build_int_phi`/`build_fp_phi`/`build_pointer_phi`), which went
+  and `IrBuilder::int_phi`/`fp_phi`/`pointer_phi`), which went
   dead in non-test builds when block arguments took over as the public
   phi-authoring surface.
 
@@ -1103,10 +1111,10 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
   for arrays, `TypeMismatch` for element). Constructors
   `Module::vector_type_n::<E, const N>()` / `array_type_n::<E, const N>()`. Typed
   ops make an element/length mismatch a **compile error**:
-  `build_vec_int_{add,sub,mul,xor,and,or,shl,lshr,ashr}` (two
+  `vector_int_{add,sub,mul,xor,and,or,shl,lshr,ashr}` (two
   `VectorValue<E, Len<N>>` with the same `E`,`N` ⇒ equal element+length for
-  free), `build_vec_extract`/`build_vec_insert`/`build_vec_splat`, and array
-  `build_arr_extract`/`build_arr_insert` (plus a typed-array `build_alloca`); the
+  free), `vector_extract`/`vector_insert`/`vector_splat`, and array
+  `array_extract`/`array_insert` (plus a typed-array `alloca`); the
   verifier's vector/array checks are unchanged (defense in depth). The old
   unwired `VectorElement`/`SizedElement`/`VectorDyn`/`ArrayDyn` markers were
   replaced by `VecElem`/`ElemDyn`. Residual, deliberately still erased / `Dyn`:
@@ -1121,7 +1129,7 @@ Signatures below are verified against the extracted `llvmorg-22.1.4` tree
     scalar element marker can't name a composite element (**scoped out**).
   - **Float / div / rem vector binops and vector `icmp`/`fcmp`** — **scoped out**;
     no existing erased `_dyn` lowering to reuse.
-  - `build_vec_splat` can't infer its element from the scalar (a Rust
+  - `vector_splat` can't infer its element from the scalar (a Rust
     associated-type-projection limitation), so its callers annotate / turbofish
     the result.
 - **A proof token that *carries* the validated `TypeId`** (residual after the
@@ -1182,14 +1190,14 @@ deferred it.
 - **`[F; N]` `IrField` arrays** -- fixed-size array fields in `#[derive(IrStruct)]`
   schemas; would let derived structs model `[i32; 4]`-shaped LLVM array
   members directly instead of requiring a hand-written wrapper.
-- **Vector-of-pointer GEP bases** -- `build_gep`/`build_field_gep` currently
+- **Vector-of-pointer GEP bases** -- `gep`/`field_gep` currently
   assume a scalar pointer base; vectorized GEP (`<N x ptr>` base, per-lane
   offsets) is unmodeled.
-- **Derive-generated field-index consts** -- `build_field_gep::<S, I>` takes
+- **Derive-generated field-index consts** -- `field_gep::<S, I>` takes
   the field index as a bare `const I: u32`; the derive macro could emit named
-  constants (e.g. `Point::X_INDEX`) so call sites read `build_field_gep::<Point,
+  constants (e.g. `Point::X_INDEX`) so call sites read `field_gep::<Point,
   { Point::X_INDEX }>` instead of a magic number.
-- **`TypedInvokeInst<Ret>` schema wrapper** -- `build_invoke` returns
+- **`TypedInvokeInst<Ret>` schema wrapper** -- `invoke` returns
   `InvokeInst<Ret::Marker>` today; a `TypedCallInst`-style wrapper carrying
   the full `Ret: FunctionReturn` schema (not just the derived marker) is
   mechanical follow-up work noted in the typed-calls design (Workstream 1)
@@ -1206,7 +1214,7 @@ deferred it.
   `feature-32/owned-modules`). `IrField::ir_type`, `StructSchema::field_types` /
   `ir_type`, `FunctionReturn::ir_type`, `FunctionParam::ir_type` and
   `FunctionParamList::ir_types` now take `ModuleView<'ctx, B>` instead of
-  `&Module<..., Unverified>`, so `build_field_gep` no longer wraps a temporary
+  `&Module<..., Unverified>`, so `field_gep` no longer wraps a temporary
   module token to call `S::ir_type(...)` — `Module::from_core` is gone with it.
   Type construction is preservation-neutral, which is why the view already
   carried the constructor surface.
@@ -1236,7 +1244,7 @@ LLVM 22.1.4 parity-completion pass (DataLayout default alignment on
 load/store/alloca, alloca array-size / `inalloca` / `swifterror` / DL alloca
 address space, GEP index validation, indirect invoke, musttail ellipsis rules,
 unordered-atomic-load DCE + trivially-dead InstSimplify erase, and the
-`llvmkit-default<On>` recipe rename). The `build_is_null`/`build_pointer_cmp`
+`llvmkit-default<On>` recipe rename). The `is_null`/`pointer_cmp`
 folder-bypass item was already fixed on dev (`b06413e`). The items below remain
 deliberately deferred; each cites its upstream anchor.
 
@@ -1264,13 +1272,13 @@ deliberately deferred; each cites its upstream anchor.
   support verifies the parse-level constraints (pointer type, non-array); the
   full `Verifier` use-site rules (swifterror values may only flow through
   specific call/load/store positions) are not yet enforced.
-- **Plain add/sub/div/shift hook dispatch** -- `build_int_add`/`build_int_sub`
+- **Plain add/sub/div/shift hook dispatch** -- `int_add`/`int_sub`
   consult the plain `fold_int_bin_op` hook where upstream `CreateAdd` funnels
   through `FoldNoWrapBinOp(.., false, false)` (and `CreateUDiv` et al. through
   `FoldExactBinOp(.., false)`). Identical results with the shipped folders;
   observable only by third-party folders that override just the
   no-wrap/exact hooks.
-- **Vector-of-pointer GEP bases** -- `build_gep` / the parser assume a scalar
+- **Vector-of-pointer GEP bases** -- `gep` / the parser assume a scalar
   pointer base; `<N x ptr>` vector GEP bases (`getGEPReturnType`'s vector arm)
   are unmodeled (documented earlier in this file). Consequence for the new GEP
   index validation: the struct-index-must-be-`i32` check (`StructType::indexValid`,
@@ -1313,7 +1321,7 @@ static tuple pipelines, `Analyses` bundle, `Dyn` containers, and the
   (`BrEdit`/`SwitchEdit`/`InvokeEdit`/`CallBrEdit`, `pass_context.rs`) would
   move the phi-seeding arity/type check from run time to compile time, the
   redirect analog of the shipped typed *creation* path
-  (`build_br_call`/`build_cond_br_call`). It was planned for cycle D and cut
+  (`br_call`/`cond_br_call`). It was planned for cycle D and cut
   after a four-source audit found it out-types every relevant consumer:
   - **LLVM** has no atomic redirect at all -- the idiom is a manual two-step
     (`replaceSuccessorWith` / `SwitchInst::setSuccessor` then
@@ -1425,9 +1433,9 @@ driver marks preserved exactly what it watched repair). What remains deferred:
 ## Phi authoring — shipped
 
 The block-argument authoring surface (`append_block_with_params`,
-`append_block_with_named_params`, `build_*_with_args`), dominance-witnessed
+`append_block_with_named_params`, `*_with_args`), dominance-witnessed
 `FnReshape::insert_phi`, the "break" that made the raw phi builders (the six
-`build_*_phi`, the open-phi `add_incoming`/`finish`) internal — block arguments
+`*_phi`, the open-phi `add_incoming`/`finish`) internal — block arguments
 are now the *only* public phi-authoring surface — the **typed terminator edit
 surface** (`FnReshape::edit_terminator` and the `edit_switch`/`edit_cond_br`/
 `edit_br`/`edit_invoke`/`edit_callbr` narrows → `BrEdit`/`CondBrEdit`/
@@ -1461,12 +1469,12 @@ indirect count is fixed, and that absence is a compile-time guarantee (the
 the block analog of the const-generic vector/array retrofit. A `BlockParams`
 sealed marker with the erased `BlockParamsDyn` default sits as the last,
 defaulted `Params` type parameter on `BasicBlockLabel`/`BasicBlock`, so all
-erased authoring is unchanged; `IRBuilder::append_block_typed::<Params>` appends
+erased authoring is unchanged; `IrBuilder::append_block_typed::<Params>` appends
 a `Params`-stamped block with typed head-phi parameter handles; and the
 `BlockCall<'ctx, R, B, Params>` edge (`head.call(args)` consumed by
-`build_br_call`/`build_cond_br_call`) makes a wrong-arity or wrong-typed
+`br_call`/`cond_br_call`) makes a wrong-arity or wrong-typed
 block-argument a *compile* error. The erased surface
-(`append_block_with_params`, `build_br_with_args`, `build_cond_br_with_args`) is
+(`append_block_with_params`, `br_with_args`, `cond_br_with_args`) is
 untouched. Two follow-ups remain deferred:
 
 - **Edit-surface `BlockCall` integration.** The reshape edit surface's typed
@@ -1475,7 +1483,7 @@ untouched. Two follow-ups remain deferred:
   built from a `Params`-stamped label is rarely usable at a redirect site — the
   pass would first have to recover (or carry) a typed label. Until a pass surface
   threads typed labels through, the typed `BlockCall` edge is a construction-time
-  (`IRBuilder`) convenience only, and the edit surface keeps taking erased
+  (`IrBuilder`) convenience only, and the edit surface keeps taking erased
   per-parameter value slices.
 - **Typed params beyond arity 12.** `BlockParams` has a `Debug` supertrait and
   the standard library stops deriving `Debug` on tuples past arity 12, so a
@@ -1490,10 +1498,10 @@ untouched. Two follow-ups remain deferred:
 (`feature-21/typed-terminator-operands`) — the program's move from a
 terminator's *edges* to its *operands*. The `switch` condition/case integer
 width is now a last, defaulted `W: IntWidth = IntDyn` parameter on
-`SwitchInst<'ctx, P, B, W>`; `IRBuilder::build_switch::<W>` pins `W` and
+`SwitchInst<'ctx, P, B, W>`; `IrBuilder::switch::<W>` pins `W` and
 its `add_case` carries an `IntoIntValue<'ctx, W, B>` bound, so a wrong-width
-case value is a **compile error** (the erased `build_switch_dyn` keeps the runtime
-`TypeMismatch` check). And `build_indirectbr`'s address bound tightened from
+case value is a **compile error** (the erased `switch_dyn` keeps the runtime
+`TypeMismatch` check). And `indirectbr`'s address bound tightened from
 `IsValue` to `IntoPointerValue`, so a typed non-pointer jump address is a
 **compile error** (the pointer-ness check moves from `verify()` to build time;
 erased `Value` addresses are unchanged). Parser / SSA-builder paths and the
@@ -1521,7 +1529,7 @@ than pending:
   worth keeping. `FunctionValue` gains a defaulted brand parameter
   `Fb: FnBrand = FnErased`, so every existing call site is unchanged. Opting in
   goes through `func.build_body(|fb| …)`, which mints a generative
-  `FnScoped<'fid>` for the closure body; `build_br` (and the other
+  `FnScoped<'fid>` for the closure body; `br` (and the other
   branch builders) require the target label's `Fb` to match the builder's, so a
   label minted in one function's body is not the right *type* to branch to from
   another's. That is what makes a cross-function branch — LLVM's "Referring to a
