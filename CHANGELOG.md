@@ -24,6 +24,41 @@ bullet below names its wave.
 
 #### Changed
 
+- **Breaking (W11b): `llvmkit-asmparser` exports its own surface, and its
+  errors say what went wrong (C-GOOD-ERR).** The crate root now re-exports
+  every parsing entry point (the `parse_assembly*`, `parse_type*`,
+  `parse_constant_value*` and summary-index families join the owned-module
+  ones) plus the types they speak: `ParseError`, `ParseResult`, `DiagLoc`,
+  `SymbolId`, `SymbolKind`, `ParsedModule`, `SlotMapping`, `GlobalRef`, and
+  `ModuleSummaryIndex`. `ParseError` — the error type of the headline API —
+  was previously only nameable as
+  `llvmkit_asmparser::parse_error::ParseError`, and through the umbrella as
+  `llvmkit::asmparser::parse_error::ParseError`. `Lexer`, `Token` and
+  `Parser` stay module-scoped: they mirror LLVM's `LLLexer` / `LLParser`
+  plumbing, not the surface a caller drives.
+  **User-visible: the rendered error text changed.** Messages no longer
+  splice a `Debug`-formatted location into the prose — `expected type at
+  DiagLoc { span: Span { start: 5, end: 9 }, file: None }` is now
+  `expected type`, and the location is read from `ParseError::loc()`, where
+  a renderer should get it (upstream is the same shape: `LLParser::error`
+  carries its `LocTy` beside the `Twine`). `SymbolKind` gains a `Display`
+  and a `sigil()`, so symbol diagnostics match `LLParser.cpp` word for
+  word — `redefinition of global '@foo'` and `use of undefined metadata
+  '!0'` instead of `redefinition of Global '@foo'` and `use of undefined
+  Metadata '%0'`; `Display for SymbolId` correspondingly prints the bare
+  identity and lets the namespace supply the sigil.
+  `ParseError::Expected::expected` is a `Cow<'static, str>` (nearly every
+  site passes a literal, so the common diagnostic no longer allocates), and
+  `Io(String)` becomes `Io { kind: std::io::ErrorKind, message: String }`,
+  so `NotFound` and `PermissionDenied` are matchable without parsing the
+  message back — `ErrorKind` is `Copy + Eq + Hash`, so the enum keeps its
+  derives. Also: `Token` implements `Display` (replacing the allocating,
+  callerless `ll_parser::describe`, same wording), `Lexer` implements
+  `FusedIterator` with the `next_token`-returns-`Eof`-forever vs
+  `Iterator::next`-returns-`None` contract now documented, and `Parser` has
+  a manual `Debug` printing a cursor summary rather than every slot table it
+  has filled.
+
 - **Breaking (W9): read APIs that allocated a `Vec` return iterators
   (C-ITER).** `FunctionCfg::successors` / `predecessors`,
   `BasicBlock::successors`, `Instruction::debug_records` /
