@@ -1228,7 +1228,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let _ = metadata_nodes.add(*slot, entry.id);
         }
         let mut attribute_groups = NumberedValues::new();
-        let mut attr_entries: Vec<_> = self.module.attribute_groups();
+        let mut attr_entries: Vec<_> = self.module.attribute_groups().collect();
         attr_entries.sort_by_key(|(slot, _)| *slot);
         for (slot, storage) in attr_entries {
             let _ = attribute_groups.add(slot, storage);
@@ -1262,7 +1262,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             let _ = metadata_nodes.add(slot, entry.id);
         }
         let mut attribute_groups = NumberedValues::new();
-        let mut attr_entries: Vec<_> = self.module.attribute_groups();
+        let mut attr_entries: Vec<_> = self.module.attribute_groups().collect();
         attr_entries.sort_by_key(|(slot, _)| *slot);
         for (slot, storage) in attr_entries {
             let _ = attribute_groups.add(slot, storage);

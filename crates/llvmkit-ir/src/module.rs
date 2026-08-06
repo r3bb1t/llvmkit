@@ -3097,8 +3097,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, S> Module<B, S> {
     ///
     /// Most callers want a single group; [`attribute_group`](Self::attribute_group)
     /// is the point lookup and copies only that one entry.
-    pub fn attribute_groups(&self) -> Vec<(u32, AttributeStorage)> {
-        self.core().attribute_groups()
+    ///
+    /// The table lives behind a `RefCell`, so the iterator walks a snapshot
+    /// taken at call time rather than borrowing the module.
+    pub fn attribute_groups(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (u32, AttributeStorage)>
+    + DoubleEndedIterator
+    + core::iter::FusedIterator
+    + use<B, S> {
+        self.core().attribute_groups().into_iter()
     }
 
     /// The attribute group printed as `#id`, or `None` if the module has no
