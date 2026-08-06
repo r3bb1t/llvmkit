@@ -1235,13 +1235,6 @@ macro_rules! decl_overflowing_flags {
             #[inline]
             #[must_use]
             pub const fn nsw(mut self) -> Self { self.nsw = true; self }
-
-            // Crate-internal per the no-bool-params convention: analyses
-            // holding runtime flag bits (value_tracking) lift them here.
-            #[inline]
-            pub(crate) const fn from_parts(nuw: bool, nsw: bool) -> Self {
-                Self { nuw, nsw }
-            }
         }
     };
 }
@@ -1289,6 +1282,28 @@ decl_overflowing_flags!(
     /// Flags for `shl`.
     ShlFlags
 );
+
+// Crate-internal lifts for analyses holding runtime flag bits
+// (value_tracking). Only the structs a caller actually lifts get one —
+// a macro-emitted blanket impl would leave MulFlags's copy dead.
+impl AddFlags {
+    #[inline]
+    pub(crate) const fn from_parts(nuw: bool, nsw: bool) -> Self {
+        Self { nuw, nsw }
+    }
+}
+impl SubFlags {
+    #[inline]
+    pub(crate) const fn from_parts(nuw: bool, nsw: bool) -> Self {
+        Self { nuw, nsw }
+    }
+}
+impl ShlFlags {
+    #[inline]
+    pub(crate) const fn from_parts(nuw: bool, nsw: bool) -> Self {
+        Self { nuw, nsw }
+    }
+}
 
 decl_exact_flags!(
     /// Flags for `udiv`. Mirrors `PossiblyExactOperator`.
