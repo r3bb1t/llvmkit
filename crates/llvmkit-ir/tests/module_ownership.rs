@@ -28,7 +28,8 @@ use llvmkit_ir::metadata::{
 use llvmkit_ir::{
     BlockId, Dyn, DynBrand, FunctionId, InstructionView, IntValue, IrBuilder, IrError, Linkage,
     MetadataAttachmentKind, MetadataField, MetadataFieldValue, MetadataKind, Module, ModuleBrand,
-    NoFolder, SpecializedMetadataKind, SpecializedMetadataNode, Unverified, Verified, module_new,
+    NamedMetadataName, NoFolder, SpecializedMetadataKind, SpecializedMetadataNode, Unverified,
+    Verified, module_new,
 };
 
 /// Declare a brand type exactly as a user would.
@@ -547,6 +548,59 @@ fn a_metadata_id_from_another_module_is_refused_everywhere() -> Result<(), IrErr
     assert!(inst.debug_records().is_empty());
     let text = format!("{b}");
     assert!(text.contains("from-b"), "{text}");
+    assert!(!text.contains("from-a"), "{text}");
+    Ok(())
+}
+
+/// llvmkit-specific, no upstream counterpart: upstream
+/// `Module::getOrInsertNamedMetadata` (`lib/IR/Module.cpp`) returns a bare
+/// `NamedMDNode *` with no notion of which module owns it — identity is the
+/// pointer. The named-metadata sibling of
+/// `a_metadata_id_from_another_module_is_refused_everywhere` above: both
+/// modules are `DynBrand`, so only the runtime `ModuleId` tag separates a
+/// `NamedMetadataId` minted by one from the other. (Two distinct named brands
+/// are separated statically instead —
+/// `tests/compile_fail/cross_module_named_metadata_id.rs`.)
+#[test]
+fn a_named_metadata_id_from_another_module_is_refused() -> Result<(), IrError> {
+    let a = Module::dynamic("a");
+    let b = Module::dynamic("b");
+
+    // Same shape in both, so the foreign slot is in range in the target.
+    let a_named = a.get_or_insert_named_metadata("shared.name");
+    let b_named = b.get_or_insert_named_metadata("shared.name");
+    let b_node = b.metadata_tuple([b.metadata_string("from-b")])?;
+
+    // The appender refuses the foreign id even though its slot is in range —
+    // and reports the *named-metadata* currency, not the operand's.
+    assert!(matches!(
+        b.named_metadata_add_operand(a_named, b_node),
+        Err(IrError::ForeignNamedMetadataId)
+    ));
+
+    // Clone-out lookup: `None` for the foreign id, never module B's node at
+    // the same slot...
+    assert!(
+        b.named_metadata_get(a_named).is_none(),
+        "a foreign id must not resolve to whatever sits at that slot here"
+    );
+    // ...and the check is discriminating, not a blanket refusal.
+    b.named_metadata_add_operand(b_named, b_node)?;
+    let node = b.named_metadata_get(b_named).expect("native id resolves");
+    assert_eq!(node.name(), &NamedMetadataName::from("shared.name"));
+    assert_eq!(node.operand_count(), 1);
+
+    // The bare-noun lookup agrees with what get-or-insert minted, and a name
+    // nothing here holds is `None`.
+    assert_eq!(
+        b.named_metadata(&NamedMetadataName::from("shared.name")),
+        Some(b_named)
+    );
+    assert!(b.named_metadata(&NamedMetadataName::ModuleFlags).is_none());
+
+    // Nothing foreign made it in: module B prints only its own operand.
+    let text = format!("{b}");
+    assert!(text.contains("!shared.name = !{!0}"), "{text}");
     assert!(!text.contains("from-a"), "{text}");
     Ok(())
 }

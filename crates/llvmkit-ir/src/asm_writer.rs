@@ -2906,7 +2906,7 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
             let md = m.metadata_store();
             let slots = metadata_slot_map(md.nodes());
             for node in nmd.iter() {
-                write!(f, "!{} = !{{", node.name())?;
+                write!(f, "!{} = !{{", node.name_str())?;
                 for (j, op) in node.operands().iter().enumerate() {
                     if j > 0 {
                         f.write_str(", ")?;

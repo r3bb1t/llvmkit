@@ -2013,7 +2013,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // `!{ !N, !N, ... }`
         self.expect_exclaim("'!' before '{' in named metadata")?;
         self.expect_punct(PunctKind::LBrace, "'{' in named metadata")?;
-        let nmd_idx = self.module.get_or_insert_named_metadata(&name);
+        let named_metadata_id = self.module.get_or_insert_named_metadata(name);
 
         // Parse comma-separated `!N` operands
         if !matches!(self.peek(), Token::RBrace) {
@@ -2022,11 +2022,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let loc = self.loc();
                 let slot = self.parse_uint32("metadata operand number")?;
                 let id = self.resolve_md_slot(slot, loc);
-                // `nmd_idx` came from `get_or_insert_named_metadata` on this
-                // same module, so the node always exists.
+                // `named_metadata_id` came from `get_or_insert_named_metadata`
+                // on this same module, so neither handle can be foreign.
                 self.module
-                    .named_metadata_add_operand(nmd_idx, id)
-                    .expect("named metadata index and id minted by this module");
+                    .named_metadata_add_operand(named_metadata_id, id)
+                    .expect("named metadata id and operand minted by this module");
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
                 }

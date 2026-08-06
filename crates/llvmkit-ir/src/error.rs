@@ -932,14 +932,12 @@ pub enum IrError {
     #[error("value id belongs to a different Module")]
     ForeignValueId,
 
-    /// A [`MetadataId`](crate::MetadataId) or a named-metadata index named
-    /// nothing in the target [`Module`](crate::Module) — the id's tag matched,
-    /// but its slot is past the end of the arena.
+    /// A [`MetadataId`](crate::MetadataId) named nothing in the target
+    /// [`Module`](crate::Module) — the id's tag matched, but its slot is past
+    /// the end of the arena.
     ///
-    /// Raised by [`Module::metadata_set`](crate::Module::metadata_set),
-    /// [`Module::metadata_as_value`](crate::Module::metadata_as_value), and
-    /// [`Module::named_metadata_add_operand`](crate::Module::named_metadata_add_operand)
-    /// (whose `index` is a plain named-node position, not a tagged id). A
+    /// Raised by [`Module::metadata_set`](crate::Module::metadata_set) and
+    /// [`Module::metadata_as_value`](crate::Module::metadata_as_value). A
     /// *foreign* id is [`ForeignMetadataId`](Self::ForeignMetadataId) instead:
     /// the tag separates the two cases, so an in-range slot from another module
     /// is rejected rather than silently mis-resolved.
@@ -967,6 +965,20 @@ pub enum IrError {
     /// the `FunctionValue` / global siblings).
     #[error("metadata id belongs to a different Module")]
     ForeignMetadataId,
+
+    /// A [`NamedMetadataId`](crate::NamedMetadataId) was used against a
+    /// different [`Module`](crate::Module) than the one that minted it. The
+    /// id's module tag did not match the target module, so it cannot name a
+    /// node there.
+    ///
+    /// The named-metadata twin of
+    /// [`ForeignMetadataId`](Self::ForeignMetadataId), raised by
+    /// [`Module::named_metadata_add_operand`](crate::Module::named_metadata_add_operand)
+    /// when the *id* (rather than the operand) is foreign. The lookup,
+    /// [`Module::named_metadata_get`](crate::Module::named_metadata_get),
+    /// returns `None` for a foreign id instead.
+    #[error("named metadata id belongs to a different Module")]
+    ForeignNamedMetadataId,
 
     /// [`crate::SsaState::for_function`] was given a function that
     /// already has a body. The layer must observe every CFG edge from

@@ -289,6 +289,7 @@ pub use module::{
     ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBBRecord,
     UseListOrderRecord, Verified,
 };
+pub use named_md_node::{NamedMetadataId, NamedMetadataName};
 pub use operator::{OverflowingBinaryOperator, PossiblyExactOperator};
 pub use optimization_level::{
     OptLevelO0, OptLevelO1, OptLevelO2, OptLevelO3, OptLevelOs, OptLevelOz, OptimizationLevel,

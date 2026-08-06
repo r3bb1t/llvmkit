@@ -24,6 +24,26 @@ bullet below names its wave.
 
 #### Changed
 
+- **Breaking (W6): `NamedMetadataId<B>` + `NamedMetadataName` replace the raw
+  `usize`/`String` named-metadata surface (D7).**
+  `Module::get_or_insert_named_metadata` mints a module-tagged, branded
+  `NamedMetadataId<B>` instead of a bare list index, and
+  `named_metadata_add_operand` takes that id — a foreign id is
+  `Err(IrError::ForeignNamedMetadataId)` (new variant), replacing the old
+  index's out-of-range `UnknownMetadataSlot` arm (an in-range foreign index
+  used to be undetectable in principle; the tag makes it impossible). New
+  bare-noun lookup `Module::named_metadata(&NamedMetadataName) ->
+  Option<NamedMetadataId<B>>` and clone-out reader
+  `Module::named_metadata_get(id) -> Option<NamedMDNode<B>>` (`None` only for
+  a foreign id). Node names are the new `#[non_exhaustive]`
+  `NamedMetadataName` enum spelling the well-known upstream set
+  (`llvm.module.flags`, `llvm.dbg.cu`, `llvm.ident`, `llvm.linker.options`,
+  ...) as variants with `Custom(String)` for the open rest;
+  `From<&str>`/`From<String>` keep call sites one-liners.
+  `NamedMDNode::new` takes `impl Into<NamedMetadataName>`, `name()` returns
+  `&NamedMetadataName`, and the printed spelling moves to `name_str()`.
+  Printed `.ll` output is unchanged.
+
 - **Breaking (W11c): the umbrella forwards features; `llvmkit-tablegen`
   becomes a real library.** `llvmkit` gains `[features] default = ["macros"]`
   forwarding to `llvmkit-ir/macros`; the `llvmkit-ir` dependency is

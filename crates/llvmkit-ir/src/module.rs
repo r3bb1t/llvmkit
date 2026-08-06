@@ -92,7 +92,7 @@ use super::metadata::{
     MetadataAttachmentSet, MetadataId, MetadataKind, MetadataSlot, MetadataStore,
     SpecializedMetadataNode, StoredBrand,
 };
-use super::named_md_node::NamedMDNode;
+use super::named_md_node::{NamedMDNode, NamedMetadataId, NamedMetadataName, NamedMetadataSlot};
 use super::pass_context::{FunctionView, ModuleFunctionViews};
 use super::struct_body_state::StructBodyDyn;
 use super::struct_body_state::{BodySet, Opaque};
@@ -2607,48 +2607,69 @@ impl<'ctx> ModuleCore {
         self.metadata.borrow()
     }
 
-    /// Get or create a named metadata node with the given name.
-    /// Mirrors `Module::getOrInsertNamedMetadata`.
-    pub fn get_or_insert_named_metadata<Name>(&self, name: Name) -> usize
-    where
-        Name: Into<String>,
-    {
-        let name = name.into();
+    /// Get or create a named metadata node with the given name, minting its
+    /// stored-brand id. Mirrors `Module::getOrInsertNamedMetadata`.
+    pub fn get_or_insert_named_metadata(
+        &self,
+        name: NamedMetadataName,
+    ) -> NamedMetadataId<StoredBrand> {
         let mut nmd = self.named_metadata.borrow_mut();
         for (i, node) in nmd.iter().enumerate() {
-            if node.name() == name {
-                return i;
+            if *node.name() == name {
+                return NamedMetadataId::from_raw(self.id, NamedMetadataSlot(i));
             }
         }
-        let idx = nmd.len();
+        let slot = NamedMetadataSlot(nmd.len());
         nmd.push(NamedMDNode::new(name));
-        idx
+        NamedMetadataId::from_raw(self.id, slot)
     }
 
-    /// Append an operand to a named metadata node (by index).
+    /// Look up an existing named metadata node by name. Mirrors
+    /// `Module::getNamedMetadata`.
+    pub fn named_metadata(&self, name: &NamedMetadataName) -> Option<NamedMetadataId<StoredBrand>> {
+        let nmd = self.named_metadata.borrow();
+        let slot = nmd.iter().position(|node| node.name() == name)?;
+        Some(NamedMetadataId::from_raw(self.id, NamedMetadataSlot(slot)))
+    }
+
+    /// Append an operand to a named metadata node. Mirrors
+    /// `NamedMDNode::addOperand`.
     ///
-    /// `Err(IrError::ForeignMetadataId)` when `op` was minted by another
-    /// module. `Err(IrError::UnknownMetadataSlot)` when `index` names no node
-    /// here: the index comes from
-    /// [`get_or_insert_named_metadata`](Self::get_or_insert_named_metadata) and
-    /// is a plain position carrying no module tag, so an index minted against
-    /// another module used to panic (out of range) or silently append to the
-    /// wrong node (in range) — neither of which an infallible signature may
-    /// hide.
-    pub fn named_metadata_add_operand<B>(&self, index: usize, op: MetadataId<B>) -> IrResult<()>
+    /// `Err(IrError::ForeignNamedMetadataId)` when `id` was minted by another
+    /// module, `Err(IrError::ForeignMetadataId)` when `op` was. There is no
+    /// unknown-slot case: the named-metadata list is append-only, so a native
+    /// id's slot keeps naming the node it was minted for.
+    pub fn named_metadata_add_operand<B>(
+        &self,
+        id: NamedMetadataId<B>,
+        op: MetadataId<B>,
+    ) -> IrResult<()>
     where
         B: ModuleBrand,
     {
+        let slot = id.into_stored(self.id)?.slot();
         let op = op.into_stored(self.id)?;
         let mut nmd = self.named_metadata.borrow_mut();
-        let len = nmd.len();
-        match nmd.get_mut(index) {
-            Some(node) => {
-                node.add_operand(op);
-                Ok(())
-            }
-            None => Err(IrError::UnknownMetadataSlot { index, len }),
-        }
+        let node = nmd.get_mut(slot.0).unwrap_or_else(|| {
+            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+        });
+        node.add_operand(op);
+        Ok(())
+    }
+
+    /// Look up a named metadata node by id, cloning it out. `None` when `id`
+    /// belongs to another module — never another module's node. A native id
+    /// always resolves: the named-metadata list is append-only.
+    pub fn named_metadata_get<B>(&self, id: NamedMetadataId<B>) -> Option<NamedMDNode<B>>
+    where
+        B: ModuleBrand,
+    {
+        let slot = id.into_stored(self.id).ok()?.slot();
+        let nmd = self.named_metadata.borrow();
+        let node = nmd.get(slot.0).unwrap_or_else(|| {
+            unreachable!("a stored NamedMetadataId always names a node in the append-only list")
+        });
+        Some(NamedMDNode::from_stored(node))
     }
 
     /// Number of named metadata nodes.
@@ -4242,23 +4263,49 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().metadata_count()
     }
 
-    pub fn get_or_insert_named_metadata<Name>(&'ctx self, name: Name) -> usize
+    /// Get or create a named metadata node with the given name, minting its
+    /// storable [`NamedMetadataId`]. Mirrors `Module::getOrInsertNamedMetadata`.
+    ///
+    /// The name is anything that converts into a [`NamedMetadataName`]: the
+    /// well-known variants directly, or any `&str` / `String` spelling (which
+    /// classifies itself, falling back to
+    /// [`NamedMetadataName::Custom`]).
+    pub fn get_or_insert_named_metadata<Name>(&'ctx self, name: Name) -> NamedMetadataId<B>
     where
-        Name: Into<String>,
+        Name: Into<NamedMetadataName>,
     {
-        self.core().get_or_insert_named_metadata(name)
+        NamedMetadataId::from_stored(self.core().get_or_insert_named_metadata(name.into()))
     }
 
-    /// Append an operand to a named metadata node.
+    /// Look up an existing named metadata node by name. `None` when this
+    /// module holds no node with that name. Mirrors
+    /// `Module::getNamedMetadata`.
+    pub fn named_metadata(&'ctx self, name: &NamedMetadataName) -> Option<NamedMetadataId<B>> {
+        self.core()
+            .named_metadata(name)
+            .map(NamedMetadataId::from_stored)
+    }
+
+    /// Append an operand to a named metadata node. Mirrors
+    /// `NamedMDNode::addOperand`.
     ///
-    /// `Err(IrError::ForeignMetadataId)` when `op` was minted by another
-    /// module. `Err(IrError::UnknownMetadataSlot)` when `index` names no node
-    /// here: the index comes from `get_or_insert_named_metadata` and carries no
-    /// module tag, so an index minted against another module used to panic (out
-    /// of range) or silently append to the wrong node (in range) — neither of
-    /// which an infallible signature may hide.
-    pub fn named_metadata_add_operand(&'ctx self, index: usize, op: MetadataId<B>) -> IrResult<()> {
-        self.core().named_metadata_add_operand(index, op)
+    /// `Err(IrError::ForeignNamedMetadataId)` when `id` was minted by another
+    /// module, `Err(IrError::ForeignMetadataId)` when `operand` was. There is
+    /// no unknown-slot case: the named-metadata list is append-only, so a
+    /// native id's slot keeps naming the node it was minted for.
+    pub fn named_metadata_add_operand(
+        &'ctx self,
+        id: NamedMetadataId<B>,
+        operand: MetadataId<B>,
+    ) -> IrResult<()> {
+        self.core().named_metadata_add_operand(id, operand)
+    }
+
+    /// Look up a named metadata node by id, cloning it out. `None` when `id`
+    /// belongs to another module — never another module's node. A native id
+    /// always resolves: the named-metadata list is append-only.
+    pub fn named_metadata_get(&'ctx self, id: NamedMetadataId<B>) -> Option<NamedMDNode<B>> {
+        self.core().named_metadata_get(id)
     }
 
     pub fn named_metadata_count(&'ctx self) -> usize {

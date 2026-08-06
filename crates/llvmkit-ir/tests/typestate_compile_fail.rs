@@ -194,6 +194,12 @@ fn typestate_compile_fail() {
     // the mix-up a type error, and `module_ownership.rs` locks the runtime tag
     // for the same-brand / `DynBrand` case.
     t.compile_fail("tests/compile_fail/cross_module_metadata_attachment.rs");
+    // W6: the same law for the *named*-metadata currency. A named-metadata
+    // handle used to be a bare `usize` list index carrying neither a brand nor
+    // a `ModuleId` tag; `NamedMetadataId<B>` carries both, so two named brands
+    // make the mix-up a type error, and `module_ownership.rs` locks the
+    // runtime tag for the same-brand / `DynBrand` case.
+    t.compile_fail("tests/compile_fail/cross_module_named_metadata_id.rs");
     // Pins the premise of the `Send` compile-assert in `module_ownership.rs`:
     // the brand type used there really is `!Send`, so asserting that
     // `Module<NotSendBrand, S>: Send` is not vacuous.
