@@ -2186,8 +2186,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         loc: field_loc,
                     });
                 }
+                let declared = kind
+                    .field(&field_name)
+                    .unwrap_or_else(|| unreachable!("accepts_field just matched {field_name}"));
                 self.bump()?;
+                let value_loc = DiagLoc::span(self.loc());
                 let value = self.parse_metadata_field_value()?;
+                self.check_metadata_field_value(declared, &value, value_loc)?;
                 fields.push(llvmkit_ir::metadata::MetadataField::new(field_name, value));
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
@@ -2197,10 +2202,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let closing_loc = DiagLoc::span(self.loc());
         self.expect_punct(PunctKind::RParen, "')' closing specialized metadata")?;
         for required in kind.required_fields() {
-            if !fields.iter().any(|f| f.name() == *required) {
+            if !fields.iter().any(|f| f.name() == required.name()) {
                 return Err(ParseError::MissingRequiredMetadataField {
                     kind: kind.name(),
-                    field: required,
+                    field: required.name(),
                     loc: closing_loc,
                 });
             }
@@ -2270,6 +2275,160 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             node.with_expression_operands(operands)
         }))
+    }
+
+    /// Check a parsed field value against the grammar its class declares.
+    ///
+    /// Mirrors the `LLParser::parseMDField` overload set (`LLParser.cpp`): each
+    /// field type is a separate overload upstream, and the overload is where
+    /// the rejection lives. Applied after the value is read rather than during,
+    /// which reaches the same verdicts — the token shape a value came from is
+    /// recoverable from the value itself.
+    ///
+    /// Keyword families are validated through [`llvmkit_ir::dwarf`], whose
+    /// tables are the vendored `Dwarf.def` / `DebugInfoFlags.def` (see
+    /// `dwarf_def_drift.rs`). A field that upstream lets you write either as a
+    /// keyword or as a raw encoding accepts both here too.
+    fn check_metadata_field_value(
+        &self,
+        field: llvmkit_ir::metadata::SpecializedMetadataField,
+        value: &MetadataFieldValue<B>,
+        loc: DiagLoc,
+    ) -> ParseResult<()> {
+        use llvmkit_ir::dwarf;
+        use llvmkit_ir::metadata::{MetadataFieldKind, MetadataFieldValue};
+
+        let name = field.name();
+
+        // A keyword family: reject a spelling its table does not contain, and
+        // let a raw unsigned encoding through as upstream's overloads do.
+        let keyword = |what: &'static str, lookup: fn(&str) -> Option<u32>| -> ParseResult<()> {
+            match value {
+                MetadataFieldValue::Enum(spelling) => {
+                    if lookup(spelling).is_none() {
+                        return Err(ParseError::InvalidMetadataFieldValue {
+                            what,
+                            value: spelling.clone(),
+                            loc,
+                        });
+                    }
+                    Ok(())
+                }
+                _ => Ok(()),
+            }
+        };
+
+        // `DIFlag*` / `DISPFlag*` accept a `|`-joined disjunction; every term
+        // must resolve, which is what upstream's per-term loop enforces.
+        let flags = |what: &'static str, lookup: fn(&str) -> Option<u32>| -> ParseResult<()> {
+            let MetadataFieldValue::Enum(spelling) = value else {
+                return Ok(());
+            };
+            for term in spelling.split('|') {
+                let term = term.trim();
+                if !term.is_empty() && lookup(term).is_none() {
+                    return Err(ParseError::InvalidMetadataFieldValue {
+                        what,
+                        value: term.to_owned(),
+                        loc,
+                    });
+                }
+            }
+            Ok(())
+        };
+
+        match field.kind() {
+            MetadataFieldKind::Metadata { allow_null } => {
+                if !allow_null && matches!(value, MetadataFieldValue::Null) {
+                    return Err(ParseError::MetadataFieldCannotBeNull {
+                        field: name.to_owned(),
+                        loc,
+                    });
+                }
+                Ok(())
+            }
+            MetadataFieldKind::MetadataString { empty_is_error } => {
+                if empty_is_error
+                    && matches!(value, MetadataFieldValue::String(text) if text.is_empty())
+                {
+                    return Err(ParseError::MetadataFieldCannotBeEmpty {
+                        field: name.to_owned(),
+                        loc,
+                    });
+                }
+                Ok(())
+            }
+            MetadataFieldKind::Unsigned { max } | MetadataFieldKind::UnsignedOrMetadata { max } => {
+                let MetadataFieldValue::Integer(parsed) = value else {
+                    return Ok(());
+                };
+                if *parsed < 0 {
+                    return Err(self.expected("unsigned integer"));
+                }
+                if u128::try_from(*parsed).is_ok_and(|v| v > u128::from(max)) {
+                    return Err(ParseError::MetadataFieldValueTooLarge {
+                        field: name.to_owned(),
+                        limit: max,
+                        loc,
+                    });
+                }
+                Ok(())
+            }
+            MetadataFieldKind::Signed { min, max } => {
+                let MetadataFieldValue::Integer(parsed) = value else {
+                    return Ok(());
+                };
+                if *parsed < i128::from(min) {
+                    return Err(ParseError::MetadataFieldValueTooSmall {
+                        field: name.to_owned(),
+                        limit: min,
+                        loc,
+                    });
+                }
+                if *parsed > i128::from(max) {
+                    return Err(ParseError::MetadataFieldValueTooLarge {
+                        field: name.to_owned(),
+                        limit: max.unsigned_abs(),
+                        loc,
+                    });
+                }
+                Ok(())
+            }
+            MetadataFieldKind::Bool => {
+                if matches!(value, MetadataFieldValue::Bool(_)) {
+                    Ok(())
+                } else {
+                    Err(self.expected("'true' or 'false'"))
+                }
+            }
+            MetadataFieldKind::DwarfTag => keyword("DWARF tag", dwarf::tag),
+            MetadataFieldKind::DwarfAttEncoding => {
+                keyword("DWARF type attribute encoding", dwarf::attribute_encoding)
+            }
+            MetadataFieldKind::DwarfVirtuality => {
+                keyword("DWARF virtuality code", dwarf::virtuality)
+            }
+            MetadataFieldKind::DwarfLang => keyword("DWARF language", dwarf::language),
+            MetadataFieldKind::DwarfSourceLangName => {
+                keyword("DWARF source language name", dwarf::source_language_name)
+            }
+            MetadataFieldKind::DwarfCc => {
+                keyword("DWARF calling convention", dwarf::calling_convention)
+            }
+            MetadataFieldKind::DwarfMacinfoType => keyword("DWARF macinfo type", dwarf::macinfo),
+            MetadataFieldKind::DiFlags => flags("debug info flag", dwarf::di_flag),
+            MetadataFieldKind::DispFlags => flags("subprogram debug info flag", dwarf::disp_flag),
+            MetadataFieldKind::EmissionKind => keyword("emission kind", emission_kind),
+            MetadataFieldKind::NameTableKind => keyword("nameTable kind", name_table_kind),
+            MetadataFieldKind::ChecksumKind => keyword("checksum kind", checksum_kind),
+            MetadataFieldKind::FixedPointKind => keyword("fixed-point kind", fixed_point_kind),
+            // `DwarfEnumKindField`'s table lives in `DICompositeType`'s Apple
+            // enum-kind set rather than `Dwarf.def`; unmodelled, so unchecked.
+            MetadataFieldKind::DwarfEnumKind
+            | MetadataFieldKind::ApsInt
+            | MetadataFieldKind::MetadataList
+            | MetadataFieldKind::SignedOrMetadata => Ok(()),
+        }
     }
 
     fn parse_metadata_field_value(&mut self) -> ParseResult<MetadataFieldValue<B>> {
@@ -9875,6 +10034,54 @@ where
         module.variadic_function_type(return_type, parameters)
     } else {
         module.function_type(return_type, parameters)
+    }
+}
+
+/// `DICompileUnit::DebugEmissionKind` spellings
+/// (`DebugInfoMetadata.h`; parsed by `LLParser`'s `EmissionKindField`).
+fn emission_kind(spelling: &str) -> Option<u32> {
+    match spelling {
+        "NoDebug" => Some(0),
+        "FullDebug" => Some(1),
+        "LineTablesOnly" => Some(2),
+        "DebugDirectivesOnly" => Some(3),
+        _ => None,
+    }
+}
+
+/// `DICompileUnit::DebugNameTableKind` spellings (`DebugInfoMetadata.h`).
+fn name_table_kind(spelling: &str) -> Option<u32> {
+    match spelling {
+        "Default" => Some(0),
+        "GNU" => Some(1),
+        "Apple" => Some(2),
+        "None" => Some(3),
+        _ => None,
+    }
+}
+
+/// `DIFile::ChecksumKind` spellings (`DebugInfoMetadata.h`). `CSK_None` is
+/// deliberately absent: upstream reserves encoding 0 for bitcode compatibility
+/// and models "no checksum" as an absent field.
+fn checksum_kind(spelling: &str) -> Option<u32> {
+    match spelling {
+        "CSK_MD5" => Some(1),
+        "CSK_SHA1" => Some(2),
+        "CSK_SHA256" => Some(3),
+        _ => None,
+    }
+}
+
+/// `DIFixedPointType::FixedPointKind` spellings (`DebugInfoMetadata.h`:
+/// `FixedPointBinary` / `FixedPointDecimal` / `FixedPointRational`, spelled
+/// without the prefix in `.ll` — the same three words `LLLexer` accepts for
+/// `lltok::FixedPointKind`).
+fn fixed_point_kind(spelling: &str) -> Option<u32> {
+    match spelling {
+        "Binary" => Some(0),
+        "Decimal" => Some(1),
+        "Rational" => Some(2),
+        _ => None,
     }
 }
 

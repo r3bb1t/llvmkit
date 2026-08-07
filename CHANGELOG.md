@@ -19,6 +19,47 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Specialized `DI*` field *values* are validated against upstream's tables
+
+- **Breaking (parser): a `DW_*` / `DIFlag*` / kind spelling upstream does not
+  know is now rejected.** Every enum-ish field was an unchecked string, so
+  llvmkit parsed `tag: DW_TAG_bogus`, `flags: DIFlagBogus`,
+  `checksumkind: CSK_BOGUS` and eleven other families that `llvm-as` refuses.
+  Each now reports upstream's own wording from the matching
+  `LLParser::parseMDField` overload — `invalid DWARF tag '...'`,
+  `invalid debug info flag '...'`, `invalid checksum kind '...'`, and so on.
+
+- **Breaking (parser): range, null, empty and boolean checks.**
+  `value for '<field>' too large, limit is <max>` (the limit is the one the
+  field's declared type carries — `LineField` is `UINT32_MAX`, `ColumnField`
+  `UINT16_MAX`), the signed `too small` twin, `'<field>' cannot be null` for an
+  `MDField(AllowNull=false)`, `'<field>' cannot be empty` for an
+  `MDStringField(EmptyIs::Error)`, and `expected 'true' or 'false'`.
+
+- **`SpecializedMetadataKind::declared_fields` replaces `fields` /
+  `required_fields`.** One table now carries the accepted spelling, the value
+  grammar, and the required flag for all 239 fields across 30 classes, because
+  all three come from the same upstream `VISIT_MD_FIELDS` line and separate
+  tables could drift. New `MetadataFieldKind` (one variant per `parseMDField`
+  overload) and `SpecializedMetadataField`. `required_fields` survives as an
+  iterator over the same table.
+
+  `MetadataFieldKind` is deliberately not `#[non_exhaustive]`: the parser
+  matches on it to pick a validation, and a catch-all arm would let a field
+  kind added by a future LLVM bump parse *unchecked* — reintroducing the exact
+  divergence this closes. Exhaustiveness makes that a compile error instead.
+
+- Fixed before shipping: the `DIFixedPointType` `kind` table was written
+  `Unsigned`/`Signed`/`Rational` and would have **rejected valid IR** —
+  upstream's spellings are `Binary`/`Decimal`/`Rational`. These three families
+  come from C++ enums rather than a `.def`, so `dwarf_def_drift.rs` cannot
+  cover them; a test pins them against the lexer's word lists instead.
+
+- Known residual, recorded rather than papered over: for the three families
+  `LLLexer` matches as exact words (`emissionKind`, `nameTableKind`, fixed-point
+  `kind`), an unknown spelling is rejected by llvmkit's *lexer*, where upstream
+  reaches `expected <kind>` in the parser. Same verdict, different layer.
+
 ### The specialized metadata set is complete: all 32 `Metadata.def` leaves
 
 - **Fixed: `!DILexicalBlock(...)` and thirteen sibling classes did not parse.**

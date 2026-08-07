@@ -419,6 +419,114 @@ impl MetadataAttachmentKind {
     }
 }
 
+/// What a specialized `DI*` field accepts.
+///
+/// One variant per `LLParser::parseMDField` overload (`LLParser.cpp`); the
+/// overload *is* the grammar, and each carries its own rejection. The ranges
+/// come from the field struct a class names in its `VISIT_MD_FIELDS` entry —
+/// `LineField` is `MDUnsignedField(0, UINT32_MAX)`, `ColumnField` is
+/// `(0, UINT16_MAX)`, and a bare `MDUnsignedField` may narrow further.
+///
+/// Deliberately **not** `#[non_exhaustive]`, unlike most enums here. The parser
+/// matches on this to pick a validation, and a catch-all arm would mean a field
+/// kind added by a future LLVM bump silently parsed *unchecked* — which is the
+/// exact divergence class this type exists to close. Exhaustiveness makes that
+/// a compile error in `ll_parser.rs` instead. Adding a variant is breaking, and
+/// should be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MetadataFieldKind {
+    /// `MDField` — a metadata reference. `allow_null` is false where upstream
+    /// writes `(/* AllowNull */ false)`, which rejects `null` with
+    /// `'<name>' cannot be null`.
+    Metadata { allow_null: bool },
+    /// `MDStringField`. `empty_is_error` is true for `EmptyIs::Error`, which
+    /// rejects `""` with `'<name>' cannot be empty`.
+    MetadataString { empty_is_error: bool },
+    /// `MDUnsignedField` and its `LineField` / `ColumnField` narrowings. Over
+    /// `max` upstream reports `value for '<name>' too large, limit is <max>`.
+    Unsigned { max: u64 },
+    /// `MDSignedField`, with `too small` / `too large` at the bounds.
+    Signed { min: i64, max: i64 },
+    /// `MDBoolField` — `true` or `false` only.
+    Bool,
+    /// `MDAPSIntField` — any integer literal.
+    ApsInt,
+    /// `MDFieldList` — a `!{...}` tuple.
+    MetadataList,
+    /// `MDSignedOrMDField` — a signed literal or a metadata reference.
+    SignedOrMetadata,
+    /// `MDUnsignedOrMDField` — an unsigned literal or a metadata reference.
+    UnsignedOrMetadata { max: u64 },
+    /// `DwarfTagField` — a `DW_TAG_*` keyword or an unsigned encoding.
+    DwarfTag,
+    /// `DwarfAttEncodingField` — a `DW_ATE_*` keyword or an encoding.
+    DwarfAttEncoding,
+    /// `DwarfVirtualityField` — a `DW_VIRTUALITY_*` keyword or an encoding.
+    DwarfVirtuality,
+    /// `DwarfLangField` — a `DW_LANG_*` keyword or an encoding.
+    DwarfLang,
+    /// `DwarfSourceLangNameField` — a `DW_LNAME_*` keyword or an encoding.
+    DwarfSourceLangName,
+    /// `DwarfCCField` — a `DW_CC_*` keyword or an encoding.
+    DwarfCc,
+    /// `DwarfMacinfoTypeField` — a `DW_MACINFO_*` keyword or an encoding.
+    DwarfMacinfoType,
+    /// `DwarfEnumKindField` — a `DW_APPLE_ENUM_KIND_*` keyword or an encoding.
+    DwarfEnumKind,
+    /// `DIFlagField` — one or more `DIFlag*` names joined with `|`.
+    DiFlags,
+    /// `DISPFlagField` — one or more `DISPFlag*` names joined with `|`.
+    DispFlags,
+    /// `EmissionKindField` — `NoDebug` / `FullDebug` / `LineTablesOnly` /
+    /// `DebugDirectivesOnly`, or an encoding.
+    EmissionKind,
+    /// `NameTableKindField` — `Default` / `GNU` / `Apple` / `None`, or an
+    /// encoding.
+    NameTableKind,
+    /// `ChecksumKindField` — `CSK_MD5` / `CSK_SHA1` / `CSK_SHA256`.
+    ChecksumKind,
+    /// `FixedPointKindField` — `Unsigned` / `Signed` / `Rational`.
+    FixedPointKind,
+}
+
+/// One field a specialized `DI*` class declares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SpecializedMetadataField {
+    name: &'static str,
+    kind: MetadataFieldKind,
+    required: bool,
+}
+
+impl SpecializedMetadataField {
+    /// The spelling `PARSE_MD_FIELD` matches on.
+    pub const fn name(self) -> &'static str {
+        self.name
+    }
+
+    /// The value grammar, i.e. which `parseMDField` overload applies.
+    pub const fn kind(self) -> MetadataFieldKind {
+        self.kind
+    }
+
+    /// Whether upstream declares this `REQUIRED` rather than `OPTIONAL`.
+    pub const fn is_required(self) -> bool {
+        self.required
+    }
+}
+
+/// Table constructor, kept short so the 239 generated rows stay readable.
+const fn field(
+    name: &'static str,
+    kind: MetadataFieldKind,
+    required: bool,
+) -> SpecializedMetadataField {
+    SpecializedMetadataField {
+        name,
+        kind,
+        required,
+    }
+}
+
 /// Specialized debug metadata node families accepted by LLVM's assembler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpecializedMetadataKind {
@@ -571,302 +679,1315 @@ impl SpecializedMetadataKind {
         }
     }
 
-    /// Every field name this node family accepts, in upstream's declaration
-    /// order.
+    /// Every field this node family declares, in upstream's order.
     ///
-    /// Each row mirrors the `VISIT_MD_FIELDS` block of the matching
-    /// `LLParser::parseDI*` (`LLParser.cpp`), which is what upstream's
-    /// `PARSE_MD_FIELD` macro dispatches on before falling through to
-    /// `invalid field '...'`.
+    /// One row per entry of the matching `LLParser::parse*`'s
+    /// `VISIT_MD_FIELDS` block: the spelling `PARSE_MD_FIELD` matches, the
+    /// field *type* whose `LLParser::parseMDField` overload validates the
+    /// value, and whether the entry is `REQUIRED` rather than `OPTIONAL`.
     ///
-    /// [`Self::DiExpression`] is deliberately empty: `LLParser::parseDIExpression`
-    /// does not use `VISIT_MD_FIELDS` at all — a `DIExpression` body is a
-    /// positional list of `DW_OP_*` operations, not `name: value` pairs.
-    pub const fn fields(self) -> &'static [&'static str] {
+    /// One table rather than three: the accepted set, the required subset, and
+    /// the per-field value grammar all come from the same upstream line, so
+    /// keeping them apart would let them drift.
+    ///
+    /// [`Self::DiExpression`] and [`Self::DiAssignId`] are empty, and that is
+    /// upstream's shape too — `parseDIExpression` routes to
+    /// `parseDIExpressionBody` (a positional `DW_OP_*` list) and
+    /// `parseDIAssignID` takes no fields at all.
+    pub const fn declared_fields(self) -> &'static [SpecializedMetadataField] {
         match self {
-            Self::DiFile => &[
-                "filename",
-                "directory",
-                "checksumkind",
-                "checksum",
-                "source",
-            ],
-            Self::DiCompileUnit => &[
-                "file",
-                "language",
-                "sourceLanguageName",
-                "sourceLanguageVersion",
-                "producer",
-                "isOptimized",
-                "flags",
-                "runtimeVersion",
-                "splitDebugFilename",
-                "emissionKind",
-                "enums",
-                "retainedTypes",
-                "globals",
-                "imports",
-                "macros",
-                "dwoId",
-                "splitDebugInlining",
-                "debugInfoForProfiling",
-                "nameTableKind",
-                "rangesBaseAddress",
-                "sysroot",
-                "sdk",
-            ],
-            Self::DiSubprogram => &[
-                "scope",
-                "name",
-                "linkageName",
-                "file",
-                "line",
-                "type",
-                "isLocal",
-                "isDefinition",
-                "scopeLine",
-                "containingType",
-                "virtuality",
-                "virtualIndex",
-                "thisAdjustment",
-                "flags",
-                "spFlags",
-                "isOptimized",
-                "unit",
-                "templateParams",
-                "declaration",
-                "retainedNodes",
-                "thrownTypes",
-                "annotations",
-                "targetFuncName",
-                "keyInstructions",
-            ],
-            Self::DiLocation => &[
-                "line",
-                "column",
-                "scope",
-                "inlinedAt",
-                "isImplicitCode",
-                "atomGroup",
-                "atomRank",
-            ],
-            Self::DiLocalVariable => &[
-                "scope",
-                "name",
-                "arg",
-                "file",
-                "line",
-                "type",
-                "flags",
-                "align",
-                "annotations",
-            ],
-            Self::DiBasicType => &[
-                "tag",
-                "name",
-                "size",
-                "align",
-                "dataSize",
-                "encoding",
-                "num_extra_inhabitants",
-                "flags",
-            ],
-            Self::DiDerivedType => &[
-                "tag",
-                "name",
-                "file",
-                "line",
-                "scope",
-                "baseType",
-                "size",
-                "align",
-                "offset",
-                "flags",
-                "extraData",
-                "dwarfAddressSpace",
-                "annotations",
-                "ptrAuthKey",
-                "ptrAuthIsAddressDiscriminated",
-                "ptrAuthExtraDiscriminator",
-                "ptrAuthIsaPointer",
-                "ptrAuthAuthenticatesNullValues",
-            ],
-            Self::DiCompositeType => &[
-                "tag",
-                "name",
-                "file",
-                "line",
-                "scope",
-                "baseType",
-                "size",
-                "align",
-                "offset",
-                "flags",
-                "elements",
-                "runtimeLang",
-                "enumKind",
-                "vtableHolder",
-                "templateParams",
-                "identifier",
-                "discriminator",
-                "dataLocation",
-                "associated",
-                "allocated",
-                "rank",
-                "annotations",
-                "num_extra_inhabitants",
-                "specification",
-                "bitStride",
-            ],
-            Self::DiSubrange => &["count", "lowerBound", "upperBound", "stride"],
-            Self::DiNamespace => &["scope", "name", "exportSymbols"],
-            Self::DiExpression => &[],
-            Self::DiGlobalVariable => &[
-                "name",
-                "scope",
-                "linkageName",
-                "file",
-                "line",
-                "type",
-                "isLocal",
-                "isDefinition",
-                "templateParams",
-                "declaration",
-                "align",
-                "annotations",
-            ],
-            Self::DiGlobalVariableExpression => &["var", "expr"],
-            Self::DiSubroutineType => &["flags", "cc", "types"],
-            Self::DiEnumerator => &["name", "value", "isUnsigned"],
-            Self::DiModule => &[
-                "scope",
-                "name",
-                "configMacros",
-                "includePath",
-                "apinotes",
-                "file",
-                "line",
-                "isDecl",
-            ],
-            Self::DiTemplateTypeParameter => &["name", "type", "defaulted"],
-            Self::DiTemplateValueParameter => &["tag", "name", "type", "defaulted", "value"],
-            Self::GenericDiNode => &["tag", "header", "operands"],
-            Self::DiSubrangeType => &[
-                "name",
-                "file",
-                "line",
-                "scope",
-                "baseType",
-                "size",
-                "align",
-                "flags",
-                "lowerBound",
-                "upperBound",
-                "stride",
-                "bias",
-            ],
-            Self::DiGenericSubrange => &["count", "lowerBound", "upperBound", "stride"],
-            Self::DiFixedPointType => &[
-                "tag",
-                "name",
-                "size",
-                "align",
-                "encoding",
-                "flags",
-                "kind",
-                "factor",
-                "numerator",
-                "denominator",
-            ],
-            Self::DiStringType => &[
-                "tag",
-                "name",
-                "stringLength",
-                "stringLengthExpression",
-                "stringLocationExpression",
-                "size",
-                "align",
-                "encoding",
-            ],
-            Self::DiLexicalBlock => &["scope", "file", "line", "column"],
-            Self::DiLexicalBlockFile => &["scope", "file", "discriminator"],
-            Self::DiCommonBlock => &["scope", "declaration", "name", "file", "line"],
-            Self::DiMacro => &["type", "line", "name", "value"],
-            Self::DiMacroFile => &["type", "line", "file", "nodes"],
-            Self::DiLabel => &[
-                "scope",
-                "name",
-                "file",
-                "line",
-                "column",
-                "isArtificial",
-                "coroSuspendIdx",
-            ],
-            Self::DiObjcProperty => &[
-                "name",
-                "file",
-                "line",
-                "setter",
-                "getter",
-                "attributes",
-                "type",
-            ],
-            Self::DiImportedEntity => {
-                &["tag", "scope", "entity", "file", "line", "name", "elements"]
+            Self::DiLocation => {
+                const {
+                    &[
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "column",
+                            MetadataFieldKind::Unsigned {
+                                max: u16::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: false },
+                            true,
+                        ),
+                        field(
+                            "inlinedAt",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field("isImplicitCode", MetadataFieldKind::Bool, false),
+                        field(
+                            "atomGroup",
+                            MetadataFieldKind::Unsigned { max: u64::MAX },
+                            false,
+                        ),
+                        field(
+                            "atomRank",
+                            MetadataFieldKind::Unsigned { max: u64::MAX },
+                            false,
+                        ),
+                    ]
+                }
             }
-            // `LLParser::parseDIAssignID` takes no fields at all — only
-            // `distinct !DIAssignID()`.
-            Self::DiAssignId => &[],
+            Self::GenericDiNode => {
+                const {
+                    &[
+                        field("tag", MetadataFieldKind::DwarfTag, true),
+                        field(
+                            "header",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field("operands", MetadataFieldKind::MetadataList, false),
+                    ]
+                }
+            }
+            Self::DiSubrangeType => {
+                const {
+                    &[
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "baseType",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "size",
+                            MetadataFieldKind::UnsignedOrMetadata { max: u64::MAX },
+                            false,
+                        ),
+                        field(
+                            "align",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field("flags", MetadataFieldKind::DiFlags, false),
+                        field("lowerBound", MetadataFieldKind::SignedOrMetadata, false),
+                        field("upperBound", MetadataFieldKind::SignedOrMetadata, false),
+                        field("stride", MetadataFieldKind::SignedOrMetadata, false),
+                        field("bias", MetadataFieldKind::SignedOrMetadata, false),
+                    ]
+                }
+            }
+            Self::DiSubrange => {
+                const {
+                    &[
+                        field("count", MetadataFieldKind::SignedOrMetadata, false),
+                        field("lowerBound", MetadataFieldKind::SignedOrMetadata, false),
+                        field("upperBound", MetadataFieldKind::SignedOrMetadata, false),
+                        field("stride", MetadataFieldKind::SignedOrMetadata, false),
+                    ]
+                }
+            }
+            Self::DiGenericSubrange => {
+                const {
+                    &[
+                        field("count", MetadataFieldKind::SignedOrMetadata, false),
+                        field("lowerBound", MetadataFieldKind::SignedOrMetadata, false),
+                        field("upperBound", MetadataFieldKind::SignedOrMetadata, false),
+                        field("stride", MetadataFieldKind::SignedOrMetadata, false),
+                    ]
+                }
+            }
+            Self::DiEnumerator => {
+                const {
+                    &[
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            true,
+                        ),
+                        field("value", MetadataFieldKind::ApsInt, true),
+                        field("isUnsigned", MetadataFieldKind::Bool, false),
+                    ]
+                }
+            }
+            Self::DiBasicType => {
+                const {
+                    &[
+                        field("tag", MetadataFieldKind::DwarfTag, false),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "size",
+                            MetadataFieldKind::UnsignedOrMetadata { max: u64::MAX },
+                            false,
+                        ),
+                        field(
+                            "align",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "dataSize",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field("encoding", MetadataFieldKind::DwarfAttEncoding, false),
+                        field(
+                            "num_extra_inhabitants",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field("flags", MetadataFieldKind::DiFlags, false),
+                    ]
+                }
+            }
+            Self::DiFixedPointType => {
+                const {
+                    &[
+                        field("tag", MetadataFieldKind::DwarfTag, false),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "size",
+                            MetadataFieldKind::UnsignedOrMetadata { max: u64::MAX },
+                            false,
+                        ),
+                        field(
+                            "align",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field("encoding", MetadataFieldKind::DwarfAttEncoding, false),
+                        field("flags", MetadataFieldKind::DiFlags, false),
+                        field("kind", MetadataFieldKind::FixedPointKind, false),
+                        field(
+                            "factor",
+                            MetadataFieldKind::Signed {
+                                min: i64::MIN,
+                                max: i64::MAX,
+                            },
+                            false,
+                        ),
+                        field("numerator", MetadataFieldKind::ApsInt, false),
+                        field("denominator", MetadataFieldKind::ApsInt, false),
+                    ]
+                }
+            }
+            Self::DiStringType => {
+                const {
+                    &[
+                        field("tag", MetadataFieldKind::DwarfTag, false),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "stringLength",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "stringLengthExpression",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "stringLocationExpression",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "size",
+                            MetadataFieldKind::UnsignedOrMetadata { max: u64::MAX },
+                            false,
+                        ),
+                        field(
+                            "align",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field("encoding", MetadataFieldKind::DwarfAttEncoding, false),
+                    ]
+                }
+            }
+            Self::DiDerivedType => {
+                const {
+                    &[
+                        field("tag", MetadataFieldKind::DwarfTag, true),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "baseType",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            true,
+                        ),
+                        field(
+                            "size",
+                            MetadataFieldKind::UnsignedOrMetadata { max: u64::MAX },
+                            false,
+                        ),
+                        field(
+                            "align",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "offset",
+                            MetadataFieldKind::UnsignedOrMetadata { max: u64::MAX },
+                            false,
+                        ),
+                        field("flags", MetadataFieldKind::DiFlags, false),
+                        field(
+                            "extraData",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "dwarfAddressSpace",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "annotations",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field("ptrAuthKey", MetadataFieldKind::Unsigned { max: 7 }, false),
+                        field(
+                            "ptrAuthIsAddressDiscriminated",
+                            MetadataFieldKind::Bool,
+                            false,
+                        ),
+                        field(
+                            "ptrAuthExtraDiscriminator",
+                            MetadataFieldKind::Unsigned { max: 0xffff },
+                            false,
+                        ),
+                        field("ptrAuthIsaPointer", MetadataFieldKind::Bool, false),
+                        field(
+                            "ptrAuthAuthenticatesNullValues",
+                            MetadataFieldKind::Bool,
+                            false,
+                        ),
+                    ]
+                }
+            }
+            Self::DiCompositeType => {
+                const {
+                    &[
+                        field("tag", MetadataFieldKind::DwarfTag, true),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "baseType",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "size",
+                            MetadataFieldKind::UnsignedOrMetadata { max: u64::MAX },
+                            false,
+                        ),
+                        field(
+                            "align",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "offset",
+                            MetadataFieldKind::UnsignedOrMetadata { max: u64::MAX },
+                            false,
+                        ),
+                        field("flags", MetadataFieldKind::DiFlags, false),
+                        field(
+                            "elements",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field("runtimeLang", MetadataFieldKind::DwarfLang, false),
+                        field("enumKind", MetadataFieldKind::DwarfEnumKind, false),
+                        field(
+                            "vtableHolder",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "templateParams",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "identifier",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "discriminator",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "dataLocation",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "associated",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "allocated",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field("rank", MetadataFieldKind::SignedOrMetadata, false),
+                        field(
+                            "annotations",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "num_extra_inhabitants",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "specification",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "bitStride",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                    ]
+                }
+            }
+            Self::DiSubroutineType => {
+                const {
+                    &[
+                        field("flags", MetadataFieldKind::DiFlags, false),
+                        field("cc", MetadataFieldKind::DwarfCc, false),
+                        field(
+                            "types",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            true,
+                        ),
+                    ]
+                }
+            }
+            Self::DiFile => {
+                const {
+                    &[
+                        field(
+                            "filename",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            true,
+                        ),
+                        field(
+                            "directory",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            true,
+                        ),
+                        field("checksumkind", MetadataFieldKind::ChecksumKind, false),
+                        field(
+                            "checksum",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "source",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                    ]
+                }
+            }
+            Self::DiCompileUnit => {
+                const {
+                    &[
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: false },
+                            true,
+                        ),
+                        field("language", MetadataFieldKind::DwarfLang, false),
+                        field(
+                            "sourceLanguageName",
+                            MetadataFieldKind::DwarfSourceLangName,
+                            false,
+                        ),
+                        field(
+                            "sourceLanguageVersion",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "producer",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field("isOptimized", MetadataFieldKind::Bool, false),
+                        field(
+                            "flags",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "runtimeVersion",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "splitDebugFilename",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field("emissionKind", MetadataFieldKind::EmissionKind, false),
+                        field(
+                            "enums",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "retainedTypes",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "globals",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "imports",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "macros",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "dwoId",
+                            MetadataFieldKind::Unsigned { max: u64::MAX },
+                            false,
+                        ),
+                        field("splitDebugInlining", MetadataFieldKind::Bool, false),
+                        field("debugInfoForProfiling", MetadataFieldKind::Bool, false),
+                        field("nameTableKind", MetadataFieldKind::NameTableKind, false),
+                        field("rangesBaseAddress", MetadataFieldKind::Bool, false),
+                        field(
+                            "sysroot",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "sdk",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                    ]
+                }
+            }
+            Self::DiSubprogram => {
+                const {
+                    &[
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "linkageName",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "type",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field("isLocal", MetadataFieldKind::Bool, false),
+                        field("isDefinition", MetadataFieldKind::Bool, false),
+                        field(
+                            "scopeLine",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "containingType",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field("virtuality", MetadataFieldKind::DwarfVirtuality, false),
+                        field(
+                            "virtualIndex",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "thisAdjustment",
+                            MetadataFieldKind::Signed {
+                                min: i32::MIN as i64,
+                                max: i32::MAX as i64,
+                            },
+                            false,
+                        ),
+                        field("flags", MetadataFieldKind::DiFlags, false),
+                        field("spFlags", MetadataFieldKind::DispFlags, false),
+                        field("isOptimized", MetadataFieldKind::Bool, false),
+                        field(
+                            "unit",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "templateParams",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "declaration",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "retainedNodes",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "thrownTypes",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "annotations",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "targetFuncName",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field("keyInstructions", MetadataFieldKind::Bool, false),
+                    ]
+                }
+            }
+            Self::DiLexicalBlock => {
+                const {
+                    &[
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: false },
+                            true,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "column",
+                            MetadataFieldKind::Unsigned {
+                                max: u16::MAX as u64,
+                            },
+                            false,
+                        ),
+                    ]
+                }
+            }
+            Self::DiLexicalBlockFile => {
+                const {
+                    &[
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: false },
+                            true,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "discriminator",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            true,
+                        ),
+                    ]
+                }
+            }
+            Self::DiCommonBlock => {
+                const {
+                    &[
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            true,
+                        ),
+                        field(
+                            "declaration",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                    ]
+                }
+            }
+            Self::DiNamespace => {
+                const {
+                    &[
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            true,
+                        ),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field("exportSymbols", MetadataFieldKind::Bool, false),
+                    ]
+                }
+            }
+            Self::DiMacro => {
+                const {
+                    &[
+                        field("type", MetadataFieldKind::DwarfMacinfoType, true),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            true,
+                        ),
+                        field(
+                            "value",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                    ]
+                }
+            }
+            Self::DiMacroFile => {
+                const {
+                    &[
+                        field("type", MetadataFieldKind::DwarfMacinfoType, false),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            true,
+                        ),
+                        field(
+                            "nodes",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                    ]
+                }
+            }
+            Self::DiModule => {
+                const {
+                    &[
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            true,
+                        ),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            true,
+                        ),
+                        field(
+                            "configMacros",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "includePath",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "apinotes",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field("isDecl", MetadataFieldKind::Bool, false),
+                    ]
+                }
+            }
+            Self::DiTemplateTypeParameter => {
+                const {
+                    &[
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "type",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            true,
+                        ),
+                        field("defaulted", MetadataFieldKind::Bool, false),
+                    ]
+                }
+            }
+            Self::DiTemplateValueParameter => {
+                const {
+                    &[
+                        field("tag", MetadataFieldKind::DwarfTag, false),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "type",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field("defaulted", MetadataFieldKind::Bool, false),
+                        field(
+                            "value",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            true,
+                        ),
+                    ]
+                }
+            }
+            Self::DiGlobalVariable => {
+                const {
+                    &[
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: true,
+                            },
+                            false,
+                        ),
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "linkageName",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "type",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field("isLocal", MetadataFieldKind::Bool, false),
+                        field("isDefinition", MetadataFieldKind::Bool, false),
+                        field(
+                            "templateParams",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "declaration",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "align",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "annotations",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                    ]
+                }
+            }
+            Self::DiLocalVariable => {
+                const {
+                    &[
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: false },
+                            true,
+                        ),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "arg",
+                            MetadataFieldKind::Unsigned {
+                                max: u16::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "type",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field("flags", MetadataFieldKind::DiFlags, false),
+                        field(
+                            "align",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "annotations",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                    ]
+                }
+            }
+            Self::DiLabel => {
+                const {
+                    &[
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: false },
+                            true,
+                        ),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            true,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            true,
+                        ),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            true,
+                        ),
+                        field(
+                            "column",
+                            MetadataFieldKind::Unsigned {
+                                max: u16::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field("isArtificial", MetadataFieldKind::Bool, false),
+                        field(
+                            "coroSuspendIdx",
+                            MetadataFieldKind::Unsigned { max: u64::MAX },
+                            false,
+                        ),
+                    ]
+                }
+            }
+            Self::DiGlobalVariableExpression => {
+                const {
+                    &[
+                        field(
+                            "var",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            true,
+                        ),
+                        field(
+                            "expr",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            true,
+                        ),
+                    ]
+                }
+            }
+            Self::DiObjcProperty => {
+                const {
+                    &[
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "setter",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "getter",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "attributes",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "type",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                    ]
+                }
+            }
+            Self::DiImportedEntity => {
+                const {
+                    &[
+                        field("tag", MetadataFieldKind::DwarfTag, true),
+                        field(
+                            "scope",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            true,
+                        ),
+                        field(
+                            "entity",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "file",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                        field(
+                            "line",
+                            MetadataFieldKind::Unsigned {
+                                max: u32::MAX as u64,
+                            },
+                            false,
+                        ),
+                        field(
+                            "name",
+                            MetadataFieldKind::MetadataString {
+                                empty_is_error: false,
+                            },
+                            false,
+                        ),
+                        field(
+                            "elements",
+                            MetadataFieldKind::Metadata { allow_null: true },
+                            false,
+                        ),
+                    ]
+                }
+            }
+            Self::DiExpression | Self::DiAssignId => &[],
         }
     }
 
-    /// The subset of [`Self::fields`] upstream declares with `REQUIRED` rather
-    /// than `OPTIONAL`.
+    /// The declaration for `name`, if this family declares one.
+    pub fn field(self, name: &str) -> Option<SpecializedMetadataField> {
+        self.declared_fields()
+            .iter()
+            .copied()
+            .find(|field| field.name() == name)
+    }
+
+    /// Whether this family declares a field called `name`.
     ///
-    /// `LLParser`'s `PARSE_MD_FIELDS` macro checks these once the closing `)`
-    /// is reached, via `REQUIRE_FIELD`, and reports
-    /// `missing required field '...'` against that location.
-    pub const fn required_fields(self) -> &'static [&'static str] {
-        match self {
-            Self::DiFile => &["filename", "directory"],
-            Self::DiCompileUnit => &["file"],
-            Self::DiLocation => &["scope"],
-            Self::DiLocalVariable => &["scope"],
-            Self::DiDerivedType => &["tag", "baseType"],
-            Self::DiCompositeType => &["tag"],
-            Self::DiNamespace => &["scope"],
-            Self::DiGlobalVariableExpression => &["var", "expr"],
-            Self::DiSubroutineType => &["types"],
-            Self::DiEnumerator => &["name", "value"],
-            Self::DiModule => &["scope", "name"],
-            Self::DiTemplateTypeParameter => &["type"],
-            Self::DiTemplateValueParameter => &["value"],
-            Self::GenericDiNode => &["tag"],
-            Self::DiLexicalBlock => &["scope"],
-            Self::DiLexicalBlockFile => &["scope", "discriminator"],
-            Self::DiCommonBlock => &["scope"],
-            Self::DiMacro => &["type", "name"],
-            Self::DiMacroFile => &["file"],
-            Self::DiLabel => &["scope", "name", "file", "line"],
-            Self::DiImportedEntity => &["tag", "scope"],
-            // Upstream declares every field of these `OPTIONAL`.
-            Self::DiSubprogram
-            | Self::DiBasicType
-            | Self::DiSubrange
-            | Self::DiExpression
-            | Self::DiGlobalVariable
-            | Self::DiSubrangeType
-            | Self::DiGenericSubrange
-            | Self::DiFixedPointType
-            | Self::DiStringType
-            | Self::DiObjcProperty
-            | Self::DiAssignId => &[],
-        }
+    /// The `PARSE_MD_FIELD` match; a `false` here is what upstream reports as
+    /// `invalid field '<name>'`.
+    pub fn accepts_field(self, name: &str) -> bool {
+        self.field(name).is_some()
     }
 
-    /// Whether `name` is one of [`Self::fields`].
-    pub fn accepts_field(self, name: &str) -> bool {
-        self.fields().contains(&name)
+    /// The fields upstream marks `REQUIRED`, checked at the closing `)` by
+    /// `REQUIRE_FIELD`.
+    pub fn required_fields(self) -> impl Iterator<Item = SpecializedMetadataField> {
+        self.declared_fields()
+            .iter()
+            .copied()
+            .filter(|field| field.is_required())
     }
 }
 
@@ -1000,7 +2121,7 @@ pub enum DwarfExpressionOperand {
 #[branded(Debug, Clone)]
 pub enum SpecializedMetadataBody<B: ModuleBrand> {
     /// `name: value` pairs, validated against
-    /// [`SpecializedMetadataKind::fields`].
+    /// [`SpecializedMetadataKind::declared_fields`].
     Fields(Vec<MetadataField<B>>),
     /// A positional DWARF operation list. [`SpecializedMetadataKind::DiExpression`]
     /// only.
@@ -1048,7 +2169,7 @@ impl<B: ModuleBrand> SpecializedMetadataNode<B> {
     ///
     /// Ignored for [`SpecializedMetadataKind::DiExpression`], whose body is a
     /// positional operation list — that kind declares no fields at all
-    /// ([`SpecializedMetadataKind::fields`] is empty for it), so there is no
+    /// ([`SpecializedMetadataKind::declared_fields`] is empty for it), so there is no
     /// field it could legitimately carry.
     #[must_use]
     pub fn field(mut self, field: MetadataField<B>) -> Self {

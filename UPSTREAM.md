@@ -19,11 +19,11 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2227. Recounted on 2026-08-07 via the documented
+Total `#[test]` functions: 2235. Recounted on 2026-08-07 via the documented
 attribute-anchored grep below (`crates/llvmkit-ir` 1527 +
-`crates/llvmkit-asmparser` 678 + `crates/llvmkit-support` 12 +
+`crates/llvmkit-asmparser` 686 + `crates/llvmkit-support` 12 +
 `crates/llvmkit-tablegen` 9 + `llvmkit` 1; `crates/llvmkit-macros` has none).
-The +23 over the 2204 Wave 12 point below is the specialized-`DI*` field
+The +31 over the 2204 Wave 12 point below is the specialized-`DI*` field
 validation port in `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs`
 (three `test/Assembler/invalid-di*.ll` mirrors, a `debug-info.ll` flags
 round-trip, the `diexpression.ll` and `invalid-diexpression-large.ll` pair,
@@ -1183,6 +1183,14 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::diassignid_requires_distinct` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIAssignID` (rejects a uniqued node before reading the parens) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::every_specialized_kind_round_trips_its_name` | `llvm/IR/Metadata.def`'s `HANDLE_SPECIALIZED_MDNODE_LEAF` list (completeness lock for the modelled set) | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/dwarf_def_drift.rs` (12 tests) | `llvm/BinaryFormat/Dwarf.def` and `llvm/IR/DebugInfoFlags.def` (vendored), against `dwarf::{getTag,getAttributeEncoding,getLanguage,getSourceLanguageName,getCallingConvention,getVirtuality,getOperationEncoding,getMacinfo}` (`lib/BinaryFormat/Dwarf.cpp`) and `DINode::getFlag` / `DISubprogram::getFlag` (`lib/IR/DebugInfoMetadata.cpp`) | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::keyword_families_reject_a_spelling_upstream_does_not_know` | the keyword-family `LLParser::parseMDField` overloads (`LLParser.cpp`): `DwarfTagField`, `DwarfAttEncodingField`, `DwarfVirtualityField`, `DwarfLangField`, `DwarfCCField`, `DwarfMacinfoTypeField`, `DIFlagField`, `DISPFlagField`, `ChecksumKindField` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::keyword_families_accept_the_spellings_upstream_knows` | the same overloads' accepting path | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::unsigned_metadata_fields_are_range_checked` | `LLParser::parseMDField(MDUnsignedField&)` and the `LineField` / `ColumnField` narrowings | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_non_nullable_metadata_field_rejects_null` | `LLParser::parseMDField(MDField&)` with `AllowNull=false` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_non_empty_string_field_rejects_the_empty_string` | `LLParser::parseMDField(MDStringField&)` with `EmptyIs::Error` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_bool_field_rejects_a_non_boolean` | `LLParser::parseMDField(MDBoolField&)` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::exact_word_kind_families_reject_an_unknown_spelling` | `LLLexer.cpp::LexIdentifier`'s exact-word rules for `lltok::{EmissionKind,NameTableKind,FixedPointKind}` | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::exact_word_kind_families_accept_every_spelling_the_lexer_produces` | same lexer rules, pinning the parser's C++-enum-derived tables against them (no `.def` exists for these) | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::attribute_group_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseUnnamedAttrGroup` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_full_header_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseFunctionHeader` | mirror |
 | `crates/llvmkit-ir/tests/ap_int.rs::construction_normalizes_top_word_and_counts_bits` | `llvm/unittests/ADT/APIntTest.cpp` construction and bit-count cases | port |

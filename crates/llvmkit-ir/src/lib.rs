@@ -285,8 +285,8 @@ pub use known_bits::{AddSubOperation, KnownBits, ShiftAmountKnowledge};
 pub use marker::{Dyn, Ptr, ReturnMarker};
 pub use metadata::{
     DwarfExpressionOperand, MetadataAttachmentKind, MetadataAttachmentSet, MetadataField,
-    MetadataFieldValue, MetadataId, MetadataKind, SpecializedMetadataBody, SpecializedMetadataKind,
-    SpecializedMetadataNode,
+    MetadataFieldKind, MetadataFieldValue, MetadataId, MetadataKind, SpecializedMetadataBody,
+    SpecializedMetadataField, SpecializedMetadataKind, SpecializedMetadataNode,
 };
 pub use module::{
     ComdatView, DynBrand, GlobalAliasView, GlobalIfuncView, GlobalVariableView, Module,

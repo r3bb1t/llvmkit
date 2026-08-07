@@ -19,12 +19,12 @@
 //! Two families are *not* pure `.def` transcriptions, and both follow
 //! `lib/BinaryFormat/Dwarf.cpp`:
 //!
-//! - [`OPERATIONS`] is the `HANDLE_DW_OP` family plus the eight
+//! - `OPERATIONS` is the `HANDLE_DW_OP` family plus the eight
 //!   `DW_OP_LLVM_*` cases `dwarf::getOperationEncoding` lists by hand. The
 //!   `HANDLE_DW_OP_LLVM_USEROP` family is deliberately absent: upstream uses it
 //!   only for *printing* (`LlvmUserOperationEncodingString`), never for the
 //!   name lookup the parser performs.
-//! - [`MACINFO_TYPES`] is `dwarf::getMacinfo`'s hand-written switch; there is
+//! - `MACINFO_TYPES` is `dwarf::getMacinfo`'s hand-written switch; there is
 //!   no `HANDLE_DW_MACINFO` family in `Dwarf.def`.
 //!
 //! # Sentinels

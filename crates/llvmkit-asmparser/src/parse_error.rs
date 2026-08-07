@@ -203,7 +203,7 @@ pub enum ParseError {
     /// (`LLParser.cpp`), which reports `invalid field '...'` once every
     /// `PARSE_MD_FIELD` in the class's `VISIT_MD_FIELDS` block has failed to
     /// match. The accepted set is
-    /// [`llvmkit_ir::metadata::SpecializedMetadataKind::fields`].
+    /// [`llvmkit_ir::metadata::SpecializedMetadataKind::declared_fields`].
     #[error("invalid field '{field}'")]
     InvalidMetadataField {
         kind: &'static str,
@@ -231,6 +231,48 @@ pub enum ParseError {
         field: &'static str,
         loc: DiagLoc,
     },
+
+    /// A `DW_*` / `DIFlag*` / kind keyword that its family's table does not
+    /// contain. `what` is upstream's own wording for the family, so the
+    /// rendered message matches `LLParser::parseMDField`'s byte for byte —
+    /// `invalid DWARF tag 'x'`, `invalid debug info flag 'x'`,
+    /// `invalid checksum kind 'x'`, and the eleven siblings.
+    #[error("invalid {what} '{value}'")]
+    InvalidMetadataFieldValue {
+        what: &'static str,
+        value: String,
+        loc: DiagLoc,
+    },
+
+    /// An unsigned metadata field over its declared maximum. Mirrors
+    /// `LLParser::parseMDField(MDUnsignedField&)`; the limit is the one the
+    /// field's type carries (`LineField` is `UINT32_MAX`, `ColumnField`
+    /// `UINT16_MAX`, and a bare `MDUnsignedField` may narrow further).
+    #[error("value for '{field}' too large, limit is {limit}")]
+    MetadataFieldValueTooLarge {
+        field: String,
+        limit: u64,
+        loc: DiagLoc,
+    },
+
+    /// A signed metadata field under its declared minimum. Mirrors
+    /// `LLParser::parseMDField(MDSignedField&)`.
+    #[error("value for '{field}' too small, limit is {limit}")]
+    MetadataFieldValueTooSmall {
+        field: String,
+        limit: i64,
+        loc: DiagLoc,
+    },
+
+    /// `null` given for an `MDField` upstream declares `(/* AllowNull */
+    /// false)`.
+    #[error("'{field}' cannot be null")]
+    MetadataFieldCannotBeNull { field: String, loc: DiagLoc },
+
+    /// `""` given for an `MDStringField` upstream declares
+    /// `EmptyIs::Error`.
+    #[error("'{field}' cannot be empty")]
+    MetadataFieldCannotBeEmpty { field: String, loc: DiagLoc },
 
     /// I/O failure pulling source bytes. The lexer itself does not perform
     /// I/O; this is for the file-reading entry points and callers using
@@ -284,7 +326,12 @@ impl ParseError {
             | ParseError::IntegerWidthOutOfRange { loc, .. }
             | ParseError::InvalidMetadataField { loc, .. }
             | ParseError::DuplicateMetadataField { loc, .. }
-            | ParseError::MissingRequiredMetadataField { loc, .. } => Some(*loc),
+            | ParseError::MissingRequiredMetadataField { loc, .. }
+            | ParseError::InvalidMetadataFieldValue { loc, .. }
+            | ParseError::MetadataFieldValueTooLarge { loc, .. }
+            | ParseError::MetadataFieldValueTooSmall { loc, .. }
+            | ParseError::MetadataFieldCannotBeNull { loc, .. }
+            | ParseError::MetadataFieldCannotBeEmpty { loc, .. } => Some(*loc),
             ParseError::Io { .. }
             | ParseError::BrandInUse { .. }
             | ParseError::BrandRetired { .. } => None,

@@ -275,11 +275,16 @@ fn required_specialized_metadata_fields_are_enforced() {
 /// field-shaped body is rejected on the element path rather than the field one.
 #[test]
 fn diexpression_declares_no_named_fields() {
-    assert!(SpecializedMetadataKind::DiExpression.fields().is_empty());
     assert!(
         SpecializedMetadataKind::DiExpression
-            .required_fields()
+            .declared_fields()
             .is_empty()
+    );
+    assert_eq!(
+        SpecializedMetadataKind::DiExpression
+            .required_fields()
+            .count(),
+        0
     );
     let err = parse_err("!0 = !DIExpression(line: 1)\n");
     assert!(
@@ -309,9 +314,10 @@ fn required_fields_are_a_subset_of_accepted_fields() {
     for kind in SpecializedMetadataKind::ALL {
         for required in kind.required_fields() {
             assert!(
-                kind.fields().contains(required),
-                "!{} lists '{required}' as required but not as an accepted field",
-                kind.name()
+                kind.accepts_field(required.name()),
+                "!{} lists '{}' as required but not as an accepted field",
+                kind.name(),
+                required.name()
             );
         }
     }
@@ -452,5 +458,238 @@ fn every_specialized_kind_round_trips_its_name() {
             "{} did not round-trip through from_name",
             kind.name()
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-field-type value validation
+//
+// Each `LLParser::parseMDField` overload carries its own rejection, and the
+// wording below is the overload's own — these are the messages `not llvm-as`
+// prints. Field grammars come from `SpecializedMetadataKind::declared_fields`.
+// ---------------------------------------------------------------------------
+
+/// Mirrors the keyword-family overloads of `LLParser::parseMDField`
+/// (`LLParser.cpp`), each of which rejects a spelling its `Dwarf.def` /
+/// `DebugInfoFlags.def` table does not contain.
+#[test]
+fn keyword_families_reject_a_spelling_upstream_does_not_know() {
+    for (src, what, value) in [
+        (
+            "!0 = !{}\n!1 = !DIDerivedType(tag: DW_TAG_bogus, baseType: !0)\n",
+            "DWARF tag",
+            "DW_TAG_bogus",
+        ),
+        (
+            "!0 = !DIBasicType(encoding: DW_ATE_bogus)\n",
+            "DWARF type attribute encoding",
+            "DW_ATE_bogus",
+        ),
+        (
+            "!0 = !{}\n!1 = !DISubprogram(virtuality: DW_VIRTUALITY_bogus)\n",
+            "DWARF virtuality code",
+            "DW_VIRTUALITY_bogus",
+        ),
+        (
+            "!0 = !{}\n!1 = !DICompileUnit(file: !0, language: DW_LANG_bogus)\n",
+            "DWARF language",
+            "DW_LANG_bogus",
+        ),
+        (
+            "!0 = !{}\n!1 = !DISubroutineType(types: !0, cc: DW_CC_bogus)\n",
+            "DWARF calling convention",
+            "DW_CC_bogus",
+        ),
+        (
+            "!0 = !DIMacro(type: DW_MACINFO_bogus, name: \"m\")\n",
+            "DWARF macinfo type",
+            "DW_MACINFO_bogus",
+        ),
+        (
+            "!0 = !{}\n!1 = !DIDerivedType(tag: DW_TAG_member, baseType: !0, flags: DIFlagBogus)\n",
+            "debug info flag",
+            "DIFlagBogus",
+        ),
+        (
+            "!0 = !DISubprogram(spFlags: DISPFlagBogus)\n",
+            "subprogram debug info flag",
+            "DISPFlagBogus",
+        ),
+        (
+            "!0 = !DIFile(filename: \"a\", directory: \"b\", checksumkind: CSK_BOGUS)\n",
+            "checksum kind",
+            "CSK_BOGUS",
+        ),
+    ] {
+        let err = parse_err(src);
+        assert!(
+            matches!(
+                &err,
+                ParseError::InvalidMetadataFieldValue { what: w, value: v, .. }
+                    if *w == what && v == value
+            ),
+            "expected invalid {what} '{value}', got: {err:?}"
+        );
+        assert_eq!(err.to_string(), format!("invalid {what} '{value}'"));
+    }
+}
+
+/// A valid keyword from each family still parses — the tables must not be so
+/// strict that ordinary debug metadata stops working.
+#[test]
+fn keyword_families_accept_the_spellings_upstream_knows() {
+    let text = parse_and_render(
+        r#"
+!named = !{!1, !2, !3, !4}
+!0 = !{}
+!1 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !0, flags: DIFlagPublic | DIFlagStaticMember)
+!2 = !DIBasicType(encoding: DW_ATE_signed)
+!3 = !DICompileUnit(file: !0, language: DW_LANG_C99, emissionKind: FullDebug, nameTableKind: GNU)
+!4 = !DIFile(filename: "a", directory: "b", checksumkind: CSK_MD5, checksum: "abc")
+"#,
+    );
+    for needle in [
+        "tag: DW_TAG_pointer_type",
+        "flags: DIFlagPublic | DIFlagStaticMember",
+        "encoding: DW_ATE_signed",
+        "language: DW_LANG_C99",
+        "emissionKind: FullDebug",
+        "nameTableKind: GNU",
+        "checksumkind: CSK_MD5",
+    ] {
+        assert!(text.contains(needle), "missing {needle} in:\n{text}");
+    }
+}
+
+/// Mirrors `LLParser::parseMDField(MDUnsignedField&)`, whose limit comes from
+/// the field's declared type: `LineField` is `UINT32_MAX` and `ColumnField`
+/// `UINT16_MAX`, so a `DILocation` column of 65536 is out of range while the
+/// same value in `line` is fine.
+#[test]
+fn unsigned_metadata_fields_are_range_checked() {
+    let err = parse_err("!0 = !{}\n!1 = !DILocation(scope: !0, column: 65536)\n");
+    assert!(
+        matches!(
+            &err,
+            ParseError::MetadataFieldValueTooLarge { field, limit, .. }
+                if field == "column" && *limit == u64::from(u16::MAX)
+        ),
+        "expected column out of range, got: {err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "value for 'column' too large, limit is 65535"
+    );
+
+    let text =
+        parse_and_render("!named = !{!1}\n!0 = !{}\n!1 = !DILocation(scope: !0, line: 65536)\n");
+    assert!(text.contains("line: 65536"), "output:\n{text}");
+}
+
+/// Mirrors `LLParser::parseMDField(MDField&)` with `(/* AllowNull */ false)`:
+/// `DILocation`'s `scope` is the canonical case.
+#[test]
+fn a_non_nullable_metadata_field_rejects_null() {
+    let err = parse_err("!0 = !DILocation(scope: null)\n");
+    assert!(
+        matches!(
+            &err,
+            ParseError::MetadataFieldCannotBeNull { field, .. } if field == "scope"
+        ),
+        "expected scope-cannot-be-null, got: {err:?}"
+    );
+    assert_eq!(err.to_string(), "'scope' cannot be null");
+}
+
+/// Mirrors `LLParser::parseMDField(MDStringField&)` with `EmptyIs::Error`:
+/// `DIGlobalVariable`'s `name` is declared that way.
+#[test]
+fn a_non_empty_string_field_rejects_the_empty_string() {
+    let err = parse_err("!0 = !DIGlobalVariable(name: \"\")\n");
+    assert!(
+        matches!(
+            &err,
+            ParseError::MetadataFieldCannotBeEmpty { field, .. } if field == "name"
+        ),
+        "expected name-cannot-be-empty, got: {err:?}"
+    );
+    assert_eq!(err.to_string(), "'name' cannot be empty");
+}
+
+/// Mirrors `LLParser::parseMDField(MDBoolField&)`, which accepts only the two
+/// keywords.
+#[test]
+fn a_bool_field_rejects_a_non_boolean() {
+    let err = parse_err("!0 = !{}\n!1 = !DISubprogram(scope: !0, isDefinition: 1)\n");
+    assert!(
+        matches!(&err, ParseError::Expected { expected, .. } if expected.contains("true")),
+        "expected a true/false error, got: {err:?}"
+    );
+}
+
+/// The three families `LLLexer` matches as **exact words** rather than by
+/// prefix — `EmissionKind`, `NameTableKind`, `FixedPointKind`
+/// (`LLLexer.cpp::LexIdentifier`). An unknown spelling never becomes one of
+/// those tokens in either implementation, so the parser's `invalid ... kind`
+/// arm is unreachable for it and the rejection happens a layer earlier.
+///
+/// Same accept/reject verdict as upstream, different diagnostic: `llvm-as`
+/// reaches `expected emission kind` from `parseMDField`, while llvmkit's lexer
+/// rejects the unknown keyword outright. Recorded rather than papered over.
+#[test]
+fn exact_word_kind_families_reject_an_unknown_spelling() {
+    for src in [
+        "!0 = !{}\n!1 = !DICompileUnit(file: !0, emissionKind: Bogus)\n",
+        "!0 = !{}\n!1 = !DICompileUnit(file: !0, nameTableKind: Bogus)\n",
+        "!0 = !DIFixedPointType(kind: Bogus)\n",
+    ] {
+        let _ = parse_err(src);
+    }
+}
+
+/// llvmkit-specific: no upstream counterpart, but it guards a bug this port
+/// nearly shipped. The parser's `fixed_point_kind` table originally read
+/// `Unsigned`/`Signed`/`Rational`, which would have *rejected valid IR* —
+/// upstream's spellings are `Binary`/`Decimal`/`Rational`
+/// (`DIFixedPointType::FixedPointKind`).
+///
+/// These three families come from C++ enums, not a `.def`, so
+/// `dwarf_def_drift.rs` cannot cover them. The lexer's word lists are the
+/// second copy in-tree, so this pins the parser's tables against what the lexer
+/// will actually hand it: a spelling the lexer accepts must not be one the
+/// parser then calls invalid.
+#[test]
+fn exact_word_kind_families_accept_every_spelling_the_lexer_produces() {
+    let text = parse_and_render(
+        r#"
+!named = !{!1, !2, !3, !4, !5, !6, !7, !8, !9, !10, !11}
+!0 = !{}
+!1 = !DICompileUnit(file: !0, emissionKind: NoDebug)
+!2 = !DICompileUnit(file: !0, emissionKind: FullDebug)
+!3 = !DICompileUnit(file: !0, emissionKind: LineTablesOnly)
+!4 = !DICompileUnit(file: !0, emissionKind: DebugDirectivesOnly)
+!5 = !DICompileUnit(file: !0, nameTableKind: Default)
+!6 = !DICompileUnit(file: !0, nameTableKind: GNU)
+!7 = !DICompileUnit(file: !0, nameTableKind: Apple)
+!8 = !DICompileUnit(file: !0, nameTableKind: None)
+!9 = !DIFixedPointType(kind: Binary)
+!10 = !DIFixedPointType(kind: Decimal)
+!11 = !DIFixedPointType(kind: Rational)
+"#,
+    );
+    for needle in [
+        "emissionKind: NoDebug",
+        "emissionKind: FullDebug",
+        "emissionKind: LineTablesOnly",
+        "emissionKind: DebugDirectivesOnly",
+        "nameTableKind: Default",
+        "nameTableKind: GNU",
+        "nameTableKind: Apple",
+        "nameTableKind: None",
+        "kind: Binary",
+        "kind: Decimal",
+        "kind: Rational",
+    ] {
+        assert!(text.contains(needle), "missing {needle} in:\n{text}");
     }
 }
