@@ -86,6 +86,7 @@ pub mod demanded_bits;
 pub mod denormal_mode;
 pub mod derived_types;
 pub mod dominator_tree;
+pub mod dwarf;
 pub mod element;
 pub mod error;
 pub mod float_kind;
