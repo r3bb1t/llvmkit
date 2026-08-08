@@ -161,6 +161,29 @@ pub enum ParseError {
         loc: DiagLoc,
     },
 
+    /// A diagnostic whose wording is *not* of the `expected <production>`
+    /// shape — rendered verbatim, with nothing prepended.
+    ///
+    /// [`ParseError::Expected`] exists because the overwhelming majority of
+    /// upstream's messages start with `expected `, and storing the bare
+    /// production keeps those sites short. But `LLParser` also emits ~100
+    /// diagnostics that are ordinary prose — `udiv constexprs are no longer
+    /// supported`, `constant ptrauth base pointer must be a pointer`,
+    /// `alignment is not a power of two`. Routing those through `Expected`
+    /// rendered them as `expected udiv constexprs are no longer supported`,
+    /// which is not upstream's text.
+    ///
+    /// This variant is the counterpart of `LLParser::error` /
+    /// `LLParser::tokError` for exactly that set: whatever the parser stores
+    /// is what a reader sees. Choose between the two by asking what upstream
+    /// prints — if the message begins with `expected `, store the remainder
+    /// in `Expected`; otherwise store the whole sentence here.
+    #[error("{message}")]
+    Message {
+        message: Cow<'static, str>,
+        loc: DiagLoc,
+    },
+
     /// `redefinition of <symbol>` — mirrors `LLParser::checkValueID` and
     /// the `"redefinition of "` diagnostic site in `LLParser.cpp`.
     #[error("redefinition of {kind} '{sigil}{id}'", sigil = .kind.sigil())]
@@ -192,10 +215,12 @@ pub enum ParseError {
         loc: DiagLoc,
     },
 
-    /// `bitwidth for integer type out of range` — mirrors the upstream
-    /// `LLParser::parseType` arm that rejects `iN` for `N` outside
-    /// `[1, MAX_INT_BITS]`.
-    #[error("integer width {width} out of range (1..={max})")]
+    /// `iN` for `N` outside `[MIN_INT_BITS, MAX_INT_BITS]`.
+    ///
+    /// Upstream rejects this in `LLLexer::LexIdentifier`, whose wording this
+    /// reproduces; `width` and `max` remain as structured fields for callers
+    /// that want the numbers, since the rendered text names neither.
+    #[error("bitwidth for integer type out of range")]
     IntegerWidthOutOfRange { width: u64, max: u32, loc: DiagLoc },
 
     /// A specialized `DI*` node named a field its class does not declare.
@@ -320,6 +345,7 @@ impl ParseError {
         match self {
             ParseError::Lex(e) => Some(DiagLoc::span(e.span())),
             ParseError::Expected { loc, .. }
+            | ParseError::Message { loc, .. }
             | ParseError::Redefinition { loc, .. }
             | ParseError::UndefinedSymbol { loc, .. }
             | ParseError::InvalidSlotId { loc, .. }
@@ -364,8 +390,14 @@ mod tests {
     }
 
     /// Ports the `redefinition of ...` diagnostic family from
-    /// `LLParser.cpp`. We assert structural identity, not string identity,
-    /// to keep wording flexibility for later revisions.
+    /// `LLParser.cpp`.
+    ///
+    /// This asserts the structured fields *and* the rendered text. It used to
+    /// assert only the fields, on the reasoning that wording should stay
+    /// flexible — but upstream's wording is contractual (every
+    /// `test/Assembler` negative pins it with a `FileCheck` line), and
+    /// field-only assertions are precisely what hid `ParseError::Expected`
+    /// prepending `expected ` to messages upstream prints bare.
     #[test]
     fn redefinition_records_symbol() {
         let err = ParseError::Redefinition {
@@ -379,6 +411,7 @@ mod tests {
         } else {
             panic!("wrong variant");
         }
+        assert_eq!(err.to_string(), "redefinition of global '@foo'");
     }
 
     /// Mirrors the exact diagnostic `LLParser::parseNamedGlobal` emits —
@@ -453,17 +486,24 @@ mod tests {
         assert!(format!("{err}").contains("no token starts with '?'"));
     }
 
-    /// Ports the upstream `parseType`-arm rejection of out-of-range integer
-    /// widths (`LLParser.cpp::parseType` checks against `MAX_INT_BITS`).
+    /// Ports the out-of-range `iN` rejection, whose text upstream fixes in
+    /// `LLLexer::LexIdentifier` (`test/Assembler/invalid-inttype.ll` pins it).
+    ///
+    /// The width and the limit stay reachable as fields — that is llvmkit's
+    /// addition — but they are deliberately absent from the rendered text,
+    /// because upstream's message names neither.
     #[test]
     fn integer_width_out_of_range_is_typed() {
         let err = ParseError::IntegerWidthOutOfRange {
             width: 1 << 30,
-            max: (1 << 24) - 1,
+            max: llvmkit_ir::MAX_INT_BITS,
             loc: DiagLoc::span(Span::new(2, 10)),
         };
-        let rendered = format!("{err}");
-        assert!(rendered.contains("integer width"));
-        assert!(rendered.contains("out of range"));
+        assert_eq!(err.to_string(), "bitwidth for integer type out of range");
+        assert!(matches!(
+            err,
+            ParseError::IntegerWidthOutOfRange { width, max, .. }
+                if width == 1 << 30 && max == llvmkit_ir::MAX_INT_BITS
+        ));
     }
 }

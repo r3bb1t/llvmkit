@@ -19,6 +19,66 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Parser diagnostics are rendered with upstream's exact wording
+
+First wave of the `LLParser` 1:1 parity program. This one is about what a
+rejection *says*, not which inputs are rejected — with one exception, noted
+last, that a message-parity test uncovered.
+
+- **Breaking (parser): `ParseError::Message` joins `ParseError::Expected`.**
+  Every prose diagnostic used to route through `Expected`, whose `Display` is
+  `expected {expected}`, so llvmkit printed `expected udiv constexprs are no
+  longer supported` where `llvm-as` prints the sentence bare. `Message`
+  renders its text verbatim and is now used by the ~100 sites whose upstream
+  wording does not begin with `expected ` — the removed-constexpr family, the
+  `ptrauth` operand checks, the alias linkage and visibility rules, the
+  `getelementptr` constant-expression checks, and `intrinsic can only be used
+  as callee` among them. Matching on `ParseError::Expected` for one of those
+  now matches `ParseError::Message` instead.
+
+- **Fixed (parser): 21 messages said `expected` twice.** Payloads that already
+  began with `expected ` were rendered by a `Display` that prepends the word
+  again, so `expected '(' in constant ptrauth expression` reached users as
+  `expected expected '(' in constant ptrauth expression`. The redundant prefix
+  is gone from the stored payload; the rendering is unchanged and now correct.
+
+- **Fixed (lexer): seven messages reworded to upstream's text.**
+  `unterminated /* */ block comment` → `unterminated comment`;
+  `invalid value number (does not fit in u32)` → `invalid value number (too
+  large)`; the integer-width message drops the interpolated bounds to match
+  `bitwidth for integer type out of range`; the hex-float overflow messages
+  spell the type lowercase (`half`, `bfloat`) instead of `Debug`-formatting it;
+  and `UnterminatedQuotedName` gains a `Display` covering upstream's three
+  spellings across the five kinds. That last one reproduces an upstream quirk
+  deliberately: `LLLexer::LexVar` serves both `@"…"` and `%"…"`, so an
+  unterminated *local* name really does report `end of file in global variable
+  name`.
+
+  Structured fields are untouched — the width and limit are still on the
+  error for callers that want them, they simply no longer appear in prose that
+  upstream writes without them.
+
+- **Breaking (lexer): `i8388609` and wider are rejected, as upstream rejects
+  them.** `INT_TY_MAX_BITS` read `(1 << 24) - 1` while its doc comment claimed
+  to mirror `IntegerType::MAX_INT_BITS`, which is `1 << 23`. llvmkit therefore
+  accepted integer types up to `i16777215` — `llvm-as` refuses everything above
+  `i8388608`, and `test/Assembler/invalid-inttype.ll` exists to pin exactly
+  that boundary. The parser separately reported the wrong limit in its own
+  message (`(1..=16777215)`) while applying the correct check, so the
+  diagnostic contradicted the rejection that produced it. Both now read the
+  one constant.
+
+- **Tests assert rendered text, not payload fields.** `parse_error.rs`
+  previously documented the opposite policy ("structural identity, not string
+  identity, to keep wording flexibility"), which is what let all of the above
+  hide: every fixture matched a variant's field, so no test could observe the
+  `expected ` prefix that `Display` added afterwards. New
+  `crates/llvmkit-asmparser/tests/parser_diagnostics.rs` ports four upstream
+  negatives whose `FileCheck` lines pin the message text
+  (`invalid-c-style-comment0.ll`, `invalid-inttype.ll`, `hex-float-overflow.ll`,
+  `internal-hidden-alias.ll`), and the existing rejection helpers now compare
+  `err.to_string()`.
+
 ### Specialized `DI*` field *values* are validated against upstream's tables
 
 - **Breaking (parser): a `DW_*` / `DIFlag*` / kind spelling upstream does not

@@ -1039,16 +1039,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(item.loc),
             })?;
             if function.basic_blocks().len() == 0 {
-                return Err(ParseError::Expected {
-                    expected: "cannot take blockaddress inside a declaration".into(),
+                return Err(ParseError::Message {
+                    message: "cannot take blockaddress inside a declaration".into(),
                     loc: DiagLoc::span(item.loc),
                 });
             }
             let block = function
                 .basic_blocks()
                 .find(|bb| bb.name().as_deref() == Some(item.label.as_str()))
-                .ok_or_else(|| ParseError::Expected {
-                    expected: "referenced value is not a basic block".into(),
+                .ok_or_else(|| ParseError::Message {
+                    message: "referenced value is not a basic block".into(),
                     loc: DiagLoc::span(item.loc),
                 })?;
             let resolved = self
@@ -1415,6 +1415,25 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         ParseError::Expected {
             expected: expected.into(),
             loc: DiagLoc::span(self.loc()),
+        }
+    }
+
+    /// A diagnostic rendered verbatim, anchored at the current token.
+    /// Mirrors `LLParser::tokError`.
+    ///
+    /// Use this whenever upstream's message does *not* begin with
+    /// `expected `; [`Self::expected`] is for the ones that do, and stores
+    /// only the production that follows the word.
+    fn message(&self, message: impl Into<Cow<'static, str>>) -> ParseError {
+        self.message_at(self.loc(), message)
+    }
+
+    /// A diagnostic rendered verbatim, anchored at an explicit span.
+    /// Mirrors `LLParser::error(LocTy, const Twine &)`.
+    fn message_at(&self, loc: Span, message: impl Into<Cow<'static, str>>) -> ParseError {
+        ParseError::Message {
+            message: message.into(),
+            loc: DiagLoc::span(loc),
         }
     }
 
@@ -3233,7 +3252,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .map(|t| t.as_type())
                 .map_err(|_| ParseError::IntegerWidthOutOfRange {
                     width: u64::from(n.get()),
-                    max: (1u32 << 24) - 1,
+                    // The bound the check actually applies — not a literal
+                    // that can drift away from it, as `(1 << 24) - 1` had.
+                    max: llvmkit_ir::MAX_INT_BITS,
                     loc: DiagLoc::span(loc),
                 }),
         }
@@ -3527,8 +3548,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
 
         if is_alias && !llvmkit_ir::global_alias::is_valid_alias_linkage(linkage) {
-            return Err(ParseError::Expected {
-                expected: "invalid linkage type for alias".into(),
+            return Err(ParseError::Message {
+                message: "invalid linkage type for alias".into(),
                 loc: DiagLoc::span(decl_loc),
             });
         }
@@ -3541,16 +3562,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if matches!(linkage, Linkage::Internal | Linkage::Private)
             && visibility != Visibility::Default
         {
-            return Err(ParseError::Expected {
-                expected: "symbol with local linkage must have default visibility".into(),
+            return Err(ParseError::Message {
+                message: "symbol with local linkage must have default visibility".into(),
                 loc: DiagLoc::span(decl_loc),
             });
         }
         if matches!(linkage, Linkage::Internal | Linkage::Private)
             && dll_storage_class != DllStorageClass::Default
         {
-            return Err(ParseError::Expected {
-                expected: "symbol with local linkage cannot have a DLL storage class".into(),
+            return Err(ParseError::Message {
+                message: "symbol with local linkage cannot have a DLL storage class".into(),
                 loc: DiagLoc::span(decl_loc),
             });
         }
@@ -3844,8 +3865,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Opcode::Fcmp => "fcmp",
             _ => return self.unsupported_constant_value_form_at(loc),
         };
-        ParseError::Expected {
-            expected: format!("{opcode} constexprs are no longer supported").into(),
+        ParseError::Message {
+            message: format!("{opcode} constexprs are no longer supported").into(),
             loc: DiagLoc::span(loc),
         }
     }
@@ -4053,7 +4074,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 match ty.into_type_enum() {
                     AnyTypeEnum::Token(_) => Ok(ValId::Constant(self.module.token_none())),
-                    _ => Err(self.expected("invalid type for none constant")),
+                    _ => Err(self.message("invalid type for none constant")),
                 }
             }
             Token::Kw(Keyword::Blockaddress) => {
@@ -4155,8 +4176,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             AnyTypeEnum::Struct(t) => {
                 if t.is_opaque() {
-                    return Err(ParseError::Expected {
-                        expected: "invalid type for null constant".into(),
+                    return Err(ParseError::Message {
+                        message: "invalid type for null constant".into(),
                         loc: DiagLoc::span(self.loc()),
                     });
                 }
@@ -4363,8 +4384,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             resolve_intrinsic_name(&name),
             IntrinsicNameResolution::NonIntrinsic
         ) {
-            return Err(ParseError::Expected {
-                expected: "intrinsic can only be used as callee".into(),
+            return Err(ParseError::Message {
+                message: "intrinsic can only be used as callee".into(),
                 loc: DiagLoc::span(self.loc()),
             });
         }
@@ -4410,8 +4431,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             resolve_intrinsic_name(&name),
             IntrinsicNameResolution::NonIntrinsic
         ) {
-            return Err(ParseError::Expected {
-                expected: "intrinsic can only be used as callee".into(),
+            return Err(ParseError::Message {
+                message: "intrinsic can only be used as callee".into(),
                 loc: DiagLoc::span(self.loc()),
             });
         }
@@ -4565,12 +4586,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         match function {
             ParsedBlockAddressFunction::Resolved(function) => {
                 if function.basic_blocks().len() == 0 {
-                    return Err(self.expected("cannot take blockaddress inside a declaration"));
+                    return Err(self.message("cannot take blockaddress inside a declaration"));
                 }
                 let block = function
                     .basic_blocks()
                     .find(|bb| bb.name().as_deref() == Some(label.as_str()))
-                    .ok_or_else(|| self.expected("referenced value is not a basic block"))?;
+                    .ok_or_else(|| self.message("referenced value is not a basic block"))?;
                 self.module
                     .block_address(function, &block)
                     .map_err(|e| self.builder_err("blockaddress", e))
@@ -4644,15 +4665,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn parse_ptrauth_constant(&mut self) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         self.expect_keyword(Keyword::Ptrauth, "'ptrauth'")?;
-        self.expect_punct(
-            PunctKind::LParen,
-            "expected '(' in constant ptrauth expression",
-        )?;
+        self.expect_punct(PunctKind::LParen, "'(' in constant ptrauth expression")?;
         let pointer = self.parse_ptrauth_operand()?;
-        self.expect_punct(
-            PunctKind::Comma,
-            "expected comma in constant ptrauth expression",
-        )?;
+        self.expect_punct(PunctKind::Comma, "comma in constant ptrauth expression")?;
         let key = self.parse_ptrauth_operand()?;
         let discriminator = if self.eat_punct(PunctKind::Comma)? {
             self.parse_ptrauth_operand()?
@@ -4669,10 +4684,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else {
             self.module.ptr_type(0).const_null().as_constant()
         };
-        self.expect_punct(
-            PunctKind::RParen,
-            "expected ')' in constant ptrauth expression",
-        )?;
+        self.expect_punct(PunctKind::RParen, "')' in constant ptrauth expression")?;
         self.module
             .ptr_auth(
                 pointer,
@@ -4682,10 +4694,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 deactivation_symbol,
             )
             .map_err(|e| match e {
-                IrError::InvalidOperation { message } => ParseError::Expected {
-                    expected: message.into(),
-                    loc: DiagLoc::span(self.loc()),
-                },
+                // `Constants::ptr_auth` carries upstream's own wording
+                // (`LLParser::parseValID`'s `lltok::kw_ptrauth` arm), so the
+                // message is rendered verbatim rather than as `expected ...`.
+                IrError::InvalidOperation { message } => self.message(message),
                 other => self.builder_err("ptrauth", other),
             })
     }
@@ -4720,19 +4732,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 } else {
                     ConstantExprFlags::none()
                 };
-                self.expect_punct(PunctKind::LParen, "expected '(' in binary constantexpr")?;
+                self.expect_punct(PunctKind::LParen, "'(' in binary constantexpr")?;
                 let lhs = self.parse_global_type_and_value()?;
-                self.expect_punct(PunctKind::Comma, "expected comma in binary constantexpr")?;
+                self.expect_punct(PunctKind::Comma, "comma in binary constantexpr")?;
                 let rhs = self.parse_global_type_and_value()?;
                 if lhs.ty() != rhs.ty() {
-                    return Err(self.expected("operands of constexpr must have same type"));
+                    return Err(self.message("operands of constexpr must have same type"));
                 }
                 if !is_int_or_int_vector_type(lhs.ty()) {
                     return Err(
-                        self.expected("constexpr requires integer or integer vector operands")
+                        self.message("constexpr requires integer or integer vector operands")
                     );
                 }
-                self.expect_punct(PunctKind::RParen, "expected ')' in binary constantexpr")?;
+                self.expect_punct(PunctKind::RParen, "')' in binary constantexpr")?;
                 self.build_constant_expr(result_ty, None, opcode, vec![lhs, rhs], flags)
             }
             ConstantExprOpcode::Trunc
@@ -4741,19 +4753,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             | ConstantExprOpcode::PtrToInt
             | ConstantExprOpcode::BitCast
             | ConstantExprOpcode::AddrSpaceCast => {
-                self.expect_punct(PunctKind::LParen, "expected '(' after constantexpr cast")?;
+                self.expect_punct(PunctKind::LParen, "'(' after constantexpr cast")?;
                 let operand = self.parse_global_type_and_value()?;
-                self.expect_keyword(Keyword::To, "expected 'to' in constantexpr cast")?;
+                self.expect_keyword(Keyword::To, "'to' in constantexpr cast")?;
                 let dst_ty = self.parse_type(false)?;
                 if dst_ty != result_ty {
                     return Err(self.expected(
                         "constant expression destination type matches initializer type",
                     ));
                 }
-                self.expect_punct(
-                    PunctKind::RParen,
-                    "expected ')' at end of constantexpr cast",
-                )?;
+                self.expect_punct(PunctKind::RParen, "')' at end of constantexpr cast")?;
                 self.build_constant_expr(
                     result_ty,
                     None,
@@ -4764,17 +4773,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             ConstantExprOpcode::GetElementPtr => {
                 let parsed_flags = self.parse_gep_constant_expr_flags()?;
-                self.expect_punct(PunctKind::LParen, "expected '(' in constantexpr")?;
+                self.expect_punct(PunctKind::LParen, "'(' in constantexpr")?;
                 let source_ty = self.parse_type(false)?;
                 if type_contains_scalable_vector(source_ty) {
-                    return Err(self.expected("invalid base element for constant getelementptr"));
+                    return Err(self.message("invalid base element for constant getelementptr"));
                 }
-                self.expect_punct(
-                    PunctKind::Comma,
-                    "expected comma after getelementptr's type",
-                )?;
+                self.expect_punct(PunctKind::Comma, "comma after getelementptr's type")?;
                 let operands = self.parse_global_value_vector()?;
-                self.expect_punct(PunctKind::RParen, "expected ')' in constantexpr")?;
+                self.expect_punct(PunctKind::RParen, "')' in constantexpr")?;
                 self.validate_parsed_gep_constant_expr(source_ty, &operands)?;
                 let flags = self.finish_gep_constant_expr_flags(parsed_flags, &operands)?;
                 self.build_constant_expr(result_ty, Some(source_ty), opcode, operands, flags)
@@ -4782,9 +4788,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ConstantExprOpcode::ShuffleVector
             | ConstantExprOpcode::InsertElement
             | ConstantExprOpcode::ExtractElement => {
-                self.expect_punct(PunctKind::LParen, "expected '(' in constantexpr")?;
+                self.expect_punct(PunctKind::LParen, "'(' in constantexpr")?;
                 let operands = self.parse_global_value_vector()?;
-                self.expect_punct(PunctKind::RParen, "expected ')' in constantexpr")?;
+                self.expect_punct(PunctKind::RParen, "')' in constantexpr")?;
                 self.validate_parsed_vector_constant_expr(opcode, result_ty, &operands)?;
                 self.build_constant_expr(
                     result_ty,
@@ -4827,11 +4833,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
 
         let in_range = if self.eat_keyword(Keyword::Inrange)? {
-            self.expect_punct(PunctKind::LParen, "expected '('")?;
+            self.expect_punct(PunctKind::LParen, "'('")?;
             let start = self.parse_inrange_bound()?;
-            self.expect_punct(PunctKind::Comma, "expected ','")?;
+            self.expect_punct(PunctKind::Comma, "','")?;
             let end = self.parse_inrange_bound()?;
-            self.expect_punct(PunctKind::RParen, "expected ')'")?;
+            self.expect_punct(PunctKind::RParen, "')'")?;
             Some((start, end))
         } else {
             None
@@ -4849,16 +4855,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Ok(ConstantExprFlags::gep(parsed.no_wrap));
         };
         let Some(base) = operands.first() else {
-            return Err(self.expected("base of getelementptr must be a pointer"));
+            return Err(self.message("base of getelementptr must be a pointer"));
         };
         let address_space = pointer_address_space_or_vector_element(base.ty())
-            .ok_or_else(|| self.expected("base of getelementptr must be a pointer"))?;
+            .ok_or_else(|| self.message("base of getelementptr must be a pointer"))?;
         let bit_width = self.module.data_layout().index_size_in_bits(address_space);
         let start_words = inrange_bound_to_apint_words(&start, bit_width);
         let end_words = inrange_bound_to_apint_words(&end, bit_width);
         let in_range = ConstantExprInRange::new(start_words, end_words, bit_width);
         if !constant_expr_inrange_is_non_empty(&in_range) {
-            return Err(self.expected("expected end to be larger than start"));
+            return Err(self.expected("end to be larger than start"));
         }
         Ok(ConstantExprFlags::gep_with_in_range(
             parsed.no_wrap,
@@ -4873,8 +4879,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 base: NumBase::Dec,
                 digits,
             }) => {
-                let magnitude_words = decimal_digits_to_words(digits)
-                    .ok_or_else(|| self.expected("expected integer"))?;
+                let magnitude_words =
+                    decimal_digits_to_words(digits).ok_or_else(|| self.expected("integer"))?;
                 ParsedInRangeBound::SignedMagnitude {
                     negative: matches!(sign, Sign::Neg),
                     magnitude_words,
@@ -4885,17 +4891,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 digits,
                 ..
             }) => {
-                let words =
-                    hex_digits_to_words(digits).ok_or_else(|| self.expected("expected integer"))?;
-                let bit_width = hex_apsint_bit_width(digits, &words)
-                    .ok_or_else(|| self.expected("expected integer"))?;
+                let words = hex_digits_to_words(digits).ok_or_else(|| self.expected("integer"))?;
+                let bit_width =
+                    hex_apsint_bit_width(digits, &words).ok_or_else(|| self.expected("integer"))?;
                 ParsedInRangeBound::HexApsInt {
                     signed: matches!(base, NumBase::HexSigned),
                     words,
                     bit_width,
                 }
             }
-            _ => return Err(self.expected("expected integer")),
+            _ => return Err(self.expected("integer")),
         };
         self.bump()?;
         Ok(bound)
@@ -4907,29 +4912,29 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         operands: &[llvmkit_ir::Constant<'ctx, B>],
     ) -> ParseResult<()> {
         let Some((base, indices)) = operands.split_first() else {
-            return Err(self.expected("base of getelementptr must be a pointer"));
+            return Err(self.message("base of getelementptr must be a pointer"));
         };
         if !is_ptr_or_ptr_vector_type(base.ty()) {
-            return Err(self.expected("base of getelementptr must be a pointer"));
+            return Err(self.message("base of getelementptr must be a pointer"));
         }
         if !indices.is_empty() && !source_ty.is_sized() {
-            return Err(self.expected("base element of getelementptr must be sized"));
+            return Err(self.message("base element of getelementptr must be sized"));
         }
         if type_contains_scalable_vector(source_ty) {
-            return Err(self.expected("invalid base element for constant getelementptr"));
+            return Err(self.message("invalid base element for constant getelementptr"));
         }
         let pointer_shape = vector_shape_type(base.ty());
         let mut gep_width = pointer_shape;
         for index in indices {
             if !is_int_or_int_vector_type(index.ty()) {
-                return Err(self.expected("getelementptr index must be an integer"));
+                return Err(self.message("getelementptr index must be an integer"));
             }
             if let Some(index_shape) = vector_shape_type(index.ty()) {
                 if let Some(pointer_shape) = gep_width
                     && index_shape != pointer_shape
                 {
                     return Err(
-                        self.expected("getelementptr vector index has a wrong number of elements")
+                        self.message("getelementptr vector index has a wrong number of elements")
                     );
                 }
                 gep_width = Some(index_shape);
@@ -4947,26 +4952,26 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         match opcode {
             ConstantExprOpcode::ShuffleVector => {
                 let [lhs, rhs, mask] = operands else {
-                    return Err(self.expected("expected three operands to shufflevector"));
+                    return Err(self.expected("three operands to shufflevector"));
                 };
                 if !is_valid_shufflevector(result_ty, lhs.ty(), rhs.ty(), mask.ty()) {
-                    return Err(self.expected("invalid operands to shufflevector"));
+                    return Err(self.message("invalid operands to shufflevector"));
                 }
             }
             ConstantExprOpcode::ExtractElement => {
                 let [vector, index] = operands else {
-                    return Err(self.expected("expected two operands to extractelement"));
+                    return Err(self.expected("two operands to extractelement"));
                 };
                 if !is_valid_extractelement(result_ty, vector.ty(), index.ty()) {
-                    return Err(self.expected("invalid extractelement operands"));
+                    return Err(self.message("invalid extractelement operands"));
                 }
             }
             ConstantExprOpcode::InsertElement => {
                 let [vector, value, index] = operands else {
-                    return Err(self.expected("expected three operands to insertelement"));
+                    return Err(self.expected("three operands to insertelement"));
                 };
                 if !is_valid_insertelement(result_ty, vector.ty(), value.ty(), index.ty()) {
-                    return Err(self.expected("invalid insertelement operands"));
+                    return Err(self.message("invalid insertelement operands"));
                 }
             }
             _ => {}
@@ -5001,8 +5006,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     if matches!(opcode, ConstantExprOpcode::ShuffleVector)
                         && message == "invalid shufflevector constant expression" =>
                 {
-                    ParseError::Expected {
-                        expected: "invalid operands to shufflevector".into(),
+                    ParseError::Message {
+                        message: "invalid operands to shufflevector".into(),
                         loc: DiagLoc::span(self.loc()),
                     }
                 }
@@ -5028,12 +5033,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
 
         match linkage {
-            Linkage::Appending | Linkage::Common => Err(ParseError::Expected {
-                expected: "invalid function linkage type".into(),
+            Linkage::Appending | Linkage::Common => Err(ParseError::Message {
+                message: "invalid function linkage type".into(),
                 loc: DiagLoc::span(loc),
             }),
-            Linkage::ExternalWeak if is_define => Err(ParseError::Expected {
-                expected: "invalid linkage for function definition".into(),
+            Linkage::ExternalWeak if is_define => Err(ParseError::Message {
+                message: "invalid linkage for function definition".into(),
                 loc: DiagLoc::span(loc),
             }),
             Linkage::Private
@@ -5045,8 +5050,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             | Linkage::WeakOdr
                 if !is_define =>
             {
-                Err(ParseError::Expected {
-                    expected: "invalid linkage for function declaration".into(),
+                Err(ParseError::Message {
+                    message: "invalid linkage for function declaration".into(),
                     loc: DiagLoc::span(loc),
                 })
             }
@@ -5120,8 +5125,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         self.expect_punct(PunctKind::RBrace, "'}' closing attribute group")?;
         if storage.is_empty() {
-            return Err(ParseError::Expected {
-                expected: "attribute group has no attributes".into(),
+            return Err(ParseError::Message {
+                message: "attribute group has no attributes".into(),
                 loc: DiagLoc::span(loc),
             });
         }
@@ -8017,9 +8022,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // Reciprocal rule: a musttail call in a varargs function must forward
         // the varargs with a trailing `...`.
         if musttail && enclosing_varargs && !var_args {
-            return Err(self.expected(
-                "expected '...' at end of argument list for musttail call in varargs function",
-            ));
+            return Err(self
+                .expected("'...' at end of argument list for musttail call in varargs function"));
         }
         let (function_attrs, function_attr_groups) = self.parse_optional_fn_attrs()?;
         let operand_bundles = self.parse_optional_operand_bundles(state)?;
@@ -9546,8 +9550,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         self.func
             .basic_blocks()
             .find(|bb| bb.to_erased() == value)
-            .ok_or_else(|| ParseError::Expected {
-                expected: "referenced value is not a basic block".into(),
+            .ok_or_else(|| ParseError::Message {
+                message: "referenced value is not a basic block".into(),
                 loc: DiagLoc::span(loc),
             })
     }

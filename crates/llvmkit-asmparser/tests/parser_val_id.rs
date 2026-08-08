@@ -32,10 +32,9 @@ fn standalone_constant_rejects_trailing_token() {
 #[test]
 fn fadd_constant_expr_rejected_as_unsupported() {
     let err = parse_err("@x = global double fadd (double 1.0, double 2.0)\n");
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "fadd constexprs are no longer supported")
-        }
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    // Upstream prints this sentence bare, so it must render verbatim — the
+    // variant assertion locks the routing that guarantees that, and the text
+    // assertion is the mirror of the upstream FileCheck line.
+    assert!(matches!(err, ParseError::Message { .. }));
+    assert_eq!(err.to_string(), "fadd constexprs are no longer supported");
 }

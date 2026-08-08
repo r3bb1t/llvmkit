@@ -76,12 +76,8 @@ fn unknown_intrinsic_declaration_is_rejected() {
 #[test]
 fn intrinsic_non_callee_use_is_rejected() {
     let err = parse_err("@p = global ptr @llvm.lifetime.start.p0\n");
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "intrinsic can only be used as callee")
-        }
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    assert!(matches!(err, ParseError::Message { .. }));
+    assert_eq!(err.to_string(), "intrinsic can only be used as callee");
 }
 
 /// Mirrors `llvm/include/llvm/IR/Intrinsics.td::int_lifetime_start`: direct

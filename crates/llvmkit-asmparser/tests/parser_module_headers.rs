@@ -59,12 +59,8 @@ fn common_function_linkage_is_rejected() {
             .parse_module()
             .expect_err("common function linkage rejected")
     };
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "invalid function linkage type")
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
+    assert!(matches!(err, ParseError::Message { .. }));
+    assert_eq!(err.to_string(), "invalid function linkage type");
 }
 
 /// Mirrors `LLParser.cpp::parseUnnamedAttrGroup`: attribute groups are parsed

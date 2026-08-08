@@ -332,6 +332,21 @@ pub enum HexFpKind {
     Bfloat,
 }
 
+impl HexFpKind {
+    /// The type's spelling as `LLLexer` writes it in
+    /// `hexadecimal constant too large for <name> (16-bit)`.
+    ///
+    /// Not the `Debug` rendering: upstream spells these lowercase, and the
+    /// message text is contractual (`test/Assembler` pins it).
+    #[inline]
+    pub const fn upstream_name(self) -> &'static str {
+        match self {
+            HexFpKind::Half => "half",
+            HexFpKind::Bfloat => "bfloat",
+        }
+    }
+}
+
 /// Which quoted-name token kind is currently being lexed. Used in
 /// [`crate::ll_lexer::LexError::UnterminatedQuotedName`].
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -341,6 +356,26 @@ pub enum QuotedNameKind {
     Comdat,
     String,
     Metadata,
+}
+
+impl QuotedNameKind {
+    /// `LLLexer`'s message for hitting EOF inside this quoted name.
+    ///
+    /// Upstream reaches only three spellings across the five kinds, because
+    /// the routines are shared: `LLLexer::LexVar` serves both `@"…"` and
+    /// `%"…"` and says **global** in either case, and `!"…"` is lexed as
+    /// `exclaim` followed by `LLLexer::LexQuote`, so it reports as a string
+    /// constant. The quirk is upstream's and is reproduced deliberately —
+    /// `%"unterminated` really does report `end of file in global variable
+    /// name` from `llvm-as`.
+    #[inline]
+    pub const fn unterminated_message(self) -> &'static str {
+        match self {
+            QuotedNameKind::Global | QuotedNameKind::Local => "end of file in global variable name",
+            QuotedNameKind::Comdat => "end of file in COMDAT variable name",
+            QuotedNameKind::String | QuotedNameKind::Metadata => "end of file in string constant",
+        }
+    }
 }
 
 /// Mirrors `Instruction::Opcode` in `llvm/include/llvm/IR/Instruction.def` for

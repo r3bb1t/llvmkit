@@ -37,6 +37,13 @@ fn assert_parse_print_parse_stable(text: &str) {
     assert_eq!(reparsed, text);
 }
 
+/// Assert the fixture is rejected with upstream's message, **rendered**.
+///
+/// Comparing `err.to_string()` rather than a variant's payload field is the
+/// point: the `FileCheck` line in each upstream fixture pins the text a user
+/// sees, so that is what has to match. Matching a field instead let
+/// `ParseError::Expected`'s `expected ` prefix silently prepend itself to
+/// messages that upstream prints bare.
 fn assert_parse_error(src: &[u8], expected_message: &str) {
     let err = {
         let module = Module::dynamic("parser_constants_error");
@@ -45,10 +52,7 @@ fn assert_parse_error(src: &[u8], expected_message: &str) {
             .parse_module()
             .expect_err("fixture is rejected")
     };
-    match err {
-        ParseError::Expected { expected, .. } => assert_eq!(expected, expected_message),
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    assert_eq!(err.to_string(), expected_message);
 }
 
 /// Exact struct aggregate store from `test/Assembler/aggregate-constant-values.ll`.
@@ -427,15 +431,11 @@ fn unsupported_constant_expr_opcodes_are_rejected() {
             .expect("lexer primes")
             .parse_module()
             .expect_err("unsupported constexpr is rejected");
-        match err {
-            ParseError::Expected { expected, .. } => {
-                assert_eq!(
-                    expected,
-                    format!("{opcode} constexprs are no longer supported")
-                );
-            }
-            other => panic!("unexpected error variant: {other:?}"),
-        }
+        assert!(matches!(err, ParseError::Message { .. }));
+        assert_eq!(
+            err.to_string(),
+            format!("{opcode} constexprs are no longer supported")
+        );
     }
 }
 
@@ -511,12 +511,8 @@ fn none_is_token_only() {
         .as_type();
     let err = parser::parse_constant_value(b"none", &module, target_ty)
         .expect_err("target-extension none is rejected");
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "invalid type for none constant")
-        }
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    assert!(matches!(err, ParseError::Message { .. }));
+    assert_eq!(err.to_string(), "invalid type for none constant");
 }
 
 /// llvmkit-specific subset of `test/Assembler/target-types.ll` and

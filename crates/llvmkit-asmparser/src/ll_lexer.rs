@@ -31,8 +31,16 @@ mod keywords;
 pub const INT_TY_MIN_BITS: u64 = 1;
 
 /// Inclusive maximum width of an `iN` integer type. Mirrors
-/// `llvm::IntegerType::MAX_INT_BITS`.
-pub const INT_TY_MAX_BITS: u64 = (1u64 << 24) - 1; // 16_777_215
+/// `llvm::IntegerType::MAX_INT_BITS` (`DerivedTypes.h`), which is `1 << 23`.
+///
+/// This read `(1 << 24) - 1` until 0.0.5 while claiming to mirror the same
+/// constant, so the lexer accepted `i8388609` through `i16777215` — widths
+/// `llvm-as` rejects outright (`test/Assembler/invalid-inttype.ll` pins
+/// `i8388609` as "the smallest integer type that can't be represented").
+/// The value now matches [`llvmkit_ir::MAX_INT_BITS`], so the rejection
+/// happens in the lexer with upstream's wording rather than downstream with
+/// a limit that contradicted the check that fired.
+pub const INT_TY_MAX_BITS: u64 = 1u64 << 23; // 8_388_608
 
 // ─── LexError ─────────────────────────────────────────────────────────────────
 //
@@ -43,19 +51,19 @@ pub const INT_TY_MAX_BITS: u64 = (1u64 << 24) - 1; // 16_777_215
 /// All lexer-level failures.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, thiserror::Error)]
 pub enum LexError {
-    #[error("unterminated /* */ block comment")]
+    #[error("unterminated comment")]
     UnterminatedBlockComment { span: Span },
 
     #[error("end of file in string constant")]
     UnterminatedString { span: Span },
 
-    #[error("end of file in {kind:?} name")]
+    #[error("{}", .kind.unterminated_message())]
     UnterminatedQuotedName { kind: QuotedNameKind, span: Span },
 
     #[error("NUL character is not allowed in names")]
     NulInName { span: Span },
 
-    #[error("invalid value number (does not fit in u32)")]
+    #[error("invalid value number (too large)")]
     IdOverflow { span: Span },
 
     #[error("constant bigger than 64 bits detected")]
@@ -64,10 +72,13 @@ pub enum LexError {
     #[error("constant bigger than 128 bits detected")]
     IntegerOverflow128 { span: Span },
 
-    #[error("bitwidth for integer type out of range (got {width}, must be 1..={max})")]
+    // `width` and `max` stay as structured fields — a caller can still ask
+    // what the offending width was — but the rendered text is upstream's,
+    // which names neither.
+    #[error("bitwidth for integer type out of range")]
     IntegerWidthOutOfRange { width: u64, max: u32, span: Span },
 
-    #[error("hexadecimal constant too large for {target:?} (16-bit)")]
+    #[error("hexadecimal constant too large for {} (16-bit)", .target.upstream_name())]
     HexFpTooLarge { target: HexFpKind, span: Span },
 
     /// No token could be formed at `span`. [`UnknownTokenReason`] says why.

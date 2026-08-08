@@ -171,7 +171,7 @@ fn ellipsis_in_non_musttail_call_rejected() {
     assert_fixture_rejected(
         "ellipsis_non_musttail",
         src.as_bytes(),
-        "unexpected ellipsis in argument list for non-musttail call",
+        "expected unexpected ellipsis in argument list for non-musttail call",
     );
 }
 
@@ -188,7 +188,7 @@ fn musttail_ellipsis_in_non_varargs_function_rejected() {
     assert_fixture_rejected(
         "musttail_non_varargs",
         src.as_bytes(),
-        "unexpected ellipsis in argument list for musttail call in non-varargs function",
+        "expected unexpected ellipsis in argument list for musttail call in non-varargs function",
     );
 }
 
@@ -267,12 +267,12 @@ fn deactivation_symbol_bundle_round_trips() {
     );
 }
 
+/// Assert rejection with upstream's message, **rendered** — see the note on
+/// `parser_constants.rs::assert_parse_error` for why the comparison is
+/// against `to_string()` and not a variant field.
 fn assert_fixture_rejected(module_name: &str, src: &[u8], expected_message: &str) {
     let err = parse_fixture_err(module_name, src);
-    match err {
-        ParseError::Expected { expected, .. } => assert_eq!(expected, expected_message),
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    assert_eq!(err.to_string(), expected_message);
 }
 
 /// Crafted against `llvm/lib/AsmParser/LLParser.cpp::parseCall`'s argument
@@ -289,7 +289,7 @@ fn call_explicit_type_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_arg_type_mismatch_rejected",
         FIXTURE,
-        "valid call: call argument #0 type mismatch: expected i32, got float",
+        "expected valid call: call argument #0 type mismatch: expected i32, got float",
     );
 }
 
@@ -307,7 +307,7 @@ fn call_explicit_type_arg_width_mismatch_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_arg_width_mismatch_rejected",
         FIXTURE,
-        "valid call: call argument #0 type mismatch: expected i32, got i8",
+        "expected valid call: call argument #0 type mismatch: expected i32, got i8",
     );
 }
 
@@ -323,7 +323,7 @@ fn call_explicit_type_too_few_args_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_too_few_args_rejected",
         FIXTURE,
-        "valid call: call argument count mismatch: expected 2, got 1",
+        "expected valid call: call argument count mismatch: expected 2, got 1",
     );
 }
 
@@ -339,7 +339,7 @@ fn call_explicit_type_too_many_args_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_too_many_args_rejected",
         FIXTURE,
-        "valid call: call argument count mismatch: expected 0, got 1",
+        "expected valid call: call argument count mismatch: expected 0, got 1",
     );
 }
 
@@ -355,7 +355,7 @@ fn call_vararg_missing_fixed_arg_rejected() {
     assert_fixture_rejected(
         "call_vararg_missing_fixed_arg_rejected",
         FIXTURE,
-        "valid call: call argument count mismatch: expected 1, got 0",
+        "expected valid call: call argument count mismatch: expected 1, got 0",
     );
 }
 
@@ -386,7 +386,7 @@ fn indirect_call_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "indirect_call_arg_type_mismatch_rejected",
         FIXTURE,
-        "valid indirect call: call argument #0 type mismatch: expected i32, got float",
+        "expected valid indirect call: call argument #0 type mismatch: expected i32, got float",
     );
 }
 
@@ -528,7 +528,7 @@ fn indirect_call_non_pointer_callee_rejected() {
     assert_fixture_rejected(
         "indirect_call_non_pointer_callee_rejected",
         FIXTURE,
-        "pointer callee: type mismatch: expected pointer, got integer",
+        "expected pointer callee: type mismatch: expected pointer, got integer",
     );
 }
 
@@ -565,7 +565,7 @@ fn callbr_indirect_callee_rejected() {
     assert_fixture_rejected(
         "callbr_indirect_callee_rejected",
         FIXTURE,
-        "direct function callee for callbr",
+        "expected direct function callee for callbr",
     );
 }
 
@@ -638,7 +638,7 @@ fn invoke_explicit_type_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "invoke_explicit_type_arg_type_mismatch_rejected",
         FIXTURE,
-        "valid invoke: call argument #0 type mismatch: expected i32, got float",
+        "expected valid invoke: call argument #0 type mismatch: expected i32, got float",
     );
 }
 
@@ -655,7 +655,7 @@ fn callbr_explicit_type_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "callbr_explicit_type_arg_type_mismatch_rejected",
         FIXTURE,
-        "valid callbr: call argument #0 type mismatch: expected i32, got float",
+        "expected valid callbr: call argument #0 type mismatch: expected i32, got float",
     );
 }
 

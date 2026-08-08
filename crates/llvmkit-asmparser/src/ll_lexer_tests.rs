@@ -374,23 +374,27 @@ mod types {
         );
     }
 
-    /// Mirrors the `MaxIntBits` upper bound (`(1<<24)-1`) in
-    /// `lib/AsmParser/LLLexer.cpp::LexIdentifier`.
+    /// Mirrors `IntegerType::MAX_INT_BITS` (`1 << 23`, `DerivedTypes.h`), the
+    /// bound `lib/AsmParser/LLLexer.cpp::LexIdentifier` checks against.
     #[test]
     fn integer_type_at_max() {
-        let toks = kinds("i16777215");
+        let toks = kinds("i8388608");
         assert_eq!(
             toks,
-            vec![Token::PrimitiveType(PrimitiveTy::Integer(nz(16777215)))]
+            vec![Token::PrimitiveType(PrimitiveTy::Integer(nz(8388608)))]
         );
     }
 
     /// Mirrors the `i<N>` overflow diagnostic in
-    /// `lib/AsmParser/LLLexer.cpp::LexIdentifier`.
+    /// `lib/AsmParser/LLLexer.cpp::LexIdentifier`. `i8388609` is upstream's
+    /// own boundary witness — `test/Assembler/invalid-inttype.ll` calls it
+    /// "the smallest integer type that can't be represented in LLVM IR".
     #[test]
     fn integer_type_overflow_errors() {
-        let err = first_err("i16777216");
-        assert!(matches!(err, LexError::IntegerWidthOutOfRange { .. }));
+        for src in ["i8388609", "i16777216"] {
+            let err = first_err(src);
+            assert!(matches!(err, LexError::IntegerWidthOutOfRange { .. }));
+        }
     }
 
     /// Mirrors the bare-`i` fallthrough in
