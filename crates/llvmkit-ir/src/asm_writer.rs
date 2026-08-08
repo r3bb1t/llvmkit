@@ -2576,13 +2576,16 @@ pub(super) fn fmt_function<B: ModuleBrand>(
     if !linkage_str.is_empty() {
         write!(f, " {linkage_str}")?;
     }
+    // `printFunction` order: DSO location, then visibility, then DLL storage
+    // class. This is the same order `LLParser::parseOptionalLinkage` reads,
+    // and the pair has to agree for LLVM's own output to round-trip here.
+    if let Some(s) = func.dso_locality().keyword() {
+        write!(f, " {s}")?;
+    }
     if let Some(s) = func.visibility().keyword() {
         write!(f, " {s}")?;
     }
     if let Some(s) = func.dll_storage_class().keyword() {
-        write!(f, " {s}")?;
-    }
-    if let Some(s) = func.dso_locality().keyword() {
         write!(f, " {s}")?;
     }
     if func.calling_conv() != crate::CallingConv::C {

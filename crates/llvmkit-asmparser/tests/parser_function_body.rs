@@ -610,6 +610,64 @@ fn parses_addrspacecast() {
     assert!(printed.contains("%r = addrspacecast ptr %p to ptr addrspace(1)\n"));
 }
 
+/// `LLParser::parseCompare`'s `ICmp` arm accepts pointer operands:
+/// its guard is `!isIntOrIntVectorTy() && !isPtrOrPtrVectorTy()`, so a
+/// pointer comparison is ordinary IR, not an extension.
+///
+/// The addrspace spelling is upstream's own, from
+/// `test/Verifier/statepoint.ll::@test2`
+/// (`%c = icmp eq ptr addrspace(1) %arg, %arg2`); `test/Assembler` has no
+/// dedicated fixture, so the `parseCompare` guard is the anchor (D11).
+/// Regression lock: llvmkit narrowed both operands to `IntValue<IntDyn>`
+/// on the scalar path, which no pointer satisfies, so every pointer
+/// comparison was rejected until 0.0.5.
+#[test]
+fn icmp_accepts_pointer_operands() {
+    let printed = parse_and_print(
+        "define i1 @ptr_eq(ptr %a, ptr %b) {\nentry:\n  \
+           %c = icmp eq ptr %a, %b\n  \
+           ret i1 %c\n\
+         }\n",
+    );
+    assert!(printed.contains("%c = icmp eq ptr %a, %b"), "{printed}");
+
+    let printed = parse_and_print(
+        "define i1 @test2(ptr addrspace(1) %arg, ptr addrspace(1) %arg2) {\nentry:\n  \
+           %c = icmp eq ptr addrspace(1) %arg, %arg2\n  \
+           ret i1 %c\n\
+         }\n",
+    );
+    assert!(
+        printed.contains("%c = icmp eq ptr addrspace(1) %arg, %arg2"),
+        "{printed}"
+    );
+}
+
+/// The other half of `LLParser::parseCompare`'s two guards, with upstream's
+/// exact wording: `icmp` refuses floating-point operands and `fcmp` refuses
+/// integer ones.
+#[test]
+fn compare_operand_category_is_enforced() {
+    assert_eq!(
+        parse_expect_error(
+            "define i1 @f(float %a, float %b) {\nentry:\n  \
+               %c = icmp eq float %a, %b\n  \
+               ret i1 %c\n\
+             }\n",
+        ),
+        "icmp requires integer operands"
+    );
+    assert_eq!(
+        parse_expect_error(
+            "define i1 @f(i32 %a, i32 %b) {\nentry:\n  \
+               %c = fcmp oeq i32 %a, %b\n  \
+               ret i1 %c\n\
+             }\n",
+        ),
+        "fcmp requires floating point operands"
+    );
+}
+
 /// The `alloca <ty>, addrspace(N)` clause round-trips (parse + print),
 /// mirroring `LLParser::parseAlloc`'s addrspace branch and AsmWriter's
 /// AllocaInst addrspace arm.

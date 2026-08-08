@@ -12,6 +12,31 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## Parser — a misplaced `phi` is rejected at parse time, not by the verifier (found 2026-08-08, LLParser parity W1)
+
+`LLParser` accepts a `phi` written after a non-phi instruction and lets
+`Verifier::visitPHINode` reject it with `PHI nodes not grouped at top of basic
+block!`. llvmkit rejects it in `ll_parser.rs::parse_basic_block` instead
+(`phi must be grouped at the top of its basic block`). Same verdict, wrong
+layer, and a message upstream never prints.
+
+**Do not "fix" this by deleting the parser check** — that was the LLParser
+parity plan's first instinct and it is wrong. Every phi llvmkit builds goes
+through `IrBuilder::make_phi_in_block`, which calls
+`BasicBlock::insert_instruction_at_phi_head`: the phi is placed at the block's
+phi head regardless of the builder's insertion point. Drop the parse-time
+check and a misplaced phi is *silently hoisted* into a legal position, so the
+verifier's own `VerifierRule::PhiNotAtTop` — which llvmkit does implement —
+never sees a violation. llvmkit would then accept invalid IR and quietly
+rewrite it, which is strictly worse than the current strictness.
+
+Closing it needs a non-hoisting insertion path for parsed phis, so the
+instruction lands where it was written. That is entangled with llvmkit's
+head-phi design (block parameters are operandless head-phis, per
+`IrBuilder::append_block_with_params`), so it wants deciding alongside that
+model rather than as a parser patch. `insert_instruction_at_phi_head` is the
+only phi insertion path today.
+
 ## ~~Parser — `syncscope("system")` collapsed to the default scope~~ (decided and fixed 2026-08-06, W8)
 
 The API-idioms plan left this as an implementer decision: preserve the

@@ -16,6 +16,35 @@ fn parse_module(src: &str) -> String {
     format!("{module}")
 }
 
+/// The `dso_local` / visibility / DLL-storage clause run parses and reprints
+/// in `LLParser::parseOptionalLinkage`'s order, which is also the order
+/// `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printFunction` emits
+/// (`printDSOLocation`, then `printVisibility`, then `printDLLStorageClass`).
+///
+/// **No upstream fixture combines `dso_local` with a visibility keyword** —
+/// `test/Assembler` covers each clause alone — so this is llvmkit-specific,
+/// with `printFunction` as the anchor for what the order must be. It is a
+/// regression lock: llvmkit read visibility *before* dso-locality until
+/// 0.0.5, and its own writer emitted that same wrong order, so llvmkit
+/// round-tripped itself while rejecting `define dso_local hidden void @f()`
+/// — the spelling `llvm-as` produces.
+#[test]
+fn dso_local_precedes_visibility_and_dll_storage() {
+    for src in [
+        "define dso_local hidden void @f() { ret void }\n",
+        "declare dso_local protected void @g()\n",
+        "define dso_preemptable dllexport void @h() { ret void }\n",
+        "@v = dso_local hidden global i32 0\n",
+    ] {
+        let printed = parse_module(src);
+        let header = src.trim_end().trim_end_matches(" { ret void }");
+        assert!(
+            printed.contains(header),
+            "expected `{header}` in printed module, got:\n{printed}"
+        );
+    }
+}
+
 /// Mirrors `LLParser.cpp::parseFunctionHeader`: function definitions accept
 /// non-declaration linkage before the return type.
 #[test]

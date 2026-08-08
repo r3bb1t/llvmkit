@@ -19,6 +19,34 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Parser accepts IR that `llvm-as` accepts (clause order, pointer compares)
+
+Second wave of the `LLParser` parity program. These are inputs LLVM produces
+and llvmkit rejected.
+
+- **Breaking (parser + printer): `dso_local` now precedes visibility and DLL
+  storage class.** `LLParser::parseOptionalLinkage` reads linkage, then
+  dso-locality, then visibility, then DLL storage; `AsmWriter::printFunction`
+  writes the same order. llvmkit's `declare` / `define` paths read visibility
+  and DLL storage *first*, and its own writer emitted that same wrong order —
+  so llvmkit round-tripped itself while failing to parse `define dso_local
+  hidden void @f()`, the spelling LLVM itself emits. The global path was
+  already correct; all three now share one helper mirroring
+  `parseOptionalLinkage`, which also brings its cross-clause rejection,
+  `dso_location and DLL-StorageClass mismatch`.
+
+- **Fixed (parser): `icmp` accepts pointer operands.** `parseCompare`'s guard
+  is `!isIntOrIntVectorTy() && !isPtrOrPtrVectorTy()`, so `icmp eq ptr %a, %b`
+  is ordinary IR. llvmkit narrowed both operands to `IntValue<IntDyn>` on the
+  scalar path, which no pointer satisfies, and rejected every pointer
+  comparison. Pointers now take the erased path, as vectors already did —
+  `IrBuilder::int_cmp_erased` accepted them all along.
+
+- **Fixed (parser): the two compare-operand diagnostics.** `icmp requires
+  integer operands` and `fcmp requires floating point operands`, reported
+  against the operand type as upstream reports them, replacing builder-error
+  passthrough.
+
 ### Parser diagnostics are rendered with upstream's exact wording
 
 First wave of the `LLParser` 1:1 parity program. This one is about what a

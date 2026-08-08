@@ -107,6 +107,25 @@ fn ptrauth_builder_message_is_not_prefixed() {
     );
 }
 
+/// Ports `test/Assembler/dllimport-dsolocal-diag.ll`, whose CHECK line is
+/// `error: dso_location and DLL-StorageClass mismatch`
+/// (`LLParser::parseOptionalLinkage`).
+///
+/// The fixture doubles as the clause-order witness: it spells `dso_local`
+/// *before* `dllimport`, which is the order `parseOptionalLinkage` reads and
+/// `AsmWriter::printFunction` writes. Reaching this diagnostic at all proves
+/// both clauses parsed in that order.
+#[test]
+fn dso_local_dllimport_mismatch_matches_upstream_text() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/dllimport-dsolocal/dso_local_dllimport_mismatch.ll");
+
+    assert_eq!(
+        parse_err("dso_local_dllimport_mismatch", FIXTURE),
+        "dso_location and DLL-StorageClass mismatch"
+    );
+}
+
 /// `LLParser::parseParameterList`'s musttail rule. The message *does* start
 /// with `expected `, so it stays a `ParseError::Expected` — this locks that
 /// the word is contributed exactly once by the rendering rather than also

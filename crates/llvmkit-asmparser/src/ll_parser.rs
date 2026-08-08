@@ -3329,23 +3329,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             },
             _ => (Linkage::External, false),
         };
-        let dso_locality = self.parse_optional_dso_locality()?;
-        let visibility = if self.eat_keyword(Keyword::Default)? {
-            Visibility::Default
-        } else if self.eat_keyword(Keyword::Hidden)? {
-            Visibility::Hidden
-        } else if self.eat_keyword(Keyword::Protected)? {
-            Visibility::Protected
-        } else {
-            Visibility::Default
-        };
-        let dll_storage_class = if self.eat_keyword(Keyword::Dllimport)? {
-            DllStorageClass::DllImport
-        } else if self.eat_keyword(Keyword::Dllexport)? {
-            DllStorageClass::DllExport
-        } else {
-            DllStorageClass::Default
-        };
+        let (dso_locality, visibility, dll_storage_class) =
+            self.parse_optional_preemption_visibility_dll()?;
         let thread_local_mode = if self.eat_keyword(Keyword::ThreadLocal)? {
             if self.eat_punct(PunctKind::LParen)? {
                 let mode = if self.eat_keyword(Keyword::Localdynamic)? {
@@ -5091,6 +5076,32 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// The `dso_local` / visibility / DLL-storage-class run that follows a
+    /// linkage keyword, in upstream's order.
+    ///
+    /// Mirrors the tail of `LLParser::parseOptionalLinkage`, including its
+    /// cross-clause rejection: `dllimport` names a symbol that lives in
+    /// another module, which is exactly what `dso_local` denies.
+    ///
+    /// The order is load-bearing rather than cosmetic. `AsmWriter.cpp`'s
+    /// `printFunction` and `printGlobal` emit these three in the same
+    /// sequence, so reading them in any other one makes LLVM's own output
+    /// unparseable — `define dso_local hidden void @f()` is the canonical
+    /// spelling, not an exotic one.
+    fn parse_optional_preemption_visibility_dll(
+        &mut self,
+    ) -> ParseResult<(llvmkit_ir::DsoLocality, Visibility, DllStorageClass)> {
+        let dso_locality = self.parse_optional_dso_locality()?;
+        let visibility = self.parse_optional_visibility()?;
+        let dll_storage_class = self.parse_optional_dll_storage_class()?;
+        if dso_locality == llvmkit_ir::DsoLocality::Local
+            && dll_storage_class == DllStorageClass::DllImport
+        {
+            return Err(self.message("dso_location and DLL-StorageClass mismatch"));
+        }
+        Ok((dso_locality, visibility, dll_storage_class))
+    }
+
     fn parse_optional_function_unnamed_addr(&mut self) -> ParseResult<UnnamedAddr> {
         if self.eat_keyword(Keyword::UnnamedAddr)? {
             Ok(UnnamedAddr::Global)
@@ -5716,9 +5727,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_declare(&mut self) -> ParseResult<()> {
         self.expect_keyword(Keyword::Declare, "'declare'")?;
         let linkage = self.parse_optional_function_linkage(false)?;
-        let visibility = self.parse_optional_visibility()?;
-        let dll_storage_class = self.parse_optional_dll_storage_class()?;
-        let dso_locality = self.parse_optional_dso_locality()?;
+        let (dso_locality, visibility, dll_storage_class) =
+            self.parse_optional_preemption_visibility_dll()?;
         let calling_conv = self.parse_optional_calling_conv()?;
         let mut attrs = AttributeStorage::new();
         self.parse_fn_attribute_value_pairs(&mut attrs, AttrIndex::Return, false)?;
@@ -5986,9 +5996,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_define(&mut self) -> ParseResult<()> {
         self.expect_keyword(Keyword::Define, "'define'")?;
         let linkage = self.parse_optional_function_linkage(true)?;
-        let visibility = self.parse_optional_visibility()?;
-        let dll_storage_class = self.parse_optional_dll_storage_class()?;
-        let dso_locality = self.parse_optional_dso_locality()?;
+        let (dso_locality, visibility, dll_storage_class) =
+            self.parse_optional_preemption_visibility_dll()?;
         let calling_conv = self.parse_optional_calling_conv()?;
         let mut attrs = AttributeStorage::new();
         self.parse_fn_attribute_value_pairs(&mut attrs, AttrIndex::Return, false)?;
@@ -6814,14 +6823,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return Err(self.expected("integer compare predicate")),
         };
         self.bump()?;
+        let operand_loc = self.loc();
         let ty = self.parse_type(false)?;
         let lhs_v = self.parse_value(state, ty)?;
-        self.expect_punct(PunctKind::Comma, "',' between icmp operands")?;
+        self.expect_punct(PunctKind::Comma, "',' after compare value")?;
         let rhs_v = self.parse_value_no_type(state, ty)?;
 
-        // Vector operands take the erased builder, as in `parse_int_binop`.
-        // The result is `<N x i1>`, which no `IntValueId<bool, B>` describes.
-        if is_vector_type(ty) {
+        // `LLParser::parseCompare` accepts integers **and pointers** here
+        // (`isIntOrIntVectorTy() || isPtrOrPtrVectorTy()`); `icmp eq ptr %a,
+        // %b` is ordinary IR that a scalar-integer-only path rejected.
+        if !is_int_or_int_vector_type(ty) && !is_ptr_or_ptr_vector_type(ty) {
+            return Err(self.message_at(operand_loc, "icmp requires integer operands"));
+        }
+
+        // Vector operands take the erased builder, as in `parse_int_binop`:
+        // the result is `<N x i1>`, which no `IntValueId<bool, B>` describes.
+        // Pointers take it for the same reason in the other direction —
+        // `IntValue<IntDyn>` cannot name a `ptr`.
+        if is_vector_type(ty) || ty.is_pointer() {
             let name = result_name.as_str();
             let flags = if samesign {
                 llvmkit_ir::instr_types::IcmpFlags::new().samesign()
@@ -7062,10 +7081,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return Err(self.expected("floating-point compare predicate")),
         };
         self.bump()?;
+        let operand_loc = self.loc();
         let ty = self.parse_type(false)?;
         let lhs_v = self.parse_value(state, ty)?;
-        self.expect_punct(PunctKind::Comma, "',' between fcmp operands")?;
+        self.expect_punct(PunctKind::Comma, "',' after compare value")?;
         let rhs_v = self.parse_value_no_type(state, ty)?;
+        // `LLParser::parseCompare`'s `FCmp` arm.
+        if !is_fp_or_fp_vector_type(ty) {
+            return Err(self.message_at(operand_loc, "fcmp requires floating point operands"));
+        }
         // Erased: a vector compare has neither a typed float operand nor a
         // typed `i1` result, so it can use neither half of the typed builder.
         let r = b
