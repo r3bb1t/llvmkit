@@ -524,6 +524,22 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
         self.is_ieee_like_fp() || matches!(self.data(), TypeData::X86Fp80 | TypeData::PpcFp128)
     }
 
+    /// Mirrors `isFPOrFPVectorTy` — a floating-point type, or a fixed or
+    /// scalable vector whose element is one.
+    ///
+    /// This is the predicate that decides whether an instruction is an
+    /// `FPMathOperator`, and therefore whether it may carry fast-math flags:
+    /// `LLParser::parseInstruction` tests it before applying flags to a
+    /// `select` or a `phi`.
+    pub fn is_float_or_float_vector(self) -> bool {
+        match self.data() {
+            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
+                Type::new(*elem, self.module).is_floating_point()
+            }
+            _ => self.is_floating_point(),
+        }
+    }
+
     /// Mirrors `isAggregateType`. Vectors are first-class but not
     /// aggregate per LangRef.
     pub fn is_aggregate(self) -> bool {

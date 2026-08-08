@@ -762,6 +762,12 @@ pub(crate) struct CastOpData {
     pub(crate) nuw: Cell<bool>,
     /// `nsw` flag: applies to `trunc`. Mirrors `PossiblyNoSignedWrapInst`.
     pub(crate) nsw: Cell<bool>,
+    /// Fast-math flags: apply to `fptrunc` and `fpext`, the two casts that
+    /// are `FPMathOperator`s. `LLParser::parseInstruction` eats them before
+    /// dispatching to `parseCast` for exactly those two keywords, then calls
+    /// `setFastMathFlags` on the result — hence a `Cell`, set after the
+    /// instruction exists rather than threaded through construction.
+    pub(crate) fmf: Cell<FastMathFlags>,
 }
 
 impl CastOpData {
@@ -772,6 +778,7 @@ impl CastOpData {
             nneg: Cell::new(false),
             nuw: Cell::new(false),
             nsw: Cell::new(false),
+            fmf: Cell::new(FastMathFlags::empty()),
         }
     }
 }
@@ -783,6 +790,7 @@ impl Clone for CastOpData {
             nneg: Cell::new(self.nneg.get()),
             nuw: Cell::new(self.nuw.get()),
             nsw: Cell::new(self.nsw.get()),
+            fmf: Cell::new(self.fmf.get()),
         }
     }
 }
@@ -793,6 +801,7 @@ impl PartialEq for CastOpData {
             && self.nneg.get() == other.nneg.get()
             && self.nuw.get() == other.nuw.get()
             && self.nsw.get() == other.nsw.get()
+            && self.fmf.get() == other.fmf.get()
     }
 }
 impl Eq for CastOpData {}
@@ -803,6 +812,7 @@ impl core::hash::Hash for CastOpData {
         self.nneg.get().hash(h);
         self.nuw.get().hash(h);
         self.nsw.get().hash(h);
+        self.fmf.get().bits().hash(h);
     }
 }
 
@@ -1145,12 +1155,17 @@ pub(crate) struct PhiData {
     /// the predecessor block. RAUW rewrites the value slot only; block
     /// edges are CFG-level data, not SSA operands.
     pub(crate) incoming: core::cell::RefCell<Vec<(Cell<ValueSlot>, ValueSlot)>>,
+    /// Fast-math flags. A `phi` of floating-point type is an
+    /// `FPMathOperator`; `LLParser::parseInstruction` eats flags before
+    /// `parsePHI` and rejects them on a non-FP result.
+    pub(crate) fmf: Cell<FastMathFlags>,
 }
 
 impl PhiData {
     pub(crate) fn new() -> Self {
         Self {
             incoming: core::cell::RefCell::new(Vec::new()),
+            fmf: Cell::new(FastMathFlags::empty()),
         }
     }
 }
@@ -1165,7 +1180,8 @@ impl PartialEq for PhiData {
     fn eq(&self, other: &Self) -> bool {
         let a = self.incoming.borrow();
         let b = other.incoming.borrow();
-        a.len() == b.len()
+        self.fmf.get() == other.fmf.get()
+            && a.len() == b.len()
             && a.iter()
                 .zip(b.iter())
                 .all(|((va, ba), (vb, bbid))| va.get() == vb.get() && ba == bbid)
@@ -1174,6 +1190,7 @@ impl PartialEq for PhiData {
 impl Eq for PhiData {}
 impl core::hash::Hash for PhiData {
     fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
+        self.fmf.get().bits().hash(h);
         for (v, b) in self.incoming.borrow().iter() {
             v.get().hash(h);
             b.hash(h);
@@ -1190,6 +1207,7 @@ impl Clone for PhiData {
                     .map(|(v, b)| (Cell::new(v.get()), *b))
                     .collect(),
             ),
+            fmf: Cell::new(self.fmf.get()),
         }
     }
 }
@@ -2333,6 +2351,11 @@ pub(crate) struct SelectInstData {
     pub(crate) cond: Cell<ValueSlot>,
     pub(crate) true_val: Cell<ValueSlot>,
     pub(crate) false_val: Cell<ValueSlot>,
+    /// Fast-math flags. A `select` is an `FPMathOperator` when its arms are
+    /// floating-point, so `LLParser::parseInstruction` eats flags before
+    /// `parseSelect` and applies them afterwards (rejecting them outright on
+    /// a non-FP result); the `Cell` mirrors that set-after-build order.
+    pub(crate) fmf: Cell<FastMathFlags>,
 }
 
 impl SelectInstData {
@@ -2341,6 +2364,7 @@ impl SelectInstData {
             cond: Cell::new(cond),
             true_val: Cell::new(true_val),
             false_val: Cell::new(false_val),
+            fmf: Cell::new(FastMathFlags::empty()),
         }
     }
 }
@@ -2350,6 +2374,7 @@ impl Clone for SelectInstData {
             cond: Cell::new(self.cond.get()),
             true_val: Cell::new(self.true_val.get()),
             false_val: Cell::new(self.false_val.get()),
+            fmf: Cell::new(self.fmf.get()),
         }
     }
 }
@@ -2358,6 +2383,7 @@ impl PartialEq for SelectInstData {
         self.cond.get() == other.cond.get()
             && self.true_val.get() == other.true_val.get()
             && self.false_val.get() == other.false_val.get()
+            && self.fmf.get() == other.fmf.get()
     }
 }
 impl Eq for SelectInstData {}
@@ -2366,6 +2392,7 @@ impl core::hash::Hash for SelectInstData {
         self.cond.get().hash(h);
         self.true_val.get().hash(h);
         self.false_val.get().hash(h);
+        self.fmf.get().bits().hash(h);
     }
 }
 

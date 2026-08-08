@@ -2160,6 +2160,32 @@ where
         TrueArm: IntoErasedValue<'ctx, B>,
         FalseArm: IntoErasedValue<'ctx, B>,
     {
+        self.select_erased_with_fmf(cond, true_arm, false_arm, FastMathFlags::empty(), name)
+    }
+
+    /// `select cond, true_arm, false_arm` carrying fast-math flags.
+    ///
+    /// A `select` is an `FPMathOperator` only when its arms are
+    /// floating-point (scalar or vector), which is why `LLParser` rejects
+    /// flags on any other result type rather than dropping them. Non-empty
+    /// flags on a non-FP select are refused here for the same reason.
+    ///
+    /// Flags are lost if the select folds to a constant — as upstream, where
+    /// the folded result is a `Constant` and carries none.
+    pub fn select_erased_with_fmf<Cond, TrueArm, FalseArm, Name>(
+        &self,
+        cond: Cond,
+        true_arm: TrueArm,
+        false_arm: FalseArm,
+        fmf: FastMathFlags,
+        name: Name,
+    ) -> IrResult<ValueId<B>>
+    where
+        Name: AsRef<str>,
+        Cond: IntoErasedValue<'ctx, B>,
+        TrueArm: IntoErasedValue<'ctx, B>,
+        FalseArm: IntoErasedValue<'ctx, B>,
+    {
         let cond = cond.into_erased_value(ModuleRef::new(self.module))?;
         let true_v = true_arm.into_erased_value(ModuleRef::new(self.module))?;
         let false_v = false_arm.into_erased_value(ModuleRef::new(self.module))?;
@@ -2204,11 +2230,18 @@ where
             }
         }
 
+        if !fmf.is_empty() && !self.is_float_or_float_vector(true_v.ty()) {
+            return Err(IrError::InvalidOperation {
+                message: "fast-math flags require a floating-point select result",
+            });
+        }
+
         let result_ty = true_v.ty().id();
         if let Some(folded) = self.folder.fold_select_dyn(cond, true_v, false_v)? {
             return Ok(self.checked_folded_value(folded, result_ty)?.id());
         }
         let payload = SelectInstData::new(cond.slot(), true_v.id, false_v.id);
+        payload.fmf.set(fmf);
         let inst = self.append_instruction(result_ty, InstructionKindData::Select(payload), name);
         Ok(inst.to_erased().id())
     }
@@ -5878,6 +5911,29 @@ where
         Name: AsRef<str>,
         V: IntoFloatValue<'ctx, FloatDyn, B>,
     {
+        self.fp_trunc_dyn_with_fmf(value, dst_ty, FastMathFlags::empty(), name)
+    }
+
+    /// [`Self::fp_trunc_dyn`] carrying fast-math flags.
+    ///
+    /// `fptrunc` and `fpext` are the two cast opcodes that are
+    /// `FPMathOperator`s, which is why `LLParser::parseInstruction` eats
+    /// flags for exactly those two keywords before dispatching to
+    /// `parseCast`. No result-type guard is needed here: the destination is
+    /// a [`FloatType`] by construction.
+    ///
+    /// Flags are lost if the cast folds to a constant, as upstream.
+    pub fn fp_trunc_dyn_with_fmf<V, Name>(
+        &self,
+        value: V,
+        dst_ty: FloatType<'ctx, FloatDyn, B>,
+        fmf: FastMathFlags,
+        name: Name,
+    ) -> IrResult<FloatValueId<FloatDyn, B>>
+    where
+        Name: AsRef<str>,
+        V: IntoFloatValue<'ctx, FloatDyn, B>,
+    {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
         let v = IsValue::as_erased(value);
         if let Some(folded) = self
@@ -5888,6 +5944,7 @@ where
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
         let payload = CastOpData::new(CastOpcode::FpTrunc, v.id);
+        payload.fmf.set(fmf);
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())
@@ -5910,6 +5967,29 @@ where
         Name: AsRef<str>,
         V: IntoFloatValue<'ctx, FloatDyn, B>,
     {
+        self.fp_ext_dyn_with_fmf(value, dst_ty, FastMathFlags::empty(), name)
+    }
+
+    /// [`Self::fp_ext_dyn`] carrying fast-math flags.
+    ///
+    /// `fptrunc` and `fpext` are the two cast opcodes that are
+    /// `FPMathOperator`s, which is why `LLParser::parseInstruction` eats
+    /// flags for exactly those two keywords before dispatching to
+    /// `parseCast`. No result-type guard is needed here: the destination is
+    /// a [`FloatType`] by construction.
+    ///
+    /// Flags are lost if the cast folds to a constant, as upstream.
+    pub fn fp_ext_dyn_with_fmf<V, Name>(
+        &self,
+        value: V,
+        dst_ty: FloatType<'ctx, FloatDyn, B>,
+        fmf: FastMathFlags,
+        name: Name,
+    ) -> IrResult<FloatValueId<FloatDyn, B>>
+    where
+        Name: AsRef<str>,
+        V: IntoFloatValue<'ctx, FloatDyn, B>,
+    {
         let value = value.into_float_value(ModuleRef::new(self.module))?;
         let v = IsValue::as_erased(value);
         if let Some(folded) = self
@@ -5920,6 +6000,7 @@ where
             return Ok(FloatValue::<FloatDyn, B>::from_value_unchecked(folded).id());
         }
         let payload = CastOpData::new(CastOpcode::FpExt, v.id);
+        payload.fmf.set(fmf);
         Ok(self
             .append_fp_at(dst_ty, InstructionKindData::Cast(payload), name)
             .id())

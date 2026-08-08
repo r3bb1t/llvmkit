@@ -47,6 +47,29 @@ and llvmkit rejected.
   against the operand type as upstream reports them, replacing builder-error
   passthrough.
 
+- **Fixed (parser + IR model): fast-math flags on `select`, `phi`, `fptrunc`
+  and `fpext`.** `LLParser::parseInstruction` eats flags for these four
+  keywords before dispatching, then applies them to the result. llvmkit could
+  not parse `select fast`, `fptrunc contract` or `fpext reassoc` at all, and
+  **silently discarded** the flags it did parse on `phi`, so `phi nsz double`
+  round-tripped as a plain `phi`. `SelectInstData`, `PhiData` and `CastOpData`
+  gain an `fmf` slot, the AsmWriter prints it, and new
+  `IrBuilder::select_erased_with_fmf` / `fp_trunc_dyn_with_fmf` /
+  `fp_ext_dyn_with_fmf` plus `set_fast_math_flags` on the phi handles carry it
+  (the plain forms delegate with empty flags, so no existing call site
+  changes). Upstream's two rejections come with them: `fast-math-flags
+  specified for select without floating-point scalar or vector return type`
+  and its `phi` twin.
+
+- **Fixed (parser): the `call` fast-math rejection uses upstream's wording.**
+  Its comment already quoted `fast-math-flags specified for call without
+  floating-point scalar or vector return type` while the code emitted a
+  reworded `expected …` message.
+
+- **New: `Type::is_float_or_float_vector`** — mirrors `isFPOrFPVectorTy`, the
+  predicate that decides whether an instruction is an `FPMathOperator` and may
+  therefore carry fast-math flags.
+
 ### Parser diagnostics are rendered with upstream's exact wording
 
 First wave of the `LLParser` 1:1 parity program. This one is about what a

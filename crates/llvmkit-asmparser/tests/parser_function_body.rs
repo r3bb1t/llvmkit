@@ -610,6 +610,106 @@ fn parses_addrspacecast() {
     assert!(printed.contains("%r = addrspacecast ptr %p to ptr addrspace(1)\n"));
 }
 
+/// `LLParser::parseInstruction` eats fast-math flags for `select`, `phi`,
+/// `fptrunc` and `fpext` before dispatching, then applies them to the
+/// result. llvmkit failed to parse the first three spellings and silently
+/// **dropped** the flags on `phi`, so none of these round-tripped.
+///
+/// Spellings are upstream's own: `select nnan ninf i1 …, float …` from
+/// `test/Transforms/InstCombine/clamp-to-minmax.ll`, and the scalar and
+/// vector `phi nsz` from
+/// `test/Transforms/SROA/propagate-fast-math-flags-on-phi.ll`.
+/// `test/Assembler` carries no fixture for any of them, so
+/// `parseInstruction`'s FMF arms are the anchor (D11).
+#[test]
+fn fast_math_flags_round_trip_on_select_phi_and_fp_casts() {
+    let printed = parse_and_print(
+        "define float @sel(i1 %c, float %a, float %b) {\nentry:\n  \
+           %r = select nnan ninf i1 %c, float %a, float %b\n  \
+           ret float %r\n\
+         }\n",
+    );
+    assert!(
+        printed.contains("%r = select nnan ninf i1 %c, float %a, float %b"),
+        "{printed}"
+    );
+
+    let printed = parse_and_print(
+        "define double @phi_with_nsz(i1 %cmp, double %a, double %b) {\nentry:\n  \
+           br i1 %cmp, label %if.then, label %return\n\
+         if.then:\n  \
+           br label %return\n\
+         return:\n  \
+           %retval = phi nsz double [ %a, %if.then ], [ %b, %entry ]\n  \
+           ret double %retval\n\
+         }\n",
+    );
+    assert!(printed.contains("phi nsz double"), "{printed}");
+
+    let printed = parse_and_print(
+        "define <2 x double> @vector_phi_with_nsz(i1 %cmp, <2 x double> %a, <2 x double> %b) {\n\
+         entry:\n  \
+           br i1 %cmp, label %if.then, label %return\n\
+         if.then:\n  \
+           br label %return\n\
+         return:\n  \
+           %r = phi nsz <2 x double> [ %a, %if.then ], [ %b, %entry ]\n  \
+           ret <2 x double> %r\n\
+         }\n",
+    );
+    assert!(printed.contains("phi nsz <2 x double>"), "{printed}");
+
+    let printed = parse_and_print(
+        "define float @tr(double %x) {\nentry:\n  \
+           %r = fptrunc contract double %x to float\n  \
+           ret float %r\n\
+         }\n",
+    );
+    assert!(
+        printed.contains("%r = fptrunc contract double %x to float"),
+        "{printed}"
+    );
+
+    let printed = parse_and_print(
+        "define double @ex(float %x) {\nentry:\n  \
+           %r = fpext reassoc float %x to double\n  \
+           ret double %r\n\
+         }\n",
+    );
+    assert!(
+        printed.contains("%r = fpext reassoc float %x to double"),
+        "{printed}"
+    );
+}
+
+/// The two rejections `LLParser::parseInstruction` pairs with those arms:
+/// flags are only legal when the result is an `FPMathOperator`.
+#[test]
+fn fast_math_flags_on_non_fp_select_or_phi_are_rejected() {
+    assert_eq!(
+        parse_expect_error(
+            "define i32 @f(i1 %c, i32 %a, i32 %b) {\nentry:\n  \
+               %r = select fast i1 %c, i32 %a, i32 %b\n  \
+               ret i32 %r\n\
+             }\n",
+        ),
+        "fast-math-flags specified for select without floating-point scalar or vector return type"
+    );
+    assert_eq!(
+        parse_expect_error(
+            "define i32 @f(i1 %cmp, i32 %a, i32 %b) {\nentry:\n  \
+               br i1 %cmp, label %t, label %r\n\
+             t:\n  \
+               br label %r\n\
+             r:\n  \
+               %v = phi fast i32 [ %a, %t ], [ %b, %entry ]\n  \
+               ret i32 %v\n\
+             }\n",
+        ),
+        "fast-math-flags specified for phi without floating-point scalar or vector return type"
+    );
+}
+
 /// `LLParser::parseCompare`'s `ICmp` arm accepts pointer operands:
 /// its guard is `!isIntOrIntVectorTy() && !isPtrOrPtrVectorTy()`, so a
 /// pointer comparison is ordinary IR, not an extension.

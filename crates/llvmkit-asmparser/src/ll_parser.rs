@@ -7350,6 +7350,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        // `LLParser::parseInstruction`'s `kw_select` arm eats fast-math flags
+        // before calling `parseSelect`, then applies them to the result --
+        // rejecting them outright when the result is not floating-point.
+        let fmf_loc = self.loc();
+        let fmf = self.parse_optional_fmf()?;
         let cond_ty = self.parse_type(false)?;
         let cond_v = self.parse_value(state, cond_ty)?;
         let cond_value = cond_v;
@@ -7379,6 +7384,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if matches!(true_ty.into_type_enum(), AnyTypeEnum::Token(_)) {
             return Err(self.expected("select arms of a type other than token"));
         }
+        if !fmf.is_empty() && !is_fp_or_fp_vector_type(true_ty) {
+            return Err(self.message_at(
+                fmf_loc,
+                "fast-math-flags specified for select without floating-point scalar or vector return type",
+            ));
+        }
         if let (Ok(condition), Ok(true_constant), Ok(false_constant)) = (
             Constant::try_from(cond_value),
             Constant::try_from(true_v),
@@ -7390,7 +7401,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Ok(folded.as_erased());
         }
         let id = b
-            .select_erased(cond_value, true_v, false_v, result_name.as_str())
+            .select_erased_with_fmf(cond_value, true_v, false_v, fmf, result_name.as_str())
             .map_err(|e| self.builder_err("select", e))?;
         Ok(b.view(id))
     }
@@ -7525,6 +7536,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        // `LLParser::parseInstruction` eats fast-math flags for `fptrunc` and
+        // `fpext` -- the two cast opcodes that are `FPMathOperator`s -- before
+        // dispatching to `parseCast`.
+        let fmf = self.parse_optional_fmf()?;
         let src_ty = self.parse_type(false)?;
         let src_v = self.parse_value(state, src_ty)?;
         self.expect_keyword(Keyword::To, "'to' in fptrunc")?;
@@ -7537,7 +7552,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return Err(self.expected("float destination type for fptrunc")),
         };
         let v = b
-            .fp_trunc_dyn(sv, df, result_name.as_str())
+            .fp_trunc_dyn_with_fmf(sv, df, fmf, result_name.as_str())
             .map_err(|e| self.builder_err("fptrunc", e))?;
         Ok(b.view(v).as_erased())
     }
@@ -7552,6 +7567,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        // `LLParser::parseInstruction` eats fast-math flags for `fptrunc` and
+        // `fpext` -- the two cast opcodes that are `FPMathOperator`s -- before
+        // dispatching to `parseCast`.
+        let fmf = self.parse_optional_fmf()?;
         let src_ty = self.parse_type(false)?;
         let src_v = self.parse_value(state, src_ty)?;
         self.expect_keyword(Keyword::To, "'to' in fpext")?;
@@ -7564,7 +7583,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return Err(self.expected("float destination type for fpext")),
         };
         let v = b
-            .fp_ext_dyn(sv, df, result_name.as_str())
+            .fp_ext_dyn_with_fmf(sv, df, fmf, result_name.as_str())
             .map_err(|e| self.builder_err("fpext", e))?;
         Ok(b.view(v).as_erased())
     }
@@ -7766,8 +7785,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        let _fmf = self.parse_optional_fmf()?;
+        // `LLParser::parseInstruction`'s `kw_phi` arm eats fast-math flags
+        // before calling `parsePHI`, then applies them -- rejecting them when
+        // the phi's result type is not floating-point. They used to be parsed
+        // and dropped here, so `phi fast float ...` round-tripped without its
+        // flags.
+        let fmf_loc = self.loc();
+        let fmf = self.parse_optional_fmf()?;
         let ty = self.parse_type(false)?;
+        if !fmf.is_empty() && !ty.is_float_or_float_vector() {
+            return Err(self.message_at(
+                fmf_loc,
+                "fast-math-flags specified for phi without floating-point scalar or vector return type",
+            ));
+        }
         let name = result_name.as_str();
         // Build the phi and extract its value ID for deferred edge resolution.
         let phi_val = match ty.into_type_enum() {
@@ -7781,7 +7812,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let phi = b
                     .fp_phi_dyn(fp_ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
-                b.view(phi).to_erased()
+                let phi = b.view(phi);
+                phi.set_fast_math_flags(fmf)
+                    .map_err(|e| self.builder_err("phi", e))?;
+                phi.to_erased()
             }
             AnyTypeEnum::Pointer(ptr_ty) => {
                 let phi = b
@@ -7802,7 +7836,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let phi = b
                     .phi_dyn(ty, name)
                     .map_err(|e| self.builder_err("phi", e))?;
-                b.view(phi).to_erased()
+                let phi = b.view(phi);
+                // A `<N x float>` phi is an `FPMathOperator` too; the guard
+                // above already rejected flags on any non-FP result.
+                phi.set_fast_math_flags(fmf)
+                    .map_err(|e| self.builder_err("phi", e))?;
+                phi.to_erased()
             }
             // Everything else is rejected here. `label`, `metadata`, and
             // `token` are first-class per `Type::is_first_class` yet are not
@@ -8063,11 +8102,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             AnyTypeEnum::Function(fn_ty) => fn_ty,
             _ => function_type_with_variadic(self.module, callee_ty, arg_tys, var_args),
         };
-        // `LLParser::parseCall`: "fast-math-flags specified for call without
-        // floating-point scalar or vector return type".
+        // `LLParser::parseCall`'s FMF guard, with its own wording.
         if !fmf.is_empty() && !is_fp_or_fp_vector_type(parsed_fn_ty.return_type()) {
-            return Err(self.expected(
-                "call with floating-point scalar or vector return type for fast-math flags",
+            return Err(self.message(
+                "fast-math-flags specified for call without floating-point scalar or vector return type",
             ));
         }
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty)?;

@@ -25,7 +25,6 @@ use crate::Branded;
 use core::fmt;
 use core::iter::FusedIterator;
 
-use super::IrResult;
 use super::align::Align;
 use super::atomic_ordering::AtomicOrdering;
 use super::atomicrmw_binop::AtomicRmwBinOp;
@@ -34,6 +33,7 @@ use super::calling_conv::CallingConv;
 use super::cmp_predicate::{CmpPredicate, FloatPredicate, IntPredicate};
 use super::derived_types::FunctionType;
 use super::float_kind::FloatKind;
+use super::{IrError, IrResult};
 // Only the crate-internal raw-phi authoring surface lifts through these, and
 // that surface is `#[cfg(test)]` — block arguments are the public way to
 // author a phi. See `docs/design/phi-type-guarantees-design.md`, slice 7.
@@ -1052,6 +1052,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> SelectInst<'ctx, B> {
             _ => unreachable!("SelectInst invariant: kind is Instruction"),
         }
     }
+    /// Fast-math flags. Mirrors `FPMathOperator::getFastMathFlags`, which a
+    /// `select` answers when its arms are floating-point.
+    pub fn fast_math_flags(self) -> FastMathFlags {
+        self.payload().fmf.get()
+    }
     pub fn condition(self) -> Value<'ctx, B> {
         let id = self.payload().cond.get();
         let module = self.module.module();
@@ -1501,6 +1506,30 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
         }
     }
 
+    /// Fast-math flags. Mirrors `FPMathOperator::getFastMathFlags`, which a
+    /// `phi` answers when its result type is floating-point.
+    pub fn fast_math_flags(&self) -> FastMathFlags {
+        self.payload().fmf.get()
+    }
+
+    /// Set the fast-math flags. Mirrors `Instruction::setFastMathFlags`,
+    /// which `LLParser::parseInstruction` calls after `parsePHI` returns.
+    ///
+    /// A `phi` is an `FPMathOperator` only when its result type is
+    /// floating-point, so non-empty flags on any other result type are
+    /// refused — upstream reports that as
+    /// `fast-math-flags specified for phi without floating-point scalar or
+    /// vector return type`.
+    pub fn set_fast_math_flags(&self, fmf: FastMathFlags) -> IrResult<()> {
+        if !fmf.is_empty() && !self.as_view().ty().is_float_or_float_vector() {
+            return Err(IrError::InvalidOperation {
+                message: "fast-math flags require a floating-point phi result",
+            });
+        }
+        self.payload().fmf.set(fmf);
+        Ok(())
+    }
+
     #[inline]
     pub fn as_view(&self) -> InstructionView<'ctx, B> {
         InstructionView::from_parts(self.id, self.module)
@@ -1599,8 +1628,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
     ///
     /// Like upstream, the vacated slot is backfilled from the **end** of the
     /// incoming list, so **incoming order is not preserved**. Errors with
-    /// [`IrError::ArgumentIndexOutOfRange`](crate::IrError::ArgumentIndexOutOfRange)
-    /// when `index` is past the end.
+    /// [`IrError::ArgumentIndexOutOfRange`] when `index` is past the end.
     ///
     /// Requires an `Unverified` module token: like
     /// [`AtomicRmwInst::set_value_operand`], this mutates the IR and must not be
@@ -1742,6 +1770,29 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
             },
             _ => unreachable!("FpPhiInst invariant: kind is Instruction"),
         }
+    }
+
+    /// Fast-math flags. Mirrors `FPMathOperator::getFastMathFlags`.
+    pub fn fast_math_flags(&self) -> FastMathFlags {
+        self.payload().fmf.get()
+    }
+
+    /// Set the fast-math flags. Mirrors `Instruction::setFastMathFlags`,
+    /// which `LLParser::parseInstruction` calls after `parsePHI` returns.
+    ///
+    /// A `phi` is an `FPMathOperator` only when its result type is
+    /// floating-point (scalar or vector), so non-empty flags on any other
+    /// result type are refused; upstream reports that as `fast-math-flags
+    /// specified for phi without floating-point scalar or vector return
+    /// type`.
+    pub fn set_fast_math_flags(&self, fmf: FastMathFlags) -> IrResult<()> {
+        if !fmf.is_empty() && !self.as_view().ty().is_float_or_float_vector() {
+            return Err(IrError::InvalidOperation {
+                message: "fast-math flags require a floating-point phi result",
+            });
+        }
+        self.payload().fmf.set(fmf);
+        Ok(())
     }
 
     #[inline]
@@ -2151,6 +2202,29 @@ impl<'ctx, B: ModuleBrand + 'ctx> OtherPhiInst<'ctx, B> {
             },
             _ => unreachable!("OtherPhiInst invariant: kind is Instruction"),
         }
+    }
+
+    /// Fast-math flags. Mirrors `FPMathOperator::getFastMathFlags`.
+    pub fn fast_math_flags(&self) -> FastMathFlags {
+        self.payload().fmf.get()
+    }
+
+    /// Set the fast-math flags. Mirrors `Instruction::setFastMathFlags`,
+    /// which `LLParser::parseInstruction` calls after `parsePHI` returns.
+    ///
+    /// A `phi` is an `FPMathOperator` only when its result type is
+    /// floating-point (scalar or vector), so non-empty flags on any other
+    /// result type are refused; upstream reports that as `fast-math-flags
+    /// specified for phi without floating-point scalar or vector return
+    /// type`.
+    pub fn set_fast_math_flags(&self, fmf: FastMathFlags) -> IrResult<()> {
+        if !fmf.is_empty() && !self.as_view().ty().is_float_or_float_vector() {
+            return Err(IrError::InvalidOperation {
+                message: "fast-math flags require a floating-point phi result",
+            });
+        }
+        self.payload().fmf.set(fmf);
+        Ok(())
     }
 
     /// Bare arena slot of the underlying value (same slot as

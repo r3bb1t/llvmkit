@@ -1126,6 +1126,10 @@ fn fmt_cast(
 ) -> fmt::Result {
     // `<keyword> <src-ty> <src-ref> to <dst-ty>`
     f.write_str(c.kind.keyword())?;
+    // `fptrunc` and `fpext` are the two `FPMathOperator` casts.
+    if !c.fmf.get().is_empty() {
+        write!(f, " {}", c.fmf.get())?;
+    }
     match c.kind {
         CastOpcode::Trunc => {
             if c.nuw.get() {
@@ -2273,7 +2277,11 @@ fn fmt_phi(
     p: &PhiData,
     slots: &SlotTracker,
 ) -> fmt::Result {
-    write!(f, "phi {} ", inst.ty())?;
+    f.write_str("phi")?;
+    if !p.fmf.get().is_empty() {
+        write!(f, " {}", p.fmf.get())?;
+    }
+    write!(f, " {} ", inst.ty())?;
     let module = inst.module();
     let mut first = true;
     for (vid_cell, bid) in p.incoming.borrow().iter() {
@@ -3306,7 +3314,13 @@ fn fmt_select(
     slots: &SlotTracker,
 ) -> fmt::Result {
     let module = inst.module();
-    f.write_str("select ")?;
+    f.write_str("select")?;
+    // `printInstruction` emits the FPMathOperator flags immediately after the
+    // opcode, before the condition operand.
+    if !s.fmf.get().is_empty() {
+        write!(f, " {}", s.fmf.get())?;
+    }
+    f.write_str(" ")?;
     let cd = module.context().value_data(s.cond.get());
     let cv = Value::from_parts(s.cond.get(), module, cd.ty);
     write!(f, "{} ", cv.ty())?;
