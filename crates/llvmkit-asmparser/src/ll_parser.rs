@@ -439,6 +439,36 @@ fn keyword_starts_top_level_entity(keyword: Keyword) -> bool {
     )
 }
 
+/// Reject a numbered slot that goes *backwards*. Mirrors
+/// `LLParser::checkValueID`.
+///
+/// Skipping ahead is legal — `test/Assembler/skip-value-numbers.ll` accepts
+/// `%10 = add i32 1, 2` as a function's first instruction and renumbers it to
+/// `%1` on output. Only a slot below the frontier is an error, because that
+/// slot is already taken or already passed. llvmkit required exact equality
+/// until 0.0.5, so every skip-ahead spelling in that fixture was rejected.
+///
+/// `kind` and `prefix` are upstream's own arguments: `("global", "@")`,
+/// `("function", "@")`, `("argument", "%")`, `("instruction", "%")` and
+/// `("label", "")` — the label form deliberately has no sigil, so it reads
+/// `label expected to be numbered '11' or greater`.
+fn check_value_id(
+    kind: &'static str,
+    prefix: &'static str,
+    next_id: u32,
+    id: u32,
+    loc: Span,
+) -> ParseResult<()> {
+    if id < next_id {
+        return Err(ParseError::Message {
+            message: format!("{kind} expected to be numbered '{prefix}{next_id}' or greater")
+                .into(),
+            loc: DiagLoc::span(loc),
+        });
+    }
+    Ok(())
+}
+
 fn is_int_or_int_vector_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
     match AnyTypeEnum::from(ty) {
         AnyTypeEnum::Int(_) => true,
@@ -6214,7 +6244,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     state.local_named.insert(n, v);
                 }
                 Some(ParamName::Numbered(id)) => {
-                    if state.local_numbered.contains_key(&id) || id != state.next_unnamed_value_id {
+                    check_value_id("argument", "%", state.next_unnamed_value_id, id, decl_loc)?;
+                    if state.local_numbered.contains_key(&id) {
                         return Err(ParseError::InvalidSlotId {
                             source: AddError::StaleId {
                                 id,
@@ -9545,9 +9576,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 loc: DiagLoc::span(loc),
             });
         }
-        if id != self.next_unnamed_value_id {
-            return Err(self.invalid_numbered_slot(id, loc));
-        }
+        check_value_id("label", "", self.next_unnamed_value_id, id, loc)?;
         self.define_numbered_block(module, id, loc)
     }
 
@@ -9635,9 +9664,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         if let Some(value) = self.local_numbered.get(&id).copied() {
             return self.value_as_block_label(value, loc);
         }
-        if id < self.next_unnamed_value_id {
-            return Err(self.invalid_numbered_slot(id, loc));
-        }
+        // Upstream reaches this rejection one step later: `getBB(ID)` creates
+        // a forward-reference block unconditionally and the *definition* runs
+        // `checkValueID`. llvmkit has no block forward-reference placeholder
+        // yet, so the backward slot is caught here at the reference instead.
+        // Same verdict and same wording; the location differs by one token.
+        // Folds into the definition site when forward references land.
+        check_value_id("label", "", self.next_unnamed_value_id, id, loc)?;
         let label = if let Some(value) = self.numbered_blocks.get(&id).copied() {
             self.value_as_block_label(value, loc)?
         } else {
@@ -9697,7 +9730,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                 }
             }
             LocalLhs::Numbered(id) => {
-                if self.local_numbered.contains_key(id) || *id != self.next_unnamed_value_id {
+                check_value_id("instruction", "%", self.next_unnamed_value_id, *id, loc)?;
+                if self.local_numbered.contains_key(id) {
                     return Err(self.invalid_numbered_slot(*id, loc));
                 }
                 self.local_numbered.insert(*id, v);

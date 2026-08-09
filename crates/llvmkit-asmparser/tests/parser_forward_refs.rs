@@ -33,30 +33,76 @@ fn parse_ok(src: &str) {
         .expect("parser succeeds");
 }
 
-/// Mirrors `test/Assembler/skip-value-numbers-invalid.ll`: stale numbered
-/// SSA values are rejected by monotonic slot checks.
+/// Redefining a numbered slot is the same rule as going backwards, and
+/// `LLParser::checkValueID` answers it with the same message: by the time
+/// `%0` is seen a second time the frontier is already `%1`.
 #[test]
 fn skip_value_numbers_invalid_is_rejected() {
     let err = parse_err(
         "define i32 @f() {\nentry:\n  %0 = add i32 1, 2\n  %0 = add i32 3, 4\n  ret i32 %0\n}\n",
     );
-    assert!(matches!(err, ParseError::InvalidSlotId { .. }));
+    assert_eq!(
+        err.to_string(),
+        "instruction expected to be numbered '%1' or greater"
+    );
 }
 
-/// Mirrors `test/Assembler/skip-value-numbers-invalid.ll`: numbered SSA
-/// definitions may not skip the next unnamed slot.
+/// Ports the three function-scoped halves of
+/// `test/Assembler/skip-value-numbers-invalid.ll`, whose CHECK lines pin
+/// `LLParser::checkValueID`'s message for each `(Kind, Prefix)` pair. Note
+/// the `label` form carries **no** sigil, as upstream spells it.
+///
+/// The rule is one-sided: a numbered slot may not go *backwards*.
 #[test]
-fn skip_ahead_value_number_is_rejected() {
-    let err = parse_err("define i32 @f() {\nentry:\n  %2 = add i32 1, 2\n  ret i32 %2\n}\n");
-    assert!(matches!(err, ParseError::InvalidSlotId { .. }));
+fn numbered_slots_may_not_go_backwards() {
+    for (fixture, expected) in [
+        (
+            include_bytes!("fixtures/upstream/skip-value-numbers/instr_smaller_id.ll").as_slice(),
+            "instruction expected to be numbered '%11' or greater",
+        ),
+        (
+            include_bytes!("fixtures/upstream/skip-value-numbers/arg_smaller_id.ll").as_slice(),
+            "argument expected to be numbered '%11' or greater",
+        ),
+        (
+            include_bytes!("fixtures/upstream/skip-value-numbers/block_smaller_id.ll").as_slice(),
+            "label expected to be numbered '11' or greater",
+        ),
+    ] {
+        let module = Module::dynamic("skip_value_numbers_invalid");
+        let err = Parser::new(fixture, &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("fixture is rejected");
+        assert_eq!(err.to_string(), expected);
+    }
 }
 
-/// Mirrors `LLParser::parseArgumentList`: explicit numbered arguments must
-/// equal the current unnamed argument slot.
+/// Ports `test/Assembler/skip-value-numbers.ll`: skipping *ahead* is legal
+/// for both instruction results and block labels, and the writer renumbers
+/// the gaps away — that fixture's own CHECK lines expect `%10, %20, %30` to
+/// print as `%1, %2, %3`.
+///
+/// This is the half llvmkit got wrong: it required each numbered slot to
+/// equal the frontier exactly, so every spelling in this fixture was
+/// rejected even though `llvm-as` accepts all of them.
 #[test]
-fn skip_ahead_numbered_parameter_is_rejected() {
-    let err = parse_err("define i32 @f(i32 %2) {\nentry:\n  ret i32 %2\n}\n");
-    assert!(matches!(err, ParseError::InvalidSlotId { .. }));
+fn numbered_slots_may_skip_ahead() {
+    for fixture in [
+        include_bytes!("fixtures/upstream/skip-value-numbers/instr_skip_ahead.ll").as_slice(),
+        include_bytes!("fixtures/upstream/skip-value-numbers/blocks_skip_ahead.ll").as_slice(),
+    ] {
+        let module = Module::dynamic("skip_value_numbers");
+        Parser::new(fixture, &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("upstream accepts skipped-ahead numbering");
+        let printed = format!("{module}");
+        assert!(
+            !printed.contains("%10") && !printed.contains("%20") && !printed.contains("%30"),
+            "gaps should be renumbered away on output, got:\n{printed}"
+        );
+    }
 }
 
 /// Mirrors `test/Assembler/2007-03-18-InvalidNumberedVar.ll`: undefined

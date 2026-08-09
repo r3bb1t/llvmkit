@@ -70,6 +70,21 @@ and llvmkit rejected.
   predicate that decides whether an instruction is an `FPMathOperator` and may
   therefore carry fast-math flags.
 
+- **Breaking (parser): numbered slots may skip ahead.** `LLParser::checkValueID`
+  rejects a slot only when it goes *backwards* (`ID < NextID`); a gap is legal
+  and the writer renumbers it away. llvmkit required each numbered instruction,
+  argument and block label to equal the frontier exactly, so it rejected every
+  spelling in `test/Assembler/skip-value-numbers.ll` — `%10 = add i32 1, 2` as
+  a function's first instruction, `define i32 @args(i32 %0, i32 %10, i32 %20)`,
+  and skipped-ahead block labels — all of which `llvm-as` accepts. The five
+  `(kind, prefix)` message forms are upstream's:
+  `instruction expected to be numbered '%11' or greater`, and the `argument`,
+  `label` (deliberately sigil-less), `global` and `function` variants.
+
+  Two llvmkit tests asserted the *opposite* of the fixture they cited —
+  `skip-value-numbers-invalid.ll` rejects going backwards, not skipping ahead.
+  They are replaced by ports of that fixture and of its positive sibling.
+
 ### Parser diagnostics are rendered with upstream's exact wording
 
 First wave of the `LLParser` 1:1 parity program. This one is about what a
