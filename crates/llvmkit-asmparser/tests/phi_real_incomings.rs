@@ -160,10 +160,11 @@ define i32 @f(i32 %a, i1 %c) {
     );
 }
 
-/// The incoming-value type check now reaches a phi whose predecessor is
-/// already terminated: `%pp` is a pointer fed to an `i32` phi, so the edge-add
-/// rejects it at parse time (previously the terminated predecessor was
-/// rejected first, so this path was unreachable).
+/// The incoming-value type check reaches a phi whose predecessor is already
+/// terminated: `%pp` is a pointer fed to an `i32` phi, rejected at parse time.
+/// The wording is `checkValidVariableType`'s, because `parsePHI` reads the
+/// incoming with `parseValue(Ty, …)` and so looks `%pp` up *at the phi's
+/// result type* before the phi ever sees it.
 #[test]
 fn phi_incoming_type_mismatch_from_terminated_predecessor_is_a_parse_error() {
     let src = "\
@@ -177,10 +178,9 @@ merge:
 }
 ";
     let err = parse_err(src);
-    let msg = err.to_string();
-    assert!(
-        msg.contains("phi.add_incoming") && msg.contains("type mismatch"),
-        "expected a phi incoming type-mismatch parse error, got: {msg}"
+    assert_eq!(
+        err.to_string(),
+        "'%pp' defined with type 'ptr' but expected 'i32'"
     );
 }
 

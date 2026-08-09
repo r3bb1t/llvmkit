@@ -122,21 +122,16 @@ return:
     parse_ok(src).expect("well-placed phi must keep parsing");
 }
 
-/// A `phi` whose incoming value type does not match the phi result type is
-/// now a PARSE error, caught at the edge-add call site
-/// (`IrBuilder::phi_add_incoming_from_value`) rather than deferred to
-/// `verify()`. Here the incoming value `%v` is a `ptr` (from `alloca`) fed
-/// to an `i32` phi, so the result-type check rejects the edge and the
-/// parser surfaces it through `builder_err`'s `valid phi.add_incoming:`
-/// prefix.
+/// A `phi` whose incoming value type does not match the phi result type is a
+/// PARSE error, not something deferred to `verify()`. Here the incoming value
+/// `%v` is a `ptr` (from `alloca`) fed to an `i32` phi.
 ///
-/// The predecessor is written as a forward-referenced block (`%fwd`) on
-/// purpose: the resolved-value edge takes the *immediate* add path, and a
-/// forward block is still unterminated at that point, so block resolution
-/// succeeds and control reaches the type check. (A predecessor that is
-/// already terminated — the common case — is rejected earlier by the
-/// parser's `basic_block_for_construction` guard, independent of this
-/// check.)
+/// The rejection comes from `checkValidVariableType`, one layer earlier than
+/// the phi itself: `parsePHI` reads each incoming with
+/// `parseValue(Ty, Op0, PFS)`, so the name is looked up *at the phi's result
+/// type* and disagreeing there is the same error any other operand would
+/// give. The phi's own result-type check stays as the backstop for values
+/// that do not arrive through a name.
 #[test]
 fn phi_incoming_type_mismatch_is_a_parse_error() {
     let src = r#"
@@ -154,10 +149,9 @@ fwd:
 }
 "#;
     let err = parse_err(src);
-    let msg = err.to_string();
-    assert!(
-        msg.contains("phi.add_incoming") && msg.contains("type mismatch"),
-        "expected phi add_incoming type-check parse error, got: {msg}"
+    assert_eq!(
+        err.to_string(),
+        "'%v' defined with type 'ptr' but expected 'i32'"
     );
 }
 

@@ -28,6 +28,7 @@
 //! - Cross-module mixing is rejected by the borrow checker through the
 //!   `'ctx` brand on [`llvmkit_ir::Module`].
 
+use core::cell::RefCell;
 use core::marker::PhantomData;
 use std::borrow::Cow;
 
@@ -39,6 +40,7 @@ use llvmkit_ir::metadata::{
     DebugMetadataOperand, DebugRecord, MetadataAttachmentKind, MetadataFieldValue, MetadataId,
     MetadataKind,
 };
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use llvmkit_ir::{
@@ -82,11 +84,6 @@ fn own_metadata<T>(result: IrResult<T>) -> T {
 type ParsedGlobalInitializer<'ctx, B> = (
     Option<Constant<'ctx, B>>,
     Option<DeferredConstantKind<'ctx, B>>,
-);
-
-type ParsedValueOrDeferredLocal<'ctx, B> = (
-    llvmkit_ir::Value<'ctx, B>,
-    Option<(DeferredLocalValueRef, Span)>,
 );
 
 // ── Type pre-resolution table (mirrors LLParser::NamedTypes / NumberedTypes) ─
@@ -227,7 +224,7 @@ struct DeferredGlobalInitializer<'ctx, B: ModuleBrand> {
 }
 
 struct DeferredBlockAddress<'ctx, B: ModuleBrand> {
-    placeholder: llvmkit_ir::BlockAddressPlaceholder<'ctx, B>,
+    placeholder: llvmkit_ir::ForwardRefValue<'ctx, B>,
     function: NameOrId,
     label: String,
     loc: Span,
@@ -1086,7 +1083,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .block_address(function, &block)
                 .map_err(|e| self.builder_err("blockaddress", e))?;
             item.placeholder
-                .replace_all_uses_with(resolved)
+                .replace_all_uses_with(resolved.as_erased())
                 .map_err(|e| self.builder_err("forward blockaddress", e))?;
         }
         Ok(())
@@ -4237,24 +4234,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         match id {
             ValId::LocalName(name) => pfs
                 .ok_or_else(|| self.expected("local value in function context"))?
-                .local_named
-                .get(&name)
-                .copied()
-                .ok_or_else(|| ParseError::UndefinedSymbol {
-                    kind: SYMBOL_KIND_LOCAL,
-                    id: SymbolId::Named(name),
-                    loc: DiagLoc::span(self.loc()),
-                }),
+                .get_val(self.module, LocalRef::Named(&name), ty, self.loc()),
             ValId::LocalId(id) => pfs
                 .ok_or_else(|| self.expected("local value in function context"))?
-                .local_numbered
-                .get(&id)
-                .copied()
-                .ok_or_else(|| ParseError::UndefinedSymbol {
-                    kind: SYMBOL_KIND_LOCAL,
-                    id: SymbolId::Numbered(id),
-                    loc: DiagLoc::span(self.loc()),
-                }),
+                .get_val(self.module, LocalRef::Numbered(id), ty, self.loc()),
             ValId::GlobalName(name) => self.resolve_global_name_as_value(name),
             ValId::GlobalId(id) => self.resolve_global_id_as_value(id),
             ValId::ApsInt(parsed) => {
@@ -4624,7 +4607,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ParsedBlockAddressFunction::Forward { function, loc } => {
                 let placeholder = self
                     .module
-                    .block_address_placeholder(expected_ty)
+                    .forward_ref_value_placeholder(expected_ty)
                     .map_err(|e| self.builder_err("blockaddress placeholder", e))?;
                 let constant = placeholder.as_constant();
                 self.deferred_block_addresses.push(DeferredBlockAddress {
@@ -7994,7 +7977,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let mut first = true;
         loop {
             if !first {
+                let saved_lex = self.lex.clone();
+                let saved_current = self.current.clone();
                 if !self.eat_punct(PunctKind::Comma)? {
+                    break;
+                }
+                // A trailing `, !dbg !N` attachment is not another incoming
+                // pair. Upstream breaks out of the pair loop on `MetadataVar`
+                // and reports the comma as already eaten (`InstExtraComma`);
+                // llvmkit restores it so `skip_trailing_metadata` sees the
+                // comma it expects, the same backtrack the index loops use.
+                if matches!(self.peek(), Token::MetadataVar(_)) {
+                    self.lex = saved_lex;
+                    self.current = saved_current;
                     break;
                 }
                 if !matches!(self.peek(), Token::LSquare) {
@@ -8008,106 +8003,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             self.bump()?; // eat `[`
             let val_loc = self.loc();
-            // Try to resolve the value from already-defined locals.
-            let val_ref = match self.peek() {
-                Token::LocalVar(_) => {
-                    let n = self
-                        .current_str_payload()
-                        .ok_or_else(|| self.expected("local name in phi incoming value"))?;
-                    self.bump()?;
-                    // Try to resolve immediately; defer if not yet defined.
-                    if let Some(v) = state.local_named.get(&n).copied() {
-                        PhiValRef::Resolved(v)
-                    } else {
-                        PhiValRef::Named(n)
-                    }
-                }
-                Token::LocalVarId(id) => {
-                    let id = *id;
-                    self.bump()?;
-                    if let Some(v) = state.local_numbered.get(&id).copied() {
-                        PhiValRef::Resolved(v)
-                    } else {
-                        PhiValRef::Numbered(id)
-                    }
-                }
-                Token::IntegerLit(_) => {
-                    let int_ty = match ty.into_type_enum() {
-                        AnyTypeEnum::Int(t) => t,
-                        _ => return Err(self.expected("integer literal only valid for int phi")),
-                    };
-                    let parsed =
-                        self.parse_int_literal(ExpectedIntWidth::Bits(int_ty.bit_width()))?;
-                    let bits = lower_parsed_apsint(&parsed, int_ty.bit_width());
-                    let c = int_ty
-                        .const_ap_int(&bits)
-                        .map_err(|e| self.builder_err("phi constant", e))?;
-                    PhiValRef::Resolved(c.as_erased())
-                }
-                Token::Kw(Keyword::Zeroinitializer) => {
-                    self.bump()?;
-                    let v = match ty.into_type_enum() {
-                        AnyTypeEnum::Int(t) => t.const_zero().as_erased(),
-                        AnyTypeEnum::Pointer(t) => t.const_null().as_erased(),
-                        _ => return Err(self.expected("zeroinitializer for int/ptr phi")),
-                    };
-                    PhiValRef::Resolved(v)
-                }
-                Token::Kw(Keyword::Null) => {
-                    self.bump()?;
-                    let v = match ty.into_type_enum() {
-                        AnyTypeEnum::Pointer(t) => t.const_null().as_erased(),
-                        _ => return Err(self.expected("null only valid for pointer phi")),
-                    };
-                    PhiValRef::Resolved(v)
-                }
-                Token::Kw(Keyword::Undef) | Token::Kw(Keyword::Poison) => {
-                    // undef/poison: treat as zeroinitializer for now (value is
-                    // structurally needed to type-check the phi; semantics are
-                    // handled by the verifier / optimizer).
-                    self.bump()?;
-                    let v = match ty.into_type_enum() {
-                        AnyTypeEnum::Int(t) => t.const_zero().as_erased(),
-                        AnyTypeEnum::Pointer(t) => t.const_null().as_erased(),
-                        AnyTypeEnum::Float(_t) => {
-                            self.expect_punct(PunctKind::Comma, "',' in phi incoming pair")?;
-                            let bb_ref = self.parse_phi_label(state)?;
-                            self.expect_punct(PunctKind::RSquare, "']' in phi incoming pair")?;
-                            state.deferred_phi.push(DeferredPhiEdge {
-                                phi_val,
-                                val_ref: PhiValRef::Undef,
-                                bb_ref,
-                                loc: val_loc,
-                            });
-                            continue;
-                        }
-                        _ => return Err(self.expected("undef for int/float/ptr phi")),
-                    };
-                    PhiValRef::Resolved(v)
-                }
-                _ => return Err(self.expected("value in phi incoming pair")),
-            };
+            // Upstream reads the incoming value with the general
+            // `parseValue(Ty, Op0, PFS)`, which mints a forward reference for
+            // a name that is not yet defined — the loop-carried
+            // `%next` of `[ %next, %loop ]` — and accepts every other value
+            // form besides. The edge is added immediately; predecessor
+            // coherence is checked once, for the whole function, by
+            // `check_function_phi_coherence` at `finish`.
+            let val = self.parse_value(state, ty)?;
             self.expect_punct(PunctKind::Comma, "',' in phi incoming pair")?;
             let bb_ref = self.parse_phi_label(state)?;
             self.expect_punct(PunctKind::RSquare, "']' to close phi incoming pair")?;
-            // Either resolve immediately or defer.
-            match val_ref {
-                PhiValRef::Resolved(v) => {
-                    let bb = state.resolve_block_ref(self.module, &bb_ref, val_loc)?;
-                    let tmp_b = llvmkit_ir::IrBuilder::new(self.module);
-                    tmp_b
-                        .phi_add_incoming_from_value(phi_val, v, bb)
-                        .map_err(|e| self.builder_err("phi.add_incoming", e))?;
-                }
-                other => {
-                    state.deferred_phi.push(DeferredPhiEdge {
-                        phi_val,
-                        val_ref: other,
-                        bb_ref,
-                        loc: val_loc,
-                    });
-                }
-            }
+            let bb = state.resolve_block_ref(self.module, &bb_ref, val_loc)?;
+            b.phi_add_incoming_from_value(phi_val, val, bb)
+                .map_err(|e| self.builder_err("phi.add_incoming", e))?;
         }
         Ok(phi_val)
     }
@@ -8732,7 +8641,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .map_err(|_| self.expected("ptr operand for atomicrmw"))?;
         self.expect_punct(PunctKind::Comma, "',' in atomicrmw")?;
         let val_ty = self.parse_type(false)?;
-        let (val_v, deferred_value) = self.parse_value_or_deferred_local(state, val_ty)?;
+        let val_v = self.parse_value(state, val_ty)?;
         let sync_scope = self.parse_optional_syncscope()?;
         let ordering = self.parse_atomic_ordering("atomicrmw ordering")?;
         let align = self.parse_optional_comma_align()?;
@@ -8748,17 +8657,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let v = b
             .atomicrmw(op, ptr, val_v, config, result_name.as_str())
             .map_err(|e| self.builder_err("atomicrmw", e))?;
-        let v = b.view(v);
-        if let Some((val_ref, loc)) = deferred_value {
-            state
-                .deferred_atomicrmw_values
-                .push(DeferredAtomicRmwValue {
-                    inst: v,
-                    val_ref,
-                    loc,
-                });
-        }
-        Ok(v.to_erased())
+        Ok(b.view(v).to_erased())
     }
 
     /// Parse an `atomicrmw` operation keyword.
@@ -9346,34 +9245,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.convert_val_id_to_value(ty, id, Some(state))
     }
 
-    fn parse_value_or_deferred_local(
-        &mut self,
-        state: &PerFunctionState<'ctx, B>,
-        ty: Type<'ctx, B>,
-    ) -> ParseResult<ParsedValueOrDeferredLocal<'ctx, B>> {
-        let loc = self.loc();
-        let id = self.parse_val_id(Some(state), Some(ty))?;
-        match id {
-            ValId::LocalName(name) => match state.local_named.get(&name).copied() {
-                Some(value) => Ok((value, None)),
-                None => Ok((
-                    ty.undef().as_erased(),
-                    Some((DeferredLocalValueRef::Named(name), loc)),
-                )),
-            },
-            ValId::LocalId(id) => match state.local_numbered.get(&id).copied() {
-                Some(value) => Ok((value, None)),
-                None => Ok((
-                    ty.undef().as_erased(),
-                    Some((DeferredLocalValueRef::Numbered(id), loc)),
-                )),
-            },
-            other => self
-                .convert_val_id_to_value(ty, other, Some(state))
-                .map(|value| (value, None)),
-        }
-    }
-
     /// Parse a floating-point literal and perform APFloat semantic conversion.
     fn parse_fp_literal(
         &mut self,
@@ -9490,50 +9361,68 @@ fn hex_word(digits: &str) -> IrResult<u64> {
 
 // ── Function-body helper types ──────────────────────────────────────────────
 
-/// Outgoing reference to an incoming phi value that could not be resolved
-/// immediately (forward reference). Resolved by `PerFunctionState::finish`.
-#[derive(Branded)]
-#[branded(Clone, Debug)]
-enum PhiValRef<'ctx, B: ModuleBrand> {
-    /// Already resolved to a concrete value.
-    Resolved(llvmkit_ir::Value<'ctx, B>),
-    /// Named local (`%name`) not yet defined.
-    Named(String),
-    /// Numbered local (`%N`) not yet defined.
-    Numbered(u32),
-    /// `undef` / `poison` constant — resolved at finish time using zero.
-    Undef,
-}
-
 #[derive(Clone, Debug)]
 enum BlockRef {
     Named(String),
     Numbered(u32),
 }
 
-/// One deferred phi incoming edge. Resolved after all blocks are parsed.
-struct DeferredPhiEdge<'ctx, B: ModuleBrand> {
-    /// The phi instruction's Value handle. Used by `finish()` with
-    /// `phi_add_incoming_from_value` to add the incoming edge.
-    phi_val: llvmkit_ir::Value<'ctx, B>,
-    /// The incoming value reference (may be a forward ref).
-    val_ref: PhiValRef<'ctx, B>,
-    /// Incoming basic block reference.
-    bb_ref: BlockRef,
-    /// Source location for error reporting.
-    loc: llvmkit_support::Span,
+/// A function-local name used before it was defined: the placeholder minted
+/// at the first use, and that use's span.
+///
+/// The pair is what `PerFunctionState::ForwardRefVals` stores
+/// (`std::pair<Value*, LocTy>`). The span is not decoration — upstream
+/// reports `use of undefined value` at the *first* reference, not at the end
+/// of the function.
+struct ForwardRef<'ctx, B: ModuleBrand> {
+    placeholder: llvmkit_ir::ForwardRefValue<'ctx, B>,
+    loc: Span,
 }
 
-#[derive(Clone, Debug)]
-enum DeferredLocalValueRef {
-    Named(String),
+/// How a function-local value was spelled at a use site. Upstream keeps the
+/// two spellings in separate maps and passes `"%" + Name` or `"%" + Twine(ID)`
+/// to `checkValidVariableType`; this carries the same distinction.
+#[derive(Clone, Copy)]
+enum LocalRef<'a> {
+    Named(&'a str),
     Numbered(u32),
 }
 
-struct DeferredAtomicRmwValue<'ctx, B: ModuleBrand> {
-    inst: llvmkit_ir::AtomicRmwInst<'ctx, B>,
-    val_ref: DeferredLocalValueRef,
+impl LocalRef<'_> {
+    /// The sigil-prefixed spelling upstream quotes in its diagnostics.
+    fn display(self) -> String {
+        match self {
+            LocalRef::Named(name) => format!("%{name}"),
+            LocalRef::Numbered(id) => format!("%{id}"),
+        }
+    }
+}
+
+/// Mirrors `LLParser::checkValidVariableType`: a name that resolves to a
+/// value of the wrong type is an error, worded one way when a `label` was
+/// wanted and another way otherwise.
+fn check_valid_variable_type<'ctx, B: ModuleBrand + 'ctx>(
     loc: Span,
+    reference: LocalRef<'_>,
+    ty: Type<'ctx, B>,
+    value: llvmkit_ir::Value<'ctx, B>,
+) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+    let value_ty = value.ty();
+    if value_ty == ty {
+        return Ok(value);
+    }
+    if ty.is_label() {
+        return Err(ParseError::NotABasicBlock {
+            name: reference.display(),
+            loc: DiagLoc::span(loc),
+        });
+    }
+    Err(ParseError::DefinedWithWrongType {
+        name: reference.display(),
+        defined: value_ty.to_string(),
+        expected: ty.to_string(),
+        loc: DiagLoc::span(loc),
+    })
 }
 
 /// Per-function symbol tables. Mirrors `LLParser::PerFunctionState`'s
@@ -9558,11 +9447,20 @@ struct PerFunctionState<'ctx, B: ModuleBrand> {
     numbered_blocks: std::collections::HashMap<u32, llvmkit_ir::Value<'ctx, B>>,
     numbered_block_refs: std::collections::HashMap<u32, Span>,
     defined_numbered_blocks: std::collections::HashSet<u32>,
-    /// Deferred phi incoming edges for forward references. Resolved by
-    /// `finish()` after all blocks in the function have been parsed.
-    deferred_phi: Vec<DeferredPhiEdge<'ctx, B>>,
-    /// Deferred `atomicrmw` value operands for non-PHI forward references.
-    deferred_atomicrmw_values: Vec<DeferredAtomicRmwValue<'ctx, B>>,
+    /// `%name` referenced before it was defined, holding the placeholder
+    /// minted at the first use and that use's span. Mirrors
+    /// `PerFunctionState::ForwardRefVals`.
+    ///
+    /// A `BTreeMap`, not a `HashMap`, because `finishFunction` reports
+    /// `ForwardRefVals.begin()` — the lexicographically smallest name — and
+    /// which of several undefined names is named is part of the diagnostic.
+    /// `RefCell` because a forward reference is created by *reading* an
+    /// operand: every value-parsing path would otherwise have to thread a
+    /// `&mut` down through `parse_val_id` / `convert_val_id_to_value`.
+    forward_ref_named: RefCell<BTreeMap<String, ForwardRef<'ctx, B>>>,
+    /// `%N` referenced before it was defined. Mirrors
+    /// `PerFunctionState::ForwardRefValIDs`; ordered for the same reason.
+    forward_ref_numbered: RefCell<BTreeMap<u32, ForwardRef<'ctx, B>>>,
     /// Source span of each parsed phi, keyed by its result name, so the
     /// end-of-function coherence check in `finish()` can point a diagnostic
     /// at the offending phi instead of at `Module::verify()`.
@@ -9587,8 +9485,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             numbered_blocks: std::collections::HashMap::new(),
             numbered_block_refs: std::collections::HashMap::new(),
             defined_numbered_blocks: std::collections::HashSet::new(),
-            deferred_phi: Vec::new(),
-            deferred_atomicrmw_values: Vec::new(),
+            forward_ref_named: RefCell::new(BTreeMap::new()),
+            forward_ref_numbered: RefCell::new(BTreeMap::new()),
             phi_locs: Vec::new(),
         }
     }
@@ -9801,6 +9699,106 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         self.value_as_block_view(module.view(label).to_erased(), loc)
     }
 
+    /// Look up a function-local value, minting a forward-reference
+    /// placeholder when the name has not been defined yet. Mirrors
+    /// `LLParser::PerFunctionState::getVal`: symbol table, then the
+    /// forward-reference map, then a fresh sentinel of the demanded type.
+    ///
+    /// Blocks are consulted alongside values because upstream keeps both in
+    /// the function's one value symbol table, which is what makes
+    /// `'%x' is not a basic block` and `'%x' defined with type 'label'`
+    /// reachable.
+    fn get_val(
+        &self,
+        module: &'ctx Module<B, Unverified>,
+        reference: LocalRef<'_>,
+        ty: Type<'ctx, B>,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        let existing = match reference {
+            LocalRef::Named(name) => self
+                .local_named
+                .get(name)
+                .copied()
+                .or_else(|| self.blocks.get(name).copied())
+                .or_else(|| {
+                    self.forward_ref_named
+                        .borrow()
+                        .get(name)
+                        .map(|entry| entry.placeholder.as_value())
+                }),
+            LocalRef::Numbered(id) => self
+                .local_numbered
+                .get(&id)
+                .copied()
+                .or_else(|| self.numbered_blocks.get(&id).copied())
+                .or_else(|| {
+                    self.forward_ref_numbered
+                        .borrow()
+                        .get(&id)
+                        .map(|entry| entry.placeholder.as_value())
+                }),
+        };
+        if let Some(value) = existing {
+            return check_valid_variable_type(loc, reference, ty, value);
+        }
+        // "Don't make placeholders with invalid type" — upstream refuses a
+        // sentinel it could not give a type to.
+        if !ty.is_first_class() {
+            return Err(ParseError::Message {
+                message: "invalid use of a non-first-class type".into(),
+                loc: DiagLoc::span(loc),
+            });
+        }
+        let placeholder =
+            module
+                .forward_ref_value_placeholder(ty)
+                .map_err(|e| ParseError::Message {
+                    message: format!("cannot create forward reference: {e}").into(),
+                    loc: DiagLoc::span(loc),
+                })?;
+        let value = placeholder.as_value();
+        let entry = ForwardRef { placeholder, loc };
+        match reference {
+            LocalRef::Named(name) => {
+                self.forward_ref_named
+                    .borrow_mut()
+                    .insert(name.to_owned(), entry);
+            }
+            LocalRef::Numbered(id) => {
+                self.forward_ref_numbered.borrow_mut().insert(id, entry);
+            }
+        }
+        Ok(value)
+    }
+
+    /// Retire a forward reference now that its definition has been parsed.
+    /// Mirrors the `Sentinel->replaceAllUsesWith(Inst)` step of
+    /// `LLParser::PerFunctionState::setInstName`, including the type
+    /// disagreement it reports first. Consuming `entry` is what makes
+    /// "resolved exactly once" hold by construction.
+    fn resolve_forward_ref(
+        entry: ForwardRef<'ctx, B>,
+        definition: llvmkit_ir::Value<'ctx, B>,
+        loc: Span,
+    ) -> ParseResult<()> {
+        if entry.placeholder.ty() != definition.ty() {
+            return Err(ParseError::InstructionForwardReferencedWithType {
+                ty: entry.placeholder.ty().to_string(),
+                loc: DiagLoc::span(loc),
+            });
+        }
+        entry
+            .placeholder
+            .replace_all_uses_with(definition)
+            .map_err(|e| ParseError::Message {
+                message: format!("cannot resolve forward reference: {e}").into(),
+                loc: DiagLoc::span(loc),
+            })
+    }
+
+    /// Install an instruction's result name. Mirrors
+    /// `LLParser::PerFunctionState::setInstName`.
     fn bind_local(
         &mut self,
         lhs: &LocalLhs,
@@ -9810,14 +9808,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         if v.ty().is_void() {
             return match lhs {
                 LocalLhs::None => Ok(()),
-                LocalLhs::Named(_) | LocalLhs::Numbered(_) => Err(ParseError::Expected {
-                    expected: "non-void instruction result for local binding".into(),
+                LocalLhs::Named(_) | LocalLhs::Numbered(_) => Err(ParseError::Message {
+                    message: "instructions returning void cannot have a name".into(),
                     loc: DiagLoc::span(loc),
                 }),
             };
         }
         match lhs {
             LocalLhs::Named(n) => {
+                let forward = self.forward_ref_named.borrow_mut().remove(n.as_str());
+                if let Some(entry) = forward {
+                    Self::resolve_forward_ref(entry, v, loc)?;
+                }
                 if self.local_named.insert(n.clone(), v).is_some() {
                     return Err(ParseError::Redefinition {
                         kind: SYMBOL_KIND_LOCAL,
@@ -9826,119 +9828,74 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                     });
                 }
             }
-            LocalLhs::Numbered(id) => {
-                check_value_id("instruction", "%", self.next_unnamed_value_id, *id, loc)?;
-                if self.local_numbered.contains_key(id) {
-                    return Err(self.invalid_numbered_slot(*id, loc));
+            LocalLhs::Numbered(_) | LocalLhs::None => {
+                let id = match lhs {
+                    LocalLhs::Numbered(id) => *id,
+                    _ => self.next_unnamed_value_id,
+                };
+                check_value_id("instruction", "%", self.next_unnamed_value_id, id, loc)?;
+                // A numbered slot already claimed by a forward-referenced
+                // *block* is upstream's `ForwardRefValIDs` hit with a `label`
+                // sentinel in it — one map there, so one diagnostic.
+                if let Some(block) = self.numbered_blocks.get(&id).copied() {
+                    return Err(ParseError::InstructionForwardReferencedWithType {
+                        ty: block.ty().to_string(),
+                        loc: DiagLoc::span(loc),
+                    });
                 }
-                self.local_numbered.insert(*id, v);
-                self.next_unnamed_value_id = id.saturating_add(1);
-            }
-            LocalLhs::None => {
-                let id = self.next_unnamed_value_id;
-                if self.local_numbered.contains_key(&id) {
+                let forward = self.forward_ref_numbered.borrow_mut().remove(&id);
+                if let Some(entry) = forward {
+                    Self::resolve_forward_ref(entry, v, loc)?;
+                }
+                if self.local_numbered.insert(id, v).is_some() {
                     return Err(self.invalid_numbered_slot(id, loc));
                 }
-                self.local_numbered.insert(id, v);
-                self.next_unnamed_value_id = id.saturating_add(1);
+                self.next_unnamed_value_id = self.next_unnamed_value_id.max(id.saturating_add(1));
             }
         }
         Ok(())
     }
 
-    /// Resolve all deferred phi incoming edges after the function body has
-    /// been fully parsed. Called by `Parser::parse_define` before `}`.
-    fn finish(mut self, module: &'ctx Module<B, Unverified>) -> ParseResult<()> {
+    /// Close the function: every forward reference must have been defined.
+    /// Mirrors `LLParser::PerFunctionState::finishFunction`, called by
+    /// `Parser::parse_define` before `}`.
+    fn finish(self, module: &'ctx Module<B, Unverified>) -> ParseResult<()> {
+        // Upstream holds blocks and values in the one `ForwardRefVals` map,
+        // so an undefined label and an undefined value compete for the same
+        // diagnostic — and both come out as `use of undefined value`, never
+        // as a label. Merging llvmkit's two tables here reproduces both the
+        // wording and `begin()`'s choice of which name to name.
+        let mut undefined_named: BTreeMap<String, Span> = BTreeMap::new();
         for (name, loc) in &self.block_refs {
             if !self.defined_blocks.contains(name) {
-                return Err(ParseError::UndefinedSymbol {
-                    kind: SymbolKind::Block,
-                    id: SymbolId::Named(name.clone()),
-                    loc: DiagLoc::span(*loc),
-                });
+                undefined_named.insert(name.clone(), *loc);
             }
         }
+        for (name, entry) in self.forward_ref_named.borrow().iter() {
+            undefined_named.insert(name.clone(), entry.loc);
+        }
+        if let Some((name, loc)) = undefined_named.into_iter().next() {
+            return Err(ParseError::UndefinedSymbol {
+                kind: SYMBOL_KIND_LOCAL,
+                id: SymbolId::Named(name),
+                loc: DiagLoc::span(loc),
+            });
+        }
+        let mut undefined_numbered: BTreeMap<u32, Span> = BTreeMap::new();
         for (id, loc) in &self.numbered_block_refs {
             if !self.defined_numbered_blocks.contains(id) {
-                return Err(ParseError::UndefinedSymbol {
-                    kind: SymbolKind::Block,
-                    id: SymbolId::Numbered(*id),
-                    loc: DiagLoc::span(*loc),
-                });
+                undefined_numbered.insert(*id, *loc);
             }
         }
-        let atomicrmw_values = std::mem::take(&mut self.deferred_atomicrmw_values);
-        for deferred in atomicrmw_values {
-            let val = match deferred.val_ref {
-                DeferredLocalValueRef::Named(ref n) => self
-                    .local_named
-                    .get(n)
-                    .copied()
-                    .ok_or_else(|| ParseError::UndefinedSymbol {
-                        kind: SYMBOL_KIND_LOCAL,
-                        id: SymbolId::Named(n.clone()),
-                        loc: DiagLoc::span(deferred.loc),
-                    })?,
-                DeferredLocalValueRef::Numbered(id) => {
-                    self.local_numbered.get(&id).copied().ok_or_else(|| {
-                        ParseError::UndefinedSymbol {
-                            kind: SYMBOL_KIND_LOCAL,
-                            id: SymbolId::Numbered(id),
-                            loc: DiagLoc::span(deferred.loc),
-                        }
-                    })?
-                }
-            };
-            deferred
-                .inst
-                .set_value_operand(module, val)
-                .map_err(|e| ParseError::Expected {
-                    expected: format!("valid atomicrmw forward value: {e}").into(),
-                    loc: DiagLoc::span(deferred.loc),
-                })?;
+        for (id, entry) in self.forward_ref_numbered.borrow().iter() {
+            undefined_numbered.insert(*id, entry.loc);
         }
-        let edges = std::mem::take(&mut self.deferred_phi);
-        for edge in edges {
-            let val = match edge.val_ref {
-                PhiValRef::Resolved(v) => v,
-                PhiValRef::Named(ref n) => {
-                    self.local_named
-                        .get(n)
-                        .copied()
-                        .ok_or_else(|| ParseError::UndefinedSymbol {
-                            kind: SYMBOL_KIND_LOCAL,
-                            id: SymbolId::Named(n.clone()),
-                            loc: DiagLoc::span(edge.loc),
-                        })?
-                }
-                PhiValRef::Numbered(id) => {
-                    self.local_numbered.get(&id).copied().ok_or_else(|| {
-                        ParseError::UndefinedSymbol {
-                            kind: SYMBOL_KIND_LOCAL,
-                            id: SymbolId::Numbered(id),
-                            loc: DiagLoc::span(edge.loc),
-                        }
-                    })?
-                }
-                PhiValRef::Undef => {
-                    // Use a zero constant of the appropriate type.
-                    let ty = edge.phi_val.ty();
-                    match llvmkit_ir::AnyTypeEnum::from(ty) {
-                        llvmkit_ir::AnyTypeEnum::Int(t) => t.const_zero().as_erased(),
-                        llvmkit_ir::AnyTypeEnum::Float(_t) => continue,
-                        llvmkit_ir::AnyTypeEnum::Pointer(t) => t.const_null().as_erased(),
-                        _ => continue,
-                    }
-                }
-            };
-            let bb = self.resolve_block_ref(module, &edge.bb_ref, edge.loc)?;
-            let tmp_b = llvmkit_ir::IrBuilder::new(module);
-            tmp_b
-                .phi_add_incoming_from_value(edge.phi_val, val, bb)
-                .map_err(|e| ParseError::Expected {
-                    expected: format!("valid phi add_incoming: {e}").into(),
-                    loc: DiagLoc::span(edge.loc),
-                })?;
+        if let Some((id, loc)) = undefined_numbered.into_iter().next() {
+            return Err(ParseError::UndefinedSymbol {
+                kind: SYMBOL_KIND_LOCAL,
+                id: SymbolId::Numbered(id),
+                loc: DiagLoc::span(loc),
+            });
         }
         // All blocks and edges now exist — every predecessor is known (the
         // parse-time analog of Cranelift's seal_block). Run the shared phi

@@ -289,9 +289,10 @@ pub(crate) enum ConstantData {
     GlobalValueRef { value: ValueSlot },
     /// `null` of a pointer or typed-pointer type.
     PointerNull,
-    /// Temporary parser placeholder for a forward `blockaddress`.
-    /// It is replaced before successful module parsing completes.
-    BlockAddressPlaceholder,
+    /// Temporary parser placeholder standing in for a value that has been
+    /// referenced before it is defined. It is replaced before successful
+    /// module parsing completes.
+    ForwardRefPlaceholder,
     /// Aggregate constant — `ConstantArray`, `ConstantStruct`, or
     /// `ConstantVector`. Element categorisation is determined by the
     /// owning aggregate type.
@@ -388,7 +389,7 @@ impl ConstantData {
             | Self::Float(_)
             | Self::GlobalValueRef { .. }
             | Self::PointerNull
-            | Self::BlockAddressPlaceholder
+            | Self::ForwardRefPlaceholder
             | Self::GepOffset { .. }
             | Self::SymbolDelta { .. }
             | Self::SymbolDeltaPlus { .. }
@@ -403,30 +404,53 @@ impl ConstantData {
     }
 }
 
-/// Linear parser placeholder for a forward `blockaddress`.
+/// Linear parser placeholder standing in for a value referenced before it is
+/// defined.
 ///
-/// The erased [`Constant`] view may be embedded in parsed constants and
-/// instructions, but only this parser-only handle can resolve the placeholder.
+/// Mirrors the sentinel `LLParser` mints on first use — `new Argument(Ty)` in
+/// `PerFunctionState::getVal`, `createGlobalFwdRef` for a `@`-reference, a
+/// stand-in constant for a forward `blockaddress`. The erased [`Value`] view
+/// may be embedded in parsed constants, instructions and metadata, but only
+/// this parser-only handle can resolve the placeholder, and resolving
+/// consumes it: upstream's sentinel is RAUW'd and deleted exactly once, so
+/// the handle is deliberately not [`Copy`].
 #[derive(Branded)]
 #[branded(Debug)]
-pub struct BlockAddressPlaceholder<'ctx, B: ModuleBrand> {
+pub struct ForwardRefValue<'ctx, B: ModuleBrand> {
     constant: Constant<'ctx, B>,
 }
 
-impl<'ctx, B: ModuleBrand + 'ctx> BlockAddressPlaceholder<'ctx, B> {
+impl<'ctx, B: ModuleBrand + 'ctx> ForwardRefValue<'ctx, B> {
     #[inline]
     pub(crate) fn from_constant(constant: Constant<'ctx, B>) -> Self {
         Self { constant }
     }
 
+    /// The placeholder in constant-operand position.
     #[inline]
     pub fn as_constant(&self) -> Constant<'ctx, B> {
         self.constant
     }
 
+    /// The placeholder in value-operand position.
+    #[inline]
+    pub fn as_value(&self) -> Value<'ctx, B> {
+        self.constant.as_erased()
+    }
+
+    /// The type the placeholder was minted at — the type its first use
+    /// demanded.
+    #[inline]
+    pub fn ty(&self) -> Type<'ctx, B> {
+        self.constant.ty()
+    }
+
+    /// Point every use of the placeholder at `replacement` and retire the
+    /// placeholder. Mirrors the `Sentinel->replaceAllUsesWith(Inst)` step of
+    /// `PerFunctionState::setInstName`.
     #[doc(hidden)]
-    pub fn replace_all_uses_with<C: IsConstant<'ctx, B>>(self, replacement: C) -> IrResult<()> {
-        crate::constants::replace_constant_uses_with(self.constant, replacement.as_constant())
+    pub fn replace_all_uses_with(self, replacement: Value<'ctx, B>) -> IrResult<()> {
+        crate::constants::replace_placeholder_uses_with(self.constant, replacement)
     }
 }
 

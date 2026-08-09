@@ -360,9 +360,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                     }
                 }
             }
-            ConstantData::BlockAddressPlaceholder => {
+            ConstantData::ForwardRefPlaceholder => {
                 return Err(IrError::InvalidOperation {
-                    message: "unresolved forward blockaddress placeholder",
+                    message: "unresolved forward-reference placeholder",
                 });
             }
             ConstantData::GlobalValueRef { .. }

@@ -105,22 +105,111 @@ fn numbered_slots_may_skip_ahead() {
     }
 }
 
-/// Mirrors `test/Assembler/2007-03-18-InvalidNumberedVar.ll`: undefined
-/// numbered SSA references are rejected structurally.
+/// Ports `test/Assembler/2007-03-18-InvalidNumberedVar.ll`, whose CHECK line
+/// pins `LLParser::checkValidVariableType`'s wording: `%0` is the `icmp`, so
+/// the `ret i32 %0` asks for it at the wrong type. The fixture reaches this
+/// through unnamed instruction results, which is why it also exercises
+/// `setInstName`'s numbering path.
 #[test]
-fn invalid_numbered_var_is_rejected() {
-    let err = parse_err("define i32 @f() {\nentry:\n  ret i32 %1\n}\n");
-    assert!(matches!(err, ParseError::UndefinedSymbol { .. }));
+fn invalid_numbered_var_reports_the_defining_type() {
+    let module = Module::dynamic("invalid_numbered_var");
+    let err = Parser::new(
+        include_bytes!("fixtures/upstream/invalid-numbered-var/invalid_numbered_var.ll"),
+        &module,
+    )
+    .expect("lexer primes")
+    .parse_module()
+    .expect_err("fixture is rejected");
+    assert_eq!(
+        err.to_string(),
+        "'%0' defined with type 'i1' but expected 'i32'"
+    );
 }
 
-/// Mirrors `test/Assembler/2009-02-01-UnnamedForwardRef.ll`: non-phi unnamed
-/// forward references remain invalid.
+/// A numbered local may be used before it is defined: `PerFunctionState::getVal`
+/// mints a sentinel of the demanded type and `setInstName` replaces every use
+/// of it when the definition arrives. llvmkit rejected this outright before
+/// forward references landed.
+///
+/// No upstream `.ll` fixture asserts the *positive* case for a numbered local
+/// on its own — `2009-02-01-UnnamedForwardRef.ll`, which llvmkit's earlier
+/// test cited here, is a **global** forward reference (`@X = global ptr @0`)
+/// and is ported with the module-level half.
 #[test]
-fn unnamed_forward_ref_is_rejected() {
-    let err = parse_err(
+fn numbered_local_forward_reference_resolves() {
+    let text = parse_and_render(
         "define i32 @f() {\nentry:\n  %0 = add i32 %1, 1\n  %1 = add i32 2, 3\n  ret i32 %0\n}\n",
     );
-    assert!(matches!(err, ParseError::UndefinedSymbol { .. }));
+    assert!(text.contains("%0 = add i32 %1, 1"), "{text}");
+    assert!(text.contains("%1 = add i32 2, 3"), "{text}");
+}
+
+/// The named half of the same rule (`ForwardRefVals` rather than
+/// `ForwardRefValIDs`), resolved by `setInstName`'s named branch.
+///
+/// No upstream counterpart as a standalone fixture; the rule is the anchor
+/// (D11) and `LLParser::PerFunctionState::getVal` is the symbol.
+#[test]
+fn named_local_forward_reference_resolves() {
+    let text = parse_and_render(
+        "define i32 @f() {\nentry:\n  %a = add i32 %b, 1\n  %b = add i32 2, 3\n  ret i32 %a\n}\n",
+    );
+    assert!(text.contains("%a = add i32 %b, 1"), "{text}");
+    assert!(text.contains("%b = add i32 2, 3"), "{text}");
+}
+
+/// A forward reference that is never defined is `finishFunction`'s
+/// `use of undefined value '%x'`, reported at the *first* use.
+///
+/// No upstream counterpart as a standalone fixture; the message is
+/// `LLParser::PerFunctionState::finishFunction`'s, verbatim.
+#[test]
+fn unresolved_local_forward_reference_names_the_first_use() {
+    let err = parse_err("define i32 @f() {\nentry:\n  %a = add i32 %b, 1\n  ret i32 %a\n}\n");
+    assert_eq!(err.to_string(), "use of undefined value '%b'");
+}
+
+/// `setInstName` compares the definition against the type the forward
+/// reference demanded and reports the *reference's* type when they disagree.
+///
+/// No upstream counterpart as a standalone fixture; the message is
+/// `LLParser::PerFunctionState::setInstName`'s, verbatim.
+#[test]
+fn forward_reference_type_disagreement_names_the_reference_type() {
+    let err = parse_err(
+        "define i32 @f() {\nentry:\n  %0 = add i32 %1, 1\n  %1 = add i64 2, 3\n  ret i32 %0\n}\n",
+    );
+    assert_eq!(
+        err.to_string(),
+        "instruction forward referenced with type 'i32'"
+    );
+}
+
+/// A loop-carried phi incoming is the commonest forward reference LLVM emits.
+/// Upstream reads it with the general `parseValue` inside `parsePHI`, so it is
+/// the same machinery as any other operand — no phi-specific deferral.
+///
+/// No upstream counterpart as a standalone fixture; the shape is `parsePHI`'s
+/// own and appears in most `-O2` output.
+#[test]
+fn loop_carried_phi_incoming_resolves() {
+    let text = parse_and_render(
+        "define i32 @f(i32 %n) {\n\
+         entry:\n  \
+           br label %loop\n\
+         loop:\n  \
+           %acc = phi i32 [ 0, %entry ], [ %next, %loop ]\n  \
+           %next = add i32 %acc, 1\n  \
+           %c = icmp slt i32 %next, %n\n  \
+           br i1 %c, label %loop, label %done\n\
+         done:\n  \
+           ret i32 %next\n\
+         }\n",
+    );
+    assert!(
+        text.contains("%acc = phi i32 [ 0, %entry ], [ %next, %loop ]"),
+        "{text}"
+    );
 }
 
 /// Mirrors `test/Assembler/2002-08-15-UnresolvedGlobalReference.ll` and
@@ -180,10 +269,14 @@ fn forward_function_definition_applies_parameter_names() {
 
 /// Mirrors `LLParser::PerFunctionState::finishFunction`: placeholder blocks
 /// created by forward branches must be defined by a later label.
+///
+/// Upstream keeps blocks in the same `ForwardRefVals` map as values, so the
+/// leftover is reported as an undefined **value**, not an undefined label —
+/// `finishFunction` has only the one message.
 #[test]
 fn undefined_block_label_is_rejected() {
     let err = parse_err("define void @f() {\nentry:\n  br label %missing\n}\n");
-    assert!(matches!(err, ParseError::UndefinedSymbol { .. }));
+    assert_eq!(err.to_string(), "use of undefined value '%missing'");
 }
 
 /// Mirrors `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest,

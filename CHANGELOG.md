@@ -19,6 +19,61 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Forward references: use-before-definition, as upstream resolves it
+
+Third wave of the `LLParser` parity program. Upstream mints a typed sentinel
+the first time a name is used and replaces it when the definition arrives
+(`LLParser::getGlobalVal`, `PerFunctionState::getVal` / `setInstName`).
+llvmkit reported `use of undefined value` immediately, rescued only by a
+handful of construct-specific deferral lists. This wave builds the general
+mechanism and retires those lists.
+
+- **Breaking (`llvmkit-ir`): the forward-`blockaddress` placeholder is now the
+  general forward-reference placeholder.** `BlockAddressPlaceholder` is
+  renamed `ForwardRefValue` and `Module::block_address_placeholder` is renamed
+  `Module::forward_ref_value_placeholder`; the payload accepts any first-class
+  type, not only a pointer, because a function-local sentinel carries whatever
+  type its first use demanded — upstream's `new Argument(Ty)`. The handle
+  stays linear: a sentinel is resolved exactly once, so
+  `replace_all_uses_with` consumes it.
+
+- **Breaking (`llvmkit-ir`): `ForwardRefValue::replace_all_uses_with` takes a
+  `Value`, not a `Constant`.** A forward-referenced name is usually defined by
+  an instruction, which is what upstream's `Sentinel->replaceAllUsesWith(Inst)`
+  passes. The underlying walker is correspondingly category-agnostic;
+  replacing a value that a *uniqued constant* embeds still requires a constant
+  replacement, and now says so instead of interning a constant with a
+  non-constant operand.
+
+- **Fixed (parser): a function-local value may be used before it is
+  defined.** `%a = add i32 %b, 1` followed by `%b = add i32 2, 3` is ordinary
+  `.ll`; llvmkit answered `use of undefined value` at the first line. Every
+  local operand now goes through a port of
+  `LLParser::PerFunctionState::getVal`, and every instruction result through a
+  port of `setInstName`. The four construct-specific deferral lists that used
+  to paper over particular cases — phi incomings, `atomicrmw` values — are
+  deleted, along with the `undef` stand-in they parked in the operand
+  meanwhile.
+
+- **Fixed (parser): phi incoming values take the general value path.**
+  `parsePHI` reads each incoming with `parseValue`, so `[ @g, %bb ]`,
+  `[ 1.5, %bb ]` and any constant expression are legal there. llvmkit had a
+  hand-rolled token match accepting only locals, integer literals,
+  `zeroinitializer`, `null`, `undef` and `poison`, and it silently rewrote a
+  forward-referenced `undef` incoming to zero at end of function.
+  `phi i32 [ 0, %a ], !dbg !1` also parses now, matching the trailing-metadata
+  rule the index lists already follow.
+
+- **Fixed (parser): three `PerFunctionState` diagnostics that were llvmkit's
+  own wording.** `'%x' defined with type 'T' but expected 'U'` and
+  `'%x' is not a basic block` (`checkValidVariableType`),
+  `instruction forward referenced with type '<T>'` (`setInstName`), and
+  `instructions returning void cannot have a name`. An undefined *label* is
+  now reported as `use of undefined value '%missing'`: upstream keeps blocks
+  in the same `ForwardRefVals` map as values, and `finishFunction` has only
+  the one message. Which name a leftover diagnostic names is upstream's too —
+  the lexicographically smallest, then the smallest slot number.
+
 ### Parser accepts IR that `llvm-as` accepts (clause order, pointer compares)
 
 Second wave of the `LLParser` parity program. These are inputs LLVM produces

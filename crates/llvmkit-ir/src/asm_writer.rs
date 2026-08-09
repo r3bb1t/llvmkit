@@ -352,7 +352,7 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
         }
         ConstantData::Float(bits) => fmt_float_constant(f, host.ty(), *bits),
         ConstantData::PointerNull => f.write_str("null"),
-        ConstantData::BlockAddressPlaceholder => f.write_str("<forward blockaddress>"),
+        ConstantData::ForwardRefPlaceholder => f.write_str("<forward reference>"),
         ConstantData::Undef => f.write_str("undef"),
         ConstantData::Poison => f.write_str("poison"),
         ConstantData::Aggregate(elems) => fmt_aggregate_constant(f, host, elems),

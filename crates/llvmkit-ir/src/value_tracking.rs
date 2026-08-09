@@ -552,7 +552,7 @@ fn compute_constant_known_bits<'a, 'ctx, B: ModuleBrand + 'ctx>(
         }
         ConstantData::Float(_)
         | ConstantData::GlobalValueRef { .. }
-        | ConstantData::BlockAddressPlaceholder
+        | ConstantData::ForwardRefPlaceholder
         | ConstantData::GepOffset { .. }
         | ConstantData::SymbolDelta { .. }
         | ConstantData::SymbolDeltaPlus { .. }

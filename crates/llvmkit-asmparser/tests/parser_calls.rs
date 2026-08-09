@@ -515,10 +515,10 @@ fn indirect_call_undef_callee_round_trips() {
 }
 
 /// Mirrors `LLParser::PerFunctionState::getVal`'s type check at the callee
-/// position ("'%x' defined with type 'i32' but expected 'ptr'"): a
-/// non-pointer local cannot be a callee. llvmkit surfaces the rule when
-/// converting the parsed callee value to a pointer; no upstream lit
-/// coverage of the diagnostic, rule shape is the anchor (D11).
+/// position: a non-pointer local cannot be a callee, because
+/// `convertValIDToValue` asks `getVal` for the name at pointer type and
+/// `checkValidVariableType` refuses. No upstream lit coverage of the
+/// diagnostic, so the rule shape is the anchor (D11).
 #[test]
 fn indirect_call_non_pointer_callee_rejected() {
     const FIXTURE: &[u8] = include_bytes!(
@@ -528,7 +528,7 @@ fn indirect_call_non_pointer_callee_rejected() {
     assert_fixture_rejected(
         "indirect_call_non_pointer_callee_rejected",
         FIXTURE,
-        "expected pointer callee: type mismatch: expected pointer, got integer",
+        "'%x' defined with type 'i32' but expected 'ptr'",
     );
 }
 

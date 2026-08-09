@@ -101,20 +101,52 @@ fn structurally_equal_constants_are_one_node() -> Result<(), IrError> {
     Ok(())
 }
 
-/// A forward `blockaddress` placeholder is the one constant kind deliberately
+/// A forward-reference placeholder is the one constant kind deliberately
 /// left un-uniqued: placeholders carry no payload, so uniquing would collapse
 /// every pending forward reference in a module into one node and resolving the
 /// first would resolve them all.
+///
+/// No upstream counterpart: upstream's sentinels are heap `Argument` /
+/// `GlobalVariable` objects (`PerFunctionState::getVal`,
+/// `createGlobalFwdRef`) whose distinctness is pointer identity, which
+/// llvmkit's arena model has to establish deliberately instead.
 #[test]
-fn block_address_placeholders_stay_distinct() -> Result<(), IrError> {
+fn forward_ref_placeholders_stay_distinct() -> Result<(), IrError> {
     let m = module_new!("uniquing-placeholder")?;
     let ptr_ty = m.ptr_type(0);
-    let first = m.block_address_placeholder(ptr_ty.as_type())?;
-    let second = m.block_address_placeholder(ptr_ty.as_type())?;
+    let first = m.forward_ref_value_placeholder(ptr_ty.as_type())?;
+    let second = m.forward_ref_value_placeholder(ptr_ty.as_type())?;
     assert_ne!(
         first.as_constant(),
         second.as_constant(),
-        "each pending forward blockaddress must remain its own node"
+        "each pending forward reference must remain its own node"
+    );
+    Ok(())
+}
+
+/// Placeholders are minted at whatever type the first use demanded, not only
+/// at pointer type — `%x = add i32 %fwd, 1` needs an `i32` sentinel, matching
+/// upstream's `new Argument(Ty)` in `PerFunctionState::getVal`. Non-first-class
+/// types are refused there too (`invalid use of a non-first-class type`).
+///
+/// No upstream counterpart: this pins the llvmkit arena representation that
+/// stands in for upstream's typed sentinel objects.
+#[test]
+fn forward_ref_placeholders_take_any_first_class_type() -> Result<(), IrError> {
+    let m = module_new!("placeholder-types")?;
+    let i32_ty = m.i32_type();
+    let first = m.forward_ref_value_placeholder(i32_ty.as_type())?;
+    let second = m.forward_ref_value_placeholder(i32_ty.as_type())?;
+    assert_eq!(first.ty(), i32_ty.as_type());
+    assert_ne!(
+        first.as_constant(),
+        second.as_constant(),
+        "distinctness must not depend on the placeholder's type"
+    );
+    assert!(
+        m.forward_ref_value_placeholder(m.void_type().as_type())
+            .is_err(),
+        "a non-first-class type has no valid sentinel"
     );
     Ok(())
 }

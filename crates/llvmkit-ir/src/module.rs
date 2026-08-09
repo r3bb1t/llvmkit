@@ -56,8 +56,7 @@ use super::attributes::AttributeStorage;
 use super::basic_block::BasicBlock;
 use super::comdat::{ComdatData, ComdatId, ComdatRef, SelectionKind};
 use super::constant::{
-    BlockAddressPlaceholder, Constant, ConstantExprFlags, ConstantExprOpcode, IntoConstantValue,
-    IsConstant,
+    Constant, ConstantExprFlags, ConstantExprOpcode, ForwardRefValue, IntoConstantValue, IsConstant,
 };
 use super::constant_range::metadata_constant_int;
 use super::constants::ConstantExprOptions;
@@ -3467,11 +3466,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.core().block_address::<B, R, S>(function, block)
     }
 
-    pub fn block_address_placeholder(
+    pub fn forward_ref_value_placeholder(
         &'ctx self,
         ty: Type<'ctx, B>,
-    ) -> IrResult<BlockAddressPlaceholder<'ctx, B>> {
-        self.core().block_address_placeholder::<B>(ty)
+    ) -> IrResult<ForwardRefValue<'ctx, B>> {
+        self.core().forward_ref_value_placeholder::<B>(ty)
     }
 
     pub fn dso_local_equivalent(

@@ -655,21 +655,21 @@ impl Context {
         id
     }
 
-    /// A forward `blockaddress` awaiting its referent.
+    /// A forward reference awaiting its referent.
     ///
     /// **The one constant kind that is deliberately not uniqued.** Placeholders
     /// carry no payload, so every one of them is structurally identical — yet
     /// each stands for a *different* unresolved reference that the parser
-    /// replaces individually as the named block is reached. Interning them
+    /// replaces individually as the named value is reached. Interning them
     /// would collapse every pending forward reference in a module into one
     /// node, and resolving the first would silently resolve them all. The name
     /// says `push`, not `intern`, for that reason.
-    pub(crate) fn push_constant_block_address_placeholder(&self, ty: TypeSlot) -> ValueSlot {
+    pub(crate) fn push_constant_forward_ref_placeholder(&self, ty: TypeSlot) -> ValueSlot {
         self.push_value(ValueData {
             ty,
             name: core::cell::RefCell::new(None),
             debug_loc: None,
-            kind: ValueKindData::Constant(ConstantData::BlockAddressPlaceholder),
+            kind: ValueKindData::Constant(ConstantData::ForwardRefPlaceholder),
             use_list: core::cell::RefCell::new(Vec::new()),
         })
     }

@@ -204,6 +204,32 @@ pub enum ParseError {
         loc: DiagLoc,
     },
 
+    /// `'%x' defined with type 'T' but expected 'U'` — mirrors the
+    /// non-label arm of `LLParser::checkValidVariableType`, reached when a
+    /// name already bound in the function — or minted as a forward reference
+    /// at an earlier use — is referenced at a different type. `name` carries
+    /// the sigil, because upstream glues it on before the quotes.
+    #[error("'{name}' defined with type '{defined}' but expected '{expected}'")]
+    DefinedWithWrongType {
+        name: String,
+        defined: String,
+        expected: String,
+        loc: DiagLoc,
+    },
+
+    /// `'%x' is not a basic block` — the label arm of
+    /// `LLParser::checkValidVariableType`: a `label` operand named something
+    /// that is bound to an ordinary value.
+    #[error("'{name}' is not a basic block")]
+    NotABasicBlock { name: String, loc: DiagLoc },
+
+    /// `instruction forward referenced with type '<T>'` — mirrors
+    /// `LLParser::PerFunctionState::setInstName`, where the definition of a
+    /// name disagrees with the type its earlier forward reference demanded.
+    /// The type named is the *forward reference's*, as upstream spells it.
+    #[error("instruction forward referenced with type '{ty}'")]
+    InstructionForwardReferencedWithType { ty: String, loc: DiagLoc },
+
     /// `slot mapping rejected slot id` — wraps a [`SlotAddError`] from
     /// [`crate::numbered_values::NumberedValues::add`]. Mirrors the
     /// `assert(ID >= NextUnusedID)` site that `LLParser` triggers when a
@@ -348,6 +374,9 @@ impl ParseError {
             | ParseError::Message { loc, .. }
             | ParseError::Redefinition { loc, .. }
             | ParseError::UndefinedSymbol { loc, .. }
+            | ParseError::DefinedWithWrongType { loc, .. }
+            | ParseError::NotABasicBlock { loc, .. }
+            | ParseError::InstructionForwardReferencedWithType { loc, .. }
             | ParseError::InvalidSlotId { loc, .. }
             | ParseError::IntegerWidthOutOfRange { loc, .. }
             | ParseError::InvalidMetadataField { loc, .. }

@@ -2756,7 +2756,7 @@ fn is_guaranteed_not_to_be_undef_or_poison<'ctx, B: ModuleBrand + 'ctx>(
         .iter()
         .copied()
         .all(|id| constant_id_guaranteed_not_to_be_undef_or_poison(module, id)),
-        ValueKindData::Constant(ConstantData::Expr(_) | ConstantData::BlockAddressPlaceholder) => {
+        ValueKindData::Constant(ConstantData::Expr(_) | ConstantData::ForwardRefPlaceholder) => {
             false
         }
         ValueKindData::Constant(

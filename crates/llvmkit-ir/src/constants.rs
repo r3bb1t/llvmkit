@@ -26,8 +26,8 @@ use super::array_len::ArrayLen;
 use super::basic_block::BasicBlock;
 use super::block_state::BlockTerminationState;
 use super::constant::{
-    BlockAddressPlaceholder, Constant, ConstantData, ConstantExprData, ConstantExprFlags,
-    ConstantExprInRange, ConstantExprOpcode, IntoConstantValue, IsConstant,
+    Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprInRange,
+    ConstantExprOpcode, ForwardRefValue, IntoConstantValue, IsConstant,
 };
 use super::constant_fold::{
     constant_fold_binary_instruction, constant_fold_cast_instruction,
@@ -1076,26 +1076,30 @@ impl<'ctx> ModuleCore {
         Ok(constant_handle::<B, _>(id, ModuleRef::<B>::new(self), ty))
     }
 
-    /// Parser-only placeholder for a forward `blockaddress` reference.
-    /// It must be RAUW'd to a real [`Self::block_address`] before the parsed
-    /// module is observed.
+    /// Parser-only placeholder for a value referenced before it is defined.
+    /// It must be RAUW'd to the real definition before the parsed module is
+    /// observed.
+    ///
+    /// Mirrors the sentinel side of `LLParser::getGlobalVal` /
+    /// `PerFunctionState::getVal`: upstream mints an `Argument` (or, for a
+    /// `@`-reference, an external-weak `GlobalVariable`) of the demanded type
+    /// and remembers it until the definition arrives. The non-first-class
+    /// rejection is upstream's `invalid use of a non-first-class type`, which
+    /// the parser renders at the reference's own location.
     #[doc(hidden)]
-    pub fn block_address_placeholder<B: ModuleBrand + 'ctx>(
+    pub fn forward_ref_value_placeholder<B: ModuleBrand + 'ctx>(
         &'ctx self,
         ty: Type<'ctx, B>,
-    ) -> IrResult<BlockAddressPlaceholder<'ctx, B>> {
-        if !ty.is_pointer() {
+    ) -> IrResult<ForwardRefValue<'ctx, B>> {
+        if !ty.is_first_class() {
             return Err(IrError::InvalidOperation {
-                message: "blockaddress placeholder must have pointer type",
+                message: "forward-reference placeholder must have first-class type",
             });
         }
         let id = self
             .context()
-            .push_constant_block_address_placeholder(ty.id());
-        Ok(BlockAddressPlaceholder::from_constant(constant_handle::<
-            B,
-            _,
-        >(
+            .push_constant_forward_ref_placeholder(ty.id());
+        Ok(ForwardRefValue::from_constant(constant_handle::<B, _>(
             id,
             ModuleRef::<B>::new(self),
             ty.id(),
@@ -1592,9 +1596,13 @@ fn vector_splat_value(module: &ModuleCore, vector: ValueSlot) -> Option<ValueSlo
         .then_some(first)
 }
 
-pub(super) fn replace_constant_uses_with<'ctx, B: ModuleBrand + 'ctx>(
+/// Retire a forward-reference placeholder in favour of the value that turned
+/// out to define it. Mirrors upstream's `Sentinel->replaceAllUsesWith(V)`,
+/// which likewise accepts any `Value *` — the definition may be an
+/// instruction result or an argument, not only a constant.
+pub(super) fn replace_placeholder_uses_with<'ctx, B: ModuleBrand + 'ctx>(
     from: Constant<'ctx, B>,
-    replacement: Constant<'ctx, B>,
+    replacement: Value<'ctx, B>,
 ) -> IrResult<()> {
     if replacement.ty != from.ty {
         return Err(IrError::TypeMismatch {
@@ -1605,10 +1613,16 @@ pub(super) fn replace_constant_uses_with<'ctx, B: ModuleBrand + 'ctx>(
     if replacement.id == from.id {
         return Ok(());
     }
-    replace_value_uses_with_constant(from.module.module(), from.id, replacement.id)
+    replace_value_uses_with(from.module.module(), from.id, replacement.id)
 }
 
-fn replace_value_uses_with_constant(
+/// Point every recorded use of `from_id` at `replacement_id`.
+///
+/// Category-agnostic: `replacement_id` may name any value. Uniqued constant
+/// users are *re-interned* rather than mutated in place, so a rewritten
+/// constant keeps its structural identity — which is why replacing a value a
+/// constant embeds requires the replacement to be a constant too.
+fn replace_value_uses_with(
     module: &ModuleCore,
     from_id: ValueSlot,
     replacement_id: ValueSlot,
@@ -1630,11 +1644,19 @@ fn replace_value_uses_with_constant(
                 }
             }
             ValueUse::Constant(user_id) => {
+                if !matches!(
+                    module.context().value_data(replacement_id).kind,
+                    ValueKindData::Constant(_)
+                ) {
+                    return Err(IrError::InvalidOperation {
+                        message: "a value embedded in a constant can only be replaced by a constant",
+                    });
+                }
                 if let Some(rewritten_id) =
                     constant_with_replaced_operand(module, user_id, from_id, replacement_id)?
                     && rewritten_id != user_id
                 {
-                    replace_value_uses_with_constant(module, user_id, rewritten_id)?;
+                    replace_value_uses_with(module, user_id, rewritten_id)?;
                 }
             }
             ValueUse::Metadata(id) => {
@@ -1758,7 +1780,7 @@ fn constant_with_replaced_operand(
         | ConstantData::Float(_)
         | ConstantData::GlobalValueRef { .. }
         | ConstantData::PointerNull
-        | ConstantData::BlockAddressPlaceholder
+        | ConstantData::ForwardRefPlaceholder
         | ConstantData::GepOffset { .. }
         | ConstantData::SymbolDelta { .. }
         | ConstantData::SymbolDeltaPlus { .. }
