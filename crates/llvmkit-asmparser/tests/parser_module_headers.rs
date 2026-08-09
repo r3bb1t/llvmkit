@@ -45,6 +45,36 @@ fn dso_local_precedes_visibility_and_dll_storage() {
     }
 }
 
+/// `LLParser::parseOptionalComdat`'s bare form: `comdat` with no parenthesised
+/// name borrows the symbol's own name. llvmkit rejected it on globals with
+/// `expected explicit comdat($name)` and, on functions, silently built a
+/// comdat named `""`.
+///
+/// `test/Assembler` covers only the failing case
+/// (`unnamed-comdat.ll`, ported in `parser_diagnostics.rs`), so the accepting
+/// half is anchored on `parseOptionalComdat` itself (D11).
+#[test]
+fn bare_comdat_borrows_the_symbols_own_name() {
+    let printed = parse_module("$v = comdat any\n@v = global i32 0, comdat\n");
+    assert!(printed.contains("@v = global i32 0, comdat"), "{printed}");
+
+    let printed = parse_module("$f = comdat any\ndefine void @f() comdat {\n  ret void\n}\n");
+    assert!(printed.contains("define void @f() comdat"), "{printed}");
+}
+
+/// `LLParser::parseDeclare` collects metadata attachments written *before*
+/// the header and applies them to the function once it exists. llvmkit went
+/// straight to linkage, so `declare !dbg !0 void @f()` did not parse at all.
+/// `define` has no such prefix form — its attachments follow the header.
+#[test]
+fn declare_accepts_metadata_before_the_header() {
+    let printed = parse_module(
+        "declare !dbg !0 void @f()\n\
+         !0 = !DISubprogram(name: \"f\", spFlags: DISPFlagDefinition)\n",
+    );
+    assert!(printed.contains("declare !dbg !0 void @f()"), "{printed}");
+}
+
 /// Mirrors `LLParser.cpp::parseFunctionHeader`: function definitions accept
 /// non-declaration linkage before the return type.
 #[test]

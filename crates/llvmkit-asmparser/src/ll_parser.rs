@@ -3467,10 +3467,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         _ => return Err(self.expected("comdat variable")),
                     };
                     self.bump()?;
-                    self.expect_punct(PunctKind::RParen, "')' after comdat")?;
+                    self.expect_punct(PunctKind::RParen, "')' after comdat var")?;
                     name
                 } else {
-                    return Err(self.expected("explicit comdat($name)"));
+                    // Bare `comdat` borrows the global's own name
+                    // (`LLParser::parseOptionalComdat`). Only an *unnamed*
+                    // global has no name to borrow, which is the one case
+                    // upstream rejects — llvmkit used to reject the whole
+                    // bare form.
+                    match &name_id {
+                        NameOrId::Name(n) => n.clone(),
+                        NameOrId::Id(_) => {
+                            return Err(self.message("comdat cannot be unnamed"));
+                        }
+                    }
                 };
                 comdat_name = Some(name);
             } else if matches!(self.peek(), Token::MetadataVar(_)) {
@@ -5756,6 +5766,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// unnamed-address arms that have concrete `FunctionData` storage today.
     fn parse_declare(&mut self) -> ParseResult<()> {
         self.expect_keyword(Keyword::Declare, "'declare'")?;
+        // `LLParser::parseDeclare` collects metadata attachments written
+        // *before* the header — `declare !dbg !0 void @f()` — and applies
+        // them once the function exists. `define` has no such prefix form;
+        // its attachments come after the header instead.
+        let mut leading_metadata = Vec::new();
+        while matches!(self.peek(), Token::MetadataVar(_)) {
+            leading_metadata.push(self.parse_named_metadata_attachment()?);
+        }
         let linkage = self.parse_optional_function_linkage(false)?;
         let (dso_locality, visibility, dll_storage_class) =
             self.parse_optional_preemption_visibility_dll()?;
@@ -5968,7 +5986,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             f.set_partition(self.module, partition);
         }
         if let Some(comdat_name) = suffix.comdat {
-            let name = comdat_name.unwrap_or_else(|| f.name().to_owned());
+            // Bare `comdat` borrows the function's own name
+            // (`LLParser::parseOptionalComdat`); an unnamed function has none
+            // to borrow. `test/Assembler/unnamed-comdat.ll` pins this on
+            // `define void @0() comdat`.
+            let name = match comdat_name {
+                Some(name) => name,
+                None if f.name().is_empty() => {
+                    return Err(self.message("comdat cannot be unnamed"));
+                }
+                None => f.name().to_owned(),
+            };
             let comdat = self.module.get_or_insert_comdat(&name);
             f.set_comdat(self.module, comdat)
                 .map_err(|e| self.builder_err("function comdat", e))?;
@@ -6000,7 +6028,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
             }
         }
-        for (kind, id) in suffix.metadata {
+        // Upstream applies the pre-header attachments first, in the order
+        // they were written, then anything the suffix carried.
+        for (kind, id) in leading_metadata.into_iter().chain(suffix.metadata) {
             own_metadata(f.set_metadata(self.module, kind, id));
         }
         if let NameOrId::Id(id) = name_id
@@ -6180,7 +6210,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             f.set_partition(self.module, partition);
         }
         if let Some(comdat_name) = suffix.comdat {
-            let name = comdat_name.unwrap_or_else(|| f.name().to_owned());
+            // Bare `comdat` borrows the function's own name
+            // (`LLParser::parseOptionalComdat`); an unnamed function has none
+            // to borrow. `test/Assembler/unnamed-comdat.ll` pins this on
+            // `define void @0() comdat`.
+            let name = match comdat_name {
+                Some(name) => name,
+                None if f.name().is_empty() => {
+                    return Err(self.message("comdat cannot be unnamed"));
+                }
+                None => f.name().to_owned(),
+            };
             let comdat = self.module.get_or_insert_comdat(&name);
             f.set_comdat(self.module, comdat)
                 .map_err(|e| self.builder_err("function comdat", e))?;

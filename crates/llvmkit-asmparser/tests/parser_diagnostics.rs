@@ -126,6 +126,23 @@ fn dso_local_dllimport_mismatch_matches_upstream_text() {
     );
 }
 
+/// Ports `test/Assembler/unnamed-comdat.ll`, whose CHECK line is
+/// `comdat cannot be unnamed` (`LLParser::parseOptionalComdat`).
+///
+/// Bare `comdat` borrows the enclosing symbol's own name; an unnamed one has
+/// none to borrow. llvmkit used to build a comdat named `""` here, and — on
+/// the *global* path — rejected the bare form outright even for named
+/// globals, which upstream accepts.
+#[test]
+fn unnamed_comdat_matches_upstream_text() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/unnamed-comdat/unnamed_comdat.ll");
+
+    assert_eq!(
+        parse_err("unnamed_comdat", FIXTURE),
+        "comdat cannot be unnamed"
+    );
+}
+
 /// `LLParser::parseParameterList`'s musttail rule. The message *does* start
 /// with `expected `, so it stays a `ParseError::Expected` — this locks that
 /// the word is contributed exactly once by the rendering rather than also

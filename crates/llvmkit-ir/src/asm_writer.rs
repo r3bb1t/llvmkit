@@ -1078,6 +1078,7 @@ pub(super) fn fmt_instruction(
         module_view.core_ref(),
         &md,
         &md_slots,
+        ", ",
     )
 }
 
@@ -2579,6 +2580,22 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         "define"
     };
     write!(f, "{header}")?;
+    // `printFunction` emits a *declaration*'s metadata attachments directly
+    // after the `declare` keyword — `declare !dbg !0 void @f()` — which is
+    // also the position `LLParser::parseDeclare` reads them from.
+    if header == "declare" {
+        let module_view = func.module();
+        let md = module_view.metadata_store();
+        let md_slots = metadata_slot_map(md.nodes());
+        fmt_metadata_attachments(
+            f,
+            &func.metadata_stored(),
+            module_view.core_ref(),
+            &md,
+            &md_slots,
+            " ",
+        )?;
+    }
     // Print non-default linkage between header and return type.
     let linkage_str = linkage.keyword();
     if !linkage_str.is_empty() {
@@ -2691,7 +2708,12 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         f.write_str(" personality ")?;
         fmt_operand(f, personality.as_erased(), None)?;
     }
-    {
+    // A *definition*'s metadata attachments sit here, after the header and
+    // before the `{`. A declaration's were already emitted right after the
+    // `declare` keyword. Both use a space separator, unlike the
+    // comma-separated attachments on globals and instructions
+    // (`AssemblyWriter::printFunction`).
+    if header != "declare" {
         let module_view = func.module();
         let md = module_view.metadata_store();
         let md_slots = metadata_slot_map(md.nodes());
@@ -2701,6 +2723,7 @@ pub(super) fn fmt_function<B: ModuleBrand>(
             module_view.core_ref(),
             &md,
             &md_slots,
+            " ",
         )?;
     }
     if header == "declare" {
@@ -3042,15 +3065,19 @@ fn fmt_specialized_metadata_node(
     f.write_str(")")
 }
 
+/// Mirrors `AssemblyWriter::printMetadataAttachments`, whose `Separator`
+/// argument is `", "` for globals and instructions but `" "` for functions —
+/// `@g = global i32 0, !dbg !0` against `define void @f() !dbg !0 {`.
 fn fmt_metadata_attachments(
     f: &mut fmt::Formatter<'_>,
     attachments: &MetadataAttachmentSet<StoredBrand>,
     module: &ModuleCore,
     store: &MetadataStore,
     slots: &[Option<usize>],
+    separator: &str,
 ) -> fmt::Result {
     for (kind, id) in attachments.iter() {
-        write!(f, ", !{} ", kind.name())?;
+        write!(f, "{separator}!{} ", kind.name())?;
         fmt_metadata_operand(f, id.slot(), module, store, slots)?;
     }
     Ok(())
@@ -3212,6 +3239,7 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
         g.module().core_ref(),
         &md,
         &md_slots,
+        ", ",
     )
 }
 
@@ -3263,6 +3291,7 @@ pub(super) fn fmt_alias<'ctx, B: ModuleBrand + 'ctx>(
         a.module().core_ref(),
         &md,
         &md_slots,
+        ", ",
     )?;
     f.write_str("\n")
 }
@@ -3303,6 +3332,7 @@ pub(super) fn fmt_ifunc<'ctx, B: ModuleBrand + 'ctx>(
         i.module().core_ref(),
         &md,
         &md_slots,
+        ", ",
     )?;
     f.write_str("\n")
 }

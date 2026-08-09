@@ -85,6 +85,30 @@ and llvmkit rejected.
   `skip-value-numbers-invalid.ll` rejects going backwards, not skipping ahead.
   They are replaced by ports of that fixture and of its positive sibling.
 
+- **Fixed (parser): bare `comdat`.** `LLParser::parseOptionalComdat` lets
+  `comdat` with no parenthesised name borrow the symbol's own name. llvmkit
+  rejected the bare form on globals (`expected explicit comdat($name)`) and,
+  on functions, silently built a comdat named `""`. The one case upstream
+  *does* reject — an unnamed symbol, which has no name to borrow — now reports
+  `comdat cannot be unnamed`, ported from
+  `test/Assembler/unnamed-comdat.ll`.
+
+- **Fixed (parser + printer): `declare !dbg !0 void @f()`.**
+  `LLParser::parseDeclare` reads metadata attachments written *before* the
+  header and applies them once the function exists; llvmkit went straight to
+  linkage, so the form did not parse. The printer half was wrong in the same
+  place: `AssemblyWriter::printFunction` emits a declaration's attachments
+  directly after the `declare` keyword and a definition's after the header,
+  both **space**-separated, where llvmkit emitted a comma-separated suffix for
+  both. `fmt_metadata_attachments` now takes the separator, as upstream's
+  `printMetadataAttachments` does — globals and instructions keep `", "`.
+
+  That printer fix reaches further than the `declare` form it was written for:
+  llvmkit also emitted `define void @f(double %x), !dbg !0 {` for
+  *definitions*, and the comma spelling appears nowhere in upstream's test
+  suite — `printFunction` writes `define … ) !dbg !0 {`. A checked-in corpus
+  expectation had encoded the wrong form, and is corrected here.
+
 ### Parser diagnostics are rendered with upstream's exact wording
 
 First wave of the `LLParser` 1:1 parity program. This one is about what a

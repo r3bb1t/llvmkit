@@ -17,7 +17,7 @@ fn parse_and_render(src: &str) -> String {
 const DEBUG_MODULE: &str = r#"
 @g = global i32 0, !dbg !15
 
-define i32 @f(), !dbg !3 {
+define i32 @f() !dbg !3 {
 entry:
   ret i32 0, !dbg !4
 }
@@ -72,6 +72,11 @@ fn specialized_debug_nodes_round_trip() {
 
 /// Mirrors `AsmWriter.cpp::SlotTracker::CreateMetadataSlot`: debug metadata
 /// attachments are printed with canonical dense slots, not literal source ids.
+///
+/// The separators are `AssemblyWriter::printMetadataAttachments`'s: globals
+/// and instructions take `", "`, a function header takes `" "`. The function
+/// line used to be asserted with a comma, which is a spelling that appears
+/// nowhere in `test/Assembler` — upstream writes `define i32 @f() !dbg !1 {`.
 #[test]
 fn function_and_global_debug_attachments_round_trip() {
     let text = parse_and_render(DEBUG_MODULE);
@@ -79,7 +84,7 @@ fn function_and_global_debug_attachments_round_trip() {
         text.contains("@g = global i32 0, !dbg !0"),
         "output:\n{text}"
     );
-    assert!(text.contains("define i32 @f(), !dbg !1"), "output:\n{text}");
+    assert!(text.contains("define i32 @f() !dbg !1"), "output:\n{text}");
     assert!(text.contains("ret i32 0, !dbg !2"), "output:\n{text}");
 }
 
