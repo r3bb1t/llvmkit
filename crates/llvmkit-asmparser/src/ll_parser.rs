@@ -7402,7 +7402,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .try_into()
             .map_err(|_| self.expected("ptr-typed GEP base"))?;
         let mut indices: Vec<llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B>> = Vec::new();
-        while self.eat_punct(PunctKind::Comma)? {
+        while matches!(self.peek(), Token::Comma) {
+            let saved_lex = self.lex.clone();
+            let saved_current = self.current.clone();
+            self.bump()?;
+            // A trailing `, !dbg !N` attachment is not an index. Upstream
+            // breaks out of the index loop on `MetadataVar` and reports the
+            // comma as already eaten (`InstExtraComma`); llvmkit restores it
+            // so `skip_trailing_metadata` sees the comma it expects, the same
+            // backtrack `parse_optional_comma_array_size` uses for alloca.
+            if matches!(self.peek(), Token::MetadataVar(_)) {
+                self.lex = saved_lex;
+                self.current = saved_current;
+                break;
+            }
             let idx_ty = self.parse_type(false)?;
             let idx_v = self.parse_value(state, idx_ty)?;
             let idx: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = idx_v
@@ -7824,7 +7837,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let agg_ty = self.parse_type(false)?;
         let agg_v = self.parse_value(state, agg_ty)?;
         let mut indices = Vec::new();
-        while self.eat_punct(PunctKind::Comma)? {
+        while matches!(self.peek(), Token::Comma) {
+            let saved_lex = self.lex.clone();
+            let saved_current = self.current.clone();
+            self.bump()?;
+            // A trailing `, !dbg !N` attachment is not an index. Upstream
+            // breaks out of the index loop on `MetadataVar` and reports the
+            // comma as already eaten (`InstExtraComma`); llvmkit restores it
+            // so `skip_trailing_metadata` sees the comma it expects, the same
+            // backtrack `parse_optional_comma_array_size` uses for alloca.
+            if matches!(self.peek(), Token::MetadataVar(_)) {
+                self.lex = saved_lex;
+                self.current = saved_current;
+                break;
+            }
             let idx = self.parse_uint32("extractvalue index")?;
             indices.push(idx);
         }
@@ -7850,7 +7876,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let elt_ty = self.parse_type(false)?;
         let elt_v = self.parse_value(state, elt_ty)?;
         let mut indices = Vec::new();
-        while self.eat_punct(PunctKind::Comma)? {
+        while matches!(self.peek(), Token::Comma) {
+            let saved_lex = self.lex.clone();
+            let saved_current = self.current.clone();
+            self.bump()?;
+            // A trailing `, !dbg !N` attachment is not an index. Upstream
+            // breaks out of the index loop on `MetadataVar` and reports the
+            // comma as already eaten (`InstExtraComma`); llvmkit restores it
+            // so `skip_trailing_metadata` sees the comma it expects, the same
+            // backtrack `parse_optional_comma_array_size` uses for alloca.
+            if matches!(self.peek(), Token::MetadataVar(_)) {
+                self.lex = saved_lex;
+                self.current = saved_current;
+                break;
+            }
             let idx = self.parse_uint32("insertvalue index")?;
             indices.push(idx);
         }

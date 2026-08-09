@@ -610,6 +610,46 @@ fn parses_addrspacecast() {
     assert!(printed.contains("%r = addrspacecast ptr %p to ptr addrspace(1)\n"));
 }
 
+/// An index list stops at a metadata attachment rather than trying to read
+/// it as another index. `LLParser::parseIndexList` breaks out of the loop on
+/// `MetadataVar` and reports the comma as already eaten, and
+/// `LLParser::parseGetElementPtr` does the same inline.
+///
+/// llvmkit's three index loops had no such guard, so
+/// `getelementptr i32, ptr %p, i64 1, !dbg !0` tried to parse `!dbg` as a
+/// type — a shape that appears in essentially every `clang -g` module.
+/// `parseAlloc`'s equivalent was already handled; these three were not.
+///
+/// `test/Assembler` has no fixture pairing these opcodes with `!dbg`, so the
+/// two upstream routines are the anchor (D11).
+#[test]
+fn index_lists_stop_at_trailing_metadata() {
+    let printed = parse_and_print(
+        "define i32 @f(ptr %p, {i32, i32} %agg) {\nentry:\n  \
+           %q = getelementptr i32, ptr %p, i64 1, !dbg !0\n  \
+           %e = extractvalue {i32, i32} %agg, 0, !dbg !0\n  \
+           %i = insertvalue {i32, i32} %agg, i32 7, 1, !dbg !0\n  \
+           ret i32 %e, !dbg !0\n\
+         }\n\
+         !0 = !DILocation(line: 1, column: 1, scope: !1)\n\
+         !1 = distinct !DISubprogram(name: \"f\", unit: !2)\n\
+         !2 = !DICompileUnit(language: DW_LANG_C11, file: !3, producer: \"llvmkit\")\n\
+         !3 = !DIFile(filename: \"a.c\", directory: \"/tmp\")\n",
+    );
+    assert!(
+        printed.contains("%q = getelementptr i32, ptr %p, i64 1"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("%e = extractvalue { i32, i32 } %agg, 0"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("%i = insertvalue { i32, i32 } %agg, i32 7, 1"),
+        "{printed}"
+    );
+}
+
 /// `LLParser::parseInstruction` eats fast-math flags for `select`, `phi`,
 /// `fptrunc` and `fpext` before dispatching, then applies them to the
 /// result. llvmkit failed to parse the first three spellings and silently

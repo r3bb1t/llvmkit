@@ -103,6 +103,15 @@ and llvmkit rejected.
   both. `fmt_metadata_attachments` now takes the separator, as upstream's
   `printMetadataAttachments` does — globals and instructions keep `", "`.
 
+- **Fixed (parser): an index list stops at a trailing metadata attachment.**
+  `getelementptr i32, ptr %p, i64 1, !dbg !0` did not parse — the index loop
+  ate the comma and tried to read `!dbg` as a type. `extractvalue` and
+  `insertvalue` had the same hole. Upstream breaks out of the loop on a
+  `MetadataVar` (`LLParser::parseIndexList`, and inline in
+  `parseGetElementPtr`); llvmkit now restores the comma for the trailing-
+  metadata handler, the backtrack `parseAlloc`'s equivalent already used.
+  This shape appears in essentially every `clang -g` module.
+
 - **Fixed (parser): `memory(argmem : read)` parses, and its six diagnostics
   are upstream's.** `LLParser::parseMemoryAttr` puts the lexer in
   `setIgnoreColonInIdentifiers` mode so the colon is a separator, not a label
