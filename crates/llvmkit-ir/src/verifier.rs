@@ -165,18 +165,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
                 ));
             }
             if g.linkage() == Linkage::Common {
-                let init_data = self.module.context().value_data(init.slot());
-                let zero = matches!(
-                    &init_data.kind,
-                    ValueKindData::Constant(ConstantData::Int(words))
-                        if words.iter().all(|w| *w == 0)
-                ) || matches!(
-                    &init_data.kind,
-                    ValueKindData::Constant(ConstantData::Float(0))
-                ) || matches!(
-                    &init_data.kind,
-                    ValueKindData::Constant(ConstantData::PointerNull)
-                );
+                // Upstream asks `GV.getInitializer()->isNullValue()`, which is
+                // true of a zero *aggregate* too — `common global [10 x T]
+                // zeroinitializer` is the shape clang emits. Recognising only
+                // scalar zeros rejected it.
+                let zero = crate::constants::constant_id_is_null_value(self.module, init.slot());
                 if !zero || g.is_constant() || g.comdat().is_some() {
                     return Err(self.fail_global(
                         g,

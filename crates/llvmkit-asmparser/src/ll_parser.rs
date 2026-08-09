@@ -179,6 +179,13 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     deferred_alias_targets: Vec<DeferredAliasTarget<'ctx, B>>,
     deferred_intrinsic_attribute_checks: Vec<DeferredIntrinsicAttributeCheck>,
     forward_function_decls: HashMap<String, Span>,
+    /// `@name` referenced before it was defined, holding the placeholder
+    /// minted at the first use. Mirrors `LLParser::ForwardRefVals`; ordered
+    /// because `validateEndOfModule` reports `begin()`.
+    forward_ref_globals: BTreeMap<String, ForwardRef<'ctx, B>>,
+    /// `@N` referenced before it was defined. Mirrors
+    /// `LLParser::ForwardRefValIDs`.
+    forward_ref_global_ids: BTreeMap<u32, ForwardRef<'ctx, B>>,
     _brand: PhantomData<B>,
 }
 
@@ -853,6 +860,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             deferred_alias_targets: Vec::new(),
             deferred_intrinsic_attribute_checks: Vec::new(),
             forward_function_decls: HashMap::new(),
+            forward_ref_globals: BTreeMap::new(),
+            forward_ref_global_ids: BTreeMap::new(),
             _brand: PhantomData,
         })
     }
@@ -1009,6 +1018,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.resolve_deferred_personality_fns()?;
         self.resolve_deferred_alias_targets()?;
         self.validate_deferred_intrinsic_attribute_checks()?;
+        self.resolve_forward_ref_globals()?;
         self.validate_forward_function_decls()?;
 
         Ok(ParsedModule {
@@ -1091,9 +1101,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn resolve_deferred_alias_targets(&mut self) -> ParseResult<()> {
         let deferred = std::mem::take(&mut self.deferred_alias_targets);
+        // These resolve after the module is parsed; the referent, if it
+        // exists, is a plain address-space-0 pointer.
+        let ptr_ty = self.module.ptr_type(0).as_type();
         for item in deferred {
             let target = self
-                .resolve_global_name_as_constant(item.name.clone())
+                .resolve_global_name_as_constant(item.name.clone(), ptr_ty)
                 .map_err(|err| match err {
                     ParseError::UndefinedSymbol { kind, id, .. } => ParseError::UndefinedSymbol {
                         kind,
@@ -1116,9 +1129,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn resolve_deferred_personality_fns(&mut self) -> ParseResult<()> {
         let deferred = std::mem::take(&mut self.deferred_personality_fns);
+        // These resolve after the module is parsed; the referent, if it
+        // exists, is a plain address-space-0 pointer.
+        let ptr_ty = self.module.ptr_type(0).as_type();
         for item in deferred {
             let personality = self
-                .resolve_global_name_as_constant(item.name.clone())
+                .resolve_global_name_as_constant(item.name.clone(), ptr_ty)
                 .map_err(|err| match err {
                     ParseError::UndefinedSymbol { kind, id, .. } => ParseError::UndefinedSymbol {
                         kind,
@@ -1194,6 +1210,110 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             seen.push(*group);
         }
         false
+    }
+
+    /// Retire every `@`-forward reference against the definition that
+    /// arrived, and report the first that never did.
+    ///
+    /// Mirrors the `ForwardRefVals` / `ForwardRefValIDs` sweep in
+    /// `LLParser::validateEndOfModule`, including its noun: an unresolved
+    /// `@`-reference is a `use of undefined **value**`, where a *redefinition*
+    /// of the same namespace says `global`.
+    fn resolve_forward_ref_globals(&mut self) -> ParseResult<()> {
+        let named = core::mem::take(&mut self.forward_ref_globals);
+        for (name, entry) in named {
+            let Ok(target) = self.resolve_global_name_as_ref(name.clone()) else {
+                return Err(ParseError::UndefinedSymbol {
+                    kind: SymbolKind::GlobalValue,
+                    id: SymbolId::Named(name),
+                    loc: DiagLoc::span(entry.loc),
+                });
+            };
+            let target = self.global_ref_to_constant(target);
+            Self::resolve_global_forward_ref(entry, target)?;
+        }
+        let numbered = core::mem::take(&mut self.forward_ref_global_ids);
+        for (id, entry) in numbered {
+            let Some(target) = self.numbered_globals.get(id).copied() else {
+                return Err(ParseError::UndefinedSymbol {
+                    kind: SymbolKind::GlobalValue,
+                    id: SymbolId::Numbered(id),
+                    loc: DiagLoc::span(entry.loc),
+                });
+            };
+            let target = self.global_ref_to_constant(target);
+            Self::resolve_global_forward_ref(entry, target)?;
+        }
+        Ok(())
+    }
+
+    fn resolve_global_forward_ref(
+        entry: ForwardRef<'ctx, B>,
+        target: llvmkit_ir::Constant<'ctx, B>,
+    ) -> ParseResult<()> {
+        if entry.placeholder.ty() != target.ty() {
+            return Err(ParseError::Message {
+                message: "forward reference and definition of global have different types".into(),
+                loc: DiagLoc::span(entry.loc),
+            });
+        }
+        entry
+            .placeholder
+            .replace_all_uses_with(target.as_erased())
+            .map_err(|e| ParseError::Message {
+                message: format!("cannot resolve forward reference: {e}").into(),
+                loc: DiagLoc::span(entry.loc),
+            })
+    }
+
+    /// Mint (or reuse) the placeholder standing for a not-yet-defined `@`
+    /// symbol. Mirrors the tail of `LLParser::getGlobalVal`, whose
+    /// `createGlobalFwdRef` likewise builds a stand-in at the demanded
+    /// pointer type.
+    fn global_forward_ref(
+        &mut self,
+        name: Option<&str>,
+        id: Option<u32>,
+        ty: Type<'ctx, B>,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
+        if !ty.is_pointer() {
+            return Err(ParseError::Message {
+                message: "global variable reference must have pointer type".into(),
+                loc: DiagLoc::span(loc),
+            });
+        }
+        if let Some(name) = name
+            && let Some(entry) = self.forward_ref_globals.get(name)
+        {
+            return Ok(entry.placeholder.as_constant());
+        }
+        if let Some(id) = id
+            && let Some(entry) = self.forward_ref_global_ids.get(&id)
+        {
+            return Ok(entry.placeholder.as_constant());
+        }
+        let placeholder =
+            self.module
+                .forward_ref_value_placeholder(ty)
+                .map_err(|e| ParseError::Message {
+                    message: format!("cannot create forward reference: {e}").into(),
+                    loc: DiagLoc::span(loc),
+                })?;
+        let constant = placeholder.as_constant();
+        let entry = ForwardRef { placeholder, loc };
+        match (name, id) {
+            (Some(name), _) => {
+                self.forward_ref_globals.insert(name.to_owned(), entry);
+            }
+            (None, Some(id)) => {
+                self.forward_ref_global_ids.insert(id, entry);
+            }
+            (None, None) => {
+                unreachable!("a global forward reference is either named or numbered")
+            }
+        }
+        Ok(constant)
     }
 
     fn validate_forward_function_decls(&self) -> ParseResult<()> {
@@ -4238,8 +4358,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ValId::LocalId(id) => pfs
                 .ok_or_else(|| self.expected("local value in function context"))?
                 .get_val(self.module, LocalRef::Numbered(id), ty, self.loc()),
-            ValId::GlobalName(name) => self.resolve_global_name_as_value(name),
-            ValId::GlobalId(id) => self.resolve_global_id_as_value(id),
+            ValId::GlobalName(name) => self.resolve_global_name_as_value(name, ty),
+            ValId::GlobalId(id) => self.resolve_global_id_as_value(id, ty),
             ValId::ApsInt(parsed) => {
                 let int_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Int(t) => t,
@@ -4288,14 +4408,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     AnyTypeEnum::Pointer(_) => {}
                     _ => return Err(self.expected("global reference for pointer constant")),
                 }
-                self.resolve_global_name_as_constant(name)
+                self.resolve_global_name_as_constant(name, ty)
             }
             ValId::GlobalId(id) => {
                 match ty.into_type_enum() {
                     AnyTypeEnum::Pointer(_) => {}
                     _ => return Err(self.expected("global reference for pointer constant")),
                 }
-                self.resolve_global_id_as_constant(id)
+                self.resolve_global_id_as_constant(id, ty)
             }
             ValId::ApsInt(parsed) => {
                 let int_ty = match ty.into_type_enum() {
@@ -4385,8 +4505,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     }
 
     fn resolve_global_name_as_value(
-        &self,
+        &mut self,
         name: String,
+        ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         if !matches!(
             resolve_intrinsic_name(&name),
@@ -4406,15 +4527,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else if let Some(id) = self.module.ifunc(&name) {
             Ok(self.module.view(id).as_erased())
         } else {
-            Err(ParseError::UndefinedSymbol {
-                kind: SymbolKind::Global,
-                id: SymbolId::Named(name),
-                loc: DiagLoc::span(self.loc()),
-            })
+            let loc = self.loc();
+            self.global_forward_ref(Some(&name), None, ty, loc)
+                .map(|c| c.as_erased())
         }
     }
 
-    fn resolve_global_id_as_value(&self, id: u32) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+    fn resolve_global_id_as_value(
+        &mut self,
+        id: u32,
+        ty: Type<'ctx, B>,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         self.numbered_globals
             .get(id)
             .copied()
@@ -4424,16 +4547,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 GlobalRef::Alias(a) => a.as_erased(),
                 GlobalRef::Ifunc(i) => i.as_erased(),
             })
-            .ok_or_else(|| ParseError::UndefinedSymbol {
-                kind: SymbolKind::Global,
-                id: SymbolId::Numbered(id),
-                loc: DiagLoc::span(self.loc()),
+            .map(Ok)
+            .unwrap_or_else(|| {
+                let loc = self.loc();
+                self.global_forward_ref(None, Some(id), ty, loc)
+                    .map(|c| c.as_erased())
             })
     }
 
     fn resolve_global_name_as_constant(
-        &self,
+        &mut self,
         name: String,
+        ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         if !matches!(
             resolve_intrinsic_name(&name),
@@ -4453,23 +4578,23 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else if let Some(id) = self.module.ifunc(&name) {
             Ok(self.module.view(id).as_global_constant_ptr())
         } else {
-            Err(ParseError::UndefinedSymbol {
-                kind: SymbolKind::Global,
-                id: SymbolId::Named(name),
-                loc: DiagLoc::span(self.loc()),
-            })
+            let loc = self.loc();
+            self.global_forward_ref(Some(&name), None, ty, loc)
         }
     }
 
-    fn resolve_global_id_as_constant(&self, id: u32) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
+    fn resolve_global_id_as_constant(
+        &mut self,
+        id: u32,
+        ty: Type<'ctx, B>,
+    ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         self.numbered_globals
             .get(id)
             .copied()
-            .map(|r| self.global_ref_to_constant(r))
-            .ok_or_else(|| ParseError::UndefinedSymbol {
-                kind: SymbolKind::Global,
-                id: SymbolId::Numbered(id),
-                loc: DiagLoc::span(self.loc()),
+            .map(|r| Ok(self.global_ref_to_constant(r)))
+            .unwrap_or_else(|| {
+                let loc = self.loc();
+                self.global_forward_ref(None, Some(id), ty, loc)
             })
     }
 

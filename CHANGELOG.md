@@ -64,6 +64,28 @@ mechanism and retires those lists.
   deleted, along with the `undef` stand-in they parked in the operand
   meanwhile.
 
+- **Fixed (parser): a `@` symbol may be referenced before it is defined.**
+  `@a = global ptr @b` with `@b` below it is upstream's own
+  `test/Assembler/2009-02-01-UnnamedForwardRef.ll`; llvmkit answered
+  `use of undefined global`. A reference to an unknown `@` name or slot now
+  mints a stand-in at the demanded pointer type
+  (`LLParser::getGlobalVal`), and `validateEndOfModule` retires it against
+  whatever definition arrived. A reference nothing satisfies is
+  `use of undefined value '@x'` — upstream's noun for an unsatisfied *use*
+  is `value`, where a colliding *definition* stays `global`; `SymbolKind`
+  gained a variant rather than smoothing that over.
+
+- **Fixed (`llvmkit-ir`): a `common` global may be initialized with a zero
+  aggregate.** The verifier asked whether the initializer was a zero *scalar*
+  — `Int(0)`, `Float(0)`, `null` — where upstream's
+  `Verifier::visitGlobalVariable` asks `Constant::isNullValue`, which is true
+  of `zeroinitializer` at any type. `common global [10 x %struct] zeroinitializer`
+  is what clang emits, and llvmkit rejected it. The predicate is now one port
+  of `isNullValue`, shared with the shufflevector folder that already had it.
+  Reachable only once forward global references landed: the fixture that
+  exposes it, `test/Assembler/2010-02-05-FunctionLocalMetadataBecomesNull.ll`,
+  had never got past parsing.
+
 - **Fixed (parser): phi incoming values take the general value path.**
   `parsePHI` reads each incoming with `parseValue`, so `[ @g, %bb ]`,
   `[ 1.5, %bb ]` and any constant expression are legal there. llvmkit had a

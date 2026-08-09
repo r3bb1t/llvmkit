@@ -1539,7 +1539,7 @@ fn valid_shufflevector_mask_constant(
     match &module.context().value_data(mask).kind {
         ValueKindData::Constant(ConstantData::Undef | ConstantData::Poison) => true,
         ValueKindData::Constant(ConstantData::Aggregate(_))
-            if constant_id_is_zero_value(module, mask) =>
+            if constant_id_is_null_value(module, mask) =>
         {
             true
         }
@@ -1571,15 +1571,19 @@ fn constant_id_is_undef_or_poison(module: &ModuleCore, id: ValueSlot) -> bool {
     )
 }
 
-fn constant_id_is_zero_value(module: &ModuleCore, id: ValueSlot) -> bool {
+/// Mirrors `Constant::isNullValue`: the all-zero value of the constant's own
+/// type, aggregates included — `zeroinitializer` is exactly this predicate.
+/// A float is null only at `+0.0`, which is the all-zero bit pattern.
+pub(crate) fn constant_id_is_null_value(module: &ModuleCore, id: ValueSlot) -> bool {
     match &module.context().value_data(id).kind {
         ValueKindData::Constant(ConstantData::Int(_)) => {
             const_index_u64(module, id).is_some_and(|value| value == 0)
         }
+        ValueKindData::Constant(ConstantData::Float(bits)) => *bits == 0,
         ValueKindData::Constant(ConstantData::PointerNull) => true,
         ValueKindData::Constant(ConstantData::Aggregate(elements)) => elements
             .iter()
-            .all(|element| constant_id_is_zero_value(module, *element)),
+            .all(|element| constant_id_is_null_value(module, *element)),
         _ => false,
     }
 }

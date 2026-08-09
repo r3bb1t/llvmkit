@@ -56,8 +56,16 @@ impl DiagLoc {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[non_exhaustive]
 pub enum SymbolKind {
-    /// `@name` — function or global variable.
+    /// `@name` — function or global variable, as a *definition*.
     Global,
+    /// `@name` — the same namespace, as an unsatisfied *use*.
+    ///
+    /// Upstream words the two sides differently and llvmkit reproduces the
+    /// split rather than smoothing it: `checkValueID` and the redefinition
+    /// sites are handed the noun `"global"`, while `validateEndOfModule`'s
+    /// leftover sweep hard-codes `"use of undefined value '@" + Name`. Same
+    /// sigil, different noun.
+    GlobalValue,
     /// `%name` — function-local SSA value or argument.
     Local,
     /// `%name` at the type position — named or numbered struct type.
@@ -82,7 +90,7 @@ impl SymbolKind {
     #[inline]
     pub const fn sigil(self) -> char {
         match self {
-            SymbolKind::Global => '@',
+            SymbolKind::Global | SymbolKind::GlobalValue => '@',
             SymbolKind::Local | SymbolKind::Type | SymbolKind::Block => '%',
             SymbolKind::Metadata => '!',
             SymbolKind::AttrGroup => '#',
@@ -102,6 +110,7 @@ impl core::fmt::Display for SymbolKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
             SymbolKind::Global => "global",
+            SymbolKind::GlobalValue => "value",
             SymbolKind::Local => "value",
             SymbolKind::Type => "type",
             SymbolKind::Block => "label",

@@ -220,6 +220,48 @@ fn unresolved_global_reference_is_rejected() {
     assert!(matches!(err, ParseError::UndefinedSymbol { .. }));
 }
 
+/// Ports `test/Assembler/2009-02-01-UnnamedForwardRef.ll` (PR3372), whose RUN
+/// line is `llvm-as | llvm-dis`: `@X`'s initializer names `@0` before `@0`
+/// exists. `getGlobalVal` mints a stand-in and `validateEndOfModule` retires
+/// it — the module-level twin of the function-local machinery above.
+#[test]
+fn unnamed_global_forward_reference_resolves() {
+    let module = Module::dynamic("unnamed_forward_ref");
+    Parser::new(
+        include_bytes!("fixtures/upstream/unnamed-forward-ref/unnamed_forward_ref.ll"),
+        &module,
+    )
+    .expect("lexer primes")
+    .parse_module()
+    .expect("upstream accepts a forward global reference");
+    let text = format!("{module}");
+    assert!(text.contains("@X = global ptr @0"), "{text}");
+    assert!(text.contains("@0 = global i32 4"), "{text}");
+}
+
+/// The named twin: `@a = global ptr @b` with `@b` below it.
+///
+/// No upstream counterpart as a standalone fixture; the rule is
+/// `LLParser::getGlobalVal`'s and the numbered form is pinned above.
+#[test]
+fn named_global_forward_reference_resolves() {
+    let text = parse_and_render("@a = global ptr @b\n@b = global i32 7\n");
+    assert!(text.contains("@a = global ptr @b"), "{text}");
+    assert!(text.contains("@b = global i32 7"), "{text}");
+}
+
+/// A `@`-reference that no definition ever satisfies is
+/// `validateEndOfModule`'s `use of undefined value '@x'` — the noun is
+/// **value**, not `global`, which upstream reserves for redefinition.
+///
+/// No upstream counterpart as a standalone fixture; the message is
+/// `LLParser::validateEndOfModule`'s, verbatim.
+#[test]
+fn unresolved_global_forward_reference_names_the_first_use() {
+    let err = parse_err("@a = global ptr @missing\n");
+    assert_eq!(err.to_string(), "use of undefined value '@missing'");
+}
+
 /// Mirrors `test/Assembler/2002-05-02-InvalidForwardRef.ll`: forward function
 /// calls resolve to the later declaration when the signatures match.
 #[test]
