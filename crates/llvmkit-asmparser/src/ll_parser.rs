@@ -49,8 +49,8 @@ use llvmkit_ir::{
     IrBuilder, IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
     Positioned, RoundingMode, SelectionKind, ShuffleMaskElem, Signedness, StructType, SyncScope,
     ThreadLocalMode, Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, UseListOrderBbRecord,
-    UseListOrderRecord, Visibility, constant_fold_select_instruction, derived_types::PointerType,
-    resolve_intrinsic_name, shufflevector_mask_from_constant,
+    UseListOrderRecord, Visibility, derived_types::PointerType, resolve_intrinsic_name,
+    shufflevector_mask_from_constant,
 };
 use llvmkit_macros::Branded;
 use llvmkit_support::{Span, Spanned};
@@ -7492,16 +7492,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 "fast-math-flags specified for select without floating-point scalar or vector return type",
             ));
         }
-        if let (Ok(condition), Ok(true_constant), Ok(false_constant)) = (
-            Constant::try_from(cond_value),
-            Constant::try_from(true_v),
-            Constant::try_from(false_v),
-        ) && let Some(folded) =
-            constant_fold_select_instruction(condition, true_constant, false_constant)
-                .map_err(|e| self.builder_err("select", e))?
-        {
-            return Ok(folded.as_erased());
-        }
+        // No constant folding here. `LLParser::parseSelect` ends in an
+        // unconditional `SelectInst::Create`, and the parser's builder is
+        // already a `NoFolder` one, so an all-constant `select` must still
+        // become an instruction. Folding it away made `%r = select i1 true,
+        // i32 5, i32 5` vanish from the printed module and left a trailing
+        // `!dbg` to attach to whatever instruction preceded it — the
+        // attachment path takes the block's last instruction, and a folded
+        // select adds none. LLVM 22 removed `select` constexprs outright
+        // (`select constexprs are no longer supported`), so there is no
+        // constant form for this to fold *into*.
         let id = b
             .select_erased_with_fmf(cond_value, true_v, false_v, fmf, result_name.as_str())
             .map_err(|e| self.builder_err("select", e))?;

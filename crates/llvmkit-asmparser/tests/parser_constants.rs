@@ -178,24 +178,33 @@ fn constant_expr_fold_cast_fixture_matches_upstream() {
     assert!(text.contains("@K = global ptr @J"), "{text}");
 }
 
-/// Exact vector-select folding excerpt from
-/// `test/Assembler/ConstantExprFoldSelect.ll` lines 5-9.
+/// `test/Assembler/ConstantExprFoldSelect.ll` body, parsed rather than
+/// optimized: an all-constant `select` survives the parser as an
+/// instruction.
+///
+/// The fixture's own RUN line is `opt -S -passes=instsimplify`, so the
+/// folding its CHECK line expects is a **pass** result, not a parse result —
+/// `LLParser::parseSelect` ends in an unconditional `SelectInst::Create`.
+/// This test used to assert the folded vector from a bare parse, which made
+/// llvmkit's parser do in one step what upstream splits across two; the
+/// folding half is covered directly through the API in
+/// `llvmkit-ir/tests/constant_fold.rs`.
+///
+/// LLVM 22 also removed `select` constexprs outright, so there is no
+/// constant form for a parser-side fold to produce.
 #[test]
-fn constant_expr_fold_select_vector_fixture_matches_upstream() {
+fn constant_select_survives_parsing_as_an_instruction() {
     const FIXTURE: &[u8] = include_bytes!(
         "fixtures/upstream/ConstantExprFoldSelect/constant_expr_fold_select_vector_fixture_matches_upstream.ll"
     );
 
-    let text = parse_and_render(
-        "constant_expr_fold_select_vector_fixture_matches_upstream",
-        FIXTURE,
-    );
+    let text = parse_and_render("constant_select_survives_parsing", FIXTURE);
     assert_parse_print_parse_stable(&text);
+    assert!(text.contains("%s = select <4 x i1>"), "{text}");
     assert!(
-        text.contains("<i16 undef, i16 -2, i16 -3, i16 4>"),
+        !text.contains("<i16 undef, i16 -2, i16 -3, i16 4>"),
         "{text}"
     );
-    assert!(!text.contains("select <4 x i1>"), "{text}");
 }
 
 /// Direct port of `LLParser::parseValID`'s general

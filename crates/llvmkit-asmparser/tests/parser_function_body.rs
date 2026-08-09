@@ -610,6 +610,47 @@ fn parses_addrspacecast() {
     assert!(printed.contains("%r = addrspacecast ptr %p to ptr addrspace(1)\n"));
 }
 
+/// Every clause shape `LLParser::parseAlloc` accepts. Its comma arm branches
+/// four ways — `align`, `addrspace`, a metadata attachment, or an element
+/// count — and the count arm then repeats the same three-way branch, so
+/// `align` is legal both with and without a size.
+///
+/// `test/Assembler/align-inst.ll` and `alloca-addrspace*.ll` cover single
+/// clauses; the combinations are anchored on `parseAlloc` itself (D11).
+#[test]
+fn alloca_accepts_every_upstream_clause_order() {
+    for (src, needle) in [
+        ("%p = alloca i32", "alloca i32, align 4"),
+        ("%p = alloca i32, align 8", "alloca i32, align 8"),
+        (
+            "%p = alloca i32, align 8, addrspace(5)",
+            "alloca i32, align 8, addrspace(5)",
+        ),
+        (
+            "%p = alloca i32, addrspace(5)",
+            "alloca i32, align 4, addrspace(5)",
+        ),
+        ("%p = alloca i32, i32 %n", "alloca i32, i32 %n, align 4"),
+        (
+            "%p = alloca i32, i32 %n, align 8",
+            "alloca i32, i32 %n, align 8",
+        ),
+        (
+            "%p = alloca i32, i32 %n, align 8, addrspace(5)",
+            "alloca i32, i32 %n, align 8, addrspace(5)",
+        ),
+        (
+            "%p = alloca i32, i32 %n, addrspace(5)",
+            "alloca i32, i32 %n, align 4, addrspace(5)",
+        ),
+    ] {
+        let printed = parse_and_print(&format!(
+            "define void @f(i32 %n) {{\nentry:\n  {src}\n  ret void\n}}\n"
+        ));
+        assert!(printed.contains(needle), "for `{src}` got:\n{printed}");
+    }
+}
+
 /// An index list stops at a metadata attachment rather than trying to read
 /// it as another index. `LLParser::parseIndexList` breaks out of the loop on
 /// `MetadataVar` and reports the comma as already eaten, and

@@ -103,6 +103,24 @@ and llvmkit rejected.
   both. `fmt_metadata_attachments` now takes the separator, as upstream's
   `printMetadataAttachments` does — globals and instructions keep `", "`.
 
+- **Breaking (parser): an all-constant `select` stays an instruction.**
+  `LLParser::parseSelect` ends in an unconditional `SelectInst::Create`, and
+  the parser's own builder already uses `NoFolder` — but llvmkit folded a
+  constant `select` away in the parse arm itself, bypassing both. So
+  `%r = select i1 true, i32 5, i32 5` vanished from the printed module, and a
+  trailing `!dbg` on it landed on whatever instruction came before, since the
+  attachment path takes the block's last instruction and a folded select adds
+  none. LLVM 22 removed `select` constexprs outright (llvmkit itself reports
+  `select constexprs are no longer supported`), so there is no constant form
+  for a parser-side fold to produce.
+
+  The test that covered this cited `test/Assembler/ConstantExprFoldSelect.ll`
+  while asserting its `CHECK` line from a bare parse — but that fixture's
+  `RUN` line is `opt -S -passes=instsimplify`, so the folding it checks is a
+  *pass* result. It now asserts what the parser does; the folding half was
+  already covered directly through the API in
+  `llvmkit-ir/tests/constant_fold.rs`.
+
 - **Fixed (parser): an index list stops at a trailing metadata attachment.**
   `getelementptr i32, ptr %p, i64 1, !dbg !0` did not parse — the index loop
   ate the comma and tried to read `!dbg` as a type. `extractvalue` and
