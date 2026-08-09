@@ -136,7 +136,33 @@ pub(super) enum ValueUse {
     Instruction(ValueSlot),
     Constant(ValueSlot),
     Metadata(MetadataSlot),
-    DebugRecord { inst: ValueSlot, record: usize },
+    DebugRecord {
+        inst: ValueSlot,
+        record: usize,
+    },
+    /// A single-slot field of a global object — an initializer, an aliasee, an
+    /// ifunc resolver, or a function's personality / prefix / prologue.
+    ///
+    /// Upstream these are ordinary `Use` edges on a `GlobalValue`, which is a
+    /// `User`. llvmkit stores each as its own `Cell<Option<ValueSlot>>` on the
+    /// owning data struct, so the edge has to name which cell it is; without
+    /// it, RAUW could not find the field and `num_uses` would undercount.
+    GlobalField {
+        owner: ValueSlot,
+        field: GlobalFieldKind,
+    },
+}
+
+/// Which single-slot field of a global object a [`ValueUse::GlobalField`]
+/// edge points at. One variant per `Cell` that holds a value id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum GlobalFieldKind {
+    Initializer,
+    Aliasee,
+    IfuncResolver,
+    PersonalityFn,
+    PrefixData,
+    PrologueData,
 }
 
 /// Discriminator over the closed value-category set.
@@ -426,9 +452,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
             .iter()
             .filter_map(|edge| match edge {
                 ValueUse::Instruction(id) => Some(*id),
-                ValueUse::Constant(_) | ValueUse::Metadata(_) | ValueUse::DebugRecord { .. } => {
-                    None
-                }
+                ValueUse::Constant(_)
+                | ValueUse::Metadata(_)
+                | ValueUse::DebugRecord { .. }
+                | ValueUse::GlobalField { .. } => None,
             })
             .collect();
         snapshot

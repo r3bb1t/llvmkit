@@ -22,7 +22,7 @@
 use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use super::value::ValueUse;
+use super::value::{GlobalFieldKind, ValueUse};
 use crate::constant::{ConstantData, ConstantExprData};
 use crate::r#type::{StructBody, TypeData, TypeSlot};
 use crate::value::{ValueData, ValueKindData, ValueSlot};
@@ -541,6 +541,77 @@ impl Context {
                 .borrow_mut()
                 .push(ValueUse::Constant(user));
         });
+    }
+
+    /// Move a global object's single-slot field edge from `old` to `new`.
+    ///
+    /// The counterpart of `Use::set` for the fields llvmkit stores as bare
+    /// `Cell`s rather than as operands: without this, an initializer or
+    /// aliasee would hold a value that neither `num_uses` counts nor RAUW can
+    /// find. Callers set the cell; this keeps the reverse edge honest.
+    pub(crate) fn retarget_global_field_use(
+        &self,
+        owner: ValueSlot,
+        field: GlobalFieldKind,
+        old: Option<ValueSlot>,
+        new: Option<ValueSlot>,
+    ) {
+        if old == new {
+            return;
+        }
+        let edge = ValueUse::GlobalField { owner, field };
+        if let Some(old) = old {
+            let data = self.value_data(old);
+            let mut uses = data.use_list.borrow_mut();
+            if let Some(position) = uses.iter().position(|use_| *use_ == edge) {
+                uses.remove(position);
+            }
+        }
+        if let Some(new) = new {
+            self.value_data(new).use_list.borrow_mut().push(edge);
+        }
+    }
+
+    /// Point a global object's single-slot field at `replacement` when it
+    /// currently holds `from`. The [`ValueUse::GlobalField`] counterpart of
+    /// `instruction::rewrite_operand_cells`: this cell is what `Use::set`
+    /// would write to upstream.
+    pub(crate) fn rewrite_global_field_cell(
+        &self,
+        owner: ValueSlot,
+        field: GlobalFieldKind,
+        from: ValueSlot,
+        replacement: ValueSlot,
+    ) {
+        let swap = |cell: &Cell<Option<ValueSlot>>| {
+            if cell.get() == Some(from) {
+                cell.set(Some(replacement));
+            }
+        };
+        let swap_required = |cell: &Cell<ValueSlot>| {
+            if cell.get() == from {
+                cell.set(replacement);
+            }
+        };
+        match (&self.value_data(owner).kind, field) {
+            (ValueKindData::GlobalVariable(g), GlobalFieldKind::Initializer) => {
+                swap(&g.initializer);
+            }
+            (ValueKindData::GlobalAlias(a), GlobalFieldKind::Aliasee) => swap_required(&a.aliasee),
+            (ValueKindData::GlobalIfunc(i), GlobalFieldKind::IfuncResolver) => {
+                swap_required(&i.resolver);
+            }
+            (ValueKindData::Function(f), GlobalFieldKind::PersonalityFn) => {
+                swap(&f.personality_fn);
+            }
+            (ValueKindData::Function(f), GlobalFieldKind::PrefixData) => swap(&f.prefix_data),
+            (ValueKindData::Function(f), GlobalFieldKind::PrologueData) => swap(&f.prologue_data),
+            // A `GlobalField` edge is only ever registered by
+            // `retarget_global_field_use`, called from the one setter that
+            // owns that exact cell, so a mismatched owner/field pair cannot
+            // be constructed.
+            (_, _) => unreachable!("GlobalField edge names a field its owner does not have"),
+        }
     }
 
     /// Update the parent block of the instruction stored at `inst_id`.

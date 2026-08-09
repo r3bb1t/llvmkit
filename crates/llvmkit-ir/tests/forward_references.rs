@@ -144,6 +144,100 @@ fn rauw_rejects_a_type_mismatch() -> Result<(), IrError> {
     Ok(())
 }
 
+/// A global's initializer is a use. Upstream it is an ordinary `Use` edge on
+/// a `GlobalVariable`, which is a `User`, so `getNumUses` counts it and RAUW
+/// finds it. llvmkit stores it in a bare `Cell`, so the edge has to be
+/// registered explicitly — this is what `ValueUse::GlobalField` exists for.
+///
+/// No upstream counterpart: upstream gets this for free from `User`, and
+/// tests it only indirectly. The nearest observation is
+/// `llvm/unittests/IR/ConstantsTest.cpp::TEST(ConstantsTest, UseCounts)`.
+#[test]
+fn a_global_initializer_is_a_use() -> Result<(), IrError> {
+    let m = module_new!("global-field-use")?;
+    let i32_ty = m.i32_type();
+    let seven = i32_ty.const_int(7);
+    assert_eq!(seven.as_erased().num_uses(), 0);
+
+    let g = m.add_global("g", seven)?;
+    assert_eq!(
+        seven.as_erased().num_uses(),
+        1,
+        "the initializer edge must be registered at construction"
+    );
+
+    let eight = i32_ty.const_int(8);
+    m.view(g).set_initializer(&m, eight)?;
+    assert_eq!(
+        seven.as_erased().num_uses(),
+        0,
+        "replacing the initializer must retire the old edge"
+    );
+    assert_eq!(eight.as_erased().num_uses(), 1);
+
+    m.view(g).clear_initializer(&m);
+    assert_eq!(eight.as_erased().num_uses(), 0);
+    Ok(())
+}
+
+/// Because the initializer is a registered use, RAUW reaches it: resolving a
+/// forward-referenced global rewrites the initializer cell of every global
+/// that named it. This is the edge `@a = global ptr @b` depends on when `@b`
+/// is defined further down the file.
+///
+/// No upstream counterpart at this layer; upstream's `Use` machinery makes it
+/// structural.
+#[test]
+fn rauw_reaches_a_global_initializer() -> Result<(), IrError> {
+    let m = module_new!("global-field-rauw")?;
+    let ptr_ty = m.ptr_type(0);
+    let placeholder = m.forward_ref_value_placeholder(ptr_ty.as_type())?;
+    let holder = m.add_global("holder", placeholder.as_constant())?;
+
+    let target = m.add_global("target", m.i32_type().const_int(1))?;
+    let target_ptr = m.view(target).as_global_constant_ptr();
+    placeholder.replace_all_uses_with(target_ptr.as_erased())?;
+
+    assert_eq!(
+        m.view(holder).initializer().map(|c| c.as_erased()),
+        Some(target_ptr.as_erased()),
+        "the initializer cell must follow the resolution"
+    );
+    assert!(
+        format!("{m}").contains("@holder = global ptr @target"),
+        "{m}"
+    );
+    Ok(())
+}
+
+/// The same edge on an alias's aliasee — the field `@a = alias i32, ptr @b`
+/// writes, and the one `GlobalAlias::set_aliasee` has to keep honest.
+///
+/// No upstream counterpart at this layer; see
+/// `test/Assembler/2007-09-10-AliasFwdRef.ll` for the parser-level behaviour
+/// this enables.
+#[test]
+fn rauw_reaches_an_alias_target() -> Result<(), IrError> {
+    let m = module_new!("alias-field-rauw")?;
+    let i32_ty = m.i32_type();
+    let ptr_ty = m.ptr_type(0);
+    let placeholder = m.forward_ref_value_placeholder(ptr_ty.as_type())?;
+    let alias = m
+        .alias_builder("a", i32_ty.as_type(), placeholder.as_constant())
+        .build()?;
+
+    let target = m.add_global("target", i32_ty.const_int(1))?;
+    let target_ptr = m.view(target).as_global_constant_ptr();
+    placeholder.replace_all_uses_with(target_ptr.as_erased())?;
+
+    assert_eq!(
+        m.view(alias).aliasee().as_erased(),
+        target_ptr.as_erased(),
+        "the aliasee cell must follow the resolution"
+    );
+    Ok(())
+}
+
 /// Constants may only be built from constants, so a placeholder that some
 /// constant embeds cannot be resolved to an instruction result. Upstream
 /// cannot reach this state at all — its function-local sentinel is an

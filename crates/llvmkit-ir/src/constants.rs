@@ -1667,6 +1667,12 @@ fn replace_value_uses_with(
                 rewrite_debug_record_value(module, inst, record, from_id, replacement_id);
                 direct_users.push(edge);
             }
+            ValueUse::GlobalField { owner, field } => {
+                module
+                    .context()
+                    .rewrite_global_field_cell(owner, field, from_id, replacement_id);
+                direct_users.push(edge);
+            }
         }
     }
     module

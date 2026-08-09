@@ -45,6 +45,15 @@ mechanism and retires those lists.
   replacement, and now says so instead of interning a constant with a
   non-constant operand.
 
+- **Fixed (`llvmkit-ir`): a global object's single-slot fields are uses.**
+  An initializer, an aliasee, an ifunc resolver and a function's
+  personality / prefix / prologue are ordinary `Use` edges upstream, because
+  `GlobalValue` is a `User`. llvmkit stored each in a bare `Cell` with no
+  reverse edge, so `num_uses` undercounted them and RAUW could not reach
+  them — `@a = global ptr @b` would keep pointing at whatever `@b` used to
+  be. Each of the six now registers a `GlobalField` edge, and both RAUW
+  walkers rewrite the cell.
+
 - **Fixed (parser): a function-local value may be used before it is
   defined.** `%a = add i32 %b, 1` followed by `%b = add i32 2, 3` is ordinary
   `.ll`; llvmkit answered `use of undefined value` at the first line. Every

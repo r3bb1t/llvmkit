@@ -13,7 +13,9 @@ use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeKind, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
+use super::value::{
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed,
+};
 use super::value_id::GlobalAliasId;
 
 #[derive(Debug)]
@@ -143,6 +145,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalAlias<'ctx, B> {
                 got: constant.ty().kind_label(),
             });
         }
+        self.module.module().context().retarget_global_field_use(
+            self.id,
+            GlobalFieldKind::Aliasee,
+            Some(self.data().aliasee.get()),
+            Some(constant.id),
+        );
         self.data().aliasee.set(constant.id);
         Ok(())
     }

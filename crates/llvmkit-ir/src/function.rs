@@ -64,7 +64,8 @@ use super::pass_context::FunctionView;
 use super::r#type::{Type, TypeData, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
 use super::value::{
-    HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData, ValueSlot, sealed,
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueData, ValueKindData,
+    ValueSlot, sealed,
 };
 use super::value_id::ViewIn;
 use super::value_id::{FunctionId, TypedFunctionId};
@@ -490,11 +491,21 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         C: IsConstant<'ctx, B>,
     {
         let id = self.checked_constant_id(data)?;
+        self.retarget_global_field_use(
+            GlobalFieldKind::PrefixData,
+            self.data().prefix_data.get(),
+            Some(id),
+        );
         self.data().prefix_data.set(Some(id));
         Ok(())
     }
 
     pub fn clear_prefix_data(self, _module: &'ctx Module<B, Unverified>) {
+        self.retarget_global_field_use(
+            GlobalFieldKind::PrefixData,
+            self.data().prefix_data.get(),
+            None,
+        );
         self.data().prefix_data.set(None);
     }
 
@@ -514,11 +525,21 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         C: IsConstant<'ctx, B>,
     {
         let id = self.checked_constant_id(data)?;
+        self.retarget_global_field_use(
+            GlobalFieldKind::PrologueData,
+            self.data().prologue_data.get(),
+            Some(id),
+        );
         self.data().prologue_data.set(Some(id));
         Ok(())
     }
 
     pub fn clear_prologue_data(self, _module: &'ctx Module<B, Unverified>) {
+        self.retarget_global_field_use(
+            GlobalFieldKind::PrologueData,
+            self.data().prologue_data.get(),
+            None,
+        );
         self.data().prologue_data.set(None);
     }
 
@@ -542,12 +563,35 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         C: IsConstant<'ctx, B>,
     {
         let id = self.checked_constant_id(data)?;
+        self.retarget_global_field_use(
+            GlobalFieldKind::PersonalityFn,
+            self.data().personality_fn.get(),
+            Some(id),
+        );
         self.data().personality_fn.set(Some(id));
         Ok(())
     }
 
     pub fn clear_personality_fn(self, _module: &'ctx Module<B, Unverified>) {
+        self.retarget_global_field_use(
+            GlobalFieldKind::PersonalityFn,
+            self.data().personality_fn.get(),
+            None,
+        );
         self.data().personality_fn.set(None);
+    }
+
+    /// Keep a single-slot field's reverse use edge in step with its cell.
+    fn retarget_global_field_use(
+        self,
+        field: GlobalFieldKind,
+        old: Option<ValueSlot>,
+        new: Option<ValueSlot>,
+    ) {
+        self.module
+            .module()
+            .context()
+            .retarget_global_field_use(self.id, field, old, new);
     }
 
     fn checked_constant_id<C>(self, data: C) -> IrResult<ValueSlot>
@@ -1524,13 +1568,30 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionBuilder<'ctx, R, B> {
         if let Some(gc) = self.gc {
             *f.data().gc.borrow_mut() = Some(gc);
         }
+        // Each of these is a use like any other, so the construction path
+        // registers the same reverse edge the setters do.
         if let Some(prefix_data) = self.prefix_data {
+            f.retarget_global_field_use(
+                GlobalFieldKind::PrefixData,
+                None,
+                Some(prefix_data.slot()),
+            );
             f.data().prefix_data.set(Some(prefix_data.slot()));
         }
         if let Some(prologue_data) = self.prologue_data {
+            f.retarget_global_field_use(
+                GlobalFieldKind::PrologueData,
+                None,
+                Some(prologue_data.slot()),
+            );
             f.data().prologue_data.set(Some(prologue_data.slot()));
         }
         if let Some(personality_fn) = self.personality_fn {
+            f.retarget_global_field_use(
+                GlobalFieldKind::PersonalityFn,
+                None,
+                Some(personality_fn.slot()),
+            );
             f.data().personality_fn.set(Some(personality_fn.slot()));
         }
         if let Some(comdat) = self.comdat {

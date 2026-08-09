@@ -105,7 +105,7 @@ use super::struct_schema::StructSchema;
 use super::r#type::{MAX_INT_BITS, MIN_INT_BITS, StructBody, Type, TypeData, TypeSlot};
 use super::typed_pointer_type::TypedPointerType;
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{Value, ValueData, ValueKindData, ValueSlot, ValueUse};
+use super::value::{GlobalFieldKind, Value, ValueData, ValueKindData, ValueSlot, ValueUse};
 use super::value_id::{
     FunctionId, GlobalAliasId, GlobalId, GlobalIfuncId, TypedFunctionId, TypedVarArgsFunctionId,
     ValueId, ViewIn,
@@ -2258,6 +2258,7 @@ impl<'ctx> ModuleCore {
         // the cached id directly. (Construction APIs only hand out
         // typed ids belonging to this module.)
         let _ = value_type;
+        let seeded_initializer = data.initializer.get();
         let value_id = self.ctx.push_value(ValueData {
             ty: pointer_ty,
             name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
@@ -2265,6 +2266,14 @@ impl<'ctx> ModuleCore {
             kind: ValueKindData::GlobalVariable(data),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        // A builder-supplied initializer is a use like any other; the setter
+        // path registers its edge, so the construction path must too.
+        self.ctx.retarget_global_field_use(
+            value_id,
+            GlobalFieldKind::Initializer,
+            None,
+            seeded_initializer,
+        );
         self.globals.borrow_mut().push(value_id);
         if !name.is_empty() {
             self.global_by_name.borrow_mut().insert(name, value_id);
@@ -2285,6 +2294,7 @@ impl<'ctx> ModuleCore {
             return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
+        let seeded_aliasee = data.aliasee.get();
         let value_id = self.ctx.push_value(ValueData {
             ty: pointer_ty,
             name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
@@ -2292,6 +2302,12 @@ impl<'ctx> ModuleCore {
             kind: ValueKindData::GlobalAlias(data),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.ctx.retarget_global_field_use(
+            value_id,
+            GlobalFieldKind::Aliasee,
+            None,
+            Some(seeded_aliasee),
+        );
         self.aliases.borrow_mut().push(value_id);
         if !name.is_empty() {
             self.alias_by_name.borrow_mut().insert(name, value_id);
@@ -2312,6 +2328,7 @@ impl<'ctx> ModuleCore {
             return Err(IrError::DuplicateGlobalName { name });
         }
         let pointer_ty = self.ctx.ptr_type(address_space);
+        let seeded_resolver = data.resolver.get();
         let value_id = self.ctx.push_value(ValueData {
             ty: pointer_ty,
             name: core::cell::RefCell::new((!name.is_empty()).then(|| name.clone())),
@@ -2319,6 +2336,12 @@ impl<'ctx> ModuleCore {
             kind: ValueKindData::GlobalIfunc(data),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        self.ctx.retarget_global_field_use(
+            value_id,
+            GlobalFieldKind::IfuncResolver,
+            None,
+            Some(seeded_resolver),
+        );
         self.ifuncs.borrow_mut().push(value_id);
         if !name.is_empty() {
             self.ifunc_by_name.borrow_mut().insert(name, value_id);

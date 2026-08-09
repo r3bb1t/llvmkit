@@ -1091,6 +1091,11 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
                 ValueUse::Metadata(id) => {
                     module.rewrite_metadata_value(id, self_id, new_id);
                 }
+                ValueUse::GlobalField { owner, field } => {
+                    module
+                        .context()
+                        .rewrite_global_field_cell(owner, field, self_id, new_id);
+                }
                 ValueUse::Constant(_) => {}
             }
         }

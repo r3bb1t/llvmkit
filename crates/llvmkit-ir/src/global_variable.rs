@@ -23,7 +23,9 @@ use super::global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
-use super::value::{HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed};
+use super::value::{
+    GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed,
+};
 use super::value_id::GlobalId;
 use crate::Branded;
 
@@ -322,13 +324,25 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
                 got: constant.ty().kind_label(),
             });
         }
+        self.retarget_initializer_use(Some(constant.id));
         self.data().initializer.set(Some(constant.id));
         Ok(())
     }
 
     /// Clear the initializer.
     pub fn clear_initializer(self, _module: &'ctx Module<B, Unverified>) {
+        self.retarget_initializer_use(None);
         self.data().initializer.set(None);
+    }
+
+    /// Keep the initializer's reverse use edge in step with the cell.
+    fn retarget_initializer_use(self, new: Option<ValueSlot>) {
+        self.module.module().context().retarget_global_field_use(
+            self.id,
+            GlobalFieldKind::Initializer,
+            self.data().initializer.get(),
+            new,
+        );
     }
 
     /// Linkage. Mirrors `GlobalValue::getLinkage`.
