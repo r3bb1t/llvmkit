@@ -5585,70 +5585,88 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// `memory(...)`. Mirrors `LLParser::parseMemoryAttr`.
     fn parse_memory_attribute(&mut self) -> ParseResult<Attribute<'ctx, B>> {
+        // `memory(argmem: read)` writes a colon as a *separator*, so the
+        // lexer must not read `argmem:` as a label. Upstream sets the same
+        // flag and resets it with a `scope_exit`; the split here is that
+        // reset, so an early `?` cannot leave it on.
+        //
+        // It has to be set before the token *inside* the parens is lexed,
+        // and the parser holds one token of lookahead — hence at entry,
+        // before the `memory` keyword is consumed, exactly as upstream.
+        self.lex.ignore_colon_in_idents = true;
+        let result = self.parse_memory_attribute_body();
+        self.lex.ignore_colon_in_idents = false;
+        result
+    }
+
+    fn parse_memory_attribute_body(&mut self) -> ParseResult<Attribute<'ctx, B>> {
         self.expect_keyword(Keyword::Memory, "'memory'")?;
-        self.expect_punct(PunctKind::LParen, "'(' in memory attribute")?;
+        if !self.eat_punct(PunctKind::LParen)? {
+            return Err(self.expected("'('"));
+        }
         let mut effects = MemoryEffects::none();
-        let mut parsed = false;
         let mut seen_location = false;
+        // Upstream's `do { ... } while (EatIfPresent(comma))`: at least one
+        // component is required, so `memory()` is rejected by the access-kind
+        // arm below rather than accepted as an empty set.
         loop {
-            if self.eat_punct(PunctKind::RParen)? {
-                if parsed {
-                    return Ok(Attribute::<B>::memory(effects));
-                }
-                return Err(self.expected("memory attribute access kind"));
-            }
-            if parsed {
-                self.expect_punct(PunctKind::Comma, "',' in memory attribute")?;
-            }
-            let (next_effects, component_had_location) =
-                self.parse_memory_effect_component(effects, seen_location)?;
-            effects = next_effects;
-            seen_location |= component_had_location;
-            parsed = true;
-        }
-    }
-
-    fn parse_memory_effect_component(
-        &mut self,
-        effects: MemoryEffects,
-        seen_location: bool,
-    ) -> ParseResult<(MemoryEffects, bool)> {
-        if let Token::LabelStr(bytes) = self.peek() {
-            let name = std::str::from_utf8(bytes.as_ref())
-                .map_err(|_| self.expected("memory location"))?;
-            if let Some(location) = Self::memory_location_for_name(name) {
+            let location = Self::memory_location_for_token(self.peek());
+            if location.is_some() {
                 self.bump()?;
-                let mod_ref = self.parse_memory_access_kind()?;
-                return Ok((effects.with_mod_ref(location, mod_ref), true));
+                if !self.eat_punct(PunctKind::Colon)? {
+                    return Err(self.message("expected ':' after location"));
+                }
+            }
+            let Some(mod_ref) = Self::memory_access_kind_for_token(self.peek()) else {
+                return Err(self.message(if location.is_none() {
+                    "expected memory location (argmem, inaccessiblemem, errnomem) or access kind (none, read, write, readwrite)"
+                } else {
+                    "expected access kind (none, read, write, readwrite)"
+                }));
+            };
+            self.bump()?;
+            match location {
+                Some(location) => {
+                    seen_location = true;
+                    effects = effects.with_mod_ref(location, mod_ref);
+                }
+                None => {
+                    if seen_location {
+                        return Err(self.message("default access kind must be specified first"));
+                    }
+                    effects = Self::memory_effects_for_mod_ref(mod_ref);
+                }
+            }
+            if self.eat_punct(PunctKind::RParen)? {
+                return Ok(Attribute::<B>::memory(effects));
+            }
+            if !self.eat_punct(PunctKind::Comma)? {
+                return Err(self.message("unterminated memory attribute"));
             }
         }
-        if seen_location {
-            return Err(self.expected("memory attribute access kind"));
-        }
-        let mod_ref = self.parse_memory_access_kind()?;
-        Ok((Self::memory_effects_for_mod_ref(mod_ref), false))
     }
 
-    fn parse_memory_access_kind(&mut self) -> ParseResult<ModRefInfo> {
-        let mod_ref = match self.peek() {
+    /// Mirrors `keywordToLoc` (`LLParser.cpp`).
+    fn memory_location_for_token(token: &Token<'_>) -> Option<MemoryLocation> {
+        Some(match token {
+            Token::Kw(Keyword::Argmem) => MemoryLocation::ArgMem,
+            Token::Kw(Keyword::Inaccessiblemem) => MemoryLocation::InaccessibleMem,
+            Token::Kw(Keyword::Errnomem) => MemoryLocation::ErrnoMem,
+            Token::Kw(Keyword::TargetMem0) => MemoryLocation::TargetMem0,
+            Token::Kw(Keyword::TargetMem1) => MemoryLocation::TargetMem1,
+            _ => return None,
+        })
+    }
+
+    /// Mirrors `keywordToModRef` (`LLParser.cpp`).
+    fn memory_access_kind_for_token(token: &Token<'_>) -> Option<ModRefInfo> {
+        Some(match token {
             Token::Kw(Keyword::None) => ModRefInfo::NoModRef,
             Token::Kw(Keyword::Read) => ModRefInfo::Ref,
             Token::Kw(Keyword::Write) => ModRefInfo::Mod,
             Token::Kw(Keyword::Readwrite) => ModRefInfo::ModRef,
-            _ => return Err(self.expected("memory attribute access kind")),
-        };
-        self.bump()?;
-        Ok(mod_ref)
-    }
-
-    fn memory_location_for_name(name: &str) -> Option<MemoryLocation> {
-        Some(match name {
-            "argmem" => MemoryLocation::ArgMem,
-            "inaccessiblemem" => MemoryLocation::InaccessibleMem,
-            "errnomem" => MemoryLocation::ErrnoMem,
-            "target_mem0" => MemoryLocation::TargetMem0,
-            "target_mem1" => MemoryLocation::TargetMem1,
             _ => return None,
         })
     }
@@ -10112,6 +10130,10 @@ enum NameOrId {
 enum PunctKind {
     Equal,
     Comma,
+    /// Only reachable while the lexer is in `ignore_colon_in_idents` mode —
+    /// otherwise a colon is absorbed into the preceding label token. That is
+    /// the mode `memory(argmem: read)` is parsed in.
+    Colon,
     LParen,
     RParen,
     LBrace,
@@ -10128,6 +10150,7 @@ impl PunctKind {
             (self, t),
             (PunctKind::Equal, Token::Equal)
                 | (PunctKind::Comma, Token::Comma)
+                | (PunctKind::Colon, Token::Colon)
                 | (PunctKind::LParen, Token::LParen)
                 | (PunctKind::RParen, Token::RParen)
                 | (PunctKind::LBrace, Token::LBrace)

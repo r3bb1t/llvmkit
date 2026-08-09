@@ -103,6 +103,23 @@ and llvmkit rejected.
   both. `fmt_metadata_attachments` now takes the separator, as upstream's
   `printMetadataAttachments` does — globals and instructions keep `", "`.
 
+- **Fixed (parser): `memory(argmem : read)` parses, and its six diagnostics
+  are upstream's.** `LLParser::parseMemoryAttr` puts the lexer in
+  `setIgnoreColonInIdentifiers` mode so the colon is a separator, not a label
+  terminator — whitespace around it is insignificant. llvmkit matched
+  locations by looking for a *label* token instead, which requires the colon
+  glued to the word, so the spaced spelling failed and `expected ':' after
+  location` was unreachable. The routine now mirrors upstream's loop and
+  emits `expected '('`, `expected ':' after location`, `expected memory
+  location (argmem, inaccessiblemem, errnomem) or access kind (none, read,
+  write, readwrite)`, `expected access kind (none, read, write, readwrite)`,
+  `default access kind must be specified first` and `unterminated memory
+  attribute`. Five of the eight splits of
+  `test/Assembler/memory-attribute-errors.ll` are ported; the three that hinge
+  on a misspelled keyword are blocked on llvmkit's lexer reporting
+  `unknown keyword '...'` where upstream defers to the parser, and are
+  recorded against the lexer-parity work.
+
   That printer fix reaches further than the `declare` form it was written for:
   llvmkit also emitted `define void @f(double %x), !dbg !0 {` for
   *definitions*, and the comma spelling appears nowhere in upstream's test
