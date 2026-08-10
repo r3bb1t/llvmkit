@@ -201,3 +201,104 @@ fn ptr_star_is_rejected() {
         "ptr* is invalid - use ptr instead"
     );
 }
+
+/// `FunctionType::isValidReturnType` via `LLParser::parseFunctionType`.
+///
+/// Written as a type alias rather than `label ()*`: the legacy typed-pointer
+/// spelling goes through llvmkit's lookahead, which skips the pointee
+/// syntactically and never builds the function type at all.
+#[test]
+fn invalid_function_return_type_is_rejected() {
+    assert_eq!(
+        parse_err(b"%t = type label ()\n").to_string(),
+        "invalid function return type"
+    );
+}
+
+/// `FunctionType::isValidArgumentType` via `LLParser::parseArgumentList` —
+/// first-class and not `label`.
+#[test]
+fn invalid_function_argument_type_is_rejected() {
+    assert_eq!(
+        parse_err(b"%t = type void (label)\n").to_string(),
+        "invalid type for function argument"
+    );
+}
+
+/// Upstream shares `parseArgumentList` between a function *type* and a
+/// function *header*, so a name and attributes parse in type position and are
+/// rejected afterwards — which is the only reason these two messages exist.
+/// llvmkit read bare types there, so both were unreachable behind a generic
+/// `expected ')'`.
+#[test]
+fn a_name_or_attribute_in_a_function_type_is_rejected() {
+    assert_eq!(
+        parse_err(b"%t = type void (i32 %x)\n").to_string(),
+        "argument name invalid in function type"
+    );
+    assert_eq!(
+        parse_err(b"%t = type void (i32 nocapture)\n").to_string(),
+        "argument attributes invalid in function type"
+    );
+}
+
+// ── Legacy typed-pointer suffixes (`LLParser::parseType`'s suffix loop) ────
+
+/// The three pointee rejections. All were unreachable: llvmkit's lookahead
+/// skipped the pointee type syntactically and lowered straight to opaque
+/// `ptr`, so there was never a pointee to ask about.
+#[test]
+fn invalid_pointee_types_are_rejected() {
+    assert_eq!(
+        parse_err(b"declare void @f(label*)\n").to_string(),
+        "basic block pointers are invalid"
+    );
+    assert_eq!(
+        parse_err(b"declare void @f(void*)\n").to_string(),
+        "pointers to void are invalid - use i8* instead"
+    );
+    assert_eq!(
+        parse_err(b"declare void @f(metadata*)\n").to_string(),
+        "pointer to this type is invalid"
+    );
+}
+
+/// The `addrspace` arm words the `void` rejection with a semicolon where the
+/// `*` arm uses a dash. That is upstream's own inconsistency, and diagnostic
+/// text is contractual, so it is reproduced rather than smoothed.
+#[test]
+fn the_addrspace_arm_words_the_void_rejection_differently() {
+    assert_eq!(
+        parse_err(b"declare void @f(void addrspace(1)*)\n").to_string(),
+        "pointers to void are invalid; use i8* instead"
+    );
+    assert_eq!(
+        parse_err(b"declare void @f(label addrspace(1)*)\n").to_string(),
+        "basic block pointers are invalid"
+    );
+}
+
+/// A legacy typed pointer still lowers to an opaque pointer once its pointee
+/// has been checked — the pointee type is parsed, not represented.
+#[test]
+fn a_valid_typed_pointer_lowers_to_an_opaque_pointer() {
+    let text = parse_render(
+        "typed_pointer_lowering",
+        b"declare void @f(i32*, i8 addrspace(3)*)\n",
+    );
+    assert!(
+        text.contains("declare void @f(ptr %0, ptr addrspace(3) %1)"),
+        "{text}"
+    );
+}
+
+/// Now that the atom is parsed for real, `%t*` looks `%t` up — so an
+/// undefined one is caught by `validateEndOfModule` rather than silently
+/// lowered away.
+#[test]
+fn a_pointer_to_an_undefined_named_type_is_rejected() {
+    assert_eq!(
+        parse_err(b"declare void @f(%t*)\n").to_string(),
+        "use of undefined type named 't'"
+    );
+}

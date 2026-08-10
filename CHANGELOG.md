@@ -47,11 +47,29 @@ type definition is.
   element's own location. `<0 x i32>`, `<2 x {i32}>` and `[2 x label]` were
   all accepted before.
 
+- **Fixed (parser): function-type validity.** `invalid function return type`
+  and `invalid type for function argument` now fire, and so do
+  `argument name invalid in function type` /
+  `argument attributes invalid in function type` — which exist only because
+  upstream shares `parseArgumentList` between a function *type* and a function
+  *header*, so a name and attributes parse in type position and are rejected
+  afterwards. llvmkit read bare types there, leaving both behind a generic
+  `expected ')'`.
+
+- **Fixed (parser): the legacy typed-pointer path parses its pointee.**
+  `parse_type` opened with a lookahead that skipped a `<type> '*'` shape
+  syntactically and lowered it straight to opaque `ptr`, so the pointee type
+  was never built. Every check about it was therefore dead code, and it was
+  also why `%t*` never looked `%t` up. `parse_type` now follows
+  `LLParser::parseType`'s own shape — atom, then a suffix loop — which makes
+  `basic block pointers are invalid`, both spellings of `pointers to void are
+  invalid`, and `pointer to this type is invalid` reachable, and lets an
+  undefined `%t` in `%t*` be reported. Nine now-dead syntax-skipping helpers
+  (186 lines) are deleted.
+
 - **Fixed (parser): `ptr*` is rejected.** It parsed as plain `ptr`. The check
-  had to go in the legacy typed-pointer lookahead rather than the
-  opaque-pointer arm where upstream puts it: llvmkit claims the whole
-  `<type> '*'` shape before that arm is reached, so the arm never sees the
-  star.
+  now sits where upstream puts it, in the opaque-pointer arm, which only
+  falls through to the suffix loop when a function-type `(` follows.
 
 - **Fixed (parser): numbered types have identity.** `%N = type ...` minted a
   fresh *literal* struct, so two numbered types with equal bodies silently

@@ -303,6 +303,15 @@ enum BlockLabel {
     Numbered(u32),
 }
 
+/// Which legacy typed-pointer suffix is being applied. The two arms of
+/// `LLParser::parseType`'s suffix loop word the `void` rejection differently,
+/// so the caller has to say which one it is.
+#[derive(Clone, Copy)]
+enum PointerSuffix {
+    Star,
+    AddrSpace,
+}
+
 enum ParsedBlockAddressFunction<'ctx, B: ModuleBrand> {
     Resolved(llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>),
     Forward { function: NameOrId, loc: Span },
@@ -3182,108 +3191,146 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `allow_void` is `true` only at function-result position.
     pub fn parse_type(&mut self, allow_void: bool) -> ParseResult<Type<'ctx, B>> {
         let type_loc = self.loc();
-        let mut result: Type<'ctx, B> =
-            if let Some(ptr_ty) = self.parse_legacy_typed_pointer_type_syntax_only()? {
-                ptr_ty
-            } else {
-                match *self.peek() {
-                    Token::PrimitiveType(p) => {
-                        let ty = self.primitive_to_type(p, type_loc)?;
-                        self.bump()?;
-                        // `ptr` may be followed by `addrspace(N)`.
-                        if matches!(p, PrimitiveTy::Ptr) {
-                            let addr_space = if let Token::Kw(Keyword::Addrspace) = self.peek() {
-                                self.bump()?;
-                                self.parse_addr_space_paren()?
-                            } else {
-                                0
-                            };
-                            let ptr_ty: PointerType<'ctx, B> = self.module.ptr_type(addr_space);
-                            ptr_ty.as_type()
+        let mut result: Type<'ctx, B> = {
+            match *self.peek() {
+                Token::PrimitiveType(p) => {
+                    let ty = self.primitive_to_type(p, type_loc)?;
+                    self.bump()?;
+                    // `ptr` may be followed by `addrspace(N)`.
+                    if matches!(p, PrimitiveTy::Ptr) {
+                        let addr_space = if let Token::Kw(Keyword::Addrspace) = self.peek() {
+                            self.bump()?;
+                            self.parse_addr_space_paren()?
                         } else {
-                            ty
+                            0
+                        };
+                        let ptr_ty: PointerType<'ctx, B> = self.module.ptr_type(addr_space);
+                        if matches!(self.peek(), Token::Star) {
+                            return Err(self.message("ptr* is invalid - use ptr instead"));
                         }
-                    }
-                    Token::LBrace => {
-                        let (elems, packed) = self.parse_struct_body()?;
-                        if packed {
-                            self.module.packed_struct_type(elems).as_type()
-                        } else {
-                            self.module.struct_type(elems).as_type()
+                        // "Fall through to parsing the type suffixes only
+                        // if this 'ptr' is a function return. Otherwise,
+                        // return success, implicitly rejecting other
+                        // suffixes." — `LLParser::parseType`.
+                        if !matches!(self.peek(), Token::LParen) {
+                            return Ok(ptr_ty.as_type());
                         }
+                        ptr_ty.as_type()
+                    } else {
+                        ty
                     }
-                    Token::Less => {
-                        // `<` introduces vector or `<{ packed-struct }>`.
-                        self.bump()?; // eat `<`
-                        if matches!(self.peek(), Token::LBrace) {
-                            let (elems, _was_packed_redundant) = self.parse_struct_body_braces()?;
-                            self.expect_punct(PunctKind::Greater, "'>' at end of packed struct")?;
-                            self.module.packed_struct_type(elems).as_type()
-                        } else {
-                            self.parse_array_or_vector_after_open(true)?
-                        }
+                }
+                Token::LBrace => {
+                    let (elems, packed) = self.parse_struct_body()?;
+                    if packed {
+                        self.module.packed_struct_type(elems).as_type()
+                    } else {
+                        self.module.struct_type(elems).as_type()
                     }
-                    Token::LSquare => {
-                        self.bump()?; // eat `[`
-                        self.parse_array_or_vector_after_open(false)?
+                }
+                Token::Less => {
+                    // `<` introduces vector or `<{ packed-struct }>`.
+                    self.bump()?; // eat `<`
+                    if matches!(self.peek(), Token::LBrace) {
+                        let (elems, _was_packed_redundant) = self.parse_struct_body_braces()?;
+                        self.expect_punct(PunctKind::Greater, "'>' at end of packed struct")?;
+                        self.module.packed_struct_type(elems).as_type()
+                    } else {
+                        self.parse_array_or_vector_after_open(true)?
                     }
-                    Token::Kw(Keyword::Target) => self.parse_target_ext_type()?,
-                    Token::LocalVar(_) => {
-                        let name = self
-                            .current_str_payload()
-                            .ok_or_else(|| self.expected("local identifier payload"))?;
-                        let loc = self.loc();
-                        self.bump()?;
-                        if let Some(ptr_ty) = self.parse_legacy_typed_pointer_suffix()? {
-                            ptr_ty
-                        } else {
-                            self.lookup_or_forward_named_type(&name, loc)
-                        }
+                }
+                Token::LSquare => {
+                    self.bump()?; // eat `[`
+                    self.parse_array_or_vector_after_open(false)?
+                }
+                Token::Kw(Keyword::Target) => self.parse_target_ext_type()?,
+                Token::LocalVar(_) => {
+                    let name = self
+                        .current_str_payload()
+                        .ok_or_else(|| self.expected("local identifier payload"))?;
+                    let loc = self.loc();
+                    self.bump()?;
+                    self.lookup_or_forward_named_type(&name, loc)
+                }
+                Token::LocalVarId(n) => {
+                    let id = n;
+                    let loc = self.loc();
+                    self.bump()?;
+                    self.lookup_or_forward_numbered_type(id, loc)
+                }
+                _ => {
+                    return Err(ParseError::Expected {
+                        expected: "type".into(),
+                        loc: DiagLoc::span(type_loc),
+                    });
+                }
+            }
+        };
+
+        // Type suffixes, mirroring `LLParser::parseType`'s own loop. `*` and
+        // `addrspace(N)*` are legacy typed-pointer syntax: the pointee is not
+        // represented in llvmkit-ir, but it is still *parsed*, because the
+        // rejections below are about the pointee's type. llvmkit used to skip
+        // the pointee syntactically and lower straight to `ptr`, which left
+        // every one of these unreachable.
+        loop {
+            match self.peek() {
+                Token::Star => {
+                    self.check_pointer_element(result, PointerSuffix::Star)?;
+                    self.bump()?;
+                    result = self.module.ptr_type(0).as_type();
+                }
+                Token::Kw(Keyword::Addrspace) => {
+                    self.check_pointer_element(result, PointerSuffix::AddrSpace)?;
+                    self.bump()?;
+                    let addr_space = self.parse_addr_space_paren()?;
+                    if !matches!(self.peek(), Token::Star) {
+                        return Err(self.expected("'*' in address space"));
                     }
-                    Token::LocalVarId(n) => {
-                        let id = n;
-                        let loc = self.loc();
-                        self.bump()?;
-                        if let Some(ptr_ty) = self.parse_legacy_typed_pointer_suffix()? {
-                            ptr_ty
-                        } else {
-                            self.lookup_or_forward_numbered_type(id, loc)
-                        }
-                    }
-                    _ => {
+                    self.bump()?;
+                    result = self.module.ptr_type(addr_space).as_type();
+                }
+                Token::LParen => {
+                    result = self.parse_function_type_after_return(result)?;
+                }
+                _ => {
+                    if !allow_void && matches!(result.into_type_enum(), AnyTypeEnum::Void(_)) {
                         return Err(ParseError::Expected {
-                            expected: "type".into(),
+                            expected: "non-void type (void only allowed at function results)"
+                                .into(),
                             loc: DiagLoc::span(type_loc),
                         });
                     }
-                }
-            };
-
-        // Type suffixes: `*` and `addrspace(N)*` are accepted as
-        // parser-compatibility input for legacy typed-pointer `.ll`.
-        // They lower immediately to opaque pointer types; the pointee
-        // syntax is not represented in llvmkit-ir.
-        loop {
-            if let Some(ptr_ty) = self.parse_legacy_typed_pointer_suffix()? {
-                result = ptr_ty;
-            } else {
-                match self.peek() {
-                    Token::LParen => {
-                        result = self.parse_function_type_after_return(result)?;
-                    }
-                    _ => {
-                        if !allow_void && matches!(result.into_type_enum(), AnyTypeEnum::Void(_)) {
-                            return Err(ParseError::Expected {
-                                expected: "non-void type (void only allowed at function results)"
-                                    .into(),
-                                loc: DiagLoc::span(type_loc),
-                            });
-                        }
-                        return Ok(result);
-                    }
+                    return Ok(result);
                 }
             }
         }
+    }
+
+    /// The three pointee rejections in `LLParser::parseType`'s suffix loop.
+    ///
+    /// The `void` wording differs by one character between the two arms —
+    /// `- use i8* instead` after `*`, `; use i8* instead` after `addrspace` —
+    /// and that is upstream's own inconsistency, reproduced rather than
+    /// smoothed (diagnostic text is contractual).
+    fn check_pointer_element(
+        &self,
+        pointee: Type<'ctx, B>,
+        suffix: PointerSuffix,
+    ) -> ParseResult<()> {
+        if pointee.is_label() {
+            return Err(self.message("basic block pointers are invalid"));
+        }
+        if pointee.is_void() {
+            return Err(self.message(match suffix {
+                PointerSuffix::Star => "pointers to void are invalid - use i8* instead",
+                PointerSuffix::AddrSpace => "pointers to void are invalid; use i8* instead",
+            }));
+        }
+        if !pointee.is_valid_pointer_element() {
+            return Err(self.message("pointer to this type is invalid"));
+        }
+        Ok(())
     }
 
     fn parse_target_ext_type(&mut self) -> ParseResult<Type<'ctx, B>> {
@@ -3308,192 +3355,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .module
             .target_ext_type(name, type_params, int_params)
             .as_type())
-    }
-
-    fn parse_legacy_typed_pointer_suffix(&mut self) -> ParseResult<Option<Type<'ctx, B>>> {
-        match self.peek() {
-            Token::Kw(Keyword::Addrspace) => {
-                self.bump()?;
-                let address_space = self.parse_addr_space_paren()?;
-                if !matches!(self.peek(), Token::Star) {
-                    return Err(self.expected("legacy typed pointer addrspace suffix requires '*'"));
-                }
-                self.bump()?;
-                Ok(Some(self.module.ptr_type(address_space).as_type()))
-            }
-            Token::Star => {
-                self.bump()?;
-                Ok(Some(self.module.ptr_type(0).as_type()))
-            }
-            _ => Ok(None),
-        }
-    }
-
-    fn parse_legacy_typed_pointer_type_syntax_only(
-        &mut self,
-    ) -> ParseResult<Option<Type<'ctx, B>>> {
-        // `ptr*` never reaches the opaque-pointer arm of `parse_type`, because
-        // this lookahead claims the whole `<type> '*'` shape first. Upstream
-        // rejects it inside `parseType`, right after building the pointer, so
-        // the equivalent guard has to sit here — at the only place that sees
-        // both the `ptr` and the star.
-        if matches!(self.peek(), Token::PrimitiveType(PrimitiveTy::Ptr)) {
-            let saved_lex = self.lex.clone();
-            let saved_current = self.current.clone();
-            self.bump()?;
-            if matches!(self.peek(), Token::Kw(Keyword::Addrspace)) {
-                self.bump()?;
-                self.parse_addr_space_paren()?;
-            }
-            let is_ptr_star = matches!(self.peek(), Token::Star);
-            self.lex = saved_lex;
-            self.current = saved_current;
-            if is_ptr_star {
-                return Err(self.message("ptr* is invalid - use ptr instead"));
-            }
-        }
-
-        let saved_lex = self.lex.clone();
-        let saved_current = self.current.clone();
-
-        if self
-            .skip_type_before_legacy_pointer_suffix_syntax_only()
-            .is_err()
-        {
-            self.lex = saved_lex;
-            self.current = saved_current;
-            return Ok(None);
-        }
-
-        let Some(mut ptr_ty) = self.parse_legacy_typed_pointer_suffix()? else {
-            self.lex = saved_lex;
-            self.current = saved_current;
-            return Ok(None);
-        };
-
-        while let Some(next_ptr_ty) = self.parse_legacy_typed_pointer_suffix()? {
-            ptr_ty = next_ptr_ty;
-        }
-
-        Ok(Some(ptr_ty))
-    }
-
-    fn skip_type_before_legacy_pointer_suffix_syntax_only(&mut self) -> ParseResult<()> {
-        self.skip_type_atom_syntax_only()?;
-        while matches!(self.peek(), Token::LParen) {
-            self.skip_function_type_syntax_only()?;
-        }
-        Ok(())
-    }
-
-    fn skip_function_type_syntax_only(&mut self) -> ParseResult<()> {
-        self.expect_punct(PunctKind::LParen, "'(' in function type")?;
-        if !matches!(self.peek(), Token::RParen) {
-            loop {
-                if matches!(self.peek(), Token::DotDotDot) {
-                    self.bump()?;
-                    break;
-                }
-                self.skip_type_syntax_only()?;
-                if !self.eat_punct(PunctKind::Comma)? {
-                    break;
-                }
-            }
-        }
-        self.expect_punct(PunctKind::RParen, "')' to close function type")?;
-        Ok(())
-    }
-
-    fn skip_type_syntax_only(&mut self) -> ParseResult<()> {
-        self.skip_type_before_legacy_pointer_suffix_syntax_only()?;
-        while self.parse_legacy_typed_pointer_suffix()?.is_some() {}
-        Ok(())
-    }
-
-    fn skip_type_atom_syntax_only(&mut self) -> ParseResult<()> {
-        match self.peek() {
-            Token::PrimitiveType(_) => {
-                let is_ptr = matches!(self.peek(), Token::PrimitiveType(PrimitiveTy::Ptr));
-                self.bump()?;
-                if is_ptr && matches!(self.peek(), Token::Kw(Keyword::Addrspace)) {
-                    self.bump()?;
-                    self.parse_addr_space_paren()?;
-                }
-            }
-            Token::LocalVar(_) | Token::LocalVarId(_) => {
-                self.bump()?;
-            }
-            Token::LBrace => {
-                self.skip_struct_type_body_syntax_only()?;
-            }
-            Token::Less => {
-                self.bump()?;
-                if matches!(self.peek(), Token::LBrace) {
-                    self.skip_struct_type_body_syntax_only()?;
-                    self.expect_punct(PunctKind::Greater, "'>' at end of packed struct")?;
-                } else {
-                    self.skip_array_or_vector_type_syntax_only(true)?;
-                }
-            }
-            Token::LSquare => {
-                self.bump()?;
-                self.skip_array_or_vector_type_syntax_only(false)?;
-            }
-            Token::Kw(Keyword::Target) => {
-                self.skip_target_ext_type_syntax_only()?;
-            }
-            _ => return Err(self.expected("type")),
-        }
-        Ok(())
-    }
-
-    fn skip_struct_type_body_syntax_only(&mut self) -> ParseResult<()> {
-        self.expect_punct(PunctKind::LBrace, "'{' to start struct body")?;
-        if !matches!(self.peek(), Token::RBrace) {
-            loop {
-                self.skip_type_syntax_only()?;
-                if !self.eat_punct(PunctKind::Comma)? {
-                    break;
-                }
-            }
-        }
-        self.expect_punct(PunctKind::RBrace, "'}' to close struct body")?;
-        Ok(())
-    }
-
-    fn skip_array_or_vector_type_syntax_only(&mut self, is_vector: bool) -> ParseResult<()> {
-        let scalable = is_vector && self.eat_keyword(Keyword::Vscale)?;
-        if scalable {
-            self.expect_keyword(Keyword::X, "'x' after vscale")?;
-        }
-        self.parse_uint64("element count")?;
-        self.expect_keyword(Keyword::X, "'x' between aggregate count and element type")?;
-        self.skip_type_syntax_only()?;
-        if is_vector {
-            self.expect_punct(PunctKind::Greater, "'>' at end of vector type")?;
-        } else {
-            self.expect_punct(PunctKind::RSquare, "']' at end of array type")?;
-        }
-        Ok(())
-    }
-
-    fn skip_target_ext_type_syntax_only(&mut self) -> ParseResult<()> {
-        self.expect_keyword(Keyword::Target, "'target'")?;
-        self.expect_punct(PunctKind::LParen, "'(' in target extension type")?;
-        self.parse_string_constant("target extension type name")?;
-        let mut seen_integer_param = false;
-        while self.eat_punct(PunctKind::Comma)? {
-            if matches!(self.peek(), Token::IntegerLit(_)) {
-                seen_integer_param = true;
-                self.parse_uint32("target extension integer parameter")?;
-            } else if seen_integer_param {
-                return Err(self.expected("target extension type"));
-            } else {
-                self.skip_type_syntax_only()?;
-            }
-        }
-        self.expect_punct(PunctKind::RParen, "')' in target extension type")?;
-        Ok(())
     }
 
     /// Helper: after consuming an opening `<` not followed by `{`, the
@@ -3578,6 +3439,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &mut self,
         ret: Type<'ctx, B>,
     ) -> ParseResult<Type<'ctx, B>> {
+        if !ret.is_valid_function_return() {
+            return Err(self.message("invalid function return type"));
+        }
         self.expect_punct(PunctKind::LParen, "'(' in function type")?;
         let mut params = Vec::new();
         let mut var_args = false;
@@ -3588,7 +3452,26 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     var_args = true;
                     break;
                 }
-                params.push(self.parse_type(false)?);
+                let arg_loc = self.loc();
+                let param = self.parse_type(false)?;
+                if !param.is_valid_function_argument() {
+                    return Err(self.message_at(arg_loc, "invalid type for function argument"));
+                }
+                // Upstream shares `parseArgumentList` between a function
+                // *type* and a function *header*, so attributes and a name
+                // parse here and are rejected afterwards — which is why these
+                // two messages exist at all. Reading them keeps the diagnostic
+                // instead of a generic "expected ')'".
+                let attrs = self.parse_optional_param_attrs()?;
+                if !attrs.is_empty() {
+                    return Err(
+                        self.message_at(arg_loc, "argument attributes invalid in function type")
+                    );
+                }
+                if matches!(self.peek(), Token::LocalVar(_) | Token::LocalVarId(_)) {
+                    return Err(self.message_at(arg_loc, "argument name invalid in function type"));
+                }
+                params.push(param);
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
                 }
