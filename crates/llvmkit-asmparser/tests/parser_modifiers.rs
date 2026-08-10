@@ -352,3 +352,41 @@ fn call_parameter_legacy_memory_keywords_remain_parameter_attrs() {
     );
     assert!(!text.contains("memory("), "{text}");
 }
+
+/// A comdat may be used before `$name = comdat ...` defines it — upstream
+/// `LLParser::getComdat` creates the `Comdat` on first reference and records
+/// that its selection kind is still owed.
+///
+/// No upstream `.ll` fixture isolates the positive case; the rule is
+/// `getComdat`'s. The two negative halves below carry upstream's exact text.
+#[test]
+fn comdat_may_be_used_before_it_is_defined() {
+    let text = parse_fixture(
+        "comdat_forward",
+        b"@g = global i32 0, comdat($c)\n$c = comdat any\n",
+    );
+    assert!(text.contains("$c = comdat any"), "{text}");
+    assert!(text.contains("comdat($c)"), "{text}");
+}
+
+/// Mirrors the `ForwardRefComdats` guard at the top of
+/// `LLParser::validateEndOfModule`: a comdat referenced but never defined is
+/// reported at its first use.
+#[test]
+fn undefined_comdat_is_rejected() {
+    assert_eq!(
+        parse_err(b"@g = global i32 0, comdat($c)\n").to_string(),
+        "use of undefined comdat '$c'"
+    );
+}
+
+/// Mirrors the `!ForwardRefComdats.erase(Name)` guard in
+/// `LLParser::parseComdat`: a second `$c = comdat ...` is a redefinition,
+/// where a definition that merely satisfies an earlier *use* is not.
+#[test]
+fn redefined_comdat_is_rejected() {
+    assert_eq!(
+        parse_err(b"$c = comdat any\n$c = comdat largest\n").to_string(),
+        "redefinition of comdat '$c'"
+    );
+}

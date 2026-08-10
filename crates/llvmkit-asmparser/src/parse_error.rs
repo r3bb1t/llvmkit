@@ -74,6 +74,8 @@ pub enum SymbolKind {
     Block,
     /// `!name` — metadata node.
     Metadata,
+    /// `$name` — comdat.
+    Comdat,
     /// `#name` — attribute group.
     AttrGroup,
 }
@@ -92,6 +94,7 @@ impl SymbolKind {
         match self {
             SymbolKind::Global | SymbolKind::GlobalValue => '@',
             SymbolKind::Local | SymbolKind::Type | SymbolKind::Block => '%',
+            SymbolKind::Comdat => '$',
             SymbolKind::Metadata => '!',
             SymbolKind::AttrGroup => '#',
         }
@@ -114,6 +117,7 @@ impl core::fmt::Display for SymbolKind {
             SymbolKind::Local => "value",
             SymbolKind::Type => "type",
             SymbolKind::Block => "label",
+            SymbolKind::Comdat => "comdat",
             SymbolKind::Metadata => "metadata",
             SymbolKind::AttrGroup => "attribute group",
         })

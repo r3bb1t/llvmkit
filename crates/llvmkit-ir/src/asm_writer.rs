@@ -368,7 +368,17 @@ pub(super) fn fmt_constant<'ctx, B: ModuleBrand + 'ctx>(
             f.write_str("blockaddress(")?;
             fmt_operand_ref(f, fval, None)?;
             f.write_str(", ")?;
-            fmt_operand_ref(f, bval, None)?;
+            // An unnamed target block is numbered in the *target function's*
+            // numbering, which is not the tracker in scope — a blockaddress
+            // routinely appears in a module-level initializer, where there is
+            // no function tracker at all. Upstream reaches the same numbering
+            // through `SlotTracker::incorporateFunction`.
+            let block_slots = bval.name().is_none().then(|| {
+                FunctionValue::<Dyn, B>::try_from(fval)
+                    .ok()
+                    .map(SlotTracker::for_function)
+            });
+            fmt_operand_ref(f, bval, block_slots.flatten().as_ref())?;
             f.write_str(")")
         }
         ConstantData::DsoLocalEquivalent { function } => {

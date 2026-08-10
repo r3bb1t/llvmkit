@@ -671,6 +671,56 @@ fn nested_forward_blockaddress_resolves_later_signature() {
     assert_parse_print_parse_stable(&text);
 }
 
+/// A `blockaddress` naming the function it appears in resolves through that
+/// function's own state — upstream's `BlockAddressPFS` route in
+/// `LLParser::parseValID`'s `kw_blockaddress` arm — even when the label is
+/// below the reference.
+///
+/// The IR shape is `test/Bitcode/blockaddress-addrspace.ll::return-self-good.ll`
+/// with its address spaces dropped; that fixture itself is still blocked on
+/// the *program* address space (`target datalayout = "P2"` reaching a function
+/// that declares none), which is W3 work.
+#[test]
+fn same_function_forward_blockaddress_resolves_by_name() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/blockaddress-self/self_named_label.ll");
+
+    let text = parse_and_render("same_function_forward_blockaddress_by_name", FIXTURE);
+    assert_check_lines(&text, &["ret ptr blockaddress(@take_self_named, %L3)"]);
+    assert_parse_print_parse_stable(&text);
+}
+
+/// The same rule for a *numbered* label, which is the half that could never
+/// have worked: llvmkit stringified the slot id and looked for a block
+/// literally named `"2"`, and no unnamed block is. Upstream keeps the two
+/// spellings apart as `ValID::t_LocalID` / `t_LocalName` precisely because
+/// they resolve through different tables.
+///
+/// No upstream `.ll` fixture isolates this; the rule is
+/// `PerFunctionState::getBB(unsigned)` reached through `BlockAddressPFS`.
+#[test]
+fn same_function_forward_blockaddress_resolves_by_number() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/blockaddress-self/self_numbered_label.ll");
+
+    let text = parse_and_render("same_function_forward_blockaddress_by_number", FIXTURE);
+    assert_check_lines(&text, &["ret ptr blockaddress(@take_self_numbered, %2)"]);
+    assert_parse_print_parse_stable(&text);
+}
+
+/// Once a function's body is closed its label numbering is gone, so a numeric
+/// label can no longer be looked up. Mirrors the `else` arm of
+/// `LLParser::parseValID`'s `kw_blockaddress` block lookup, whose wording this
+/// pins. A *named* label stays resolvable, because names survive in the
+/// function's value symbol table.
+#[test]
+fn numeric_blockaddress_label_after_the_function_is_defined_is_rejected() {
+    assert_parse_error(
+        include_bytes!("fixtures/upstream/blockaddress-self/numeric_label_after_definition.ll"),
+        "cannot take address of numeric label after the function is defined",
+    );
+}
+
 /// Direct port of `LLParser::parseValID`'s forward `dso_local_equivalent` /
 /// `no_cfi` placeholder resolution.
 #[test]

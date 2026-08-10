@@ -1027,7 +1027,13 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
     #[inline]
     pub fn as_global_constant_ptr(self) -> Constant<'ctx, B> {
         let module = self.module.module();
-        let ptr_ty = module.ptr_type::<B>(0).as_type().id();
+        // A function's address has the function's own address space, not 0.
+        // Mirrors `GlobalValue::getType`, which is built from
+        // `PointerType::get(C, AddressSpace)`; hard-coding 0 made every
+        // reference to a function in a non-zero program address space
+        // (`test/Assembler/call-nonzero-program-addrspace.ll`) come out as a
+        // plain `ptr`.
+        let ptr_ty = module.ptr_type::<B>(self.address_space()).as_type().id();
         let id = module
             .context()
             .intern_constant_global_value_ref(ptr_ty, self.id);

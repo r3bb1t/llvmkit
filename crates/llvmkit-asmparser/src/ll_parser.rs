@@ -182,6 +182,10 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     /// `@name` referenced before it was defined, holding the placeholder
     /// minted at the first use. Mirrors `LLParser::ForwardRefVals`; ordered
     /// because `validateEndOfModule` reports `begin()`.
+    /// `$name` used before `$name = comdat ...` was seen, with the first
+    /// use's span. Mirrors `LLParser::ForwardRefComdats`; ordered because
+    /// `validateEndOfModule` reports `begin()`.
+    forward_ref_comdats: BTreeMap<String, Span>,
     forward_ref_globals: BTreeMap<String, ForwardRef<'ctx, B>>,
     /// `@N` referenced before it was defined. Mirrors
     /// `LLParser::ForwardRefValIDs`.
@@ -232,9 +236,22 @@ struct DeferredGlobalInitializer<'ctx, B: ModuleBrand> {
 
 struct DeferredBlockAddress<'ctx, B: ModuleBrand> {
     placeholder: llvmkit_ir::ForwardRefValue<'ctx, B>,
-    function: NameOrId,
-    label: String,
+    function: DeferredBlockAddressFunction<'ctx, B>,
+    label: BlockLabel,
     loc: Span,
+}
+
+/// Which function a deferred `blockaddress` is waiting on.
+///
+/// A function that has already been installed is matched by identity, not by
+/// how it was spelled: `define void @0()` has no name to match on, so keying
+/// an unnamed function by `NameOrId::Name("")` would strand its own
+/// `blockaddress(@0, %1)` until end of module.
+#[derive(Branded)]
+#[branded(Clone)]
+enum DeferredBlockAddressFunction<'ctx, B: ModuleBrand> {
+    Installed(llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>),
+    Forward(NameOrId),
 }
 
 struct DeferredPersonalityFn<'ctx, B: ModuleBrand> {
@@ -264,6 +281,18 @@ struct DeferredIntrinsicAttributeCheck {
     attr_groups: Vec<u32>,
     expected_attrs: AttributeStorage,
     loc: Span,
+}
+
+/// How a `blockaddress` names its basic block. Upstream keeps the two
+/// spellings apart as `ValID::t_LocalName` / `t_LocalID` because they resolve
+/// through different tables — and because a *numeric* label is only reachable
+/// while the function's own numbering is still live. Collapsing them to a
+/// string, as llvmkit did, makes `blockaddress(@f, %5)` look for a block
+/// literally named `"5"`, which no unnamed block ever is.
+#[derive(Clone, Debug)]
+enum BlockLabel {
+    Named(String),
+    Numbered(u32),
 }
 
 enum ParsedBlockAddressFunction<'ctx, B: ModuleBrand> {
@@ -860,6 +889,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             deferred_alias_targets: Vec::new(),
             deferred_intrinsic_attribute_checks: Vec::new(),
             forward_function_decls: HashMap::new(),
+            forward_ref_comdats: BTreeMap::new(),
             forward_ref_globals: BTreeMap::new(),
             forward_ref_global_ids: BTreeMap::new(),
             _brand: PhantomData,
@@ -1018,6 +1048,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.resolve_deferred_personality_fns()?;
         self.resolve_deferred_alias_targets()?;
         self.validate_deferred_intrinsic_attribute_checks()?;
+        self.validate_forward_ref_comdats()?;
         self.resolve_forward_ref_globals()?;
         self.validate_forward_function_decls()?;
 
@@ -1058,43 +1089,59 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(())
     }
 
-    fn resolve_deferred_block_addresses(&mut self) -> ParseResult<()> {
-        let deferred = std::mem::take(&mut self.deferred_block_addresses);
-        for item in deferred {
-            let function = match &item.function {
-                NameOrId::Name(name) => self
-                    .module
-                    .function_dyn(name)
-                    .map(|id| self.module.view(id)),
-                NameOrId::Id(id) => self.numbered_globals.get(*id).and_then(|r| match r {
-                    GlobalRef::Function(f) => Some(*f),
-                    _ => None,
-                }),
+    /// Retire every deferred `blockaddress` that names `function`, now that
+    /// its body has been parsed and its labels are all defined. Mirrors
+    /// `LLParser::PerFunctionState::resolveForwardRefBlockAddresses`.
+    fn resolve_block_addresses_for_function(
+        &mut self,
+        state: &PerFunctionState<'ctx, B>,
+        function_ref: &NameOrId,
+    ) -> ParseResult<()> {
+        let mut pending = Vec::new();
+        let mut resolved = Vec::new();
+        for item in core::mem::take(&mut self.deferred_block_addresses) {
+            let is_ours = match &item.function {
+                DeferredBlockAddressFunction::Installed(f) => {
+                    f.as_erased() == state.func.as_erased()
+                }
+                DeferredBlockAddressFunction::Forward(reference) => reference == function_ref,
+            };
+            if is_ours {
+                resolved.push(item);
+            } else {
+                pending.push(item);
             }
-            .ok_or_else(|| ParseError::Expected {
-                expected: "function name in blockaddress".into(),
-                loc: DiagLoc::span(item.loc),
-            })?;
-            if function.basic_blocks().len() == 0 {
+        }
+        self.deferred_block_addresses = pending;
+        for item in resolved {
+            let Some(block) = state.defined_block(&item.label) else {
                 return Err(ParseError::Message {
-                    message: "cannot take blockaddress inside a declaration".into(),
-                    loc: DiagLoc::span(item.loc),
-                });
-            }
-            let block = function
-                .basic_blocks()
-                .find(|bb| bb.name().as_deref() == Some(item.label.as_str()))
-                .ok_or_else(|| ParseError::Message {
                     message: "referenced value is not a basic block".into(),
                     loc: DiagLoc::span(item.loc),
-                })?;
-            let resolved = self
+                });
+            };
+            let block = state.value_as_block_view(block, item.loc)?;
+            let address = self
                 .module
-                .block_address(function, &block)
+                .block_address(state.func, &block)
                 .map_err(|e| self.builder_err("blockaddress", e))?;
             item.placeholder
-                .replace_all_uses_with(resolved.as_erased())
+                .replace_all_uses_with(address.as_erased())
                 .map_err(|e| self.builder_err("forward blockaddress", e))?;
+        }
+        Ok(())
+    }
+
+    /// Anything still deferred at end of module names a function that was
+    /// never defined. Mirrors the `ForwardRefBlockAddresses` guard at the top
+    /// of `LLParser::validateEndOfModule`, whose wording this reproduces —
+    /// the reference is reported, not the label.
+    fn resolve_deferred_block_addresses(&mut self) -> ParseResult<()> {
+        if let Some(item) = self.deferred_block_addresses.first() {
+            return Err(ParseError::Expected {
+                expected: "function name in blockaddress".into(),
+                loc: DiagLoc::span(item.loc),
+            });
         }
         Ok(())
     }
@@ -1858,7 +1905,36 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(())
     }
 
+    /// Reference a comdat by name, recording a forward reference when no
+    /// `$name = comdat ...` has been seen yet. Mirrors `LLParser::getComdat`,
+    /// which likewise creates the `Comdat` eagerly and remembers that its
+    /// selection kind is still owed.
+    fn comdat_ref(&mut self, name: &str, loc: Span) -> llvmkit_ir::comdat::ComdatRef<'ctx, B> {
+        if let Some(comdat) = self.module.comdat(name) {
+            return comdat;
+        }
+        self.forward_ref_comdats
+            .entry(name.to_owned())
+            .or_insert(loc);
+        self.module.get_or_insert_comdat(name)
+    }
+
+    /// The first comdat that no definition ever gave a selection kind.
+    /// Mirrors the `ForwardRefComdats` guard in
+    /// `LLParser::validateEndOfModule`.
+    fn validate_forward_ref_comdats(&self) -> ParseResult<()> {
+        if let Some((name, loc)) = self.forward_ref_comdats.iter().next() {
+            return Err(ParseError::UndefinedSymbol {
+                kind: SymbolKind::Comdat,
+                id: SymbolId::Named(name.clone()),
+                loc: DiagLoc::span(*loc),
+            });
+        }
+        Ok(())
+    }
+
     fn parse_comdat_definition(&mut self) -> ParseResult<()> {
+        let name_loc = self.loc();
         let name = match self.peek() {
             Token::ComdatVar(bytes) => std::str::from_utf8(bytes.as_ref())
                 .map_err(|_| self.expected("valid UTF-8 comdat name"))?
@@ -1881,6 +1957,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else {
             return Err(self.expected("comdat selection kind"));
         };
+        // A comdat already in the table is a redefinition *unless* it got
+        // there through a forward reference, which this definition satisfies.
+        // Mirrors the `!ForwardRefComdats.erase(Name)` guard in
+        // `LLParser::parseComdat`.
+        let was_forward_referenced = self.forward_ref_comdats.remove(&name).is_some();
+        if self.module.comdat(&name).is_some() && !was_forward_referenced {
+            return Err(ParseError::Redefinition {
+                kind: SymbolKind::Comdat,
+                id: SymbolId::Named(name),
+                loc: DiagLoc::span(name_loc),
+            });
+        }
         let comdat = self.module.get_or_insert_comdat(&name);
         comdat.set_selection_kind(self.module, kind);
         Ok(())
@@ -3638,7 +3726,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             builder = builder.partition(p);
         }
         if let Some(name) = comdat_name {
-            let comdat = self.module.get_or_insert_comdat(&name);
+            let comdat = self.comdat_ref(&name, decl_loc);
             builder = builder.comdat(comdat);
         }
         let g = builder.build().map_err(|e| ParseError::Expected {
@@ -4222,7 +4310,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::Kw(Keyword::Blockaddress) => {
                 let ty =
                     expected_ty.ok_or_else(|| self.expected("pointer type for blockaddress"))?;
-                self.parse_blockaddress_constant(ty).map(ValId::Constant)
+                self.parse_blockaddress_constant(ty, pfs)
+                    .map(ValId::Constant)
             }
             Token::Kw(Keyword::DsoLocalEquivalent) => self
                 .parse_dso_local_equivalent_constant()
@@ -4699,6 +4788,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_blockaddress_constant(
         &mut self,
         expected_ty: Type<'ctx, B>,
+        pfs: Option<&PerFunctionState<'ctx, B>>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         if !matches!(expected_ty.into_type_enum(), AnyTypeEnum::Pointer(_)) {
             return Err(self.expected("pointer type for blockaddress"));
@@ -4707,11 +4797,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_punct(PunctKind::LParen, "'(' in blockaddress")?;
         let function = self.parse_function_ref_for_blockaddress("function name in blockaddress")?;
         self.expect_punct(PunctKind::Comma, "',' in blockaddress")?;
+        let label_loc = self.loc();
         let label = match self.peek() {
-            Token::LocalVar(_) => self
-                .current_str_payload()
-                .ok_or_else(|| self.expected("basic block name in blockaddress"))?,
-            Token::LocalVarId(id) => id.to_string(),
+            Token::LocalVar(_) => BlockLabel::Named(
+                self.current_str_payload()
+                    .ok_or_else(|| self.expected("basic block name in blockaddress"))?,
+            ),
+            Token::LocalVarId(id) => BlockLabel::Numbered(*id),
             _ => return Err(self.expected("basic block name in blockaddress")),
         };
         self.bump()?;
@@ -4721,29 +4813,81 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if function.basic_blocks().len() == 0 {
                     return Err(self.message("cannot take blockaddress inside a declaration"));
                 }
-                let block = function
-                    .basic_blocks()
-                    .find(|bb| bb.name().as_deref() == Some(label.as_str()))
-                    .ok_or_else(|| self.message("referenced value is not a basic block"))?;
-                self.module
-                    .block_address(function, &block)
-                    .map_err(|e| self.builder_err("blockaddress", e))
+                // Upstream's `BlockAddressPFS` route: a blockaddress naming the
+                // function currently being parsed resolves through that
+                // function's own state, where both label spellings are live.
+                // A block that has not been reached yet defers to the
+                // function's close, which is where upstream's
+                // `resolveForwardRefBlockAddresses` would have caught it.
+                let same_function =
+                    pfs.filter(|state| state.func.as_erased() == function.as_dyn().as_erased());
+                if let Some(state) = same_function {
+                    if let Some(block) = state.defined_block(&label) {
+                        let block = state.value_as_block_view(block, label_loc)?;
+                        return self
+                            .module
+                            .block_address(function, &block)
+                            .map_err(|e| self.builder_err("blockaddress", e));
+                    }
+                    return self.defer_block_address(
+                        expected_ty,
+                        DeferredBlockAddressFunction::Installed(function),
+                        label,
+                        label_loc,
+                    );
+                }
+                match label {
+                    // The numbering is a parse-time artefact of the function's
+                    // own body; once that body is closed there is nothing left
+                    // to look `%5` up in.
+                    BlockLabel::Numbered(_) => Err(self.message_at(
+                        label_loc,
+                        "cannot take address of numeric label after the function is defined",
+                    )),
+                    BlockLabel::Named(name) => {
+                        let block = function
+                            .basic_blocks()
+                            .find(|bb| bb.name().as_deref() == Some(name.as_str()))
+                            .ok_or_else(|| {
+                                self.message_at(label_loc, "referenced value is not a basic block")
+                            })?;
+                        self.module
+                            .block_address(function, &block)
+                            .map_err(|e| self.builder_err("blockaddress", e))
+                    }
+                }
             }
-            ParsedBlockAddressFunction::Forward { function, loc } => {
-                let placeholder = self
-                    .module
-                    .forward_ref_value_placeholder(expected_ty)
-                    .map_err(|e| self.builder_err("blockaddress placeholder", e))?;
-                let constant = placeholder.as_constant();
-                self.deferred_block_addresses.push(DeferredBlockAddress {
-                    placeholder,
-                    function,
-                    label,
-                    loc,
-                });
-                Ok(constant)
-            }
+            ParsedBlockAddressFunction::Forward { function, loc } => self.defer_block_address(
+                expected_ty,
+                DeferredBlockAddressFunction::Forward(function),
+                label,
+                loc,
+            ),
         }
+    }
+
+    /// Park a `blockaddress` whose block is not yet available behind a
+    /// placeholder. Mirrors the `ForwardRefBlockAddresses` entry upstream
+    /// makes; it is drained when the named function's body closes.
+    fn defer_block_address(
+        &mut self,
+        expected_ty: Type<'ctx, B>,
+        function: DeferredBlockAddressFunction<'ctx, B>,
+        label: BlockLabel,
+        loc: Span,
+    ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
+        let placeholder = self
+            .module
+            .forward_ref_value_placeholder(expected_ty)
+            .map_err(|e| self.builder_err("blockaddress placeholder", e))?;
+        let constant = placeholder.as_constant();
+        self.deferred_block_addresses.push(DeferredBlockAddress {
+            placeholder,
+            function,
+            label,
+            loc,
+        });
+        Ok(constant)
     }
 
     fn parse_dso_local_equivalent_constant(
@@ -6123,7 +6267,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 None => f.name().to_owned(),
             };
-            let comdat = self.module.get_or_insert_comdat(&name);
+            let comdat = self.comdat_ref(&name, decl_loc);
             f.set_comdat(self.module, comdat)
                 .map_err(|e| self.builder_err("function comdat", e))?;
         }
@@ -6347,7 +6491,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 None => f.name().to_owned(),
             };
-            let comdat = self.module.get_or_insert_comdat(&name);
+            let comdat = self.comdat_ref(&name, decl_loc);
             f.set_comdat(self.module, comdat)
                 .map_err(|e| self.builder_err("function comdat", e))?;
         }
@@ -6432,6 +6576,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
 
         self.parse_function_body(&mut state)?;
+        // Upstream drains `ForwardRefBlockAddresses` for this function as the
+        // body *opens* (`PerFunctionState::resolveForwardRefBlockAddresses`),
+        // because its own `PerFunctionState` will forward-declare whatever
+        // blocks the addresses name. llvmkit resolves at the close instead —
+        // by then every block exists for real, so no placeholder blocks are
+        // needed, and the labels are still numbered.
+        self.resolve_block_addresses_for_function(&state, &name_id)?;
         state.finish(self.module)?;
         self.expect_punct(PunctKind::RBrace, "'}' to close function body")?;
         Ok(())
@@ -9753,6 +9904,27 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
             })
     }
 
+    /// The block this `blockaddress` label names, if the body has defined it.
+    ///
+    /// Deliberately non-creating: upstream's `getBB` *would* forward-declare,
+    /// but every caller here runs either mid-body (where a miss defers) or at
+    /// the close (where a miss is a real error), so inventing a block would
+    /// only hide the second case.
+    fn defined_block(&self, label: &BlockLabel) -> Option<llvmkit_ir::Value<'ctx, B>> {
+        match label {
+            BlockLabel::Named(name) => self
+                .defined_blocks
+                .contains(name)
+                .then(|| self.blocks.get(name).copied())
+                .flatten(),
+            BlockLabel::Numbered(id) => self
+                .defined_numbered_blocks
+                .contains(id)
+                .then(|| self.numbered_blocks.get(id).copied())
+                .flatten(),
+        }
+    }
+
     fn value_as_block_view(
         &self,
         value: llvmkit_ir::Value<'ctx, B>,
@@ -10241,7 +10413,7 @@ fn borrow_live_builder<'b, 'm, 'ctx, B: ModuleBrand + 'ctx>(
 /// Local symbol kind label used in [`crate::parse_error::ParseError::UndefinedSymbol`].
 const SYMBOL_KIND_LOCAL: SymbolKind = SymbolKind::Local;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum NameOrId {
     Name(String),
     Id(u32),

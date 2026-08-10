@@ -75,6 +75,33 @@ mechanism and retires those lists.
   is `value`, where a colliding *definition* stays `global`; `SymbolKind`
   gained a variant rather than smoothing that over.
 
+- **Fixed (parser + printer): `blockaddress` with a numeric label.**
+  llvmkit stringified the slot id and looked for a block literally *named*
+  `"5"` — which no unnamed block is — so `blockaddress(@f, %5)` could never
+  resolve. Upstream keeps the two spellings apart as `ValID::t_LocalID` /
+  `t_LocalName`, and llvmkit now does too. A `blockaddress` naming the
+  function it appears in resolves through that function's own state
+  (upstream's `BlockAddressPFS`), so a label below the reference works; one
+  naming a function whose body has closed reports
+  `cannot take address of numeric label after the function is defined`,
+  because the numbering is gone. Deferred `blockaddress` resolution moved
+  from end-of-module to the target function's close, where its labels are
+  still numbered. The printer half was broken too: it printed the target
+  block without the target *function's* slot numbering, so an unnamed block
+  came out as `%<unnumbered>` and the module could not round-trip.
+
+- **Fixed (parser): a comdat may be used before it is defined**, and
+  redefining one is now an error. Every site ran `get_or_insert_comdat`, so a
+  *use* silently created the comdat and a second `$c = comdat ...` was
+  silently accepted. Ports `LLParser::getComdat` and the
+  `!ForwardRefComdats.erase(Name)` guard in `parseComdat`, adding
+  `use of undefined comdat '$x'` and `redefinition of comdat '$x'`.
+
+- **Fixed (`llvmkit-ir`): a function's address carries the function's own
+  address space.** `FunctionValue::as_global_constant_ptr` hard-coded 0,
+  where `GlobalValue::getType` builds the pointer from the value's own
+  address space.
+
 - **Fixed (`llvmkit-ir`): a `common` global may be initialized with a zero
   aggregate.** The verifier asked whether the initializer was a zero *scalar*
   — `Int(0)`, `Float(0)`, `null` — where upstream's
