@@ -603,6 +603,71 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
             _ => true,
         }
     }
+
+    // ---- Element / shape validity (`Type.cpp`) ----
+    //
+    // Deny-lists, not allow-lists, except for vectors — reproduced in that
+    // shape so a type kind added later keeps upstream's default answer.
+
+    /// Mirrors `StructType::isValidElementType`.
+    pub fn is_valid_struct_element(self) -> bool {
+        !matches!(
+            self.data(),
+            TypeData::Void
+                | TypeData::Label
+                | TypeData::Metadata
+                | TypeData::Function { .. }
+                | TypeData::Token
+        )
+    }
+
+    /// Mirrors `ArrayType::isValidElementType`, which additionally denies
+    /// `x86_amx` where the struct predicate does not.
+    pub fn is_valid_array_element(self) -> bool {
+        self.is_valid_struct_element() && !matches!(self.data(), TypeData::X86Amx)
+    }
+
+    /// Mirrors `VectorType::isValidElementType` — the one *allow*-list in the
+    /// family: integers, floats, pointers, and target extension types that
+    /// declare `CanBeVectorElement`.
+    pub fn is_valid_vector_element(self) -> bool {
+        match self.data() {
+            TypeData::Integer { .. } | TypeData::Pointer { .. } | TypeData::TypedPointer { .. } => {
+                true
+            }
+            TypeData::TargetExt(_) => crate::derived_types::TargetExtType::try_from(self)
+                .is_ok_and(|t| {
+                    t.has_property(crate::derived_types::TargetExtProperty::CanBeVectorElement)
+                }),
+            _ => self.is_floating_point(),
+        }
+    }
+
+    /// Mirrors `PointerType::isValidElementType`. Only reachable through
+    /// legacy typed-pointer syntax; opaque `ptr` has no element type.
+    pub fn is_valid_pointer_element(self) -> bool {
+        !matches!(
+            self.data(),
+            TypeData::Void
+                | TypeData::Label
+                | TypeData::Metadata
+                | TypeData::Token
+                | TypeData::X86Amx
+        )
+    }
+
+    /// Mirrors `FunctionType::isValidReturnType`.
+    pub fn is_valid_function_return(self) -> bool {
+        !matches!(
+            self.data(),
+            TypeData::Function { .. } | TypeData::Label | TypeData::Metadata
+        )
+    }
+
+    /// Mirrors `FunctionType::isValidArgumentType`.
+    pub fn is_valid_function_argument(self) -> bool {
+        self.is_first_class() && !self.is_label()
+    }
 }
 
 /// Public discriminator for analysis-mode pattern matching.

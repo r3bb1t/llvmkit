@@ -134,3 +134,70 @@ fn a_forward_referenced_numbered_type_resolves_to_its_definition() {
     assert!(text.contains("%0 = type { i32 }"), "{text}");
     assert!(text.contains("@h = global %0 zeroinitializer"), "{text}");
 }
+
+// ── Element / shape validity (`Type.cpp`'s isValidElementType family) ──────
+
+/// `zero element vector is illegal` and `size too large for vector` — the two
+/// shape checks in `LLParser::parseArrayVectorType`. Upstream reads the count
+/// as an `APSInt` and range-checks it *after*, which is why an over-large
+/// count is this message rather than a parse failure.
+#[test]
+fn vector_shape_is_checked() {
+    assert_eq!(
+        parse_err(b"declare void @f(<0 x i32>)\n").to_string(),
+        "zero element vector is illegal"
+    );
+    assert_eq!(
+        parse_err(b"declare void @f(<4294967296 x i32>)\n").to_string(),
+        "size too large for vector"
+    );
+}
+
+/// `VectorType::isValidElementType` is the one *allow*-list in the family:
+/// integers, floats, pointers, and target extension types that declare
+/// `CanBeVectorElement`. A struct element is not in it.
+#[test]
+fn invalid_vector_element_type_is_rejected() {
+    assert_eq!(
+        parse_err(b"declare void @f(<2 x {i32}>)\n").to_string(),
+        "invalid vector element type"
+    );
+}
+
+/// `ArrayType::isValidElementType` is a deny-list, and denies `x86_amx` where
+/// the struct predicate does not.
+#[test]
+fn invalid_array_element_type_is_rejected() {
+    assert_eq!(
+        parse_err(b"declare void @f([2 x label])\n").to_string(),
+        "invalid array element type"
+    );
+    assert_eq!(
+        parse_err(b"declare void @f([2 x x86_amx])\n").to_string(),
+        "invalid array element type"
+    );
+}
+
+/// `StructType::isValidElementType`, checked per element against that
+/// element's own location (`LLParser::parseStructBody`). `x86_amx` is legal
+/// here — the difference from the array predicate is deliberate upstream.
+#[test]
+fn invalid_struct_element_type_is_rejected() {
+    assert_eq!(
+        parse_err(b"declare void @f({i32, label})\n").to_string(),
+        "invalid element type for struct"
+    );
+    let text = parse_render("struct_amx_element", b"declare void @f({i32, x86_amx})\n");
+    assert!(text.contains("x86_amx"), "{text}");
+}
+
+/// `ptr*` is rejected where a pointee-typed pointer would have been read.
+/// Mirrors the check `LLParser::parseType` makes immediately after building
+/// the opaque pointer, before its suffix loop runs.
+#[test]
+fn ptr_star_is_rejected() {
+    assert_eq!(
+        parse_err(b"declare void @f(ptr*)\n").to_string(),
+        "ptr* is invalid - use ptr instead"
+    );
+}

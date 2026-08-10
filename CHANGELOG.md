@@ -34,6 +34,25 @@ type definition is.
   identified struct by its position among the module's anonymous ones, as
   `TypePrinting::NumberedTypes` does.
 
+- **Fixed (`llvmkit-ir` + parser): element and shape validity.** The six
+  `isValidElementType` / `isValidReturnType` / `isValidArgumentType`
+  predicates from `llvm/lib/IR/Type.cpp` are ported onto `Type`, deny-lists
+  reproduced as deny-lists so a type kind added later keeps upstream's default
+  answer — and the vector one as the allow-list it actually is, target
+  extension types' `CanBeVectorElement` included. The parser checks them where
+  upstream checks them, which makes five diagnostics reachable:
+  `zero element vector is illegal`, `size too large for vector`,
+  `invalid vector element type`, `invalid array element type`, and
+  `invalid element type for struct` — the last per element, against that
+  element's own location. `<0 x i32>`, `<2 x {i32}>` and `[2 x label]` were
+  all accepted before.
+
+- **Fixed (parser): `ptr*` is rejected.** It parsed as plain `ptr`. The check
+  had to go in the legacy typed-pointer lookahead rather than the
+  opaque-pointer arm where upstream puts it: llvmkit claims the whole
+  `<type> '*'` shape before that arm is reached, so the arm never sees the
+  star.
+
 - **Fixed (parser): numbered types have identity.** `%N = type ...` minted a
   fresh *literal* struct, so two numbered types with equal bodies silently
   became one type, and a forward-referenced `%N` could never be the same type

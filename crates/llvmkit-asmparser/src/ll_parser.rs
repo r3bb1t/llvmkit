@@ -3163,7 +3163,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let mut elems = Vec::new();
         if !matches!(self.peek(), Token::RBrace) {
             loop {
-                elems.push(self.parse_type(false)?);
+                elems.push(self.parse_struct_element()?);
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
                 }
@@ -3332,6 +3332,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_legacy_typed_pointer_type_syntax_only(
         &mut self,
     ) -> ParseResult<Option<Type<'ctx, B>>> {
+        // `ptr*` never reaches the opaque-pointer arm of `parse_type`, because
+        // this lookahead claims the whole `<type> '*'` shape first. Upstream
+        // rejects it inside `parseType`, right after building the pointer, so
+        // the equivalent guard has to sit here — at the only place that sees
+        // both the `ptr` and the star.
+        if matches!(self.peek(), Token::PrimitiveType(PrimitiveTy::Ptr)) {
+            let saved_lex = self.lex.clone();
+            let saved_current = self.current.clone();
+            self.bump()?;
+            if matches!(self.peek(), Token::Kw(Keyword::Addrspace)) {
+                self.bump()?;
+                self.parse_addr_space_paren()?;
+            }
+            let is_ptr_star = matches!(self.peek(), Token::Star);
+            self.lex = saved_lex;
+            self.current = saved_current;
+            if is_ptr_star {
+                return Err(self.message("ptr* is invalid - use ptr instead"));
+            }
+        }
+
         let saved_lex = self.lex.clone();
         let saved_current = self.current.clone();
 
@@ -3487,19 +3508,26 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else {
             false
         };
-        let n = if is_vector {
-            u64::from(self.parse_uint32("vector element count")?)
-        } else {
-            self.parse_uint64("array element count")?
-        };
+        // Upstream reads the count as an APSInt and only *then* range-checks
+        // it, so an over-large vector count is `size too large for vector`
+        // rather than a parse failure. Reading it as u64 here keeps that
+        // ordering.
+        let size_loc = self.loc();
+        let n = self.parse_uint64("array or vector element count")?;
         self.expect_keyword(Keyword::X, "'x' between count and element type")?;
+        let elem_loc = self.loc();
         let elem = self.parse_type(false)?;
         if is_vector {
             self.expect_punct(PunctKind::Greater, "'>' at end of vector type")?;
-            let n32 = u32::try_from(n).map_err(|_| ParseError::Expected {
-                expected: "vector element count fits in u32".into(),
-                loc: DiagLoc::span(self.loc()),
-            })?;
+            if n == 0 {
+                return Err(self.message_at(size_loc, "zero element vector is illegal"));
+            }
+            let Ok(n32) = u32::try_from(n) else {
+                return Err(self.message_at(size_loc, "size too large for vector"));
+            };
+            if !elem.is_valid_vector_element() {
+                return Err(self.message_at(elem_loc, "invalid vector element type"));
+            }
             let v = if scalable {
                 self.module.scalable_vector_type(elem, n32)
             } else {
@@ -3508,6 +3536,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Ok(v.as_type())
         } else {
             self.expect_punct(PunctKind::RSquare, "']' at end of array type")?;
+            if !elem.is_valid_array_element() {
+                return Err(self.message_at(elem_loc, "invalid array element type"));
+            }
             let arr = self.module.array_type(elem, n);
             Ok(arr.as_type())
         }
@@ -3520,7 +3551,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let mut elems = Vec::new();
         if !matches!(self.peek(), Token::RBrace) {
             loop {
-                elems.push(self.parse_type(false)?);
+                elems.push(self.parse_struct_element()?);
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
                 }
@@ -3528,6 +3559,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         self.expect_punct(PunctKind::RBrace, "'}' in packed struct body")?;
         Ok((elems, true))
+    }
+
+    /// One struct element, checked where `LLParser::parseStructBody` checks
+    /// it — per element, against the element's own location.
+    fn parse_struct_element(&mut self) -> ParseResult<Type<'ctx, B>> {
+        let elem_loc = self.loc();
+        let ty = self.parse_type(false)?;
+        if !ty.is_valid_struct_element() {
+            return Err(self.message_at(elem_loc, "invalid element type for struct"));
+        }
+        Ok(ty)
     }
 
     /// `T (params...)` — mirrors `LLParser::parseFunctionType`. The opening
