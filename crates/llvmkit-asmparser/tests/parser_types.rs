@@ -302,3 +302,47 @@ fn a_pointer_to_an_undefined_named_type_is_rejected() {
         "use of undefined type named 't'"
     );
 }
+
+// ── Target extension types (`LLParser::parseTargetExtType`) ───────────────
+
+/// Type parameters must precede integer ones; once an integer has been seen,
+/// anything else is `expected uint32 param`. llvmkit reported a generic
+/// `expected target extension type` here.
+#[test]
+fn a_type_param_after_an_int_param_is_rejected() {
+    assert_eq!(
+        parse_err(b"declare void @f(target(\"spirv.Type\", 1, i32))\n").to_string(),
+        "expected uint32 param"
+    );
+}
+
+/// `TargetExtType::checkParams` (`llvm/lib/IR/Type.cpp`) — the three named
+/// types that constrain their own arity. Upstream reaches these through
+/// `getOrError`; llvmkit runs the same check from the parser, the only place
+/// a malformed one can be written.
+#[test]
+fn target_extension_type_arity_is_checked() {
+    assert_eq!(
+        parse_err(b"declare void @f(target(\"aarch64.svcount\", i32))\n").to_string(),
+        "target extension type aarch64.svcount should have no parameters"
+    );
+    assert_eq!(
+        parse_err(b"declare void @f(target(\"riscv.vector.tuple\", i32))\n").to_string(),
+        "target extension type riscv.vector.tuple should have one type parameter and one integer parameter"
+    );
+    assert_eq!(
+        parse_err(b"declare void @f(target(\"amdgcn.named.barrier\"))\n").to_string(),
+        "target extension type amdgcn.named.barrier should have no type parameters and one integer parameter"
+    );
+}
+
+/// A target extension type may be parameterised by `void`
+/// (`parseType(TypeParam, /*AllowVoid=*/true)`), which llvmkit rejected.
+#[test]
+fn a_target_extension_type_may_take_a_void_parameter() {
+    let text = parse_render(
+        "target_ext_void_param",
+        b"declare void @f(target(\"t\", void))\n",
+    );
+    assert!(text.contains("target(\"t\", void)"), "{text}");
+}

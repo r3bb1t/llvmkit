@@ -56,6 +56,14 @@ type definition is.
   afterwards. llvmkit read bare types there, leaving both behind a generic
   `expected ')'`.
 
+- **Fixed (`llvmkit-ir` + parser): target extension type validation.**
+  `TargetExtType::checkParams` is ported — the three named types that
+  constrain their own arity (`aarch64.svcount`, `riscv.vector.tuple`,
+  `amdgcn.named.barrier`) — and the parser surfaces it. A type parameter
+  after an integer one is now `expected uint32 param` rather than a generic
+  complaint, and a type parameter may be `void`, which upstream allows
+  (`AllowVoid=true`) and llvmkit rejected.
+
 - **Fixed (parser): the legacy typed-pointer path parses its pointee.**
   `parse_type` opened with a lookahead that skipped a `<type> '*'` shape
   syntactically and lowered it straight to opaque `ptr`, so the pointee type

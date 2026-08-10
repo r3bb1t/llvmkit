@@ -1138,6 +1138,35 @@ pub enum TargetExtProperty {
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> TargetExtType<'ctx, B> {
+    /// Arity constraints for the target extension types that declare them.
+    /// Port of `TargetExtType::checkParams` (`llvm/lib/IR/Type.cpp`), whose
+    /// messages this reproduces verbatim.
+    ///
+    /// Upstream runs this from `getOrError`, i.e. as part of construction.
+    /// llvmkit keeps construction infallible and exposes the check, because
+    /// its intrinsic tables build these types from a closed, known-good set;
+    /// the `.ll` parser — the only place a malformed one can be written — is
+    /// what calls this.
+    pub fn check_params(self) -> IrResult<()> {
+        let message = match (
+            self.name(),
+            self.type_params().count(),
+            self.int_params().count(),
+        ) {
+            ("aarch64.svcount", types, ints) if types != 0 || ints != 0 => {
+                "target extension type aarch64.svcount should have no parameters"
+            }
+            ("riscv.vector.tuple", types, ints) if types != 1 || ints != 1 => {
+                "target extension type riscv.vector.tuple should have one type parameter and one integer parameter"
+            }
+            ("amdgcn.named.barrier", types, ints) if types != 0 || ints != 1 => {
+                "target extension type amdgcn.named.barrier should have no type parameters and one integer parameter"
+            }
+            _ => return Ok(()),
+        };
+        Err(IrError::InvalidOperation { message })
+    }
+
     pub fn name(self) -> &'ctx str {
         self.module
             .type_data(self.id)

@@ -3345,16 +3345,29 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 seen_integer_param = true;
                 int_params.push(self.parse_uint32("target extension integer parameter")?);
             } else if seen_integer_param {
-                return Err(self.expected("target extension type"));
+                // Type parameters must precede integer ones; once an integer
+                // has been seen, anything else is upstream's `expected uint32
+                // param`.
+                return Err(self.expected("uint32 param"));
             } else {
-                type_params.push(self.parse_type(false)?);
+                // `parseType(TypeParam, /*AllowVoid=*/true)` — a target
+                // extension type may be parameterised by `void`.
+                type_params.push(self.parse_type(true)?);
             }
         }
         self.expect_punct(PunctKind::RParen, "')' in target extension type")?;
-        Ok(self
-            .module
-            .target_ext_type(name, type_params, int_params)
-            .as_type())
+        let loc = self.loc();
+        let ty = self.module.target_ext_type(name, type_params, int_params);
+        // Upstream surfaces `TargetExtType::getOrError`'s message through
+        // `tokError`, so the arity complaint is the whole diagnostic.
+        ty.check_params().map_err(|e| match e {
+            IrError::InvalidOperation { message } => ParseError::Message {
+                message: message.into(),
+                loc: DiagLoc::span(loc),
+            },
+            other => self.builder_err("target extension type", other),
+        })?;
+        Ok(ty.as_type())
     }
 
     /// Helper: after consuming an opening `<` not followed by `{`, the
