@@ -168,16 +168,15 @@ fn parse_target_extension_type() {
 }
 
 /// Mirrors `LLParser.cpp::parseTargetExtType`: type parameters must precede
-/// integer parameters in target extension types.
+/// integer parameters in target extension types. The message is upstream's
+/// `expected uint32 param`; llvmkit reported a generic production name until
+/// the `SeenInt` guard was ported.
 #[test]
 fn parse_target_extension_rejects_type_after_integer_param() {
     let module = module_new!("facade_target_ext_bad_param_order").expect("fresh module");
     let err = parser::parse_type(b"target(\"spirv.Image\", 7, i32)", &module)
         .expect_err("type parameter after integer parameter is malformed");
-    match err {
-        ParseError::Expected { expected, .. } => assert_eq!(expected, "target extension type"),
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    assert_eq!(err.to_string(), "expected uint32 param");
 }
 
 /// Mirrors `LLParser.cpp::parseStandaloneConstantValue` through the facade.

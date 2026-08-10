@@ -399,10 +399,5 @@ fn represented_intrinsic_signature_mismatches_are_rejected() {
 #[test]
 fn target_extension_type_rejects_type_parameter_after_integer_parameter_before_pointer_suffix() {
     let err = parse_err("declare void @f(target(\"dx.Resource\", 1, i32)* %p)\n");
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "target extension type")
-        }
-        other => panic!("unexpected error variant: {other:?}"),
-    }
+    assert_eq!(err.to_string(), "expected uint32 param");
 }
