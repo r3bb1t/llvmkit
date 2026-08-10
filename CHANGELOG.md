@@ -19,6 +19,39 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Type identity: `%0 = type {i32}` and `%1 = type {i32}` are two types
+
+Fourth wave of the `LLParser` parity program. LLVM has two struct-identity
+regimes — *literal* structs are structurally uniqued, *identified* ones never
+unify — and llvmkit spelled the difference as `name.is_none()`. That cannot
+represent an **anonymous identified** struct, which is exactly what a numbered
+type definition is.
+
+- **Breaking (`llvmkit-ir`): struct identity is explicit.** `StructTypeData`
+  carries a `StructIdentity` (`Literal` / `Identified { name }`) instead of an
+  `Option<String>` name, and `Module::anonymous_identified_struct()` mirrors
+  `StructType::create(Context)` with no name. The printer numbers an anonymous
+  identified struct by its position among the module's anonymous ones, as
+  `TypePrinting::NumberedTypes` does.
+
+- **Fixed (parser): numbered types have identity.** `%N = type ...` minted a
+  fresh *literal* struct, so two numbered types with equal bodies silently
+  became one type, and a forward-referenced `%N` could never be the same type
+  as its later definition. Both now work.
+
+- **Fixed (parser): a numbered type may be defined at any slot.** llvmkit
+  required each definition to equal a running frontier and rejected
+  `%5 = type {i32}` as the first one; upstream's `NumberedTypes` is a plain map
+  with no such rule.
+
+- **Fixed (parser): `redefinition of type`, `forward references to non-struct
+  type`, `use of undefined type '%N'` and `use of undefined type named 'x'`.**
+  None were reachable. The type tables kept no forward-reference location — the
+  one bit that drives all four — and a comment asserted that upstream does not
+  diagnose an undefined type at all, which is not so: `validateEndOfModule`
+  has a loop for each spelling. `%t = type opaque` now correctly counts as a
+  definition, so a later `%t = type {i32}` is a redefinition.
+
 ### Forward references: use-before-definition, as upstream resolves it
 
 Third wave of the `LLParser` parity program. Upstream mints a typed sentinel

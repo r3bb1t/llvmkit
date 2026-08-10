@@ -196,7 +196,7 @@ where
         let TypeData::Struct(data) = ty.data() else {
             return false;
         };
-        if data.name.as_deref() != Some(S::NAME) {
+        if data.identity.name() != Some(S::NAME) {
             return false;
         }
         let body = data.body.borrow();

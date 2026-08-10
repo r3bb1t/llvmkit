@@ -2845,8 +2845,16 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
             let s = data
                 .as_struct()
                 .expect("iter_named_struct_ids yields only struct ids");
-            let name = s.name.as_ref().expect("named struct must have a name");
-            fmt_llvm_name(f, "%", name)?;
+            // Identified structs print their identity block here; an
+            // anonymous one is numbered rather than named, exactly as
+            // `AsmWriter::printTypeIdentities` does.
+            match s.identity.name() {
+                Some(name) => fmt_llvm_name(f, "%", name)?,
+                None => match m.context().anonymous_identified_struct_number(id) {
+                    Some(number) => write!(f, "%{number}")?,
+                    None => f.write_str("%<unnumbered>")?,
+                },
+            }
             f.write_str(" = type ")?;
             match s.body.borrow().as_ref() {
                 Some(body) => fmt_struct_body(f, body, m)?,

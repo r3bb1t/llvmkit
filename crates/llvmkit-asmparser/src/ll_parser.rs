@@ -98,6 +98,14 @@ type ParsedGlobalInitializer<'ctx, B> = (
 #[branded(Debug, Clone, Copy)]
 struct TypeEntry<'ctx, B: ModuleBrand> {
     ty: Type<'ctx, B>,
+    /// Where this type was first *referenced*, when no definition has been
+    /// seen yet. `None` means defined.
+    ///
+    /// Upstream stores the same fact as the `LocTy` half of
+    /// `NamedTypes` / `NumberedTypes`'s `std::pair<Type *, LocTy>`, where an
+    /// *invalid* location means "defined". That one bit drives both
+    /// `redefinition of type` and `use of undefined type`.
+    forward_ref_loc: Option<Span>,
 }
 
 struct MetadataSlotEntry<B: ModuleBrand> {
@@ -907,12 +915,28 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         parser.named_types = slots
             .named_types
             .iter()
-            .map(|(name, ty)| (name.clone(), TypeEntry { ty: *ty }))
+            .map(|(name, ty)| {
+                (
+                    name.clone(),
+                    TypeEntry {
+                        ty: *ty,
+                        forward_ref_loc: None,
+                    },
+                )
+            })
             .collect();
         parser.numbered_types = slots
             .numbered_types
             .iter()
-            .map(|(id, ty)| (*id, TypeEntry { ty: *ty }))
+            .map(|(id, ty)| {
+                (
+                    *id,
+                    TypeEntry {
+                        ty: *ty,
+                        forward_ref_loc: None,
+                    },
+                )
+            })
             .collect();
         parser.next_unnamed_type_id = slots
             .numbered_types
@@ -1027,11 +1051,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
         }
 
-        // Forward-referenced types that never received a definition stay
-        // opaque. That matches upstream's behavior — `validateEndOfModule`
-        // does not error on opaque structs that were referenced but never
-        // bodied; only `LLParser`'s `error(forward_loc, ...)` paths flag
-        // the truly malformed cases.
+        self.validate_forward_ref_types()?;
 
         for (slot, entry) in &self.metadata_slots {
             if !entry.defined {
@@ -1917,6 +1937,44 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .entry(name.to_owned())
             .or_insert(loc);
         self.module.get_or_insert_comdat(name)
+    }
+
+    /// A `%name` / `%N` that was referenced but never defined.
+    ///
+    /// Mirrors the two `NumberedTypes` / `NamedTypes` loops in
+    /// `LLParser::validateEndOfModule`, including their order — numbered
+    /// first — and their different nouns: `use of undefined type '%N'` for a
+    /// slot, `use of undefined type named 'x'` for a name.
+    ///
+    /// llvmkit previously claimed upstream did not diagnose this at all, and
+    /// left every unresolved reference as a silently opaque struct.
+    fn validate_forward_ref_types(&self) -> ParseResult<()> {
+        let mut numbered: Vec<(u32, Span)> = self
+            .numbered_types
+            .iter()
+            .filter_map(|(id, entry)| entry.forward_ref_loc.map(|loc| (*id, loc)))
+            .collect();
+        numbered.sort_unstable_by_key(|(id, _)| *id);
+        if let Some((id, loc)) = numbered.first() {
+            return Err(ParseError::UndefinedSymbol {
+                kind: SymbolKind::Type,
+                id: SymbolId::Numbered(*id),
+                loc: DiagLoc::span(*loc),
+            });
+        }
+        let mut named: Vec<(&String, Span)> = self
+            .named_types
+            .iter()
+            .filter_map(|(name, entry)| entry.forward_ref_loc.map(|loc| (name, loc)))
+            .collect();
+        named.sort_unstable_by_key(|(name, _)| name.as_str());
+        if let Some((name, loc)) = named.first() {
+            return Err(ParseError::Message {
+                message: format!("use of undefined type named '{name}'").into(),
+                loc: DiagLoc::span(*loc),
+            });
+        }
+        Ok(())
     }
 
     /// The first comdat that no definition ever gave a selection kind.
@@ -2973,89 +3031,123 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// Common path between `parseNamedType` and `parseUnnamedType`. The
     /// directive's RHS is restricted to a struct type (or `opaque`) per
     /// upstream `parseStructDefinition`; non-struct RHS is a typed error.
+    /// `%name = type ...` / `%N = type ...`. Mirrors
+    /// `LLParser::parseStructDefinition`.
+    ///
+    /// The table entry's `forward_ref_loc` is the whole state machine:
+    /// present means "referenced, not yet defined", absent means "defined".
+    /// Upstream spells the same thing as the validity of the `LocTy` half of
+    /// its `std::pair<Type *, LocTy>`.
     fn parse_struct_definition(
         &mut self,
         name: Option<String>,
         slot: Option<u32>,
         decl_loc: Span,
     ) -> ParseResult<()> {
-        // Resolve the *handle* the directive should populate.
-        let handle: StructType<'ctx, llvmkit_ir::StructBodyDyn, B> = match (&name, slot) {
-            (Some(n), None) => self.module.get_or_insert_named_struct(n),
-            (None, Some(id)) => {
-                if id != self.next_unnamed_type_id {
-                    return Err(ParseError::Expected {
-                        expected: format!(
-                            "monotonic numbered type id %{}",
-                            self.next_unnamed_type_id
-                        )
-                        .into(),
-                        loc: DiagLoc::span(decl_loc),
-                    });
-                }
-                self.next_unnamed_type_id = self.next_unnamed_type_id.saturating_add(1);
-                // Numbered types are anonymous in the IR; we still create a
-                // fresh literal struct slot to represent the body.
-                self.module
-                    .struct_type(core::iter::empty::<Type<'ctx, B>>())
-            }
+        let existing = match (&name, slot) {
+            (Some(n), None) => self.named_types.get(n.as_str()).copied(),
+            (None, Some(id)) => self.numbered_types.get(&id).copied(),
             _ => unreachable!("parse_struct_definition called without a name xor slot"),
         };
-
-        // RHS: either `opaque` or a literal-struct body.
-        match self.peek() {
-            Token::Kw(Keyword::Opaque) => {
-                self.bump()?;
-                // Opaque named struct: nothing to set.
-            }
-            Token::LBrace | Token::Less => {
-                let (elements, packed) = self.parse_struct_body()?;
-                if name.is_some() {
-                    self.module
-                        .set_struct_body_dyn(handle, elements, packed)
-                        .map_err(|e| ParseError::Expected {
-                            expected: format!("valid struct body: {e}").into(),
-                            loc: DiagLoc::span(decl_loc),
-                        })?;
-                } else {
-                    // Numbered types record an anonymous literal struct;
-                    // upstream never re-uses the name slot, so we keep the
-                    // freshly built handle and the literal struct produced
-                    // by `module.struct_type` as the table entry below.
-                    let lit = if packed {
-                        self.module.packed_struct_type(elements)
-                    } else {
-                        self.module.struct_type(elements)
-                    };
-                    self.numbered_types.insert(
-                        match slot {
-                            Some(slot) => slot,
-                            None => {
-                                return Err(ParseError::Expected {
-                                    expected: "numbered type slot for anonymous literal body"
-                                        .into(),
-                                    loc: DiagLoc::span(decl_loc),
-                                });
-                            }
-                        },
-                        TypeEntry { ty: lit.as_type() },
-                    );
-                    return Ok(());
-                }
-            }
-            _ => return Err(self.expected("'opaque' or '{' after 'type'")),
+        // Already defined once — `Entry.first && !Entry.second.isValid()`.
+        if let Some(entry) = existing
+            && entry.forward_ref_loc.is_none()
+        {
+            return Err(self.message_at(decl_loc, "redefinition of type"));
         }
 
-        // Insert / update the named-type table.
-        if let Some(n) = name {
-            self.named_types.insert(
-                n,
-                TypeEntry {
-                    ty: handle.as_type(),
-                },
-            );
+        // `%t = type opaque` counts as a definition even though it leaves the
+        // body unset, which is why a later `%t = type {i32}` is a redefinition.
+        if matches!(self.peek(), Token::Kw(Keyword::Opaque)) {
+            self.bump()?;
+            let ty = match existing {
+                Some(entry) => entry.ty,
+                None => self.fresh_identified_struct(&name),
+            };
+            self.record_type_definition(name, slot, ty);
+            return Ok(());
         }
+
+        // `<` here is either a packed struct body or a vector type alias.
+        let is_packed = self.eat_punct(PunctKind::Less)?;
+        if !matches!(self.peek(), Token::LBrace) {
+            // A random type alias, accepted for compatibility with old files.
+            // These may not be forward referenced, because there is no
+            // identified struct to fill in later.
+            if existing.is_some() {
+                return Err(self.message_at(decl_loc, "forward references to non-struct type"));
+            }
+            let aliased = if is_packed {
+                self.parse_array_or_vector_after_open(true)?
+            } else {
+                self.parse_type(false)?
+            };
+            self.record_type_definition(name, slot, aliased);
+            return Ok(());
+        }
+
+        // `<` was already eaten above when present, so the two shapes take
+        // different helpers: the brace-only one when we are inside `<{...}>`,
+        // and the general one — which handles its own `<` — otherwise.
+        let (elements, packed) = if is_packed {
+            let (elements, _) = self.parse_struct_body_braces()?;
+            self.expect_punct(PunctKind::Greater, "'>' in packed struct")?;
+            (elements, true)
+        } else {
+            self.parse_struct_body()?
+        };
+
+        let ty = match existing {
+            Some(entry) => entry.ty,
+            None => self.fresh_identified_struct(&name),
+        };
+        let handle: StructType<'ctx, llvmkit_ir::StructBodyDyn, B> = StructType::try_from(ty)
+            .map_err(|_| ParseError::Message {
+                message: "redefinition of type".into(),
+                loc: DiagLoc::span(decl_loc),
+            })?;
+        self.module
+            .set_struct_body_dyn(handle, elements, packed)
+            .map_err(|e| ParseError::Expected {
+                expected: format!("valid struct body: {e}").into(),
+                loc: DiagLoc::span(decl_loc),
+            })?;
+        self.record_type_definition(name, slot, ty);
         Ok(())
+    }
+
+    /// The identified struct a `type` directive defines when the name has not
+    /// been uttered before — named or anonymous, matching upstream's two
+    /// `StructType::create` overloads.
+    fn fresh_identified_struct(&self, name: &Option<String>) -> Type<'ctx, B> {
+        match name {
+            Some(n) => self.module.get_or_insert_named_struct(n).as_type(),
+            None => self.module.anonymous_identified_struct().as_type(),
+        }
+    }
+
+    /// Record a completed `type` definition, clearing the forward-reference
+    /// location so a second definition is caught as a redefinition.
+    fn record_type_definition(
+        &mut self,
+        name: Option<String>,
+        slot: Option<u32>,
+        ty: Type<'ctx, B>,
+    ) {
+        let entry = TypeEntry {
+            ty,
+            forward_ref_loc: None,
+        };
+        match (name, slot) {
+            (Some(n), _) => {
+                self.named_types.insert(n, entry);
+            }
+            (None, Some(id)) => {
+                self.numbered_types.insert(id, entry);
+                self.next_unnamed_type_id = self.next_unnamed_type_id.max(id.saturating_add(1));
+            }
+            (None, None) => unreachable!("a type definition is either named or numbered"),
+        }
     }
 
     /// Parse a struct body: `{ T, T, ... }` or `<{ T, T, ... }>` (packed).
@@ -3495,34 +3587,44 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn lookup_or_forward_named_type(&mut self, name: &str, _loc: Span) -> Type<'ctx, B> {
+    /// Mirrors the `lltok::LocalVar` arm of `LLParser::parseType`: an
+    /// undefined `%name` becomes an opaque identified struct on the spot, and
+    /// the reference's location is remembered so `validateEndOfModule` can
+    /// blame it if no definition ever arrives.
+    fn lookup_or_forward_named_type(&mut self, name: &str, loc: Span) -> Type<'ctx, B> {
         if let Some(entry) = self.named_types.get(name) {
             return entry.ty;
         }
-        // Forward-reference: create an opaque-named struct now, record the
-        // first-seen span, and let the matching definition fill in the body
-        // later (or stay opaque if it never lands).
         let st = self.module.get_or_insert_named_struct(name);
-        self.named_types
-            .insert(name.to_owned(), TypeEntry { ty: st.as_type() });
+        self.named_types.insert(
+            name.to_owned(),
+            TypeEntry {
+                ty: st.as_type(),
+                forward_ref_loc: Some(loc),
+            },
+        );
         st.as_type()
     }
 
-    fn lookup_or_forward_numbered_type(&mut self, id: u32, _loc: Span) -> Type<'ctx, B> {
+    /// The `lltok::LocalVarID` twin of [`Self::lookup_or_forward_named_type`],
+    /// mirroring upstream's `StructType::create(Context)` with no name.
+    ///
+    /// An *anonymous identified* struct, not a literal one: `%0 = type {i32}`
+    /// and `%1 = type {i32}` must stay distinct types, and a forward-referenced
+    /// `%0` has to be the same type as the `%0` its definition later fills in.
+    /// A literal empty struct could be neither.
+    fn lookup_or_forward_numbered_type(&mut self, id: u32, loc: Span) -> Type<'ctx, B> {
         if let Some(entry) = self.numbered_types.get(&id) {
             return entry.ty;
         }
-        // Forward reference for a numbered type creates a fresh anonymous
-        // literal struct slot whose body must be filled by a matching
-        // `%N = type ...` directive. Upstream uses `StructType::create(ctx)`
-        // for this; llvmkit-ir doesn't expose anonymous opaque structs, so
-        // we use a literal empty struct and rely on the eventual
-        // definition to update the table entry.
-        let st = self
-            .module
-            .struct_type(core::iter::empty::<Type<'ctx, B>>());
-        self.numbered_types
-            .insert(id, TypeEntry { ty: st.as_type() });
+        let st = self.module.anonymous_identified_struct();
+        self.numbered_types.insert(
+            id,
+            TypeEntry {
+                ty: st.as_type(),
+                forward_ref_loc: Some(loc),
+            },
+        );
         st.as_type()
     }
 

@@ -1304,6 +1304,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> ModuleView<'ctx, B> {
         StructType::new(id, ModuleRef::new(self.core))
     }
 
+    /// A fresh identified struct with no name — `%0 = type { i32 }`.
+    /// Mirrors `StructType::create(Context)` called without a name.
+    ///
+    /// Never uniqued: two calls give two distinct types even at the same
+    /// body, which is what makes `%0` and `%1` different types when both are
+    /// written `type { i32 }`. Body-setting goes through the same
+    /// `set_struct_body` path as a named one.
+    #[inline]
+    pub fn anonymous_identified_struct(self) -> StructType<'ctx, StructBodyDyn, B> {
+        let id = self.core.ctx.create_anonymous_identified_struct();
+        StructType::new(id, ModuleRef::new(self.core))
+    }
+
     /// Look up an existing identified struct type by name, or `None`.
     #[inline]
     pub fn named_struct(self, name: &str) -> Option<StructType<'ctx, StructBodyDyn, B>> {
@@ -3787,6 +3800,13 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
 
     /// Get or create the identified struct type `%name`, body unset.
     /// Delegates to [`ModuleView::get_or_insert_named_struct`].
+    /// A fresh identified struct with no name — `%0 = type { i32 }`.
+    /// Mirrors `StructType::create(Context)` called without a name.
+    #[inline]
+    pub fn anonymous_identified_struct(&'ctx self) -> StructType<'ctx, StructBodyDyn, B> {
+        self.as_view().anonymous_identified_struct()
+    }
+
     pub fn get_or_insert_named_struct(
         &'ctx self,
         name: &str,
@@ -3849,7 +3869,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
             .type_data(st.id)
             .as_struct()
             .unwrap_or_else(|| unreachable!("StructType wraps struct data"));
-        if s.name.is_none() {
+        if s.identity.is_literal() {
             return Err(IrError::TypeMismatch {
                 expected: TypeKindLabel::Struct,
                 got: TypeKindLabel::Struct,

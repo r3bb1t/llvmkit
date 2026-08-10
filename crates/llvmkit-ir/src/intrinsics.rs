@@ -775,7 +775,7 @@ fn append_mangled_type<'ctx, B: ModuleBrand + 'ctx>(
             out.push('f');
         }
         TypeData::Struct(data) => {
-            if let Some(name) = &data.name {
+            if let Some(name) = data.identity.name() {
                 out.push_str("s_");
                 out.push_str(name);
                 out.push('s');

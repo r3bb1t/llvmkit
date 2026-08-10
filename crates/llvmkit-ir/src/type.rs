@@ -217,15 +217,47 @@ impl TypeData {
     }
 }
 
-/// Payload for any struct type — both literal and named.
+/// Payload for any struct type — literal or identified.
 ///
-/// `name = None` distinguishes literal structs (whose `body` is set at
-/// creation and never changes) from identified ones (whose body may be
-/// filled in later via `set_struct_body`, and is `None` while opaque).
+/// [`StructIdentity`] is the discriminator, not the name: a literal struct's
+/// `body` is set at creation and never changes, while an identified struct's
+/// may be filled in later via `set_struct_body` and is `None` while opaque.
 #[derive(Debug)]
 pub(crate) struct StructTypeData {
-    pub(crate) name: Option<String>,
+    pub(crate) identity: StructIdentity,
     pub(crate) body: RefCell<Option<StructBody>>,
+}
+
+/// Which of LLVM's two struct-identity regimes a struct type belongs to.
+///
+/// Mirrors the `StructType::get` / `StructType::create` split. A *literal*
+/// struct is structurally uniqued: `{i32}` written twice is one type. An
+/// *identified* struct never unifies — `%a = type {i32}` and `%b = type {i32}`
+/// are distinct, and so are `%0 = type {i32}` and `%1 = type {i32}`.
+///
+/// The name is not the discriminator. llvmkit used to spell literal-ness as
+/// `name.is_none()`, which cannot represent an *anonymous identified* struct
+/// — exactly what `%0 = type {i32}` is.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum StructIdentity {
+    Literal,
+    Identified { name: Option<String> },
+}
+
+impl StructIdentity {
+    /// The declared name, for an identified struct that has one.
+    #[inline]
+    pub(crate) fn name(&self) -> Option<&str> {
+        match self {
+            Self::Literal => None,
+            Self::Identified { name } => name.as_deref(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_literal(&self) -> bool {
+        matches!(self, Self::Literal)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -660,8 +692,27 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
                 write!(f, "<vscale x {min} x {}>", Type::new(*elem, self.module))
             }
             TypeData::Struct(s) => {
-                if let Some(name) = &s.name {
-                    return write!(f, "%{name}");
+                // An identified struct prints as its *reference*, never as its
+                // body: `%name`, or `%N` for an anonymous one, whose number is
+                // its position among the module's anonymous identified structs
+                // (`TypePrinting::NumberedTypes`). Only a literal struct spells
+                // its body inline.
+                match &s.identity {
+                    StructIdentity::Identified { name: Some(name) } => {
+                        return write!(f, "%{name}");
+                    }
+                    StructIdentity::Identified { name: None } => {
+                        return match self
+                            .module
+                            .module()
+                            .context()
+                            .anonymous_identified_struct_number(self.id)
+                        {
+                            Some(number) => write!(f, "%{number}"),
+                            None => f.write_str("%<unnumbered>"),
+                        };
+                    }
+                    StructIdentity::Literal => {}
                 }
                 let body = s.body.borrow();
                 let body = body.as_ref().expect("literal struct must have body");

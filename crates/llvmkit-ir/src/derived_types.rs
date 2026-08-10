@@ -1071,8 +1071,8 @@ impl<'ctx, Body: StructBodyState, B: ModuleBrand + 'ctx> StructType<'ctx, Body, 
             .type_data(self.id)
             .as_struct()
             .expect("StructType invariant: wraps Struct")
-            .name
-            .as_deref()
+            .identity
+            .name()
     }
     /// `true` for an *opaque* identified struct (body unset). Always
     /// `false` for literal structs.

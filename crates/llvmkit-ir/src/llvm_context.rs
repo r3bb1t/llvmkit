@@ -342,7 +342,7 @@ impl Context {
             return id;
         }
         let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
-            name: None,
+            identity: crate::r#type::StructIdentity::Literal,
             body: RefCell::new(Some(StructBody { elements, packed })),
         }));
         self.literal_struct_types.borrow_mut().insert(key, id);
@@ -390,7 +390,9 @@ impl Context {
             return (id, true);
         }
         let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
-            name: Some(name.to_owned()),
+            identity: crate::r#type::StructIdentity::Identified {
+                name: Some(name.to_owned()),
+            },
             body: RefCell::new(None),
         }));
         self.named_struct_types
@@ -398,6 +400,44 @@ impl Context {
             .insert(name.to_owned(), id);
         self.named_struct_order.borrow_mut().push(id);
         (id, false)
+    }
+
+    /// An identified struct with no name — what `%0 = type { i32 }` is.
+    /// Mirrors `StructType::create(Context)` with no name argument.
+    ///
+    /// Never interned: two anonymous identified structs with the same body are
+    /// still two types, which is the whole point of the identified regime.
+    pub(crate) fn create_anonymous_identified_struct(&self) -> TypeSlot {
+        let id = self.push(TypeData::Struct(crate::r#type::StructTypeData {
+            identity: crate::r#type::StructIdentity::Identified { name: None },
+            body: RefCell::new(None),
+        }));
+        self.named_struct_order.borrow_mut().push(id);
+        id
+    }
+
+    /// This anonymous identified struct's position among the module's
+    /// anonymous identified structs — the number `AsmWriter` prints it under.
+    /// Mirrors `TypePrinting::NumberedTypes`, which counts only the unnamed
+    /// ones.
+    pub(crate) fn anonymous_identified_struct_number(&self, id: TypeSlot) -> Option<u32> {
+        let mut number: u32 = 0;
+        for &candidate in self.named_struct_order.borrow().iter() {
+            let TypeData::Struct(data) = self.type_data(candidate) else {
+                continue;
+            };
+            if !matches!(
+                data.identity,
+                crate::r#type::StructIdentity::Identified { name: None }
+            ) {
+                continue;
+            }
+            if candidate == id {
+                return Some(number);
+            }
+            number = number.saturating_add(1);
+        }
+        None
     }
 
     pub(crate) fn get_named_struct(&self, name: &str) -> Option<TypeSlot> {
@@ -425,7 +465,7 @@ impl Context {
         let mut slot = s.body.borrow_mut();
         if slot.is_some() {
             return Err(crate::IrError::StructBodyAlreadySet {
-                name: s.name.clone().expect("named struct"),
+                name: s.identity.name().unwrap_or_default().to_owned(),
             });
         }
         if self.body_would_be_recursive(id, &body) {
