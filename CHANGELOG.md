@@ -56,6 +56,20 @@ type definition is.
   afterwards. llvmkit read bare types there, leaving both behind a generic
   `expected ')'`.
 
+- **Fixed (parser): symbolic and defaulted address spaces.**
+  `addrspace("A")` / `("G")` / `("P")` now resolve through the module's data
+  layout to the alloca, default-globals and program address spaces
+  (`parseOptionalAddrSpace`'s `ParseAddrspaceValue`), with
+  `invalid symbolic addrspace 'X'`, `expected integer or string constant`, and
+  the `isUInt<24>` check `invalid address space, must be a 24-bit integer`.
+  And a function that declares no `addrspace` now takes the **program**
+  address space rather than 0 — upstream's `DefaultAS` parameter, reached
+  through `parseOptionalProgramAddrSpace`, which llvmkit had no equivalent of.
+
+  Together with W2.6's same-function forward `blockaddress`, this clears
+  `test/Bitcode/blockaddress-addrspace.ll::return-self-good.ll`, whose corpus
+  entry moves `xfail-parse` -> `pass`.
+
 - **Fixed (`llvmkit-ir` + parser): target extension type validation.**
   `TargetExtType::checkParams` is ported — the three named types that
   constrain their own arity (`aarch64.svcount`, `riscv.vector.tuple`,

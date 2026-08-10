@@ -1683,11 +1683,61 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     /// Consume a `(` u32 `)` block. Mirrors `LLParser::parseOptionalAddrSpace`
     /// / its mandatory cousin.
+    /// `addrspace ( <uint32> | "A" | "G" | "P" )`. Mirrors the inner
+    /// `ParseAddrspaceValue` lambda of `LLParser::parseOptionalAddrSpace`.
+    ///
+    /// The three symbolic spellings resolve through the module's data layout,
+    /// which is why `target datalayout` has to have been seen already —
+    /// upstream guarantees that by parsing target definitions in their own
+    /// pass before any entity.
     fn parse_addr_space_paren(&mut self) -> ParseResult<u32> {
-        self.expect_punct(PunctKind::LParen, "'(' in addrspace")?;
-        let n = self.parse_uint32("address space (uint32)")?;
-        self.expect_punct(PunctKind::RParen, "')' in addrspace")?;
-        Ok(n)
+        self.expect_punct(PunctKind::LParen, "'(' in address space")?;
+        let addr_space = match self.peek() {
+            Token::StringConstant(bytes) => {
+                let name = std::str::from_utf8(bytes.as_ref())
+                    .map_err(|_| self.expected("valid UTF-8 symbolic address space"))?
+                    .to_owned();
+                let layout = self.module.data_layout();
+                let resolved = match name.as_str() {
+                    "A" => layout.alloca_addr_space(),
+                    "G" => layout.default_globals_addr_space(),
+                    "P" => layout.program_addr_space(),
+                    _ => {
+                        return Err(ParseError::Message {
+                            message: format!("invalid symbolic addrspace '{name}'").into(),
+                            loc: DiagLoc::span(self.loc()),
+                        });
+                    }
+                };
+                self.bump()?;
+                resolved
+            }
+            Token::IntegerLit(_) => {
+                let loc = self.loc();
+                let n = self.parse_uint32("integer or string constant")?;
+                // `isUInt<24>` — upstream checks the parsed value, not the
+                // token, so the diagnostic points at the number.
+                if n >= (1 << 24) {
+                    return Err(
+                        self.message_at(loc, "invalid address space, must be a 24-bit integer")
+                    );
+                }
+                n
+            }
+            _ => return Err(self.expected("integer or string constant")),
+        };
+        self.expect_punct(PunctKind::RParen, "')' in address space")?;
+        Ok(addr_space)
+    }
+
+    /// `addrspace(...)` where omitting it means the *program* address space.
+    /// Mirrors `LLParser::parseOptionalProgramAddrSpace`.
+    fn parse_optional_program_addr_space(&mut self) -> ParseResult<u32> {
+        if self.eat_keyword(Keyword::Addrspace)? {
+            self.parse_addr_space_paren()
+        } else {
+            Ok(self.module.data_layout().program_addr_space())
+        }
     }
 
     fn parse_uint32(&mut self, expected: &'static str) -> ParseResult<u32> {
@@ -6141,11 +6191,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         self.expect_punct(PunctKind::RParen, "')' to close function declaration")?;
         let unnamed_addr = self.parse_optional_function_unnamed_addr()?;
-        let address_space = if self.eat_keyword(Keyword::Addrspace)? {
-            self.parse_addr_space_paren()?
-        } else {
-            0
-        };
+        // A function with no explicit `addrspace` lives in the *program*
+        // address space, not 0. Mirrors `parseOptionalProgramAddrSpace`, which
+        // is `parseOptionalAddrSpace` with `DefaultAS =
+        // getProgramAddressSpace()` — the `DefaultAS` parameter llvmkit had no
+        // equivalent of.
+        let address_space = self.parse_optional_program_addr_space()?;
         let suffix = self.parse_optional_function_suffix(&mut attrs)?;
 
         let fn_ty = function_type_with_variadic(self.module, ret_ty, params, var_args);
@@ -6441,11 +6492,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         self.expect_punct(PunctKind::RParen, "')' to close function header")?;
         let unnamed_addr = self.parse_optional_function_unnamed_addr()?;
-        let address_space = if self.eat_keyword(Keyword::Addrspace)? {
-            self.parse_addr_space_paren()?
-        } else {
-            0
-        };
+        // A function with no explicit `addrspace` lives in the *program*
+        // address space, not 0. Mirrors `parseOptionalProgramAddrSpace`, which
+        // is `parseOptionalAddrSpace` with `DefaultAS =
+        // getProgramAddressSpace()` — the `DefaultAS` parameter llvmkit had no
+        // equivalent of.
+        let address_space = self.parse_optional_program_addr_space()?;
         let suffix = self.parse_optional_function_suffix(&mut attrs)?;
 
         let fn_ty = function_type_with_variadic(self.module, ret_ty, param_types, var_args);

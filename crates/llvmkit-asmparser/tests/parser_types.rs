@@ -346,3 +346,50 @@ fn a_target_extension_type_may_take_a_void_parameter() {
     );
     assert!(text.contains("target(\"t\", void)"), "{text}");
 }
+
+// ── Symbolic address spaces (`LLParser::parseOptionalAddrSpace`) ──────────
+
+/// `addrspace("A"|"G"|"P")` resolve through the module's data layout —
+/// alloca, default-globals and program address spaces respectively. Mirrors
+/// the `ParseAddrspaceValue` lambda in `LLParser::parseOptionalAddrSpace`.
+#[test]
+fn symbolic_address_spaces_resolve_through_the_data_layout() {
+    let text = parse_render(
+        "symbolic_addrspace",
+        b"target datalayout = \"A5-G2-P3\"\n@g = external global i32, align 4\ndeclare void @f(ptr addrspace(\"A\"), ptr addrspace(\"G\"), ptr addrspace(\"P\"))\n",
+    );
+    assert!(
+        text.contains("ptr addrspace(5)") && text.contains("ptr addrspace(2)"),
+        "{text}"
+    );
+    assert!(text.contains("ptr addrspace(3)"), "{text}");
+}
+
+/// An unknown symbolic spelling is `invalid symbolic addrspace 'X'`.
+#[test]
+fn an_unknown_symbolic_address_space_is_rejected() {
+    assert_eq!(
+        parse_err(b"declare void @f(ptr addrspace(\"Q\"))\n").to_string(),
+        "invalid symbolic addrspace 'Q'"
+    );
+}
+
+/// Anything that is neither a number nor a string is
+/// `expected integer or string constant`.
+#[test]
+fn a_non_constant_address_space_is_rejected() {
+    assert_eq!(
+        parse_err(b"declare void @f(ptr addrspace(i32))\n").to_string(),
+        "expected integer or string constant"
+    );
+}
+
+/// `isUInt<24>` — upstream range-checks the parsed value, so the diagnostic
+/// is about the number rather than the token.
+#[test]
+fn an_address_space_wider_than_24_bits_is_rejected() {
+    assert_eq!(
+        parse_err(b"declare void @f(ptr addrspace(16777216))\n").to_string(),
+        "invalid address space, must be a 24-bit integer"
+    );
+}
