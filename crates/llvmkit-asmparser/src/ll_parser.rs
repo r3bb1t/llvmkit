@@ -303,6 +303,26 @@ enum BlockLabel {
     Numbered(u32),
 }
 
+/// The `CastOpcode` a constant-expression cast opcode denotes, for
+/// `cast_is_valid`. The two enums are separate because `ConstantExprOpcode`
+/// also covers non-cast forms; upstream shares one `Instruction::CastOps`
+/// numbering between the constant and instruction paths.
+fn cast_opcode_for(opcode: ConstantExprOpcode) -> llvmkit_ir::CastOpcode {
+    use llvmkit_ir::CastOpcode as C;
+    match opcode {
+        ConstantExprOpcode::Trunc => C::Trunc,
+        ConstantExprOpcode::PtrToAddr => C::PtrToAddr,
+        ConstantExprOpcode::PtrToInt => C::PtrToInt,
+        ConstantExprOpcode::IntToPtr => C::IntToPtr,
+        ConstantExprOpcode::BitCast => C::BitCast,
+        ConstantExprOpcode::AddrSpaceCast => C::AddrSpaceCast,
+        // The arm that reaches `cast_opcode_for` is gated on the cast
+        // opcodes above; the remaining constant-expression opcodes are not
+        // casts and never get here.
+        _ => C::BitCast,
+    }
+}
+
 /// Which legacy typed-pointer suffix is being applied. The two arms of
 /// `LLParser::parseType`'s suffix loop word the `void` rejection differently,
 /// so the caller has to say which one it is.
@@ -5166,12 +5186,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let operand = self.parse_global_type_and_value()?;
                 self.expect_keyword(Keyword::To, "'to' in constantexpr cast")?;
                 let dst_ty = self.parse_type(false)?;
-                if dst_ty != result_ty {
-                    return Err(self.expected(
-                        "constant expression destination type matches initializer type",
-                    ));
-                }
                 self.expect_punct(PunctKind::RParen, "')' at end of constantexpr cast")?;
+                // Upstream asks `CastInst::castIsValid`, not whether the
+                // destination matches the initializer's type — that agreement
+                // is `convertValIDToValue`'s job and is checked there.
+                let src_ty = operand.ty();
+                if !llvmkit_ir::cast_is_valid(cast_opcode_for(opcode), src_ty, dst_ty) {
+                    return Err(ParseError::Message {
+                        message: format!(
+                            "invalid cast opcode for cast from '{src_ty}' to '{dst_ty}'"
+                        )
+                        .into(),
+                        loc: DiagLoc::span(self.loc()),
+                    });
+                }
                 self.build_constant_expr(
                     result_ty,
                     None,

@@ -420,3 +420,26 @@ fn a_constant_of_the_wrong_type_is_rejected() {
         "constant expression type mismatch: got type 'ptr addrspace(1)' but expected 'ptr addrspace(2)'"
     );
 }
+
+/// Ports `test/Assembler/invalid_cast4.ll`, whose CHECK pins
+/// `CastInst::castIsValid` reached from a *constant expression*:
+/// `inttoptr (i64 0 to i64)` names a destination that is not a pointer.
+///
+/// llvmkit asked a different question here — whether the destination matched
+/// the initializer's type — which upstream does not ask at all. That
+/// agreement is `convertValIDToValue`'s job (W4 part 1).
+#[test]
+fn an_invalid_constexpr_cast_opcode_is_rejected() {
+    let module = Module::dynamic("invalid_cast4");
+    let err = Parser::new(
+        include_bytes!("fixtures/upstream/invalid-cast/invalid_cast4.ll"),
+        &module,
+    )
+    .expect("parse constructor")
+    .parse_module()
+    .expect_err("the fixture is a negative test");
+    assert_eq!(
+        err.to_string(),
+        "invalid cast opcode for cast from 'i64' to 'i64'"
+    );
+}

@@ -248,8 +248,8 @@ pub use inline_asm::{AsmDialect, InlineAsm, InlineAsmOptions};
 pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
     AddFlags, AshrFlags, AtomicCmpXchgConfig, AtomicRmwConfig, AtomicRmwFlags, BinaryOpcode,
-    CallAttributeData, CmpXchgFlags, IcmpFlags, IntBinOpFlags, IntCastFlags, LshrFlags, MulFlags,
-    OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SdivFlags, ShlFlags,
+    CallAttributeData, CastOpcode, CmpXchgFlags, IcmpFlags, IntBinOpFlags, IntCastFlags, LshrFlags,
+    MulFlags, OperandBundleData, OperandBundleTag, OrFlags, OverflowFlags, SdivFlags, ShlFlags,
     ShuffleMaskElem, SubFlags, TailCallKind, TruncFlags, UdivFlags, UiToFpFlags, UnaryOpcode,
     ZextFlags,
 };
@@ -257,6 +257,7 @@ pub use instruction::{
     CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,
     TerminatorKind,
 };
+pub use instructions::cast_is_valid;
 pub use instructions::{
     AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AshrInst, AtomicCmpXchgInst, AtomicRmwInst,
     BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, Callee, CatchPadInst, CatchReturnInst,

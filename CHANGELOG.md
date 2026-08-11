@@ -21,6 +21,20 @@ cut, entries accumulate under **Unreleased**.
 
 ### Constants must agree with the type asked for
 
+- **Fixed (`llvmkit-ir` + parser): `invalid cast opcode for cast from 'A' to
+  'B'`.** `CastInst::castIsValid` is ported onto `cast_is_valid`, and the
+  constant-expression cast path asks it. llvmkit asked a different question
+  entirely — whether the cast's destination matched the *initializer's* type —
+  which upstream never asks; that agreement belongs to `convertValIDToValue`
+  and is checked there. `test/Assembler/invalid_cast4.ll` is ported.
+
+- **Added (`llvmkit-ir`): seven `Type` predicates from `Type.h`** —
+  `scalar_type`, `scalar_size_in_bits`, `primitive_size_in_bits`,
+  `vector_element_count`, `is_int_or_int_vector`, `is_ptr_or_ptr_vector`,
+  `pointer_address_space`. Several existed as private duplicates in five
+  different modules; these are the public ones `cast_is_valid` and the
+  verifier can share.
+
 Fifth wave of the `LLParser` parity program.
 
 - **Fixed (parser): `constant expression type mismatch: got type 'A' but

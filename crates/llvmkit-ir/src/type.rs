@@ -604,6 +604,83 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
         }
     }
 
+    // ---- Scalar / vector projection (`Type.h`) ----
+
+    /// The element type of a vector, or `self` for anything else.
+    /// Mirrors `Type::getScalarType`.
+    pub fn scalar_type(self) -> Self {
+        match self.data() {
+            TypeData::FixedVector { elem, .. } | TypeData::ScalableVector { elem, .. } => {
+                Type::new(*elem, self.module)
+            }
+            _ => self,
+        }
+    }
+
+    /// Element count of a vector — the *minimum* count for a scalable one, as
+    /// `ElementCount` carries it. `None` for a non-vector.
+    ///
+    /// Comparing two of these also settles scalar-versus-vector agreement,
+    /// which is how `CastInst::castIsValid` avoids a separate arm for it.
+    pub fn vector_element_count(self) -> Option<u32> {
+        match self.data() {
+            TypeData::FixedVector { n, .. } => Some(*n),
+            TypeData::ScalableVector { min, .. } => Some(*min),
+            _ => None,
+        }
+    }
+
+    /// Bit width of this type's *scalar* type, or 0 where LLVM has no answer.
+    /// Mirrors `Type::getScalarSizeInBits`, whose zero return is the "not a
+    /// sized primitive" signal the cast table relies on.
+    pub fn scalar_size_in_bits(self) -> u32 {
+        self.scalar_type().primitive_size_in_bits()
+    }
+
+    /// Mirrors `Type::getPrimitiveSizeInBits`: the bit width of a primitive
+    /// or vector of primitives, and 0 for everything else. A scalable vector
+    /// reports its minimum width, matching upstream's `TypeSize` in the
+    /// contexts the parser uses this for.
+    pub fn primitive_size_in_bits(self) -> u32 {
+        match self.data() {
+            TypeData::Half | TypeData::Bfloat => 16,
+            TypeData::Float => 32,
+            TypeData::Double => 64,
+            TypeData::X86Fp80 => 80,
+            TypeData::Fp128 | TypeData::PpcFp128 => 128,
+            TypeData::X86Amx => 8192,
+            TypeData::Integer { bits } => *bits,
+            TypeData::FixedVector { elem, n } => Type::new(*elem, self.module)
+                .primitive_size_in_bits()
+                .saturating_mul(*n),
+            TypeData::ScalableVector { elem, min } => Type::new(*elem, self.module)
+                .primitive_size_in_bits()
+                .saturating_mul(*min),
+            _ => 0,
+        }
+    }
+
+    /// Mirrors `Type::isIntOrIntVectorTy`.
+    pub fn is_int_or_int_vector(self) -> bool {
+        self.scalar_type().is_integer()
+    }
+
+    /// Mirrors `Type::isPtrOrPtrVectorTy`.
+    pub fn is_ptr_or_ptr_vector(self) -> bool {
+        self.scalar_type().is_pointer()
+    }
+
+    /// Address space of a pointer type, or `None` if this is not one.
+    /// Mirrors `PointerType::getAddressSpace` with the null check folded in
+    /// (design law 3: the `dyn_cast` plus null test becomes an `Option`).
+    pub fn pointer_address_space(self) -> Option<u32> {
+        match self.data() {
+            TypeData::Pointer { addr_space } => Some(*addr_space),
+            TypeData::TypedPointer { addr_space, .. } => Some(*addr_space),
+            _ => None,
+        }
+    }
+
     // ---- Element / shape validity (`Type.cpp`) ----
     //
     // Deny-lists, not allow-lists, except for vectors — reproduced in that

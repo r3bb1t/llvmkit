@@ -3869,6 +3869,115 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
     }
 }
 
+/// Is `op` a legal cast from `src` to `dst`? Port of
+/// `CastInst::castIsValid` (`llvm/lib/IR/Instructions.cpp`).
+///
+/// Pure and infallible — a predicate, not a builder check (design law 7).
+/// The parser, the constant-expression path and the verifier all ask the
+/// same question, so there is one table.
+///
+/// Element counts do the scalar/vector agreement work: a scalar counts as 0
+/// elements, so comparing counts also rejects scalar-to-vector and
+/// vector-to-scalar without a separate arm — upstream's own trick.
+pub fn cast_is_valid<'ctx, B: ModuleBrand + 'ctx>(
+    op: CastOpcode,
+    src: Type<'ctx, B>,
+    dst: Type<'ctx, B>,
+) -> bool {
+    if !src.is_first_class() || !dst.is_first_class() || src.is_aggregate() || dst.is_aggregate() {
+        return false;
+    }
+
+    let src_is_vector = src.is_vector();
+    let dst_is_vector = dst.is_vector();
+    let src_scalar_bits = src.scalar_size_in_bits();
+    let dst_scalar_bits = dst.scalar_size_in_bits();
+    let src_elements = if src_is_vector {
+        src.vector_element_count()
+    } else {
+        None
+    };
+    let dst_elements = if dst_is_vector {
+        dst.vector_element_count()
+    } else {
+        None
+    };
+    let counts_agree = src_elements == dst_elements;
+
+    match op {
+        CastOpcode::Trunc => {
+            src.is_int_or_int_vector()
+                && dst.is_int_or_int_vector()
+                && counts_agree
+                && src_scalar_bits > dst_scalar_bits
+        }
+        CastOpcode::Zext | CastOpcode::Sext => {
+            src.is_int_or_int_vector()
+                && dst.is_int_or_int_vector()
+                && counts_agree
+                && src_scalar_bits < dst_scalar_bits
+        }
+        CastOpcode::FpTrunc => {
+            src.is_float_or_float_vector()
+                && dst.is_float_or_float_vector()
+                && counts_agree
+                && src_scalar_bits > dst_scalar_bits
+        }
+        CastOpcode::FpExt => {
+            src.is_float_or_float_vector()
+                && dst.is_float_or_float_vector()
+                && counts_agree
+                && src_scalar_bits < dst_scalar_bits
+        }
+        CastOpcode::UiToFp | CastOpcode::SiToFp => {
+            src.is_int_or_int_vector() && dst.is_float_or_float_vector() && counts_agree
+        }
+        CastOpcode::FpToUi | CastOpcode::FpToSi => {
+            src.is_float_or_float_vector() && dst.is_int_or_int_vector() && counts_agree
+        }
+        CastOpcode::PtrToAddr | CastOpcode::PtrToInt => {
+            counts_agree && src.is_ptr_or_ptr_vector() && dst.is_int_or_int_vector()
+        }
+        CastOpcode::IntToPtr => {
+            counts_agree && src.is_int_or_int_vector() && dst.is_ptr_or_ptr_vector()
+        }
+        CastOpcode::BitCast => {
+            let src_ptr = src.scalar_type().pointer_address_space();
+            let dst_ptr = dst.scalar_type().pointer_address_space();
+            // A pointer may only bitcast to a pointer, and vice versa.
+            if src_ptr.is_some() != dst_ptr.is_some() {
+                return false;
+            }
+            let Some(src_space) = src_ptr else {
+                // Non-pointer: a no-op cast of type only, so the bit widths
+                // must match exactly.
+                return src.primitive_size_in_bits() == dst.primitive_size_in_bits();
+            };
+            if Some(src_space) != dst_ptr {
+                return false;
+            }
+            match (src_is_vector, dst_is_vector) {
+                (true, true) => counts_agree,
+                (true, false) => src_elements == Some(1),
+                (false, true) => dst_elements == Some(1),
+                (false, false) => true,
+            }
+        }
+        CastOpcode::AddrSpaceCast => {
+            let (Some(src_space), Some(dst_space)) = (
+                src.scalar_type().pointer_address_space(),
+                dst.scalar_type().pointer_address_space(),
+            ) else {
+                return false;
+            };
+            if src_space == dst_space {
+                return false;
+            }
+            counts_agree
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
