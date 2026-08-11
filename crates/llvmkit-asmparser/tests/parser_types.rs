@@ -498,3 +498,59 @@ fn undef_like_constants_reject_a_non_first_class_type() {
         "invalid type for poison constant"
     );
 }
+
+// ── Aggregate initializers (`LLParser::parseValID`'s aggregate arms) ──────
+
+/// `constant vector must not be empty`, and the element-type allow-list the
+/// vector arm applies to element 0. llvmkit accepted `<>` outright.
+#[test]
+fn vector_constant_shape_is_checked() {
+    assert_eq!(
+        parse_err(b"@g = global <2 x i32> <>\n").to_string(),
+        "constant vector must not be empty"
+    );
+}
+
+/// `vector element #N is not of type 'T'` and `array element #N ...` — the
+/// two agreement loops, which report against the *first* element's location
+/// and number the offender. Note upstream's unbalanced quote in the message;
+/// diagnostic text is contractual, so it is reproduced.
+#[test]
+fn aggregate_element_type_disagreement_is_numbered() {
+    assert_eq!(
+        parse_err(b"@g = global <2 x i32> <i32 1, i64 2>\n").to_string(),
+        "vector element #1 is not of type 'i32"
+    );
+    assert_eq!(
+        parse_err(b"@g = global [2 x i32] [i32 1, i64 2]\n").to_string(),
+        "array element #1 is not of type 'i32"
+    );
+}
+
+/// `invalid empty array initializer` — `[]` is upstream's `t_EmptyArray`,
+/// legal only at a zero-length array type. With no elements there is nothing
+/// to derive an element type from, which is why upstream defers it to
+/// `convertValIDToValue`.
+#[test]
+fn an_empty_array_initializer_needs_a_zero_length_array() {
+    assert_eq!(
+        parse_err(b"@g = global [2 x i32] []\n").to_string(),
+        "invalid empty array initializer"
+    );
+    let text = parse_render("empty_array_ok", b"@g = global [0 x i32] []\n");
+    assert!(text.contains("[0 x i32]"), "{text}");
+}
+
+/// The two struct-initializer checks from `convertValIDToValue`'s
+/// `t_ConstantStruct` arm: element count, then per-element type agreement.
+#[test]
+fn struct_initializer_shape_is_checked() {
+    assert_eq!(
+        parse_err(b"@g = global {i32, i32} {i32 1}\n").to_string(),
+        "initializer with struct type has wrong # elements"
+    );
+    assert_eq!(
+        parse_err(b"@g = global {i32, i32} {i32 1, i64 2}\n").to_string(),
+        "element 1 of struct initializer doesn't match struct element type"
+    );
+}

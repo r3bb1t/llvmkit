@@ -21,6 +21,18 @@ cut, entries accumulate under **Unreleased**.
 
 ### Constants must agree with the type asked for
 
+- **Fixed (parser): eight aggregate-initializer diagnostics.**
+  `constant vector must not be empty` (llvmkit accepted `<>`),
+  `vector elements must have integer, pointer or floating point type`,
+  the numbered element-agreement messages `vector element #N is not of type
+  'T` / `array element #N ...` — reproduced with upstream's own unbalanced
+  quote, since diagnostic text is contractual — `invalid array element type`,
+  `invalid empty array initializer` (`[]` is legal only at a zero-length
+  array type), `initializer with struct type has wrong # elements`, and
+  `element N of struct initializer doesn't match struct element type`. All
+  previously surfaced as llvmkit builder errors wrapped in
+  `expected valid <kind> constant: …`, or not at all.
+
 - **Fixed (parser): six `convertValIDToValue` diagnostics.**
   `functions are not values, refer to them as pointers` (the guard before any
   `ValID` arm runs), `invalid use of function-local name`, `integer constant

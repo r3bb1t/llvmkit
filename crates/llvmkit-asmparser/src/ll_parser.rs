@@ -4277,12 +4277,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 AnyTypeEnum::Array(array_ty) if matches!(self.peek(), Token::LSquare) => {
                     self.expect_punct(PunctKind::LSquare, "'[' to open array constant")?;
+                    let first_elt_loc = self.loc();
                     let values = if matches!(self.peek(), Token::RSquare) {
                         Vec::new()
                     } else {
                         self.parse_global_value_vector()?
                     };
                     self.expect_punct(PunctKind::RSquare, "']' to close array constant")?;
+                    if values.is_empty() {
+                        // `[]` is upstream's `t_EmptyArray`, legal only at a
+                        // zero-length array type — it defers the check to
+                        // `convertValIDToValue` because with no elements there
+                        // is nothing to derive an element type from.
+                        if !array_ty.is_empty() {
+                            return Err(self.message("invalid empty array initializer"));
+                        }
+                    } else {
+                        self.check_aggregate_elements(&values, "array", first_elt_loc)?;
+                    }
                     let c = array_ty
                         .const_array(values)
                         .map_err(|e| ParseError::Expected {
@@ -4293,12 +4305,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 AnyTypeEnum::Vector(vec_ty) if matches!(self.peek(), Token::Less) => {
                     self.expect_punct(PunctKind::Less, "'<' to open vector constant")?;
+                    let first_elt_loc = self.loc();
                     let values = if matches!(self.peek(), Token::Greater) {
                         Vec::new()
                     } else {
                         self.parse_global_value_vector()?
                     };
                     self.expect_punct(PunctKind::Greater, "'>' to close vector constant")?;
+                    if values.is_empty() {
+                        return Err(self.message("constant vector must not be empty"));
+                    }
+                    let element_ty = values[0].ty();
+                    if !element_ty.is_integer()
+                        && !element_ty.is_floating_point()
+                        && !element_ty.is_pointer()
+                    {
+                        return Err(self.message_at(
+                            first_elt_loc,
+                            "vector elements must have integer, pointer or floating point type",
+                        ));
+                    }
+                    self.check_aggregate_elements(&values, "vector", first_elt_loc)?;
                     let c = vec_ty
                         .const_vector(values)
                         .map_err(|e| ParseError::Expected {
@@ -4329,6 +4356,25 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             PunctKind::Greater,
                             "'>' to close packed struct constant",
                         )?;
+                    }
+                    if struct_ty.field_count() != values.len() {
+                        return Err(
+                            self.message("initializer with struct type has wrong # elements")
+                        );
+                    }
+                    for (index, value) in values.iter().enumerate() {
+                        let field_ty = struct_ty.field_type(index).ok_or_else(|| {
+                            self.message("initializer with struct type has wrong # elements")
+                        })?;
+                        if value.ty() != field_ty {
+                            return Err(ParseError::Message {
+                                message: format!(
+                                    "element {index} of struct initializer doesn't match struct element type"
+                                )
+                                .into(),
+                                loc: DiagLoc::span(self.loc()),
+                            });
+                        }
                     }
                     let c = struct_ty
                         .const_struct(values)
@@ -4559,6 +4605,41 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }),
             _ => Err(self.expected("zeroinitializer for a zeroable type")),
         }
+    }
+
+    /// Every element of an array or vector constant must have element 0's
+    /// type. Mirrors the two agreement loops in `LLParser::parseValID`'s
+    /// `lsquare` / `less` arms, which report against the *first* element's
+    /// location and number the offender.
+    ///
+    /// `what` is the noun upstream uses — `array element #N` / `vector
+    /// element #N` — so the two loops stay one function without inventing a
+    /// third spelling.
+    fn check_aggregate_elements(
+        &self,
+        values: &[llvmkit_ir::Constant<'ctx, B>],
+        what: &'static str,
+        first_elt_loc: Span,
+    ) -> ParseResult<()> {
+        let Some(first) = values.first() else {
+            return Ok(());
+        };
+        let element_ty = first.ty();
+        if what == "array" && !element_ty.is_first_class() {
+            return Err(ParseError::Message {
+                message: format!("invalid array element type: {element_ty}").into(),
+                loc: DiagLoc::span(first_elt_loc),
+            });
+        }
+        for (index, value) in values.iter().enumerate() {
+            if value.ty() != element_ty {
+                return Err(ParseError::Message {
+                    message: format!("{what} element #{index} is not of type '{element_ty}").into(),
+                    loc: DiagLoc::span(first_elt_loc),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// `functions are not values, refer to them as pointers` — the guard at
