@@ -19,6 +19,19 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Constants must agree with the type asked for
+
+Fifth wave of the `LLParser` parity program.
+
+- **Fixed (parser): `constant expression type mismatch: got type 'A' but
+  expected 'B'`.** A parsed constant carries its own type and nothing checked
+  it against the context's — the `ValID::t_Constant` arm of
+  `convertValIDToValue`. `blockaddress` is the usual way to reach it, since
+  its type comes from the *function's* address space rather than the
+  surrounding expression, which is exactly what
+  `test/Bitcode/blockaddress-addrspace.ll`'s negative half tests. Both halves
+  of that fixture now behave as upstream.
+
 ### Type identity: `%0 = type {i32}` and `%1 = type {i32}` are two types
 
 Fourth wave of the `LLParser` parity program. LLVM has two struct-identity

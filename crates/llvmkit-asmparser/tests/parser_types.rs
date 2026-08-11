@@ -393,3 +393,30 @@ fn an_address_space_wider_than_24_bits_is_rejected() {
         "invalid address space, must be a 24-bit integer"
     );
 }
+
+// ── Constant type agreement (`LLParser::convertValIDToValue`) ─────────────
+
+/// The `ValID::t_Constant` arm of `LLParser::convertValIDToValue`: a parsed
+/// constant carries its own type, and nothing before this point checks it
+/// against the type the context asked for.
+///
+/// Ports the negative half of `test/Bitcode/blockaddress-addrspace.ll`
+/// (`return-self-bad.ll`), whose CHECK line pins this message. The function
+/// is `addrspace(1)`, so its `blockaddress` is `ptr addrspace(1)` while the
+/// `ret` wants `ptr addrspace(2)` — the address space is what disagrees,
+/// which is why the fixture exists.
+#[test]
+fn a_constant_of_the_wrong_type_is_rejected() {
+    let module = Module::dynamic("constant_type_mismatch");
+    let err = Parser::new(
+        include_bytes!("fixtures/upstream/blockaddress-addrspace/return_self_bad.ll"),
+        &module,
+    )
+    .expect("parse constructor")
+    .parse_module()
+    .expect_err("the fixture is a negative test");
+    assert_eq!(
+        err.to_string(),
+        "constant expression type mismatch: got type 'ptr addrspace(1)' but expected 'ptr addrspace(2)'"
+    );
+}

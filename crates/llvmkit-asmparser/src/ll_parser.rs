@@ -1154,6 +1154,23 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .module
                 .block_address(state.func, &block)
                 .map_err(|e| self.builder_err("blockaddress", e))?;
+            // Upstream never defers this: `BlockAddressPFS->getBB` forward-
+            // declares the block, so `BlockAddress::get` is built at once and
+            // `convertValIDToValue` compares its type against the context's.
+            // llvmkit resolves at function close instead, but the comparison
+            // is the same one — the placeholder was minted at exactly the type
+            // the context asked for — so the diagnostic is upstream's.
+            let expected = item.placeholder.ty();
+            let got = address.ty();
+            if got != expected {
+                return Err(ParseError::Message {
+                    message: format!(
+                        "constant expression type mismatch: got type '{got}' but expected '{expected}'"
+                    )
+                    .into(),
+                    loc: DiagLoc::span(item.loc),
+                });
+            }
             item.placeholder
                 .replace_all_uses_with(address.as_erased())
                 .map_err(|e| self.builder_err("forward blockaddress", e))?;
@@ -4524,6 +4541,31 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// `constant expression type mismatch: got type 'A' but expected 'B'` —
+    /// the `ValID::t_Constant` arm of `LLParser::convertValIDToValue`.
+    ///
+    /// A parsed constant carries its own type; nothing before this point
+    /// checks it against the type the context asked for. `blockaddress` is the
+    /// common way to reach it, since its type comes from the *function's*
+    /// address space rather than the surrounding expression.
+    fn checked_constant_type(
+        &self,
+        ty: Type<'ctx, B>,
+        constant: llvmkit_ir::Constant<'ctx, B>,
+    ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
+        let got = constant.ty();
+        if got != ty {
+            return Err(ParseError::Message {
+                message: format!(
+                    "constant expression type mismatch: got type '{got}' but expected '{ty}'"
+                )
+                .into(),
+                loc: DiagLoc::span(self.loc()),
+            });
+        }
+        Ok(constant)
+    }
+
     fn convert_val_id_to_value(
         &mut self,
         ty: Type<'ctx, B>,
@@ -4570,7 +4612,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ValId::Zero => self.zero_initializer_constant(ty).map(|c| c.as_erased()),
             ValId::Undef => Ok(ty.undef().as_erased()),
             ValId::Poison => Ok(ty.poison().as_erased()),
-            ValId::Constant(c) => Ok(c.as_erased()),
+            ValId::Constant(c) => self.checked_constant_type(ty, c).map(|c| c.as_erased()),
             ValId::ConstantSplat(c) => self.expand_splat_constant(ty, c).map(|c| c.as_erased()),
             ValId::Value(v) => Ok(v),
         }
@@ -4630,7 +4672,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ValId::Zero => self.zero_initializer_constant(ty),
             ValId::Undef => Ok(ty.undef().as_constant()),
             ValId::Poison => Ok(ty.poison().as_constant()),
-            ValId::Constant(c) => Ok(c),
+            ValId::Constant(c) => self.checked_constant_type(ty, c),
             ValId::ConstantSplat(c) => self.expand_splat_constant(ty, c),
             ValId::LocalId(_) | ValId::LocalName(_) | ValId::Value(_) => {
                 Err(self.expected("constant value"))
