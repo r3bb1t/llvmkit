@@ -21,6 +21,15 @@ cut, entries accumulate under **Unreleased**.
 
 ### Constants must agree with the type asked for
 
+- **Fixed (parser): six `convertValIDToValue` diagnostics.**
+  `functions are not values, refer to them as pointers` (the guard before any
+  `ValID` arm runs), `invalid use of function-local name`, `integer constant
+  must have integer type`, `floating point constant invalid for type`,
+  `null must be a pointer type`, and the first-class guard the `undef` /
+  `poison` / `zeroinitializer` arms share — which llvmkit had no equivalent
+  of, so `undef` at an opaque struct type was accepted. The rest were llvmkit
+  wordings rendered as `expected <production>`.
+
 - **Fixed (`llvmkit-ir` + parser): `invalid cast opcode for cast from 'A' to
   'B'`.** `CastInst::castIsValid` is ported onto `cast_is_valid`, and the
   constant-expression cast path asks it. llvmkit asked a different question

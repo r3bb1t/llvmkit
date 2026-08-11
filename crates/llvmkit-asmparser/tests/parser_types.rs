@@ -443,3 +443,58 @@ fn an_invalid_constexpr_cast_opcode_is_rejected() {
         "invalid cast opcode for cast from 'i64' to 'i64'"
     );
 }
+
+// ── convertValIDToValue message family ────────────────────────────────────
+
+/// The guard at the very top of `LLParser::convertValIDToValue`, before any
+/// `ValID` arm runs: a function *type* in value position is always this
+/// error, whatever the value turns out to be.
+#[test]
+fn a_function_typed_value_is_rejected() {
+    assert_eq!(
+        parse_err(b"@g = global void () zeroinitializer\n").to_string(),
+        "functions are not values, refer to them as pointers"
+    );
+}
+
+/// `integer constant must have integer type` and `floating point constant
+/// invalid for type` — the `t_APSInt` and `t_APFloat` arms. llvmkit worded
+/// both as `expected <production>`.
+#[test]
+fn a_constant_of_the_wrong_literal_kind_is_rejected() {
+    assert_eq!(
+        parse_err(b"@g = global float 3\n").to_string(),
+        "integer constant must have integer type"
+    );
+    assert_eq!(
+        parse_err(b"@g = global i32 3.0\n").to_string(),
+        "floating point constant invalid for type"
+    );
+}
+
+/// `null must be a pointer type` — the `t_Null` arm.
+#[test]
+fn null_at_a_non_pointer_type_is_rejected() {
+    assert_eq!(
+        parse_err(b"@g = global i32 null\n").to_string(),
+        "null must be a pointer type"
+    );
+}
+
+/// The `t_Undef` / `t_Poison` / `t_Zero` arms share a first-class guard that
+/// llvmkit had no equivalent of. An *opaque* identified struct is the
+/// reachable half — a struct with no body, so `isFirstClassType` is false.
+/// (The `label` half needs a value position at label type, which the grammar
+/// does not offer; upstream carries a `FIXME` about `label` being
+/// first-class at all.)
+#[test]
+fn undef_like_constants_reject_a_non_first_class_type() {
+    assert_eq!(
+        parse_err(b"%t = type opaque\n@g = global %t undef\n").to_string(),
+        "invalid type for undef constant"
+    );
+    assert_eq!(
+        parse_err(b"%t = type opaque\n@g = global %t poison\n").to_string(),
+        "invalid type for poison constant"
+    );
+}

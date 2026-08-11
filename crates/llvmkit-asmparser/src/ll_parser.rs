@@ -4383,7 +4383,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::FloatLit(_) => {
                 let float_ty = match expected_ty.map(Type::into_type_enum) {
                     Some(AnyTypeEnum::Float(t)) => t,
-                    _ => return Err(self.expected("float constant only valid for float type")),
+                    _ => return Err(self.message("floating point constant invalid for type")),
                 };
                 let bits = self.parse_fp_literal(&float_ty)?;
                 Ok(ValId::ApFloat(bits))
@@ -4561,6 +4561,30 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// `functions are not values, refer to them as pointers` — the guard at
+    /// the very top of `LLParser::convertValIDToValue`, before any `ValID`
+    /// arm runs. A function *type* in value position is always this error,
+    /// whatever the value turned out to be.
+    fn reject_function_typed_value(&self, ty: Type<'ctx, B>) -> ParseResult<()> {
+        if matches!(ty.kind(), llvmkit_ir::TypeKind::Function) {
+            return Err(self.message("functions are not values, refer to them as pointers"));
+        }
+        Ok(())
+    }
+
+    /// The first-class-and-not-label guard the `t_Undef`, `t_Poison` and
+    /// `t_Zero` arms share. Upstream carries a `FIXME` about `LabelTy` being
+    /// first-class at all, which is why the label test is separate.
+    fn check_undef_like_type(&self, ty: Type<'ctx, B>, what: &'static str) -> ParseResult<()> {
+        if !ty.is_first_class() || ty.is_label() {
+            return Err(ParseError::Message {
+                message: format!("invalid type for {what} constant").into(),
+                loc: DiagLoc::span(self.loc()),
+            });
+        }
+        Ok(())
+    }
+
     /// `constant expression type mismatch: got type 'A' but expected 'B'` —
     /// the `ValID::t_Constant` arm of `LLParser::convertValIDToValue`.
     ///
@@ -4592,19 +4616,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         id: ValId<'ctx, B>,
         pfs: Option<&PerFunctionState<'ctx, B>>,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        self.reject_function_typed_value(ty)?;
         match id {
             ValId::LocalName(name) => pfs
-                .ok_or_else(|| self.expected("local value in function context"))?
+                .ok_or_else(|| self.message("invalid use of function-local name"))?
                 .get_val(self.module, LocalRef::Named(&name), ty, self.loc()),
             ValId::LocalId(id) => pfs
-                .ok_or_else(|| self.expected("local value in function context"))?
+                .ok_or_else(|| self.message("invalid use of function-local name"))?
                 .get_val(self.module, LocalRef::Numbered(id), ty, self.loc()),
             ValId::GlobalName(name) => self.resolve_global_name_as_value(name, ty),
             ValId::GlobalId(id) => self.resolve_global_id_as_value(id, ty),
             ValId::ApsInt(parsed) => {
                 let int_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Int(t) => t,
-                    _ => return Err(self.expected("integer constant only valid for int type")),
+                    _ => return Err(self.message("integer constant must have integer type")),
                 };
                 let bits = lower_parsed_apsint(&parsed, int_ty.bit_width());
                 let c = int_ty
@@ -4615,7 +4640,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ValId::ApFloat(value) => {
                 let float_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Float(t) => t,
-                    _ => return Err(self.expected("float constant only valid for float type")),
+                    _ => return Err(self.message("floating point constant invalid for type")),
                 };
                 Ok(float_ty
                     .const_ap_float(&value)
@@ -4625,13 +4650,22 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ValId::Null => {
                 let pty = match ty.into_type_enum() {
                     AnyTypeEnum::Pointer(t) => t,
-                    _ => return Err(self.expected("'null' is only valid for pointer types")),
+                    _ => return Err(self.message("null must be a pointer type")),
                 };
                 Ok(pty.const_null().as_erased())
             }
-            ValId::Zero => self.zero_initializer_constant(ty).map(|c| c.as_erased()),
-            ValId::Undef => Ok(ty.undef().as_erased()),
-            ValId::Poison => Ok(ty.poison().as_erased()),
+            ValId::Zero => {
+                self.check_undef_like_type(ty, "null")?;
+                self.zero_initializer_constant(ty).map(|c| c.as_erased())
+            }
+            ValId::Undef => {
+                self.check_undef_like_type(ty, "undef")?;
+                Ok(ty.undef().as_erased())
+            }
+            ValId::Poison => {
+                self.check_undef_like_type(ty, "poison")?;
+                Ok(ty.poison().as_erased())
+            }
             ValId::Constant(c) => self.checked_constant_type(ty, c).map(|c| c.as_erased()),
             ValId::ConstantSplat(c) => self.expand_splat_constant(ty, c).map(|c| c.as_erased()),
             ValId::Value(v) => Ok(v),
@@ -4643,6 +4677,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         ty: Type<'ctx, B>,
         id: ValId<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
+        self.reject_function_typed_value(ty)?;
         match id {
             ValId::GlobalName(name) => {
                 match ty.into_type_enum() {
@@ -4661,7 +4696,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ValId::ApsInt(parsed) => {
                 let int_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Int(t) => t,
-                    _ => return Err(self.expected("integer constant for non-integer type")),
+                    _ => return Err(self.message("integer constant must have integer type")),
                 };
                 let bits = lower_parsed_apsint(&parsed, int_ty.bit_width());
                 let c = int_ty
@@ -4675,7 +4710,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ValId::ApFloat(value) => {
                 let float_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Float(t) => t,
-                    _ => return Err(self.expected("float constant only valid for float type")),
+                    _ => return Err(self.message("floating point constant invalid for type")),
                 };
                 Ok(float_ty
                     .const_ap_float(&value)
@@ -4685,13 +4720,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             ValId::Null => {
                 let ptr_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Pointer(t) => t,
-                    _ => return Err(self.expected("'null' is only valid for pointer types")),
+                    _ => return Err(self.message("null must be a pointer type")),
                 };
                 Ok(ptr_ty.const_null().as_constant())
             }
             ValId::Zero => self.zero_initializer_constant(ty),
-            ValId::Undef => Ok(ty.undef().as_constant()),
-            ValId::Poison => Ok(ty.poison().as_constant()),
+            ValId::Undef => {
+                self.check_undef_like_type(ty, "undef")?;
+                Ok(ty.undef().as_constant())
+            }
+            ValId::Poison => {
+                self.check_undef_like_type(ty, "poison")?;
+                Ok(ty.poison().as_constant())
+            }
             ValId::Constant(c) => self.checked_constant_type(ty, c),
             ValId::ConstantSplat(c) => self.expand_splat_constant(ty, c),
             ValId::LocalId(_) | ValId::LocalName(_) | ValId::Value(_) => {
