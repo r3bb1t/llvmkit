@@ -64,38 +64,132 @@ fn inline_asm_inteldialect_unwind_round_trips() {
     );
 }
 
-/// llvmkit-specific subset of `test/Assembler/inline-asm-constraint-error.ll`:
-/// non-callbr inline asm may not carry label constraints.
+/// Every split of `test/Assembler/inline-asm-constraint-error.ll`, each
+/// asserting its own `FileCheck` line. The nine splits are exactly the nine
+/// messages `InlineAsm::verify` can produce, and
+/// `LLParser::convertValIDToValue` prints each verbatim.
+///
+/// `test/Assembler/invalid-inline-constraint.ll` pins the same
+/// `failed to parse constraints` message but is not portable yet: its body is
+/// deliberately corrupted past the call, and llvmkit's lexer raises
+/// `unknown keyword 'ounwi'` before the parser can report. Upstream's lexer
+/// returns a silent `lltok::Error` token there. Same blocker as three splits
+/// of `memory-attribute-errors.ll`; see the lexer-parity item recorded for the
+/// end of the parity program.
 #[test]
-fn inline_asm_call_label_constraint_subset() {
-    const FIXTURE: &[u8] = include_bytes!(
-        "fixtures/upstream/inline-asm-constraint-error/inline_asm_call_label_constraint_subset.ll"
-    );
+fn inline_asm_constraint_errors_match_upstream_text() {
+    const SPLITS: &[(&str, &[u8], &str)] = &[
+        (
+            "parse-fail",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/parse-fail.ll"),
+            "failed to parse constraints",
+        ),
+        (
+            "input-before-output",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/input-before-output.ll"),
+            "output constraint occurs after input, clobber or label constraint",
+        ),
+        (
+            "input-after-clobber",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/input-after-clobber.ll"),
+            "input constraint occurs after clobber constraint",
+        ),
+        (
+            "must-return-void",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/must-return-void.ll"),
+            "inline asm without outputs must return void",
+        ),
+        (
+            "cannot-be-struct",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/cannot-be-struct.ll"),
+            "inline asm with one output cannot return struct",
+        ),
+        (
+            "incorrect-struct-elements",
+            include_bytes!(
+                "fixtures/upstream/inline-asm-constraint-error/incorrect-struct-elements.ll"
+            ),
+            "number of output constraints does not match number of return struct elements",
+        ),
+        (
+            "incorrect-arg-num",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/incorrect-arg-num.ll"),
+            "number of input constraints does not match number of parameters",
+        ),
+        (
+            "label-after-clobber",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/label-after-clobber.ll"),
+            "label constraint occurs after clobber constraint",
+        ),
+        (
+            "output-after-label",
+            include_bytes!("fixtures/upstream/inline-asm-constraint-error/output-after-label.ll"),
+            "output constraint occurs after input, clobber or label constraint",
+        ),
+    ];
 
-    let err = parse_fixture_err("inline_asm_call_label_constraint_subset", FIXTURE);
-    match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "inline asm call without label constraints")
-        }
-        other => panic!("unexpected error variant: {other:?}"),
+    for (name, fixture, expected) in SPLITS {
+        let err = parse_fixture_err(name, fixture);
+        assert_eq!(err.to_string(), *expected, "split {name}");
     }
 }
 
-/// llvmkit-specific subset of `test/Assembler/inline-asm-constraint-error.ll`:
-/// callbr inline asm must provide one label constraint per indirect label.
+/// `test/Assembler/invalid-untyped-metadata.ll` (LLVM bug 24645), fixture
+/// verbatim: inline asm outside a call callee has no function type to check
+/// the constraint string against.
 #[test]
-fn inline_asm_callbr_label_constraints_subset() {
-    const FIXTURE: &[u8] = include_bytes!(
+fn inline_asm_without_a_function_type_is_rejected() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/inline-asm-constraint-error/invalid-untyped-metadata.ll");
+
+    let err = parse_fixture_err("invalid-untyped-metadata", FIXTURE);
+    assert_eq!(
+        err.to_string(),
+        "invalid type for inline asm constraint string"
+    );
+}
+
+/// `Verifier::verifyInlineAsmCall`'s two label rules, asserted at the layer
+/// upstream puts them: the parser accepts both shapes and `verify()` reports.
+///
+/// Both used to be parse-time rejections with llvmkit wordings, which shadowed
+/// the verifier rule llvmkit already had — the ordinary-call one carries
+/// upstream's text verbatim. The fixtures are llvmkit's, because upstream's
+/// own splits of `inline-asm-constraint-error.ll` all stop at
+/// `InlineAsm::verify` and never reach these two.
+#[test]
+fn inline_asm_label_constraint_rules_are_verifier_rules() {
+    const CALL: &[u8] = include_bytes!(
+        "fixtures/upstream/inline-asm-constraint-error/inline_asm_call_label_constraint_subset.ll"
+    );
+    const CALLBR: &[u8] = include_bytes!(
         "fixtures/upstream/inline-asm-constraint-error/inline_asm_callbr_label_constraints_subset.ll"
     );
 
-    let err = parse_fixture_err("inline_asm_callbr_label_constraints_subset", FIXTURE);
-    match err {
-        ParseError::Expected { expected, .. } => assert_eq!(
-            expected,
-            "inline asm callbr label constraint count matches indirect labels"
+    for (name, fixture, expected) in [
+        (
+            "inline_asm_call_label_constraint_subset",
+            CALL,
+            "Label constraints can only be used with callbr",
         ),
-        other => panic!("unexpected error variant: {other:?}"),
+        (
+            "inline_asm_callbr_label_constraints_subset",
+            CALLBR,
+            "Number of label constraints does not match number of callbr dests",
+        ),
+    ] {
+        let module = Module::dynamic(name);
+        Parser::new(fixture, &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect("the parser accepts what upstream's parser accepts");
+        let err = module
+            .verify_borrowed()
+            .expect_err("the verifier rejects it");
+        assert!(
+            err.to_string().contains(expected),
+            "{name}: unexpected error: {err}"
+        );
     }
 }
 

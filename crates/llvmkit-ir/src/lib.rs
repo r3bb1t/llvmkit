@@ -244,7 +244,10 @@ pub use global_alias::{GlobalAlias, GlobalAliasBuilder};
 pub use global_ifunc::{GlobalIfunc, GlobalIfuncBuilder};
 pub use global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 pub use global_variable::{GlobalBuilder, GlobalVariable};
-pub use inline_asm::{AsmDialect, InlineAsm, InlineAsmOptions};
+pub use inline_asm::{
+    AsmDialect, ConstraintInfo, ConstraintKind, ConstraintParseError, InlineAsm, InlineAsmOptions,
+    InlineAsmVerifyError, SubConstraint, parse_constraints, verify_inline_asm,
+};
 pub use inst_simplify::InstSimplifyPass;
 pub use instr_types::{
     AddFlags, AshrFlags, AtomicCmpXchgConfig, AtomicRmwConfig, AtomicRmwFlags, BinaryOpcode,

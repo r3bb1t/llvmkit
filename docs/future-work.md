@@ -972,16 +972,17 @@ says that too rather than inventing one.
   diagnostics) and no dependency on anything else — it is the smallest item in
   this list. No reason for the 0.0.4 sweep passing it over is recorded, so do
   not assume one; take it whenever `llvmkit-support` is next touched.
-- **Inline-asm constraints are never parsed.** `InlineAsm::constraint_string`
-  hands back the raw `"=r,r,r"`, and the one derived answer,
-  `label_constraint_count`, is computed by splitting on `,` and counting `!`
-  (`constraint_summary`, `inline_asm.rs`) with `arg_constraints` hardcoded to
-  `0`. Upstream models this properly: `InlineAsm::ConstraintInfo` /
-  `ParseConstraints` / `InlineAsm::verify` (`llvm/IR/InlineAsm.h`) decompose
-  the string into typed constraint records and check them against the asm's
-  `FunctionType`. Porting it would let the verifier reject a constraint list
-  that does not match the call, which llvmkit currently accepts. Blocked on
-  nothing but effort; it is a self-contained port with an obvious oracle.
+- ~~**Inline-asm constraints are never parsed.**~~ **Closed 2026-08-12**
+  (LLParser parity W4). `parse_constraints` / `verify_inline_asm` in
+  `inline_asm.rs` port `InlineAsm::ParseConstraints` and the static
+  `InlineAsm::verify`; `ConstraintInfo` carries the typed records, all nine
+  `verify` messages are reachable from the parser, and the `!`-counting
+  heuristic behind `label_constraint_count` is gone along with the
+  `arg_constraints`-hardcoded-to-`0` summary struct. What is *not* ported: the
+  per-operand `elementtype` half of `Verifier::verifyInlineAsmCall`, because
+  the call surface cannot spell per-operand `elementtype` attributes yet, and
+  the `Flag` / `ConstraintCode` bit encodings, which are backend
+  serialization and out of scope.
 
 ## Killer-feature designs (deferred)
 

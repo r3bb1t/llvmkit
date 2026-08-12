@@ -2752,9 +2752,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         if let ValueKindData::InlineAsm(_) = &self.module.context().value_data(c.callee.get()).kind
         {
             let inline_asm = InlineAsm::<B>::from_parts(c.callee.get(), self.module, callee_ty);
-            let summary = inline_asm.constraint_summary();
-            let _arg_constraints = summary.arg_constraints;
-            if summary.label_count != 0 {
+            if inline_asm.label_constraint_count() != 0 {
                 return Err(self.fail(
                     f,
                     bb,
@@ -3206,6 +3204,23 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
             }
         }
         self.check_intrinsic_call(f, bb, d.callee.get(), d.fn_ty, &d.args)?;
+        // `Verifier::verifyInlineAsmCall`'s `callbr` arm: one label constraint
+        // per indirect destination. The ordinary-call twin lives in
+        // `check_call`; upstream runs both from the same helper, and both are
+        // verifier rules — the parser accepts either shape.
+        if let ValueKindData::InlineAsm(_) = &self.module.context().value_data(d.callee.get()).kind
+        {
+            let callee_ty = self.module.context().value_data(d.callee.get()).ty;
+            let inline_asm = InlineAsm::<B>::from_parts(d.callee.get(), self.module, callee_ty);
+            if inline_asm.label_constraint_count() != d.indirect_dests.len() {
+                return Err(self.fail(
+                    f,
+                    bb,
+                    VerifierRule::CallArgCountMismatch,
+                    "Number of label constraints does not match number of callbr dests".to_owned(),
+                ));
+            }
+        }
         Ok(())
     }
 

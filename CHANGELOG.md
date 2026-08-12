@@ -21,6 +21,35 @@ cut, entries accumulate under **Unreleased**.
 
 ### Constants must agree with the type asked for
 
+- **Added (`llvmkit-ir`): inline-asm constraint strings are parsed and
+  verified.** `parse_constraints` and `verify_inline_asm` port
+  `InlineAsm::ParseConstraints` and the static `InlineAsm::verify`, with
+  `ConstraintInfo` / `SubConstraint` / `ConstraintKind` as the model. All nine
+  of `verify`'s messages are now reachable from the parser, byte for byte;
+  the constraint string used to be stored and never looked at. This closes the
+  recorded future-work item "inline-asm constraints are never parsed".
+
+- **Fixed (parser): three inline-asm texts, and inline asm as a value.**
+  `expected string constant`, `expected comma in inline asm expression` and
+  `expected constraint string` replace llvmkit wordings; `asm` outside a call
+  callee reports `invalid type for inline asm constraint string` instead of
+  `expected supported constant/value form`.
+
+- **Fixed (parser): `%res = callbr ...` parses.** `callbr` was dispatched only
+  when it opened the line, so a `callbr` binding a result was rejected as an
+  unsupported opcode.
+
+- **Fixed (parser + `llvmkit-ir`): the two inline-asm label rules moved to the
+  verifier**, where `Verifier::verifyInlineAsmCall` puts them. The parser
+  rejected both with invented wordings, shadowing the ordinary-call rule
+  llvmkit's verifier already carried with upstream's exact text; the `callbr`
+  twin, `Number of label constraints does not match number of callbr dests`,
+  is new.
+
+- **Fixed (`llvmkit-ir`): `label_constraint_count` counts parsed constraints**
+  rather than occurrences of `!`, which also matched a `!` inside a `{...}`
+  register name.
+
 - **Fixed (parser): `getelementptr` constant expressions run upstream's
   checks, in upstream's order.** `invalid getelementptr indices` is new —
   llvmkit's constant-expression path never asked

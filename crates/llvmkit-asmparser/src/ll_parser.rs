@@ -353,6 +353,8 @@ enum ParsedDirectCallee<'ctx, B: ModuleBrand> {
     },
 }
 
+/// `ValID::t_InlineAsm`'s payload: upstream packs the four keyword bits into
+/// `ID.UIntVal` and the two strings into `StrVal` / `StrVal2`.
 struct ParsedInlineAsm {
     asm: String,
     constraints: String,
@@ -360,6 +362,9 @@ struct ParsedInlineAsm {
     is_align_stack: bool,
     dialect: llvmkit_ir::AsmDialect,
     can_unwind: bool,
+    /// Where the `asm` keyword began — `ID.Loc`, which every diagnostic
+    /// `convertValIDToValue` raises for this arm reports against.
+    loc: Span,
 }
 
 enum ParsedCallee<'ctx, B: ModuleBrand> {
@@ -4232,7 +4237,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let loc = self.loc();
         match self.peek() {
             Token::Kw(Keyword::Asm) => {
-                return Err(self.unsupported_constant_value_form_at(loc));
+                // Upstream builds a `t_InlineAsm` `ValID` here and rejects it
+                // in `convertValIDToValue` when `ID.FTy` is null — that is,
+                // everywhere except a call callee, where `parseCall` supplies
+                // the signature. llvmkit's callee path has its own arm, so
+                // reaching `parseValID` with `asm` *is* the null-`FTy` case;
+                // the verdict and the text are upstream's, one layer earlier.
+                let asm = self.parse_inline_asm()?;
+                return Err(ParseError::Message {
+                    message: "invalid type for inline asm constraint string".into(),
+                    loc: DiagLoc::span(asm.loc),
+                });
             }
             Token::Instruction(op) if !is_supported_constant_expr_opcode(*op) => {
                 return Err(self.unsupported_constant_expr_at(loc, *op));
@@ -7107,6 +7122,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 return Ok(());
             }
+            // `callbr` is a terminator that may still bind a result, so it
+            // arrives here rather than at the terminator dispatch above
+            // whenever the line opens with `%res =` — `%res = callbr i32 asm
+            // ...` is `test/Assembler/inline-asm-constraint-error.ll`'s
+            // `output-after-label` split, and every `callbr` returning a value.
+            if matches!(self.peek(), Token::Instruction(Opcode::CallBr)) {
+                let b = take_live_builder(&mut builder, self.loc())?;
+                let value = self.parse_callbr(state, b, &result_name)?;
+                self.finish_trailing_metadata(state, bb_value, &mut pending_debug_records)?;
+                if let Some(value) = value {
+                    state.bind_local(&result_name, value, result_loc)?;
+                }
+                return Ok(());
+            }
             let opcode = match self.peek() {
                 Token::Instruction(op) => *op,
                 _ => return Err(self.expected("instruction opcode")),
@@ -8755,9 +8784,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 b.view(call).to_erased()
             }
             ParsedCallee::InlineAsm(asm) => {
-                if asm.label_constraint_count() != 0 {
-                    return Err(self.expected("inline asm call without label constraints"));
-                }
                 let call = b
                     .inline_asm_call::<llvmkit_ir::Dyn, _, _, _>(asm, args, name)
                     .map_err(|e| self.builder_err("call", e))?;
@@ -8829,6 +8855,35 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// `ValID ::= 'asm' SideEffect? AlignStack? IntelDialect? Unwind?
+    /// STRINGCONSTANT ',' STRINGCONSTANT`. Mirrors `LLParser::parseValID`'s
+    /// `kw_asm` arm, keyword order included — upstream reads them in a fixed
+    /// sequence, so `asm alignstack sideeffect ""` does not parse.
+    fn parse_inline_asm(&mut self) -> ParseResult<ParsedInlineAsm> {
+        let loc = self.loc();
+        self.expect_keyword(Keyword::Asm, "'asm'")?;
+        let has_side_effects = self.eat_keyword(Keyword::Sideeffect)?;
+        let is_align_stack = self.eat_keyword(Keyword::Alignstack)?;
+        let dialect = if self.eat_keyword(Keyword::Inteldialect)? {
+            llvmkit_ir::AsmDialect::Intel
+        } else {
+            llvmkit_ir::AsmDialect::Att
+        };
+        let can_unwind = self.eat_keyword(Keyword::Unwind)?;
+        let asm = self.parse_string_constant("string constant")?;
+        self.expect_punct(PunctKind::Comma, "comma in inline asm expression")?;
+        let constraints = self.parse_string_constant("constraint string")?;
+        Ok(ParsedInlineAsm {
+            asm,
+            constraints,
+            has_side_effects,
+            is_align_stack,
+            dialect,
+            can_unwind,
+            loc,
+        })
+    }
+
     /// Parse the callee operand of `call` / `invoke` / `callbr`. Global
     /// callees (`@f`, `@42`) and inline asm keep dedicated arms so direct
     /// resolution (forward declarations, intrinsics) still sees names; any
@@ -8853,28 +8908,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 Ok(ParsedDirectCallee::Id { id, loc })
             }
-            Token::Kw(Keyword::Asm) => {
-                self.bump()?;
-                let has_side_effects = self.eat_keyword(Keyword::Sideeffect)?;
-                let is_align_stack = self.eat_keyword(Keyword::Alignstack)?;
-                let dialect = if self.eat_keyword(Keyword::Inteldialect)? {
-                    llvmkit_ir::AsmDialect::Intel
-                } else {
-                    llvmkit_ir::AsmDialect::Att
-                };
-                let can_unwind = self.eat_keyword(Keyword::Unwind)?;
-                let asm = self.parse_string_constant("inline asm string")?;
-                self.expect_punct(PunctKind::Comma, "',' after inline asm string")?;
-                let constraints = self.parse_string_constant("inline asm constraint string")?;
-                Ok(ParsedDirectCallee::InlineAsm(ParsedInlineAsm {
-                    asm,
-                    constraints,
-                    has_side_effects,
-                    is_align_stack,
-                    dialect,
-                    can_unwind,
-                }))
-            }
+            Token::Kw(Keyword::Asm) => Ok(ParsedDirectCallee::InlineAsm(self.parse_inline_asm()?)),
             _ => {
                 let ptr_ty = self.module.ptr_type(0).as_type();
                 let v = self.parse_value(state, ptr_ty)?;
@@ -8981,7 +9015,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     id: SymbolId::Numbered(id),
                     loc: DiagLoc::span(loc),
                 }),
-            ParsedDirectCallee::InlineAsm(data) => Ok(ParsedCallee::InlineAsm(
+            ParsedDirectCallee::InlineAsm(data) => Ok(ParsedCallee::InlineAsm({
+                // `convertValIDToValue`'s `t_InlineAsm` arm verifies before it
+                // constructs, and prints `InlineAsm::verify`'s message as-is.
+                llvmkit_ir::verify_inline_asm(parsed_fn_ty, &data.constraints).map_err(|e| {
+                    ParseError::Message {
+                        message: e.to_string().into(),
+                        loc: DiagLoc::span(data.loc),
+                    }
+                })?;
                 self.module
                     .inline_asm(parsed_fn_ty, data.asm, data.constraints, {
                         let mut options =
@@ -8996,8 +9038,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                             options = options.unwind();
                         }
                         options
-                    }),
-            )),
+                    })
+            })),
             ParsedDirectCallee::Value { v, loc } => {
                 // Mirrors `PerFunctionState::getVal`'s type check: whatever
                 // value form the callee took, it must be pointer-typed.
@@ -9564,11 +9606,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         .call_site_type(parsed_fn_ty),
                 )
                 .map_err(|e| self.builder_err("invoke", e))?,
-            ParsedCallee::InlineAsm(asm) => {
-                if asm.label_constraint_count() != 0 {
-                    return Err(self.expected("inline asm call without label constraints"));
-                }
-                b.inline_asm_invoke_with_config::<llvmkit_ir::Dyn, _, _, _, _>(
+            ParsedCallee::InlineAsm(asm) => b
+                .inline_asm_invoke_with_config::<llvmkit_ir::Dyn, _, _, _, _>(
                     asm,
                     args,
                     normal_bb,
@@ -9577,8 +9616,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         .calling_conv(calling_conv)
                         .attrs(call_attrs),
                 )
-                .map_err(|e| self.builder_err("invoke", e))?
-            }
+                .map_err(|e| self.builder_err("invoke", e))?,
             ParsedCallee::Indirect(callee_ptr) => b
                 .indirect_invoke_dyn_with_config::<llvmkit_ir::Dyn, _, _, _, _, _>(
                     callee_ptr,
@@ -9703,13 +9741,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         .call_site_type(parsed_fn_ty),
                 )
                 .map_err(|e| self.builder_err("callbr", e))?,
-            ParsedCallee::InlineAsm(asm) => {
-                if asm.label_constraint_count() != indirect.len() {
-                    return Err(self.expected(
-                        "inline asm callbr label constraint count matches indirect labels",
-                    ));
-                }
-                b.inline_asm_callbr_with_config::<llvmkit_ir::Dyn, _, _, _, _, _>(
+            ParsedCallee::InlineAsm(asm) => b
+                .inline_asm_callbr_with_config::<llvmkit_ir::Dyn, _, _, _, _, _>(
                     asm,
                     args,
                     fallthrough,
@@ -9718,8 +9751,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         .calling_conv(calling_conv)
                         .attrs(call_attrs),
                 )
-                .map_err(|e| self.builder_err("callbr", e))?
-            }
+                .map_err(|e| self.builder_err("callbr", e))?,
             ParsedCallee::Indirect(_) => {
                 // A non-inline-asm callbr with an indirect callee is invalid
                 // IR upstream too (`Verifier::visitCallBrInst` requires a
