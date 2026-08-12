@@ -57,6 +57,15 @@ impl AttributeMask {
                 Attribute::NoFpClass(_) => {
                     self.enum_kinds.insert(AttrKind::NoFpClass);
                 }
+                Attribute::AllocSize { .. } => {
+                    self.enum_kinds.insert(AttrKind::AllocSize);
+                }
+                Attribute::VScaleRange { .. } => {
+                    self.enum_kinds.insert(AttrKind::VscaleRange);
+                }
+                Attribute::AllocKind(_) => {
+                    self.enum_kinds.insert(AttrKind::AllocKind);
+                }
                 Attribute::String { key, .. } => {
                     self.target_dep_attrs.insert(key.clone());
                 }
@@ -84,6 +93,9 @@ impl AttributeMask {
             Attribute::Range { .. } => self.contains_kind(AttrKind::Range),
             Attribute::Memory(_) => self.contains_kind(AttrKind::Memory),
             Attribute::NoFpClass(_) => self.contains_kind(AttrKind::NoFpClass),
+            Attribute::AllocSize { .. } => self.contains_kind(AttrKind::AllocSize),
+            Attribute::VScaleRange { .. } => self.contains_kind(AttrKind::VscaleRange),
+            Attribute::AllocKind(_) => self.contains_kind(AttrKind::AllocKind),
             Attribute::String { key, .. } => self.contains_string(key),
         }
     }

@@ -21,6 +21,19 @@ cut, entries accumulate under **Unreleased**.
 
 ### Attributes
 
+- **Added: `allocsize`, `vscale_range` and `allockind`**, the three attributes
+  whose argument needed a grammar. With them come upstream's diagnostics —
+  `'allocsize' indices can't refer to the same parameter`,
+  `unknown allockind <word>`, and `expected allockind value` — and a new
+  `AllocFnKind` flag type mirroring `llvm/IR/Attributes.h`.
+
+  Upstream packs each of these into a single `uint64_t` and reserves a
+  sentinel in it for "absent" (`-1` for `allocsize`'s element count, `0` for
+  `vscale_range`'s maximum). llvmkit stores them as named fields with an
+  `Option`, so the sentinel exists only where it is printed. Note that
+  `vscale_range(4)` means `vscale_range(4,4)`, not an unbounded maximum —
+  upstream defaults a missing maximum to the minimum.
+
 - **Added: `preallocated(T)`**, the one type attribute `Attributes.td`
   declares in both function and parameter position. It takes the same
   production as `byval` / `sret`.

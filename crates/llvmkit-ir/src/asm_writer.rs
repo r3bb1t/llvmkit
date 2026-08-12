@@ -2467,7 +2467,10 @@ fn fmt_attribute_stored<'ctx, B: ModuleBrand + 'ctx>(
             upper.to_string_radix(10, Signedness::Signed)
         ),
         AttributeStored::Memory(effects) => write!(f, "{effects}"),
-        AttributeStored::NoFpClass(_) => write!(f, "{attr}"),
+        AttributeStored::NoFpClass(_)
+        | AttributeStored::AllocSize { .. }
+        | AttributeStored::VScaleRange { .. }
+        | AttributeStored::AllocKind(_) => write!(f, "{attr}"),
         AttributeStored::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
         AttributeStored::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
     }

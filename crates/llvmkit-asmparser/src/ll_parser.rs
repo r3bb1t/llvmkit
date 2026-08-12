@@ -6240,6 +6240,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let attr = self.parse_range_attribute()?;
                     out.add(index, attr);
                 }
+                Token::Kw(Keyword::Allocsize) => {
+                    let attr = self.parse_alloc_size_attribute()?;
+                    out.add(index, attr);
+                }
+                Token::Kw(Keyword::VscaleRange) => {
+                    let attr = self.parse_vscale_range_attribute()?;
+                    out.add(index, attr);
+                }
+                Token::Kw(Keyword::Allockind) => {
+                    let attr = self.parse_alloc_kind_attribute()?;
+                    out.add(index, attr);
+                }
                 Token::Kw(keyword) => {
                     let Some(kind) = Self::attr_kind_for_keyword(*keyword) else {
                         break;
@@ -6272,6 +6284,82 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             lower_parsed_apsint(&upper, bits),
         )
         .ok_or_else(|| self.expected("valid range attribute"))
+    }
+
+    /// `allocsize(N)` / `allocsize(N, M)`. Ports
+    /// `LLParser::parseAllocSizeArguments`, whose one diagnostic of its own
+    /// catches an attribute that names the same parameter twice.
+    fn parse_alloc_size_attribute(&mut self) -> ParseResult<Attribute<'ctx, B>> {
+        self.expect_keyword(Keyword::Allocsize, "'allocsize'")?;
+        self.expect_punct(PunctKind::LParen, "'('")?;
+        let element_size = self.parse_uint32("allocsize element size argument")?;
+        let element_count = if self.eat_punct(PunctKind::Comma)? {
+            let count_loc = self.loc();
+            let count = self.parse_uint32("allocsize element count argument")?;
+            if count == element_size {
+                return Err(self.message_at(
+                    count_loc,
+                    "'allocsize' indices can't refer to the same parameter",
+                ));
+            }
+            Some(count)
+        } else {
+            None
+        };
+        self.expect_punct(PunctKind::RParen, "')'")?;
+        Ok(Attribute::AllocSize {
+            element_size,
+            element_count,
+        })
+    }
+
+    /// `vscale_range(min)` / `vscale_range(min, max)`. Ports
+    /// `LLParser::parseVScaleRangeArguments`, including its default: a missing
+    /// max is *min*, not unbounded.
+    fn parse_vscale_range_attribute(&mut self) -> ParseResult<Attribute<'ctx, B>> {
+        self.expect_keyword(Keyword::VscaleRange, "'vscale_range'")?;
+        self.expect_punct(PunctKind::LParen, "'('")?;
+        let min = self.parse_uint32("vscale_range minimum")?;
+        let max = if self.eat_punct(PunctKind::Comma)? {
+            self.parse_uint32("vscale_range maximum")?
+        } else {
+            min
+        };
+        self.expect_punct(PunctKind::RParen, "')'")?;
+        // `addVScaleRangeAttr(Min, Max > 0 ? Max : std::nullopt)`: zero is how
+        // upstream spells unbounded, so it never survives as a maximum.
+        Ok(Attribute::VScaleRange {
+            min,
+            max: (max > 0).then_some(max),
+        })
+    }
+
+    /// `allockind("alloc,zeroed")`. Ports `LLParser::parseAllocKind`, whose
+    /// argument is one *string* holding a comma-separated list — so an empty
+    /// or all-unknown list is `expected allockind value`, reported twice for
+    /// two different reasons.
+    fn parse_alloc_kind_attribute(&mut self) -> ParseResult<Attribute<'ctx, B>> {
+        self.expect_keyword(Keyword::Allockind, "'allockind'")?;
+        self.expect_punct(PunctKind::LParen, "'('")?;
+        let kind_loc = self.loc();
+        let Ok(spelled) = self.parse_string_constant("allockind value") else {
+            return Err(self.message_at(kind_loc, "expected allockind value"));
+        };
+        let mut kind = llvmkit_ir::AllocFnKind::UNKNOWN;
+        for word in spelled.split(',') {
+            let Some(one) = llvmkit_ir::AllocFnKind::from_keyword(word) else {
+                return Err(ParseError::Message {
+                    message: format!("unknown allockind {word}").into(),
+                    loc: DiagLoc::span(kind_loc),
+                });
+            };
+            kind |= one;
+        }
+        self.expect_punct(PunctKind::RParen, "')'")?;
+        if kind.is_unknown() {
+            return Err(self.message_at(kind_loc, "expected allockind value"));
+        }
+        Ok(Attribute::AllocKind(kind))
     }
 
     /// The class mask a single `nofpclass` component keyword contributes.

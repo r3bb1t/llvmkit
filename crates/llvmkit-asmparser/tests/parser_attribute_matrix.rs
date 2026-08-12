@@ -363,6 +363,32 @@ entry:
     parse_dynamic(printed.as_str()).expect("round-trip");
 }
 
+/// The three attributes whose argument needed a grammar of its own. Each
+/// asserts the spelling `Attribute::getAsString` produces — note that all
+/// three write their comma with no following space, and that `vscale_range`
+/// always prints two arguments, using `0` for an unbounded maximum.
+#[test]
+fn the_argument_carrying_function_attributes_round_trip() {
+    for (spelled, printed) in [
+        ("allocsize(0)", "allocsize(0)"),
+        ("allocsize(0, 1)", "allocsize(0,1)"),
+        ("vscale_range(1, 16)", "vscale_range(1,16)"),
+        // A missing maximum defaults to the *minimum*, not to unbounded.
+        ("vscale_range(4)", "vscale_range(4,4)"),
+        ("allockind(\"alloc\")", "allockind(\"alloc\")"),
+        ("allockind(\"alloc,zeroed\")", "allockind(\"alloc,zeroed\")"),
+        // `getAsString` emits the kinds in declaration order, whatever order
+        // the source wrote them in.
+        ("allockind(\"zeroed,alloc\")", "allockind(\"alloc,zeroed\")"),
+    ] {
+        parse_print_reparse(
+            spelled,
+            &format!("define void @f() #0 {{ ret void }}\nattributes #0 = {{ {spelled} }}\n"),
+            printed,
+        );
+    }
+}
+
 /// `preallocated(T)` is a `TypeAttr`, so it takes the same production as
 /// `byval` / `sret` / `elementtype`. Its `Attributes.td` def declares *both*
 /// `FnAttr` and `ParamAttr` — the only type attribute that does — so both

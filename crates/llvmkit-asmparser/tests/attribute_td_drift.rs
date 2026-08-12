@@ -31,17 +31,9 @@ const ATTRIBUTES_TD: &str = include_str!("../tablegen/llvm-22.1.4/include/llvm/I
 /// deleting its line here, and a new upstream attribute fails this test until
 /// it is either implemented or consciously added.
 ///
-/// Kept as the spelled `.ll` keyword, sorted. Each of the four needs a
-/// **grammar**, not just a keyword — every one takes an argument the parser
-/// has no production for yet, which is why they outlived the sweep that wired
-/// the other thirty-nine.
-const NOT_YET_MODELED: &[&str] = &[
-    "allockind",
-    "allocsize",
-    "initializes",
-    "preallocated",
-    "vscale_range",
-];
+/// Kept as the spelled `.ll` keyword, sorted. `initializes` is the last one:
+/// it takes a `ConstantRangeList`, which llvmkit has no type for yet.
+const NOT_YET_MODELED: &[&str] = &["initializes"];
 
 /// One attribute as `Attributes.td` declares it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -145,6 +137,10 @@ fn parser_accepts(attr: &TdAttribute) -> bool {
             spellings.push(format!("{kw} 8"));
             spellings.push(format!("{kw}(none)"));
             spellings.push(format!("{kw}(sync)"));
+            // `allockind` is an `IntAttr` whose argument is a *string* of
+            // comma-separated words, so none of the numeric spellings above
+            // reaches it.
+            spellings.push(format!("{kw}(\"alloc\")"));
         }
         "TypeAttr" => spellings.push(format!("{kw}(%s)")),
         "ConstantRangeAttr" => spellings.push(format!("{kw}(i32 0, 10)")),

@@ -666,9 +666,131 @@ pub enum Attribute<'ctx, B: ModuleBrand> {
     /// is the same shape [`Attribute::Memory`] already uses for
     /// [`MemoryEffects`].
     NoFpClass(FpClassTest),
+    /// `allocsize(N)` / `allocsize(N, M)` — which parameters give the
+    /// allocation's element size and, optionally, its element count.
+    ///
+    /// Upstream packs both into one `uint64_t` and reserves `-1` in the low
+    /// half to mean "absent" (`packAllocSizeArgs`). That reservation is a
+    /// storage trick, not semantics, so the absent case is an `Option` here
+    /// (design law 3) and the packing is not reproduced.
+    AllocSize {
+        /// Parameter index giving the size of one element.
+        element_size: u32,
+        /// Parameter index giving the number of elements, if the attribute
+        /// names one.
+        element_count: Option<u32>,
+    },
+    /// `vscale_range(min)` / `vscale_range(min, max)` — bounds on `vscale`.
+    ///
+    /// Upstream reserves `0` in the packed max to mean "unbounded", and
+    /// `parseVScaleRangeArguments` defaults a missing max to *min*, not to
+    /// unbounded — the two are different states and only the `Option` keeps
+    /// them apart.
+    VScaleRange {
+        /// Smallest `vscale` the function supports.
+        min: u32,
+        /// Largest `vscale`, or `None` for unbounded.
+        max: Option<u32>,
+    },
+    /// `allockind("alloc,zeroed")` — what an allocator function does.
+    AllocKind(AllocFnKind),
     /// Free-form key=value string attribute. Used for target-dependent
     /// attributes (`"target-features"`, `"frame-pointer"`, ...).
     String { key: String, value: String },
+}
+
+/// What an allocator function does, as `allockind("…")` spells it. Mirrors
+/// `enum class AllocFnKind` in `llvm/include/llvm/IR/Attributes.h`, which is
+/// a bitmask: a function may be several of these at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct AllocFnKind(u8);
+
+impl AllocFnKind {
+    /// No kind named. Upstream's `Unknown`, and the value
+    /// `LLParser::parseAllocKind` rejects an empty list for.
+    pub const UNKNOWN: Self = Self(0);
+    /// Returns a new allocation.
+    pub const ALLOC: Self = Self(1 << 0);
+    /// Resizes the `allocptr` argument.
+    pub const REALLOC: Self = Self(1 << 1);
+    /// Frees the `allocptr` argument.
+    pub const FREE: Self = Self(1 << 2);
+    /// Returns uninitialized memory.
+    pub const UNINITIALIZED: Self = Self(1 << 3);
+    /// Returns zeroed memory.
+    pub const ZEROED: Self = Self(1 << 4);
+    /// Aligns allocations per the `allocalign` argument.
+    pub const ALIGNED: Self = Self(1 << 5);
+
+    /// The `.ll` spelling of each kind, in the order
+    /// `Attribute::getAsString` emits them — which is the declaration order,
+    /// not the order they were written in the source.
+    const NAMED: &'static [(Self, &'static str)] = &[
+        (Self::ALLOC, "alloc"),
+        (Self::REALLOC, "realloc"),
+        (Self::FREE, "free"),
+        (Self::UNINITIALIZED, "uninitialized"),
+        (Self::ZEROED, "zeroed"),
+        (Self::ALIGNED, "aligned"),
+    ];
+
+    /// The kind one `allockind` word names, or `None` if it names none.
+    #[must_use]
+    pub fn from_keyword(word: &str) -> Option<Self> {
+        Self::NAMED
+            .iter()
+            .find(|(_, name)| *name == word)
+            .map(|(kind, _)| *kind)
+    }
+
+    /// Whether every kind in `other` is set here.
+    #[must_use]
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Whether no kind is named — upstream's `== AllocFnKind::Unknown`.
+    #[must_use]
+    pub fn is_unknown(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The kinds set here, in `getAsString` order.
+    pub fn keywords(self) -> impl Iterator<Item = &'static str> {
+        Self::NAMED
+            .iter()
+            .filter(move |(kind, _)| self.contains(*kind))
+            .map(|(_, name)| *name)
+    }
+}
+
+impl core::ops::BitOr for AllocFnKind {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for AllocFnKind {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl fmt::Display for AllocFnKind {
+    /// The quoted, comma-joined body of `allockind("…")`, matching
+    /// `Attribute::getAsString`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for name in self.keywords() {
+            if !first {
+                f.write_str(",")?;
+            }
+            first = false;
+            f.write_str(name)?;
+        }
+        Ok(())
+    }
 }
 
 impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
@@ -749,6 +871,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
             Self::Range { .. } => Some(AttrKind::Range),
             Self::Memory(_) => Some(AttrKind::Memory),
             Self::NoFpClass(_) => Some(AttrKind::NoFpClass),
+            Self::AllocSize { .. } => Some(AttrKind::AllocSize),
+            Self::VScaleRange { .. } => Some(AttrKind::VscaleRange),
+            Self::AllocKind(_) => Some(AttrKind::AllocKind),
             Self::String { .. } => None,
         }
     }
@@ -771,6 +896,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Attribute<'ctx, B> {
                 lower.to_string_radix(10, crate::Signedness::Signed),
                 upper.to_string_radix(10, crate::Signedness::Signed)
             ),
+            Self::AllocSize {
+                element_size,
+                element_count: Some(count),
+            } => write!(f, "allocsize({element_size},{count})"),
+            Self::AllocSize {
+                element_size,
+                element_count: None,
+            } => write!(f, "allocsize({element_size})"),
+            Self::VScaleRange { min, max } => {
+                write!(f, "vscale_range({min},{})", max.unwrap_or(0))
+            }
+            Self::AllocKind(kind) => write!(f, "allockind(\"{kind}\")"),
             Self::Memory(effects) => write!(f, "{effects}"),
             Self::NoFpClass(mask) => write!(f, "nofpclass({})", FpClassMaskNames(*mask)),
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
@@ -1069,6 +1206,15 @@ pub(super) enum AttributeStored {
     },
     Memory(MemoryEffects),
     NoFpClass(FpClassTest),
+    AllocSize {
+        element_size: u32,
+        element_count: Option<u32>,
+    },
+    VScaleRange {
+        min: u32,
+        max: Option<u32>,
+    },
+    AllocKind(AllocFnKind),
     String {
         key: String,
         value: String,
@@ -1089,6 +1235,15 @@ impl AttributeStored {
             },
             Attribute::Memory(effects) => Self::Memory(effects),
             Attribute::NoFpClass(mask) => Self::NoFpClass(mask),
+            Attribute::AllocSize {
+                element_size,
+                element_count,
+            } => Self::AllocSize {
+                element_size,
+                element_count,
+            },
+            Attribute::VScaleRange { min, max } => Self::VScaleRange { min, max },
+            Attribute::AllocKind(kind) => Self::AllocKind(kind),
             Attribute::String { key, value } => Self::String { key, value },
         }
     }
@@ -1106,6 +1261,21 @@ impl fmt::Display for AttributeStored {
             }
             Self::Memory(effects) => write!(f, "{effects}"),
             Self::NoFpClass(mask) => write!(f, "nofpclass({})", FpClassMaskNames(*mask)),
+            // `Attribute::getAsString` writes both `allocsize` arguments with
+            // no space after the comma, and prints an unbounded
+            // `vscale_range` max as `0` — the value it reserves for it.
+            Self::AllocSize {
+                element_size,
+                element_count: Some(count),
+            } => write!(f, "allocsize({element_size},{count})"),
+            Self::AllocSize {
+                element_size,
+                element_count: None,
+            } => write!(f, "allocsize({element_size})"),
+            Self::VScaleRange { min, max } => {
+                write!(f, "vscale_range({min},{})", max.unwrap_or(0))
+            }
+            Self::AllocKind(kind) => write!(f, "allockind(\"{kind}\")"),
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
             Self::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
         }
