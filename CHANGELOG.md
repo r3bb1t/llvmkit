@@ -21,6 +21,12 @@ cut, entries accumulate under **Unreleased**.
 
 ### Constants must agree with the type asked for
 
+- **Fixed (parser): `expected value token`** replaces `expected constant
+  initializer` in `LLParser::parseValID`'s default arm, and
+  `expected a function, alias to function, or ifunc in dso_local_equivalent`
+  is new — the rule existed only as a builder error wrapped in
+  `expected dso_local_equivalent: ...`.
+
 - **Added (`llvmkit-ir`): inline-asm constraint strings are parsed and
   verified.** `parse_constraints` and `verify_inline_asm` port
   `InlineAsm::ParseConstraints` and the static `InlineAsm::verify`, with

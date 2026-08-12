@@ -595,6 +595,19 @@ enum ParsedInRangeBound {
     },
 }
 
+/// `GV->getValueType()->isFunctionTy()` for whichever global kind `r` names.
+/// A `GlobalVariable`'s value type can never be a function type — that is
+/// `invalid type for global variable` — so it answers `false` by construction
+/// rather than by omission.
+fn global_ref_value_type_is_function<'ctx, B: ModuleBrand + 'ctx>(r: GlobalRef<'ctx, B>) -> bool {
+    match r {
+        GlobalRef::Function(_) => true,
+        GlobalRef::Variable(g) => g.value_type().is_function(),
+        GlobalRef::Alias(a) => a.value_type().is_function(),
+        GlobalRef::Ifunc(i) => i.value_type().is_function(),
+    }
+}
+
 fn pointer_address_space_or_vector_element<'ctx, B: ModuleBrand + 'ctx>(
     ty: Type<'ctx, B>,
 ) -> Option<u32> {
@@ -4527,7 +4540,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let ty = expected_ty.ok_or_else(|| self.unsupported_constant_value_form_at(loc))?;
                 self.parse_constant_expr(ty).map(ValId::Constant)
             }
-            _ => Err(self.expected("constant initializer")),
+            // `LLParser::parseValID`'s default arm.
+            _ => Err(self.expected("value token")),
         }
     }
 
@@ -5191,6 +5205,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &mut self,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         self.expect_keyword(Keyword::DsoLocalEquivalent, "'dso_local_equivalent'")?;
+        let operand_loc = self.loc();
         let global = match self.peek() {
             Token::GlobalVar(_) => {
                 let name = self
@@ -5206,6 +5221,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             _ => Err(self.expected("global value name in dso_local_equivalent")),
         }?;
+        // `!GV->getValueType()->isFunctionTy()`, reported at the operand.
+        // Upstream skips this when the referent is still forward-referenced;
+        // llvmkit never gets here with one, because a global initializer that
+        // mentions `dso_local_equivalent` is re-parsed after the whole module.
+        if !global_ref_value_type_is_function(global) {
+            return Err(ParseError::Message {
+                message: "expected a function, alias to function, or ifunc in dso_local_equivalent"
+                    .into(),
+                loc: DiagLoc::span(operand_loc),
+            });
+        }
         self.module
             .dso_local_equivalent_global(self.global_ref_to_constant(global))
             .map_err(|e| self.builder_err("dso_local_equivalent", e))

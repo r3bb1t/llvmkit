@@ -586,7 +586,11 @@ fn specialized_metadata_field_inline_dieexpression_round_trips() {
 }
 
 /// A specialized metadata value still requires LLVM's `!` metadata sigil.
-/// Mirrors `LLParser::parseMetadataAsValue` rejecting non-metadata tokens.
+/// Mirrors `LLParser::parseMetadataAsValue` rejecting non-metadata tokens,
+/// which reaches `parseValID`'s default arm — this is the one reachable pin on
+/// its `expected value token`. `test/Assembler/invalid-hexint.ll` pins the
+/// same message on a malformed literal, and is blocked on the lexer
+/// re-layering recorded for the end of the parity program.
 #[test]
 fn call_metadata_bare_dieexpression_operand_is_rejected() {
     let err = parse_fails(
@@ -599,10 +603,7 @@ entry:
 }
 "#,
     );
-    assert!(
-        err.contains("constant initializer"),
-        "unexpected error: {err}"
-    );
+    assert_eq!(err, "expected value token");
 }
 
 /// Metadata fields likewise require the leading `!` for specialized metadata.

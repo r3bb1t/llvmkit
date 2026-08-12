@@ -575,6 +575,21 @@ fn constant_expr_gep_with_no_operands_reports_the_missing_base() {
     );
 }
 
+/// `LLParser::parseValID`'s `kw_dso_local_equivalent` arm rejects a referent
+/// whose value type is not a function type. Upstream's only
+/// `dso_local_equivalent` fixture is the positive round-trip
+/// `test/Assembler/dso_local_equivalent.ll`, so this anchors the guard by
+/// symbol; the text is upstream's.
+#[test]
+fn dso_local_equivalent_requires_a_function_referent() {
+    assert_parse_error(
+        b"@g = global i32 0
+@p = global ptr dso_local_equivalent @g
+",
+        "expected a function, alias to function, or ifunc in dso_local_equivalent",
+    );
+}
+
 /// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none`
 /// and `Constants.cpp::ConstantTargetNone::get`: `none` is token-only in the
 /// shipped parser subset.
