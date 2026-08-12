@@ -15,6 +15,15 @@ fn parse_and_render(module_name: &str, src: &[u8]) -> String {
     format!("{module}")
 }
 
+fn parse_err(src: &[u8]) -> String {
+    let module = Module::dynamic("parser_ap_literals_error");
+    Parser::new(src, &module)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("literal is rejected")
+        .to_string()
+}
+
 /// Port of `LLParser.cpp::parseValID` decimal APSInt conversion for arbitrary width.
 #[test]
 fn decimal_i129_literal_round_trips_without_host_truncation() {
@@ -61,79 +70,79 @@ fn decimal_double_literal_round_trips_through_apfloat() {
     assert!(text.contains("@g = global double 1.000000e+00"), "{text}");
 }
 
-/// llvmkit-specific subset of
-/// `llvm/lib/Support/APFloat.cpp::IEEEFloat::convertFromDecimalString`:
-/// decimal half tokens round in half destination semantics, not host `double`.
+/// `LLLexer::LexDigitOrNegative` builds **every** decimal floating literal at
+/// `IEEEdouble` — it has no type information — and `convertValIDToValue`'s
+/// `t_APFloat` arm narrows afterwards, rejecting via
+/// `ConstantFP::isValueValidForType` when the narrowing would lose anything.
+///
+/// So a decimal `half` literal is legal exactly when it survives the double
+/// round-trip: `1 + 2^-10` is a half value and passes, while `1 + 2^-11` is
+/// halfway between two half values and does not.
+///
+/// These two used to assert the opposite — that llvmkit parses the decimal
+/// *directly* at half semantics, which skips LLParser's double round-trip and
+/// gives a different answer: read at half, `1 + 2^-11` plus a trailing digit
+/// rounds **up** to `0xH3C01`; read as a double first, it ties to even and
+/// rounds **down**, then loses information and is refused.
 #[test]
-fn decimal_half_literal_rounds_in_half_semantics() {
+fn decimal_half_literal_goes_through_double() {
     let text = parse_and_render(
-        "decimal_half_literal_rounds_in_half_semantics",
-        b"@h = global half 1.0004882812500000000000000000000001\n",
+        "decimal_half_literal_goes_through_double",
+        b"@h = global half 1.0009765625\n",
     );
     assert!(text.contains("@h = global half 0xH3C01"), "{text}");
+
+    assert_eq!(
+        parse_err(b"@h = global half 1.0004882812500000000000000000000001\n"),
+        "floating point constant invalid for type"
+    );
 }
 
-/// llvmkit-specific subset of
-/// `llvm/lib/Support/APFloat.cpp::IEEEFloat::convertFromDecimalString`:
-/// decimal bfloat tokens round in bfloat destination semantics, not host `double`.
+/// The `bfloat` twin of the test above: seven significand bits, so `1 + 2^-7`
+/// passes and `1 + 2^-8` is the tie that does not.
 #[test]
-fn decimal_bfloat_literal_rounds_in_bfloat_semantics() {
+fn decimal_bfloat_literal_goes_through_double() {
     let text = parse_and_render(
-        "decimal_bfloat_literal_rounds_in_bfloat_semantics",
-        b"@b = global bfloat 1.0039062500000000000000000000000001\n",
+        "decimal_bfloat_literal_goes_through_double",
+        b"@b = global bfloat 1.0078125\n",
     );
     assert!(text.contains("@b = global bfloat 0xR3F81"), "{text}");
-}
 
-/// llvmkit-specific subset of
-/// `llvm/lib/Support/APFloat.cpp::IEEEFloat::convertFromDecimalString`:
-/// decimal fp128 tokens preserve significand bits below host `double` precision.
-#[test]
-fn decimal_fp128_literal_keeps_bits_beyond_host_double() {
-    let text = parse_and_render(
-        "decimal_fp128_literal_keeps_bits_beyond_host_double",
-        b"@q = global fp128 1.0000000000000001\n",
-    );
-    assert!(
-        text.contains("@q = global fp128 0xL0734ACA5F6226F0B3FFF000000000000"),
-        "{text}"
+    assert_eq!(
+        parse_err(b"@b = global bfloat 1.0039062500000000000000000000000001\n"),
+        "floating point constant invalid for type"
     );
 }
 
-/// llvmkit-specific subset of
-/// `llvm/lib/Support/APFloat.cpp::IEEEFloat::convertFromDecimalString`:
-/// decimal x86_fp80 tokens preserve significand bits below host `double` precision.
-#[test]
-fn decimal_x86_fp80_literal_keeps_bits_beyond_host_double() {
-    let text = parse_and_render(
-        "decimal_x86_fp80_literal_keeps_bits_beyond_host_double",
-        b"@x = global x86_fp80 1.0000000000000001\n",
-    );
-    assert!(
-        text.contains("@x = global x86_fp80 0xK3FFF800000000000039A"),
-        "{text}"
-    );
-}
-
-/// llvmkit-specific subset of
-/// `llvm/lib/Support/APFloat.cpp::DoubleAPFloat::convertFromString`:
-/// decimal ppc_fp128 tokens keep the low double component below host precision.
+/// `fp128`, `x86_fp80` and `ppc_fp128` have **no decimal spelling** upstream,
+/// and this is the message that says so — the one `convertValIDToValue`
+/// reaches after `isValueValidForType` has passed. The lexer hands it a
+/// `double`; the narrowing step deliberately covers only half / bfloat /
+/// single ("Long double does not need this"), so the value is still a double
+/// when its type is compared against the demanded one.
 ///
-/// The **leading** component is written first (`0x3FF0000000000000`, exactly
-/// 1.0), then the residual — upstream's order, since `AsmWriter` prints
-/// `getLoBits(64)` first and upstream's low word holds
-/// `DoubleAPFloat::Floats[0]`. This expectation previously had the two halves
-/// the other way round, matching a printer that disagreed with LLVM.
+/// The hex forms are how these types are written, and
+/// `exotic_hex_float_literals_round_trip_bits` covers them. No upstream `.ll`
+/// pins this message — none of them writes a decimal at these types, which is
+/// itself the evidence — so the guard is anchored by symbol.
 #[test]
-fn decimal_ppc_fp128_literal_keeps_low_component_beyond_host_double() {
-    let text = parse_and_render(
-        "decimal_ppc_fp128_literal_keeps_low_component_beyond_host_double",
-        b"@p = global ppc_fp128 1.0000000000000001\n",
-    );
-    assert!(
-        text.contains("@p = global ppc_fp128 0xM3FF00000000000003C9CD2B297D889BC"),
-        "{text}"
-    );
+fn the_wide_float_types_have_no_decimal_spelling() {
+    for (source, expected) in [
+        (
+            b"@q = global fp128 1.0000000000000001\n".as_slice(),
+            "floating point constant does not have type 'fp128'",
+        ),
+        (
+            b"@x = global x86_fp80 1.0000000000000001\n".as_slice(),
+            "floating point constant does not have type 'x86_fp80'",
+        ),
+        (
+            b"@p = global ppc_fp128 1.0000000000000001\n".as_slice(),
+            "floating point constant does not have type 'ppc_fp128'",
+        ),
+    ] {
+        assert_eq!(parse_err(source), expected);
+    }
 }
 
 /// Port of `LLLexer.cpp` hex APFloat token forms and parser semantic lowering.

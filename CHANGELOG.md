@@ -21,6 +21,21 @@ cut, entries accumulate under **Unreleased**.
 
 ### Constants must agree with the type asked for
 
+- **Breaking (parser): floating-point literals go through `double`, as
+  upstream's lexer does.** `LLLexer` has no type information, so it reads every
+  decimal literal at `IEEEdouble` and `convertValIDToValue` narrows afterwards;
+  llvmkit read the literal straight at the demanded type's semantics. Three
+  consequences, all upstream's: a decimal at `half` or `bfloat` is legal only
+  when it survives the double round-trip exactly (`floating point constant
+  invalid for type` otherwise, where llvmkit used to round silently to a
+  *different* value); `fp128`, `x86_fp80` and `ppc_fp128` have no decimal
+  spelling at all and now say so with `floating point constant does not have
+  type 'T'`, previously unreachable; and a signalling NaN survives the
+  narrowing, which quiets it, by being rebuilt afterwards.
+
+- **Added (`llvmkit-ir`): `float_value_is_valid_for_type`**, a port of
+  `ConstantFP::isValueValidForType`.
+
 - **Fixed (parser): aggregate constants no longer parse *from* the type they
   are checked against.** `[...]`, `<...>`, `<{...}>` and `{...}` were selected
   by the demanded type and built directly at it, where upstream builds them

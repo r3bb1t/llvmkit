@@ -214,7 +214,7 @@ pub use constant_range::{
 };
 pub use constants::{
     ConstantAggregate, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
-    ConstantPointerNull, PoisonValue, UndefValue,
+    ConstantPointerNull, PoisonValue, UndefValue, float_value_is_valid_for_type,
 };
 pub use data_layout::{
     DataLayout, FunctionPtrAlignType, ManglingMode, PointerSpec, PrimitiveSpec, StructLayoutInfo,

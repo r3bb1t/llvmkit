@@ -44,9 +44,9 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use llvmkit_ir::{
-    Align, AnyTypeEnum, ApFloat, ApFloatSemantics, ApInt, AtomicOrdering, AtomicRmwBinOp,
-    CallingConv, Constant, ConstantExprFlags, ConstantExprInRange, ConstantExprOpcode,
-    ConstantExprOptions, DllStorageClass, Dyn, FastMathFlags, FloatDyn, FloatPredicate, FloatType,
+    Align, AnyTypeEnum, ApFloat, ApFloatSemantics, ApFloatSign, ApInt, AtomicOrdering,
+    AtomicRmwBinOp, CallingConv, Constant, ConstantExprFlags, ConstantExprInRange,
+    ConstantExprOpcode, ConstantExprOptions, DllStorageClass, Dyn, FastMathFlags, FloatPredicate,
     FpClassTest, GepNoWrapFlags, IntCastFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution,
     IrBuilder, IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
     Positioned, RoundingMode, SelectionKind, ShuffleMaskElem, Signedness, StructType, SyncScope,
@@ -4315,14 +4315,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 };
                 self.parse_int_literal(expected_width).map(ValId::ApsInt)
             }
-            Token::FloatLit(_) => {
-                let float_ty = match expected_ty.map(Type::into_type_enum) {
-                    Some(AnyTypeEnum::Float(t)) => t,
-                    _ => return Err(self.message("floating point constant invalid for type")),
-                };
-                let bits = self.parse_fp_literal(&float_ty)?;
-                Ok(ValId::ApFloat(bits))
-            }
+            Token::FloatLit(_) => self.parse_fp_literal().map(ValId::ApFloat),
             Token::Kw(Keyword::True) => {
                 let ty = expected_ty.ok_or_else(|| self.expected("i1 type for boolean literal"))?;
                 if ty != self.module.i1_type().as_type() {
@@ -4497,6 +4490,72 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // `LLParser::parseValID`'s default arm.
             _ => Err(self.expected("value token")),
         }
+    }
+
+    /// `convertValIDToValue`'s `t_APFloat` arm, in upstream's three steps:
+    /// validity, then the narrowing the lexer could not do, then a type
+    /// comparison against what the value actually became.
+    ///
+    /// Upstream builds with `ConstantFP::get(Context, val)`, which types
+    /// itself off the *value's* semantics, and compares that type to `Ty`.
+    /// Comparing the semantics directly is the same test — two semantics are
+    /// the same type exactly when they are equal — and saves mapping a
+    /// semantics back to a `FloatType`.
+    fn float_literal_constant(
+        &self,
+        ty: Type<'ctx, B>,
+        value: ApFloat,
+    ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
+        let AnyTypeEnum::Float(float_ty) = ty.into_type_enum() else {
+            return Err(self.message("floating point constant invalid for type"));
+        };
+        if !llvmkit_ir::float_value_is_valid_for_type(ty, &value) {
+            return Err(self.message("floating point constant invalid for type"));
+        }
+
+        // "The lexer has no type info, so builds all half, bfloat, float, and
+        // double FP constants as double. Fix this here. Long double does not
+        // need this."
+        let value = if value.semantics() == ApFloatSemantics::IeeeDouble
+            && matches!(
+                float_ty.semantics(),
+                ApFloatSemantics::IeeeHalf
+                    | ApFloatSemantics::Bfloat
+                    | ApFloatSemantics::IeeeSingle
+            ) {
+            // `convert` quiets a signalling NaN, so upstream manufactures a
+            // fresh one from the converted bits afterwards.
+            let was_signaling = value.is_signaling();
+            let (converted, _, _) =
+                value.convert(float_ty.semantics(), RoundingMode::NearestTiesToEven);
+            if was_signaling {
+                let payload = converted.to_bits();
+                ApFloat::snan(
+                    converted.semantics(),
+                    if converted.is_negative() {
+                        ApFloatSign::Negative
+                    } else {
+                        ApFloatSign::Positive
+                    },
+                    llvmkit_ir::NanPayload::Bits(&payload),
+                )
+            } else {
+                converted
+            }
+        } else {
+            value
+        };
+
+        if value.semantics() != float_ty.semantics() {
+            return Err(ParseError::Message {
+                message: format!("floating point constant does not have type '{ty}'").into(),
+                loc: DiagLoc::span(self.loc()),
+            });
+        }
+        Ok(float_ty
+            .const_ap_float(&value)
+            .map_err(|e| self.builder_err("float constant", e))?
+            .as_constant())
     }
 
     /// `convertValIDToValue`'s `t_EmptyArray` arm. Upstream materialises
@@ -4765,16 +4824,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .map_err(|e| self.builder_err("integer constant", e))?;
                 Ok(c.as_erased())
             }
-            ValId::ApFloat(value) => {
-                let float_ty = match ty.into_type_enum() {
-                    AnyTypeEnum::Float(t) => t,
-                    _ => return Err(self.message("floating point constant invalid for type")),
-                };
-                Ok(float_ty
-                    .const_ap_float(&value)
-                    .map_err(|e| self.builder_err("float constant", e))?
-                    .as_erased())
-            }
+            ValId::ApFloat(value) => self
+                .float_literal_constant(ty, value)
+                .map(|c| c.as_erased()),
             ValId::Null => {
                 let pty = match ty.into_type_enum() {
                     AnyTypeEnum::Pointer(t) => t,
@@ -4842,16 +4894,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     })?;
                 Ok(c.as_constant())
             }
-            ValId::ApFloat(value) => {
-                let float_ty = match ty.into_type_enum() {
-                    AnyTypeEnum::Float(t) => t,
-                    _ => return Err(self.message("floating point constant invalid for type")),
-                };
-                Ok(float_ty
-                    .const_ap_float(&value)
-                    .map_err(|e| self.builder_err("float constant", e))?
-                    .as_constant())
-            }
+            ValId::ApFloat(value) => self.float_literal_constant(ty, value),
             ValId::Null => {
                 let ptr_ty = match ty.into_type_enum() {
                     AnyTypeEnum::Pointer(t) => t,
@@ -9923,29 +9966,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     }
 
     /// Parse a floating-point literal and perform APFloat semantic conversion.
-    fn parse_fp_literal(
-        &mut self,
-        float_ty: &FloatType<'ctx, FloatDyn, B>,
-    ) -> ParseResult<ApFloat> {
+    /// Read a floating-point literal with **no** reference to the type it will
+    /// be used at, as `LLLexer` does — it has none. Every decimal literal
+    /// becomes an `IEEEdouble`, and each `0x` form its own fixed semantics;
+    /// narrowing to the demanded type, and rejecting when that loses
+    /// information, is `convertValIDToValue`'s `t_APFloat` arm.
+    fn parse_fp_literal(&mut self) -> ParseResult<ApFloat> {
         use super::ll_token::FpLit;
         let value = match self.peek() {
             Token::FloatLit(fp) => match *fp {
-                FpLit::Decimal(s) => {
-                    ApFloat::from_string(float_ty.semantics(), s, RoundingMode::NearestTiesToEven)
-                        .map(|(value, _status)| value)
-                        .map_err(|_| self.expected("valid decimal float literal"))?
-                }
-                FpLit::HexDouble(s) => {
-                    let value = parse_hex_apfloat(ApFloatSemantics::IeeeDouble, s)
-                        .map_err(|_| self.expected("valid hex double literal"))?;
-                    if float_ty.semantics() == ApFloatSemantics::IeeeDouble {
-                        value
-                    } else {
-                        value
-                            .convert(float_ty.semantics(), RoundingMode::NearestTiesToEven)
-                            .0
-                    }
-                }
+                FpLit::Decimal(s) => ApFloat::from_string(
+                    ApFloatSemantics::IeeeDouble,
+                    s,
+                    RoundingMode::NearestTiesToEven,
+                )
+                .map(|(value, _status)| value)
+                .map_err(|_| self.expected("valid decimal float literal"))?,
+                FpLit::HexDouble(s) => parse_hex_apfloat(ApFloatSemantics::IeeeDouble, s)
+                    .map_err(|_| self.expected("valid hex double literal"))?,
                 FpLit::HexHalf(s) => parse_hex_apfloat(ApFloatSemantics::IeeeHalf, s)
                     .map_err(|_| self.expected("valid hex half literal"))?,
                 FpLit::HexBfloat(s) => parse_hex_apfloat(ApFloatSemantics::Bfloat, s)

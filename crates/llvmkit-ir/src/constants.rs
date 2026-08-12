@@ -20,7 +20,7 @@
 //! pointer-based identity in our own code.
 
 use super::DebugLoc;
-use super::ap_float::{ApFloat, ApFloatSemantics};
+use super::ap_float::{ApFloat, ApFloatSemantics, LosesInfo, RoundingMode};
 use super::ap_int::ApInt;
 use super::array_len::ArrayLen;
 use super::basic_block::BasicBlock;
@@ -742,6 +742,57 @@ impl<'ctx, B: ModuleBrand + 'ctx> FloatType<'ctx, f32, B> {
     /// Construct a `float` constant from an `f32`. Infallible.
     pub fn const_float(self, value: f32) -> ConstantFloatValue<'ctx, f32, B> {
         intern_float_constant(self, u128::from(value.to_bits()))
+    }
+}
+
+/// Can `value` be held by `ty` without loss? Port of
+/// `ConstantFP::isValueValidForType` (`llvm/lib/IR/Constants.cpp`).
+///
+/// Non-floating-point types answer `false` — upstream's `default:` arm, whose
+/// comment is "These can't be represented as floating point!". The three
+/// narrow types ask by *converting*: a value already at their semantics is
+/// trivially valid, anything else must survive `rmNearestTiesToEven` exactly.
+/// The three wide ones are pure allow-lists, since every narrower semantics
+/// they list is exactly representable in them.
+pub fn float_value_is_valid_for_type<'ctx, B: ModuleBrand + 'ctx>(
+    ty: Type<'ctx, B>,
+    value: &ApFloat,
+) -> bool {
+    /// The semantics upstream treats as exactly representable everywhere
+    /// wider: `IEEEhalf`, `BFloat`, `IEEEsingle`, `IEEEdouble`.
+    fn is_narrow(semantics: ApFloatSemantics) -> bool {
+        matches!(
+            semantics,
+            ApFloatSemantics::IeeeHalf
+                | ApFloatSemantics::Bfloat
+                | ApFloatSemantics::IeeeSingle
+                | ApFloatSemantics::IeeeDouble
+        )
+    }
+    fn converts_exactly(value: &ApFloat, to: ApFloatSemantics) -> bool {
+        if value.semantics() == to {
+            return true;
+        }
+        let (_, _, loses) = value.convert(to, RoundingMode::NearestTiesToEven);
+        matches!(loses, LosesInfo::No)
+    }
+
+    let semantics = value.semantics();
+    match ty.data() {
+        TypeData::Half => converts_exactly(value, ApFloatSemantics::IeeeHalf),
+        TypeData::Bfloat => converts_exactly(value, ApFloatSemantics::Bfloat),
+        TypeData::Float => converts_exactly(value, ApFloatSemantics::IeeeSingle),
+        TypeData::Double => {
+            is_narrow(semantics) || converts_exactly(value, ApFloatSemantics::IeeeDouble)
+        }
+        TypeData::X86Fp80 => {
+            is_narrow(semantics) || semantics == ApFloatSemantics::X87DoubleExtended
+        }
+        TypeData::Fp128 => is_narrow(semantics) || semantics == ApFloatSemantics::IeeeQuad,
+        TypeData::PpcFp128 => {
+            is_narrow(semantics) || semantics == ApFloatSemantics::PpcDoubleDouble
+        }
+        _ => false,
     }
 }
 
