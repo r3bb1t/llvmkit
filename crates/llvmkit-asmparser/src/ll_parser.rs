@@ -6113,6 +6113,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<Vec<u32>> {
         let mut groups = Vec::new();
         loop {
+            // `Loc` in both upstream loops: the attribute's own keyword, which
+            // is what the position diagnostics report against.
+            let attr_loc = self.loc();
             match self.peek() {
                 Token::RBrace | Token::LBrace | Token::Comma | Token::Eof => break,
                 Token::AttrGrpId(id) if allow_group_refs => {
@@ -6138,6 +6141,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let value = self.parse_uint64("align value")?;
                     let attr = Attribute::<B>::int(AttrKind::Alignment, value)
                         .ok_or_else(|| self.expected("attribute"))?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 Token::Kw(Keyword::Alignstack) => {
@@ -6147,14 +6151,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     self.expect_punct(PunctKind::RParen, "')' after alignstack value")?;
                     let attr = Attribute::<B>::int(AttrKind::StackAlignment, value)
                         .ok_or_else(|| self.expected("attribute"))?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 Token::Kw(Keyword::Memory) => {
                     let attr = self.parse_memory_attribute()?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 Token::Kw(Keyword::Nofpclass) => {
                     let attr = self.parse_nofpclass_attribute()?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 Token::Kw(keyword)
@@ -6183,6 +6190,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     };
                     let attr = Attribute::<B>::int(AttrKind::UwTable, kind)
                         .ok_or_else(|| self.expected("attribute"))?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 Token::Kw(kw @ (Keyword::Dereferenceable | Keyword::DereferenceableOrNull)) => {
@@ -6197,6 +6205,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     self.expect_punct(PunctKind::RParen, "')' after dereferenceable byte count")?;
                     let attr = Attribute::<B>::int(kind, bytes)
                         .ok_or_else(|| self.expected("attribute"))?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 Token::Kw(
@@ -6221,6 +6230,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     self.expect_punct(PunctKind::RParen, "')' after type attribute")?;
                     let attr = Attribute::<B>::type_attr(kind, ty)
                         .ok_or_else(|| self.expected("attribute"))?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 Token::Kw(Keyword::Captures) => {
@@ -6234,22 +6244,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     self.expect_punct(PunctKind::RParen, "')' after captures(none)")?;
                     let attr = Attribute::<B>::enum_attr(AttrKind::NoCapture)
                         .ok_or_else(|| self.expected("attribute"))?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 Token::Kw(Keyword::Range) => {
                     let attr = self.parse_range_attribute()?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 Token::Kw(Keyword::Allocsize) => {
                     let attr = self.parse_alloc_size_attribute()?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 Token::Kw(Keyword::VscaleRange) => {
                     let attr = self.parse_vscale_range_attribute()?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 Token::Kw(Keyword::Allockind) => {
                     let attr = self.parse_alloc_kind_attribute()?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 Token::Kw(keyword) => {
@@ -6259,6 +6274,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     self.bump()?;
                     let attr = Attribute::<B>::enum_attr(kind)
                         .ok_or_else(|| self.expected("attribute"))?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 _ => break,
@@ -6284,6 +6300,50 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             lower_parsed_apsint(&upper, bits),
         )
         .ok_or_else(|| self.expected("valid range attribute"))
+    }
+
+    /// The position check both attribute loops run on every attribute they
+    /// parse: `parseFnAttributeValuePairs`'s `canUseAsFnAttr` guard and
+    /// `parseOptionalParamOrReturnAttrs`' `canUseAsParamAttr` /
+    /// `canUseAsRetAttr` pair.
+    ///
+    /// Upstream accumulates these with `HaveError |= error(...)` and keeps
+    /// parsing, so a list with several misplaced attributes reports several
+    /// times. llvmkit reports the first and stops — same verdict for the
+    /// module, one diagnostic instead of several.
+    fn check_attribute_position(
+        &self,
+        index: AttrIndex,
+        attr: &Attribute<'ctx, B>,
+        loc: Span,
+    ) -> ParseResult<()> {
+        let Some(kind) = attr.kind() else {
+            // A string attribute; upstream's check is on the enum kind only.
+            return Ok(());
+        };
+        let positions = kind.positions();
+        let (allowed, message) = match index {
+            // "As a hack, we allow function alignment to be initially parsed
+            // as an attribute on a function declaration/definition or added to
+            // an attribute group and later moved to the alignment field."
+            AttrIndex::Function => (
+                positions.function || kind == AttrKind::Alignment,
+                "this attribute does not apply to functions",
+            ),
+            AttrIndex::Return => (
+                positions.return_value,
+                "this attribute does not apply to return values",
+            ),
+            AttrIndex::Param(_) => (
+                positions.parameter,
+                "this attribute does not apply to parameters",
+            ),
+        };
+        if allowed {
+            Ok(())
+        } else {
+            Err(self.message_at(loc, message))
+        }
     }
 
     /// `allocsize(N)` / `allocsize(N, M)`. Ports

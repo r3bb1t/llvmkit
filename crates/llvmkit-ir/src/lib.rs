@@ -174,8 +174,8 @@ pub use atomic_ordering::AtomicOrdering;
 pub use atomicrmw_binop::AtomicRmwBinOp;
 pub use attribute_mask::AttributeMask;
 pub use attributes::{
-    AllocFnKind, AttrIndex, AttrKind, Attribute, AttributeList, AttributeSet, AttributeStorage,
-    MemoryEffects, MemoryLocation, ModRefInfo, StrBoolAttrKind,
+    AllocFnKind, AttrIndex, AttrKind, Attribute, AttributeList, AttributePositions, AttributeSet,
+    AttributeStorage, MemoryEffects, MemoryLocation, ModRefInfo, StrBoolAttrKind,
 };
 pub use basic_block::{BasicBlock, BasicBlockLabel, BlockCall, IntoBasicBlockLabel};
 pub use block_params::{BlockParams, BlockParamsDyn};

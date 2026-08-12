@@ -363,6 +363,55 @@ entry:
     parse_dynamic(printed.as_str()).expect("round-trip");
 }
 
+/// The three position diagnostics, from `Attribute::canUseAsFnAttr` and its
+/// two siblings as `parseFnAttributeValuePairs` and
+/// `parseOptionalParamOrReturnAttrs` ask them.
+///
+/// `align` is the exemption upstream calls out by name: it is
+/// `[ParamAttr, RetAttr]` in `Attributes.td`, yet the function loop accepts it
+/// anyway — "as a hack, we allow function alignment to be initially parsed as
+/// an attribute … and later moved to the alignment field."
+#[test]
+fn attributes_are_rejected_outside_their_declared_positions() {
+    fn parse_err(src: &str) -> String {
+        parse_dynamic(src)
+            .expect_err("attribute is in the wrong position")
+            .to_string()
+    }
+
+    // `noalias` is `[ParamAttr, RetAttr]`, never a function attribute.
+    assert_eq!(
+        parse_err("define void @f() #0 { ret void }\nattributes #0 = { noalias }\n"),
+        "this attribute does not apply to functions"
+    );
+    // `alwaysinline` is `[FnAttr]` only.
+    assert_eq!(
+        parse_err("define void @f(ptr alwaysinline %p) { ret void }\n"),
+        "this attribute does not apply to parameters"
+    );
+    assert_eq!(
+        parse_err("define alwaysinline ptr @f() { ret ptr null }\n"),
+        "this attribute does not apply to return values"
+    );
+    // `byval` is `[ParamAttr]`: legal on a parameter, not on a return value.
+    assert_eq!(
+        parse_err("%s = type { i32 }\ndefine byval(%s) ptr @f() { ret ptr null }\n"),
+        "this attribute does not apply to return values"
+    );
+
+    // The `align` hack, both spellings.
+    parse_print_reparse(
+        "align in an attribute group",
+        "define void @f() #0 { ret void }\nattributes #0 = { align 8 }\n",
+        "align 8",
+    );
+    parse_print_reparse(
+        "align on a parameter",
+        "define void @f(ptr align 8 %p) { ret void }\n",
+        "align 8",
+    );
+}
+
 /// The three attributes whose argument needed a grammar of its own. Each
 /// asserts the spelling `Attribute::getAsString` produces — note that all
 /// three write their comma with no following space, and that `vscale_range`

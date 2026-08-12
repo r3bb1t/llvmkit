@@ -369,7 +369,108 @@ pub enum AttrKind {
     StructRet,
 }
 
+/// Where `Attributes.td` declares an attribute may be written. Mirrors the
+/// `[FnAttr]` / `[ParamAttr]` / `[RetAttr]` list on each `def`, which upstream
+/// generates into `AttributeProperty` and reads back through
+/// `Attribute::canUseAsFnAttr` and its two siblings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AttributePositions {
+    /// May be written on a function, or in an `attributes #N = { … }` group.
+    pub function: bool,
+    /// May be written on a parameter.
+    pub parameter: bool,
+    /// May be written on a return value.
+    pub return_value: bool,
+}
+
 impl AttrKind {
+    /// The positions `Attributes.td` declares for this attribute.
+    ///
+    /// Extracted from the vendored `.td` and pinned against it by
+    /// `attribute_td_drift.rs`, which is the second copy this table needs —
+    /// a hand-written position that drifts is a *wrong diagnostic*, not a
+    /// missing one.
+    pub const fn positions(self) -> AttributePositions {
+        const fn at(function: bool, parameter: bool, return_value: bool) -> AttributePositions {
+            AttributePositions {
+                function,
+                parameter,
+                return_value,
+            }
+        }
+        match self {
+            // `[FnAttr, ParamAttr, RetAttr]`
+            Self::StackAlignment => at(true, true, true),
+
+            // `[ParamAttr, RetAttr]`
+            Self::Alignment
+            | Self::Dereferenceable
+            | Self::DereferenceableOrNull
+            | Self::InReg
+            | Self::NoAlias
+            | Self::NoExt
+            | Self::NoFpClass
+            | Self::NoUndef
+            | Self::NonNull
+            | Self::Range
+            | Self::Sext
+            | Self::Zext => at(false, true, true),
+
+            // `[FnAttr, ParamAttr]`
+            Self::NoFree | Self::Preallocated => at(true, true, false),
+
+            // `[ParamAttr]`
+            Self::AllocAlign
+            | Self::AllocatedPointer
+            | Self::ByRef
+            | Self::ByVal
+            | Self::DeadOnReturn
+            | Self::DeadOnUnwind
+            | Self::ElementType
+            | Self::ImmArg
+            | Self::InAlloca
+            | Self::Nest
+            | Self::ReadNone
+            | Self::ReadOnly
+            | Self::Returned
+            | Self::StructRet
+            | Self::SwiftAsync
+            | Self::SwiftError
+            | Self::SwiftSelf
+            | Self::Writable
+            | Self::WriteOnly => at(false, true, false),
+
+            // LLVM 22 has no `nocapture` def: it was replaced by
+            // `captures(none)`, which is `[ParamAttr]`. llvmkit still spells
+            // the parsed result `NoCapture`, so it inherits that position.
+            Self::NoCapture => at(false, true, false),
+
+            // `[FnAttr]` — everything else. `AttrKind` is `#[non_exhaustive]`,
+            // so a catch-all is unavoidable; what keeps it from silently
+            // guessing wrong for a future variant is `attribute_td_drift.rs`,
+            // which checks every position in this table against the `.td`.
+            _ => at(true, false, false),
+        }
+    }
+
+    /// Mirrors `Attribute::canUseAsFnAttr`.
+    #[must_use]
+    pub const fn can_use_as_fn_attr(self) -> bool {
+        self.positions().function
+    }
+
+    /// Mirrors `Attribute::canUseAsParamAttr`.
+    #[must_use]
+    pub const fn can_use_as_param_attr(self) -> bool {
+        self.positions().parameter
+    }
+
+    /// Mirrors `Attribute::canUseAsRetAttr`.
+    #[must_use]
+    pub const fn can_use_as_ret_attr(self) -> bool {
+        self.positions().return_value
+    }
+
     /// Mnemonic spelling used in `.ll` syntax. Mirrors the `def` name in
     /// `Attributes.td` (lowercased / underscored where appropriate).
     pub const fn name(self) -> &'static str {

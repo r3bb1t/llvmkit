@@ -21,6 +21,14 @@ cut, entries accumulate under **Unreleased**.
 
 ### Attributes
 
+- **Added: an attribute written in the wrong position is now rejected.**
+  `AttrKind::positions` ports the `[FnAttr]` / `[ParamAttr]` / `[RetAttr]`
+  lists from `Attributes.td`, and `can_use_as_fn_attr` and its two siblings
+  read it, so `this attribute does not apply to functions` / `to parameters` /
+  `to return values` all fire where upstream fires them. `align` keeps the
+  exemption upstream calls out by name — the function loop accepts it despite
+  the `.td`, because it is later moved to the alignment field.
+
 - **Added: `allocsize`, `vscale_range` and `allockind`**, the three attributes
   whose argument needed a grammar. With them come upstream's diagnostics —
   `'allocsize' indices can't refer to the same parameter`,
