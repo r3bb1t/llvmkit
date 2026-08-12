@@ -72,6 +72,11 @@ const NOT_YET_MODELED: &[&str] = &[
     "sanitize_type",
     "shadowcallstack",
     "skipprofile",
+    // Surfaced by fixing the reader above: its `.td` def wraps across lines,
+    // so the guard had been reading it as declaring no position and skipping
+    // it. `AttrKind::SpeculativeLoadHardening` and the lexer keyword both
+    // exist; only `attr_kind_for_keyword` never learned it.
+    "speculative_load_hardening",
     "swiftasync",
     "swifterror",
     "vscale_range",
@@ -88,16 +93,44 @@ struct TdAttribute {
     ret_attr: bool,
 }
 
-/// Parse the `def <Name> : <Kind>Attr<"<keyword>", …, [<positions>]>;` lines.
+/// Each `def … ;` in the file, joined into one logical line.
+///
+/// Upstream wraps a `def` across lines whenever the declaration is long, and
+/// reading this file line by line silently mis-reads exactly those. It did:
+/// `dereferenceable_or_null` and `speculative_load_hardening` came back
+/// declaring *no* position, which made the probe below vacuous for both, and
+/// `nocreateundeforpoison` was not seen at all — so a new upstream attribute
+/// would slip past this guard purely by being declared on two lines.
+///
+/// No string literal in `Attributes.td` contains a `;`, so terminating a def
+/// on one is safe.
+fn attribute_defs(src: &str) -> Vec<String> {
+    let mut defs = Vec::new();
+    let mut current = String::new();
+    for line in src.lines() {
+        let line = line.trim();
+        if line.starts_with("def ") {
+            current = line.to_owned();
+        } else if !current.is_empty() {
+            current.push(' ');
+            current.push_str(line);
+        }
+        if current.ends_with(';') {
+            defs.push(std::mem::take(&mut current));
+        }
+    }
+    defs
+}
+
+/// Parse the `def <Name> : <Kind>Attr<"<keyword>", …, [<positions>]>;` defs.
 /// `StrBoolAttr` carries no positions (`Attr<S, IntersectPreserve, []>`), so
 /// the position-probing tests below cannot exercise it and it is skipped
 /// here; `str_bool_attributes_have_typed_readers` covers those declarations
 /// against the `StrBoolAttrKind` reader enum instead.
 fn parse_attributes_td(src: &str) -> Vec<TdAttribute> {
     let mut out = Vec::new();
-    for line in src.lines() {
-        let line = line.trim();
-        let Some(rest) = line.strip_prefix("def ") else {
+    for def in attribute_defs(src) {
+        let Some(rest) = def.strip_prefix("def ") else {
             continue;
         };
         let Some((_name, decl)) = rest.split_once(" : ") else {
@@ -198,6 +231,21 @@ fn vendored_attributes_td_is_parseable() {
     let byval = by_kw("byval").expect("byval present");
     assert_eq!(byval.kind, "TypeAttr");
     assert!(byval.param_attr);
+
+    // The three defs that `Attributes.td` wraps across lines. A reader that
+    // works line by line reports the first two as declaring no position at
+    // all — which makes the probe below pass vacuously — and does not see the
+    // third, so a new attribute could join upstream unnoticed. Pinning them
+    // keeps the guard's own reader honest.
+    let deref_or_null = by_kw("dereferenceable_or_null").expect("multi-line def is seen");
+    assert!(!deref_or_null.fn_attr);
+    assert!(deref_or_null.param_attr);
+    assert!(deref_or_null.ret_attr);
+    let hardening = by_kw("speculative_load_hardening").expect("multi-line def is seen");
+    assert!(hardening.fn_attr);
+    assert!(!hardening.param_attr);
+    let no_create = by_kw("nocreateundeforpoison").expect("multi-line def is seen");
+    assert!(no_create.fn_attr);
 }
 
 #[test]
