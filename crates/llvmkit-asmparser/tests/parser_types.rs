@@ -537,12 +537,28 @@ fn an_empty_array_initializer_needs_a_zero_length_array() {
         parse_err(b"@g = global [2 x i32] []\n").to_string(),
         "invalid empty array initializer"
     );
+    // Not an array at all: same message, reached by the other half of
+    // upstream's `!Ty->isArrayTy() || getNumElements() != 0`.
+    assert_eq!(
+        parse_err(b"@g = global i32 []\n").to_string(),
+        "invalid empty array initializer"
+    );
+    // What the arm materialises is **poison**, not a zero-length array
+    // constant: the element type is still unknown.
     let text = parse_render("empty_array_ok", b"@g = global [0 x i32] []\n");
-    assert!(text.contains("[0 x i32]"), "{text}");
+    assert!(text.contains("@g = global [0 x i32] poison"), "{text}");
 }
 
-/// The two struct-initializer checks from `convertValIDToValue`'s
-/// `t_ConstantStruct` arm: element count, then per-element type agreement.
+/// `convertValIDToValue`'s shared `t_ConstantStruct` / `t_PackedConstantStruct`
+/// arm, in upstream's order: element count, packedness, per-element type — and
+/// the bare `constant expression type mismatch` when the demanded type is not
+/// a struct at all. Upstream words that last one *without* the got/expected
+/// suffix its other mismatches carry.
+///
+/// The packedness and non-struct checks became reachable only when the arm
+/// stopped being selected from the demanded type: llvmkit used to take the
+/// struct branch *because* the type was a struct, so an initializer whose
+/// packedness disagreed, or one at a non-struct type, never arrived here.
 #[test]
 fn struct_initializer_shape_is_checked() {
     assert_eq!(
@@ -550,7 +566,19 @@ fn struct_initializer_shape_is_checked() {
         "initializer with struct type has wrong # elements"
     );
     assert_eq!(
+        parse_err(b"@g = global { i32 } <{ i32 7 }>\n").to_string(),
+        "packed'ness of initializer and type don't match"
+    );
+    assert_eq!(
+        parse_err(b"@g = global <{ i32 }> { i32 7 }\n").to_string(),
+        "packed'ness of initializer and type don't match"
+    );
+    assert_eq!(
         parse_err(b"@g = global {i32, i32} {i32 1, i64 2}\n").to_string(),
         "element 1 of struct initializer doesn't match struct element type"
+    );
+    assert_eq!(
+        parse_err(b"@g = global i32 { i32 7 }\n").to_string(),
+        "constant expression type mismatch"
     );
 }

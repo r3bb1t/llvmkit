@@ -21,6 +21,16 @@ cut, entries accumulate under **Unreleased**.
 
 ### Constants must agree with the type asked for
 
+- **Fixed (parser): aggregate constants no longer parse *from* the type they
+  are checked against.** `[...]`, `<...>`, `<{...}>` and `{...}` were selected
+  by the demanded type and built directly at it, where upstream builds them
+  from their own elements and lets `convertValIDToValue` compare. Two checks
+  were unreachable as a result and are new:
+  `packed'ness of initializer and type don't match`, and the bare
+  `constant expression type mismatch` for a struct initializer at a non-struct
+  type. `[]` at a zero-length array now materialises `poison`, matching
+  upstream's `t_EmptyArray` arm, rather than a zero-length array constant.
+
 - **Fixed (parser): `c"..."` is always an `[N x i8]` array.** llvmkit derived
   the array type from the *expected* type, so `@g = global [4 x i32] c"abcd"`
   was silently accepted and built a `[4 x i32]`. Upstream's

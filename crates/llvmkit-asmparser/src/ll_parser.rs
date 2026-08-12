@@ -413,6 +413,15 @@ enum ValId<'ctx, B: ModuleBrand> {
     Constant(llvmkit_ir::Constant<'ctx, B>),
     Value(llvmkit_ir::Value<'ctx, B>),
     ConstantSplat(llvmkit_ir::Constant<'ctx, B>),
+    /// `[]`. Upstream's `t_EmptyArray` deliberately carries no type: with no
+    /// elements there is nothing to derive one from.
+    EmptyArray,
+    /// `{ ... }` — the elements only. The struct type they are checked
+    /// against belongs to `convertValIDToValue`.
+    ConstantStruct(Vec<llvmkit_ir::Constant<'ctx, B>>),
+    /// `<{ ... }>`, kept distinct so the packedness check has something to
+    /// compare against.
+    PackedConstantStruct(Vec<llvmkit_ir::Constant<'ctx, B>>),
 }
 
 fn inferred_decimal_bits(digits: &str) -> u32 {
@@ -4268,121 +4277,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => {}
         }
 
-        if let Some(ty) = expected_ty {
-            match ty.into_type_enum() {
-                AnyTypeEnum::Array(array_ty) if matches!(self.peek(), Token::LSquare) => {
-                    self.expect_punct(PunctKind::LSquare, "'[' to open array constant")?;
-                    let first_elt_loc = self.loc();
-                    let values = if matches!(self.peek(), Token::RSquare) {
-                        Vec::new()
-                    } else {
-                        self.parse_global_value_vector()?
-                    };
-                    self.expect_punct(PunctKind::RSquare, "']' to close array constant")?;
-                    if values.is_empty() {
-                        // `[]` is upstream's `t_EmptyArray`, legal only at a
-                        // zero-length array type — it defers the check to
-                        // `convertValIDToValue` because with no elements there
-                        // is nothing to derive an element type from.
-                        if !array_ty.is_empty() {
-                            return Err(self.message("invalid empty array initializer"));
-                        }
-                    } else {
-                        self.check_aggregate_elements(&values, "array", first_elt_loc)?;
-                    }
-                    let c = array_ty
-                        .const_array(values)
-                        .map_err(|e| ParseError::Expected {
-                            expected: format!("valid array constant: {e}").into(),
-                            loc: DiagLoc::span(self.loc()),
-                        })?;
-                    return Ok(ValId::Constant(c.as_constant()));
-                }
-                AnyTypeEnum::Vector(vec_ty) if matches!(self.peek(), Token::Less) => {
-                    self.expect_punct(PunctKind::Less, "'<' to open vector constant")?;
-                    let first_elt_loc = self.loc();
-                    let values = if matches!(self.peek(), Token::Greater) {
-                        Vec::new()
-                    } else {
-                        self.parse_global_value_vector()?
-                    };
-                    self.expect_punct(PunctKind::Greater, "'>' to close vector constant")?;
-                    if values.is_empty() {
-                        return Err(self.message("constant vector must not be empty"));
-                    }
-                    let element_ty = values[0].ty();
-                    if !element_ty.is_integer()
-                        && !element_ty.is_floating_point()
-                        && !element_ty.is_pointer()
-                    {
-                        return Err(self.message_at(
-                            first_elt_loc,
-                            "vector elements must have integer, pointer or floating point type",
-                        ));
-                    }
-                    self.check_aggregate_elements(&values, "vector", first_elt_loc)?;
-                    let c = vec_ty
-                        .const_vector(values)
-                        .map_err(|e| ParseError::Expected {
-                            expected: format!("valid vector constant: {e}").into(),
-                            loc: DiagLoc::span(self.loc()),
-                        })?;
-                    return Ok(ValId::Constant(c.as_constant()));
-                }
-                AnyTypeEnum::Struct(struct_ty)
-                    if matches!(self.peek(), Token::LBrace)
-                        || (struct_ty.is_packed() && matches!(self.peek(), Token::Less)) =>
-                {
-                    if struct_ty.is_opaque() {
-                        return Err(self.expected("non-opaque struct type for struct constant"));
-                    }
-                    if struct_ty.is_packed() {
-                        self.expect_punct(PunctKind::Less, "'<' to open packed struct constant")?;
-                    }
-                    self.expect_punct(PunctKind::LBrace, "'{' to open struct constant")?;
-                    let values = if matches!(self.peek(), Token::RBrace) {
-                        Vec::new()
-                    } else {
-                        self.parse_global_value_vector()?
-                    };
-                    self.expect_punct(PunctKind::RBrace, "'}' to close struct constant")?;
-                    if struct_ty.is_packed() {
-                        self.expect_punct(
-                            PunctKind::Greater,
-                            "'>' to close packed struct constant",
-                        )?;
-                    }
-                    if struct_ty.field_count() != values.len() {
-                        return Err(
-                            self.message("initializer with struct type has wrong # elements")
-                        );
-                    }
-                    for (index, value) in values.iter().enumerate() {
-                        let field_ty = struct_ty.field_type(index).ok_or_else(|| {
-                            self.message("initializer with struct type has wrong # elements")
-                        })?;
-                        if value.ty() != field_ty {
-                            return Err(ParseError::Message {
-                                message: format!(
-                                    "element {index} of struct initializer doesn't match struct element type"
-                                )
-                                .into(),
-                                loc: DiagLoc::span(self.loc()),
-                            });
-                        }
-                    }
-                    let c = struct_ty
-                        .const_struct(values)
-                        .map_err(|e| ParseError::Expected {
-                            expected: format!("valid struct constant: {e}").into(),
-                            loc: DiagLoc::span(self.loc()),
-                        })?;
-                    return Ok(ValId::Constant(c.as_constant()));
-                }
-                _ => {}
-            }
-        }
-
         match self.peek() {
             Token::LocalVar(_) => {
                 if pfs.is_none() {
@@ -4475,6 +4369,72 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     _ => Err(self.message("invalid type for none constant")),
                 }
             }
+            Token::LSquare => {
+                // `LLParser::parseValID`'s `lsquare` arm. The array type comes
+                // from element 0, never from the demanded type.
+                self.bump()?;
+                let first_elt_loc = self.loc();
+                let values = self.parse_global_value_vector()?;
+                self.expect_punct(PunctKind::RSquare, "end of array constant")?;
+                if values.is_empty() {
+                    // Upstream's `t_EmptyArray`: with no elements there is no
+                    // element type to derive, so the check is deferred.
+                    return Ok(ValId::EmptyArray);
+                }
+                self.check_aggregate_elements(&values, "array", first_elt_loc)?;
+                let element_ty = values[0].ty();
+                let len = u64::try_from(values.len()).unwrap_or(u64::MAX);
+                let c = self
+                    .module
+                    .array_type(element_ty, len)
+                    .const_array(values)
+                    .map_err(|e| self.builder_err("array constant", e))?;
+                Ok(ValId::Constant(c.as_constant()))
+            }
+            Token::Less => {
+                // `LLParser::parseValID`'s `less` arm: `<{ ... }>` is a packed
+                // struct, `< ... >` a vector.
+                self.bump()?;
+                let is_packed_struct = self.eat_punct(PunctKind::LBrace)?;
+                let first_elt_loc = self.loc();
+                let values = self.parse_global_value_vector()?;
+                if is_packed_struct {
+                    self.expect_punct(PunctKind::RBrace, "end of packed struct")?;
+                }
+                self.expect_punct(PunctKind::Greater, "end of constant")?;
+                if is_packed_struct {
+                    return Ok(ValId::PackedConstantStruct(values));
+                }
+                if values.is_empty() {
+                    return Err(self.message("constant vector must not be empty"));
+                }
+                let element_ty = values[0].ty();
+                if !element_ty.is_integer()
+                    && !element_ty.is_floating_point()
+                    && !element_ty.is_pointer()
+                {
+                    return Err(self.message_at(
+                        first_elt_loc,
+                        "vector elements must have integer, pointer or floating point type",
+                    ));
+                }
+                self.check_aggregate_elements(&values, "vector", first_elt_loc)?;
+                let len = u32::try_from(values.len()).unwrap_or(u32::MAX);
+                let c = self
+                    .module
+                    .vector_type(element_ty, len)
+                    .const_vector(values)
+                    .map_err(|e| self.builder_err("vector constant", e))?;
+                Ok(ValId::Constant(c.as_constant()))
+            }
+            Token::LBrace => {
+                // `LLParser::parseValID`'s `lbrace` arm. Every check against
+                // the demanded struct type is `convertValIDToValue`'s.
+                self.bump()?;
+                let values = self.parse_global_value_vector()?;
+                self.expect_punct(PunctKind::RBrace, "end of struct constant")?;
+                Ok(ValId::ConstantStruct(values))
+            }
             Token::Kw(Keyword::C) => {
                 // `ConstantDataArray::getString` always builds `[N x i8]`;
                 // agreement with the demanded type is `convertValIDToValue`'s
@@ -4537,6 +4497,64 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // `LLParser::parseValID`'s default arm.
             _ => Err(self.expected("value token")),
         }
+    }
+
+    /// `convertValIDToValue`'s `t_EmptyArray` arm. Upstream materialises
+    /// *poison*, not a zero-length array — nothing reads the value, and the
+    /// element type is still unknown.
+    fn empty_array_constant(
+        &self,
+        ty: Type<'ctx, B>,
+    ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
+        let is_zero_length_array = match ty.into_type_enum() {
+            AnyTypeEnum::Array(array_ty) => array_ty.is_empty(),
+            _ => false,
+        };
+        if !is_zero_length_array {
+            return Err(self.message("invalid empty array initializer"));
+        }
+        Ok(ty.poison().as_constant())
+    }
+
+    /// `convertValIDToValue`'s shared `t_ConstantStruct` /
+    /// `t_PackedConstantStruct` arm, in upstream's order: element count,
+    /// packedness, then per-field type. A demanded type that is not a struct
+    /// at all gets the *bare* `constant expression type mismatch` — upstream
+    /// words this one without the got/expected suffix its other mismatches
+    /// carry.
+    fn struct_initializer_constant(
+        &self,
+        ty: Type<'ctx, B>,
+        values: &[llvmkit_ir::Constant<'ctx, B>],
+        is_packed_initializer: bool,
+    ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
+        let AnyTypeEnum::Struct(struct_ty) = ty.into_type_enum() else {
+            return Err(self.message("constant expression type mismatch"));
+        };
+        if struct_ty.field_count() != values.len() {
+            return Err(self.message("initializer with struct type has wrong # elements"));
+        }
+        if struct_ty.is_packed() != is_packed_initializer {
+            return Err(self.message("packed'ness of initializer and type don't match"));
+        }
+        for (index, value) in values.iter().enumerate() {
+            let field_ty = struct_ty
+                .field_type(index)
+                .ok_or_else(|| self.message("initializer with struct type has wrong # elements"))?;
+            if value.ty() != field_ty {
+                return Err(ParseError::Message {
+                    message: format!(
+                        "element {index} of struct initializer doesn't match struct element type"
+                    )
+                    .into(),
+                    loc: DiagLoc::span(self.loc()),
+                });
+            }
+        }
+        struct_ty
+            .const_struct(values.to_vec())
+            .map(|c| c.as_constant())
+            .map_err(|e| self.builder_err("struct constant", e))
     }
 
     fn expand_splat_constant(
@@ -4778,6 +4796,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             ValId::Constant(c) => self.checked_constant_type(ty, c).map(|c| c.as_erased()),
             ValId::ConstantSplat(c) => self.expand_splat_constant(ty, c).map(|c| c.as_erased()),
+            ValId::EmptyArray => self.empty_array_constant(ty).map(|c| c.as_erased()),
+            ValId::ConstantStruct(values) => self
+                .struct_initializer_constant(ty, &values, false)
+                .map(|c| c.as_erased()),
+            ValId::PackedConstantStruct(values) => self
+                .struct_initializer_constant(ty, &values, true)
+                .map(|c| c.as_erased()),
             ValId::Value(v) => Ok(v),
         }
     }
@@ -4845,6 +4870,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             ValId::Constant(c) => self.checked_constant_type(ty, c),
             ValId::ConstantSplat(c) => self.expand_splat_constant(ty, c),
+            ValId::EmptyArray => self.empty_array_constant(ty),
+            ValId::ConstantStruct(values) => self.struct_initializer_constant(ty, &values, false),
+            ValId::PackedConstantStruct(values) => {
+                self.struct_initializer_constant(ty, &values, true)
+            }
             ValId::LocalId(_) | ValId::LocalName(_) | ValId::Value(_) => {
                 Err(self.expected("constant value"))
             }
