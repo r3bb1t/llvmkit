@@ -3978,6 +3978,24 @@ pub fn cast_is_valid<'ctx, B: ModuleBrand + 'ctx>(
     }
 }
 
+/// The type a `getelementptr` index list arrives at, or `None` when the list
+/// does not index into `source_ty`. Port of
+/// `GetElementPtrInst::getIndexedType` (`llvm/lib/IR/Instructions.cpp`).
+///
+/// `indices` is the index list *without* the base pointer, exactly as upstream
+/// passes it. The first index steps the pointer and is never applied to
+/// `source_ty`, so an empty list arrives at `source_ty` itself — which is why
+/// upstream's null check doubles as "these indices are valid".
+pub fn indexed_gep_type<'ctx, B: ModuleBrand + 'ctx>(
+    source_ty: Type<'ctx, B>,
+    indices: &[Value<'ctx, B>],
+) -> Option<Type<'ctx, B>> {
+    let module = source_ty.module;
+    let slots: Vec<_> = indices.iter().map(|index| index.slot()).collect();
+    crate::constants::gep_indexed_type(module.module(), source_ty.id(), &slots)
+        .map(|indexed| Type::new(indexed, module))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

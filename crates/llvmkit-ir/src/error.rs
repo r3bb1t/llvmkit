@@ -697,6 +697,17 @@ pub enum IrError {
         name: String,
     },
 
+    /// An identified struct's body reaches the struct being defined. Port of
+    /// `StructType::checkBody` (`lib/IR/Type.cpp`), whose message this
+    /// reproduces verbatim so `LLParser::parseStructDefinition` can hand it
+    /// straight to `tokError`. An anonymous identified struct has no name, and
+    /// upstream's `getName()` renders empty there too.
+    #[error("identified structure type '{name}' is recursive")]
+    RecursiveStructBody {
+        /// Name of the identified struct being defined; empty if anonymous.
+        name: String,
+    },
+
     /// A struct schema found an existing named struct with a different body.
     #[error("named struct {name:?} has a different body")]
     StructBodyMismatch {

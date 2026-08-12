@@ -501,6 +501,80 @@ fn constant_expr_gep_rejects_scalable_vector_pointee() {
     assert_parse_error(FIXTURE, "invalid base element for constant getelementptr");
 }
 
+/// Exact negative constant-GEP fixture from
+/// `test/Assembler/getelementptr_vec_ce2.ll`: two vector indices whose lane
+/// counts disagree. The first vector index is what fixes the width, so the
+/// second one is the offender even though the base pointer is a scalar —
+/// `LLParser::parseValID`'s "GEPWidth may have been unknown" comment.
+#[test]
+fn constant_expr_gep_rejects_disagreeing_vector_index_widths() {
+    const FIXTURE: &[u8] =
+        include_bytes!("fixtures/upstream/getelementptr-vec/getelementptr_vec_ce2.ll");
+
+    assert_parse_error(
+        FIXTURE,
+        "getelementptr vector index has a wrong number of elements",
+    );
+}
+
+/// No upstream `.ll` pins these three in their *constant-expression* form —
+/// `test/Assembler/getelementptr_struct.ll` and friends are all instruction
+/// GEPs — so this anchors the guards by symbol instead:
+/// `LLParser::parseValID`'s `getelementptr` arm, in the order it runs them.
+///
+/// The order is the point. A struct that holds a scalable vector is both
+/// unsized and unsupported as a constant-GEP base, and upstream reports it
+/// unsized; make the body homogeneous and `StructType::isSized`'s
+/// `containsHomogeneousScalableVectorTypes` exception makes it sized, so the
+/// *next* check — `ConstantExpr::isSupportedGetElementPtr` — is the one that
+/// fires.
+#[test]
+fn constant_expr_gep_checks_run_in_upstream_order() {
+    assert_parse_error(
+        b"%opaque = type opaque\n\
+          @g = external global i8\n\
+          @p = global ptr getelementptr (%opaque, ptr @g, i32 0)\n",
+        "base element of getelementptr must be sized",
+    );
+    assert_parse_error(
+        b"%mixed = type { <vscale x 2 x i32>, i32 }\n\
+          @g = external global i8\n\
+          @p = global ptr getelementptr (%mixed, ptr @g, i32 0)\n",
+        "base element of getelementptr must be sized",
+    );
+    assert_parse_error(
+        b"%homogeneous = type { <vscale x 2 x i32>, <vscale x 2 x i32> }\n\
+          @g = external global i8\n\
+          @p = global ptr getelementptr (%homogeneous, ptr @g, i32 0)\n",
+        "invalid base element for constant getelementptr",
+    );
+}
+
+/// `GetElementPtrInst::getIndexedType` returning null, reached from
+/// `LLParser::parseValID` rather than `parseGetElementPtr`. The shape is
+/// `test/Verifier/2002-11-05-GetelementptrPointers.ll`'s — indexing *into* a
+/// pointer held inside a struct — written as a constant expression, which
+/// upstream's test tree does not cover.
+#[test]
+fn constant_expr_gep_rejects_indices_that_do_not_index_the_source() {
+    assert_parse_error(
+        b"@g = external global i8\n\
+          @p = global ptr getelementptr ({ i32, ptr }, ptr @g, i32 0, i32 1, i32 0)\n",
+        "invalid getelementptr indices",
+    );
+}
+
+/// `LLParser::parseGlobalValueVector`'s empty-list early return: a closing
+/// paren yields no operands rather than a diagnostic of its own, so the
+/// `Elts.size() == 0` half of upstream's base-pointer check is what reports.
+#[test]
+fn constant_expr_gep_with_no_operands_reports_the_missing_base() {
+    assert_parse_error(
+        b"@p = global ptr getelementptr (i8, )\n",
+        "base of getelementptr must be a pointer",
+    );
+}
+
 /// Mirrors `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none`
 /// and `Constants.cpp::ConstantTargetNone::get`: `none` is token-only in the
 /// shipped parser subset.

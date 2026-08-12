@@ -1826,8 +1826,8 @@ pub(crate) fn advance_gep_index_type(
 /// mirroring `GetElementPtrInst::getIndexedType`: the first index steps the
 /// pointer, each subsequent index indexes into the current aggregate.
 /// Returns the innermost indexed type, or `None` if any index is invalid —
-/// a struct index that is not a constant `i32` in range
-/// (`StructType::indexValid`), or an index that walks past a non-aggregate.
+/// which is upstream's null return, and the parser's
+/// `invalid getelementptr indices`.
 pub(crate) fn gep_indexed_type(
     module: &ModuleCore,
     source_ty: TypeSlot,
@@ -1835,20 +1835,71 @@ pub(crate) fn gep_indexed_type(
 ) -> Option<TypeSlot> {
     let mut current = source_ty;
     for index in indices.iter().skip(1) {
-        // `StructType::indexValid` requires an i32 index; the shared walker
-        // above only checks constness/range, so enforce the width here.
-        if matches!(module.context().type_data(current), TypeData::Struct(_)) {
-            let idx_ty = module.context().value_data(*index).ty;
-            if !matches!(
-                module.context().type_data(idx_ty),
-                TypeData::Integer { bits: 32 }
-            ) {
-                return None;
-            }
-        }
-        current = advance_gep_index_type(module, current, *index)?;
+        current = type_at_gep_index(module, current, *index)?;
     }
     Some(current)
+}
+
+/// Mirrors `GetElementPtrInst::getTypeAtIndex(Type *, Value *)`: a struct
+/// validates its index first, everything else only has to be indexed by an
+/// integer (or vector of them) and be an array or a vector.
+fn type_at_gep_index(module: &ModuleCore, current: TypeSlot, index: ValueSlot) -> Option<TypeSlot> {
+    if let TypeData::Struct(data) = module.context().type_data(current) {
+        let field = struct_gep_field_index(module, current, index)?;
+        let body = data.body.borrow();
+        return body.as_ref()?.elements.get(field).copied();
+    }
+    if !is_int_or_int_vector(module, module.context().value_data(index).ty) {
+        return None;
+    }
+    match module.context().type_data(current) {
+        TypeData::Array { elem, .. }
+        | TypeData::FixedVector { elem, .. }
+        | TypeData::ScalableVector { elem, .. } => Some(*elem),
+        _ => None,
+    }
+}
+
+/// Mirrors `StructType::indexValid`: a struct index is a constant (vector of)
+/// `i32`, never a scalable vector, and in range — with a vector index read
+/// through `getSplatValue`, so all lanes must agree.
+///
+/// The other arms of `Constant::getSplatValue` cannot be reached from here.
+/// A poison lane makes the splat poison, which is not a `ConstantInt` either
+/// way; a `zeroinitializer` is spelled as an all-zero element list, which the
+/// lane comparison already handles; and the constant-*expression* splat form
+/// only survives construction for a *scalable* vector, which this rejects
+/// before asking.
+fn struct_gep_field_index(
+    module: &ModuleCore,
+    struct_ty: TypeSlot,
+    index: ValueSlot,
+) -> Option<usize> {
+    let index_ty = module.context().value_data(index).ty;
+    let (is_vector, scalar_ty) = match module.context().type_data(index_ty) {
+        TypeData::FixedVector { elem, .. } => (true, *elem),
+        // `isa<ScalableVectorType>(V->getType())` is rejected outright, even
+        // though `isIntOrIntVectorTy(32)` accepted it.
+        TypeData::ScalableVector { .. } => return None,
+        _ => (false, index_ty),
+    };
+    if !matches!(
+        module.context().type_data(scalar_ty),
+        TypeData::Integer { bits: 32 }
+    ) {
+        return None;
+    }
+    let scalar = if is_vector {
+        vector_splat_value(module, index)?
+    } else {
+        index
+    };
+    let field = usize::try_from(const_index_u64(module, scalar)?).ok()?;
+    let TypeData::Struct(data) = module.context().type_data(struct_ty) else {
+        return None;
+    };
+    let body = data.body.borrow();
+    (field < body.as_ref()?.elements.len()).then_some(field)
 }
 
 fn validate_constant_expr_flags(data: &ConstantExprData) -> IrResult<()> {
@@ -2188,7 +2239,9 @@ fn validate_gep_constant_expr(
             message: "getelementptr constant expression expects a pointer base",
         });
     };
-    if type_contains_scalable_vector(module, source_ty.id()) {
+    // `ConstantExpr::isSupportedGetElementPtr` — the source element type may
+    // not be or contain a scalable vector.
+    if source_ty.is_scalable() {
         return Err(IrError::InvalidOperation {
             message: "invalid base element for constant getelementptr",
         });
@@ -2261,21 +2314,6 @@ fn scalar_type_id(module: &ModuleCore, id: TypeSlot) -> TypeSlot {
         .type_data(id)
         .as_vector()
         .map_or(id, |(elem, _, _)| elem)
-}
-
-fn type_contains_scalable_vector(module: &ModuleCore, id: TypeSlot) -> bool {
-    match module.context().type_data(id) {
-        TypeData::ScalableVector { .. } => true,
-        TypeData::Array { elem, .. } | TypeData::FixedVector { elem, .. } => {
-            type_contains_scalable_vector(module, *elem)
-        }
-        TypeData::Struct(s) => s.body.borrow().as_ref().is_some_and(|body| {
-            body.elements
-                .iter()
-                .any(|elem| type_contains_scalable_vector(module, *elem))
-        }),
-        _ => false,
-    }
 }
 
 fn vector_shape(module: &ModuleCore, id: TypeSlot) -> Option<(u32, bool)> {

@@ -21,6 +21,45 @@ cut, entries accumulate under **Unreleased**.
 
 ### Constants must agree with the type asked for
 
+- **Fixed (parser): `getelementptr` constant expressions run upstream's
+  checks, in upstream's order.** `invalid getelementptr indices` is new —
+  llvmkit's constant-expression path never asked
+  `GetElementPtrInst::getIndexedType`, though its instruction path and
+  verifier both did. `base element of getelementptr must be sized` and
+  `invalid base element for constant getelementptr` were checked in the wrong
+  order and, for the scalable case, at the wrong moment (right after the
+  source type parsed, before the operand list). Order is behaviour here: a
+  struct holding a scalable vector satisfies neither check, and upstream
+  reports it unsized.
+
+- **Fixed (`llvmkit-ir`): `Type::is_sized` follows `StructType::isSized`.**
+  A struct holding a scalable vector is now unsized unless its body is
+  homogeneously that vector (`containsHomogeneousScalableVectorTypes`), and a
+  target extension type defers to its layout type instead of answering `true`
+  unconditionally.
+
+- **Added (`llvmkit-ir`): `Type::is_scalable` and `indexed_gep_type`**, ports
+  of `Type::isScalableTy` (including `isScalableTargetExtTy`) and
+  `GetElementPtrInst::getIndexedType`. Three private near-copies of the
+  scalable-vector walk — in `constants.rs`, the constant folder and the
+  parser — collapse onto the first; each was missing at least one of the
+  target-extension arm, the array recursion, or the cycle guard.
+
+- **Fixed (`llvmkit-ir`): a struct index may be a vector splat.**
+  `StructType::indexValid` accepts a `<N x i32>` index whose lanes agree and
+  reads it through `getSplatValue`; llvmkit required a scalar `i32`, which
+  rejected `getelementptr({ i8 }, <2 x ptr> undef, <2 x i64> …, <2 x i32>
+  zeroinitializer)` — upstream's own `ConstantExprFold.ll`.
+
+- **Fixed (parser): `parseGlobalValueVector`'s two early returns.** A closing
+  bracket now yields an empty operand list rather than a diagnostic from the
+  first element parse, and `inrange` ends the list for the caller to handle.
+
+- **Breaking (`llvmkit-ir`): `IrError::RecursiveStructBody { name }`** replaces
+  `InvalidOperation { message: "recursive struct body" }`, and renders
+  `StructType::checkBody`'s own text — `identified structure type '<name>' is
+  recursive` — which `parseStructDefinition` prints verbatim.
+
 - **Fixed (parser): eight aggregate-initializer diagnostics.**
   `constant vector must not be empty` (llvmkit accepted `<>`),
   `vector elements must have integer, pointer or floating point type`,

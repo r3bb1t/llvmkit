@@ -571,18 +571,6 @@ fn vector_shape_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> Option<(
         _ => None,
     }
 }
-fn type_contains_scalable_vector<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
-    match AnyTypeEnum::from(ty) {
-        AnyTypeEnum::Vector(v) => v.is_scalable() || type_contains_scalable_vector(v.element()),
-        AnyTypeEnum::Array(a) => type_contains_scalable_vector(a.element()),
-        AnyTypeEnum::Struct(s) => (0..s.field_count()).any(|index| {
-            s.field_type(index)
-                .is_some_and(type_contains_scalable_vector)
-        }),
-        _ => false,
-    }
-}
-
 #[derive(Debug, Clone)]
 struct ParsedGepConstantExprFlags {
     no_wrap: GepNoWrapFlags,
@@ -3204,9 +3192,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             })?;
         self.module
             .set_struct_body_dyn(handle, elements, packed)
-            .map_err(|e| ParseError::Expected {
-                expected: format!("valid struct body: {e}").into(),
-                loc: DiagLoc::span(decl_loc),
+            .map_err(|e| match e {
+                // `parseStructDefinition` hands `setBodyOrError`'s message
+                // straight to `tokError`, so it is printed verbatim.
+                IrError::RecursiveStructBody { .. } => ParseError::Message {
+                    message: e.to_string().into(),
+                    loc: DiagLoc::span(decl_loc),
+                },
+                other => ParseError::Expected {
+                    expected: format!("valid struct body: {other}").into(),
+                    loc: DiagLoc::span(decl_loc),
+                },
             })?;
         self.record_type_definition(name, slot, ty);
         Ok(())
@@ -4856,9 +4852,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// Mirrors `LLParser::parseGlobalValueVector`, including both of its
+    /// early returns: a closing bracket yields the empty list rather than a
+    /// diagnostic, and `inrange` ends the list so the caller can deal with it.
     fn parse_global_value_vector(&mut self) -> ParseResult<Vec<llvmkit_ir::Constant<'ctx, B>>> {
         let mut values = Vec::new();
+        if matches!(
+            self.peek(),
+            Token::RBrace | Token::RSquare | Token::Greater | Token::RParen
+        ) {
+            return Ok(values);
+        }
         loop {
+            if matches!(self.peek(), Token::Kw(Keyword::Inrange)) {
+                break;
+            }
             values.push(self.parse_global_type_and_value()?);
             if !self.eat_punct(PunctKind::Comma)? {
                 break;
@@ -5334,14 +5342,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let parsed_flags = self.parse_gep_constant_expr_flags()?;
                 self.expect_punct(PunctKind::LParen, "'(' in constantexpr")?;
                 let source_ty = self.parse_type(false)?;
-                if type_contains_scalable_vector(source_ty) {
-                    return Err(self.message("invalid base element for constant getelementptr"));
-                }
                 self.expect_punct(PunctKind::Comma, "comma after getelementptr's type")?;
                 let operands = self.parse_global_value_vector()?;
                 self.expect_punct(PunctKind::RParen, "')' in constantexpr")?;
-                self.validate_parsed_gep_constant_expr(source_ty, &operands)?;
-                let flags = self.finish_gep_constant_expr_flags(parsed_flags, &operands)?;
+                let flags =
+                    self.validate_parsed_gep_constant_expr(source_ty, &operands, parsed_flags)?;
                 self.build_constant_expr(result_ty, Some(source_ty), opcode, operands, flags)
             }
             ConstantExprOpcode::ShuffleVector
@@ -5405,19 +5410,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(ParsedGepConstantExprFlags { no_wrap, in_range })
     }
 
-    fn finish_gep_constant_expr_flags(
+    /// The `inrange` half of the `getelementptr` arm: upstream widens both
+    /// bounds to the base pointer's index width before comparing them, so a
+    /// bound that only overflows at the narrower width is legal.
+    fn gep_constant_expr_flags(
         &self,
         parsed: ParsedGepConstantExprFlags,
-        operands: &[Constant<'ctx, B>],
+        address_space: u32,
     ) -> ParseResult<ConstantExprFlags> {
         let Some((start, end)) = parsed.in_range else {
             return Ok(ConstantExprFlags::gep(parsed.no_wrap));
         };
-        let Some(base) = operands.first() else {
-            return Err(self.message("base of getelementptr must be a pointer"));
-        };
-        let address_space = pointer_address_space_or_vector_element(base.ty())
-            .ok_or_else(|| self.message("base of getelementptr must be a pointer"))?;
         let bit_width = self.module.data_layout().index_size_in_bits(address_space);
         let start_words = inrange_bound_to_apint_words(&start, bit_width);
         let end_words = inrange_bound_to_apint_words(&end, bit_width);
@@ -5465,25 +5468,33 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(bound)
     }
 
+    /// Everything `LLParser::parseValID`'s `getelementptr` arm does after the
+    /// closing paren, in upstream's order: base type, `inrange` bounds, index
+    /// agreement, sizedness, constant-expression support, index walk.
+    ///
+    /// The order *is* the behaviour — several of these overlap, so which one
+    /// fires decides the message. `getelementptr({<vscale x 2 x i32>, i32},
+    /// ptr @g, i32 0)` is both unsized and unsupported, and upstream reports
+    /// it unsized.
     fn validate_parsed_gep_constant_expr(
         &self,
         source_ty: Type<'ctx, B>,
         operands: &[llvmkit_ir::Constant<'ctx, B>],
-    ) -> ParseResult<()> {
+        parsed_flags: ParsedGepConstantExprFlags,
+    ) -> ParseResult<ConstantExprFlags> {
+        // Upstream's `Elts.size() == 0 || !isPtrOrPtrVectorTy()`; asking for
+        // the address space answers both at once, and the `inrange` bounds
+        // need it next anyway.
         let Some((base, indices)) = operands.split_first() else {
             return Err(self.message("base of getelementptr must be a pointer"));
         };
-        if !is_ptr_or_ptr_vector_type(base.ty()) {
+        let Some(address_space) = pointer_address_space_or_vector_element(base.ty()) else {
             return Err(self.message("base of getelementptr must be a pointer"));
-        }
-        if !indices.is_empty() && !source_ty.is_sized() {
-            return Err(self.message("base element of getelementptr must be sized"));
-        }
-        if type_contains_scalable_vector(source_ty) {
-            return Err(self.message("invalid base element for constant getelementptr"));
-        }
-        let pointer_shape = vector_shape_type(base.ty());
-        let mut gep_width = pointer_shape;
+        };
+
+        let flags = self.gep_constant_expr_flags(parsed_flags, address_space)?;
+
+        let mut gep_width = vector_shape_type(base.ty());
         for index in indices {
             if !is_int_or_int_vector_type(index.ty()) {
                 return Err(self.message("getelementptr index must be an integer"));
@@ -5496,10 +5507,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.message("getelementptr vector index has a wrong number of elements")
                     );
                 }
+                // The base may have been a scalar, so the width is known only
+                // now — upstream's own comment.
                 gep_width = Some(index_shape);
             }
         }
-        Ok(())
+
+        if !indices.is_empty() && !source_ty.is_sized() {
+            return Err(self.message("base element of getelementptr must be sized"));
+        }
+        // `ConstantExpr::isSupportedGetElementPtr`.
+        if source_ty.is_scalable() {
+            return Err(self.message("invalid base element for constant getelementptr"));
+        }
+        let index_values: Vec<_> = indices.iter().map(|index| index.as_erased()).collect();
+        if llvmkit_ir::indexed_gep_type(source_ty, &index_values).is_none() {
+            return Err(self.message("invalid getelementptr indices"));
+        }
+        Ok(flags)
     }
 
     fn validate_parsed_vector_constant_expr(

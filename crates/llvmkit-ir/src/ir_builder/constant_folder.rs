@@ -109,7 +109,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> IrBuilderFolder<'ctx, B> for ConstantFolder {
         indices: &[Value<'ctx, B>],
         no_wrap: GepNoWrapFlags,
     ) -> IrResult<Option<Value<'ctx, B>>> {
-        if type_contains_scalable_vector(source_ty) {
+        // Folding to a constant expression is only legal where
+        // `ConstantExpr::isSupportedGetElementPtr` allows one.
+        if source_ty.is_scalable() {
             return Ok(None);
         }
         let ptr = match Constant::try_from(ptr) {
@@ -768,29 +770,4 @@ fn shuffle_mask_constant<'ctx, B: ModuleBrand + 'ctx>(
     })
     .const_vector(elements)
     .map(|constant| constant.as_constant())
-}
-
-fn type_contains_scalable_vector<B: ModuleBrand>(ty: Type<'_, B>) -> bool {
-    match ty.data() {
-        TypeData::ScalableVector { .. } => true,
-        TypeData::Array { elem, .. } | TypeData::FixedVector { elem, .. } => {
-            type_contains_scalable_vector(Type::new(*elem, ty.module()))
-        }
-        TypeData::Struct(data) => data.body.borrow().as_ref().is_some_and(|body| {
-            body.elements
-                .iter()
-                .any(|elem| type_contains_scalable_vector(Type::new(*elem, ty.module())))
-        }),
-        TypeData::TargetExt(data) => match data.name.as_str() {
-            "aarch64.svcount" => true,
-            "riscv.vector.tuple" => data.type_params.first().is_some_and(|elem| {
-                matches!(
-                    Type::new(*elem, ty.module()).data(),
-                    TypeData::ScalableVector { .. }
-                )
-            }),
-            _ => false,
-        },
-        _ => false,
-    }
 }

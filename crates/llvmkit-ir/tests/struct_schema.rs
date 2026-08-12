@@ -312,8 +312,8 @@ fn struct_schema_rejects_recursive_named_body() -> Result<(), IrError> {
     let m = module_new!("schema")?;
     assert_eq!(
         <RecursiveNode as StructSchema>::ir_type(m.as_view()),
-        Err(IrError::InvalidOperation {
-            message: "recursive struct body",
+        Err(IrError::RecursiveStructBody {
+            name: String::from("RecursiveNode"),
         })
     );
     Ok(())

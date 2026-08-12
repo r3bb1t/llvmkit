@@ -469,8 +469,8 @@ impl Context {
             });
         }
         if self.body_would_be_recursive(id, &body) {
-            return Err(crate::IrError::InvalidOperation {
-                message: "recursive struct body",
+            return Err(crate::IrError::RecursiveStructBody {
+                name: s.identity.name().unwrap_or_default().to_owned(),
             });
         }
         *slot = Some(body);

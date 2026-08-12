@@ -257,7 +257,6 @@ pub use instruction::{
     CastKind, Classified, Instruction, InstructionKind, InstructionView, NonTerminator, PhiKind,
     TerminatorKind,
 };
-pub use instructions::cast_is_valid;
 pub use instructions::{
     AddInst, AddrSpaceCastInst, AllocaInst, AndInst, AshrInst, AtomicCmpXchgInst, AtomicRmwInst,
     BinaryOp, BitCastInst, BranchInst, CallBrInst, CallInst, Callee, CatchPadInst, CatchReturnInst,
@@ -270,6 +269,7 @@ pub use instructions::{
     SremInst, StoreInst, SubInst, SwitchInst, TruncInst, TypedCallInst, UdivInst, UiToFpInst,
     UnreachableInst, UremInst, VaArgInst, XorInst, ZextInst,
 };
+pub use instructions::{cast_is_valid, indexed_gep_type};
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{
     BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution,

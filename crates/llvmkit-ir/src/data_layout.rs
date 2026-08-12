@@ -1529,7 +1529,7 @@ fn parse_addr_space_and_name(s: &str) -> IrResult<(u32, String)> {
 /// (`aarch64.svcount`), RISC-V (`riscv.vector.tuple`), DirectX
 /// (`dx.*`), AMDGPU (`amdgcn.named.barrier`), and the test
 /// extension (`llvm.test.vectorelement`).
-fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Option<TypeSlot> {
+pub(crate) fn target_ext_layout_type(module: &ModuleCore, id: TypeSlot) -> Option<TypeSlot> {
     let data = module.context().type_data(id);
     let TypeData::TargetExt(ext) = data else {
         return None;

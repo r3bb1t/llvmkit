@@ -588,10 +588,32 @@ impl<'ctx, B: ModuleBrand + 'ctx> Type<'ctx, B> {
             || self.is_target_ext()
     }
 
-    /// Mirrors `isSized`. Composite types recurse; opaque named structs
-    /// remain unsized until their body is filled.
+    /// Mirrors `Type::isSized` together with `StructType::isSized`. Composite
+    /// types recurse; opaque named structs remain unsized until their body is
+    /// filled; a struct holding a scalable vector is unsized unless *every*
+    /// element is that same scalable vector.
+    ///
+    /// Upstream's `Visited` set is an optional parameter that most callers
+    /// leave null; `LLParser`'s `getelementptr` paths are among the few that
+    /// supply one. llvmkit always threads it. On every constructible type the
+    /// answer is identical — `StructType::checkBody` already rejects a body
+    /// that reaches its own struct, so no cycle exists to find — but a
+    /// predicate that recurses on its input should not rely on a guard in
+    /// another file staying complete, and house law forbids the stack
+    /// overflow that would follow if it ever did not.
     pub fn is_sized(self) -> bool {
-        is_sized(self.module.module(), self.id)
+        is_sized(self.module.module(), self.id, &mut Vec::new())
+    }
+
+    /// Mirrors `Type::isScalableTy`: whether this type *is* or *contains* a
+    /// scalable vector, counting a target extension type whose layout type is
+    /// one (`Type::isScalableTargetExtTy`).
+    ///
+    /// Distinct from `VectorType::is_scalable`, which asks only whether *that*
+    /// vector is scalable. This walks array elements and struct bodies, so
+    /// `[4 x { <vscale x 2 x i32> }]` answers `true`.
+    pub fn is_scalable(self) -> bool {
+        is_scalable(self.module.module(), self.id, &mut Vec::new())
     }
 
     /// Mirrors `Type::isFirstClassType`: every `TypeID` *except*
@@ -909,7 +931,7 @@ impl<'ctx, B: ModuleBrand> fmt::Display for Type<'ctx, B> {
 // Helpers
 // --------------------------------------------------------------------------
 
-fn is_sized(module: &ModuleCore, id: TypeSlot) -> bool {
+fn is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
     let data = module.context().type_data(id);
     match data {
         TypeData::Void
@@ -931,12 +953,85 @@ fn is_sized(module: &ModuleCore, id: TypeSlot) -> bool {
         | TypeData::TypedPointer { .. } => true,
         TypeData::Array { elem, .. }
         | TypeData::FixedVector { elem, .. }
-        | TypeData::ScalableVector { elem, .. } => is_sized(module, *elem),
-        TypeData::Struct(s) => match s.body.borrow().as_ref() {
-            None => false,
-            Some(body) => body.elements.iter().all(|e| is_sized(module, *e)),
-        },
-        TypeData::TargetExt(_) => true,
+        | TypeData::ScalableVector { elem, .. } => is_sized(module, *elem, visited),
+        // `Type::isSizedDerivedType` asks the *layout* type, so an extension
+        // with no layout — upstream's `void` default, llvmkit's `None` — is
+        // unsized rather than trivially sized.
+        TypeData::TargetExt(_) => crate::data_layout::target_ext_layout_type(module, id)
+            .is_some_and(|layout| is_sized(module, layout, visited)),
+        TypeData::Struct(_) => struct_is_sized(module, id, visited),
+    }
+}
+
+/// Mirrors `StructType::isSized`: an opaque body is unsized, a cycle answers
+/// `false`, and an element that is or contains a scalable vector makes the
+/// struct unsized — unless the body is homogeneously that scalable vector,
+/// which upstream special-cases before the loop.
+fn struct_is_sized(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
+    let TypeData::Struct(data) = module.context().type_data(id) else {
+        return false;
+    };
+    let borrowed = data.body.borrow();
+    let Some(body) = borrowed.as_ref() else {
+        return false;
+    };
+    if visited.contains(&id) {
+        return false;
+    }
+    visited.push(id);
+    if contains_homogeneous_scalable_vector_types(module, &body.elements) {
+        return true;
+    }
+    body.elements.iter().all(|elem| {
+        // Upstream asks `isScalableTy()` with a *fresh* visited set here.
+        !is_scalable(module, *elem, &mut Vec::new()) && is_sized(module, *elem, visited)
+    })
+}
+
+/// Mirrors `StructType::containsHomogeneousScalableVectorTypes`: a non-empty
+/// body whose first element is a scalable vector and whose elements are all
+/// the same type. Types are uniqued, so `all_equal` is slot equality.
+fn contains_homogeneous_scalable_vector_types(module: &ModuleCore, elements: &[TypeSlot]) -> bool {
+    let Some(first) = elements.first() else {
+        return false;
+    };
+    if !matches!(
+        module.context().type_data(*first),
+        TypeData::ScalableVector { .. }
+    ) {
+        return false;
+    }
+    elements.iter().all(|elem| elem == first)
+}
+
+/// Mirrors `Type::isScalableTy` and `StructType::isScalableTy`, including
+/// `Type::isScalableTargetExtTy`. Note that upstream does *not* recurse
+/// through a fixed vector's element type here — a fixed vector of scalable
+/// vectors is unrepresentable — so neither does this.
+fn is_scalable(module: &ModuleCore, id: TypeSlot, visited: &mut Vec<TypeSlot>) -> bool {
+    match module.context().type_data(id) {
+        TypeData::Array { elem, .. } => is_scalable(module, *elem, visited),
+        TypeData::Struct(data) => {
+            if visited.contains(&id) {
+                return false;
+            }
+            visited.push(id);
+            let borrowed = data.body.borrow();
+            borrowed.as_ref().is_some_and(|body| {
+                body.elements
+                    .iter()
+                    .any(|elem| is_scalable(module, *elem, visited))
+            })
+        }
+        TypeData::ScalableVector { .. } => true,
+        TypeData::TargetExt(_) => crate::data_layout::target_ext_layout_type(module, id)
+            .is_some_and(|layout| {
+                matches!(
+                    module.context().type_data(layout),
+                    TypeData::ScalableVector { .. }
+                )
+            }),
+        _ => false,
     }
 }
 

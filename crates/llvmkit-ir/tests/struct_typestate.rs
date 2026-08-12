@@ -60,3 +60,91 @@ fn double_set_body_runtime_path_rejects() -> Result<(), IrError> {
     assert!(matches!(err, IrError::StructBodyAlreadySet { .. }));
     Ok(())
 }
+
+/// Mirrors `StructType::checkBody` (`lib/IR/Type.cpp`), whose message this
+/// reproduces verbatim: a body that reaches the struct being defined is
+/// rejected, so the cycle `Type::isSized` and `Type::isScalableTy` guard
+/// against with their `Visited` sets cannot be built in the first place.
+///
+/// This is why those two predicates' visited sets are belt-and-braces rather
+/// than load-bearing. They are still threaded — upstream threads them, and a
+/// predicate that recurses on its input should not depend on a guard in a
+/// different file staying complete.
+#[test]
+fn self_referential_struct_body_is_rejected() -> Result<(), IrError> {
+    let m = module_new!("t")?;
+    let opaque = m.opaque_struct("rec")?;
+    let err = m
+        .set_struct_body(opaque, [opaque.as_type()], false)
+        .expect_err("a self-referential body is rejected");
+    assert_eq!(
+        err,
+        IrError::RecursiveStructBody {
+            name: String::from("rec"),
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "identified structure type 'rec' is recursive"
+    );
+    Ok(())
+}
+
+/// llvmkit-specific (Doctrine D11): `StructType::isSized`'s scalable-vector
+/// rule and its `containsHomogeneousScalableVectorTypes` exception, asserted
+/// on the predicate directly because upstream pins them only through
+/// `test/Verifier/scalable-vector-struct-{alloca,load,store}.ll`, whose
+/// instructions belong to a later wave.
+#[test]
+fn struct_sizedness_follows_the_scalable_vector_rule() -> Result<(), IrError> {
+    let m = module_new!("t")?;
+    let i32_ty = m.i32_type().as_type();
+    let scalable = m.scalable_vector_type(m.i32_type(), 2).as_type();
+
+    let mixed = m.set_struct_body(m.opaque_struct("mixed")?, [scalable, i32_ty], false)?;
+    assert!(!mixed.as_type().is_sized());
+    assert!(mixed.as_type().is_scalable());
+
+    let homogeneous =
+        m.set_struct_body(m.opaque_struct("homogeneous")?, [scalable, scalable], false)?;
+    assert!(homogeneous.as_type().is_sized());
+    assert!(homogeneous.as_type().is_scalable());
+
+    // `Type::isScalableTy` walks array elements; `isSized` then refuses the
+    // struct that holds the array.
+    let array = m.array_type(scalable, 2).as_type();
+    let wrapped = m.set_struct_body(m.opaque_struct("wrapped")?, [array], false)?;
+    assert!(wrapped.as_type().is_scalable());
+    assert!(!wrapped.as_type().is_sized());
+    Ok(())
+}
+
+/// llvmkit-specific (Doctrine D11): `Type::isScalableTargetExtTy` — a target
+/// extension type counts as scalable exactly when its layout type is a
+/// scalable vector. `target("aarch64.svcount")` lays out as
+/// `<vscale x 16 x i1>`; `target("spirv.Image")` lays out as `ptr`.
+#[test]
+fn scalable_target_extension_types_are_scalable() -> Result<(), IrError> {
+    let m = module_new!("t")?;
+    let svcount = m
+        .target_ext_type(
+            "aarch64.svcount",
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            Vec::<u32>::new(),
+        )
+        .as_type();
+    let image = m
+        .target_ext_type(
+            "spirv.Image",
+            Vec::<llvmkit_ir::Type<'_, _>>::new(),
+            Vec::<u32>::new(),
+        )
+        .as_type();
+    assert!(svcount.is_scalable());
+    assert!(!image.is_scalable());
+    // Both are sized: sizedness follows the layout type, and a scalable
+    // vector is sized. Only a *struct holding* one is not.
+    assert!(svcount.is_sized());
+    assert!(image.is_sized());
+    Ok(())
+}
