@@ -363,6 +363,24 @@ entry:
     parse_dynamic(printed.as_str()).expect("round-trip");
 }
 
+/// `preallocated(T)` is a `TypeAttr`, so it takes the same production as
+/// `byval` / `sret` / `elementtype`. Its `Attributes.td` def declares *both*
+/// `FnAttr` and `ParamAttr` — the only type attribute that does — so both
+/// positions are asserted.
+#[test]
+fn preallocated_is_a_type_attribute_in_both_positions() {
+    parse_print_reparse(
+        "preallocated param",
+        "%s = type { i32 }\ndefine void @f(ptr preallocated(%s) %p) { ret void }\n",
+        "preallocated(%s)",
+    );
+    parse_print_reparse(
+        "preallocated fn",
+        "%s = type { i32 }\ndefine void @f() #0 { ret void }\nattributes #0 = { preallocated(%s) }\n",
+        "preallocated(%s)",
+    );
+}
+
 /// The thirty-nine plain enum attributes wired in one sweep: every remaining
 /// `EnumAttr` in `Attributes.td` that the lexer already tokenised and
 /// `attr_kind_for_keyword` — upstream's `tokenToAttribute` — did not know.

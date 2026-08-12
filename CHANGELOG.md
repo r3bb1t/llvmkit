@@ -21,6 +21,17 @@ cut, entries accumulate under **Unreleased**.
 
 ### Attributes
 
+- **Added: `preallocated(T)`**, the one type attribute `Attributes.td`
+  declares in both function and parameter position. It takes the same
+  production as `byval` / `sret`.
+
+- **Fixed (`llvmkit-ir`): printing an attribute *group* could panic.** The
+  group printer used the module-less `Display`, whose type-attribute arm is
+  `unreachable!("typed attributes need a module context to print")`. Nothing
+  reached it while no type attribute was accepted in function position;
+  `preallocated` in an `attributes #0 = { … }` group does. The group printer
+  now takes the module-aware path the parameter printer already used.
+
 - **Added: thirty-nine attributes the parser did not accept.** Every remaining
   plain `EnumAttr` in `Attributes.td` — `naked`, `nobuiltin`, `returns_twice`,
   the eight `sanitize_*` kinds, the coroutine and hot-patch flags,

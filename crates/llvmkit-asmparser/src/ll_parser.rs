@@ -6204,6 +6204,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     | Keyword::Byref
                     | Keyword::Inalloca
                     | Keyword::Sret
+                    | Keyword::Preallocated
                     | Keyword::Elementtype),
                 ) => {
                     let kind = match kw {
@@ -6211,6 +6212,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         Keyword::Byref => AttrKind::ByRef,
                         Keyword::Inalloca => AttrKind::InAlloca,
                         Keyword::Sret => AttrKind::StructRet,
+                        Keyword::Preallocated => AttrKind::Preallocated,
                         _ => AttrKind::ElementType,
                     };
                     self.bump()?;

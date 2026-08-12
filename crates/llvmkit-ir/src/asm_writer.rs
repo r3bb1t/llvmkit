@@ -2914,7 +2914,11 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
                         if i != 0 {
                             f.write_str(" ")?;
                         }
-                        write!(f, "{attr}")?;
+                        // Not `Display`: `preallocated(T)` is a type attribute
+                        // that `Attributes.td` also declares `FnAttr`, so an
+                        // attribute group can hold one, and printing a type
+                        // needs the module.
+                        fmt_attribute_stored(f, attr, ModuleView::<DynBrand>::new(m))?;
                     }
                     f.write_str(" ")?;
                 }
