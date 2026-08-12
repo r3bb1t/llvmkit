@@ -575,6 +575,44 @@ fn constant_expr_gep_with_no_operands_reports_the_missing_base() {
     );
 }
 
+/// `LLParser::parseConstantValue`'s tail switches on `ValID::Kind` and accepts
+/// a fixed set; everything outside it is `expected a constant value`. The
+/// message was unreachable while llvmkit's standalone entry point converted
+/// whatever `parseValID` returned, which also made it accept `@g` — a
+/// `t_GlobalName`, and not in upstream's set.
+///
+/// `null` is the one kind handled outside the conversion: upstream takes
+/// `Constant::getNullValue(Ty)` directly, so at a non-pointer type it is that
+/// type's zero rather than `null must be a pointer type`.
+///
+/// No upstream `.ll` pins any of this — `parseStandaloneConstantValue` is a
+/// C++ entry point with no textual test — so the guards are anchored by
+/// symbol.
+#[test]
+fn a_standalone_constant_value_accepts_only_upstreams_kinds() {
+    let module = module_new!("parser_constants_standalone").expect("fresh module");
+    let i32_ty = module.i32_type().as_type();
+
+    let parsed = parser::parse_constant_value(b"7", &module, i32_ty).expect("an integer parses");
+    assert_eq!(format!("{}", parsed.as_erased()), "i32 7");
+
+    // `t_Null` at a non-pointer type is `getNullValue`, not a diagnostic.
+    let parsed = parser::parse_constant_value(b"null", &module, i32_ty).expect("null parses");
+    assert_eq!(format!("{}", parsed.as_erased()), "i32 0");
+
+    // `t_GlobalName` is not in the accepted set, so the kind switch rejects it
+    // before anything tries to resolve the name.
+    let err = parser::parse_constant_value(b"@g", &module, module.ptr_type(0).as_type())
+        .expect_err("a global name is not a constant value here");
+    assert_eq!(err.to_string(), "expected a constant value");
+
+    // Nor is `t_EmptyArray`, at any type.
+    let empty_array = module.array_type(module.i32_type(), 0).as_type();
+    let err = parser::parse_constant_value(b"[]", &module, empty_array)
+        .expect_err("an empty array is not a constant value here");
+    assert_eq!(err.to_string(), "expected a constant value");
+}
+
 /// Every split of `test/Assembler/constant-splat-diagnostics.ll`, each
 /// asserting its own `FileCheck` line. Four pin `convertValIDToValue`'s
 /// `t_ConstantSplat` arm; the fifth pins the instruction dispatch, because

@@ -1621,8 +1621,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         | Keyword::Poison
                 )
         );
-        let value = match self.parse_global_value(ty) {
-            Ok(value) => value,
+        let loc = self.loc();
+        let id = match self.parse_val_id(None, Some(ty)) {
+            Ok(id) => id,
             Err(ParseError::Lex(_)) if scalar_start => {
                 return Err(ParseError::Expected {
                     expected: "end of string".into(),
@@ -1630,6 +1631,36 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 });
             }
             Err(err) => return Err(err),
+        };
+        // `LLParser::parseConstantValue` switches on the *kind* and accepts a
+        // fixed set. Everything outside it — a local or global name, inline
+        // asm, `[]` — is `expected a constant value`, even where
+        // `convertValIDToValue` would have had something to say.
+        let value = match id {
+            ValId::ApsInt(_)
+            | ValId::ApFloat(_)
+            | ValId::Undef
+            | ValId::Poison
+            | ValId::Zero
+            | ValId::Constant(_)
+            | ValId::ConstantSplat(_)
+            | ValId::ConstantStruct(_)
+            | ValId::PackedConstantStruct(_) => self.convert_val_id_to_constant(ty, id)?,
+            // Upstream takes `Constant::getNullValue(Ty)` directly here rather
+            // than going through the conversion, so `null` at a non-pointer
+            // type is the type's zero rather than a diagnostic.
+            ValId::Null => self.zero_initializer_constant(ty)?,
+            ValId::LocalId(_)
+            | ValId::LocalName(_)
+            | ValId::GlobalId(_)
+            | ValId::GlobalName(_)
+            | ValId::EmptyArray
+            | ValId::Value(_) => {
+                return Err(ParseError::Message {
+                    message: "expected a constant value".into(),
+                    loc: DiagLoc::span(loc),
+                });
+            }
         };
         self.require_eof()?;
         Ok(value)

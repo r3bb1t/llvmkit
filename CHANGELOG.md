@@ -21,6 +21,14 @@ cut, entries accumulate under **Unreleased**.
 
 ### Constants must agree with the type asked for
 
+- **Breaking (parser): `parse_constant_value` accepts only the `ValID` kinds
+  upstream's `parseConstantValue` accepts.** It used to convert whatever
+  `parseValID` returned, which meant it took `@g` and `[]` — neither is in
+  upstream's set. Both now report `expected a constant value`, previously
+  unreachable. `null` keeps its special handling: upstream takes
+  `Constant::getNullValue(Ty)` directly, so at a non-pointer type it is that
+  type's zero rather than `null must be a pointer type`.
+
 - **Breaking (parser): floating-point literals go through `double`, as
   upstream's lexer does.** `LLLexer` has no type information, so it reads every
   decimal literal at `IEEEdouble` and `convertValIDToValue` narrows afterwards;
