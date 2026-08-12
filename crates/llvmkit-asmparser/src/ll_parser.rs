@@ -373,28 +373,38 @@ enum ParsedCallee<'ctx, B: ModuleBrand> {
     Indirect(llvmkit_ir::PointerValue<'ctx, B>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ParsedSign {
-    Positive,
-    Negative,
-}
-
+/// An integer literal token, holding exactly what `LLLexer` puts in
+/// `APSIntVal`: the value at the width the *token itself* needs, plus the
+/// signedness that decides how a consumer widens it. Mirrors `APSInt`.
+///
+/// The width is never the destination's. That is what makes
+/// `LLParser::parseRangeAttr`'s `integer is too large for the bit width of
+/// specified type` askable at all — the check is on
+/// `Lex.getAPSIntVal().getBitWidth()` — and it is what makes `s0x0F` the
+/// **−1** upstream reads rather than the `+15` a destination-width parse
+/// gives, because `LLLexer` truncates a `[us]0x` literal to its active bits
+/// before stamping the signedness on it.
 #[derive(Debug, Clone)]
-enum ParsedApsInt {
-    SignedMagnitude {
-        sign: ParsedSign,
-        magnitude: ApInt,
-    },
-    Hex {
-        signedness: Signedness,
-        value: ApInt,
-    },
+struct ParsedApsInt {
+    value: ApInt,
+    signedness: Signedness,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ExpectedIntWidth {
-    Infer,
-    Bits(u32),
+impl ParsedApsInt {
+    /// The token's own bit width, as `APSInt::getBitWidth` reports it.
+    fn bit_width(&self) -> u32 {
+        self.value.bit_width()
+    }
+
+    /// Widen (or narrow) to `dest_width` by the token's signedness. Mirrors
+    /// `APSInt::extend` where the caller has already checked the width fits,
+    /// and `APInt::extOrTrunc` where it has not.
+    fn extend_or_truncate(&self, dest_width: u32) -> ApInt {
+        match self.signedness {
+            Signedness::Signed => self.value.sext_or_trunc(dest_width),
+            Signedness::Unsigned => self.value.zext_or_trunc(dest_width),
+        }
+    }
 }
 
 #[derive(Branded)]
@@ -424,48 +434,20 @@ enum ValId<'ctx, B: ModuleBrand> {
     PackedConstantStruct(Vec<llvmkit_ir::Constant<'ctx, B>>),
 }
 
-fn inferred_decimal_bits(digits: &str) -> u32 {
-    let digit_count = u32::try_from(digits.len()).unwrap_or(u32::MAX / 4);
-    digit_count.saturating_mul(4).max(1)
-}
-
-fn inferred_hex_bits(digits: &str) -> u32 {
-    let digit_count = u32::try_from(digits.len()).unwrap_or(u32::MAX / 4);
-    digit_count.saturating_mul(4).max(1)
-}
-
-fn lower_parsed_apsint(parsed: &ParsedApsInt, dest_width: u32) -> ApInt {
-    match parsed {
-        ParsedApsInt::SignedMagnitude { sign, magnitude } => {
-            let magnitude = magnitude.zext_or_trunc(dest_width);
-            if matches!(sign, ParsedSign::Negative) {
-                magnitude.negate()
-            } else {
-                magnitude
-            }
-        }
-        ParsedApsInt::Hex { signedness, value } => match signedness {
-            Signedness::Unsigned => value.zext_or_trunc(dest_width),
-            Signedness::Signed => value.sext_or_trunc(dest_width),
-        },
-    }
+/// The over-estimate `APSInt::APSInt(StringRef)` opens with, before
+/// truncating to the value's own width: `((Str.size() * 64) / 19) + 2`.
+fn decimal_scratch_bits(digits: &str) -> u32 {
+    let digit_count = u32::try_from(digits.len()).unwrap_or(u32::MAX / 64);
+    digit_count
+        .saturating_mul(64)
+        .saturating_div(19)
+        .saturating_add(2)
 }
 
 fn parsed_apsint_to_i128(parsed: &ParsedApsInt) -> Option<i128> {
-    match parsed {
-        ParsedApsInt::SignedMagnitude { sign, magnitude } => {
-            let value = magnitude.try_zext_u128()?;
-            let signed = i128::try_from(value).ok()?;
-            Some(if matches!(sign, ParsedSign::Negative) {
-                -signed
-            } else {
-                signed
-            })
-        }
-        ParsedApsInt::Hex { signedness, value } => match signedness {
-            Signedness::Unsigned => i128::try_from(value.try_zext_u128()?).ok(),
-            Signedness::Signed => value.try_sext_i128(),
-        },
+    match parsed.signedness {
+        Signedness::Unsigned => i128::try_from(parsed.value.try_zext_u128()?).ok(),
+        Signedness::Signed => parsed.value.try_sext_i128(),
     }
 }
 
@@ -1859,39 +1841,64 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn parse_int_literal(&mut self, expected_width: ExpectedIntWidth) -> ParseResult<ParsedApsInt> {
+    /// Read one integer-literal token into the `APSInt` the lexer would have
+    /// produced. The value's width is the token's own; widening to whatever
+    /// the destination wants is [`ParsedApsInt::extend_or_truncate`]'s job,
+    /// exactly as it is `LLParser`'s.
+    ///
+    /// Two upstream rules meet here, both in `LLLexer`:
+    ///
+    /// - a decimal literal goes through `APSInt::APSInt(StringRef)`, which
+    ///   parses at an over-estimated width and then truncates to the value's
+    ///   significant bits (negative, signed) or active bits (non-negative,
+    ///   unsigned);
+    /// - a `[us]0x…` literal is built at `4 * digits` bits by
+    ///   `LLLexer::lexIdentifier` and truncated to its **active** bits when
+    ///   those are fewer, *before* the `s`/`u` prefix decides the signedness.
+    ///   That truncation is why `s0x0F` is −1 and not 15.
+    fn parse_int_literal(&mut self) -> ParseResult<ParsedApsInt> {
         let lit = match self.peek() {
             Token::IntegerLit(lit) => *lit,
             _ => return Err(self.expected("integer literal")),
         };
         let parsed = match lit.base {
             NumBase::Dec => {
-                let width = match expected_width {
-                    ExpectedIntWidth::Bits(bits) => bits,
-                    ExpectedIntWidth::Infer => inferred_decimal_bits(lit.digits),
-                };
-                let magnitude = ApInt::from_string(width, lit.digits, 10)
+                let scratch_width = decimal_scratch_bits(lit.digits);
+                let magnitude = ApInt::from_string(scratch_width, lit.digits, 10)
                     .map_err(|_| self.expected("valid integer literal"))?;
-                let sign = if matches!(lit.sign, Sign::Neg) {
-                    ParsedSign::Negative
+                if matches!(lit.sign, Sign::Neg) {
+                    let value = magnitude.negate();
+                    let minimum = value.significant_bits().max(1);
+                    ParsedApsInt {
+                        value: value.trunc(minimum).unwrap_or(value),
+                        signedness: Signedness::Signed,
+                    }
                 } else {
-                    ParsedSign::Positive
-                };
-                ParsedApsInt::SignedMagnitude { sign, magnitude }
+                    let active = magnitude.active_bits().max(1);
+                    ParsedApsInt {
+                        value: magnitude.trunc(active).unwrap_or(magnitude),
+                        signedness: Signedness::Unsigned,
+                    }
+                }
             }
             NumBase::HexSigned | NumBase::HexUnsigned => {
-                let width = match expected_width {
-                    ExpectedIntWidth::Bits(bits) => bits,
-                    ExpectedIntWidth::Infer => inferred_hex_bits(lit.digits),
-                };
-                let value = ApInt::from_string(width, lit.digits, 16)
+                let digit_width = u32::try_from(lit.digits.len())
+                    .unwrap_or(u32::MAX / 4)
+                    .saturating_mul(4);
+                let value = ApInt::from_string(digit_width, lit.digits, 16)
                     .map_err(|_| self.expected("valid hexadecimal integer literal"))?;
+                let active = value.active_bits();
+                let value = if active > 0 && active < digit_width {
+                    value.trunc(active).unwrap_or(value)
+                } else {
+                    value
+                };
                 let signedness = if matches!(lit.base, NumBase::HexSigned) {
                     Signedness::Signed
                 } else {
                     Signedness::Unsigned
                 };
-                ParsedApsInt::Hex { signedness, value }
+                ParsedApsInt { value, signedness }
             }
         };
         self.bump()?;
@@ -2904,7 +2911,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.parse_string_constant("metadata field string")?,
             )),
             Token::IntegerLit(_) => {
-                let parsed = self.parse_int_literal(ExpectedIntWidth::Infer)?;
+                let parsed = self.parse_int_literal()?;
                 let value = parsed_apsint_to_i128(&parsed)
                     .ok_or_else(|| self.expected("metadata integer literal in i128 range"))?;
                 Ok(MetadataFieldValue::Integer(value))
@@ -4339,13 +4346,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 Ok(ValId::GlobalId(id))
             }
-            Token::IntegerLit(_) => {
-                let expected_width = match expected_ty.map(Type::into_type_enum) {
-                    Some(AnyTypeEnum::Int(t)) => ExpectedIntWidth::Bits(t.bit_width()),
-                    _ => ExpectedIntWidth::Infer,
-                };
-                self.parse_int_literal(expected_width).map(ValId::ApsInt)
-            }
+            Token::IntegerLit(_) => self.parse_int_literal().map(ValId::ApsInt),
             Token::FloatLit(_) => self.parse_fp_literal().map(ValId::ApFloat),
             Token::Kw(Keyword::True) => {
                 let ty = expected_ty.ok_or_else(|| self.expected("i1 type for boolean literal"))?;
@@ -4353,9 +4354,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     return Err(self.expected("i1 type for boolean literal"));
                 }
                 self.bump()?;
-                Ok(ValId::ApsInt(ParsedApsInt::SignedMagnitude {
-                    sign: ParsedSign::Positive,
-                    magnitude: ApInt::from_words(1, &[1]),
+                Ok(ValId::ApsInt(ParsedApsInt {
+                    value: ApInt::from_words(1, &[1]),
+                    signedness: Signedness::Unsigned,
                 }))
             }
             Token::Kw(Keyword::False) => {
@@ -4364,9 +4365,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     return Err(self.expected("i1 type for boolean literal"));
                 }
                 self.bump()?;
-                Ok(ValId::ApsInt(ParsedApsInt::SignedMagnitude {
-                    sign: ParsedSign::Positive,
-                    magnitude: ApInt::zero(1),
+                Ok(ValId::ApsInt(ParsedApsInt {
+                    value: ApInt::zero(1),
+                    signedness: Signedness::Unsigned,
                 }))
             }
             Token::Kw(Keyword::Null) => {
@@ -4849,7 +4850,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     AnyTypeEnum::Int(t) => t,
                     _ => return Err(self.message("integer constant must have integer type")),
                 };
-                let bits = lower_parsed_apsint(&parsed, int_ty.bit_width());
+                // `convertValIDToValue`'s `t_APSInt` arm: the literal is
+                // widened *or truncated* to the demanded type, so `i8 300` is
+                // 44 rather than an error.
+                let bits = parsed.extend_or_truncate(int_ty.bit_width());
                 let c = int_ty
                     .const_ap_int(&bits)
                     .map_err(|e| self.builder_err("integer constant", e))?;
@@ -4916,7 +4920,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     AnyTypeEnum::Int(t) => t,
                     _ => return Err(self.message("integer constant must have integer type")),
                 };
-                let bits = lower_parsed_apsint(&parsed, int_ty.bit_width());
+                // `convertValIDToValue`'s `t_APSInt` arm: the literal is
+                // widened *or truncated* to the demanded type, so `i8 300` is
+                // 44 rather than an error.
+                let bits = parsed.extend_or_truncate(int_ty.bit_width());
                 let c = int_ty
                     .const_ap_int(&bits)
                     .map_err(|e| ParseError::Expected {
@@ -6243,6 +6250,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
+                Token::Kw(Keyword::Initializes) => {
+                    let attr = self.parse_initializes_attribute()?;
+                    self.check_attribute_position(index, &attr, attr_loc)?;
+                    out.add(index, attr);
+                }
                 Token::Kw(Keyword::Allocsize) => {
                     let attr = self.parse_alloc_size_attribute()?;
                     self.check_attribute_position(index, &attr, attr_loc)?;
@@ -6281,16 +6293,94 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let TypeKind::Integer { bits } = ty.kind() else {
             return Err(self.expected("range attribute integer type"));
         };
-        let lower = self.parse_int_literal(ExpectedIntWidth::Bits(bits))?;
+        let lower = self.parse_sized_apsint(bits)?;
         self.expect_punct(PunctKind::Comma, "',' in range attribute")?;
-        let upper = self.parse_int_literal(ExpectedIntWidth::Bits(bits))?;
+        let upper = self.parse_sized_apsint(bits)?;
         self.expect_punct(PunctKind::RParen, "')' in range attribute")?;
-        Attribute::<B>::range(
-            ty,
-            lower_parsed_apsint(&lower, bits),
-            lower_parsed_apsint(&upper, bits),
-        )
-        .ok_or_else(|| self.expected("valid range attribute"))
+        Attribute::<B>::range(ty, lower, upper)
+            .ok_or_else(|| self.expected("valid range attribute"))
+    }
+
+    /// `initializes((Lo1,Hi1),(Lo2,Hi2),...)`. Ports
+    /// `LLParser::parseInitializesAttr`.
+    ///
+    /// Three details of the loop are contractual:
+    ///
+    /// - the list is one-or-more with no trailing comma, so `initializes()`
+    ///   fails on the *inner* `(` and `initializes((0,4),)` does too;
+    /// - `Lower == Upper` is rejected **before** the inner `)` is required,
+    ///   which puts that diagnostic on the token after `Upper`;
+    /// - the ordering invariant runs only after the outer `)` is consumed, so
+    ///   `Invalid (unordered or overlapping) range list` lands on whatever
+    ///   follows the whole attribute.
+    ///
+    /// Unlike `parseRangeAttr` there is **no** width check: upstream calls
+    /// `APSInt::extend(64)` directly, which asserts in a debug build on a
+    /// literal wider than 64 bits and misbehaves in a release one. No fixture
+    /// covers that input and llvmkit raises no runtime panics, so the bound
+    /// is truncated to 64 bits — the closest defined reading of upstream's
+    /// release behaviour.
+    fn parse_initializes_attribute(&mut self) -> ParseResult<Attribute<'ctx, B>> {
+        self.expect_keyword(Keyword::Initializes, "'initializes'")?;
+        self.expect_punct(PunctKind::LParen, "'('")?;
+
+        let mut ranges = Vec::new();
+        loop {
+            self.expect_punct(PunctKind::LParen, "'('")?;
+            let lower = self.parse_apsint_at_64_bits()?;
+            self.expect_punct(PunctKind::Comma, "','")?;
+            let upper = self.parse_apsint_at_64_bits()?;
+            if lower.eq_ap_int(&upper) {
+                return Err(self.message("the range should not represent the full or empty set!"));
+            }
+            self.expect_punct(PunctKind::RParen, "')'")?;
+            let Ok(range) = llvmkit_ir::ConstantRange::new(lower, upper) else {
+                // `ConstantRange::new` rejects only mismatched widths and an
+                // equal pair that is neither the minimum nor the maximum.
+                // Both bounds are 64 bits, and equality was just rejected.
+                unreachable!("initializes bounds are 64-bit and unequal")
+            };
+            ranges.push(range);
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')'")?;
+        Attribute::<B>::initializes(ranges)
+            .ok_or_else(|| self.message("Invalid (unordered or overlapping) range list"))
+    }
+
+    /// `parseInitializesAttr`'s local `ParseAPSInt` lambda.
+    fn parse_apsint_at_64_bits(&mut self) -> ParseResult<ApInt> {
+        if !matches!(self.peek(), Token::IntegerLit(_)) {
+            return Err(self.expected("integer"));
+        }
+        Ok(self.parse_int_literal()?.extend_or_truncate(64))
+    }
+
+    /// `parseRangeAttr`'s local `ParseAPSInt` lambda: the token must fit the
+    /// declared type, then widens by its own signedness.
+    ///
+    /// The width check reads the *token's* width, which is why
+    /// [`Self::parse_int_literal`] must not build the literal at the
+    /// destination width — doing so makes this question unaskable, and
+    /// `range(i8 300, 0)` silently means `range(i8 44, 0)`.
+    fn parse_sized_apsint(&mut self, bit_width: u32) -> ParseResult<ApInt> {
+        if !matches!(self.peek(), Token::IntegerLit(_)) {
+            return Err(self.expected("integer"));
+        }
+        // Upstream checks the width before `Lex.Lex()`, so its `tokError`
+        // names the literal; the span is captured here for the same reason.
+        let literal_loc = self.loc();
+        let parsed = self.parse_int_literal()?;
+        if parsed.bit_width() > bit_width {
+            return Err(self.message_at(
+                literal_loc,
+                "integer is too large for the bit width of specified type",
+            ));
+        }
+        Ok(parsed.extend_or_truncate(bit_width))
     }
 
     /// The position check both attribute loops run on every attribute they

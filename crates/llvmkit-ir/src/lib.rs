@@ -78,6 +78,7 @@ pub mod constant;
 pub mod constant_fold;
 pub mod constant_folding;
 pub mod constant_range;
+pub mod constant_range_list;
 pub mod constants;
 pub mod data_layout;
 pub mod dce;
@@ -213,6 +214,7 @@ pub use constant_folding::{
 pub use constant_range::{
     ConstantRange, EquivalentIcmp, NoWrapKind, OverflowResult, PreferredRangeType, RangeIntrinsic,
 };
+pub use constant_range_list::ConstantRangeList;
 pub use constants::{
     ConstantAggregate, ConstantExprOptions, ConstantFloatValue, ConstantIntValue,
     ConstantPointerNull, PoisonValue, UndefValue, float_value_is_valid_for_type,

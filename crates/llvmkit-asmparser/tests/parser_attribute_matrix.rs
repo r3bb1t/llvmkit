@@ -448,6 +448,101 @@ fn captures_diagnostics_match_upstream_text() {
     assert_eq!(parse_err("captures(ret address)"), "expected ':'");
 }
 
+/// Ports the `@initializes` function of `test/Bitcode/attributes.ll`, whose
+/// `; CHECK: define void @initializes(ptr initializes((-4, 0), (4, 8)) %a)`
+/// is the only fixture in the tree that pins this attribute's printed form.
+/// It fixes the `, ` between ranges and inside each range, the absence of a
+/// space after the keyword, and signed rendering of a negative bound.
+#[test]
+fn initializes_round_trips() {
+    parse_print_reparse(
+        "initializes",
+        "define void @initializes(ptr initializes((-4, 0), (4, 8)) %a) {\n  ret void\n}\n",
+        "initializes((-4, 0), (4, 8))",
+    );
+}
+
+/// Ports all ten splits of `test/Assembler/initializes-attribute-invalid.ll`,
+/// each asserting the exact text its `FileCheck` prefix pins.
+///
+/// Two of them are subtler than they look: `initializes()` fails on the
+/// **inner** `(` — the outer one was already consumed and the do-loop demands
+/// at least one range — and `initializes((0, 4) (8, 12))` reports a missing
+/// `)` rather than a missing `,`, because the list separator is read with
+/// `EatIfPresent` and its absence simply ends the loop.
+#[test]
+fn initializes_diagnostics_match_upstream_text() {
+    fn parse_err(spelled: &str) -> String {
+        parse_dynamic(format!(
+            "define void @foo(ptr {spelled} %a) {{\n  ret void\n}}\n"
+        ))
+        .expect_err("initializes attribute is rejected")
+        .to_string()
+    }
+
+    // OUTER-LEFT
+    assert_eq!(parse_err("initializes 0, 4"), "expected '('");
+    // INNER-LEFT
+    assert_eq!(parse_err("initializes(0, 4"), "expected '('");
+    // INNER-RIGHT
+    assert_eq!(parse_err("initializes((0, 4"), "expected ')'");
+    // OUTER-RIGHT
+    assert_eq!(parse_err("initializes((0, 4)"), "expected ')'");
+    // INTEGER
+    assert_eq!(parse_err("initializes((0.5, 4))"), "expected integer");
+    // LOWER-EQUAL-UPPER
+    assert_eq!(
+        parse_err("initializes((4, 4))"),
+        "the range should not represent the full or empty set!"
+    );
+    // INNER-COMMA
+    assert_eq!(parse_err("initializes((0 4))"), "expected ','");
+    // OUTER-COMMA
+    assert_eq!(parse_err("initializes((0, 4) (8, 12))"), "expected ')'");
+    // EMPTY1
+    assert_eq!(parse_err("initializes()"), "expected '('");
+    // EMPTY2
+    assert_eq!(parse_err("initializes(())"), "expected integer");
+}
+
+/// Ports all five splits of `test/Verifier/initializes-attr.ll`.
+///
+/// The file is misfiled upstream: every case is rejected by `llvm-as`'s
+/// *parser*, through `ConstantRangeList::getConstantRangeList`, and never
+/// reaches the verifier — which is why they are asserted here as parse
+/// errors. `overlapping1` is the one that matters most: `(0, 4), (4, 8)`
+/// merely *touch*, and `isOrderedRanges` compares with `sle`, so adjacency
+/// is rejected too.
+#[test]
+fn initializes_range_list_invariants_match_upstream_text() {
+    fn parse_err(spelled: &str) -> String {
+        parse_dynamic(format!(
+            "define void @foo(ptr {spelled} %a) {{\n  ret void\n}}\n"
+        ))
+        .expect_err("initializes range list is rejected")
+        .to_string()
+    }
+
+    for spelled in [
+        // lower_greater_than_upper1
+        "initializes((4, 0))",
+        // lower_greater_than_upper2
+        "initializes((0, 4), (8, 6))",
+        // descending_order
+        "initializes((8, 12), (0, 4))",
+        // overlapping1 — adjacency, not overlap
+        "initializes((0, 4), (4, 8))",
+        // overlapping2
+        "initializes((0, 4), (2, 8))",
+    ] {
+        assert_eq!(
+            parse_err(spelled),
+            "Invalid (unordered or overlapping) range list",
+            "{spelled}"
+        );
+    }
+}
+
 /// The three position diagnostics, from `Attribute::canUseAsFnAttr` and its
 /// two siblings as `parseFnAttributeValuePairs` and
 /// `parseOptionalParamOrReturnAttrs` ask them.

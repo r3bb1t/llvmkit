@@ -24,6 +24,8 @@ use core::iter::FusedIterator;
 use std::fmt;
 
 use super::ApInt;
+use super::constant_range::ConstantRange;
+use super::constant_range_list::ConstantRangeList;
 use super::fp_class::FpClassTest;
 use super::module::ModuleBrand;
 use super::r#type::{Type, TypeKind, TypeSlot};
@@ -360,6 +362,7 @@ pub enum AttrKind {
     Range,
     Memory,
     NoFpClass,
+    Initializes,
 
     // ---- Type-valued attributes ----
     ByRef,
@@ -431,6 +434,7 @@ impl AttrKind {
             | Self::ElementType
             | Self::ImmArg
             | Self::InAlloca
+            | Self::Initializes
             | Self::Nest
             | Self::ReadNone
             | Self::ReadOnly
@@ -574,6 +578,7 @@ impl AttrKind {
             Self::Range => "range",
             Self::Memory => "memory",
             Self::NoFpClass => "nofpclass",
+            Self::Initializes => "initializes",
             // Type
             Self::ByRef => "byref",
             Self::ByVal => "byval",
@@ -630,6 +635,13 @@ impl AttrKind {
         matches!(self, Self::NoFpClass)
     }
 
+    /// `true` for kinds whose payload is a list of integer constant ranges.
+    /// Mirrors `Attribute::isConstantRangeListAttrKind`.
+    #[inline]
+    pub const fn is_range_list_kind(self) -> bool {
+        matches!(self, Self::Initializes)
+    }
+
     /// `true` for plain enum / flag kinds (no payload).
     #[inline]
     pub const fn is_enum_kind(self) -> bool {
@@ -638,6 +650,7 @@ impl AttrKind {
             && !self.is_range_kind()
             && !self.is_memory_kind()
             && !self.is_fp_class_kind()
+            && !self.is_range_list_kind()
     }
 }
 
@@ -801,6 +814,12 @@ pub enum Attribute<'ctx, B: ModuleBrand> {
     /// `captures(address, ret: provenance)` — which components of a pointer
     /// parameter a call may capture.
     Captures(CaptureInfo),
+    /// `initializes((-4, 0), (4, 8))` — the byte ranges, relative to the
+    /// pointer argument, that the callee writes before any read of them.
+    ///
+    /// The payload is the checked [`ConstantRangeList`], not a bare `Vec`, so
+    /// an unordered or overlapping list cannot reach the variant.
+    Initializes(ConstantRangeList),
     /// Free-form key=value string attribute. Used for target-dependent
     /// attributes (`"target-features"`, `"frame-pointer"`, ...).
     String { key: String, value: String },
@@ -1171,6 +1190,15 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
         Some(Self::Range { ty, lower, upper })
     }
 
+    /// Construct an `initializes` attribute. Returns `None` when the ranges
+    /// are unordered or overlapping — the condition
+    /// `ConstantRangeList::getConstantRangeList` reports as `std::nullopt` and
+    /// `LLParser::parseInitializesAttr` renders as
+    /// `Invalid (unordered or overlapping) range list`.
+    pub fn initializes(ranges: Vec<ConstantRange>) -> Option<Self> {
+        ConstantRangeList::new(ranges).map(Self::Initializes)
+    }
+
     /// Construct a string key=value attribute. Always valid.
     pub fn string<Key, ValueText>(key: Key, value: ValueText) -> Self
     where
@@ -1200,6 +1228,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
             Self::VScaleRange { .. } => Some(AttrKind::VscaleRange),
             Self::AllocKind(_) => Some(AttrKind::AllocKind),
             Self::Captures(_) => Some(AttrKind::Captures),
+            Self::Initializes(_) => Some(AttrKind::Initializes),
             Self::String { .. } => None,
         }
     }
@@ -1235,6 +1264,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Attribute<'ctx, B> {
             }
             Self::AllocKind(kind) => write!(f, "allockind(\"{kind}\")"),
             Self::Captures(info) => write!(f, "{info}"),
+            Self::Initializes(ranges) => write!(f, "initializes({ranges})"),
             Self::Memory(effects) => write!(f, "{effects}"),
             Self::NoFpClass(mask) => write!(f, "nofpclass({})", FpClassMaskNames(*mask)),
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
@@ -1543,6 +1573,7 @@ pub(super) enum AttributeStored {
     },
     AllocKind(AllocFnKind),
     Captures(CaptureInfo),
+    Initializes(ConstantRangeList),
     String {
         key: String,
         value: String,
@@ -1573,6 +1604,7 @@ impl AttributeStored {
             Attribute::VScaleRange { min, max } => Self::VScaleRange { min, max },
             Attribute::AllocKind(kind) => Self::AllocKind(kind),
             Attribute::Captures(info) => Self::Captures(info),
+            Attribute::Initializes(ranges) => Self::Initializes(ranges),
             Attribute::String { key, value } => Self::String { key, value },
         }
     }
@@ -1606,6 +1638,7 @@ impl fmt::Display for AttributeStored {
             }
             Self::AllocKind(kind) => write!(f, "allockind(\"{kind}\")"),
             Self::Captures(info) => write!(f, "{info}"),
+            Self::Initializes(ranges) => write!(f, "initializes({ranges})"),
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
             Self::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
         }
@@ -1770,13 +1803,16 @@ mod tests {
     /// in `lib/IR/Attributes.cpp`, extended for `RangeAttr` and `Memory`.
     #[test]
     fn kind_partition_is_total() {
-        // Every variant is exactly one of enum/int/type/range/memory.
+        // Every variant is exactly one of
+        // enum/int/type/range/memory/fp-class/range-list.
         let kinds = [
             AttrKind::AlwaysInline,
             AttrKind::Alignment,
             AttrKind::ByVal,
             AttrKind::Range,
             AttrKind::Memory,
+            AttrKind::NoFpClass,
+            AttrKind::Initializes,
         ];
         for k in kinds {
             let categories = [
@@ -1785,6 +1821,8 @@ mod tests {
                 k.is_type_kind(),
                 k.is_range_kind(),
                 k.is_memory_kind(),
+                k.is_fp_class_kind(),
+                k.is_range_list_kind(),
             ];
             assert_eq!(
                 categories.into_iter().filter(|category| *category).count(),

@@ -2471,7 +2471,8 @@ fn fmt_attribute_stored<'ctx, B: ModuleBrand + 'ctx>(
         | AttributeStored::AllocSize { .. }
         | AttributeStored::VScaleRange { .. }
         | AttributeStored::AllocKind(_)
-        | AttributeStored::Captures(_) => write!(f, "{attr}"),
+        | AttributeStored::Captures(_)
+        | AttributeStored::Initializes(_) => write!(f, "{attr}"),
         AttributeStored::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
         AttributeStored::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
     }

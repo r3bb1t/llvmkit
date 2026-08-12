@@ -31,9 +31,11 @@ const ATTRIBUTES_TD: &str = include_str!("../tablegen/llvm-22.1.4/include/llvm/I
 /// deleting its line here, and a new upstream attribute fails this test until
 /// it is either implemented or consciously added.
 ///
-/// Kept as the spelled `.ll` keyword, sorted. `initializes` is the last one:
-/// it takes a `ConstantRangeList`, which llvmkit has no type for yet.
-const NOT_YET_MODELED: &[&str] = &["initializes"];
+/// Kept as the spelled `.ll` keyword, sorted. **The list is empty** — every
+/// attribute `Attributes.td` declares is accepted in every position it
+/// declares — so any entry appearing here again is a new upstream attribute
+/// or a regression, never the status quo.
+const NOT_YET_MODELED: &[&str] = &[];
 
 /// One attribute as `Attributes.td` declares it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -91,9 +93,18 @@ fn parse_attributes_td(src: &str) -> Vec<TdAttribute> {
         // dropped `hot`, `disable_sanitizer_instrumentation` and `allockind`
         // on the floor. A def name is one word, so the first colon is always
         // the separator.
-        let Some((_name, decl)) = rest.split_once(':') else {
+        let Some((name, decl)) = rest.split_once(':') else {
             continue;
         };
+        // An *anonymous* `def : …` is never an attribute. `Attributes.td`
+        // closes with 32 of them — the `CompatRule` / `MergeRule` inlining
+        // rules — and three `CompatRuleStrAttr` ones end in `Attr`, so the
+        // kind filter below lets them through and the reader invents an
+        // attribute called `isEqual`. It went unnoticed because a rule
+        // declares no position, and "no position" used to be a silent pass.
+        if name.trim().is_empty() {
+            continue;
+        }
         let decl = decl.trim();
         let Some((kind, args)) = decl.split_once('<') else {
             continue;
@@ -169,7 +180,11 @@ fn parser_accepts(attr: &TdAttribute) -> bool {
         }
     }
     if sources.is_empty() {
-        return true; // no modeled position to probe
+        // No declared position means nothing to probe, and answering "accepted"
+        // here is what let three separate reader bugs pass vacuously. The real
+        // guard is `every_attribute_declares_a_position`, which fails loudly
+        // and says which attribute; this only refuses to claim a pass.
+        return false;
     }
     sources
         .iter()
@@ -209,6 +224,27 @@ fn vendored_attributes_td_is_parseable() {
     assert!(!hardening.param_attr);
     let no_create = by_kw("nocreateundeforpoison").expect("multi-line def is seen");
     assert!(no_create.fn_attr);
+}
+
+/// Every `def` must declare at least one of `[FnAttr]` / `[ParamAttr]` /
+/// `[RetAttr]`. Upstream has no positionless attribute — a keyword that may
+/// be written nowhere could never appear in a `.ll` file — so reading one is
+/// proof the reader below is broken, not that the attribute is odd. Three
+/// separate reader bugs hid behind exactly this state, each passing the probe
+/// vacuously; this is the assertion that would have caught all three.
+#[test]
+fn every_attribute_declares_a_position() {
+    let positionless: Vec<String> = parse_attributes_td(ATTRIBUTES_TD)
+        .into_iter()
+        .filter(|attr| !attr.fn_attr && !attr.param_attr && !attr.ret_attr)
+        .map(|attr| format!("{} ({})", attr.keyword, attr.kind))
+        .collect();
+    assert!(
+        positionless.is_empty(),
+        "these defs were read as declaring no position at all, which upstream \
+         never writes — the reader in this file is misparsing them:\n  {}",
+        positionless.join("\n  ")
+    );
 }
 
 #[test]

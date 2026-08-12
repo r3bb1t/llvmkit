@@ -69,6 +69,9 @@ impl AttributeMask {
                 Attribute::Captures(_) => {
                     self.enum_kinds.insert(AttrKind::Captures);
                 }
+                Attribute::Initializes(_) => {
+                    self.enum_kinds.insert(AttrKind::Initializes);
+                }
                 Attribute::String { key, .. } => {
                     self.target_dep_attrs.insert(key.clone());
                 }
@@ -100,6 +103,7 @@ impl AttributeMask {
             Attribute::VScaleRange { .. } => self.contains_kind(AttrKind::VscaleRange),
             Attribute::AllocKind(_) => self.contains_kind(AttrKind::AllocKind),
             Attribute::Captures(_) => self.contains_kind(AttrKind::Captures),
+            Attribute::Initializes(_) => self.contains_kind(AttrKind::Initializes),
             Attribute::String { key, .. } => self.contains_string(key),
         }
     }

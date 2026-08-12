@@ -12,6 +12,53 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## `ConstantRangeList` — three set operations not ported (decided 2026-08-12, LLParser parity W5)
+
+`crates/llvmkit-ir/src/constant_range_list.rs` ports
+`llvm/include/llvm/IR/ConstantRangeList.h` as far as the `.ll` surface needs
+and one step further: `isOrderedRanges`, `getConstantRangeList`, `print`, and
+`insert` (with its `int64_t` overload), the last of which the parser never
+calls but the upstream unit tests pin.
+
+**Not ported: `subtract`, `unionWith`, `intersectWith`.** They have no
+consumer anywhere in llvmkit — upstream's callers are Attributor- and
+`MemoryLocation`-style passes this tree has not ported — so porting them would
+add public API with no in-tree user and no way to be sure it stays right.
+Three of the six `unittests/IR/ConstantRangeListTest.cpp` cases (`Subtract`,
+`Union`, `Intersect`) are therefore not portable yet; the other three
+(`Basics`, `getConstantRangeList`, `Insert`) are ported verbatim. Land the
+three methods together with their first real caller, and take the three tests
+in the same commit.
+
+One upstream detail to carry forward if they are ported: `insert`'s no-op
+check uses `ConstantRange::contains`, which compares **unsigned**, while every
+other comparison in the class is signed. `subtract` carries the comment saying
+signed checking is what is wanted. llvmkit reproduces the inconsistency rather
+than correcting it (behaviour is upstream's), and a `subtract` port must be
+read against that comment, not against `insert`.
+
+## Parser — the `inrange` bounds have a second, parallel APSInt reader (found 2026-08-12, LLParser parity W5)
+
+`Parser::parse_inrange_bound` (`ll_parser.rs`) and its helpers
+(`ParsedInRangeBound`, `inrange_bound_to_apint_words`,
+`signed_magnitude_to_apint_words`, `apsint_to_apint_words`,
+`hex_apsint_bit_width`, `decimal_digits_to_words`, `hex_digits_to_words`)
+implement the same `LLLexer` APSInt semantics that `Parser::parse_int_literal`
+now implements — the `[us]0x` active-bit truncation and the signed widening.
+Both are currently *correct*: the `inrange` path was written with the
+truncation and is pinned by
+`parser_constants.rs::constant_expr_gep_inrange_signed_hex_active_bits_are_preserved`,
+and `parse_int_literal` gained it in W5 when the `initializes` bounds needed
+it.
+
+Two implementations of one lexer rule is the shape this program keeps finding
+bugs in (three private copies of the scalable-vector walk in W4.5, none
+matching `Type::isScalableTy`). Collapse `parse_inrange_bound` onto
+`parse_int_literal` + `ParsedApsInt::extend_or_truncate`; the only real work
+is that `ConstantExprInRange::new` takes `Box<[u64]>` rather than an `ApInt`.
+Not done in W5 because it is on the GEP constant-expression path, not the
+attribute path — it belongs with W9a.
+
 ## Parser — a misplaced `phi` is rejected at parse time, not by the verifier (found 2026-08-08, LLParser parity W1)
 
 `LLParser` accepts a `phi` written after a non-phi instruction and lets

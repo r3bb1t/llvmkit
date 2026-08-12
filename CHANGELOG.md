@@ -21,6 +21,30 @@ cut, entries accumulate under **Unreleased**.
 
 ### Attributes
 
+- **Added: `initializes((-4, 0), (4, 8))`, and with it `ConstantRangeList`.**
+  The last attribute in `Attributes.td` that llvmkit did not model. The new
+  `llvmkit_ir::ConstantRangeList` ports
+  `llvm/include/llvm/IR/ConstantRangeList.h` — the ordering invariant
+  (`isOrderedRanges`), the checked constructor (`getConstantRangeList`), the
+  merging `insert`, and `print`. Note that the invariant rejects ranges that
+  merely *touch*: `initializes((0, 4), (4, 8))` is an error, because the
+  ordering test is `sle`. All eight of `LLParser::parseInitializesAttr`'s
+  diagnostics are reachable, including
+  `Invalid (unordered or overlapping) range list`. With this, **every
+  attribute LLVM 22.1.4 declares is accepted in every position it declares**
+  — the drift guard's `NOT_YET_MODELED` list is empty.
+
+- **Changed (behavioural): an integer literal now carries the width the token
+  needs, not the width its context wants.** Two consequences, both upstream's:
+  `s0x0F` is **−1**, because `LLLexer` truncates a `[us]0x` literal to its
+  active bits *before* the prefix decides the signedness (llvmkit read `+15`,
+  a wrong value rather than a missing error); and `i8 300` is now accepted as
+  `44`, because `convertValIDToValue` applies `extOrTrunc` and not a checked
+  widening (llvmkit refused it as an overflow). The token width is also what
+  makes `range`'s
+  `integer is too large for the bit width of specified type` askable at all,
+  so that diagnostic lands here rather than with the rest of `range`.
+
 - **Added: `captures(...)` in full.** llvmkit accepted only `captures(none)`
   and mapped it to `nocapture`; every other component was a hand-written
   refusal. `CaptureComponents` and `CaptureInfo` port

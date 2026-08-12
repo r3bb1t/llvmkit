@@ -50,6 +50,32 @@ fn unsigned_hex_i129_literal_round_trips() {
     );
 }
 
+/// An integer literal token carries the width the *token* needs, never the
+/// one its context wants, and two upstream behaviours follow from that.
+///
+/// `LLLexer::lexIdentifier`'s `[us]0x` tail builds the value at `4 * digits`
+/// bits and truncates it to its **active** bits before the `s` / `u` prefix
+/// decides the signedness — so `s0x0F` is a four-bit signed `0b1111`, which
+/// is −1, not 15. Reading it at the destination width instead gives `+15`
+/// with no diagnostic, which is a wrong value rather than a missing error.
+///
+/// `convertValIDToValue`'s `t_APSInt` arm then applies `extOrTrunc`, not a
+/// checked widening, so `i8 300` is `44` and is accepted. llvmkit used to
+/// build the literal straight at `i8` and refuse it as an overflow.
+///
+/// No upstream `.ll` pins either: `test/Assembler/invalid-hexint.ll` is the
+/// tree's only `[us]0x` fixture and it turns on a malformed token, which is
+/// blocked on the lexer's error-token layering. Anchored by symbol instead.
+#[test]
+fn integer_literals_carry_the_lexers_own_width() {
+    let text = parse_and_render(
+        "integer_literals_carry_the_lexers_own_width",
+        b"@n = global i64 s0x0F\n@w = global i8 300\n",
+    );
+    assert!(text.contains("@n = global i64 -1"), "{text}");
+    assert!(text.contains("@w = global i8 44"), "{text}");
+}
+
 /// Port of `LLLexer.cpp` signed decimal literals through `LLParser.cpp::parseValID`.
 #[test]
 fn negative_wide_decimal_literal_round_trips_as_signed_bits() {
