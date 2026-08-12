@@ -378,6 +378,7 @@ fn every_remaining_plain_enum_attribute_round_trips() {
     const FUNCTION_ATTRIBUTES: &[&str] = &[
         "builtin",
         "coro_elide_safe",
+        "disable_sanitizer_instrumentation",
         "coro_only_destroy_when_complete",
         "fn_ret_thunk_extern",
         "hybrid_patchable",
@@ -411,6 +412,7 @@ fn every_remaining_plain_enum_attribute_round_trips() {
         "speculative_load_hardening",
     ];
     const PARAMETER_ATTRIBUTES: &[&str] = &[
+        "allocalign",
         "allocptr",
         "dead_on_return",
         "dead_on_unwind",

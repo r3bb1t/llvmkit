@@ -5948,8 +5948,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // kinds; only this mapping — upstream's `tokenToAttribute` — was
             // missing them, so each parsed as "not an attribute" and ended
             // whatever list it appeared in.
+            Keyword::Allocalign => AttrKind::AllocAlign,
             Keyword::Allocptr => AttrKind::AllocatedPointer,
             Keyword::Builtin => AttrKind::Builtin,
+            Keyword::DisableSanitizerInstrumentation => AttrKind::DisableSanitizerInstrumentation,
             Keyword::CoroElideSafe => AttrKind::CoroElideSafe,
             Keyword::CoroOnlyDestroyWhenComplete => AttrKind::CoroDestroyOnlyWhenComplete,
             Keyword::DeadOnReturn => AttrKind::DeadOnReturn,

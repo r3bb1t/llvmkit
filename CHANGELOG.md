@@ -31,11 +31,16 @@ cut, entries accumulate under **Unreleased**.
   Fourteen new `AttrKind` variants come with them, named after their upstream
   `Attributes.td` defs.
 
-- **Fixed (test): the attribute drift guard read lines, not defs.** It exists
-  so a new upstream attribute fails CI, and it was blind wherever upstream
-  wraps a `def` across lines: two attributes were probed in no position at all
-  and one was invisible. Fixing it immediately surfaced
-  `speculative_load_hardening` as a genuine gap.
+- **Fixed (test): the attribute drift guard could not read its own source.**
+  It exists so a new upstream attribute fails CI, and its reader was wrong
+  twice over: it worked line by line, so it missed every `def` upstream wraps
+  across lines, and it required `def Name : Kind<…>` with spaces around the
+  colon, so it also missed the three written `def Name: Kind<…>`. Six
+  attributes were affected — three invisible, three probed in no position at
+  all, which passes vacuously. Fixing both surfaced four real gaps:
+  `speculative_load_hardening`, `disable_sanitizer_instrumentation`,
+  `allocalign` (which needed a new `AttrKind`), and `allockind`, which needs a
+  grammar and is listed as such.
 
 ### Constants must agree with the type asked for
 

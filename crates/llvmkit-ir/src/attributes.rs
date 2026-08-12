@@ -263,6 +263,7 @@ impl fmt::Display for MemoryEffects {
 #[non_exhaustive]
 pub enum AttrKind {
     // ---- Enum (flag) attributes ----
+    AllocAlign,
     AllocatedPointer,
     AlwaysInline,
     Builtin,
@@ -375,6 +376,7 @@ impl AttrKind {
         match self {
             // Enum / flag
             Self::AlwaysInline => "alwaysinline",
+            Self::AllocAlign => "allocalign",
             Self::AllocatedPointer => "allocptr",
             Self::Builtin => "builtin",
             Self::Cold => "cold",

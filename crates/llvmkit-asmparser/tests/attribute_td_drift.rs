@@ -35,7 +35,13 @@ const ATTRIBUTES_TD: &str = include_str!("../tablegen/llvm-22.1.4/include/llvm/I
 /// **grammar**, not just a keyword — every one takes an argument the parser
 /// has no production for yet, which is why they outlived the sweep that wired
 /// the other thirty-nine.
-const NOT_YET_MODELED: &[&str] = &["allocsize", "initializes", "preallocated", "vscale_range"];
+const NOT_YET_MODELED: &[&str] = &[
+    "allockind",
+    "allocsize",
+    "initializes",
+    "preallocated",
+    "vscale_range",
+];
 
 /// One attribute as `Attributes.td` declares it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -88,9 +94,15 @@ fn parse_attributes_td(src: &str) -> Vec<TdAttribute> {
         let Some(rest) = def.strip_prefix("def ") else {
             continue;
         };
-        let Some((_name, decl)) = rest.split_once(" : ") else {
+        // Split on the *first* colon, not on `" : "`. Upstream writes both
+        // `def Foo : Bar<…>` and `def Foo: Bar<…>`, and requiring the spaces
+        // dropped `hot`, `disable_sanitizer_instrumentation` and `allockind`
+        // on the floor. A def name is one word, so the first colon is always
+        // the separator.
+        let Some((_name, decl)) = rest.split_once(':') else {
             continue;
         };
+        let decl = decl.trim();
         let Some((kind, args)) = decl.split_once('<') else {
             continue;
         };
