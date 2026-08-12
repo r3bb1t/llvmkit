@@ -31,56 +31,11 @@ const ATTRIBUTES_TD: &str = include_str!("../tablegen/llvm-22.1.4/include/llvm/I
 /// deleting its line here, and a new upstream attribute fails this test until
 /// it is either implemented or consciously added.
 ///
-/// Kept as the spelled `.ll` keyword, sorted.
-const NOT_YET_MODELED: &[&str] = &[
-    "allocptr",
-    "allocsize",
-    "builtin",
-    "coro_elide_safe",
-    "coro_only_destroy_when_complete",
-    "dead_on_return",
-    "dead_on_unwind",
-    "fn_ret_thunk_extern",
-    "hybrid_patchable",
-    "initializes",
-    "jumptable",
-    "naked",
-    "nobuiltin",
-    "nocf_check",
-    "nodivergencesource",
-    "noext",
-    "noimplicitfloat",
-    "noprofile",
-    "noredzone",
-    "nosanitize_bounds",
-    "nosanitize_coverage",
-    "null_pointer_is_valid",
-    "optdebug",
-    "optforfuzzing",
-    "preallocated",
-    "presplitcoroutine",
-    "returns_twice",
-    "safestack",
-    "sanitize_alloc_token",
-    "sanitize_hwaddress",
-    "sanitize_memory",
-    "sanitize_memtag",
-    "sanitize_numerical_stability",
-    "sanitize_realtime",
-    "sanitize_realtime_blocking",
-    "sanitize_thread",
-    "sanitize_type",
-    "shadowcallstack",
-    "skipprofile",
-    // Surfaced by fixing the reader above: its `.td` def wraps across lines,
-    // so the guard had been reading it as declaring no position and skipping
-    // it. `AttrKind::SpeculativeLoadHardening` and the lexer keyword both
-    // exist; only `attr_kind_for_keyword` never learned it.
-    "speculative_load_hardening",
-    "swiftasync",
-    "swifterror",
-    "vscale_range",
-];
+/// Kept as the spelled `.ll` keyword, sorted. Each of the four needs a
+/// **grammar**, not just a keyword — every one takes an argument the parser
+/// has no production for yet, which is why they outlived the sweep that wired
+/// the other thirty-nine.
+const NOT_YET_MODELED: &[&str] = &["allocsize", "initializes", "preallocated", "vscale_range"];
 
 /// One attribute as `Attributes.td` declares it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

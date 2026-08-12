@@ -19,6 +19,24 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Attributes
+
+- **Added: thirty-nine attributes the parser did not accept.** Every remaining
+  plain `EnumAttr` in `Attributes.td` — `naked`, `nobuiltin`, `returns_twice`,
+  the eight `sanitize_*` kinds, the coroutine and hot-patch flags,
+  `swifterror`, `noext`, `dead_on_return`, and the rest. The lexer already
+  tokenised all of them and `llvmkit-ir` already had most of the kinds; the
+  gap was `attr_kind_for_keyword`, upstream's `tokenToAttribute`, so each one
+  parsed as "not an attribute" and quietly ended whatever list it appeared in.
+  Fourteen new `AttrKind` variants come with them, named after their upstream
+  `Attributes.td` defs.
+
+- **Fixed (test): the attribute drift guard read lines, not defs.** It exists
+  so a new upstream attribute fails CI, and it was blind wherever upstream
+  wraps a `def` across lines: two attributes were probed in no position at all
+  and one was invisible. Fixing it immediately surfaced
+  `speculative_load_hardening` as a genuine gap.
+
 ### Constants must agree with the type asked for
 
 - **Breaking (parser): `parse_constant_value` accepts only the `ValID` kinds

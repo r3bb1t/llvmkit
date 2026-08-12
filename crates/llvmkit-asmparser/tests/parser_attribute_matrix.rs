@@ -355,11 +355,82 @@ entry:
   ret void
 }
 "#;
-    // `dead_on_unwind` may or may not be modeled; strip to the M0 target set.
-    let src = src.replace("dead_on_unwind ", "");
-    let m = parse_dynamic(src.as_str()).expect("byval/sret C shape parses");
+    let m = parse_dynamic(src).expect("byval/sret C shape parses");
     let printed = format!("{m}");
     assert!(printed.contains("byval(%struct.Point)"), "{printed}");
     assert!(printed.contains("sret(%struct.Point)"), "{printed}");
+    assert!(printed.contains("dead_on_unwind"), "{printed}");
     parse_dynamic(printed.as_str()).expect("round-trip");
+}
+
+/// The thirty-nine plain enum attributes wired in one sweep: every remaining
+/// `EnumAttr` in `Attributes.td` that the lexer already tokenised and
+/// `attr_kind_for_keyword` — upstream's `tokenToAttribute` — did not know.
+/// Each is probed in the position its `.td` def declares.
+///
+/// `test/Bitcode/attributes.ll` is the upstream fixture that exercises these;
+/// its RUN line is `llvm-as | llvm-dis | FileCheck`, a pure assembler
+/// round-trip, which is the same three assertions `parse_print_reparse`
+/// makes. It lives under `test/Bitcode` only because that is where LLVM keeps
+/// its full-attribute-surface round-trip.
+#[test]
+fn every_remaining_plain_enum_attribute_round_trips() {
+    const FUNCTION_ATTRIBUTES: &[&str] = &[
+        "builtin",
+        "coro_elide_safe",
+        "coro_only_destroy_when_complete",
+        "fn_ret_thunk_extern",
+        "hybrid_patchable",
+        "jumptable",
+        "naked",
+        "nobuiltin",
+        "nocf_check",
+        "nodivergencesource",
+        "noimplicitfloat",
+        "noprofile",
+        "noredzone",
+        "nosanitize_bounds",
+        "nosanitize_coverage",
+        "null_pointer_is_valid",
+        "optdebug",
+        "optforfuzzing",
+        "presplitcoroutine",
+        "returns_twice",
+        "safestack",
+        "sanitize_alloc_token",
+        "sanitize_hwaddress",
+        "sanitize_memory",
+        "sanitize_memtag",
+        "sanitize_numerical_stability",
+        "sanitize_realtime",
+        "sanitize_realtime_blocking",
+        "sanitize_thread",
+        "sanitize_type",
+        "shadowcallstack",
+        "skipprofile",
+        "speculative_load_hardening",
+    ];
+    const PARAMETER_ATTRIBUTES: &[&str] = &[
+        "allocptr",
+        "dead_on_return",
+        "dead_on_unwind",
+        "noext",
+        "swiftasync",
+        "swifterror",
+    ];
+
+    for keyword in FUNCTION_ATTRIBUTES {
+        parse_print_reparse(
+            keyword,
+            &format!("define void @f() #0 {{ ret void }}\nattributes #0 = {{ {keyword} }}\n"),
+            keyword,
+        );
+    }
+    for keyword in PARAMETER_ATTRIBUTES {
+        parse_print_reparse(
+            keyword,
+            &format!("define void @f(ptr {keyword} %p) {{ ret void }}\n"),
+            keyword,
+        );
+    }
 }
