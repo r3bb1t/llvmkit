@@ -575,6 +575,64 @@ fn constant_expr_gep_with_no_operands_reports_the_missing_base() {
     );
 }
 
+/// Every split of `test/Assembler/constant-splat-diagnostics.ll`, each
+/// asserting its own `FileCheck` line. Four pin `convertValIDToValue`'s
+/// `t_ConstantSplat` arm; the fifth pins the instruction dispatch, because
+/// `splat` is a constant form and never an opcode.
+#[test]
+fn constant_splat_diagnostics_match_upstream_text() {
+    const SPLITS: &[(&str, &[u8], &str)] = &[
+        (
+            "not_a_scalar",
+            include_bytes!("fixtures/upstream/constant-splat-diagnostics/not_a_sclar.ll"),
+            "constant expression type mismatch: got type '<1 x i32>' but expected 'i32'",
+        ),
+        (
+            "not_a_vector",
+            include_bytes!("fixtures/upstream/constant-splat-diagnostics/not_a_vector.ll"),
+            "vector constant must have vector type",
+        ),
+        (
+            "wrong_explicit_type",
+            include_bytes!("fixtures/upstream/constant-splat-diagnostics/wrong_explicit_type.ll"),
+            "constant expression type mismatch: got type 'i8' but expected 'i32'",
+        ),
+        (
+            "wrong_implicit_type",
+            include_bytes!("fixtures/upstream/constant-splat-diagnostics/wrong_implicit_type.ll"),
+            "constant expression type mismatch: got type 'i8' but expected 'i32'",
+        ),
+        (
+            "not_a_constant",
+            include_bytes!("fixtures/upstream/constant-splat-diagnostics/not_a_constant.ll"),
+            "expected instruction opcode",
+        ),
+    ];
+
+    for (name, fixture, expected) in SPLITS {
+        let module = Module::dynamic(*name);
+        let err = Parser::new(fixture, &module)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("split is rejected");
+        assert_eq!(err.to_string(), *expected, "split {name}");
+    }
+}
+
+/// `c"..."` is type-free upstream: `ConstantDataArray::getString` always
+/// builds `[N x i8]`, and agreement with the demanded type is
+/// `convertValIDToValue`'s job. Deriving the array type from the *expected*
+/// type instead accepted this silently. No upstream `.ll` pins it, so the
+/// guard is anchored by symbol.
+#[test]
+fn a_c_string_is_always_an_i8_array() {
+    assert_parse_error(
+        b"@g = global [4 x i32] c\"abcd\"
+",
+        "constant expression type mismatch: got type '[4 x i8]' but expected '[4 x i32]'",
+    );
+}
+
 /// `LLParser::parseValID`'s `kw_dso_local_equivalent` arm rejects a referent
 /// whose value type is not a function type. Upstream's only
 /// `dso_local_equivalent` fixture is the positive round-trip

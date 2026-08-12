@@ -21,6 +21,19 @@ cut, entries accumulate under **Unreleased**.
 
 ### Constants must agree with the type asked for
 
+- **Fixed (parser): `c"..."` is always an `[N x i8]` array.** llvmkit derived
+  the array type from the *expected* type, so `@g = global [4 x i32] c"abcd"`
+  was silently accepted and built a `[4 x i32]`. Upstream's
+  `ConstantDataArray::getString` always builds `[N x i8]` and leaves agreement
+  to `convertValIDToValue`, which now reports
+  `constant expression type mismatch: got type '[4 x i8]' but expected
+  '[4 x i32]'`.
+
+- **Fixed (parser): the two `splat` conversion diagnostics.**
+  `vector constant must have vector type` and
+  `constant expression type mismatch: got type 'A' but expected 'B'` replace a
+  single `expected vector type for splat constant` covering both.
+
 - **Fixed (parser): `expected value token`** replaces `expected constant
   initializer` in `LLParser::parseValID`'s default arm, and
   `expected a function, alias to function, or ifunc in dso_local_equivalent`

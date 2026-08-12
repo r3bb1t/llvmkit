@@ -4270,35 +4270,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
         if let Some(ty) = expected_ty {
             match ty.into_type_enum() {
-                AnyTypeEnum::Array(array_ty) if matches!(self.peek(), Token::Kw(Keyword::C)) => {
-                    self.bump()?;
-                    let bytes: Vec<u8> = match self.peek() {
-                        Token::StringConstant(b) => b.as_ref().to_vec(),
-                        _ => return Err(self.expected("string constant after 'c'")),
-                    };
-                    self.bump()?;
-                    let AnyTypeEnum::Int(elem_ty) = array_ty.element().into_type_enum() else {
-                        return Err(self.expected("i8 array type for c\"...\" constant"));
-                    };
-                    let mut values = Vec::with_capacity(bytes.len());
-                    for b in &bytes {
-                        let c = elem_ty.const_int_checked(u64::from(*b)).map_err(|e| {
-                            ParseError::Expected {
-                                expected: format!("i8 array element for c\"...\" constant: {e}")
-                                    .into(),
-                                loc: DiagLoc::span(self.loc()),
-                            }
-                        })?;
-                        values.push(c.as_constant());
-                    }
-                    let c = array_ty
-                        .const_array(values)
-                        .map_err(|e| ParseError::Expected {
-                            expected: format!("valid c\"...\" constant: {e}").into(),
-                            loc: DiagLoc::span(self.loc()),
-                        })?;
-                    return Ok(ValId::Constant(c.as_constant()));
-                }
                 AnyTypeEnum::Array(array_ty) if matches!(self.peek(), Token::LSquare) => {
                     self.expect_punct(PunctKind::LSquare, "'[' to open array constant")?;
                     let first_elt_loc = self.loc();
@@ -4504,6 +4475,29 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     _ => Err(self.message("invalid type for none constant")),
                 }
             }
+            Token::Kw(Keyword::C) => {
+                // `ConstantDataArray::getString` always builds `[N x i8]`;
+                // agreement with the demanded type is `convertValIDToValue`'s
+                // job. Deriving the array type from the *expected* type
+                // instead silently accepted `[4 x i32] c"abcd"`.
+                self.bump()?;
+                let bytes: Vec<u8> = match self.peek() {
+                    Token::StringConstant(b) => b.as_ref().to_vec(),
+                    _ => return Err(self.expected("string")),
+                };
+                self.bump()?;
+                let i8_ty = self.module.i8_type();
+                let values: Vec<_> = bytes
+                    .iter()
+                    .map(|byte| i8_ty.const_int(*byte).as_constant())
+                    .collect();
+                let c = self
+                    .module
+                    .array_type(i8_ty, u64::try_from(values.len()).unwrap_or(u64::MAX))
+                    .const_array(values)
+                    .map_err(|e| self.builder_err("c\"...\" constant", e))?;
+                Ok(ValId::Constant(c.as_constant()))
+            }
             Token::Kw(Keyword::Blockaddress) => {
                 let ty =
                     expected_ty.ok_or_else(|| self.expected("pointer type for blockaddress"))?;
@@ -4551,10 +4545,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         scalar: llvmkit_ir::Constant<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         let AnyTypeEnum::Vector(vec_ty) = ty.into_type_enum() else {
-            return Err(self.expected("vector type for splat constant"));
+            return Err(self.message("vector constant must have vector type"));
         };
-        if scalar.ty() != vec_ty.element() {
-            return Err(self.expected("vector type for splat constant"));
+        // Upstream compares against `Ty->getScalarType()`, which for a vector
+        // is its element type.
+        let scalar_ty = scalar.ty();
+        let element_ty = vec_ty.element();
+        if scalar_ty != element_ty {
+            return Err(ParseError::Message {
+                message: format!(
+                    "constant expression type mismatch: got type '{scalar_ty}' but expected '{element_ty}'"
+                )
+                .into(),
+                loc: DiagLoc::span(self.loc()),
+            });
         }
         let len = usize::try_from(vec_ty.min_len()).map_err(|_| ParseError::Expected {
             expected: "vector type for splat constant".into(),
