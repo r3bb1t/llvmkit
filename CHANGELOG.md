@@ -21,6 +21,17 @@ cut, entries accumulate under **Unreleased**.
 
 ### Attributes
 
+- **Added: `captures(...)` in full.** llvmkit accepted only `captures(none)`
+  and mapped it to `nocapture`; every other component was a hand-written
+  refusal. `CaptureComponents` and `CaptureInfo` port
+  `llvm/Support/ModRef.h`, including the fact that these are a **lattice, not
+  four flags** — `ADDRESS` literally contains `ADDRESS_IS_NULL`'s bit, so
+  "captures the address but not its nullness" is unrepresentable rather than
+  merely invalid. The `ret:` sublocation parses at any position, once, and
+  swallows every later component; a missing `ret:` means the two buckets are
+  *equal*, not that the return captures nothing. `captures(none)` now prints
+  as itself instead of `nocapture`.
+
 - **Added: an attribute written in the wrong position is now rejected.**
   `AttrKind::positions` ports the `[FnAttr]` / `[ParamAttr]` / `[RetAttr]`
   lists from `Attributes.td`, and `can_use_as_fn_attr` and its two siblings

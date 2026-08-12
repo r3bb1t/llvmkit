@@ -6234,16 +6234,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     out.add(index, attr);
                 }
                 Token::Kw(Keyword::Captures) => {
-                    self.bump()?;
-                    self.expect_punct(PunctKind::LParen, "'(' in captures attribute")?;
-                    if !self.eat_keyword(Keyword::None)? {
-                        return Err(self.expected(
-                            "captures components other than `none` are not supported yet",
-                        ));
-                    }
-                    self.expect_punct(PunctKind::RParen, "')' after captures(none)")?;
-                    let attr = Attribute::<B>::enum_attr(AttrKind::NoCapture)
-                        .ok_or_else(|| self.expected("attribute"))?;
+                    let attr = self.parse_captures_attribute()?;
                     self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
@@ -6344,6 +6335,97 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else {
             Err(self.message_at(loc, message))
         }
+    }
+
+    /// `captures(address, ret: provenance)`. Ports `LLParser::parseCapturesAttr`.
+    ///
+    /// The loop shape is contractual, not incidental:
+    ///
+    /// - `ret:` may appear at **any** position, not only first, and at most
+    ///   once. Once seen, every later component accumulates into the return
+    ///   bucket — there is no way back.
+    /// - The "no `none` beside a component" guard is per *bucket*: it resets
+    ///   at `ret:`, so `captures(address, ret: none)` is legal.
+    /// - Components accumulate with `|=`, so `captures(address, address)`
+    ///   collapses silently.
+    /// - A missing `ret:` means the return bucket **equals** the other bucket
+    ///   (`Ret.value_or(Other)`), not that it is empty.
+    /// - `captures()` is rejected: the first iteration finds `)` where a
+    ///   component keyword must be, so it is the "expected one of …" message.
+    fn parse_captures_attribute(&mut self) -> ParseResult<Attribute<'ctx, B>> {
+        // `ret:` would otherwise lex as a *label*. Upstream sets
+        // `setIgnoreColonInIdentifiers(true)` before the first token inside
+        // the attribute and clears it with a `scope_exit`; the split here is
+        // that reset, so an early `?` cannot leave the flag on. Same shape as
+        // `parse_memory_attribute`.
+        self.lex.ignore_colon_in_idents = true;
+        let result = self.parse_captures_attribute_body();
+        self.lex.ignore_colon_in_idents = false;
+        result
+    }
+
+    fn parse_captures_attribute_body(&mut self) -> ParseResult<Attribute<'ctx, B>> {
+        self.expect_keyword(Keyword::Captures, "'captures'")?;
+        self.expect_punct(PunctKind::LParen, "'('")?;
+        let mut other = llvmkit_ir::CaptureComponents::NONE;
+        let mut ret: Option<llvmkit_ir::CaptureComponents> = None;
+        let mut seen_component = false;
+        loop {
+            // `ret` is the return *opcode* token, here and upstream: LLVM's
+            // `INSTKEYWORD(ret, Ret)` is what `lltok::kw_ret` names, and
+            // `parseCapturesAttr` eats that same token.
+            if matches!(self.peek(), Token::Instruction(Opcode::Ret)) {
+                self.bump()?;
+                // The colon is consumed *before* the duplicate check, so the
+                // diagnostic lands on the token after it.
+                self.expect_punct(PunctKind::Colon, "':'")?;
+                if ret.is_some() {
+                    return Err(self.message("duplicate 'ret' location"));
+                }
+                ret = Some(llvmkit_ir::CaptureComponents::NONE);
+                seen_component = false;
+            }
+            let current = match ret.as_mut() {
+                Some(ret) => ret,
+                None => &mut other,
+            };
+            if self.eat_keyword(Keyword::None)? {
+                if seen_component {
+                    return Err(self.message("cannot use 'none' with other component"));
+                }
+                *current = llvmkit_ir::CaptureComponents::NONE;
+            } else {
+                if seen_component && current.captures_nothing() {
+                    return Err(self.message("cannot use 'none' with other component"));
+                }
+                let component = match self.peek() {
+                    Token::Kw(Keyword::AddressIsNull) => {
+                        llvmkit_ir::CaptureComponents::ADDRESS_IS_NULL
+                    }
+                    Token::Kw(Keyword::Address) => llvmkit_ir::CaptureComponents::ADDRESS,
+                    Token::Kw(Keyword::Provenance) => llvmkit_ir::CaptureComponents::PROVENANCE,
+                    Token::Kw(Keyword::ReadProvenance) => {
+                        llvmkit_ir::CaptureComponents::READ_PROVENANCE
+                    }
+                    _ => {
+                        return Err(self.message(
+                            "expected one of 'none', 'address', 'address_is_null', 'provenance' or 'read_provenance'",
+                        ));
+                    }
+                };
+                self.bump()?;
+                *current |= component;
+            }
+            seen_component = true;
+            if self.eat_punct(PunctKind::RParen)? {
+                break;
+            }
+            self.expect_punct(PunctKind::Comma, "',' or ')'")?;
+        }
+        Ok(Attribute::Captures(llvmkit_ir::CaptureInfo {
+            other,
+            ret: ret.unwrap_or(other),
+        }))
     }
 
     /// `allocsize(N)` / `allocsize(N, M)`. Ports

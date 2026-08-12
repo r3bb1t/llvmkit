@@ -128,24 +128,21 @@ fn parameter_attributes_previously_missing() {
     }
 }
 
+/// `captures(none)` prints back as itself, not as `nocapture`.
+///
+/// This test used to assert the opposite half too — that any component other
+/// than `none` must *fail* to parse — which pinned llvmkit's limitation
+/// rather than upstream's behaviour. The full grammar is now modelled, so the
+/// full component set is covered by `captures_components_round_trip` and the
+/// half that asserted a gap is gone.
 #[test]
-fn captures_none_maps_to_the_modeled_form() {
-    // `captures(none)` is LLVM 21+'s spelling of the fact llvmkit models as
-    // `nocapture`; accepting it must not silently drop the fact.
+fn captures_none_round_trips_as_itself() {
     let m = parse_dynamic("define void @f(ptr captures(none) %p) { ret void }\n")
         .expect("captures(none)");
     let printed = format!("{m}");
-    assert!(
-        printed.contains("nocapture") || printed.contains("captures(none)"),
-        "capture fact dropped: {printed}"
-    );
+    assert!(printed.contains("captures(none)"), "{printed}");
+    assert!(!printed.contains("nocapture"), "{printed}");
     parse_dynamic(printed.as_str()).expect("round-trip");
-
-    // Other components are a pinpointed error, never a silent drop.
-    let Err(err) = parse_dynamic("define void @f(ptr captures(address) %p) { ret void }\n") else {
-        panic!("unsupported captures component must not parse");
-    };
-    assert!(format!("{err}").contains("captures"), "{err}");
 }
 
 #[test]
@@ -361,6 +358,96 @@ entry:
     assert!(printed.contains("sret(%struct.Point)"), "{printed}");
     assert!(printed.contains("dead_on_unwind"), "{printed}");
     parse_dynamic(printed.as_str()).expect("round-trip");
+}
+
+/// `captures(...)` in full: the `CaptureComponents` lattice, the `ret:`
+/// sublocation, and `operator<<(raw_ostream &, CaptureInfo)`'s printing —
+/// which is what `Attribute::getAsString` emits for this attribute, parens
+/// and keyword included.
+///
+/// The printed forms are the ones `test/Assembler/captures.ll` pins. Note
+/// `captures(address, ret: none)`: a `ret:` bucket that differs from the
+/// other bucket is always printed, even when it is empty, while a missing
+/// `ret:` means the two buckets are *equal*, not that the return captures
+/// nothing.
+#[test]
+fn captures_components_round_trip() {
+    for (spelled, printed) in [
+        ("captures(none)", "captures(none)"),
+        ("captures(address)", "captures(address)"),
+        ("captures(address_is_null)", "captures(address_is_null)"),
+        (
+            "captures(address, provenance)",
+            "captures(address, provenance)",
+        ),
+        (
+            "captures(address, read_provenance)",
+            "captures(address, read_provenance)",
+        ),
+        // `ret:` may appear first, or later, and swallows everything after it.
+        (
+            "captures(ret: address, provenance)",
+            "captures(ret: address, provenance)",
+        ),
+        (
+            "captures(address_is_null, ret: address, provenance)",
+            "captures(address_is_null, ret: address, provenance)",
+        ),
+        // The `none` guard is per bucket, so this is legal.
+        (
+            "captures(address, ret: none)",
+            "captures(address, ret: none)",
+        ),
+        // Components accumulate with `|=`, so a repeat collapses.
+        ("captures(address, address)", "captures(address)"),
+        // `address` subsumes `address_is_null` — the lattice, not four flags.
+        ("captures(address_is_null, address)", "captures(address)"),
+    ] {
+        parse_print_reparse(
+            spelled,
+            &format!("define void @f(ptr {spelled} %p) {{ ret void }}\n"),
+            printed,
+        );
+    }
+}
+
+/// `parseCapturesAttr`'s own diagnostics.
+#[test]
+fn captures_diagnostics_match_upstream_text() {
+    fn parse_err(spelled: &str) -> String {
+        parse_dynamic(&format!(
+            "define void @f(ptr {spelled} %p) {{ ret void }}\n"
+        ))
+        .expect_err("captures attribute is rejected")
+        .to_string()
+    }
+
+    assert_eq!(
+        parse_err("captures(ret: address, ret: provenance)"),
+        "duplicate 'ret' location"
+    );
+    assert_eq!(
+        parse_err("captures(address, none)"),
+        "cannot use 'none' with other component"
+    );
+    assert_eq!(
+        parse_err("captures(none, address)"),
+        "cannot use 'none' with other component"
+    );
+    // `captures(bogus)` would pin the same message, but a word matching no
+    // keyword never reaches the parser: llvmkit's lexer raises
+    // `unknown keyword 'bogus'` where upstream returns a silent error token.
+    // Blocked on the same lexer re-layering as three splits of
+    // `memory-attribute-errors.ll`. `captures()` reaches the arm instead,
+    // because `)` *is* a token the parser sees.
+    //
+    // `captures()` is not an empty set: the loop demands a component first.
+    assert_eq!(
+        parse_err("captures()"),
+        "expected one of 'none', 'address', 'address_is_null', 'provenance' or 'read_provenance'"
+    );
+    assert_eq!(parse_err("captures(address"), "expected ',' or ')'");
+    assert_eq!(parse_err("captures(ret address)"), "expected ':'");
 }
 
 /// The three position diagnostics, from `Attribute::canUseAsFnAttr` and its

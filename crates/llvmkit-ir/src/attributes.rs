@@ -350,6 +350,7 @@ pub enum AttrKind {
     // ---- Integer-valued attributes ----
     Alignment,
     AllocKind,
+    Captures,
     AllocSize,
     Dereferenceable,
     DereferenceableOrNull,
@@ -420,7 +421,8 @@ impl AttrKind {
             Self::NoFree | Self::Preallocated => at(true, true, false),
 
             // `[ParamAttr]`
-            Self::AllocAlign
+            Self::Captures
+            | Self::AllocAlign
             | Self::AllocatedPointer
             | Self::ByRef
             | Self::ByVal
@@ -562,6 +564,7 @@ impl AttrKind {
             // Integer
             Self::Alignment => "align",
             Self::AllocKind => "allockind",
+            Self::Captures => "captures",
             Self::AllocSize => "allocsize",
             Self::Dereferenceable => "dereferenceable",
             Self::DereferenceableOrNull => "dereferenceable_or_null",
@@ -795,9 +798,230 @@ pub enum Attribute<'ctx, B: ModuleBrand> {
     },
     /// `allockind("alloc,zeroed")` — what an allocator function does.
     AllocKind(AllocFnKind),
+    /// `captures(address, ret: provenance)` — which components of a pointer
+    /// parameter a call may capture.
+    Captures(CaptureInfo),
     /// Free-form key=value string attribute. Used for target-dependent
     /// attributes (`"target-features"`, `"frame-pointer"`, ...).
     String { key: String, value: String },
+}
+
+/// Which components of a pointer a call may capture. Mirrors
+/// `enum class CaptureComponents` in `llvm/include/llvm/Support/ModRef.h`.
+///
+/// This is a **lattice, not four independent flags**: `ADDRESS` literally
+/// contains `ADDRESS_IS_NULL`'s bit, and `PROVENANCE` contains
+/// `READ_PROVENANCE`'s. Spelling it as a masked newtype rather than four
+/// bools is what makes the invariant-violating states unrepresentable —
+/// "captures the address but not whether it is null" cannot be written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct CaptureComponents(u8);
+
+impl CaptureComponents {
+    /// Captures nothing.
+    pub const NONE: Self = Self(0);
+    /// Captures only whether the address is null.
+    pub const ADDRESS_IS_NULL: Self = Self(1 << 0);
+    /// Captures the address — which subsumes capturing its nullness.
+    pub const ADDRESS: Self = Self((1 << 1) | 1);
+    /// Captures provenance for reads only.
+    pub const READ_PROVENANCE: Self = Self(1 << 2);
+    /// Captures full provenance — which subsumes read provenance.
+    pub const PROVENANCE: Self = Self((1 << 3) | (1 << 2));
+    /// Captures everything.
+    pub const ALL: Self = Self(0b1111);
+
+    /// Mirrors `capturesNothing`.
+    #[must_use]
+    pub const fn captures_nothing(self) -> bool {
+        self.0 == 0
+    }
+    /// Mirrors `capturesAnything`.
+    #[must_use]
+    pub const fn captures_anything(self) -> bool {
+        self.0 != 0
+    }
+    /// Mirrors `capturesAddressIsNullOnly`.
+    #[must_use]
+    pub const fn captures_address_is_null_only(self) -> bool {
+        self.0 & Self::ADDRESS.0 == Self::ADDRESS_IS_NULL.0
+    }
+    /// Mirrors `capturesAddress`.
+    #[must_use]
+    pub const fn captures_address(self) -> bool {
+        self.0 & Self::ADDRESS.0 != 0
+    }
+    /// Mirrors `capturesReadProvenanceOnly`.
+    #[must_use]
+    pub const fn captures_read_provenance_only(self) -> bool {
+        self.0 & Self::PROVENANCE.0 == Self::READ_PROVENANCE.0
+    }
+    /// Mirrors `capturesFullProvenance`.
+    #[must_use]
+    pub const fn captures_full_provenance(self) -> bool {
+        self.0 & Self::PROVENANCE.0 == Self::PROVENANCE.0
+    }
+    /// Mirrors `capturesAnyProvenance`.
+    #[must_use]
+    pub const fn captures_any_provenance(self) -> bool {
+        self.0 & Self::PROVENANCE.0 != 0
+    }
+    /// Mirrors `capturesAll`.
+    #[must_use]
+    pub const fn captures_all(self) -> bool {
+        self.0 == Self::ALL.0
+    }
+
+    /// The component one `captures` word names.
+    #[must_use]
+    pub fn from_keyword(word: &str) -> Option<Self> {
+        match word {
+            "none" => Some(Self::NONE),
+            "address_is_null" => Some(Self::ADDRESS_IS_NULL),
+            "address" => Some(Self::ADDRESS),
+            "read_provenance" => Some(Self::READ_PROVENANCE),
+            "provenance" => Some(Self::PROVENANCE),
+            _ => None,
+        }
+    }
+}
+
+impl core::ops::BitOr for CaptureComponents {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for CaptureComponents {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl fmt::Display for CaptureComponents {
+    /// Mirrors `operator<<(raw_ostream &, CaptureComponents)`.
+    ///
+    /// The two provenance tests are **not** `else if` in upstream, and the
+    /// separator is `", "`. A value of `0b1000` — reachable only from a raw
+    /// integer payload, never from the parser — prints as the empty string,
+    /// because `capturesNothing` is false but neither provenance predicate
+    /// fires. That is upstream's behaviour and is left alone.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.captures_nothing() {
+            return f.write_str("none");
+        }
+        let mut first = true;
+        let mut sep = |f: &mut fmt::Formatter<'_>| -> fmt::Result {
+            if !first {
+                f.write_str(", ")?;
+            }
+            first = false;
+            Ok(())
+        };
+        if self.captures_address_is_null_only() {
+            sep(f)?;
+            f.write_str("address_is_null")?;
+        } else if self.captures_address() {
+            sep(f)?;
+            f.write_str("address")?;
+        }
+        if self.captures_read_provenance_only() {
+            sep(f)?;
+            f.write_str("read_provenance")?;
+        }
+        if self.captures_full_provenance() {
+            sep(f)?;
+            f.write_str("provenance")?;
+        }
+        Ok(())
+    }
+}
+
+/// What a call captures, split into the return value and everything else.
+/// Mirrors `class CaptureInfo` in `llvm/include/llvm/Support/ModRef.h`.
+///
+/// Named fields rather than upstream's positional `(Other, Ret)` constructor,
+/// which is easy to transpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CaptureInfo {
+    /// What is captured other than through the return value.
+    pub other: CaptureComponents,
+    /// What is captured through the return value.
+    pub ret: CaptureComponents,
+}
+
+impl CaptureInfo {
+    /// Captures nothing at all. Mirrors `CaptureInfo::none`.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            other: CaptureComponents::NONE,
+            ret: CaptureComponents::NONE,
+        }
+    }
+
+    /// Captures everything. Mirrors `CaptureInfo::all`.
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            other: CaptureComponents::ALL,
+            ret: CaptureComponents::ALL,
+        }
+    }
+
+    /// Captures only through the return value. Mirrors `CaptureInfo::retOnly`.
+    #[must_use]
+    pub const fn ret_only(ret: CaptureComponents) -> Self {
+        Self {
+            other: CaptureComponents::NONE,
+            ret,
+        }
+    }
+
+    /// Everything captured either way. Upstream spells this as an *implicit*
+    /// conversion to `CaptureComponents`; here it is explicit.
+    #[must_use]
+    pub fn union_components(self) -> CaptureComponents {
+        self.other | self.ret
+    }
+
+    /// The attribute payload encoding. Mirrors `CaptureInfo::toIntValue`.
+    #[must_use]
+    pub const fn to_int_value(self) -> u64 {
+        ((self.other.0 as u64) << 4) | (self.ret.0 as u64)
+    }
+
+    /// Mirrors `CaptureInfo::createFromIntValue`.
+    #[must_use]
+    pub const fn from_int_value(value: u64) -> Self {
+        Self {
+            other: CaptureComponents(((value >> 4) & 0xf) as u8),
+            ret: CaptureComponents((value & 0xf) as u8),
+        }
+    }
+}
+
+impl fmt::Display for CaptureInfo {
+    /// Mirrors `operator<<(raw_ostream &, CaptureInfo)`, which is also what
+    /// `Attribute::getAsString` emits for this attribute — the `captures`
+    /// keyword and its parens come from here, not from the attribute-name
+    /// table.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("captures(")?;
+        let mut first = true;
+        if self.other.captures_anything() || self.other == self.ret {
+            write!(f, "{}", self.other)?;
+            first = false;
+        }
+        if self.other != self.ret {
+            if !first {
+                f.write_str(", ")?;
+            }
+            write!(f, "ret: {}", self.ret)?;
+        }
+        f.write_str(")")
+    }
 }
 
 /// What an allocator function does, as `allockind("…")` spells it. Mirrors
@@ -975,6 +1199,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Attribute<'ctx, B> {
             Self::AllocSize { .. } => Some(AttrKind::AllocSize),
             Self::VScaleRange { .. } => Some(AttrKind::VscaleRange),
             Self::AllocKind(_) => Some(AttrKind::AllocKind),
+            Self::Captures(_) => Some(AttrKind::Captures),
             Self::String { .. } => None,
         }
     }
@@ -1009,6 +1234,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> fmt::Display for Attribute<'ctx, B> {
                 write!(f, "vscale_range({min},{})", max.unwrap_or(0))
             }
             Self::AllocKind(kind) => write!(f, "allockind(\"{kind}\")"),
+            Self::Captures(info) => write!(f, "{info}"),
             Self::Memory(effects) => write!(f, "{effects}"),
             Self::NoFpClass(mask) => write!(f, "nofpclass({})", FpClassMaskNames(*mask)),
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
@@ -1316,6 +1542,7 @@ pub(super) enum AttributeStored {
         max: Option<u32>,
     },
     AllocKind(AllocFnKind),
+    Captures(CaptureInfo),
     String {
         key: String,
         value: String,
@@ -1345,6 +1572,7 @@ impl AttributeStored {
             },
             Attribute::VScaleRange { min, max } => Self::VScaleRange { min, max },
             Attribute::AllocKind(kind) => Self::AllocKind(kind),
+            Attribute::Captures(info) => Self::Captures(info),
             Attribute::String { key, value } => Self::String { key, value },
         }
     }
@@ -1377,6 +1605,7 @@ impl fmt::Display for AttributeStored {
                 write!(f, "vscale_range({min},{})", max.unwrap_or(0))
             }
             Self::AllocKind(kind) => write!(f, "allockind(\"{kind}\")"),
+            Self::Captures(info) => write!(f, "{info}"),
             Self::String { key, value } if value.is_empty() => write!(f, "\"{key}\""),
             Self::String { key, value } => write!(f, "\"{key}\"=\"{value}\""),
         }
