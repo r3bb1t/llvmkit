@@ -415,11 +415,9 @@ fn captures_components_round_trip() {
 #[test]
 fn captures_diagnostics_match_upstream_text() {
     fn parse_err(spelled: &str) -> String {
-        parse_dynamic(&format!(
-            "define void @f(ptr {spelled} %p) {{ ret void }}\n"
-        ))
-        .expect_err("captures attribute is rejected")
-        .to_string()
+        parse_dynamic(format!("define void @f(ptr {spelled} %p) {{ ret void }}\n"))
+            .expect_err("captures attribute is rejected")
+            .to_string()
     }
 
     assert_eq!(
