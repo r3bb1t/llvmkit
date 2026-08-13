@@ -21,6 +21,14 @@ cut, entries accumulate under **Unreleased**.
 
 ### Calling conventions
 
+- **Fixed: `expected metadata after comma`.** llvmkit said
+  `expected metadata attachment` at `parseInstructionMetadata`'s only
+  diagnostic. Found by porting
+  `test/Assembler/alloca-addrspace-parse-error-{0,1}.ll`, which also pin
+  something easy to miss: a misordered `alloca i32, addrspace(1), align 4`
+  reports through *that* message, not a dedicated one, because the loop
+  demands metadata once a comma has been eaten.
+
 - **Changed: the optional-parser diagnostics carry upstream's text.**
   `parseScope`'s three messages open with a capital `E` —
   `Expected '(' in syncscope`, `Expected synchronization scope name`,

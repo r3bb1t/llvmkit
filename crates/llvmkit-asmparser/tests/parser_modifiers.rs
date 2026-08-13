@@ -452,24 +452,52 @@ fn comdat_may_be_used_before_it_is_defined() {
     assert!(text.contains("comdat($c)"), "{text}");
 }
 
-/// Mirrors the `ForwardRefComdats` guard at the top of
+/// Ports `test/Assembler/invalid-comdat.ll` verbatim, asserting its CHECK
+/// line. The rule is the `ForwardRefComdats` guard at the top of
 /// `LLParser::validateEndOfModule`: a comdat referenced but never defined is
 /// reported at its first use.
 #[test]
 fn undefined_comdat_is_rejected() {
     assert_eq!(
-        parse_err(b"@g = global i32 0, comdat($c)\n").to_string(),
-        "use of undefined comdat '$c'"
+        parse_err(b"@v = global i32 0, comdat($v)\n").to_string(),
+        "use of undefined comdat '$v'"
     );
 }
 
-/// Mirrors the `!ForwardRefComdats.erase(Name)` guard in
-/// `LLParser::parseComdat`: a second `$c = comdat ...` is a redefinition,
+/// Ports `test/Assembler/invalid-comdat2.ll` verbatim, asserting its CHECK
+/// line. The rule is the `!ForwardRefComdats.erase(Name)` guard in
+/// `LLParser::parseComdat`: a second `$v = comdat ...` is a redefinition,
 /// where a definition that merely satisfies an earlier *use* is not.
+///
+/// Note the fixture repeats the *same* selection kind, so this pins that the
+/// rejection is about redefining at all, not about disagreeing.
 #[test]
 fn redefined_comdat_is_rejected() {
     assert_eq!(
-        parse_err(b"$c = comdat any\n$c = comdat largest\n").to_string(),
-        "redefinition of comdat '$c'"
+        parse_err(b"$v = comdat any\n$v = comdat any\n").to_string(),
+        "redefinition of comdat '$v'"
     );
+}
+
+/// Ports both `test/Assembler/alloca-addrspace-parse-error-{0,1}.ll`, which
+/// pin that a trailing comma after an `alloca` clause demands metadata: the
+/// index-list loop breaks on `MetadataVar`, so a comma with anything else
+/// after it — or nothing — is `expected metadata after comma`.
+///
+/// The second is the interesting one: `addrspace(1), align 4` is the *wrong
+/// clause order*, and upstream reports it through the same message rather
+/// than a dedicated one.
+#[test]
+fn alloca_addrspace_parse_errors_match_upstream_text() {
+    for fixture in [
+        b"target datalayout = \"A1\"\ndefine void @use_alloca() {\n  %alloca = alloca i32, addrspace(1),\n  ret void\n}\n!0 = !{}\n"
+            .as_slice(),
+        b"target datalayout = \"A1\"\ndefine void @use_alloca() {\n  %alloca = alloca i32, addrspace(1), align 4\n  ret void\n}\n!0 = !{}\n"
+            .as_slice(),
+    ] {
+        assert_eq!(
+            parse_err(fixture).to_string(),
+            "expected metadata after comma"
+        );
+    }
 }

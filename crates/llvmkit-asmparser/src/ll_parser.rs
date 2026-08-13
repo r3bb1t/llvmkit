@@ -3271,7 +3271,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Token::MetadataVar(bytes) => std::str::from_utf8(bytes.as_ref())
                     .map_err(|_| self.expected("valid UTF-8 metadata attachment name"))?
                     .to_owned(),
-                _ => return Err(self.expected("metadata attachment")),
+                // `parseInstructionMetadata`'s only message. It is what an
+                // `alloca` with a trailing comma reports, and what a clause
+                // written after `addrspace(...)` reports too — the loop
+                // demands metadata once a comma has been eaten, so a
+                // misordered `align 4` lands here rather than on a dedicated
+                // diagnostic (`alloca-addrspace-parse-error-{0,1}.ll`).
+                _ => return Err(self.expected("metadata after comma")),
             };
             self.bump()?;
             let id = self.parse_metadata_attachment_operand()?;
