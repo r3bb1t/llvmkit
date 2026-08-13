@@ -2087,7 +2087,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     /// Parse an atomic ordering keyword.
     /// Mirrors `LLParser::parseOrdering` (LLParser.cpp ~2810).
-    fn parse_atomic_ordering(&mut self, expected: &'static str) -> ParseResult<AtomicOrdering> {
+    /// Mirrors `LLParser::parseOrdering`, whose one message —
+    /// capital `E` included — is the same at every call site, so this takes
+    /// no label. The per-instruction complaints (`invalid cmpxchg success
+    /// ordering` and friends) are *validity* checks that run after this,
+    /// not alternative spellings of it.
+    fn parse_atomic_ordering(&mut self) -> ParseResult<AtomicOrdering> {
         let ord = match self.peek() {
             Token::Kw(Keyword::Unordered) => AtomicOrdering::Unordered,
             Token::Kw(Keyword::Monotonic) => AtomicOrdering::Monotonic,
@@ -2095,7 +2100,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::Kw(Keyword::Release) => AtomicOrdering::Release,
             Token::Kw(Keyword::AcqRel) => AtomicOrdering::AcquireRelease,
             Token::Kw(Keyword::SeqCst) => AtomicOrdering::SequentiallyConsistent,
-            _ => return Err(self.expected(expected)),
+            _ => return Err(self.message("Expected ordering on atomic instruction")),
         };
         self.bump()?;
         Ok(ord)
@@ -2114,9 +2119,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Ok(SyncScope::System);
         }
         self.bump()?; // eat `syncscope`
-        self.expect_punct(PunctKind::LParen, "'(' after syncscope")?;
-        let name = self.parse_string_constant("sync scope name")?;
-        self.expect_punct(PunctKind::RParen, "')' after sync scope")?;
+        // Upstream's three messages here open with a capital `E`, alone among
+        // its diagnostics. Contractual, not a typo to tidy.
+        let paren_loc = self.loc();
+        if !self.eat_punct(PunctKind::LParen)? {
+            return Err(self.message_at(paren_loc, "Expected '(' in syncscope"));
+        }
+        let name_loc = self.loc();
+        let Ok(name) = self.parse_string_constant("sync scope name") else {
+            return Err(self.message_at(name_loc, "Expected synchronization scope name"));
+        };
+        let end_loc = self.loc();
+        if !self.eat_punct(PunctKind::RParen)? {
+            return Err(self.message_at(end_loc, "Expected ')' in syncscope"));
+        }
         Ok(match name.as_str() {
             "singlethread" => SyncScope::SingleThread,
             _ => SyncScope::Named(name),
@@ -2267,7 +2283,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else if self.eat_keyword(Keyword::Samesize)? {
             SelectionKind::SameSize
         } else {
-            return Err(self.expected("comdat selection kind"));
+            // `parseComdat`'s default arm.
+            return Err(self.message("unknown selection kind"));
         };
         // A comdat already in the table is a redefinition *unless* it got
         // there through a forward reference, which this definition satisfies.
@@ -3881,9 +3898,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 } else if self.eat_keyword(Keyword::Localexec)? {
                     ThreadLocalMode::LocalExec
                 } else {
-                    return Err(self.expected("thread-local model"));
+                    // `parseTLSModel`'s only message.
+                    return Err(self.expected("localdynamic, initialexec or localexec"));
                 };
-                self.expect_punct(PunctKind::RParen, "')' after thread-local model")?;
+                // `thread local`, unhyphenated, is upstream's spelling.
+                self.expect_punct(PunctKind::RParen, "')' after thread local model")?;
                 mode
             } else {
                 ThreadLocalMode::GeneralDynamic
@@ -8706,7 +8725,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         if is_atomic {
             let sync_scope = self.parse_optional_syncscope()?;
-            let ordering = self.parse_atomic_ordering("atomic ordering")?;
+            let ordering = self.parse_atomic_ordering()?;
             self.expect_punct(PunctKind::Comma, "',' after atomic ordering")?;
             // Upstream requires the align clause on an atomic load
             // ("atomic load must have explicit non-zero alignment",
@@ -8747,7 +8766,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         if is_atomic {
             let sync_scope = self.parse_optional_syncscope()?;
-            let ordering = self.parse_atomic_ordering("atomic ordering")?;
+            let ordering = self.parse_atomic_ordering()?;
             self.expect_punct(PunctKind::Comma, "',' after atomic ordering")?;
             // Upstream requires the align clause on an atomic store
             // ("atomic store must have explicit non-zero alignment",
@@ -10077,7 +10096,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// Upstream: `test/Assembler/fence.ll`.
     fn parse_fence(&mut self, b: &ParsedBlockBuilder<'ctx, 'ctx, B>) -> ParseResult<()> {
         let sync_scope = self.parse_optional_syncscope()?;
-        let ordering = self.parse_atomic_ordering("fence ordering")?;
+        let ordering = self.parse_atomic_ordering()?;
         let _ = b
             .fence(ordering, sync_scope, "")
             .map_err(|e| self.builder_err("fence", e))?;
@@ -10109,8 +10128,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let new_ty = self.parse_type(false)?;
         let new_v = self.parse_value(state, new_ty)?;
         let sync_scope = self.parse_optional_syncscope()?;
-        let success_ord = self.parse_atomic_ordering("cmpxchg success ordering")?;
-        let failure_ord = self.parse_atomic_ordering("cmpxchg failure ordering")?;
+        let success_ord = self.parse_atomic_ordering()?;
+        let failure_ord = self.parse_atomic_ordering()?;
         let align = self.parse_optional_comma_align()?;
         let align = match align {
             Some(value) => llvmkit_ir::align::MaybeAlign::from(value),
@@ -10153,7 +10172,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let val_ty = self.parse_type(false)?;
         let val_v = self.parse_value(state, val_ty)?;
         let sync_scope = self.parse_optional_syncscope()?;
-        let ordering = self.parse_atomic_ordering("atomicrmw ordering")?;
+        let ordering = self.parse_atomic_ordering()?;
         let align = self.parse_optional_comma_align()?;
         let align = match align {
             Some(value) => llvmkit_ir::align::MaybeAlign::from(value),

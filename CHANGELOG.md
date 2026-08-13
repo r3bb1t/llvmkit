@@ -21,6 +21,20 @@ cut, entries accumulate under **Unreleased**.
 
 ### Calling conventions
 
+- **Changed: the optional-parser diagnostics carry upstream's text.**
+  `parseScope`'s three messages open with a capital `E` —
+  `Expected '(' in syncscope`, `Expected synchronization scope name`,
+  `Expected ')' in syncscope` — alone among LLParser's diagnostics, and so does
+  `Expected ordering on atomic instruction`. Reproduced as written; the
+  capital is contractual, not a typo to tidy. `parseOrdering` has that one
+  message at every call site, so llvmkit's six per-site labels (`expected
+  fence ordering`, `expected cmpxchg success ordering`, …) are gone — the
+  per-instruction complaints upstream *does* have are validity checks that run
+  after it, not alternative spellings of it. Also
+  `expected localdynamic, initialexec or localexec`,
+  `expected ')' after thread local model` (unhyphenated, as upstream writes
+  it), and `unknown selection kind` for a bad comdat.
+
 - **Fixed: 28 calling conventions parsed as `ccc`.** The parser matched 31
   keywords while the printer knew 60 — so `spir_kernel`, `ptx_kernel`,
   `graalcc`, `preserve_nonecc`, `cxx_fast_tlscc`, `x86_intrcc`, the ARM/AArch64
