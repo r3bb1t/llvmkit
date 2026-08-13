@@ -34,6 +34,40 @@ cut, entries accumulate under **Unreleased**.
   attribute LLVM 22.1.4 declares is accepted in every position it declares**
   — the drift guard's `NOT_YET_MODELED` list is empty.
 
+- **Fixed (P0): an argument-carrying attribute on a function header did not
+  parse at all.** `define void @f() uwtable { ret void }` — ordinary `clang`
+  output — failed with `expected '{' to open function body`, and so did
+  `allocsize`, `vscale_range`, `allockind`, `nofpclass`, `dereferenceable`,
+  `captures`, `range`, `initializes` and the six type attributes. llvmkit
+  gates the header attribute list behind a lookahead predicate that had gone
+  out of sync with the list's own arms; upstream enters the list
+  unconditionally. Every test for these attributes had used the
+  `attributes #N = { … }` form, which enters the loop directly, so the header
+  path was untested.
+
+- **Added: the attribute-group `align = N` / `alignstack = N` grammar**, and
+  with it the `InAttrGrp` printing form. `Attribute::getAsString` spells four
+  kinds differently inside a group — `align=8`, `alignstack=8`,
+  `dereferenceable=8`, `dereferenceable_or_null=8` — and
+  `parseEnumAttribute` accepts only the matching grammar in each context, so
+  `attributes #0 = { align 8 }` is now the error upstream gives
+  (`expected '=' here`) and the group prints `align=8`.
+  `test/Bitcode/attributes.ll` pins both halves: it writes `alignstack(4)`
+  inline and checks `alignstack=4` in the group.
+
+- **Added: the alignment and dereferenceable value checks.**
+  `alignment is not a power of two`, `huge alignments are not supported yet`
+  (the maximum is `1 << 32`, inclusive), `stack alignment is not a power of
+  two`, and `dereferenceable bytes must be non-zero` — none of which existed.
+  `@g = global i8 0, align 8589934592` used to be accepted silently, and
+  `align 3` reported an invented `expected alignment must be non-zero power of
+  two, got 3`. Also `expected unwind table kind`,
+  `unterminated attribute group`, and
+  `cannot have an attribute group reference in an attribute group`, plus the
+  `attributes` group's own `expected '=' here` / `expected '{' here` /
+  `expected end of attribute group` texts and the anchor fix that puts
+  `attribute group has no attributes` on the `attributes` keyword.
+
 - **Fixed: legacy memory keywords now intersect instead of accumulating.**
   `upgradeMemoryAttr` runs `ME &= MemoryEffects::X()` over one accumulator
   that starts at `unknown()` and is emitted once after the whole attribute

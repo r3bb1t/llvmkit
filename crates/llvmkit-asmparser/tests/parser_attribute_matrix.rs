@@ -145,14 +145,75 @@ fn captures_none_round_trips_as_itself() {
     parse_dynamic(printed.as_str()).expect("round-trip");
 }
 
+/// `test/Bitcode/attributes.ll`'s `@f23` writes
+/// `define void @f23() alignstack(4)` inline and CHECKs
+/// `attributes #13 = { alignstack=4 }`, so it pins both halves of the group
+/// spelling at once. Only the *parse* half is portable today: llvmkit's
+/// printer emits function attributes inline on the header and never forms an
+/// attribute group, so the CHECK line cannot be produced from that input.
+/// The printer gap is recorded in `docs/future-work.md`; this asserts the
+/// half that holds, and the group spelling itself is covered by
+/// `attribute_group_equals_grammar_round_trips` from group-carrying input.
 #[test]
-fn alignstack_paren_form_round_trips() {
-    parse_print_reparse(
-        "alignstack",
-        "define void @f() #0 { ret void }
-attributes #0 = { alignstack(16) }
-",
-        "alignstack(16)",
+fn inline_alignstack_parses_and_round_trips() {
+    let m = parse_dynamic("define void @f23() alignstack(4) {\n  ret void\n}\n")
+        .expect("inline alignstack(4) parses");
+    let printed = format!("{m}");
+    assert!(printed.contains("alignstack(4)"), "{printed}");
+    parse_dynamic(printed.as_str()).expect("round-trip");
+}
+
+/// The four kinds whose group spelling differs, each written in the form its
+/// context requires and printed back in the other. Anchored on
+/// `Attribute::getAsString`'s `InAttrGrp` arms and `parseEnumAttribute`'s
+/// `InAttrGroup` branches; only `alignstack` has an upstream fixture.
+#[test]
+fn attribute_group_equals_grammar_round_trips() {
+    for (group_body, printed) in [
+        ("align = 8", "align=8"),
+        ("alignstack = 16", "alignstack=16"),
+    ] {
+        let src =
+            format!("define void @f() #0 {{ ret void }}\nattributes #0 = {{ {group_body} }}\n");
+        let m = parse_dynamic(src.as_str()).unwrap_or_else(|e| panic!("{group_body}: {e}"));
+        let out = format!("{m}");
+        assert!(out.contains(printed), "{group_body}:\n{out}");
+        parse_dynamic(out.as_str()).unwrap_or_else(|e| panic!("{group_body} round-trip: {e}"));
+    }
+
+    // `dereferenceable` is `[ParamAttr, RetAttr]`, so inside a group it parses
+    // and *then* trips the position check — the group spelling is reachable
+    // only through the printer, from a parameter attribute.
+    let m = parse_dynamic("define void @f(ptr dereferenceable(8) %p) { ret void }\n")
+        .expect("parameter dereferenceable(8)");
+    assert!(format!("{m}").contains("dereferenceable(8)"), "{m}");
+}
+
+/// `parseEnumAttribute`'s two `InAttrGroup` branches reject the inline
+/// spelling, and `parseOptionalAlignment` / `parseOptionalStackAlignment`
+/// reject the equals spelling outside a group.
+#[test]
+fn attribute_group_equals_grammar_is_context_exclusive() {
+    fn parse_err(src: &str) -> String {
+        parse_dynamic(src)
+            .expect_err("wrong-context alignment spelling is rejected")
+            .to_string()
+    }
+
+    // Paren / bare forms are not the group grammar.
+    assert_eq!(
+        parse_err("define void @f() #0 { ret void }\nattributes #0 = { align 8 }\n"),
+        "expected '=' here"
+    );
+    assert_eq!(
+        parse_err("define void @f() #0 { ret void }\nattributes #0 = { alignstack(16) }\n"),
+        "expected '=' here"
+    );
+    // And the equals form is not the inline grammar: `alignstack` demands a
+    // paren, so the `=` is where the `(` should be.
+    assert_eq!(
+        parse_err("define void @f() alignstack = 16 {\n  ret void\n}\n"),
+        "expected '('"
     );
 }
 
@@ -653,16 +714,153 @@ fn attributes_are_rejected_outside_their_declared_positions() {
         "this attribute does not apply to return values"
     );
 
-    // The `align` hack, both spellings.
+    // The `align` hack, both spellings — `align` is `[ParamAttr, RetAttr]`
+    // yet the function loop accepts it anyway, which is the exemption
+    // upstream calls out by name.
     parse_print_reparse(
         "align in an attribute group",
-        "define void @f() #0 { ret void }\nattributes #0 = { align 8 }\n",
-        "align 8",
+        "define void @f() #0 { ret void }\nattributes #0 = { align = 8 }\n",
+        "align=8",
     );
     parse_print_reparse(
         "align on a parameter",
         "define void @f(ptr align 8 %p) { ret void }\n",
         "align 8",
+    );
+}
+
+/// The value checks `parseOptionalAlignment`, `parseOptionalStackAlignment`
+/// and `parseOptionalDerefAttrBytes` run, none of which llvmkit had.
+///
+/// Two anchoring details are contractual: `AlignLoc` is captured *before* the
+/// optional paren, so it is the same token as `ParenLoc` and `align(3)`
+/// reports under the `(`; and the non-power-of-two test runs before the
+/// maximum test, so `align 3` is never "huge".
+///
+/// `test/Assembler/align-param-attr-error{0,1,2}.ll` and `align-inst-*.ll`
+/// pin these for the instruction and parameter paths.
+#[test]
+fn alignment_value_checks_match_upstream_text() {
+    fn parse_err(src: &str) -> String {
+        parse_dynamic(src)
+            .expect_err("bad alignment is rejected")
+            .to_string()
+    }
+
+    assert_eq!(
+        parse_err("define void @f(ptr align 3 %p) { ret void }\n"),
+        "alignment is not a power of two"
+    );
+    assert_eq!(
+        parse_err("define void @f(ptr align 0 %p) { ret void }\n"),
+        "alignment is not a power of two"
+    );
+    // `Value::MaximumAlignment` is `1 << 32`, so `1 << 33` is the first
+    // rejected power of two. llvmkit accepted this silently.
+    assert_eq!(
+        parse_err("@g = global i8 0, align 8589934592\n"),
+        "huge alignments are not supported yet"
+    );
+    // `1 << 32` itself is legal.
+    parse_dynamic("@g = global i8 0, align 4294967296\n").expect("the maximum is inclusive");
+
+    assert_eq!(
+        parse_err("define void @f() alignstack(3) {\n  ret void\n}\n"),
+        "stack alignment is not a power of two"
+    );
+    assert_eq!(
+        parse_err("define void @f(ptr dereferenceable(0) %p) { ret void }\n"),
+        "dereferenceable bytes must be non-zero"
+    );
+    assert_eq!(
+        parse_err("define void @f(ptr dereferenceable_or_null(0) %p) { ret void }\n"),
+        "dereferenceable bytes must be non-zero"
+    );
+}
+
+/// Every `[FnAttr]` attribute with an argument must parse on a *function
+/// header*, not only inside an attribute group.
+///
+/// Upstream has one attribute-list production for both, entered from
+/// `parseFunctionHeader` without any lookahead gate. llvmkit gates the header
+/// path on `is_attr_start`, so a keyword missing from that predicate makes
+/// the whole list invisible — the attribute is not rejected, it is never
+/// looked for, and the failure surfaces as `expected '{' to open function
+/// body`. Every one of these is ordinary `clang` output.
+#[test]
+fn argument_carrying_attributes_parse_on_a_function_header() {
+    for spelled in [
+        "uwtable",
+        "uwtable(sync)",
+        "allocsize(0)",
+        "allocsize(0, 1)",
+        "vscale_range(1, 16)",
+        "allockind(\"alloc\")",
+        "memory(read)",
+        "alignstack(16)",
+        "nocallback",
+    ] {
+        let src = format!("define void @f() {spelled} {{\n  ret void\n}}\n");
+        parse_dynamic(src.as_str())
+            .unwrap_or_else(|e| panic!("{spelled} on a function header: {e}\n{src}"));
+    }
+}
+
+/// `parseUnnamedAttrGrp` and its loop's own diagnostics.
+///
+/// `unterminated attribute group` fires for any token that is not an
+/// attribute — upstream's fixture spells it with a misspelled keyword, which
+/// llvmkit's lexer intercepts, so the triggers here are a type keyword, an
+/// integer, and end-of-file. `cannot have an attribute group reference in an
+/// attribute group` is non-fatal upstream (it keeps parsing and accumulates);
+/// llvmkit reports the first and stops, the same choice already recorded for
+/// the position diagnostics.
+#[test]
+fn attribute_group_diagnostics_match_upstream_text() {
+    fn parse_err(src: &str) -> String {
+        parse_dynamic(src)
+            .expect_err("malformed attribute group is rejected")
+            .to_string()
+    }
+
+    assert_eq!(
+        parse_err("attributes #0 = { i32 }\n"),
+        "unterminated attribute group"
+    );
+    assert_eq!(
+        parse_err("attributes #0 = { 42 }\n"),
+        "unterminated attribute group"
+    );
+    assert_eq!(
+        parse_err("attributes #0 = { nounwind\n"),
+        "unterminated attribute group"
+    );
+    assert_eq!(
+        parse_err("attributes #0 = { #1 }\n"),
+        "cannot have an attribute group reference in an attribute group"
+    );
+    assert_eq!(
+        parse_err("attributes #0 = { }\n"),
+        "attribute group has no attributes"
+    );
+    // `alignstack = 0` is well defined and adds no attribute, so a group
+    // holding only it is empty — `MaybeAlign(0)` carries nothing.
+    assert_eq!(
+        parse_err("attributes #0 = { alignstack = 0 }\n"),
+        "attribute group has no attributes"
+    );
+    assert_eq!(
+        parse_err("attributes 0 = { nounwind }\n"),
+        "expected attribute group id"
+    );
+    assert_eq!(
+        parse_err("attributes #0 { nounwind }\n"),
+        "expected '=' here"
+    );
+    assert_eq!(parse_err("attributes #0 = nounwind\n"), "expected '{' here");
+    assert_eq!(
+        parse_err("define void @f() uwtable(none) {\n  ret void\n}\n"),
+        "expected unwind table kind"
     );
 }
 

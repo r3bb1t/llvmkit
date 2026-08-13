@@ -2447,16 +2447,46 @@ fn fmt_attribute_set<'ctx, B: ModuleBrand + 'ctx>(
     Ok(())
 }
 
+/// Whether an attribute is being printed inside `attributes #N = { … }`.
+/// Mirrors `Attribute::getAsString`'s `InAttrGrp` parameter, which changes the
+/// spelling of exactly four kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttrPrintContext {
+    /// Anywhere an attribute is written inline: `align 8`, `alignstack(8)`.
+    Inline,
+    /// The body of an attribute group: `align=8`, `alignstack=8`. No spaces
+    /// around the `=`.
+    AttributeGroup,
+}
+
 fn fmt_attribute_stored<'ctx, B: ModuleBrand + 'ctx>(
     f: &mut fmt::Formatter<'_>,
     attr: &AttributeStored,
     module: ModuleView<'ctx, B>,
 ) -> fmt::Result {
+    fmt_attribute_stored_in(f, attr, module, AttrPrintContext::Inline)
+}
+
+fn fmt_attribute_stored_in<'ctx, B: ModuleBrand + 'ctx>(
+    f: &mut fmt::Formatter<'_>,
+    attr: &AttributeStored,
+    module: ModuleView<'ctx, B>,
+    context: AttrPrintContext,
+) -> fmt::Result {
+    let in_group = context == AttrPrintContext::AttributeGroup;
     match attr {
         AttributeStored::Enum(k) => f.write_str(k.name()),
+        AttributeStored::Int(AttrKind::Alignment, v) if in_group => write!(f, "align={v}"),
         AttributeStored::Int(AttrKind::Alignment, v) => write!(f, "align {v}"),
         AttributeStored::Int(AttrKind::UwTable, 2) => f.write_str("uwtable"),
         AttributeStored::Int(AttrKind::UwTable, 1) => f.write_str("uwtable(sync)"),
+        // `AttrWithBytesToString` covers exactly these three.
+        AttributeStored::Int(
+            k @ (AttrKind::StackAlignment
+            | AttrKind::Dereferenceable
+            | AttrKind::DereferenceableOrNull),
+            v,
+        ) if in_group => write!(f, "{}={v}", k.name()),
         AttributeStored::Int(k, v) => write!(f, "{}({v})", k.name()),
         AttributeStored::Type(k, ty_id) => write!(f, "{}({})", k.name(), Type::new(*ty_id, module)),
         AttributeStored::Range { ty, lower, upper } => write!(
@@ -2923,7 +2953,15 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
                         // that `Attributes.td` also declares `FnAttr`, so an
                         // attribute group can hold one, and printing a type
                         // needs the module.
-                        fmt_attribute_stored(f, attr, ModuleView::<DynBrand>::new(m))?;
+                        //
+                        // `writeAllAttributeGroups` asks for the `InAttrGrp`
+                        // spelling, which is `align=8` and not `align 8`.
+                        fmt_attribute_stored_in(
+                            f,
+                            attr,
+                            ModuleView::<DynBrand>::new(m),
+                            AttrPrintContext::AttributeGroup,
+                        )?;
                     }
                     f.write_str(" ")?;
                 }

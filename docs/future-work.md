@@ -12,6 +12,64 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## Printer — function attributes are never hoisted into an attribute group (found 2026-08-13, LLParser parity W5)
+
+`AssemblyWriter` prints function attributes **inline on the header**
+(`define void @f() alignstack(4)`), where upstream prints a group reference
+and emits the group at the end of the module:
+
+    define void @f23() #13
+    ...
+    attributes #13 = { alignstack=4 }
+
+Upstream does this in `SlotTracker::CreateAttributeSetSlot` (one slot per
+distinct `AttributeSet`) plus `AssemblyWriter::writeAllAttributeGroups`.
+llvmkit has neither: `asm_writer.rs` emits an `attributes #N = { … }` block
+only for groups the *input* already carried, kept in `Module`'s attribute-group
+table.
+
+Consequences, all real:
+
+- `test/Bitcode/attributes.ll` cannot be ported as a round-trip. It is the
+  fixture that pins the `InAttrGrp` spelling of all four kinds that have one,
+  and its CHECK lines are group lines. W5 ported the parse half and pins the
+  printed group spelling from group-carrying input instead
+  (`attribute_group_equals_grammar_round_trips`); the writer half is
+  unpinned.
+- llvmkit's output is bulkier than upstream's and diverges byte-for-byte from
+  `llvm-dis` for any module with function attributes, which the parser/printer
+  contract says should not happen.
+- The `align` hack has no visible effect yet: upstream moves a group's
+  `Alignment` to `Fn->setAlignment()` in `validateEndOfModule`, so
+  `attributes #0 = { align = 8 }` re-prints as `define void @f() align 8`
+  with the attribute gone from the group. llvmkit keeps it in the group.
+
+Land it with the `validateEndOfModule` group-merge work (W13) rather than
+alone: the merge is what decides which attributes survive into the printed
+group, so doing the writer first would pin output the merge then changes.
+
+## Parser — the attribute-list lookahead has to be kept in sync by hand (found 2026-08-13, LLParser parity W5)
+
+`Parser::keyword_starts_attribute` (`ll_parser.rs`) exists only because
+llvmkit gates the *function-header* attribute list behind a lookahead, where
+upstream's `parseFunctionHeader` enters `parseFnAttributeValuePairs`
+unconditionally and lets `tokenToAttribute` end it.
+
+The gate is a second copy of the loop's arm list, and it was already wrong:
+`uwtable`, `allocsize`, `vscale_range`, `allockind`, `nofpclass`,
+`dereferenceable`, `captures`, `range`, `initializes` and the six type
+attributes were all missing from it, so `define void @f() uwtable {` — plain
+`clang` output — did not parse at all. Not "was rejected": the list was never
+entered, and the failure surfaced as `expected '{' to open function body`.
+Every existing test for those attributes used the `attributes #N = { … }`
+form, which enters the loop directly, so nothing caught it.
+
+`argument_carrying_attributes_parse_on_a_function_header` now covers the
+header path, but the structural fix is to delete the lookahead: enter the
+loop unconditionally and let the `_ => break` arm end it, exactly as upstream
+does. That needs `parse_optional_function_suffix`'s `align`-is-not-an-
+attribute carve-out to survive, which is why it was not done in W5.
+
 ## `ConstantRangeList` — three set operations not ported (decided 2026-08-12, LLParser parity W5)
 
 `crates/llvmkit-ir/src/constant_range_list.rs` ports

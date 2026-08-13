@@ -373,6 +373,39 @@ enum ParsedCallee<'ctx, B: ModuleBrand> {
     Indirect(llvmkit_ir::PointerValue<'ctx, B>),
 }
 
+/// Which of upstream's attribute-list productions a call to
+/// `Parser::parse_fn_attribute_value_pairs` is playing.
+///
+/// llvmkit merges three upstream shapes into one loop, and they disagree on
+/// more than one axis, so a bool cannot express it: `InAttrGrp` selects the
+/// `align = N` equals grammar and turns an unrecognised token into a hard
+/// error, while *group references* are legal only in the one context where
+/// `InAttrGrp` is false and the list belongs to a function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttrListContext {
+    /// A function header or call site: `parseFnAttributeValuePairs` with
+    /// `InAttrGrp == false`. `#N` references are collected, and a token that
+    /// is not an attribute simply ends the list.
+    FunctionHeader,
+    /// The body of `attributes #N = { … }`: `parseFnAttributeValuePairs` with
+    /// `InAttrGrp == true`. `align` and `alignstack` take their equals form,
+    /// a `#N` reference is `cannot have an attribute group reference in an
+    /// attribute group`, and a token that is not an attribute is
+    /// `unterminated attribute group`.
+    AttributeGroup,
+    /// A parameter or return list: `parseOptionalParamOrReturnAttrs`, which
+    /// upstream writes as a separate function. It has no `#N` arm at all and
+    /// always passes `InAttrGroup == false`.
+    ParamOrReturn,
+}
+
+impl AttrListContext {
+    /// `InAttrGroup`, as `parseEnumAttribute` takes it.
+    fn in_attr_group(self) -> bool {
+        matches!(self, Self::AttributeGroup)
+    }
+}
+
 /// An integer literal token, holding exactly what `LLLexer` puts in
 /// `APSIntVal`: the value at the width the *token itself* needs, plus the
 /// signedness that decides how a consumer widens it. Mirrors `APSInt`.
@@ -1951,14 +1984,71 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(flags)
     }
 
-    /// Parse `align N`. Returns the alignment value.
-    /// Mirrors `LLParser::parseAlignment` (LLParser.cpp ~6539).
-    fn parse_align_val(&mut self) -> ParseResult<Align> {
+    /// `align N` / `align(N)`. Ports `LLParser::parseOptionalAlignment` from
+    /// the point where the `align` keyword is known to be present.
+    ///
+    /// Both diagnostics are anchored at `AlignLoc`, which upstream captures
+    /// immediately after eating `align` and **before** the optional paren —
+    /// so `AlignLoc == ParenLoc`, and `align(3)` reports under the `(`, not
+    /// under the `3`. The `expected ')'` is anchored there too.
+    fn parse_optional_alignment_value(&mut self, allow_parens: bool) -> ParseResult<u64> {
         self.expect_keyword(Keyword::Align, "'align'")?;
-        let n = self.parse_uint64("alignment (bytes)")?;
-        Align::new(n).map_err(|_| ParseError::Expected {
-            expected: format!("alignment must be non-zero power of two, got {n}").into(),
-            loc: DiagLoc::span(self.loc()),
+        let align_loc = self.loc();
+        let have_parens = allow_parens && self.eat_punct(PunctKind::LParen)?;
+        let value = self.parse_uint64("alignment (bytes)")?;
+        if have_parens && !self.eat_punct(PunctKind::RParen)? {
+            return Err(self.message_at(align_loc, "expected ')'"));
+        }
+        self.check_alignment_value(value, align_loc)?;
+        Ok(value)
+    }
+
+    /// `parseOptionalAlignment`'s two value checks, in its order. Split out
+    /// because the attribute-group `align = N` form reaches them from a
+    /// different grammar.
+    ///
+    /// `MaximumAlignment` is `1 << 32` (`llvm/IR/Value.h`); note that a
+    /// non-power-of-two is reported first, so `align 3` is never "huge".
+    fn check_alignment_value(&self, value: u64, loc: Span) -> ParseResult<()> {
+        if !value.is_power_of_two() {
+            return Err(self.message_at(loc, "alignment is not a power of two"));
+        }
+        if value > (1u64 << 32) {
+            return Err(self.message_at(loc, "huge alignments are not supported yet"));
+        }
+        Ok(())
+    }
+
+    /// `alignstack(N)`. Ports `LLParser::parseOptionalStackAlignment` from the
+    /// point where the keyword is known to be present.
+    ///
+    /// Unlike `align`, this one's `AlignLoc` is the *number* token — it is
+    /// captured after the `(` is eaten — and the power-of-two check runs only
+    /// after the closing paren. `0` fails it, since `isPowerOf2_32(0)` is
+    /// false.
+    fn parse_stack_alignment_value(&mut self) -> ParseResult<u64> {
+        self.expect_keyword(Keyword::Alignstack, "'alignstack'")?;
+        self.expect_punct(PunctKind::LParen, "'('")?;
+        let align_loc = self.loc();
+        let value = u64::from(self.parse_uint32("alignstack value")?);
+        self.expect_punct(PunctKind::RParen, "')'")?;
+        if !value.is_power_of_two() {
+            return Err(self.message_at(align_loc, "stack alignment is not a power of two"));
+        }
+        Ok(value)
+    }
+
+    /// Parse `align N` for an instruction or global. Returns the alignment.
+    ///
+    /// Mirrors `LLParser::parseOptionalAlignment` with `AllowParens = false`,
+    /// which is how every instruction and global site calls it.
+    fn parse_align_val(&mut self) -> ParseResult<Align> {
+        let value = self.parse_optional_alignment_value(false)?;
+        Align::new(value).map_err(|_| {
+            // `check_alignment_value` has already refused zero, a
+            // non-power-of-two, and anything above `1 << 32`, so `Align::new`
+            // cannot fail here.
+            self.message_at(self.loc(), "alignment is not a power of two")
         })
     }
 
@@ -5867,9 +5957,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
+    /// `attributes #N = { … }`. Ports `LLParser::parseUnnamedAttrGrp`.
+    ///
+    /// `AttrGrpLoc` is captured at the `attributes` keyword, *before* it is
+    /// consumed, and is what both the redefinition error and
+    /// `attribute group has no attributes` report against — llvmkit used to
+    /// anchor them one token later, on the `#N`.
     fn parse_unnamed_attr_group(&mut self) -> ParseResult<()> {
-        self.expect_keyword(Keyword::Attributes, "'attributes'")?;
         let loc = self.loc();
+        self.expect_keyword(Keyword::Attributes, "'attributes'")?;
         let id = match self.peek() {
             Token::AttrGrpId(id) => {
                 let id = *id;
@@ -5878,18 +5974,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             _ => return Err(self.expected("attribute group id")),
         };
-        self.expect_punct(PunctKind::Equal, "'=' after attribute group id")?;
-        self.expect_punct(PunctKind::LBrace, "'{' in attribute group")?;
+        self.expect_punct(PunctKind::Equal, "'=' here")?;
+        self.expect_punct(PunctKind::LBrace, "'{' here")?;
         let mut storage = AttributeStorage::new();
-        let groups =
-            self.parse_fn_attribute_value_pairs(&mut storage, AttrIndex::Function, false)?;
-        if !groups.is_empty() {
-            return Err(ParseError::Expected {
-                expected: "attribute".into(),
-                loc: DiagLoc::span(loc),
-            });
-        }
-        self.expect_punct(PunctKind::RBrace, "'}' closing attribute group")?;
+        // A `#N` reference inside the group is rejected by the loop itself, so
+        // it can never return group ids here.
+        self.parse_fn_attribute_value_pairs(
+            &mut storage,
+            AttrIndex::Function,
+            AttrListContext::AttributeGroup,
+        )?;
+        self.expect_punct(PunctKind::RBrace, "end of attribute group")?;
         if storage.is_empty() {
             return Err(ParseError::Message {
                 message: "attribute group has no attributes".into(),
@@ -5999,12 +6094,49 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             _ => return None,
         })
     }
+    /// Every keyword `parse_fn_attribute_value_pairs` has an arm for.
+    ///
+    /// Upstream needs no such predicate: `parseFunctionHeader` enters the
+    /// attribute list unconditionally and lets `tokenToAttribute` end it.
+    /// llvmkit gates the header path on a lookahead, which means a keyword
+    /// missing from *this* list is not rejected — the list is never entered,
+    /// and `define void @f() uwtable {` fails with `expected '{' to open
+    /// function body`. It has to name every keyword the loop's bespoke arms
+    /// match, because those never reach `attr_kind_for_keyword`.
+    fn keyword_starts_attribute(keyword: Keyword) -> bool {
+        if Self::attr_kind_for_keyword(keyword).is_some()
+            || Self::legacy_memory_effects(keyword).is_some()
+        {
+            return true;
+        }
+        matches!(
+            keyword,
+            Keyword::Align
+                | Keyword::Alignstack
+                | Keyword::Memory
+                | Keyword::Nofpclass
+                | Keyword::Uwtable
+                | Keyword::Dereferenceable
+                | Keyword::DereferenceableOrNull
+                | Keyword::Byval
+                | Keyword::Byref
+                | Keyword::Inalloca
+                | Keyword::Sret
+                | Keyword::Preallocated
+                | Keyword::Elementtype
+                | Keyword::Captures
+                | Keyword::Range
+                | Keyword::Initializes
+                | Keyword::Allocsize
+                | Keyword::VscaleRange
+                | Keyword::Allockind
+        )
+    }
+
     fn is_attr_start(&self) -> bool {
         match self.peek() {
             Token::AttrGrpId(_) | Token::StringConstant(_) => true,
-            Token::Kw(Keyword::Align | Keyword::Alignstack | Keyword::Memory) => true,
-            Token::Kw(keyword) if Self::legacy_memory_effects(*keyword).is_some() => true,
-            Token::Kw(keyword) => Self::attr_kind_for_keyword(*keyword).is_some(),
+            Token::Kw(keyword) => Self::keyword_starts_attribute(*keyword),
             _ => false,
         }
     }
@@ -6024,7 +6156,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<Vec<u32>> {
         let mut groups = Vec::new();
         while self.is_function_header_attr_start() {
-            groups.extend(self.parse_fn_attribute_value_pairs(attrs, AttrIndex::Function, true)?);
+            groups.extend(self.parse_fn_attribute_value_pairs(
+                attrs,
+                AttrIndex::Function,
+                AttrListContext::FunctionHeader,
+            )?);
         }
         Ok(groups)
     }
@@ -6116,7 +6252,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &mut self,
         out: &mut AttributeStorage,
         index: AttrIndex,
-        allow_group_refs: bool,
+        context: AttrListContext,
     ) -> ParseResult<Vec<u32>> {
         let mut groups = Vec::new();
         // The legacy memory keywords **intersect** into one accumulator —
@@ -6129,13 +6265,22 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // is what the position diagnostics report against.
             let attr_loc = self.loc();
             match self.peek() {
-                Token::RBrace | Token::LBrace | Token::Comma | Token::Eof => break,
-                Token::AttrGrpId(id) if allow_group_refs => {
+                // `}` is the loop's only unconditional exit, in both contexts.
+                Token::RBrace => break,
+                Token::LBrace | Token::Comma | Token::Eof if !context.in_attr_group() => break,
+                Token::AttrGrpId(id) if context == AttrListContext::FunctionHeader => {
                     let id = *id;
                     self.bump()?;
                     groups.push(id);
                 }
-                Token::AttrGrpId(_) => return Err(self.expected("attribute")),
+                Token::AttrGrpId(_) if context == AttrListContext::AttributeGroup => {
+                    return Err(self.message(
+                        "cannot have an attribute group reference in an attribute group",
+                    ));
+                }
+                // `parseOptionalParamOrReturnAttrs` has no `#N` arm at all, so
+                // the token simply is not an attribute and ends the list.
+                Token::AttrGrpId(_) => break,
                 Token::StringConstant(_) => {
                     let key = self.parse_string_constant("attribute string key")?;
                     let value = if self.eat_punct(PunctKind::Equal)? {
@@ -6145,22 +6290,64 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     };
                     out.add(index, Attribute::<B>::string(key, value));
                 }
-                Token::Kw(Keyword::Align) if index == AttrIndex::Function && allow_group_refs => {
+                Token::Kw(Keyword::Align)
+                    if index == AttrIndex::Function
+                        && context == AttrListContext::FunctionHeader =>
+                {
                     break;
                 }
                 Token::Kw(Keyword::Align) => {
-                    self.bump()?;
-                    let value = self.parse_uint64("align value")?;
+                    // Inside a group the grammar is `align = N`, read with
+                    // `parseUInt32` and given **no** validation at all —
+                    // upstream reaches `Align(Value)`, whose rejections are
+                    // C++ asserts. llvmkit raises no runtime panics, so it
+                    // reuses `parseOptionalAlignment`'s wording for the two
+                    // values that would assert; recorded in
+                    // `docs/future-work.md` as a deliberate divergence in
+                    // *diagnostic presence*, never in accept/reject.
+                    let value = if context.in_attr_group() {
+                        self.bump()?;
+                        self.expect_punct(PunctKind::Equal, "'=' here")?;
+                        let value_loc = self.loc();
+                        let value = u64::from(self.parse_uint32("align value")?);
+                        self.check_alignment_value(value, value_loc)?;
+                        value
+                    } else {
+                        self.parse_optional_alignment_value(true)?
+                    };
                     let attr = Attribute::<B>::int(AttrKind::Alignment, value)
                         .ok_or_else(|| self.expected("attribute"))?;
                     self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
                 }
                 Token::Kw(Keyword::Alignstack) => {
-                    self.bump()?;
-                    self.expect_punct(PunctKind::LParen, "'(' in alignstack attribute")?;
-                    let value = self.parse_uint64("alignstack value")?;
-                    self.expect_punct(PunctKind::RParen, "')' after alignstack value")?;
+                    let value = if context.in_attr_group() {
+                        self.bump()?;
+                        self.expect_punct(PunctKind::Equal, "'=' here")?;
+                        let value_loc = self.loc();
+                        let value = u64::from(self.parse_uint32("alignstack value")?);
+                        // Same treatment as `align =` above: upstream's
+                        // `MaybeAlign(unsigned)` asserts on a non-power-of-two.
+                        // A zero is well defined and adds no attribute.
+                        if value == 0 {
+                            continue;
+                        }
+                        if !value.is_power_of_two() {
+                            return Err(
+                                self.message_at(value_loc, "stack alignment is not a power of two")
+                            );
+                        }
+                        value
+                    } else {
+                        let value = self.parse_stack_alignment_value()?;
+                        if value == 0 {
+                            // `addStackAlignmentAttr(0)` builds a `MaybeAlign`
+                            // holding nothing, so no attribute is added — and
+                            // a group containing only it is empty.
+                            continue;
+                        }
+                        value
+                    };
                     let attr = Attribute::<B>::int(AttrKind::StackAlignment, value)
                         .ok_or_else(|| self.expected("attribute"))?;
                     self.check_attribute_position(index, &attr, attr_loc)?;
@@ -6193,9 +6380,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         } else if self.eat_keyword(Keyword::Async)? {
                             2
                         } else {
-                            return Err(self.expected("'sync' or 'async' in uwtable"));
+                            return Err(self.message("expected unwind table kind"));
                         };
-                        self.expect_punct(PunctKind::RParen, "')' after uwtable kind")?;
+                        self.expect_punct(PunctKind::RParen, "')'")?;
                         kind
                     } else {
                         2
@@ -6212,9 +6399,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         AttrKind::DereferenceableOrNull
                     };
                     self.bump()?;
-                    self.expect_punct(PunctKind::LParen, "'(' in dereferenceable attribute")?;
+                    self.expect_punct(PunctKind::LParen, "'('")?;
+                    let bytes_loc = self.loc();
                     let bytes = self.parse_uint64("dereferenceable byte count")?;
-                    self.expect_punct(PunctKind::RParen, "')' after dereferenceable byte count")?;
+                    // The non-zero check runs *after* the closing paren, so a
+                    // malformed `dereferenceable(0` reports `expected ')'`.
+                    self.expect_punct(PunctKind::RParen, "')'")?;
+                    if bytes == 0 {
+                        return Err(
+                            self.message_at(bytes_loc, "dereferenceable bytes must be non-zero")
+                        );
+                    }
                     let attr = Attribute::<B>::int(kind, bytes)
                         .ok_or_else(|| self.expected("attribute"))?;
                     self.check_attribute_position(index, &attr, attr_loc)?;
@@ -6277,6 +6472,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 Token::Kw(keyword) => {
                     let Some(kind) = Self::attr_kind_for_keyword(*keyword) else {
+                        if context.in_attr_group() {
+                            return Err(self.message("unterminated attribute group"));
+                        }
                         break;
                     };
                     self.bump()?;
@@ -6284,6 +6482,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         .ok_or_else(|| self.expected("attribute"))?;
                     self.check_attribute_position(index, &attr, attr_loc)?;
                     out.add(index, attr);
+                }
+                // `tokenToAttribute` answers `Attribute::None` for anything
+                // that is not an attribute keyword. Inside a group that is a
+                // hard error; elsewhere it just ends the list.
+                _ if context.in_attr_group() => {
+                    return Err(self.message("unterminated attribute group"));
                 }
                 _ => break,
             }
@@ -6804,8 +7008,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn parse_optional_param_attrs(&mut self) -> ParseResult<AttributeStorage> {
         let mut storage = AttributeStorage::new();
-        let groups =
-            self.parse_fn_attribute_value_pairs(&mut storage, AttrIndex::Param(0), false)?;
+        let groups = self.parse_fn_attribute_value_pairs(
+            &mut storage,
+            AttrIndex::Param(0),
+            AttrListContext::ParamOrReturn,
+        )?;
         if !groups.is_empty() {
             return Err(self.expected("attribute"));
         }
@@ -6814,7 +7021,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn parse_optional_return_attrs(&mut self) -> ParseResult<AttributeStorage> {
         let mut storage = AttributeStorage::new();
-        let groups = self.parse_fn_attribute_value_pairs(&mut storage, AttrIndex::Return, false)?;
+        let groups = self.parse_fn_attribute_value_pairs(
+            &mut storage,
+            AttrIndex::Return,
+            AttrListContext::ParamOrReturn,
+        )?;
         if !groups.is_empty() {
             return Err(self.expected("attribute"));
         }
@@ -6823,8 +7034,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn parse_optional_fn_attrs(&mut self) -> ParseResult<(AttributeStorage, Vec<u32>)> {
         let mut storage = AttributeStorage::new();
-        let groups =
-            self.parse_fn_attribute_value_pairs(&mut storage, AttrIndex::Function, true)?;
+        let groups = self.parse_fn_attribute_value_pairs(
+            &mut storage,
+            AttrIndex::Function,
+            AttrListContext::FunctionHeader,
+        )?;
         Ok((storage, groups))
     }
 
@@ -6907,7 +7121,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.parse_optional_preemption_visibility_dll()?;
         let calling_conv = self.parse_optional_calling_conv()?;
         let mut attrs = AttributeStorage::new();
-        self.parse_fn_attribute_value_pairs(&mut attrs, AttrIndex::Return, false)?;
+        self.parse_fn_attribute_value_pairs(
+            &mut attrs,
+            AttrIndex::Return,
+            AttrListContext::ParamOrReturn,
+        )?;
         let ret_ty = self.parse_type(true)?;
         let (name_id, name) = match self.peek() {
             Token::GlobalVar(_) => {
@@ -6937,7 +7155,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     expected: "parameter slot fits in u32".into(),
                     loc: DiagLoc::span(decl_loc),
                 })?;
-                self.parse_fn_attribute_value_pairs(&mut attrs, AttrIndex::Param(slot), false)?;
+                self.parse_fn_attribute_value_pairs(
+                    &mut attrs,
+                    AttrIndex::Param(slot),
+                    AttrListContext::ParamOrReturn,
+                )?;
                 let p_name = if matches!(self.peek(), Token::LocalVar(_)) {
                     let n = self
                         .current_str_payload()
@@ -7189,7 +7411,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.parse_optional_preemption_visibility_dll()?;
         let calling_conv = self.parse_optional_calling_conv()?;
         let mut attrs = AttributeStorage::new();
-        self.parse_fn_attribute_value_pairs(&mut attrs, AttrIndex::Return, false)?;
+        self.parse_fn_attribute_value_pairs(
+            &mut attrs,
+            AttrIndex::Return,
+            AttrListContext::ParamOrReturn,
+        )?;
         let ret_ty = self.parse_type(true)?;
         let (name_id, name) = match self.peek() {
             Token::GlobalVar(_) => {
@@ -7235,7 +7461,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     expected: "parameter slot fits in u32".into(),
                     loc: DiagLoc::span(decl_loc),
                 })?;
-                self.parse_fn_attribute_value_pairs(&mut attrs, AttrIndex::Param(slot), false)?;
+                self.parse_fn_attribute_value_pairs(
+                    &mut attrs,
+                    AttrIndex::Param(slot),
+                    AttrListContext::ParamOrReturn,
+                )?;
                 let p_name = match self.peek() {
                     Token::LocalVar(_) => {
                         let s = self
