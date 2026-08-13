@@ -1051,9 +1051,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<MetadataId<B>> {
         if let Some(entry) = self.metadata_slots.get_mut(&slot) {
             if entry.defined {
-                return Err(ParseError::Redefinition {
-                    kind: SymbolKind::Metadata,
-                    id: SymbolId::Numbered(slot),
+                // `parseStandaloneMetadata`'s `try_emplace` guard. Upstream
+                // names neither the id nor the kind, and capitalises the
+                // first word — the only place it does so outside `parseScope`
+                // and `parseOrdering`.
+                return Err(ParseError::Message {
+                    message: "Metadata id is already used".into(),
                     loc: DiagLoc::span(loc),
                 });
             }
@@ -2237,7 +2240,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.module.set_data_layout(parsed);
                 Ok(())
             }
-            _ => Err(self.expected("'triple' or 'datalayout' after 'target'")),
+            // `parseTargetDefinition`'s `default:` arm.
+            _ => Err(self.message("unknown target property")),
         }
     }
 
@@ -2545,7 +2549,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_standalone_metadata(&mut self) -> ParseResult<()> {
         let loc = self.bump()?; // consume Token::Exclaim
         let slot = self.parse_uint32()?;
-        self.expect_punct(PunctKind::Equal, "'=' after metadata id")?;
+        self.expect_punct(PunctKind::Equal, "'=' here")?;
+        // "Detect common error, from old metadata syntax" — `!0 = metadata
+        // !{...}` used to be legal, so a type token here gets its own message
+        // rather than the generic one.
+        if matches!(self.peek(), Token::PrimitiveType(_)) {
+            return Err(self.message("unexpected type in metadata definition"));
+        }
         let distinct = self.eat_keyword(Keyword::Distinct)?;
         match self.peek() {
             Token::Exclaim => {
@@ -4089,7 +4099,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             } else if matches!(self.peek(), Token::MetadataVar(_)) {
                 metadata.push(self.parse_named_metadata_attachment()?);
             } else {
-                return Err(self.expected("global attribute"));
+                // `parseGlobal`'s property loop falls through to
+                // `parseOptionalComdat` and, when that finds no comdat,
+                // reports this — bang included.
+                return Err(self.message("unknown global variable property!"));
             }
         }
 
@@ -4211,16 +4224,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
 
         let value_type = self.parse_type(false)?;
-        self.expect_punct(PunctKind::Comma, "',' after the alias or ifunc type")?;
+        self.expect_punct(PunctKind::Comma, "comma after alias or ifunc's type")?;
+        // `AliaseeLoc`, captured before the aliasee is read — upstream anchors
+        // both the pointer-type check and `invalid aliasee` here.
+        let aliasee_loc = self.loc();
         let target_ty = self.parse_type(false)?;
         let target_loc = self.loc();
         match target_ty.into_type_enum() {
             AnyTypeEnum::Pointer(_) => {}
             _ => {
-                return Err(ParseError::Expected {
-                    expected: "pointer type for the alias or ifunc target".into(),
-                    loc: DiagLoc::span(self.loc()),
-                });
+                return Err(
+                    self.message_at(aliasee_loc, "An alias or ifunc must have pointer type")
+                );
             }
         }
         // A forward-referenced target becomes a null placeholder patched at
@@ -4245,7 +4260,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             if self.eat_keyword(Keyword::Partition)? {
                 partition = Some(self.parse_string_constant("partition name")?);
             } else {
-                return Err(self.expected("unknown alias or ifunc property"));
+                // `parseAliasOrIFunc`'s property loop, bang included. It was
+                // routed through `expected`, which rendered
+                // `expected unknown alias or ifunc property` — the word
+                // "expected" glued onto a message that is not one.
+                return Err(self.message("unknown alias or ifunc property!"));
             }
         }
 

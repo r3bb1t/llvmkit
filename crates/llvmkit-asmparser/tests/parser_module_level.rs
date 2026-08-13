@@ -103,6 +103,60 @@ fn a_bad_code_model_reports_upstream_text() {
     }
 }
 
+/// The module-entity diagnostics that name a *property*, each verbatim.
+///
+/// Three of them are prose that does not begin with "expected", and llvmkit
+/// had routed two through the `Expected` variant — which rendered
+/// `expected unknown alias or ifunc property`, gluing the word onto a message
+/// that is not one. Note the bangs: upstream ends both property messages with
+/// `!` and neither is a typo to tidy.
+///
+/// `Metadata id is already used` capitalises its first word, joining
+/// `parseScope`'s and `parseOrdering`'s messages as the only ones that do.
+///
+/// Each trigger is a real keyword in the wrong place (`nounwind`), not a
+/// misspelling: llvmkit's lexer answers `unknown keyword '...'` for a word it
+/// does not know, so a misspelled trigger never reaches the parser. That is
+/// the same re-layering the `memory(...)` and `uwtable` fixtures wait on.
+#[test]
+fn module_entity_property_diagnostics_match_upstream_text() {
+    fn parse_err(src: &str) -> String {
+        let m = llvmkit_ir::Module::dynamic("module_entity_diagnostics");
+        Parser::new(src.as_bytes(), &m)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("malformed module entity is rejected")
+            .to_string()
+    }
+
+    assert_eq!(
+        parse_err("target nounwind = \"x\"\n"),
+        "unknown target property"
+    );
+    assert_eq!(
+        parse_err("@g = global i32 0, nounwind\n"),
+        "unknown global variable property!"
+    );
+    assert_eq!(
+        parse_err("@t = global i32 0\n@a = alias i32, ptr @t, nounwind\n"),
+        "unknown alias or ifunc property!"
+    );
+    assert_eq!(
+        parse_err("@t = global i32 0\n@a = alias i32, i32 7\n"),
+        "An alias or ifunc must have pointer type"
+    );
+    assert_eq!(
+        parse_err("!0 = !{}\n!0 = !{}\n"),
+        "Metadata id is already used"
+    );
+    // "Detect common error, from old metadata syntax": `!0 = metadata !{}`
+    // was once legal, so a type token here gets its own message.
+    assert_eq!(
+        parse_err("!0 = i32 !{}\n"),
+        "unexpected type in metadata definition"
+    );
+}
+
 /// Mirrors `test/Assembler/datalayout.ll` + the trailing `target triple`
 /// arm: a module that carries both directives round-trips through the
 /// AsmWriter byte-for-byte.

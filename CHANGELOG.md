@@ -19,6 +19,20 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Module-level entities
+
+- **Changed: the property diagnostics carry upstream's text.**
+  `unknown target property`, `unknown global variable property!` and
+  `unknown alias or ifunc property!` — both bangs included — plus
+  `An alias or ifunc must have pointer type`,
+  `Metadata id is already used` (capitalised, like `parseScope`'s and
+  `parseOrdering`'s), and `unexpected type in metadata definition`, which
+  llvmkit had no check for at all: upstream detects `!0 = metadata !{}`, the
+  old syntax, and says so rather than reporting a generic failure. Two of
+  these had been routed through the `Expected` variant, rendering
+  `expected unknown alias or ifunc property` — the word glued onto a message
+  that is not one.
+
 ### Global variables
 
 - **Added: `code_model "small"` and the four sanitizer keywords on globals**
