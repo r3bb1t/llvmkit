@@ -21,6 +21,16 @@ cut, entries accumulate under **Unreleased**.
 
 ### Module-level entities
 
+- **Fixed: local linkage did not constrain visibility on globals or
+  functions.** `@var = internal hidden global i32 0` and
+  `define internal hidden void @f()` were both accepted;
+  `isValidVisibilityForLinkage` and `isValidDLLStorageClassForLinkage` are
+  asked at three call sites upstream, and llvmkit had them on the *alias* path
+  only. The predicate is now one function the three sites share, and the whole
+  twelve-fixture family
+  `{internal,private}-{hidden,protected}-{alias,function,variable}.ll` is
+  ported.
+
 - **Changed: the property diagnostics carry upstream's text.**
   `unknown target property`, `unknown global variable property!` and
   `unknown alias or ifunc property!` — both bangs included — plus

@@ -2109,6 +2109,39 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(ord)
     }
 
+    /// `isValidVisibilityForLinkage` and `isValidDLLStorageClassForLinkage`
+    /// (`LLParser.cpp`), together, since upstream asks them as a pair at every
+    /// one of its three call sites: `parseAliasOrIFunc`, `parseGlobal` and
+    /// `parseFunctionHeader`.
+    ///
+    /// Both read the same way: a *local* linkage — internal or private —
+    /// forces default visibility and default DLL storage class, and any other
+    /// linkage constrains neither. Both are reported at `NameLoc`, the
+    /// entity's own name, not at the offending keyword.
+    fn check_linkage_agreement(
+        linkage: Linkage,
+        visibility: Visibility,
+        dll_storage_class: DllStorageClass,
+        name_loc: Span,
+    ) -> ParseResult<()> {
+        if !matches!(linkage, Linkage::Internal | Linkage::Private) {
+            return Ok(());
+        }
+        if visibility != Visibility::Default {
+            return Err(ParseError::Message {
+                message: "symbol with local linkage must have default visibility".into(),
+                loc: DiagLoc::span(name_loc),
+            });
+        }
+        if dll_storage_class != DllStorageClass::Default {
+            return Err(ParseError::Message {
+                message: "symbol with local linkage cannot have a DLL storage class".into(),
+                loc: DiagLoc::span(name_loc),
+            });
+        }
+        Ok(())
+    }
+
     /// `code_model "small"`. Ports `LLParser::parseOptionalCodeModel`.
     ///
     /// Both failures — an unrecognised spelling and a token that is not a
@@ -4015,6 +4048,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let externally_initialized = self.eat_keyword(Keyword::ExternallyInitialized)?;
 
+        // `parseGlobal` opens with the same pair `parseAliasOrIFunc` does.
+        // llvmkit checked aliases only, so `@g = private hidden global i32 0`
+        // was accepted here while its alias twin was rejected.
+        Self::check_linkage_agreement(linkage, visibility, dll_storage_class, decl_loc)?;
+
         let is_constant = if self.eat_keyword(Keyword::Global)? {
             false
         } else if self.eat_keyword(Keyword::Constant)? {
@@ -4206,22 +4244,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(decl_loc),
             });
         }
-        if matches!(linkage, Linkage::Internal | Linkage::Private)
-            && visibility != Visibility::Default
-        {
-            return Err(ParseError::Message {
-                message: "symbol with local linkage must have default visibility".into(),
-                loc: DiagLoc::span(decl_loc),
-            });
-        }
-        if matches!(linkage, Linkage::Internal | Linkage::Private)
-            && dll_storage_class != DllStorageClass::Default
-        {
-            return Err(ParseError::Message {
-                message: "symbol with local linkage cannot have a DLL storage class".into(),
-                loc: DiagLoc::span(decl_loc),
-            });
-        }
+        Self::check_linkage_agreement(linkage, visibility, dll_storage_class, decl_loc)?;
 
         let value_type = self.parse_type(false)?;
         self.expect_punct(PunctKind::Comma, "comma after alias or ifunc's type")?;
@@ -7287,6 +7310,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let decl_loc = self.loc();
         self.bump()?;
+        // `parseDeclare` reaches `parseFunctionHeader` too, so a declaration
+        // gets the same linkage/visibility pair a definition does.
+        Self::check_linkage_agreement(linkage, visibility, dll_storage_class, decl_loc)?;
         self.expect_punct(PunctKind::LParen, "'(' in function declaration")?;
         let mut params = Vec::new();
         let mut param_names: Vec<Option<String>> = Vec::new();
@@ -7577,6 +7603,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let decl_loc = self.loc();
         self.bump()?;
+        // `parseFunctionHeader`'s copy of the same pair the global and alias
+        // paths run, reported at the function's own name.
+        Self::check_linkage_agreement(linkage, visibility, dll_storage_class, decl_loc)?;
         match resolve_intrinsic_name(&name) {
             IntrinsicNameResolution::NonIntrinsic => {}
             IntrinsicNameResolution::UnknownIntrinsic => {

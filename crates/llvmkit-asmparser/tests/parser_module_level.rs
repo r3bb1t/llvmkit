@@ -103,6 +103,83 @@ fn a_bad_code_model_reports_upstream_text() {
     }
 }
 
+/// Ports the whole twelve-fixture family
+/// `test/Assembler/{internal,private}-{hidden,protected}-{alias,function,variable}.ll`
+/// verbatim, each asserting its CHECK line.
+///
+/// The family exists because upstream asks the same pair —
+/// `isValidVisibilityForLinkage` and `isValidDLLStorageClassForLinkage` — at
+/// three separate call sites, and the fixtures cover all three. llvmkit had
+/// the checks on the *alias* path only, so `@var = internal hidden global i32 0`
+/// and `define internal hidden void @f()` were both accepted. The predicate is
+/// now one function the three sites share, which is why porting eight of the
+/// twelve and leaving four would have been the wrong split.
+#[test]
+fn local_linkage_constrains_visibility_everywhere() {
+    fn parse_err(src: &str) -> String {
+        let m = llvmkit_ir::Module::dynamic("local_linkage");
+        Parser::new(src.as_bytes(), &m)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("local linkage with non-default visibility is rejected")
+            .to_string()
+    }
+
+    for linkage in ["internal", "private"] {
+        for visibility in ["hidden", "protected"] {
+            // ...-variable.ll
+            assert_eq!(
+                parse_err(&format!("@var = {linkage} {visibility} global i32 0\n")),
+                "symbol with local linkage must have default visibility",
+                "{linkage} {visibility} variable"
+            );
+            // ...-alias.ll
+            assert_eq!(
+                parse_err(&format!(
+                    "@global = global i32 0\n@alias = {linkage} {visibility} alias i32, ptr @global\n"
+                )),
+                "symbol with local linkage must have default visibility",
+                "{linkage} {visibility} alias"
+            );
+            // ...-function.ll
+            assert_eq!(
+                parse_err(&format!(
+                    "define {linkage} {visibility} void @function() {{\nentry:\n  ret void\n}}\n"
+                )),
+                "symbol with local linkage must have default visibility",
+                "{linkage} {visibility} function"
+            );
+        }
+    }
+}
+
+/// The DLL-storage-class half of the same pair, which upstream has no fixture
+/// for — `isValidDLLStorageClassForLinkage` is checked immediately after the
+/// visibility one at all three sites, so it is anchored on the symbol.
+#[test]
+fn local_linkage_constrains_dll_storage_class_everywhere() {
+    fn parse_err(src: &str) -> String {
+        let m = llvmkit_ir::Module::dynamic("local_linkage_dll");
+        Parser::new(src.as_bytes(), &m)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("local linkage with a DLL storage class is rejected")
+            .to_string()
+    }
+
+    for src in [
+        "@var = internal dllexport global i32 0\n",
+        "@global = global i32 0\n@alias = private dllexport alias i32, ptr @global\n",
+        "define internal dllexport void @function() {\nentry:\n  ret void\n}\n",
+    ] {
+        assert_eq!(
+            parse_err(src),
+            "symbol with local linkage cannot have a DLL storage class",
+            "{src}"
+        );
+    }
+}
+
 /// The module-entity diagnostics that name a *property*, each verbatim.
 ///
 /// Three of them are prose that does not begin with "expected", and llvmkit
