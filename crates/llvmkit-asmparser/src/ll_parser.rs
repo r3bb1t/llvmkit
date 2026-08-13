@@ -9601,9 +9601,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(v)
     }
 
-    /// Optionally skip a calling convention keyword. Returns the CC token if
-    /// consumed, but the calling convention is not yet plumbed through to
-    /// the IR (deferred).
+    /// `LLParser::parseOptionalCallingConv`, whole. An absent convention is
+    /// `ccc`, not an error, so this never fails on a token it does not know.
+    ///
+    /// The keyword table is checked against upstream's switch by
+    /// `calling_conv_drift.rs`; the printed spellings live on
+    /// [`llvmkit_ir::CallingConv`] and mirror `printCallingConv`.
     fn parse_optional_calling_conv(&mut self) -> ParseResult<CallingConv> {
         let cc = match self.peek() {
             Token::Kw(Keyword::Ccc) => Some(CallingConv::C),
@@ -9612,35 +9615,77 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::Kw(Keyword::Anyregcc) => Some(CallingConv::ANY_REG),
             Token::Kw(Keyword::PreserveMostcc) => Some(CallingConv::PRESERVE_MOST),
             Token::Kw(Keyword::PreserveAllcc) => Some(CallingConv::PRESERVE_ALL),
+            Token::Kw(Keyword::PreserveNonecc) => Some(CallingConv::PRESERVE_NONE),
             Token::Kw(Keyword::Ghccc) => Some(CallingConv::GHC),
             Token::Kw(Keyword::Swiftcc) => Some(CallingConv::SWIFT),
             Token::Kw(Keyword::Swifttailcc) => Some(CallingConv::SWIFT_TAIL),
+            Token::Kw(Keyword::CxxFastTlscc) => Some(CallingConv::CXX_FAST_TLS),
             Token::Kw(Keyword::X86Stdcallcc) => Some(CallingConv::X86_STD_CALL),
             Token::Kw(Keyword::X86Fastcallcc) => Some(CallingConv::X86_FAST_CALL),
             Token::Kw(Keyword::X86Thiscallcc) => Some(CallingConv::X86_THIS_CALL),
             Token::Kw(Keyword::X86Vectorcallcc) => Some(CallingConv::X86_VECTOR_CALL),
             Token::Kw(Keyword::X86Regcallcc) => Some(CallingConv::X86_REG_CALL),
+            Token::Kw(Keyword::X86Intrcc) => Some(CallingConv::X86_INTR),
             Token::Kw(Keyword::IntelOclBicc) => Some(CallingConv::INTEL_OCL_BI),
             Token::Kw(Keyword::Win64cc) => Some(CallingConv::WIN64),
             Token::Kw(Keyword::X86_64Sysvcc) => Some(CallingConv::X86_64_SYS_V),
             Token::Kw(Keyword::Hhvmcc) => Some(CallingConv::DUMMY_HHVM),
             Token::Kw(Keyword::HhvmCcc) => Some(CallingConv::DUMMY_HHVM_C),
+            Token::Kw(Keyword::ArmApcscc) => Some(CallingConv::ARM_APCS),
+            Token::Kw(Keyword::ArmAapcscc) => Some(CallingConv::ARM_AAPCS),
+            Token::Kw(Keyword::ArmAapcsVfpcc) => Some(CallingConv::ARM_AAPCS_VFP),
+            Token::Kw(Keyword::Aarch64VectorPcs) => Some(CallingConv::AARCH64_VECTOR_CALL),
+            Token::Kw(Keyword::Aarch64SveVectorPcs) => Some(CallingConv::AARCH64_SVE_VECTOR_CALL),
+            Token::Kw(Keyword::Aarch64SmePreservemostFromX0) => {
+                Some(CallingConv::AARCH64_SME_PRESERVE_MOST_FROM_X0)
+            }
+            Token::Kw(Keyword::Aarch64SmePreservemostFromX1) => {
+                Some(CallingConv::AARCH64_SME_PRESERVE_MOST_FROM_X1)
+            }
+            Token::Kw(Keyword::Aarch64SmePreservemostFromX2) => {
+                Some(CallingConv::AARCH64_SME_PRESERVE_MOST_FROM_X2)
+            }
+            Token::Kw(Keyword::Msp430Intrcc) => Some(CallingConv::MSP430_INTR),
+            Token::Kw(Keyword::AvrIntrcc) => Some(CallingConv::AVR_INTR),
+            Token::Kw(Keyword::AvrSignalcc) => Some(CallingConv::AVR_SIGNAL),
+            Token::Kw(Keyword::PtxKernel) => Some(CallingConv::PTX_KERNEL),
+            Token::Kw(Keyword::PtxDevice) => Some(CallingConv::PTX_DEVICE),
+            Token::Kw(Keyword::SpirKernel) => Some(CallingConv::SPIR_KERNEL),
+            Token::Kw(Keyword::SpirFunc) => Some(CallingConv::SPIR_FUNC),
             Token::Kw(Keyword::AmdgpuVs) => Some(CallingConv::AMDGPU_VS),
+            Token::Kw(Keyword::AmdgpuGfx) => Some(CallingConv::AMDGPU_GFX),
             Token::Kw(Keyword::AmdgpuLs) => Some(CallingConv::AMDGPU_LS),
             Token::Kw(Keyword::AmdgpuHs) => Some(CallingConv::AMDGPU_HS),
             Token::Kw(Keyword::AmdgpuEs) => Some(CallingConv::AMDGPU_ES),
             Token::Kw(Keyword::AmdgpuGs) => Some(CallingConv::AMDGPU_GS),
             Token::Kw(Keyword::AmdgpuPs) => Some(CallingConv::AMDGPU_PS),
             Token::Kw(Keyword::AmdgpuCs) => Some(CallingConv::AMDGPU_CS),
+            Token::Kw(Keyword::AmdgpuCsChain) => Some(CallingConv::AMDGPU_CS_CHAIN),
+            Token::Kw(Keyword::AmdgpuCsChainPreserve) => {
+                Some(CallingConv::AMDGPU_CS_CHAIN_PRESERVE)
+            }
             Token::Kw(Keyword::AmdgpuKernel) => Some(CallingConv::AMDGPU_KERNEL),
+            Token::Kw(Keyword::AmdgpuGfxWholeWave) => Some(CallingConv::AMDGPU_GFX_WHOLE_WAVE),
             Token::Kw(Keyword::Tailcc) => Some(CallingConv::TAIL),
             Token::Kw(Keyword::CfguardCheckcc) => Some(CallingConv::CF_GUARD_CHECK),
             Token::Kw(Keyword::M68kRtdcc) => Some(CallingConv::M68K_RTD),
+            Token::Kw(Keyword::Graalcc) => Some(CallingConv::GRAAL),
+            Token::Kw(Keyword::RiscvVectorCc) => Some(CallingConv::RISCV_VECTOR_CALL),
+            Token::Kw(Keyword::CheriotCompartmentcallcc) => {
+                Some(CallingConv::CHERIOT_COMPARTMENT_CALL)
+            }
+            Token::Kw(Keyword::CheriotCompartmentcalleecc) => {
+                Some(CallingConv::CHERIOT_COMPARTMENT_CALLEE)
+            }
+            Token::Kw(Keyword::CheriotLibrarycallcc) => Some(CallingConv::CHERIOT_LIBRARY_CALL),
+            Token::Kw(Keyword::RiscvVlsCc) => return self.parse_riscv_vls_calling_conv(),
             Token::Kw(Keyword::Cc) => {
                 self.bump()?;
-                let raw = self.parse_uint32()?;
-                return CallingConv::from_raw(raw)
-                    .ok_or_else(|| self.expected("valid calling convention number"));
+                // `parseUInt32(CC)` and nothing else — upstream validates no
+                // range here. `MaxID` (1023) bounds the *bitcode* encoding,
+                // and neither the parser nor the Verifier consults it, so
+                // `cc 5000` is legal.
+                return Ok(CallingConv::from_raw(self.parse_uint32()?));
             }
             _ => None,
         };
@@ -9650,6 +9695,47 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else {
             Ok(CallingConv::C)
         }
+    }
+
+    /// `riscv_vls_cc` / `riscv_vls_cc(<ABI_VLEN>)`.
+    ///
+    /// **This reproduces an upstream bug, deliberately.** The `kw_riscv_vls_cc`
+    /// arm consumes its own keyword with `Lex.Lex()` and then, when no `(`
+    /// follows, `break`s to the switch's common tail — which calls `Lex.Lex()`
+    /// a *second* time. A bare `riscv_vls_cc` therefore swallows the token
+    /// after it, so `define riscv_vls_cc void @f()` loses its return type.
+    /// Every other arm reaches that tail without having consumed anything.
+    ///
+    /// It is unreachable from printed IR: `printCallingConv` writes these
+    /// twelve conventions only as `riscv_vls_cc(<N>)`, never bare. Reproduced
+    /// rather than fixed because the program's contract is upstream's
+    /// behaviour, not upstream's intent; recorded in `docs/future-work.md`.
+    fn parse_riscv_vls_calling_conv(&mut self) -> ParseResult<CallingConv> {
+        self.expect_keyword(Keyword::RiscvVlsCc, "'riscv_vls_cc'")?;
+        if !self.eat_punct(PunctKind::LParen)? {
+            // The upstream double-`Lex.Lex()` described above.
+            self.bump()?;
+            return Ok(CallingConv::RISCV_VLS_CALL_128);
+        }
+        let vlen_loc = self.loc();
+        let vlen = self.parse_uint32()?;
+        self.expect_punct(PunctKind::RParen, "')'")?;
+        let cc = match vlen {
+            32 => CallingConv::RISCV_VLS_CALL_32,
+            64 => CallingConv::RISCV_VLS_CALL_64,
+            128 => CallingConv::RISCV_VLS_CALL_128,
+            256 => CallingConv::RISCV_VLS_CALL_256,
+            512 => CallingConv::RISCV_VLS_CALL_512,
+            1024 => CallingConv::RISCV_VLS_CALL_1024,
+            2048 => CallingConv::RISCV_VLS_CALL_2048,
+            4096 => CallingConv::RISCV_VLS_CALL_4096,
+            8192 => CallingConv::RISCV_VLS_CALL_8192,
+            16384 => CallingConv::RISCV_VLS_CALL_16384,
+            32768 => CallingConv::RISCV_VLS_CALL_32768,
+            65536 => CallingConv::RISCV_VLS_CALL_65536,
+            _ => return Err(self.message_at(vlen_loc, "unknown RISC-V ABI VLEN")),
+        };
+        Ok(cc)
     }
 
     /// `ValID ::= 'asm' SideEffect? AlignStack? IntelDialect? Unwind?

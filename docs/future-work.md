@@ -12,6 +12,31 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## Two upstream calling-convention bugs: one reproduced, one not (found 2026-08-13, LLParser parity W6)
+
+Both were found by the round-trip drift lock in `calling_conv_drift.rs`, and
+they pull in opposite directions, so the choices are recorded here.
+
+**Reproduced: bare `riscv_vls_cc` consumes the following token.**
+`parseOptionalCallingConv`'s `kw_riscv_vls_cc` arm calls `Lex.Lex()` itself and
+then, when no `(` follows, `break`s to the switch's shared tail — which calls
+`Lex.Lex()` again. Every other arm reaches that tail without having consumed
+anything. So `define riscv_vls_cc void @f()` loses its return type upstream,
+and now here too (`Parser::parse_riscv_vls_calling_conv`). It is unreachable
+from printed IR, because `printCallingConv` writes those twelve conventions
+only as `riscv_vls_cc(<N>)`. Reproduced because the contract is upstream's
+behaviour, not its intent — revisit if upstream fixes it.
+
+**Not reproduced: the numeric fallback prints without a space.**
+`printCallingConv`'s default is `Out << "cc" << cc`, so an unnamed convention
+prints as `cc11`, which `LLLexer` reads as one unknown identifier. `llvm-as`
+therefore cannot re-parse `llvm-dis`'s own output for `HiPE`, `AVR_BUILTIN`,
+`MSP430_BUILTIN`, `WASM_EmscriptenInvoke`, `M68k_INTR` or the two ARM64EC
+thunks. llvmkit prints `cc 11` instead — the spelling upstream's *parser*
+accepts, so llvmkit's output round-trips here **and** remains valid input to
+`llvm-as`. This is the one place the byte-for-byte printer rule is
+deliberately broken, and it is broken in the safe direction.
+
 ## Printer — function attributes are never hoisted into an attribute group (found 2026-08-13, LLParser parity W5)
 
 `AssemblyWriter` prints function attributes **inline on the header**

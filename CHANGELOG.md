@@ -19,6 +19,30 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Calling conventions
+
+- **Fixed: 28 calling conventions parsed as `ccc`.** The parser matched 31
+  keywords while the printer knew 60 — so `spir_kernel`, `ptx_kernel`,
+  `graalcc`, `preserve_nonecc`, `cxx_fast_tlscc`, `x86_intrcc`, the ARM/AArch64
+  sets (including all three `aarch64_sme_preservemost_from_x*`), the AMDGPU
+  additions (`amdgpu_gfx`, the two `cs_chain` forms, `gfx_whole_wave`), the
+  AVR/MSP430 interrupt conventions and the three CHERIoT ones were all read as
+  the default and printed back wrong. Every keyword upstream's
+  `parseOptionalCallingConv` accepts is now accepted, `riscv_vls_cc(<N>)`
+  included, with `unknown RISC-V ABI VLEN` for a width outside the twelve legal
+  ones.
+
+  The lexer already had all 59 keywords and the printer all 60 mnemonics; only
+  the parser's table was short. A new drift lock walks the whole id space and
+  asserts that everything llvmkit can *print* it can *read back*, which is the
+  invariant that was silently false.
+
+- **Changed: `cc <N>` accepts any `u32`.** `CallingConv::from_raw` is now
+  infallible. It used to reject anything above `MaxID` (1023), but that
+  constant bounds the bitcode field — `parseOptionalCallingConv`'s `cc` arm is
+  a bare `parseUInt32(CC)` and the Verifier never mentions it — so `cc 1024`
+  was a parse error llvmkit invented.
+
 ### Attributes
 
 - **Added: `initializes((-4, 0), (4, 8))`, and with it `ConstantRangeList`.**
