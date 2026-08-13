@@ -806,6 +806,96 @@ fn argument_carrying_attributes_parse_on_a_function_header() {
     }
 }
 
+/// Ports the four portable splits of `test/Assembler/byref-parse-error-*.ll`,
+/// which pin `parseRequiredTypeAttr`'s bare texts. `-0` and `-5` give
+/// `expected '('` in parameter and return position; `-1` and `-3` fall through
+/// to `parseType`'s own `expected type`.
+///
+/// The other seven splits of that family turn on a type llvmkit's `parse_type`
+/// rejects with a different message, and belong with the W3 type work.
+#[test]
+fn byref_parse_errors_match_upstream_text() {
+    fn parse_err(src: &str) -> String {
+        parse_dynamic(src)
+            .expect_err("malformed byref is rejected")
+            .to_string()
+    }
+
+    // byref-parse-error-0.ll
+    assert_eq!(
+        parse_err("define void @test_byref(ptr byref) {\n  ret void\n}\n"),
+        "expected '('"
+    );
+    // byref-parse-error-5.ll — the same check in return position.
+    assert_eq!(
+        parse_err("define byref ptr @test_byref() {\n  ret void\n}\n"),
+        "expected '('"
+    );
+    // byref-parse-error-1.ll
+    assert_eq!(
+        parse_err("define void @test_byref(ptr byref() {\n  ret void\n}\n"),
+        "expected type"
+    );
+    // byref-parse-error-3.ll
+    assert_eq!(
+        parse_err("define void @test_byref(ptr byref(-1)) {\n  ret void\n}\n"),
+        "expected type"
+    );
+}
+
+/// Ports `test/Assembler/align-param-attr-error{0,2}.ll` and
+/// `test/Assembler/allockind-missing.ll` and `invalid-attrgrp.ll`.
+///
+/// `align-param-attr-error1.ll` is not ported: its CHECK is
+/// `expected '{' in function body`, which is the function-body frame's
+/// message and still reads `expected '{' to open function body` here — that
+/// belongs with the function-header wave, not this one.
+#[test]
+fn attribute_argument_fixtures_match_upstream_text() {
+    fn parse_err(src: &str) -> String {
+        parse_dynamic(src)
+            .expect_err("malformed attribute argument is rejected")
+            .to_string()
+    }
+
+    // align-param-attr-error0.ll
+    assert_eq!(
+        parse_err("define void @missing_rparen(ptr align(4 %ptr) {\n  ret void\n}\n"),
+        "expected ')'"
+    );
+    // align-param-attr-error2.ll — `parseUInt64`'s message, not a bespoke one.
+    assert_eq!(
+        parse_err("define void @missing_value(ptr align () %ptr) {\n  ret void\n}\n"),
+        "expected integer"
+    );
+    // allockind-missing.ll
+    assert_eq!(
+        parse_err("declare void @f0() allockind()\n"),
+        "expected allockind value"
+    );
+    // invalid-attrgrp.ll
+    assert_eq!(parse_err("attributes\n"), "expected attribute group id");
+}
+
+/// `parseUInt32`'s second message, which llvmkit collapsed into the first by
+/// parsing straight into a `u32`. It is why the group form is *stricter* than
+/// the inline one: `attributes #0 = { align = 4294967296 }` is rejected while
+/// `align 4294967296` is accepted, because only the group form goes through
+/// `parseUInt32`.
+///
+/// No upstream fixture pins it; anchored on `LLParser::parseUInt32`.
+#[test]
+fn a_uint32_field_reports_its_own_overflow() {
+    let err =
+        parse_dynamic("define void @f() #0 { ret void }\nattributes #0 = { align = 4294967296 }\n")
+            .expect_err("a 33-bit align value does not fit parseUInt32")
+            .to_string();
+    assert_eq!(err, "expected 32-bit integer (too large)");
+
+    parse_dynamic("@g = global i8 0, align 4294967296\n")
+        .expect("the inline form reads a full uint64");
+}
+
 /// `parseUnnamedAttrGrp` and its loop's own diagnostics.
 ///
 /// `unterminated attribute group` fires for any token that is not an

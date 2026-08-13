@@ -292,10 +292,7 @@ fn diexpression_declares_no_named_fields() {
         0
     );
     let err = parse_err("!0 = !DIExpression(line: 1)\n");
-    assert!(
-        matches!(&err, ParseError::Expected { expected, .. } if expected.contains("DIExpression")),
-        "expected an element-path error, got: {err:?}"
-    );
+    assert_eq!(err.to_string(), "expected unsigned integer");
 }
 
 /// llvmkit-specific: no upstream counterpart. This is the weak half of a drift

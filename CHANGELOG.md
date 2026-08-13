@@ -34,6 +34,19 @@ cut, entries accumulate under **Unreleased**.
   attribute LLVM 22.1.4 declares is accepted in every position it declares**
   — the drift guard's `NOT_YET_MODELED` list is empty.
 
+- **Changed: `parseUInt32` / `parseUInt64` speak upstream's texts.** Every one
+  of upstream's ~25 call sites reports the same `expected integer`; llvmkit
+  passed a bespoke label per site (`expected alignment (bytes)`,
+  `expected uselistorder index`, …), so all 25 diverged. `parseUInt32`'s
+  second message, `expected 32-bit integer (too large)`, existed nowhere — it
+  had been collapsed into the first by parsing straight into a `u32`. That
+  distinction is load-bearing: it is why `attributes #0 = { align = 4294967296 }`
+  is rejected while the inline `align 4294967296` is accepted.
+
+  One site was wrong to share the helper at all: `parseDIExpressionBody`
+  inspects the token itself and says `expected unsigned integer`. It now does
+  too.
+
 - **Fixed (P0): an argument-carrying attribute on a function header did not
   parse at all.** `define void @f() uwtable { ret void }` — ordinary `clang`
   output — failed with `expected '{' to open function body`, and so did

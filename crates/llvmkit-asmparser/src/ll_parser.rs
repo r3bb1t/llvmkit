@@ -1812,7 +1812,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             Token::IntegerLit(_) => {
                 let loc = self.loc();
-                let n = self.parse_uint32("integer or string constant")?;
+                let n = self.parse_uint32()?;
                 // `isUInt<24>` — upstream checks the parsed value, not the
                 // token, so the diagnostic points at the number.
                 if n >= (1 << 24) {
@@ -1838,25 +1838,40 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn parse_uint32(&mut self, expected: &'static str) -> ParseResult<u32> {
-        let n = match self.peek() {
+    /// Mirrors `LLParser::parseUInt32`, including its second message: a value
+    /// that does not round-trip through `unsigned` is
+    /// `expected 32-bit integer (too large)`, which is why
+    /// `attributes #0 = { align = 4294967296 }` fails where the inline
+    /// `align 4294967296` succeeds.
+    fn parse_uint32(&mut self) -> ParseResult<u32> {
+        // Upstream reads the token as an unsigned APSInt first and only then
+        // asks whether it fits, so "not an integer" and "too large" are
+        // separate messages. Parsing straight into a `u32` would collapse them.
+        let digits = match self.peek() {
             Token::IntegerLit(IntLit {
                 sign: Sign::Pos,
                 base: NumBase::Dec,
                 digits,
-            }) => digits.parse::<u32>().ok(),
-            _ => None,
+            }) => *digits,
+            _ => return Err(self.expected("integer")),
         };
-        match n {
-            Some(n) => {
-                self.bump()?;
-                Ok(n)
-            }
-            None => Err(self.expected(expected)),
-        }
+        let Ok(value) = digits.parse::<u64>() else {
+            // `getLimitedValue(0xFFFFFFFFULL + 1)` saturates rather than
+            // failing, so a literal too wide even for 64 bits still reaches
+            // the range check below.
+            return Err(self.expected("32-bit integer (too large)"));
+        };
+        let Ok(value) = u32::try_from(value) else {
+            return Err(self.expected("32-bit integer (too large)"));
+        };
+        self.bump()?;
+        Ok(value)
     }
 
-    fn parse_uint64(&mut self, expected: &'static str) -> ParseResult<u64> {
+    /// Mirrors `LLParser::parseUInt64`. Its one message is `expected integer`
+    /// at every one of upstream's call sites, so this takes no label; the
+    /// bespoke per-site wordings llvmkit used to pass were all divergences.
+    fn parse_uint64(&mut self) -> ParseResult<u64> {
         let n = match self.peek() {
             Token::IntegerLit(IntLit {
                 sign: Sign::Pos,
@@ -1870,7 +1885,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
                 Ok(n)
             }
-            None => Err(self.expected(expected)),
+            None => Err(self.expected("integer")),
         }
     }
 
@@ -1995,7 +2010,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_keyword(Keyword::Align, "'align'")?;
         let align_loc = self.loc();
         let have_parens = allow_parens && self.eat_punct(PunctKind::LParen)?;
-        let value = self.parse_uint64("alignment (bytes)")?;
+        let value = self.parse_uint64()?;
         if have_parens && !self.eat_punct(PunctKind::RParen)? {
             return Err(self.message_at(align_loc, "expected ')'"));
         }
@@ -2030,7 +2045,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_keyword(Keyword::Alignstack, "'alignstack'")?;
         self.expect_punct(PunctKind::LParen, "'('")?;
         let align_loc = self.loc();
-        let value = u64::from(self.parse_uint32("alignstack value")?);
+        let value = u64::from(self.parse_uint32()?);
         self.expect_punct(PunctKind::RParen, "')'")?;
         if !value.is_power_of_two() {
             return Err(self.message_at(align_loc, "stack alignment is not a power of two"));
@@ -2276,7 +2291,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let mut indexes = Vec::new();
         if !matches!(self.peek(), Token::RBrace) {
             loop {
-                indexes.push(self.parse_uint32("uselistorder index")?);
+                indexes.push(self.parse_uint32()?);
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
                 }
@@ -2455,7 +2470,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ///   `!0 = distinct !{...}`
     fn parse_standalone_metadata(&mut self) -> ParseResult<()> {
         let loc = self.bump()?; // consume Token::Exclaim
-        let slot = self.parse_uint32("metadata slot number after '!'")?;
+        let slot = self.parse_uint32()?;
         self.expect_punct(PunctKind::Equal, "'=' after metadata id")?;
         let distinct = self.eat_keyword(Keyword::Distinct)?;
         match self.peek() {
@@ -2501,7 +2516,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             loop {
                 self.expect_exclaim("'!' before metadata operand")?;
                 let loc = self.loc();
-                let slot = self.parse_uint32("metadata operand number")?;
+                let slot = self.parse_uint32()?;
                 let id = self.resolve_md_slot(slot, loc);
                 // `named_metadata_id` came from `get_or_insert_named_metadata`
                 // on this same module, so neither handle can be foreign.
@@ -2556,7 +2571,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             _ => {
                 let loc = self.loc();
-                let slot = self.parse_uint32("metadata slot number after '!'")?;
+                let slot = self.parse_uint32()?;
                 self.resolve_md_slot(slot, loc)
             }
         };
@@ -2578,7 +2593,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                     _ => {
                         let loc = self.loc();
-                        let slot = self.parse_uint32("metadata attachment operand number")?;
+                        let slot = self.parse_uint32()?;
                         Ok(self.resolve_md_slot(slot, loc))
                     }
                 }
@@ -2645,7 +2660,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             _ => {
                 let loc = self.loc();
-                let slot = self.parse_uint32("metadata operand number")?;
+                let slot = self.parse_uint32()?;
                 Ok(self.resolve_md_slot(slot, loc))
             }
         }
@@ -2802,13 +2817,26 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.bump()?;
                         DwarfExpressionOperand::Operation(name)
                     }
-                    // Anything else must be an unsigned literal: upstream
-                    // rejects a signed element with "expected unsigned
-                    // integer", and one above `UINT64_MAX` with "element too
-                    // large".
-                    _ => DwarfExpressionOperand::Literal(
-                        self.parse_uint64("unsigned integer in DIExpression")?,
-                    ),
+                    // Anything else must be an unsigned literal. This is
+                    // `parseDIExpressionBody`'s **own** check, not
+                    // `parseUInt64`'s — it inspects the token directly and
+                    // says `expected unsigned integer`, so the site cannot
+                    // share the helper.
+                    _ => {
+                        let Token::IntegerLit(IntLit {
+                            sign: Sign::Pos,
+                            base: NumBase::Dec,
+                            digits,
+                        }) = *self.peek()
+                        else {
+                            return Err(self.expected("unsigned integer"));
+                        };
+                        let Ok(value) = digits.parse::<u64>() else {
+                            return Err(self.expected("unsigned integer"));
+                        };
+                        self.bump()?;
+                        DwarfExpressionOperand::Literal(value)
+                    }
                 };
                 operands.push(operand);
                 if !self.eat_punct(PunctKind::Comma)? {
@@ -3041,7 +3069,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                     _ => {
                         let loc = self.loc();
-                        let slot = self.parse_uint32("metadata field metadata reference")?;
+                        let slot = self.parse_uint32()?;
                         Ok(MetadataFieldValue::Metadata(
                             self.resolve_md_slot(slot, loc),
                         ))
@@ -3581,7 +3609,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         while self.eat_punct(PunctKind::Comma)? {
             if matches!(self.peek(), Token::IntegerLit(_)) {
                 seen_integer_param = true;
-                int_params.push(self.parse_uint32("target extension integer parameter")?);
+                int_params.push(self.parse_uint32()?);
             } else if seen_integer_param {
                 // Type parameters must precede integer ones; once an integer
                 // has been seen, anything else is upstream's `expected uint32
@@ -3625,7 +3653,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // rather than a parse failure. Reading it as u64 here keeps that
         // ordering.
         let size_loc = self.loc();
-        let n = self.parse_uint64("array or vector element count")?;
+        let n = self.parse_uint64()?;
         self.expect_keyword(Keyword::X, "'x' between count and element type")?;
         let elem_loc = self.loc();
         let elem = self.parse_type(false)?;
@@ -6201,7 +6229,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 Token::Kw(Keyword::Align) => {
                     self.bump()?;
-                    let bytes = self.parse_uint64("function alignment")?;
+                    let bytes = self.parse_uint64()?;
                     suffix.align = MaybeAlign::new(
                         Align::new(bytes).map_err(|e| self.builder_err("function align", e))?,
                     );
@@ -6309,7 +6337,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.bump()?;
                         self.expect_punct(PunctKind::Equal, "'=' here")?;
                         let value_loc = self.loc();
-                        let value = u64::from(self.parse_uint32("align value")?);
+                        let value = u64::from(self.parse_uint32()?);
                         self.check_alignment_value(value, value_loc)?;
                         value
                     } else {
@@ -6325,7 +6353,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.bump()?;
                         self.expect_punct(PunctKind::Equal, "'=' here")?;
                         let value_loc = self.loc();
-                        let value = u64::from(self.parse_uint32("alignstack value")?);
+                        let value = u64::from(self.parse_uint32()?);
                         // Same treatment as `align =` above: upstream's
                         // `MaybeAlign(unsigned)` asserts on a non-power-of-two.
                         // A zero is well defined and adds no attribute.
@@ -6401,7 +6429,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     self.bump()?;
                     self.expect_punct(PunctKind::LParen, "'('")?;
                     let bytes_loc = self.loc();
-                    let bytes = self.parse_uint64("dereferenceable byte count")?;
+                    let bytes = self.parse_uint64()?;
                     // The non-zero check runs *after* the closing paren, so a
                     // malformed `dereferenceable(0` reports `expected ')'`.
                     self.expect_punct(PunctKind::RParen, "')'")?;
@@ -6432,9 +6460,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         _ => AttrKind::ElementType,
                     };
                     self.bump()?;
-                    self.expect_punct(PunctKind::LParen, "'(' in type attribute")?;
+                    // `parseRequiredTypeAttr`'s three steps, with its bare
+                    // texts: `byref-parse-error-{0,5}.ll` pin the `'('` and
+                    // `-{1,3}.ll` pin `parse_type`'s own `expected type`.
+                    self.expect_punct(PunctKind::LParen, "'('")?;
                     let ty = self.parse_type(false)?;
-                    self.expect_punct(PunctKind::RParen, "')' after type attribute")?;
+                    self.expect_punct(PunctKind::RParen, "')'")?;
                     let attr = Attribute::<B>::type_attr(kind, ty)
                         .ok_or_else(|| self.expected("attribute"))?;
                     self.check_attribute_position(index, &attr, attr_loc)?;
@@ -6759,10 +6790,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_alloc_size_attribute(&mut self) -> ParseResult<Attribute<'ctx, B>> {
         self.expect_keyword(Keyword::Allocsize, "'allocsize'")?;
         self.expect_punct(PunctKind::LParen, "'('")?;
-        let element_size = self.parse_uint32("allocsize element size argument")?;
+        let element_size = self.parse_uint32()?;
         let element_count = if self.eat_punct(PunctKind::Comma)? {
             let count_loc = self.loc();
-            let count = self.parse_uint32("allocsize element count argument")?;
+            let count = self.parse_uint32()?;
             if count == element_size {
                 return Err(self.message_at(
                     count_loc,
@@ -6786,9 +6817,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_vscale_range_attribute(&mut self) -> ParseResult<Attribute<'ctx, B>> {
         self.expect_keyword(Keyword::VscaleRange, "'vscale_range'")?;
         self.expect_punct(PunctKind::LParen, "'('")?;
-        let min = self.parse_uint32("vscale_range minimum")?;
+        let min = self.parse_uint32()?;
         let max = if self.eat_punct(PunctKind::Comma)? {
-            self.parse_uint32("vscale_range maximum")?
+            self.parse_uint32()?
         } else {
             min
         };
@@ -6873,7 +6904,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.bump()?;
             } else if mask.is_none() {
                 // The integer spelling, which replaces the whole list.
-                let value = self.parse_uint64("nofpclass test mask")?;
+                let value = self.parse_uint64()?;
                 let bits = u32::try_from(value)
                     .ok()
                     .filter(|bits| *bits != 0)
@@ -9214,7 +9245,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.current = saved_current;
                 break;
             }
-            let idx = self.parse_uint32("extractvalue index")?;
+            let idx = self.parse_uint32()?;
             indices.push(idx);
         }
         let v = b
@@ -9253,7 +9284,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.current = saved_current;
                 break;
             }
-            let idx = self.parse_uint32("insertvalue index")?;
+            let idx = self.parse_uint32()?;
             indices.push(idx);
         }
         let v = b
@@ -9607,7 +9638,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::Kw(Keyword::M68kRtdcc) => Some(CallingConv::M68K_RTD),
             Token::Kw(Keyword::Cc) => {
                 self.bump()?;
-                let raw = self.parse_uint32("calling convention number")?;
+                let raw = self.parse_uint32()?;
                 return CallingConv::from_raw(raw)
                     .ok_or_else(|| self.expected("valid calling convention number"));
             }
