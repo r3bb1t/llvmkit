@@ -6119,6 +6119,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         allow_group_refs: bool,
     ) -> ParseResult<Vec<u32>> {
         let mut groups = Vec::new();
+        // The legacy memory keywords **intersect** into one accumulator —
+        // `upgradeMemoryAttr` is `ME &= MemoryEffects::X()` per keyword, with
+        // `ME` starting at `unknown()` and emitted once after the whole list.
+        // `readonly writeonly` is one `memory(none)`, not two attributes.
+        let mut legacy_memory = MemoryEffects::unknown();
         loop {
             // `Loc` in both upstream loops: the attribute's own keyword, which
             // is what the position diagnostics report against.
@@ -6178,7 +6183,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     let effects = Self::legacy_memory_effects(*keyword)
                         .ok_or_else(|| self.expected("memory attribute"))?;
                     self.bump()?;
-                    out.add(index, Attribute::<B>::memory(effects));
+                    legacy_memory &= effects;
                 }
                 Token::Kw(Keyword::Uwtable) => {
                     self.bump()?;
@@ -6282,6 +6287,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 _ => break,
             }
+        }
+        // `if (ME != MemoryEffects::unknown()) B.addMemoryAttr(ME);` — and
+        // because `addAttributeImpl` replaces by kind, a legacy keyword
+        // anywhere in the list overwrites an explicit `memory(...)` from the
+        // same list, in either source order.
+        if legacy_memory != MemoryEffects::unknown() {
+            out.set(index, Attribute::<B>::memory(legacy_memory));
         }
         Ok(groups)
     }
@@ -6711,14 +6723,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             if location.is_some() {
                 self.bump()?;
                 if !self.eat_punct(PunctKind::Colon)? {
-                    return Err(self.message("expected ':' after location"));
+                    return Err(self.expected("':' after location"));
                 }
             }
+            // Upstream's stale location list — it omits target_mem0 and
+            // target_mem1 even though `keywordToLoc` accepts both. The
+            // staleness is contractual; do not "fix" it.
             let Some(mod_ref) = Self::memory_access_kind_for_token(self.peek()) else {
-                return Err(self.message(if location.is_none() {
-                    "expected memory location (argmem, inaccessiblemem, errnomem) or access kind (none, read, write, readwrite)"
+                return Err(self.expected(if location.is_none() {
+                    "memory location (argmem, inaccessiblemem, errnomem) or access kind (none, read, write, readwrite)"
                 } else {
-                    "expected access kind (none, read, write, readwrite)"
+                    "access kind (none, read, write, readwrite)"
                 }));
             };
             self.bump()?;

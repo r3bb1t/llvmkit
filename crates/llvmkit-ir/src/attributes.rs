@@ -222,6 +222,25 @@ impl MemoryEffects {
     }
 }
 
+/// Intersection. Mirrors `MemoryEffectsBase::operator&` (`ModRef.h`): a raw
+/// bitwise AND of the packed per-location words, which is exact because each
+/// location's two bits are independent.
+impl core::ops::BitAnd for MemoryEffects {
+    type Output = Self;
+    fn bitand(self, rhs: Self) -> Self {
+        Self {
+            data: self.data & rhs.data,
+        }
+    }
+}
+
+/// Mirrors `MemoryEffectsBase::operator&=`.
+impl core::ops::BitAndAssign for MemoryEffects {
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.data &= rhs.data;
+    }
+}
+
 impl fmt::Display for MemoryEffects {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let effects = *self;
@@ -1608,6 +1627,23 @@ impl AttributeStored {
             Attribute::String { key, value } => Self::String { key, value },
         }
     }
+
+    /// Enum kind, or `None` for string attributes. The storage-side twin of
+    /// [`Attribute::kind`].
+    pub(super) fn kind(&self) -> Option<AttrKind> {
+        match self {
+            Self::Enum(k) | Self::Int(k, _) | Self::Type(k, _) => Some(*k),
+            Self::Range { .. } => Some(AttrKind::Range),
+            Self::Memory(_) => Some(AttrKind::Memory),
+            Self::NoFpClass(_) => Some(AttrKind::NoFpClass),
+            Self::AllocSize { .. } => Some(AttrKind::AllocSize),
+            Self::VScaleRange { .. } => Some(AttrKind::VscaleRange),
+            Self::AllocKind(_) => Some(AttrKind::AllocKind),
+            Self::Captures(_) => Some(AttrKind::Captures),
+            Self::Initializes(_) => Some(AttrKind::Initializes),
+            Self::String { .. } => None,
+        }
+    }
 }
 impl fmt::Display for AttributeStored {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1672,6 +1708,33 @@ impl AttributeStorage {
             return;
         }
         self.entries.push((index, vec![stored]));
+    }
+
+    /// Insert `attr` at `index`, **replacing** any attribute already stored
+    /// there with the same kind (or, for a string attribute, the same key).
+    ///
+    /// Ports the `std::swap(*It, Attr)` branch of `addAttributeImpl`
+    /// (`lib/IR/Attributes.cpp`), which is what every `AttrBuilder::add*`
+    /// goes through — an `AttrBuilder` can never hold two attributes of one
+    /// kind. [`Self::add`] keeps its weaker structural de-duplication; the
+    /// difference is observable and recorded in `docs/future-work.md`.
+    pub fn set<B: ModuleBrand>(&mut self, index: AttrIndex, attr: Attribute<'_, B>) {
+        let stored = AttributeStored::from_attribute(attr);
+        let Some(pos) = self.entries.iter().position(|(i, _)| *i == index) else {
+            self.entries.push((index, vec![stored]));
+            return;
+        };
+        let set = &mut self.entries[pos].1;
+        let same_slot = set.iter().position(|existing| match (&stored, existing) {
+            (AttributeStored::String { key: new_key, .. }, AttributeStored::String { key, .. }) => {
+                new_key == key
+            }
+            _ => stored.kind().is_some() && stored.kind() == existing.kind(),
+        });
+        match same_slot {
+            Some(slot) => set[slot] = stored,
+            None => set.push(stored),
+        }
     }
 
     pub fn is_empty(&self) -> bool {

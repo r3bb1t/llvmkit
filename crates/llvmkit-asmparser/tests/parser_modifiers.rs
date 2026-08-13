@@ -320,6 +320,89 @@ fn memory_attribute_tolerates_space_before_the_colon() {
     );
 }
 
+/// Legacy memory keywords **intersect**: `upgradeMemoryAttr` (`LLParser.cpp`)
+/// is `ME &= MemoryEffects::X()` per keyword over an accumulator starting at
+/// `unknown()`, emitted once after the whole list, and
+/// `MemoryEffectsBase::operator&=` is a raw AND of the packed word.
+///
+/// No upstream `.ll` pins the intersection of two keywords — the closest are
+/// `test/Analysis/AliasSet/argmemonly.ll` (`argmemonly writeonly` on a
+/// declaration, no CHECK on the printed attribute) and
+/// `test/Bitcode/upgrade-masked-keep-metadata.ll` (both intersections below
+/// in `attributes #N` groups, likewise unchecked) — so these are anchored on
+/// the symbols, with those two fixtures as the corroborating in-tree usage.
+/// llvmkit used to store one `memory(...)` per keyword, so
+/// `readonly writeonly` printed `memory(read) memory(write)`.
+#[test]
+fn legacy_memory_keywords_intersect() {
+    for (spelled, expected) in [
+        ("readonly writeonly", "memory(none)"),
+        ("readnone readonly", "memory(none)"),
+        ("argmemonly writeonly", "memory(argmem: write)"),
+        (
+            "inaccessiblemem_or_argmemonly readonly",
+            "memory(argmem: read, inaccessiblemem: read)",
+        ),
+    ] {
+        let text = parse_fixture(
+            "legacy_memory_keywords_intersect",
+            format!("declare void @f() {spelled}\n").as_bytes(),
+        );
+        assert_check_lines(&text, &[&format!("declare void @f() {expected}")]);
+        assert_eq!(
+            text.matches("memory(").count(),
+            1,
+            "{spelled} must yield exactly one memory attribute:\n{text}"
+        );
+
+        // The accumulator is per attribute list, so an `attributes #N` group
+        // intersects the same way.
+        let text = parse_fixture(
+            "legacy_memory_keywords_intersect_group",
+            format!("define void @f() #0 {{ ret void }}\nattributes #0 = {{ {spelled} }}\n")
+                .as_bytes(),
+        );
+        assert_check_lines(&text, &[&format!("attributes #0 = {{ {expected} }}")]);
+    }
+}
+
+/// The accumulated effects are emitted *after* the list and
+/// `addAttributeImpl` replaces by kind, so a legacy keyword discards an
+/// explicit `memory(...)` written in the same list — in either source order.
+/// Anchored on `LLParser::parseFnAttributeValuePairs`'s
+/// `if (ME != MemoryEffects::unknown()) B.addMemoryAttr(ME);` epilogue and
+/// `addAttributeImpl`'s `std::swap` branch (`lib/IR/Attributes.cpp`); no
+/// upstream `.ll` combines the two forms.
+#[test]
+fn legacy_memory_keyword_overwrites_explicit_memory() {
+    for spelled in ["memory(none) readonly", "readonly memory(none)"] {
+        let text = parse_fixture(
+            "legacy_memory_keyword_overwrites_explicit_memory",
+            format!("declare void @f() {spelled}\n").as_bytes(),
+        );
+        assert_check_lines(&text, &["declare void @f() memory(read)"]);
+        assert_eq!(
+            text.matches("memory(").count(),
+            1,
+            "{spelled} must yield exactly one memory attribute:\n{text}"
+        );
+    }
+}
+
+/// `expected access kind (none, read, write, readwrite)` fired only on inputs
+/// whose trigger word matches no keyword, which the lexer intercepts — so the
+/// message was implemented but untestable from the upstream fixture. A
+/// *keyword* in access-kind position reaches it: `readonly` is a token
+/// `keywordToModRef` does not accept. Anchored on `LLParser::parseMemoryAttr`
+/// (D11: no upstream counterpart uses a keyword trigger).
+#[test]
+fn memory_access_kind_diagnostic_fires_on_keyword_input() {
+    assert_eq!(
+        parse_err(b"declare void @f() memory(argmem: readonly)\n").to_string(),
+        "expected access kind (none, read, write, readwrite)"
+    );
+}
+
 /// Mirrors `llvm/test/Bitcode/upgrade-memory-intrinsics.ll`: legacy memory
 /// keywords on pointer parameters remain parameter attributes, while bare
 /// function attributes upgrade to `memory(...)`.

@@ -34,6 +34,19 @@ cut, entries accumulate under **Unreleased**.
   attribute LLVM 22.1.4 declares is accepted in every position it declares**
   — the drift guard's `NOT_YET_MODELED` list is empty.
 
+- **Fixed: legacy memory keywords now intersect instead of accumulating.**
+  `upgradeMemoryAttr` runs `ME &= MemoryEffects::X()` over one accumulator
+  that starts at `unknown()` and is emitted once after the whole attribute
+  list. llvmkit added one `memory(...)` attribute per keyword, so
+  `declare void @f() readonly writeonly` printed
+  `memory(read) memory(write)` — two attributes of a kind LLVM can only hold
+  one of — where upstream gives `memory(none)`. `MemoryEffects` gains
+  `BitAnd` / `BitAndAssign` (ports of `MemoryEffectsBase::operator&`), and
+  `AttributeStorage::set` ports `addAttributeImpl`'s replace-by-kind branch,
+  which is also what makes a legacy keyword discard an explicit `memory(...)`
+  from the same list in either source order — `memory(none) readonly` and
+  `readonly memory(none)` are both `memory(read)`.
+
 - **Changed: `range(T lo, hi)` reaches 1:1 with `parseRangeAttr`.** All seven
   of its diagnostics now carry upstream's exact text —
   `the range must have integer type!` (anchored at the *first* token of the
