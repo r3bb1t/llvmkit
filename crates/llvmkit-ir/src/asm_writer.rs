@@ -3281,6 +3281,27 @@ pub(super) fn fmt_global<'ctx, B: ModuleBrand + 'ctx>(
         print_escaped_string(f, partition.as_bytes())?;
         f.write_str("\"")?;
     }
+
+    // Code model, then sanitizer metadata, then comdat — `printGlobal`'s
+    // order, which is also the order `parseGlobal`'s property loop accepts
+    // them in any of, so only the printed sequence is fixed.
+    if let Some(model) = g.code_model() {
+        write!(f, ", code_model \"{model}\"")?;
+    }
+    if let Some(sanitizer) = g.sanitizer_metadata() {
+        if sanitizer.no_address {
+            f.write_str(", no_sanitize_address")?;
+        }
+        if sanitizer.no_hwaddress {
+            f.write_str(", no_sanitize_hwaddress")?;
+        }
+        if sanitizer.memtag {
+            f.write_str(", sanitize_memtag")?;
+        }
+        if sanitizer.is_dyn_init {
+            f.write_str(", sanitize_address_dyninit")?;
+        }
+    }
     if let Some(c) = g.comdat() {
         f.write_str(", comdat")?;
         if c.name() != g.name() {

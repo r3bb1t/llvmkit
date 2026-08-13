@@ -2106,6 +2106,63 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(ord)
     }
 
+    /// `code_model "small"`. Ports `LLParser::parseOptionalCodeModel`.
+    ///
+    /// Both failures — an unrecognised spelling and a token that is not a
+    /// string at all — carry the same text, because upstream binds it to a
+    /// local and uses it twice. Note the order: it inspects `getStrVal()`
+    /// *before* checking the token is a `StringConstant`, so a non-string
+    /// token reads as the empty string and falls through the chain to the
+    /// same message.
+    fn parse_optional_code_model(&mut self) -> ParseResult<llvmkit_ir::CodeModel> {
+        self.expect_keyword(Keyword::CodeModel, "'code_model'")?;
+        const ERR: &str = "global code model string";
+        let Token::StringConstant(bytes) = self.peek() else {
+            return Err(self.expected(ERR));
+        };
+        let Ok(spelled) = std::str::from_utf8(bytes.as_ref()) else {
+            return Err(self.expected(ERR));
+        };
+        let Some(model) = llvmkit_ir::CodeModel::from_name(spelled) else {
+            return Err(self.expected(ERR));
+        };
+        self.bump()?;
+        Ok(model)
+    }
+
+    /// `isSanitizer` plus the `parseSanitizer` switch, as one lookup: which
+    /// field of `SanitizerMetadata` a token sets, or `None` when the token is
+    /// not a sanitizer keyword at all.
+    ///
+    /// Upstream's `default:` arm — `non-sanitizer token passed to
+    /// LLParser::parseSanitizer()` — is unreachable by construction, since
+    /// `parseGlobal` guards the call with `isSanitizer(Lex.getKind())`. The
+    /// `Option` here is that guard, so the message has no counterpart.
+    fn sanitizer_for_token(
+        &self,
+        token: &Token<'_>,
+    ) -> Option<fn(llvmkit_ir::SanitizerMetadata) -> llvmkit_ir::SanitizerMetadata> {
+        match token {
+            Token::Kw(Keyword::NoSanitizeAddress) => Some(|mut m| {
+                m.no_address = true;
+                m
+            }),
+            Token::Kw(Keyword::NoSanitizeHwaddress) => Some(|mut m| {
+                m.no_hwaddress = true;
+                m
+            }),
+            Token::Kw(Keyword::SanitizeMemtag) => Some(|mut m| {
+                m.memtag = true;
+                m
+            }),
+            Token::Kw(Keyword::SanitizeAddressDyninit) => Some(|mut m| {
+                m.is_dyn_init = true;
+                m
+            }),
+            _ => None,
+        }
+    }
+
     /// Parse optional `syncscope("...")`. Returns `SyncScope::System` if absent.
     /// Mirrors `LLParser::parseOptionalScope` (LLParser.cpp).
     ///
@@ -3987,11 +4044,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let mut align = MaybeAlign::NONE;
         let mut comdat_name = None;
         let mut metadata = Vec::new();
+        let mut code_model = None;
+        let mut sanitizer: Option<llvmkit_ir::SanitizerMetadata> = None;
         while self.eat_punct(PunctKind::Comma)? {
             if self.eat_keyword(Keyword::Section)? {
                 section = Some(self.parse_string_constant("section name")?);
             } else if self.eat_keyword(Keyword::Partition)? {
                 partition = Some(self.parse_string_constant("partition name")?);
+            } else if matches!(self.peek(), Token::Kw(Keyword::CodeModel)) {
+                code_model = Some(self.parse_optional_code_model()?);
+            } else if let Some(update) = self.sanitizer_for_token(self.peek()) {
+                // `parseSanitizer` merges into whatever the global already
+                // carries, so the four keywords accumulate rather than
+                // replacing one another.
+                self.bump()?;
+                sanitizer = Some(update(sanitizer.unwrap_or_default()));
             } else if matches!(self.peek(), Token::Kw(Keyword::Align)) {
                 align = MaybeAlign::new(self.parse_align_val()?);
             } else if self.eat_keyword(Keyword::Comdat)? {
@@ -4067,6 +4134,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // The parser threads borrowing handles through its deferred-fixup and
         // slot-numbering tables, so resolve the freshly minted id once here.
         let g = self.module.view(g);
+        if let Some(model) = code_model {
+            g.set_code_model(self.module, model);
+        }
+        if let Some(metadata) = sanitizer {
+            g.set_sanitizer_metadata(self.module, metadata);
+        }
         for (kind, id) in metadata {
             own_metadata(g.set_metadata(self.module, kind, id));
         }

@@ -15,6 +15,94 @@ fn parse_into<B: ModuleBrand>(src: &str, m: &Module<B>) {
         .expect("parser succeeds");
 }
 
+/// Ports the `@g5`–`@g14` half of `test/Assembler/globalvariable-attributes.ll`
+/// verbatim, asserting each of its CHECK lines.
+///
+/// `@g9` is the one that earns its place: it writes three sanitizer keywords
+/// and pins that they print in `printGlobal`'s fixed order — address,
+/// hwaddress, memtag, dyninit — and that the whole group comes *before*
+/// `align`. `parseSanitizer` merges into whatever the global already carries,
+/// so the keywords accumulate rather than replacing each other.
+///
+/// `@g1`–`@g4` are not ported: they need the trailing global attribute list
+/// and the attribute-group printer, which are W7 work and recorded in
+/// `docs/future-work.md`.
+#[test]
+fn global_sanitizer_and_code_model_round_trip() {
+    for (source, expected) in [
+        (
+            "@g5 = global i32 2, no_sanitize_address, align 4\n",
+            "@g5 = global i32 2, no_sanitize_address, align 4",
+        ),
+        (
+            "@g6 = global i32 2, no_sanitize_hwaddress, align 4\n",
+            "@g6 = global i32 2, no_sanitize_hwaddress, align 4",
+        ),
+        (
+            "@g7 = global i32 2, sanitize_address_dyninit, align 4\n",
+            "@g7 = global i32 2, sanitize_address_dyninit, align 4",
+        ),
+        (
+            "@g8 = global i32 2, sanitize_memtag, align 4\n",
+            "@g8 = global i32 2, sanitize_memtag, align 4",
+        ),
+        (
+            "@g9 = global i32 2, no_sanitize_address, no_sanitize_hwaddress, sanitize_memtag, align 4\n",
+            "@g9 = global i32 2, no_sanitize_address, no_sanitize_hwaddress, sanitize_memtag, align 4",
+        ),
+        (
+            "@g10 = global i32 2, code_model \"tiny\"\n",
+            "@g10 = global i32 2, code_model \"tiny\"",
+        ),
+        (
+            "@g11 = global i32 2, code_model \"small\"\n",
+            "@g11 = global i32 2, code_model \"small\"",
+        ),
+        (
+            "@g12 = global i32 2, code_model \"kernel\"\n",
+            "@g12 = global i32 2, code_model \"kernel\"",
+        ),
+        (
+            "@g13 = global i32 2, code_model \"medium\"\n",
+            "@g13 = global i32 2, code_model \"medium\"",
+        ),
+        (
+            "@g14 = global i32 2, code_model \"large\"\n",
+            "@g14 = global i32 2, code_model \"large\"",
+        ),
+    ] {
+        let m = llvmkit_ir::Module::dynamic("global_properties");
+        parse_into(source, &m);
+        let printed = format!("{m}");
+        assert!(printed.contains(expected), "{source}printed:\n{printed}");
+
+        // Same module name, so the `ModuleID` header matches and the
+        // comparison is about the global itself.
+        let round_tripped = llvmkit_ir::Module::dynamic("global_properties");
+        parse_into(printed.as_str(), &round_tripped);
+        assert_eq!(format!("{round_tripped}"), printed);
+    }
+}
+
+/// `parseOptionalCodeModel` binds its message to a local and uses it for both
+/// failures, so an unrecognised model and a non-string token report the same
+/// thing. Anchored on the symbol; no upstream `.ll` exercises the failure.
+#[test]
+fn a_bad_code_model_reports_upstream_text() {
+    for source in [
+        "@g = global i32 2, code_model \"huge\"\n",
+        "@g = global i32 2, code_model 4\n",
+    ] {
+        let m = llvmkit_ir::Module::dynamic("bad_code_model");
+        let err = Parser::new(source.as_bytes(), &m)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("bad code model is rejected")
+            .to_string();
+        assert_eq!(err, "expected global code model string", "{source}");
+    }
+}
+
 /// Mirrors `test/Assembler/datalayout.ll` + the trailing `target triple`
 /// arm: a module that carries both directives round-trips through the
 /// AsmWriter byte-for-byte.

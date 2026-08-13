@@ -19,6 +19,19 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Global variables
+
+- **Added: `code_model "small"` and the four sanitizer keywords on globals**
+  (`no_sanitize_address`, `no_sanitize_hwaddress`, `sanitize_memtag`,
+  `sanitize_address_dyninit`) — both parsed and printed, so
+  `test/Assembler/globalvariable-attributes.ll`'s `@g5`–`@g14` round-trip.
+  `llvmkit_ir::CodeModel` mirrors `CodeModel::Model` and
+  `SanitizerMetadata` mirrors `GlobalValue::SanitizerMetadata` as one
+  `Option` on the global rather than upstream's presence-bit-plus-side-table,
+  which is a C++ allocation artifact. The sanitizer keywords **accumulate**:
+  `parseSanitizer` merges into what the global already carries, and the
+  printer emits them in its own fixed order, before `comdat` and `align`.
+
 ### Calling conventions
 
 - **Fixed: `expected metadata after comma`.** llvmkit said

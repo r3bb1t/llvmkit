@@ -35,6 +35,76 @@ use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use core::cell::{Cell, RefCell};
 
 // --------------------------------------------------------------------------
+// Code model and sanitizer metadata
+// --------------------------------------------------------------------------
+
+/// Per-global code model. Mirrors `enum CodeModel::Model`
+/// (`llvm/Support/CodeGen.h`), as `GlobalVariable::setCodeModel` stores it.
+///
+/// Distinct from [`crate::module_flags::ModuleFlagKey::CodeModel`], which
+/// merely *names* the `"Code Model"` module flag; these are its values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CodeModel {
+    Tiny,
+    Small,
+    Kernel,
+    Medium,
+    Large,
+}
+
+impl CodeModel {
+    /// The `.ll` spelling, as `AssemblyWriter::printGlobal` writes it inside
+    /// `code_model "..."`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Tiny => "tiny",
+            Self::Small => "small",
+            Self::Kernel => "kernel",
+            Self::Medium => "medium",
+            Self::Large => "large",
+        }
+    }
+
+    /// Read a spelling back. Mirrors the chain in
+    /// `LLParser::parseOptionalCodeModel`.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "tiny" => Self::Tiny,
+            "small" => Self::Small,
+            "kernel" => Self::Kernel,
+            "medium" => Self::Medium,
+            "large" => Self::Large,
+            _ => return None,
+        })
+    }
+}
+
+impl core::fmt::Display for CodeModel {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// The sanitizer opt-outs and opt-ins a global may carry. Mirrors
+/// `GlobalValue::SanitizerMetadata` (`llvm/IR/GlobalValue.h`).
+///
+/// Upstream keeps a presence bit on the `GlobalValue` and the payload in a
+/// side table on the context, with a documented dangling-reference hazard its
+/// by-value setter exists to dodge. That shape is a C++ allocation artifact,
+/// not semantics, so here it is one honest `Option<SanitizerMetadata>` on the
+/// global (annex A13). Every field is a storage bool — the flag *is* the
+/// datum — so the selector-bool rule does not apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct SanitizerMetadata {
+    pub no_address: bool,
+    pub no_hwaddress: bool,
+    pub memtag: bool,
+    pub is_dyn_init: bool,
+}
+
+// --------------------------------------------------------------------------
 // Storage payload
 // --------------------------------------------------------------------------
 
@@ -64,6 +134,8 @@ pub(super) struct GlobalVariableData {
     /// Comdat name (no leading `$`). The actual `ComdatData` lives in
     /// the owning module's comdat storage.
     pub(super) comdat: RefCell<Option<String>>,
+    pub(super) code_model: Cell<Option<CodeModel>>,
+    pub(super) sanitizer_metadata: Cell<Option<SanitizerMetadata>>,
     pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
 }
 
@@ -462,6 +534,52 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalVariable<'ctx, B> {
         self.data().partition.borrow().clone()
     }
 
+    /// The per-global code model, if one is set. Mirrors
+    /// `GlobalVariable::getCodeModel`.
+    pub fn code_model(self) -> Option<CodeModel> {
+        self.data().code_model.get()
+    }
+
+    /// Set the code model. Mirrors `GlobalVariable::setCodeModel`.
+    pub fn set_code_model(self, _module: &'ctx Module<B, Unverified>, model: CodeModel) {
+        self.data().code_model.set(Some(model));
+    }
+
+    /// Clear the code model.
+    pub fn clear_code_model(self, _module: &'ctx Module<B, Unverified>) {
+        self.data().code_model.set(None);
+    }
+
+    /// The sanitizer metadata, if any. Mirrors
+    /// `GlobalValue::getSanitizerMetadata` paired with
+    /// `hasSanitizerMetadata` — upstream needs both because the payload lives
+    /// in a context side table; the `Option` is the same question asked once.
+    pub fn sanitizer_metadata(self) -> Option<SanitizerMetadata> {
+        self.data().sanitizer_metadata.get()
+    }
+
+    /// Set the sanitizer metadata. Mirrors
+    /// `GlobalValue::setSanitizerMetadata`.
+    pub fn set_sanitizer_metadata(
+        self,
+        _module: &'ctx Module<B, Unverified>,
+        metadata: SanitizerMetadata,
+    ) {
+        self.data().sanitizer_metadata.set(Some(metadata));
+    }
+
+    /// Drop the sanitizer metadata. Mirrors
+    /// `GlobalValue::removeSanitizerMetadata`.
+    pub fn clear_sanitizer_metadata(self, _module: &'ctx Module<B, Unverified>) {
+        self.data().sanitizer_metadata.set(None);
+    }
+
+    /// Whether the global is memory-tagged. Mirrors
+    /// `GlobalValue::isTagged`.
+    pub fn is_tagged(self) -> bool {
+        self.sanitizer_metadata().is_some_and(|m| m.memtag)
+    }
+
     /// Set the partition. Mirrors
     /// `GlobalValue::setPartition`.
     pub fn set_partition<P>(self, _module: &'ctx Module<B, Unverified>, partition: P)
@@ -853,6 +971,8 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalBuilder<'ctx, B> {
             section: RefCell::new(section),
             partition: RefCell::new(partition),
             comdat: RefCell::new(comdat),
+            code_model: Cell::new(None),
+            sanitizer_metadata: Cell::new(None),
             metadata: RefCell::new(MetadataAttachmentSet::new()),
         };
         (name, data, initializer, address_space, value_type)
