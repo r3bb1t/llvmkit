@@ -6286,19 +6286,38 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(groups)
     }
 
+    /// `range(<ty> <n>,<n>)`. Ports `LLParser::parseRangeAttr`.
+    ///
+    /// Two placements are contractual and were both off by one token before:
+    /// `the range must have integer type!` is `error(TyLoc, …)`, anchored at
+    /// the **first** token of the type rather than the one after it; and the
+    /// empty-set check runs *before* the closing `)` is required, so it
+    /// anchors on that `)`.
+    ///
+    /// The type check is `Type::isIntegerTy`, which is false for a vector of
+    /// integers — `range(<4 x i32> 0, 0)` is the fixture that says so.
     fn parse_range_attribute(&mut self) -> ParseResult<Attribute<'ctx, B>> {
         self.expect_keyword(Keyword::Range, "'range'")?;
-        self.expect_punct(PunctKind::LParen, "'(' in range attribute")?;
+        self.expect_punct(PunctKind::LParen, "'('")?;
+        let type_loc = self.loc();
         let ty = self.parse_type(false)?;
         let TypeKind::Integer { bits } = ty.kind() else {
-            return Err(self.expected("range attribute integer type"));
+            return Err(self.message_at(type_loc, "the range must have integer type!"));
         };
         let lower = self.parse_sized_apsint(bits)?;
-        self.expect_punct(PunctKind::Comma, "',' in range attribute")?;
+        self.expect_punct(PunctKind::Comma, "','")?;
         let upper = self.parse_sized_apsint(bits)?;
-        self.expect_punct(PunctKind::RParen, "')' in range attribute")?;
-        Attribute::<B>::range(ty, lower, upper)
-            .ok_or_else(|| self.expected("valid range attribute"))
+        if lower.eq_ap_int(&upper) && !lower.is_zero() {
+            return Err(self.message("the range represent the empty set but limits aren't 0!"));
+        }
+        self.expect_punct(PunctKind::RParen, "')'")?;
+        let Some(attr) = Attribute::<B>::range(ty, lower, upper) else {
+            // `Attribute::range` refuses a non-integer type, bounds whose width
+            // disagrees with it, and the empty set. The first and third were
+            // just checked, and both bounds are built at `bits`.
+            unreachable!("range bounds are built at the type's width and are not the empty set")
+        };
+        Ok(attr)
     }
 
     /// `initializes((Lo1,Hi1),(Lo2,Hi2),...)`. Ports

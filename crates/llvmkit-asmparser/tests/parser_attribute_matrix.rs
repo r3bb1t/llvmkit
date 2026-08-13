@@ -448,6 +448,80 @@ fn captures_diagnostics_match_upstream_text() {
     assert_eq!(parse_err("captures(ret address)"), "expected ':'");
 }
 
+/// `range(iN lo, hi)` accepts three shapes worth pinning: an ordinary range,
+/// the one legal degenerate form `range(i8 0, 0)` — legal precisely because
+/// the empty-set check exempts zero, which is why
+/// `test/Assembler/range-attribute-invalid-range.ll` writes `1, 1` and not
+/// `0, 0` — and a **wrapped** range with `lower > upper`, which
+/// `test/Verifier/range-attr.ll` pins as parsing cleanly (its complaint is
+/// about the annotated value's type, not the range).
+#[test]
+fn range_attribute_shapes_round_trip() {
+    for spelled in [
+        "range(i8 0, 64)",
+        "range(i8 -1, 0)",
+        "range(i8 0, 0)",
+        "range(i8 1, 0)",
+    ] {
+        parse_print_reparse(
+            spelled,
+            &format!("define void @f(i8 {spelled} %a) {{ ret void }}\n"),
+            spelled,
+        );
+    }
+}
+
+/// `LLParser::parseRangeAttr`'s seven diagnostics, verbatim.
+///
+/// Two are ported fixtures: `test/Assembler/range-attribute-invalid-range.ll`
+/// (`range(i8 1, 1)`) and `test/Assembler/range-attribute-invalid-type.ll`
+/// (`range(<4 x i32> 0, 0)`, which pins that `Type::isIntegerTy` is false for
+/// a *vector* of integers).
+///
+/// `integer is too large for the bit width of specified type` has **no**
+/// upstream fixture — nothing in the tree emits it — so its three cases are
+/// derived from the `ParseAPSInt` lambda together with
+/// `APSInt::APSInt(StringRef)` and `LLLexer::lexIdentifier`'s `[us]0x` rule.
+/// The third is the subtle one: an all-zero hex literal keeps its full
+/// syntactic width, because the active-bit trim is guarded by `activeBits > 0`.
+#[test]
+fn range_diagnostics_match_upstream_text() {
+    fn parse_err(spelled: &str) -> String {
+        parse_dynamic(format!("define void @f(i8 {spelled} %a) {{ ret void }}\n"))
+            .expect_err("range attribute is rejected")
+            .to_string()
+    }
+
+    assert_eq!(parse_err("range i8 0, 4"), "expected '('");
+    assert_eq!(
+        parse_err("range(<4 x i32> 0, 0)"),
+        "the range must have integer type!"
+    );
+    assert_eq!(parse_err("range(i8 1.5, 4)"), "expected integer");
+    assert_eq!(parse_err("range(i8 0 4)"), "expected ','");
+    assert_eq!(
+        parse_err("range(i8 1, 1)"),
+        "the range represent the empty set but limits aren't 0!"
+    );
+    assert_eq!(parse_err("range(i8 0, 4 %a)"), "expected ')'");
+
+    for spelled in [
+        // 300 needs nine active bits.
+        "range(i8 300, 0)",
+        // -255 needs nine significant bits, and llvmkit used to accept this
+        // and silently wrap the bound to 1.
+        "range(i8 -255, 0)",
+        // Eighteen zero digits: no active bits, so no trim, so 72 bits wide.
+        "range(i8 u0x000000000000000000, 1)",
+    ] {
+        assert_eq!(
+            parse_err(spelled),
+            "integer is too large for the bit width of specified type",
+            "{spelled}"
+        );
+    }
+}
+
 /// Ports the `@initializes` function of `test/Bitcode/attributes.ll`, whose
 /// `; CHECK: define void @initializes(ptr initializes((-4, 0), (4, 8)) %a)`
 /// is the only fixture in the tree that pins this attribute's printed form.

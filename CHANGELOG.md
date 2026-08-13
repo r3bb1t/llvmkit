@@ -34,6 +34,20 @@ cut, entries accumulate under **Unreleased**.
   attribute LLVM 22.1.4 declares is accepted in every position it declares**
   — the drift guard's `NOT_YET_MODELED` list is empty.
 
+- **Changed: `range(T lo, hi)` reaches 1:1 with `parseRangeAttr`.** All seven
+  of its diagnostics now carry upstream's exact text —
+  `the range must have integer type!` (anchored at the *first* token of the
+  type, and false for a vector of integers),
+  `the range represent the empty set but limits aren't 0!` (checked before
+  the closing `)`, reproducing upstream's own ungrammatical wording), and the
+  bare `expected '('` / `','` / `')'` / `expected integer` forms in place of
+  llvmkit's embellished ones. Three inputs change verdict with the token-width
+  model below: `range(i8 -255, 0)` and an all-zero
+  `range(i8 u0x000000000000000000, 1)` were silently accepted (the first
+  wrapping its bound to 1) and are now rejected as too large; `range(i8 1, 0)`
+  — a *wrapped* range — parses cleanly, as `test/Verifier/range-attr.ll`
+  requires.
+
 - **Changed (behavioural): an integer literal now carries the width the token
   needs, not the width its context wants.** Two consequences, both upstream's:
   `s0x0F` is **−1**, because `LLLexer` truncates a `[us]0x` literal to its
