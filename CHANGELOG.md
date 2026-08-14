@@ -21,6 +21,68 @@ cut, entries accumulate under **Unreleased**.
 
 ### Function headers
 
+- **Changed (breaking): the header clause chain is a fixed sequence.**
+  `parseFunctionHeader` tries `section`, `partition`, `comdat`, `align`, `gc`,
+  `prefix`, `prologue`, `personality` **once each, in that order**, so the
+  order is contractual: `define void @f() gc "g" section "s" {` is rejected
+  because `section` was looked for before `gc`. llvmkit looped over the
+  clauses instead, accepting any order and any number of repeats.
+
+  Its prerequisite lands with it: `align` is parsed by the *attribute* loop
+  and then moved to the alignment field, which is what makes
+  `align 8 section "s"` legal ("As a hack, we allow function alignment to be
+  initially parsed as an attribute…", upstream's own comment). llvmkit
+  excluded `align` from that loop — invisible while the chain was order-free.
+
+- **Changed (breaking): function metadata is where upstream puts it.** A
+  *declaration*'s attachments are read before the header and a *definition*'s
+  after it, and neither position eats a comma. llvmkit's clause loop had a
+  `MetadataVar` arm and a `Comma` arm, so it accepted
+  `declare void @f() !dbg !0` (no trailing form exists) and
+  `define i32 @f(), !dbg !3 {` (upstream never eats that comma).
+
+- **Added: `'builtin' attribute not valid on function` and
+  `functions with 'sret' argument must return void`.** `builtin` is a real
+  attribute a *call site* may carry, so the rejection lives in the header and
+  is anchored at the attribute's own location — which is why upstream threads
+  `BuiltinLoc` out of `parseFnAttributeValuePairs` at all. The `sret` rule
+  asks parameter 0 only and reports at the return type.
+
+- **Added: `cannot take blockaddress inside a declaration`**, the tail
+  `parseFunctionHeader` reaches only when it is not parsing a definition.
+
+- **Changed (breaking): a function redefinition is an error.** Upstream always
+  creates a fresh `Function` and only reuses a *forward reference*, so a
+  repeated `declare`, a repeated `define`, and a `declare` followed by a
+  `define` are all rejected — `invalid redefinition of function 'f'` when a
+  function already holds the name, `redefinition of function '@f'` when any
+  other named value does. llvmkit reused any function whose signature matched
+  and accepted all three.
+
+- **Added: the function-body frame.** `expected '{' in function body`
+  (llvmkit said `'{' to open function body`),
+  `function body requires at least one basic block` (llvmkit had no such
+  check, so `define void @f() { }` parsed as a body with zero blocks),
+  `found end of file when expecting more instructions`, and
+  `multiple definition of local value named 'x'` — the last a sentence of its
+  own, not the `redefinition of <kind> '<sigil><name>'` shape llvmkit reused,
+  and upstream spells the name without a `%`. `parseFunctionBody`'s two loops
+  are now sequential too: every basic block, then every `uselistorder`
+  directive. With these, `align-param-attr-error1.ll`,
+  `mustprogress-parse-error-2.ll`, `2004-03-30-UnclosedFunctionCrash.ll` and
+  `2003-11-24-SymbolTableCrash.ll` port verbatim.
+
+- **Added: `redefinition of argument '%x'`.** Upstream sets each argument name
+  and notices when the symbol table renamed it; llvmkit installed the names
+  unchecked, so a repeated `%x` silently won.
+
+- **Changed: three named-metadata texts, found in passing.**
+  `LLParser::parseNamedMetadata`'s three-`parseToken` chain is
+  `expected '=' here`, `Expected '!' here`, `Expected '{' here` — the last two
+  carrying upstream's capital `E`, a few lines from `parseMDNodeVector`'s
+  *lowercase* `expected '{' here`, so the two spellings cannot be unified.
+  llvmkit had invented all three.
+
 - **Changed (breaking): one `parseArgumentList`, shared by every path that
   parses an argument list.** llvmkit had three partial hand-written copies —
   one in `declare`, one in `define`, one in the function-*type* production —

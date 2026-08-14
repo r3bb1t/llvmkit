@@ -1828,6 +1828,41 @@ impl AttributeStorage {
             .iter()
             .find_map(|(i, set)| (*i == index).then_some(set.as_slice()))
     }
+
+    /// `true` when an attribute of `kind` is recorded at `index`.
+    ///
+    /// Ports `AttributeList::hasParamAttr` / `hasFnAttr` for the enum-kind
+    /// spelling, which `LLParser::parseFunctionHeader` asks of parameter 0 to
+    /// enforce `functions with 'sret' argument must return void`.
+    pub fn has_kind(&self, index: AttrIndex, kind: AttrKind) -> bool {
+        self.get(index)
+            .is_some_and(|attrs| attrs.iter().any(|attr| attr.kind() == Some(kind)))
+    }
+
+    /// The integer payload recorded at `index` for an integer-flavoured
+    /// `kind`, if one is.
+    ///
+    /// Ports the `AttrBuilder` getters that read a single integer attribute
+    /// back out — `getAlignment`, `getStackAlignment` and friends in
+    /// `lib/IR/Attributes.cpp` — which `LLParser::parseFunctionHeader` needs
+    /// to move a parsed `align` from the attribute list into the function's
+    /// alignment field.
+    pub fn int_value(&self, index: AttrIndex, kind: AttrKind) -> Option<u64> {
+        self.get(index)?.iter().find_map(|attr| match attr {
+            AttributeStored::Int(k, v) if *k == kind => Some(*v),
+            _ => None,
+        })
+    }
+
+    /// Drop every attribute of `kind` at `index`.
+    ///
+    /// Ports `AttrBuilder::removeAttribute(Attribute::AttrKind)`, whose one
+    /// in-tree caller is the same alignment move.
+    pub fn remove(&mut self, index: AttrIndex, kind: AttrKind) {
+        if let Some(pos) = self.entries.iter().position(|(i, _)| *i == index) {
+            self.entries[pos].1.retain(|attr| attr.kind() != Some(kind));
+        }
+    }
 }
 
 /// Upstream provenance: mirrors `class Attribute` / `AttributeSet` /

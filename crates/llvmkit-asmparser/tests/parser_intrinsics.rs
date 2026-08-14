@@ -302,13 +302,38 @@ fn intrinsic_declaration_rejects_noncanonical_suffix_modifier() {
         "@g = global i32 0\ndeclare void @llvm.assume(i1 noundef %x) prefix ptr @g\n",
         "@g = global i32 0\ndeclare void @llvm.assume(i1 noundef %x) prologue ptr @g\n",
         "@g = global i32 0\ndeclare void @llvm.assume(i1 noundef %x) personality ptr @g\n",
-        "!0 = !{}\ndeclare void @llvm.assume(i1 noundef %x) !dbg !0\n",
         "declare void @llvm.assume(i1 noundef %x) unnamed_addr\n",
         "declare void @llvm.assume(i1 noundef %x) addrspace(1)\n",
         "declare fastcc void @llvm.assume(i1 noundef %x)\n",
     ] {
         assert_expected_error(src, "intrinsic declaration modifier");
     }
+}
+
+/// A *trailing* `!dbg` on a declaration is not an intrinsic-modifier problem
+/// at all — it is not a declaration clause in the first place.
+///
+/// `LLParser::parseDeclare` reads a declaration's attachments **before** the
+/// header and `parseOptionalFunctionMetadata` is a `parseDefine`-only step,
+/// so `declare void @f() !dbg !0` leaves the `!dbg` at top level, where
+/// `parseNamedMetadata` demands the `=` of a `!name = !{...}` definition.
+/// llvmkit used to accept the trailing form on both paths, because its
+/// clause loop carried a `MetadataVar` arm.
+#[test]
+fn a_declaration_takes_its_metadata_before_the_header() {
+    // Leading is the legal spelling, on an ordinary function and on an
+    // intrinsic alike.
+    let text = parse_and_render("!0 = !{}\ndeclare !dbg !0 void @f()\n");
+    assert!(text.contains("declare !dbg !0 void @f()"), "{text}");
+
+    assert_eq!(
+        parse_err("!0 = !{}\ndeclare void @f() !dbg !0\n").to_string(),
+        "expected '=' here"
+    );
+    assert_eq!(
+        parse_err("!0 = !{}\ndeclare void @llvm.assume(i1 noundef %x) !dbg !0\n").to_string(),
+        "expected '=' here"
+    );
 }
 
 /// Mirrors `IntrinsicsDirectX.td::int_dx_resource_handlefrombinding`: target

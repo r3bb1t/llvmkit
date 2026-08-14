@@ -19,15 +19,15 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2377. Recounted on 2026-08-14 in the LLParser-parity
-Wave 8 part 1 commit via the documented attribute-anchored grep below
-(`crates/llvmkit-ir` 1543 + `crates/llvmkit-asmparser` 812 +
+Total `#[test]` functions: 2387. Recounted on 2026-08-14 at the LLParser-parity
+Wave 8 point via the documented attribute-anchored grep below
+(`crates/llvmkit-ir` 1543 + `crates/llvmkit-asmparser` 822 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
-`crates/llvmkit-macros` has none). The +142 over the 2235 point below is the
+`crates/llvmkit-macros` has none). The +152 over the 2235 point below is the
 LLParser-parity program's waves 0-8.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries 1937 rows. Matching them against the tree by test-function name
+below carries 1947 rows. Matching them against the tree by test-function name
 leaves **470 `#[test]` functions (469 distinct names) with no row**. The gap
 is inherited, not new: it accumulated across the type-safety and pass-API
 programs, where whole test files landed without rows, and it sits in
@@ -1004,6 +1004,16 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_function_type_accepts_a_numbered_argument_but_not_a_named_one` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionType`'s rejection loop, which asks `!Arg.Name.empty()` — a `%N` argument is filed under `UnnamedArgNums`, not under `Name`, so only a `%name` is rejected | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::the_argument_list_delimiters_use_upstream_text` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` (`expected '(' in function argument list`) and `LLParser::parseArgumentList` (`expected ')' at end of argument list`), verbatim | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_missing_function_name_uses_upstream_text` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader`'s `tokError("expected function name")`; the `void ()` half pins that `parseType`'s suffix loop makes it a function type first | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_function_redefinition_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader`'s redefinition arm — `M->getFunction` gives `invalid redefinition of function 'f'`, `M->getNamedValue` gives `redefinition of function '@f'`. No `test/Assembler` fixture pins either, and none of the 500 both declares and defines one function | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_forward_referenced_function_is_not_a_redefinition` | the case the same arm must *not* catch: `LLParser::ForwardRefVals` holds the placeholder, which is reused rather than rejected | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_intrinsics.rs::a_declaration_takes_its_metadata_before_the_header` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDeclare` (attachments read before `parseFunctionHeader`) vs `LLParser::parseOptionalFunctionMetadata` (a `parseDefine`-only step); the rejection text is `LLParser::parseNamedMetadata`'s `expected '=' here` | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::the_header_clause_chain_is_a_fixed_sequence` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader`'s single-`EatIfPresent` clause chain, plus its "As a hack, we allow function alignment to be initially parsed as an attribute" move | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::builtin_is_not_a_function_attribute` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader`'s `FuncAttrs.contains(Attribute::Builtin)` check at `BuiltinLoc`; the call-site half is `LLParser::parseCall`, which accepts the attribute | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::an_sret_first_argument_forces_a_void_return` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader`'s `PAL.hasParamAttr(0, Attribute::StructRet) && !RetType->isVoidTy()` guard, reported at `RetTypeLoc` | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_blockaddress_may_not_name_a_declaration` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader`'s `ForwardRefBlockAddresses` tail, reached only when `IsDefine` is false | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::the_function_body_frame_matches_upstream_text` | `test/Assembler/align-param-attr-error1.ll`, `test/Assembler/mustprogress-parse-error-2.ll`, `test/Assembler/2004-03-30-UnclosedFunctionCrash.ll` and `test/Assembler/2003-11-24-SymbolTableCrash.ll`, all vendored verbatim; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionBody`, `LLParser::parseInstruction`'s EOF arm and `PerFunctionState::setInstName`. The empty-body half has no upstream fixture and cites `parseFunctionBody` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::uselistorder_directives_come_after_every_block` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionBody`'s two sequential loops, and `LLParser::parseUseListOrder`'s `expected 'uselistorder'` | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_repeated_argument_name_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader`'s argument-naming loop, which sets each name and compares it back — `redefinition of argument '%x'` | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_types.rs::a_type_param_after_an_int_param_is_rejected` | `LLParser::parseTargetExtType`'s `SeenInt` guard — `expected uint32 param`, verbatim | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_types.rs::target_extension_type_arity_is_checked` | `TargetExtType::checkParams` (`llvm/lib/IR/Type.cpp`), all three named constraints, messages verbatim | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_types.rs::a_target_extension_type_may_take_a_void_parameter` | `parseType(TypeParam, /*AllowVoid=*/true)` in `LLParser::parseTargetExtType` | llvmkit-specific (rule anchor) |

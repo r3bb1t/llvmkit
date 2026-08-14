@@ -116,6 +116,9 @@ struct MetadataSlotEntry<B: ModuleBrand> {
 
 struct FunctionSuffix<'ctx, B: ModuleBrand> {
     attr_groups: Vec<u32>,
+    /// `BuiltinLoc` — where a `builtin` attribute was written in the header,
+    /// which `parseFunctionHeader` rejects once the whole chain has parsed.
+    builtin_loc: Option<Span>,
     section: Option<String>,
     partition: Option<String>,
     comdat: Option<Option<String>>,
@@ -124,7 +127,6 @@ struct FunctionSuffix<'ctx, B: ModuleBrand> {
     prefix_data: Option<llvmkit_ir::Constant<'ctx, B>>,
     prologue_data: Option<llvmkit_ir::Constant<'ctx, B>>,
     personality_fn: Option<ParsedPersonalityFn<'ctx, B>>,
-    metadata: Vec<(MetadataAttachmentKind, MetadataId<B>)>,
     _marker: core::marker::PhantomData<&'ctx ()>,
 }
 
@@ -132,6 +134,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for FunctionSuffix<'ctx, B> {
     fn default() -> Self {
         Self {
             attr_groups: Vec::new(),
+            builtin_loc: None,
             section: None,
             partition: None,
             comdat: None,
@@ -140,7 +143,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Default for FunctionSuffix<'ctx, B> {
             prefix_data: None,
             prologue_data: None,
             personality_fn: None,
-            metadata: Vec::new(),
             _marker: PhantomData,
         }
     }
@@ -400,6 +402,20 @@ enum ParsedCallee<'ctx, B: ModuleBrand> {
     Function(llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>),
     InlineAsm(llvmkit_ir::InlineAsm<'ctx, B>),
     Indirect(llvmkit_ir::PointerValue<'ctx, B>),
+}
+
+/// What an attribute list yields besides the attributes themselves — the two
+/// out-parameters of `LLParser::parseFnAttributeValuePairs`, returned rather
+/// than written through (ported-type design law 6).
+#[derive(Default)]
+struct ParsedAttrList {
+    /// `#N` group references, resolved at end of module (`FwdRefAttrGrps`).
+    groups: Vec<u32>,
+    /// Where `builtin` was written, if it was (`BuiltinLoc`).
+    /// `parseFunctionHeader` is the only caller that reads it, to report
+    /// `'builtin' attribute not valid on function`; a *call site* may carry
+    /// the attribute, which is why the check cannot live in the loop.
+    builtin_loc: Option<Span>,
 }
 
 /// Which of upstream's attribute-list productions a call to
@@ -2654,11 +2670,22 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         self.bump()?;
 
-        self.expect_punct(PunctKind::Equal, "'=' after metadata name")?;
+        self.expect_punct(PunctKind::Equal, "'=' here")?;
 
-        // `!{ !N, !N, ... }`
-        self.expect_exclaim("'!' before '{' in named metadata")?;
-        self.expect_punct(PunctKind::LBrace, "'{' in named metadata")?;
+        // `!{ !N, !N, ... }`. Upstream's own three-`parseToken` chain, and the
+        // last two are verbatim messages carrying its capital `E` — a few
+        // lines from `parseMDNodeVector`'s *lowercase* `expected '{' here`,
+        // so the two spellings cannot be unified. llvmkit had invented all
+        // three (`'=' after metadata name`, `'!' before '{' in named
+        // metadata`, `'{' in named metadata`).
+        if !matches!(self.peek(), Token::Exclaim) {
+            return Err(self.message("Expected '!' here"));
+        }
+        self.bump()?;
+        if !matches!(self.peek(), Token::LBrace) {
+            return Err(self.message("Expected '{' here"));
+        }
+        self.bump()?;
         let named_metadata_id = self.module.get_or_insert_named_metadata(name);
 
         // Parse comma-separated operands. Almost all are `!N` slot
@@ -3949,12 +3976,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     loc: DiagLoc::span(type_loc),
                 })?;
                 let index = AttrIndex::Param(slot);
-                let groups = self.parse_fn_attribute_value_pairs(
+                let parsed = self.parse_fn_attribute_value_pairs(
                     attrs,
                     index,
                     AttrListContext::ParamOrReturn,
                 )?;
-                if !groups.is_empty() {
+                if !parsed.groups.is_empty() {
                     return Err(self.expected("attribute"));
                 }
 
@@ -3963,6 +3990,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         .current_str_payload()
                         .ok_or_else(|| self.expected("local identifier payload"))?;
                     self.bump()?;
+                    // `parseFunctionHeader` sets each argument's name and then
+                    // notices the symbol table renamed it. For a function
+                    // being built there is nothing else in that table yet, so
+                    // the collision is with an earlier argument.
+                    if args
+                        .iter()
+                        .any(|arg: &ArgInfo<'ctx, B>| arg.name.as_deref() == Some(name.as_str()))
+                    {
+                        return Err(self
+                            .message_at(type_loc, format!("redefinition of argument '%{name}'")));
+                    }
                     Some(name)
                 } else {
                     let arg_id = if let Token::LocalVarId(id) = self.peek() {
@@ -6209,6 +6247,90 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(linkage)
     }
 
+    /// `parseFunctionHeader`'s last act when `IsDefine` is false: a
+    /// `blockaddress` naming this function can never be satisfied, because a
+    /// declaration has no blocks to address.
+    ///
+    /// Upstream looks the function up in `ForwardRefBlockAddresses` and
+    /// reports at the *reference*, not at the declaration.
+    fn check_no_blockaddress_for_declaration(
+        &self,
+        f: llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>,
+        name_id: &NameOrId,
+    ) -> ParseResult<()> {
+        for item in &self.deferred_block_addresses {
+            let is_ours = match &item.function {
+                DeferredBlockAddressFunction::Installed(installed) => {
+                    installed.as_erased() == f.as_erased()
+                }
+                DeferredBlockAddressFunction::Forward(reference) => reference == name_id,
+            };
+            if is_ours {
+                return Err(
+                    self.message_at(item.loc, "cannot take blockaddress inside a declaration")
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The two rules `parseFunctionHeader` applies once the whole clause
+    /// chain has parsed and the `AttributeList` is assembled.
+    ///
+    /// `builtin` is a real attribute — a *call site* may carry it — so the
+    /// rejection lives here rather than in the attribute loop, anchored at
+    /// the attribute's own location. The `sret` rule asks parameter 0 only,
+    /// and reports at the return type.
+    fn check_function_attribute_rules(
+        &self,
+        suffix: &FunctionSuffix<'ctx, B>,
+        attrs: &AttributeStorage,
+        ret_ty: Type<'ctx, B>,
+        ret_ty_loc: Span,
+    ) -> ParseResult<()> {
+        if let Some(loc) = suffix.builtin_loc {
+            return Err(self.message_at(loc, "'builtin' attribute not valid on function"));
+        }
+        if attrs.has_kind(AttrIndex::Param(0), AttrKind::StructRet) && !ret_ty.is_void() {
+            return Err(self.message_at(
+                ret_ty_loc,
+                "functions with 'sret' argument must return void",
+            ));
+        }
+        Ok(())
+    }
+
+    /// `parseFunctionHeader`'s redefinition arm.
+    ///
+    /// Upstream always creates a **fresh** `Function` for a header; only a
+    /// *forward reference* is reused (its placeholder is RAUW'd and erased),
+    /// and anything else already carrying the name is an error. llvmkit used
+    /// to reuse any function whose signature happened to match, so a repeated
+    /// `declare` — or a `declare` followed by a `define` — was accepted
+    /// silently.
+    ///
+    /// The two messages differ by namespace *and* by one `@`: a pre-existing
+    /// **function** is `invalid redefinition of function 'f'`, while any other
+    /// named value is `redefinition of function '@f'`.
+    fn check_function_redefinition(&self, name: &str, loc: Span) -> ParseResult<()> {
+        // An empty name is the `@N` / `@""` form, which upstream routes
+        // through `ForwardRefValIDs` instead; a name already registered as a
+        // forward reference is exactly the case that *may* be reused.
+        if name.is_empty() || self.forward_function_decls.contains_key(name) {
+            return Ok(());
+        }
+        if self.module.function_dyn(name).is_some() {
+            return Err(self.message_at(loc, format!("invalid redefinition of function '{name}'")));
+        }
+        if self.module.global(name).is_some()
+            || self.module.alias(name).is_some()
+            || self.module.ifunc(name).is_some()
+        {
+            return Err(self.message_at(loc, format!("redefinition of function '@{name}'")));
+        }
+        Ok(())
+    }
+
     /// `parseFunctionHeader`'s "Verify that the linkage is ok" switch.
     ///
     /// Upstream runs it **after** the return type has parsed, and anchors it
@@ -6495,111 +6617,129 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn is_function_header_attr_start(&self) -> bool {
-        // `align N` in the function header grammar is a function alignment
-        // suffix, not an `AttributeList` entry. Leave it for
-        // `parse_optional_function_suffix` so intrinsic declarations reject it
-        // through the noncanonical modifier path rather than treating it as an
-        // extra generated-attribute mismatch.
-        self.is_attr_start() && !matches!(self.peek(), Token::Kw(Keyword::Align))
-    }
-
     fn parse_optional_function_header_attrs(
         &mut self,
         attrs: &mut AttributeStorage,
-    ) -> ParseResult<Vec<u32>> {
+    ) -> ParseResult<ParsedAttrList> {
+        let mut builtin_loc = None;
         let mut groups = Vec::new();
-        while self.is_function_header_attr_start() {
-            groups.extend(self.parse_fn_attribute_value_pairs(
+        // `align N` is parsed here as an `AttributeList` entry, exactly as
+        // upstream does, and moved to the alignment field by
+        // `parse_optional_function_suffix`. llvmkit used to exclude it from
+        // this loop and leave it to the suffix, which is invisible while the
+        // suffix is order-free but breaks `align 8 section "x"` once the
+        // clause chain is a fixed sequence.
+        while self.is_attr_start() {
+            let parsed = self.parse_fn_attribute_value_pairs(
                 attrs,
                 AttrIndex::Function,
                 AttrListContext::FunctionHeader,
-            )?);
+            )?;
+            groups.extend(parsed.groups);
+            builtin_loc = builtin_loc.or(parsed.builtin_loc);
         }
-        Ok(groups)
+        Ok(ParsedAttrList {
+            groups,
+            builtin_loc,
+        })
     }
 
+    /// The fixed clause chain `parseFunctionHeader` runs after the argument
+    /// list, in its order and with its arity: each clause is tried **once**,
+    /// in sequence.
+    ///
+    /// That makes the order contractual. `define void @f() gc "x" section "y"`
+    /// is rejected upstream — `section` is looked for before `gc`, so by the
+    /// time `gc` has been eaten the `section` arm is already behind us, and
+    /// the leftover `section` fails against the `{`. llvmkit looped over the
+    /// clauses instead, in any order and any number of times, so it also
+    /// accepted `section "a" section "b"`.
+    ///
+    /// `align` appears in two places on purpose. The attribute loop parses it
+    /// first (the `Alignment` exemption in
+    /// [`Self::check_attribute_position`] is upstream's own hack, comment
+    /// included) and it is then *moved* to the alignment field, which is what
+    /// makes `define void @f() align 8 section "x"` legal; the clause below
+    /// covers the post-`comdat` position. The two spellings differ in one
+    /// detail — `parseOptionalAlignment` is called with `AllowParens = true`
+    /// from the attribute loop and `false` here, so `align(8)` is an
+    /// attribute-position-only form.
+    ///
+    /// Metadata is deliberately absent: upstream reads a *declaration*'s
+    /// attachments before the header (`parseDeclare`) and a *definition*'s
+    /// after it (`parseOptionalFunctionMetadata`), and neither eats a comma.
     fn parse_optional_function_suffix(
         &mut self,
         attrs: &mut AttributeStorage,
     ) -> ParseResult<FunctionSuffix<'ctx, B>> {
+        let parsed_attrs = self.parse_optional_function_header_attrs(attrs)?;
         let mut suffix = FunctionSuffix {
-            attr_groups: self.parse_optional_function_header_attrs(attrs)?,
+            attr_groups: parsed_attrs.groups,
+            builtin_loc: parsed_attrs.builtin_loc,
             ..FunctionSuffix::default()
         };
-        loop {
-            match self.peek() {
-                Token::Kw(Keyword::Section) => {
-                    self.bump()?;
-                    suffix.section = Some(self.parse_string_constant("section name")?);
-                }
-                Token::Kw(Keyword::Partition) => {
-                    self.bump()?;
-                    suffix.partition = Some(self.parse_string_constant("partition name")?);
-                }
-                Token::Kw(Keyword::Comdat) => {
-                    self.bump()?;
-                    suffix.comdat = if self.eat_punct(PunctKind::LParen)? {
-                        let name = match self.peek() {
-                            Token::ComdatVar(bytes) => std::str::from_utf8(bytes.as_ref())
-                                .map_err(|_| self.expected("valid UTF-8 comdat name"))?
-                                .to_owned(),
-                            _ => return Err(self.expected("comdat variable")),
-                        };
-                        self.bump()?;
-                        self.expect_punct(PunctKind::RParen, "')' after comdat")?;
-                        Some(Some(name))
-                    } else {
-                        Some(None)
-                    };
-                }
-                Token::Kw(Keyword::Align) => {
-                    self.bump()?;
-                    let bytes = self.parse_uint64()?;
-                    suffix.align = MaybeAlign::new(
-                        Align::new(bytes).map_err(|e| self.builder_err("function align", e))?,
-                    );
-                }
-                Token::Kw(Keyword::Gc) => {
-                    self.bump()?;
-                    suffix.gc = Some(self.parse_string_constant("gc name")?);
-                }
-                Token::Kw(Keyword::Prefix) => {
-                    self.bump()?;
-                    suffix.prefix_data = Some(self.parse_global_type_and_value()?);
-                }
-                Token::Kw(Keyword::Prologue) => {
-                    self.bump()?;
-                    suffix.prologue_data = Some(self.parse_global_type_and_value()?);
-                }
-                Token::Kw(Keyword::Personality) => {
-                    self.bump()?;
-                    suffix.personality_fn = Some(self.parse_personality_fn()?);
-                }
-                Token::MetadataVar(_) => {
-                    suffix
-                        .metadata
-                        .push(self.parse_named_metadata_attachment()?);
-                }
-                Token::Comma => {
-                    self.bump()?;
-                    if matches!(self.peek(), Token::MetadataVar(_)) {
-                        suffix
-                            .metadata
-                            .push(self.parse_named_metadata_attachment()?);
-                    } else {
-                        return Err(self.expected("metadata attachment"));
-                    }
-                }
-                _ if self.is_attr_start() => {
-                    suffix
-                        .attr_groups
-                        .extend(self.parse_optional_function_header_attrs(attrs)?);
-                }
-                _ => break,
-            }
+        // "If the alignment was parsed as an attribute, move to the alignment
+        // field." — `parseFunctionHeader`, verbatim.
+        if let Some(value) = attrs.int_value(AttrIndex::Function, AttrKind::Alignment) {
+            suffix.align = MaybeAlign::new(
+                Align::new(value).map_err(|e| self.builder_err("function align", e))?,
+            );
+            attrs.remove(AttrIndex::Function, AttrKind::Alignment);
+        }
+        if self.eat_keyword(Keyword::Section)? {
+            suffix.section = Some(self.parse_string_constant("section name")?);
+        }
+        if self.eat_keyword(Keyword::Partition)? {
+            suffix.partition = Some(self.parse_string_constant("partition name")?);
+        }
+        if self.eat_keyword(Keyword::Comdat)? {
+            suffix.comdat = if self.eat_punct(PunctKind::LParen)? {
+                let name = match self.peek() {
+                    Token::ComdatVar(bytes) => std::str::from_utf8(bytes.as_ref())
+                        .map_err(|_| self.expected("valid UTF-8 comdat name"))?
+                        .to_owned(),
+                    _ => return Err(self.expected("comdat variable")),
+                };
+                self.bump()?;
+                self.expect_punct(PunctKind::RParen, "')' after comdat")?;
+                Some(Some(name))
+            } else {
+                Some(None)
+            };
+        }
+        if matches!(self.peek(), Token::Kw(Keyword::Align)) {
+            let value = self.parse_optional_alignment_value(false)?;
+            suffix.align = MaybeAlign::new(
+                Align::new(value).map_err(|e| self.builder_err("function align", e))?,
+            );
+        }
+        if self.eat_keyword(Keyword::Gc)? {
+            suffix.gc = Some(self.parse_string_constant("gc name")?);
+        }
+        if self.eat_keyword(Keyword::Prefix)? {
+            suffix.prefix_data = Some(self.parse_global_type_and_value()?);
+        }
+        if self.eat_keyword(Keyword::Prologue)? {
+            suffix.prologue_data = Some(self.parse_global_type_and_value()?);
+        }
+        if self.eat_keyword(Keyword::Personality)? {
+            suffix.personality_fn = Some(self.parse_personality_fn()?);
         }
         Ok(suffix)
+    }
+
+    /// `(!dbg !57)*` after a function *definition*'s header. Mirrors
+    /// `LLParser::parseOptionalFunctionMetadata`, which loops on `MetadataVar`
+    /// directly and never eats a comma — `define i32 @f(), !dbg !3 {` is
+    /// invalid, and llvmkit used to accept it.
+    fn parse_optional_function_metadata(
+        &mut self,
+    ) -> ParseResult<Vec<(MetadataAttachmentKind, MetadataId<B>)>> {
+        let mut attachments = Vec::new();
+        while matches!(self.peek(), Token::MetadataVar(_)) {
+            attachments.push(self.parse_named_metadata_attachment()?);
+        }
+        Ok(attachments)
     }
 
     fn parse_fn_attribute_value_pairs(
@@ -6607,7 +6747,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         out: &mut AttributeStorage,
         index: AttrIndex,
         context: AttrListContext,
-    ) -> ParseResult<Vec<u32>> {
+    ) -> ParseResult<ParsedAttrList> {
+        let mut builtin_loc = None;
         let mut groups = Vec::new();
         // The legacy memory keywords **intersect** into one accumulator —
         // `upgradeMemoryAttr` is `ME &= MemoryEffects::X()` per keyword, with
@@ -6643,12 +6784,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         String::new()
                     };
                     out.add(index, Attribute::<B>::string(key, value));
-                }
-                Token::Kw(Keyword::Align)
-                    if index == AttrIndex::Function
-                        && context == AttrListContext::FunctionHeader =>
-                {
-                    break;
                 }
                 Token::Kw(Keyword::Align) => {
                     // Inside a group the grammar is `align = N`, read with
@@ -6835,6 +6970,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         break;
                     };
                     self.bump()?;
+                    // `BuiltinLoc = Lex.getLoc()` in upstream's `kw_builtin`
+                    // arm. The rejection itself belongs to the *caller*: a
+                    // call site may legally carry `builtin`.
+                    if kind == AttrKind::Builtin {
+                        builtin_loc = Some(attr_loc);
+                    }
                     let attr = Attribute::<B>::enum_attr(kind)
                         .ok_or_else(|| self.expected("attribute"))?;
                     self.check_attribute_position(index, &attr, attr_loc)?;
@@ -6856,7 +6997,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if legacy_memory != MemoryEffects::unknown() {
             out.set(index, Attribute::<B>::memory(legacy_memory));
         }
-        Ok(groups)
+        Ok(ParsedAttrList {
+            groups,
+            builtin_loc,
+        })
     }
 
     /// `range(<ty> <n>,<n>)`. Ports `LLParser::parseRangeAttr`.
@@ -7365,12 +7509,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn parse_optional_param_attrs(&mut self) -> ParseResult<AttributeStorage> {
         let mut storage = AttributeStorage::new();
-        let groups = self.parse_fn_attribute_value_pairs(
+        let parsed = self.parse_fn_attribute_value_pairs(
             &mut storage,
             AttrIndex::Param(0),
             AttrListContext::ParamOrReturn,
         )?;
-        if !groups.is_empty() {
+        if !parsed.groups.is_empty() {
             return Err(self.expected("attribute"));
         }
         Ok(storage)
@@ -7378,12 +7522,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn parse_optional_return_attrs(&mut self) -> ParseResult<AttributeStorage> {
         let mut storage = AttributeStorage::new();
-        let groups = self.parse_fn_attribute_value_pairs(
+        let parsed = self.parse_fn_attribute_value_pairs(
             &mut storage,
             AttrIndex::Return,
             AttrListContext::ParamOrReturn,
         )?;
-        if !groups.is_empty() {
+        if !parsed.groups.is_empty() {
             return Err(self.expected("attribute"));
         }
         Ok(storage)
@@ -7391,12 +7535,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     fn parse_optional_fn_attrs(&mut self) -> ParseResult<(AttributeStorage, Vec<u32>)> {
         let mut storage = AttributeStorage::new();
-        let groups = self.parse_fn_attribute_value_pairs(
+        // A call site's `builtin` is legal, so its location is discarded here
+        // — only `parseFunctionHeader` rejects one.
+        let parsed = self.parse_fn_attribute_value_pairs(
             &mut storage,
             AttrIndex::Function,
             AttrListContext::FunctionHeader,
         )?;
-        Ok((storage, groups))
+        Ok((storage, parsed.groups))
     }
 
     /// Mirrors `knownBundleName` (`lib/IR/LLVMContext.cpp`), the spelling
@@ -7532,6 +7678,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // equivalent of.
         let address_space = self.parse_optional_program_addr_space()?;
         let suffix = self.parse_optional_function_suffix(&mut attrs)?;
+        self.check_function_attribute_rules(&suffix, &attrs, ret_ty, ret_ty_loc)?;
 
         let fn_ty = function_type_with_variadic(self.module, ret_ty, params, var_args);
         match resolve_intrinsic_name(&name) {
@@ -7558,7 +7705,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     || suffix.prefix_data.is_some()
                     || suffix.prologue_data.is_some()
                     || suffix.personality_fn.is_some()
-                    || !suffix.metadata.is_empty()
+                    // A declaration's attachments are the ones read *before*
+                    // the header; there is no trailing form to check.
+                    || !leading_metadata.is_empty()
                 {
                     return Err(self.intrinsic_modifier_error(decl_loc));
                 }
@@ -7617,6 +7766,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }),
             NameOrId::Name(_) => None,
         };
+        self.check_function_redefinition(&name, decl_loc)?;
         let existing_by_name = (!name.is_empty())
             .then(|| self.module.function_dyn(&name))
             .flatten()
@@ -7723,21 +7873,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
             }
         }
-        // Upstream applies the pre-header attachments first, in the order
-        // they were written, then anything the suffix carried.
-        for (kind, id) in leading_metadata.into_iter().chain(suffix.metadata) {
+        // `parseDeclare` applies the attachments it read *before* the header,
+        // in the order they were written. There is no trailing form: a
+        // declaration's metadata comes first or not at all, so
+        // `declare void @f() !dbg !0` is invalid — which llvmkit used to
+        // accept, because its clause loop had a `MetadataVar` arm.
+        for (kind, id) in leading_metadata {
             own_metadata(f.set_metadata(self.module, kind, id));
         }
-        if let NameOrId::Id(id) = name_id
-            && self.numbered_globals.get(id).is_none()
+        if let NameOrId::Id(id) = &name_id
+            && self.numbered_globals.get(*id).is_none()
         {
             self.numbered_globals
-                .add(id, GlobalRef::Function(f))
+                .add(*id, GlobalRef::Function(f))
                 .map_err(|source| ParseError::InvalidSlotId {
                     source,
                     loc: DiagLoc::span(decl_loc),
                 })?;
         }
+        // `parseFunctionHeader`'s `if (IsDefine) return false;` tail: only a
+        // declaration reaches the blockaddress check.
+        self.check_no_blockaddress_for_declaration(f, &name_id)?;
         Ok(())
     }
 
@@ -7823,6 +7979,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // equivalent of.
         let address_space = self.parse_optional_program_addr_space()?;
         let suffix = self.parse_optional_function_suffix(&mut attrs)?;
+        self.check_function_attribute_rules(&suffix, &attrs, ret_ty, ret_ty_loc)?;
+        let function_metadata = self.parse_optional_function_metadata()?;
 
         let fn_ty = function_type_with_variadic(self.module, ret_ty, param_types, var_args);
         let existing_by_id = match &name_id {
@@ -7832,6 +7990,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }),
             NameOrId::Name(_) => None,
         };
+        self.check_function_redefinition(&name, decl_loc)?;
         let existing_by_name = (!name.is_empty())
             .then(|| self.module.function_dyn(&name))
             .flatten()
@@ -7938,7 +8097,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
             }
         }
-        for (kind, id) in suffix.metadata {
+        // `parseDefine` reads the attachments *after* the header, through
+        // `parseOptionalFunctionMetadata`, and before the body's `{`.
+        for (kind, id) in function_metadata {
             own_metadata(f.set_metadata(self.module, kind, id));
         }
         if let NameOrId::Id(id) = name_id
@@ -7952,7 +8113,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 })?;
         }
 
-        self.expect_punct(PunctKind::LBrace, "'{' to open function body")?;
+        self.expect_punct(PunctKind::LBrace, "'{' in function body")?;
 
         let mut state = PerFunctionState::new(f);
         // Mirrors `PerFunctionState::PerFunctionState`, which walks the
@@ -7996,23 +8157,36 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // by then every block exists for real, so no placeholder blocks are
         // needed, and the labels are still numbered.
         self.resolve_block_addresses_for_function(&state, &name_id)?;
-        state.finish(self.module)?;
+        // Upstream eats the `}` *then* runs `PFS.finishFunction()`, so a body
+        // that both ends early and leaves a value undefined reports the
+        // missing brace first.
         self.expect_punct(PunctKind::RBrace, "'}' to close function body")?;
+        state.finish(self.module)?;
         Ok(())
     }
 
     // ── Function body driver ─────────────────────────────────────────────
 
+    /// `'{' BasicBlock+ UseListOrderDirective* '}'` — mirrors
+    /// `LLParser::parseFunctionBody`, whose two loops are what make the
+    /// grammar's `+` and its ordering real: every basic block comes first,
+    /// then every `uselistorder` directive, and neither may be empty of
+    /// blocks. llvmkit ran one loop that took either at any point, so
+    /// `define void @f() { }` parsed as a body with no blocks, and a block
+    /// after a `uselistorder` was accepted.
     fn parse_function_body(&mut self, state: &mut PerFunctionState<'ctx, B>) -> ParseResult<()> {
-        // Mirrors `LLParser::parseBasicBlock`: a body must contain at least
-        // one block, and an unlabeled block is assigned the next shared
-        // function-local numbered value slot.
-        loop {
+        // "We need at least one basic block."
+        if matches!(
+            self.peek(),
+            Token::RBrace | Token::Kw(Keyword::Uselistorder)
+        ) {
+            return Err(self.message("function body requires at least one basic block"));
+        }
+        while !matches!(
+            self.peek(),
+            Token::RBrace | Token::Kw(Keyword::Uselistorder)
+        ) {
             match self.peek() {
-                Token::RBrace => break,
-                Token::Kw(Keyword::Uselistorder) => {
-                    self.parse_function_use_list_order(state)?;
-                }
                 Token::LabelStr(_) => {
                     let label_loc = self.loc();
                     let label = self
@@ -8035,6 +8209,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     self.parse_basic_block(state, BlockHeader::Implicit, loc)?;
                 }
             }
+        }
+        // Then, and only then, the `uselistorder` directives.
+        while !matches!(self.peek(), Token::RBrace) {
+            self.parse_function_use_list_order(state)?;
         }
         Ok(())
     }
@@ -8081,6 +8259,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             while matches!(self.peek(), Token::Hash) {
                 self.bump()?;
                 pending_debug_records.push(self.parse_debug_record(state)?);
+            }
+
+            // `parseInstruction`'s first line: a block that runs off the end
+            // of the file gets its own message rather than whatever the
+            // enclosing production would have said next.
+            if matches!(self.peek(), Token::Eof) {
+                return Err(self.message("found end of file when expecting more instructions"));
             }
 
             // Terminator — these consume the builder.
@@ -11629,9 +11814,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
                     Self::resolve_forward_ref(entry, v, loc)?;
                 }
                 if self.local_named.insert(n.clone(), v).is_some() {
-                    return Err(ParseError::Redefinition {
-                        kind: SYMBOL_KIND_LOCAL,
-                        id: SymbolId::Named(n.clone()),
+                    // `setInstName` sets the name and then notices the symbol
+                    // table renamed it. The sentence is its own — not the
+                    // `redefinition of <kind> '<sigil><name>'` shape — and
+                    // upstream spells the name **without** a `%`.
+                    return Err(ParseError::Message {
+                        message: format!("multiple definition of local value named '{n}'").into(),
                         loc: DiagLoc::span(loc),
                     });
                 }

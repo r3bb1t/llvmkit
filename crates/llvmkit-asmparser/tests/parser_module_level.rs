@@ -863,6 +863,253 @@ fn the_argument_list_delimiters_use_upstream_text() {
     );
 }
 
+/// `parseFunctionHeader`'s redefinition arm. Upstream always creates a
+/// **fresh** `Function`; only a forward reference is reused, so a repeated
+/// `declare`, a repeated `define`, and a `declare` followed by a `define` are
+/// all errors. llvmkit reused any function whose signature happened to match,
+/// and accepted all three.
+///
+/// The two texts differ by namespace *and* by one `@`: a pre-existing
+/// function is `invalid redefinition of function 'f'` (`M->getFunction`),
+/// while any other named value is `redefinition of function '@f'`
+/// (`M->getNamedValue`).
+///
+/// No `test/Assembler` fixture pins either — and none of the 500 both
+/// declares and defines one function, which is the same fact from the other
+/// side.
+#[test]
+fn a_function_redefinition_is_rejected() {
+    let define = "define void @f() {\nentry:\n  ret void\n}\n";
+    for src in [
+        "declare void @f()\ndeclare void @f()\n".to_owned(),
+        format!("{define}{define}"),
+        format!("declare void @f()\n{define}"),
+    ] {
+        let src = src.as_str();
+        assert_eq!(
+            header_err(src),
+            "invalid redefinition of function 'f'",
+            "{src}"
+        );
+    }
+
+    for src in [
+        "@f = global i32 0\ndeclare void @f()\n",
+        "@g = global i32 0\n@f = alias i32, ptr @g\ndeclare void @f()\n",
+    ] {
+        assert_eq!(header_err(src), "redefinition of function '@f'", "{src}");
+    }
+}
+
+/// The case the redefinition arm must *not* catch: a function referenced
+/// before it is defined. Upstream keeps it in `ForwardRefVals` and reuses the
+/// placeholder; llvmkit keeps the provisional `Function` it minted at the
+/// call site.
+#[test]
+fn a_forward_referenced_function_is_not_a_redefinition() {
+    let m = llvmkit_ir::Module::dynamic("forward_referenced_function");
+    parse_into(
+        "define void @g() {\nentry:\n  call void @f()\n  ret void\n}\n\
+         define void @f() {\nentry:\n  ret void\n}\n",
+        &m,
+    );
+    let printed = format!("{m}");
+    assert!(printed.contains("define void @f()"), "{printed}");
+    assert!(printed.contains("call void @f()"), "{printed}");
+}
+
+/// `parseFunctionHeader` runs its clause chain as a fixed **sequence** of
+/// single `EatIfPresent` guards, so the order is contractual and each clause
+/// appears at most once. llvmkit looped over them instead, accepting any
+/// order and any number of repeats.
+///
+/// `align` is the interesting one: it is legal *before* `section` because the
+/// attribute loop parses it and `parseFunctionHeader` then moves it to the
+/// alignment field ("As a hack, we allow function alignment to be initially
+/// parsed as an attribute…", upstream's own comment), and legal again after
+/// `comdat` as the clause. llvmkit used to exclude `align` from the attribute
+/// loop entirely, which is invisible while the chain is order-free.
+#[test]
+fn the_header_clause_chain_is_a_fixed_sequence() {
+    // In order: accepted.
+    let m = llvmkit_ir::Module::dynamic("clause_order_ok");
+    parse_into(
+        "define void @f() section \"s\" align 8 gc \"g\" {\nentry:\n  ret void\n}\n",
+        &m,
+    );
+    // `align` as an attribute, before `section`: also accepted, and it lands
+    // in the alignment field rather than the attribute list.
+    let m = llvmkit_ir::Module::dynamic("clause_order_align_attr");
+    parse_into(
+        "define void @f() align 8 section \"s\" {\nentry:\n  ret void\n}\n",
+        &m,
+    );
+    let printed = format!("{m}");
+    assert!(printed.contains("section \"s\""), "{printed}");
+    assert!(printed.contains("align 8"), "{printed}");
+
+    // Out of order: `section` is looked for before `gc`, so the trailing
+    // `section` is left over and fails against the body's `{`.
+    assert_eq!(
+        header_err("define void @f() gc \"g\" section \"s\" {\nentry:\n  ret void\n}\n"),
+        "expected '{' in function body"
+    );
+    // And a clause may not repeat.
+    assert_eq!(
+        header_err("define void @f() section \"a\" section \"b\" {\nentry:\n  ret void\n}\n"),
+        "expected '{' in function body"
+    );
+}
+
+/// `if (FuncAttrs.contains(Attribute::Builtin))` in
+/// `LLParser::parseFunctionHeader`, anchored at `BuiltinLoc` — which is why
+/// upstream threads that location out of `parseFnAttributeValuePairs` at all.
+///
+/// The attribute itself is real: a *call site* may carry `builtin`, so the
+/// rejection cannot live in the attribute loop.
+#[test]
+fn builtin_is_not_a_function_attribute() {
+    for src in [
+        "declare void @f() builtin\n",
+        "define void @f() builtin {\nentry:\n  ret void\n}\n",
+    ] {
+        assert_eq!(
+            header_err(src),
+            "'builtin' attribute not valid on function",
+            "{src}"
+        );
+    }
+
+    // The call-site spelling stays legal.
+    let m = llvmkit_ir::Module::dynamic("builtin_call_site");
+    parse_into(
+        "declare void @g()\ndefine void @f() {\nentry:\n  call void @g() builtin\n  ret void\n}\n",
+        &m,
+    );
+}
+
+/// `if (PAL.hasParamAttr(0, Attribute::StructRet) && !RetType->isVoidTy())`,
+/// reported at `RetTypeLoc`. Parameter **0** only, which is the whole rule.
+#[test]
+fn an_sret_first_argument_forces_a_void_return() {
+    assert_eq!(
+        header_err("declare i32 @f(ptr sret(i32) %p)\n"),
+        "functions with 'sret' argument must return void"
+    );
+
+    // Void return: fine. `sret` on a later parameter: not this rule.
+    let m = llvmkit_ir::Module::dynamic("sret_ok");
+    parse_into("declare void @f(ptr sret(i32) %p)\n", &m);
+    let m = llvmkit_ir::Module::dynamic("sret_second_param");
+    parse_into("declare i32 @f(ptr %a, ptr sret(i32) %p)\n", &m);
+}
+
+/// `parseFunctionHeader`'s tail, reached only when `IsDefine` is false: a
+/// `blockaddress` naming a function that turns out to be a *declaration* can
+/// never be satisfied. Reported at the reference, not at the declaration.
+#[test]
+fn a_blockaddress_may_not_name_a_declaration() {
+    assert_eq!(
+        header_err("@a = global ptr blockaddress(@f, %bb)\ndeclare void @f()\n"),
+        "cannot take blockaddress inside a declaration"
+    );
+}
+
+/// The four texts `LLParser::parseFunctionBody` and `parseBasicBlock` own,
+/// three of them ported from their upstream fixtures.
+///
+/// `function body requires at least one basic block` had no llvmkit
+/// equivalent at all: its loop simply broke on `}`, so `define void @f() { }`
+/// parsed as a body with zero blocks.
+#[test]
+fn the_function_body_frame_matches_upstream_text() {
+    // `test/Assembler/align-param-attr-error1.ll` and
+    // `test/Assembler/mustprogress-parse-error-2.ll` both pin the brace.
+    for fixture in [
+        include_bytes!("fixtures/upstream/align-param-attr-error1.ll").as_slice(),
+        include_bytes!("fixtures/upstream/mustprogress-parse-error-2.ll").as_slice(),
+    ] {
+        let m = llvmkit_ir::Module::dynamic("function_body_brace");
+        let err = Parser::new(fixture, &m)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("fixture is rejected")
+            .to_string();
+        assert_eq!(err, "expected '{' in function body");
+    }
+
+    // `test/Assembler/2004-03-30-UnclosedFunctionCrash.ll`
+    let m = llvmkit_ir::Module::dynamic("unclosed_function");
+    let err = Parser::new(
+        include_bytes!("fixtures/upstream/2004-03-30-UnclosedFunctionCrash.ll").as_slice(),
+        &m,
+    )
+    .expect("lexer primes")
+    .parse_module()
+    .expect_err("fixture is rejected")
+    .to_string();
+    assert_eq!(err, "found end of file when expecting more instructions");
+
+    // `test/Assembler/2003-11-24-SymbolTableCrash.ll`. Note upstream spells
+    // the name **without** a `%`, unlike its `redefinition of ...` family.
+    let m = llvmkit_ir::Module::dynamic("symbol_table_crash");
+    let err = Parser::new(
+        include_bytes!("fixtures/upstream/2003-11-24-SymbolTableCrash.ll").as_slice(),
+        &m,
+    )
+    .expect("lexer primes")
+    .parse_module()
+    .expect_err("fixture is rejected")
+    .to_string();
+    assert_eq!(err, "multiple definition of local value named 'tmp.1'");
+
+    // No upstream fixture pins the empty body; the routine is the anchor.
+    assert_eq!(
+        header_err("define void @f() {\n}\n"),
+        "function body requires at least one basic block"
+    );
+    assert_eq!(
+        header_err("define void @f() {\nuselistorder ptr @f, { 1, 0 }\n}\n"),
+        "function body requires at least one basic block"
+    );
+}
+
+/// `parseFunctionBody`'s two loops are ordered: every basic block, *then*
+/// every `uselistorder` directive. llvmkit ran one loop that accepted either
+/// at any point, so a block after a directive parsed.
+#[test]
+fn uselistorder_directives_come_after_every_block() {
+    let m = llvmkit_ir::Module::dynamic("uselistorder_placement");
+    parse_into(
+        "define i32 @f(i32 %a) {\nentry:\n  %b = add i32 %a, %a\n  ret i32 %b\n\
+         uselistorder i32 %a, { 1, 0 }\n}\n",
+        &m,
+    );
+
+    // Once the directives start, the only things left are more directives or
+    // the `}` — `parseUseListOrder`'s own `parseToken` reports the label.
+    assert_eq!(
+        header_err(
+            "define i32 @f(i32 %a) {\nentry:\n  %b = add i32 %a, %a\n  ret i32 %b\n\
+             uselistorder i32 %a, { 1, 0 }\nsecond:\n  ret i32 0\n}\n"
+        ),
+        "expected 'uselistorder'"
+    );
+}
+
+/// `parseFunctionHeader`'s argument-naming loop: upstream sets each name and
+/// notices when the symbol table renamed it. llvmkit installed the names
+/// without checking, so the second `%x` silently won.
+#[test]
+fn a_repeated_argument_name_is_rejected() {
+    for src in [
+        "declare void @f(i32 %x, i32 %x)\n",
+        "define void @f(i32 %x, i32 %x) {\nentry:\n  ret void\n}\n",
+    ] {
+        assert_eq!(header_err(src), "redefinition of argument '%x'", "{src}");
+    }
+}
+
 /// `parseFunctionHeader`'s `tokError("expected function name")`. llvmkit
 /// appended ` after return type`, which upstream never says.
 ///

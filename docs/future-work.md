@@ -12,6 +12,45 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## Parser — a forward-referenced function is a *typed* `Function`, so a later definition may not change its signature (found 2026-08-14, LLParser parity W8)
+
+`declare`/`define` reuse a function that a call already forward-referenced,
+and reject the reuse when the signatures disagree:
+
+```
+forward function declaration with matching signature
+forward function definition with matching signature
+```
+
+Neither text is upstream's, and neither *rule* is upstream's either.
+`LLParser::getGlobalVal` mints an untyped placeholder — a `ptr`-typed
+`GlobalVariable` — so `parseFunctionHeader` compares only
+`FwdFn->getType() != PFT`, which after opaque pointers is nothing but the
+**address space**. The signature is not checked there at all; a call whose
+arguments disagree with the eventual definition is accepted by the parser and
+rejected by the Verifier (`Call parameter type does not match function
+signature!`).
+
+llvmkit cannot do that yet. `parse_direct_callee`'s forward-reference arm
+calls `Module::add_function_dyn` with the *call site's* signature, so the
+placeholder is a real `Function` with a real `FunctionType` — and there is no
+way to give it a different signature later. The check is therefore
+load-bearing for the representation, not merely for the diagnostic: dropping
+it would leave a call wired to a function whose type it does not match.
+
+Closing it needs the same shape W2 gave value forward references — an untyped
+placeholder plus RAUW at the definition — applied to the *callee* position, so
+that `parseFunctionHeader` can create a fresh `Function` and re-point the call.
+It also unblocks the three per-site texts W2.5 carried:
+`invalid forward reference to function '<n>' with wrong type: expected 'T' but
+was 'U'` (pinned by `test/Assembler/opaque-ptr-invalid-forward-ref.ll`, whose
+fixture is vendored and waiting), `type of definition and forward reference of
+'@N' disagree`, and the global/alias twins — all of which compare types at the
+*definition site*, where llvmkit still resolves in one end-of-module sweep.
+
+The two redefinition texts landed in W8 part 2 (`invalid redefinition of
+function 'f'`, `redefinition of function '@f'`); this is the remainder.
+
 ## Parser — a self-typed aliasee does not parse, because constant expressions are type-directed (found 2026-08-13, LLParser parity W7)
 
 `@a = alias i32, bitcast (ptr @g to ptr)` does not parse, and neither do the
