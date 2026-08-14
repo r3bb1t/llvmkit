@@ -19,6 +19,35 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Memory instructions
+
+- **Added: `alloca`, `load` and `store` validate their operands.** Twelve of
+  the fourteen diagnostics `parseAlloc`, `parseLoad` and `parseStore` own were
+  missing — llvmkit leaned on *builder* errors where upstream checks at parse
+  time, and had invented four `expected …` labels for the delimiters
+  (`',' between load type and pointer` for upstream's
+  `expected comma after load's type`, and so on). Now present, at upstream's
+  own anchors: `invalid type for alloca`,
+  `element count must have integer type`, `Cannot allocate unsized type`
+  (upstream's capital `C`), `load operand must be a pointer to a first class
+  type`, `atomic load cannot use Release ordering`,
+  `loading unsized types is not allowed`, `store operand must be a pointer`,
+  `store operand must be a first class value`,
+  `atomic store cannot use Acquire ordering` and
+  `storing unsized types is not allowed`.
+
+- **Changed (breaking): an atomic load or store reads its `align` clause
+  optionally.** `parseScopeAndOrdering` is a no-op on a non-atomic op and the
+  alignment is then read the *same* way in both cases, so a missing one is a
+  **diagnostic** — `atomic load must have explicit non-zero alignment` —
+  rather than a parse failure. llvmkit demanded the comma and the alignment
+  structurally, so `load atomic i32, ptr %p seq_cst` answered
+  `expected ',' after atomic ordering`. That shape is also what made the
+  ordering and sizedness checks above unreachable.
+
+  `test/Assembler/alloca-invalid-type.ll`, `alloca-invalid-type-2.ll` and
+  `invalid-load-missing-explicit-type.ll` now port verbatim.
+
 ### Function headers
 
 - **Changed (breaking): the header clause chain is a fixed sequence.**

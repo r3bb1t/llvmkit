@@ -19,15 +19,15 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2388. Recounted on 2026-08-14 at the LLParser-parity
-Wave 8 point via the documented attribute-anchored grep below
-(`crates/llvmkit-ir` 1543 + `crates/llvmkit-asmparser` 823 +
+Total `#[test]` functions: 2390. Recounted on 2026-08-14 in the LLParser-parity
+Wave 9a commit via the documented attribute-anchored grep below
+(`crates/llvmkit-ir` 1543 + `crates/llvmkit-asmparser` 825 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
-`crates/llvmkit-macros` has none). The +153 over the 2235 point below is the
-LLParser-parity program's waves 0-8.
+`crates/llvmkit-macros` has none). The +155 over the 2235 point below is the
+LLParser-parity program's waves 0-9a.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries 1948 rows. Matching them against the tree by test-function name
+below carries 1950 rows. Matching them against the tree by test-function name
 leaves **470 `#[test]` functions (469 distinct names) with no row**. The gap
 is inherited, not new: it accumulated across the type-safety and pass-API
 programs, where whole test files landed without rows, and it sits in
@@ -1014,6 +1014,8 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::the_function_body_frame_matches_upstream_text` | `test/Assembler/align-param-attr-error1.ll`, `test/Assembler/mustprogress-parse-error-2.ll`, `test/Assembler/2004-03-30-UnclosedFunctionCrash.ll` and `test/Assembler/2003-11-24-SymbolTableCrash.ll`, all vendored verbatim; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionBody`, `LLParser::parseInstruction`'s EOF arm and `PerFunctionState::setInstName`. The empty-body half has no upstream fixture and cites `parseFunctionBody` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::uselistorder_directives_come_after_every_block` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionBody`'s two sequential loops, and `LLParser::parseUseListOrder`'s `expected 'uselistorder'` | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_repeated_argument_name_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader`'s argument-naming loop, which sets each name and compares it back — `redefinition of argument '%x'` | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::alloca_validates_its_type_and_element_count` | `test/Assembler/alloca-invalid-type.ll` and `test/Assembler/alloca-invalid-type-2.ll`, both vendored verbatim; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseAlloc`'s `isFunctionTy \|\| !PointerType::isValidElementType` guard, its `element count must have integer type` check and its `Cannot allocate unsized type` check (the last two have no upstream fixture) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::load_and_store_validate_their_operands` | `test/Assembler/invalid-load-missing-explicit-type.ll`, vendored verbatim; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseLoad` and `LLParser::parseStore` — their operand, atomic-alignment, ordering and sizedness checks, none of which `test/Assembler` pins | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_block_may_not_take_a_local_value_name` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::PerFunctionState::defineBB` reaching `getBB` → `getVal(Name, LabelTy)`, so blocks and local values share one namespace; the numbered twin is unreachable behind `checkValueID` and no `test/Assembler` fixture pins either | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_types.rs::a_type_param_after_an_int_param_is_rejected` | `LLParser::parseTargetExtType`'s `SeenInt` guard — `expected uint32 param`, verbatim | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_types.rs::target_extension_type_arity_is_checked` | `TargetExtType::checkParams` (`llvm/lib/IR/Type.cpp`), all three named constraints, messages verbatim | llvmkit-specific (rule anchor) |

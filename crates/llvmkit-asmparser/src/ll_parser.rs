@@ -9070,11 +9070,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // (`LLParser::parseAlloc`).
         let inalloca = self.eat_keyword(Keyword::Inalloca)?;
         let swifterror = self.eat_keyword(Keyword::Swifterror)?;
+        let ty_loc = self.loc();
         let ty = self.parse_type(false)?;
+        if ty.is_function() || !ty.is_valid_pointer_element() {
+            return Err(self.message_at(ty_loc, "invalid type for alloca"));
+        }
         // Upstream parses size, then alignment, then address space.
         let size = self.parse_optional_comma_array_size(state)?;
         let align = self.parse_optional_comma_align()?;
         let addr_space = self.parse_optional_comma_addrspace()?;
+        // `if (!Alignment && !Ty->isSized(&Visited))` — an explicit alignment
+        // is what makes an unsized allocation legal, because the alignment is
+        // otherwise derived from the type's layout. Upstream's capital `C`.
+        if align.is_none() && !ty.is_sized() {
+            return Err(self.message_at(ty_loc, "Cannot allocate unsized type"));
+        }
         // Runtime-clause dispatch: every optional slot is an `Option` /
         // `bool` decided by the source text, so the builder chain is
         // assembled with explicit ifs (the same shape
@@ -9127,11 +9137,14 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.current = saved_current;
             return Ok(None);
         }
+        // Upstream reads a general `parseTypeAndValue` here and rejects a
+        // non-integer *afterwards*, at the operand's own location.
+        let size_loc = self.loc();
         let size_ty = self.parse_type(false)?;
         let size_v = self.parse_value(state, size_ty)?;
         let n: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = size_v
             .try_into()
-            .map_err(|_| self.expected("integer alloca array size"))?;
+            .map_err(|_| self.message_at(size_loc, "element count must have integer type"))?;
         Ok(Some(n))
     }
 
@@ -9165,13 +9178,56 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let is_atomic = self.eat_keyword(Keyword::Atomic)?;
         let volatile = self.eat_keyword(Keyword::Volatile)?;
+        let explicit_type_loc = self.loc();
         let ty = self.parse_type(false)?;
-        self.expect_punct(PunctKind::Comma, "',' between load type and pointer")?;
+        self.expect_punct(PunctKind::Comma, "comma after load's type")?;
+        let operand_loc = self.loc();
         let ptr_ty = self.parse_type(false)?;
         let ptr_v = self.parse_value(state, ptr_ty)?;
-        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
-            .try_into()
-            .map_err(|_| self.expected("ptr-typed load operand"))?;
+
+        // `parseScopeAndOrdering` is a no-op when the load is not atomic, and
+        // the align clause is read the *same* way in both cases — optionally.
+        // llvmkit used to demand a comma and an alignment on the atomic path,
+        // so a missing one was `expected ',' after atomic ordering` instead of
+        // upstream's own diagnostic below.
+        let scope_and_ordering = if is_atomic {
+            let sync_scope = self.parse_optional_syncscope()?;
+            Some((sync_scope, self.parse_atomic_ordering()?))
+        } else {
+            None
+        };
+        let align = self.parse_optional_comma_align()?;
+
+        // `parseLoad`'s checks, in its order and at its anchors.
+        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v.try_into().map_err(|_| {
+            self.message_at(
+                operand_loc,
+                "load operand must be a pointer to a first class type",
+            )
+        })?;
+        if !ty.is_first_class() {
+            return Err(self.message_at(
+                operand_loc,
+                "load operand must be a pointer to a first class type",
+            ));
+        }
+        if is_atomic && align.is_none() {
+            return Err(self.message_at(
+                operand_loc,
+                "atomic load must have explicit non-zero alignment",
+            ));
+        }
+        if let Some((_, ordering)) = scope_and_ordering
+            && matches!(
+                ordering,
+                AtomicOrdering::Release | AtomicOrdering::AcquireRelease
+            )
+        {
+            return Err(self.message_at(operand_loc, "atomic load cannot use Release ordering"));
+        }
+        if align.is_none() && !ty.is_sized() {
+            return Err(self.message_at(explicit_type_loc, "loading unsized types is not allowed"));
+        }
 
         // Runtime-clause dispatch: `volatile` / `atomic` / the align and
         // syncscope clauses are all decided by the source text, so the
@@ -9181,16 +9237,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if volatile {
             load = load.volatile();
         }
-        if is_atomic {
-            let sync_scope = self.parse_optional_syncscope()?;
-            let ordering = self.parse_atomic_ordering()?;
-            self.expect_punct(PunctKind::Comma, "',' after atomic ordering")?;
-            // Upstream requires the align clause on an atomic load
-            // ("atomic load must have explicit non-zero alignment",
-            // `LLParser::parseLoad`), so this is not optional here.
-            let align = self.parse_align_val()?;
-            load = load.atomic(ordering).sync_scope(sync_scope).align(align);
-        } else if let Some(align) = self.parse_optional_comma_align()? {
+        if let Some((sync_scope, ordering)) = scope_and_ordering {
+            load = load.atomic(ordering).sync_scope(sync_scope);
+        }
+        if let Some(align) = align {
             load = load.align(align);
         }
         let v = load
@@ -9209,29 +9259,60 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<()> {
         let is_atomic = self.eat_keyword(Keyword::Atomic)?;
         let volatile = self.eat_keyword(Keyword::Volatile)?;
+        let value_loc = self.loc();
         let val_ty = self.parse_type(false)?;
         let val_v = self.parse_value(state, val_ty)?;
-        self.expect_punct(PunctKind::Comma, "',' between store value and pointer")?;
+        self.expect_punct(PunctKind::Comma, "',' after store operand")?;
+        let ptr_loc = self.loc();
         let ptr_ty = self.parse_type(false)?;
         let ptr_v = self.parse_value(state, ptr_ty)?;
+
+        // As in `parse_load`: the align clause is optional on both paths, and
+        // its absence on an atomic store is a *diagnostic*, not a parse
+        // failure.
+        let scope_and_ordering = if is_atomic {
+            let sync_scope = self.parse_optional_syncscope()?;
+            Some((sync_scope, self.parse_atomic_ordering()?))
+        } else {
+            None
+        };
+        let align = self.parse_optional_comma_align()?;
+
+        // `parseStore`'s checks, in its order. Note the anchors differ: the
+        // pointer rule reports at `PtrLoc`, everything else at the *value*.
         let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
             .try_into()
-            .map_err(|_| self.expected("ptr-typed store target"))?;
+            .map_err(|_| self.message_at(ptr_loc, "store operand must be a pointer"))?;
+        if !val_ty.is_first_class() {
+            return Err(self.message_at(value_loc, "store operand must be a first class value"));
+        }
+        if is_atomic && align.is_none() {
+            return Err(self.message_at(
+                value_loc,
+                "atomic store must have explicit non-zero alignment",
+            ));
+        }
+        if let Some((_, ordering)) = scope_and_ordering
+            && matches!(
+                ordering,
+                AtomicOrdering::Acquire | AtomicOrdering::AcquireRelease
+            )
+        {
+            return Err(self.message_at(value_loc, "atomic store cannot use Acquire ordering"));
+        }
+        if align.is_none() && !val_ty.is_sized() {
+            return Err(self.message_at(value_loc, "storing unsized types is not allowed"));
+        }
+
         // Runtime-clause dispatch, mirroring [`Self::parse_load`].
         let mut store = b.store_to(val_v, ptr);
         if volatile {
             store = store.volatile();
         }
-        if is_atomic {
-            let sync_scope = self.parse_optional_syncscope()?;
-            let ordering = self.parse_atomic_ordering()?;
-            self.expect_punct(PunctKind::Comma, "',' after atomic ordering")?;
-            // Upstream requires the align clause on an atomic store
-            // ("atomic store must have explicit non-zero alignment",
-            // `LLParser::parseStore`), so this is not optional here.
-            let align = self.parse_align_val()?;
-            store = store.atomic(ordering).sync_scope(sync_scope).align(align);
-        } else if let Some(align) = self.parse_optional_comma_align()? {
+        if let Some((sync_scope, ordering)) = scope_and_ordering {
+            store = store.atomic(ordering).sync_scope(sync_scope);
+        }
+        if let Some(align) = align {
             store = store.align(align);
         }
         store.build().map_err(|e| self.builder_err("store", e))?;

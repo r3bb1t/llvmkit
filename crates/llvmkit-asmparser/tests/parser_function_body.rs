@@ -865,3 +865,88 @@ fn alloca_addrspace_round_trips() {
         "{printed}"
     );
 }
+
+/// Ports `test/Assembler/alloca-invalid-type.ll` and `alloca-invalid-type-2.ll`
+/// verbatim — `parseAlloc`'s `Ty->isFunctionTy() ||
+/// !PointerType::isValidElementType(Ty)` guard — plus the two sibling checks
+/// that follow it, neither of which has an upstream fixture.
+///
+/// llvmkit had none of the three: the type reached the builder, which
+/// answered in its own words or accepted it.
+///
+/// `Cannot allocate unsized type` carries upstream's capital `C`, and an
+/// explicit alignment is what makes an unsized allocation legal — without one
+/// the alignment would have to come from a layout the type does not have.
+#[test]
+fn alloca_validates_its_type_and_element_count() {
+    for fixture in [
+        include_str!("fixtures/upstream/alloca-invalid-type.ll"),
+        include_str!("fixtures/upstream/alloca-invalid-type-2.ll"),
+    ] {
+        assert_eq!(parse_expect_error(fixture), "invalid type for alloca");
+    }
+
+    assert_eq!(
+        parse_expect_error(
+            "define void @f() {\nentry:\n  %p = alloca i32, ptr null\n  ret void\n}\n"
+        ),
+        "element count must have integer type"
+    );
+    assert_eq!(
+        parse_expect_error(
+            "%t = type opaque\ndefine void @f() {\nentry:\n  %p = alloca %t\n  ret void\n}\n"
+        ),
+        "Cannot allocate unsized type"
+    );
+    // An explicit alignment makes the same allocation legal.
+    parse_and_print(
+        "%t = type opaque\ndefine void @f() {\nentry:\n  %p = alloca %t, align 4\n  ret void\n}\n",
+    );
+}
+
+/// Ports `test/Assembler/invalid-load-missing-explicit-type.ll` verbatim, and
+/// pins the rest of `parseLoad`'s and `parseStore`'s check families — twelve
+/// diagnostics llvmkit did not have, leaning on builder errors instead, plus
+/// four invented `expected …` labels.
+///
+/// The *shape* matters as much as the text: upstream reads the `align` clause
+/// optionally on both paths and then **diagnoses** its absence on an atomic
+/// op. llvmkit demanded a comma and an alignment structurally, so
+/// `load atomic i32, ptr %p seq_cst` answered `expected ',' after atomic
+/// ordering` — a parse failure standing in for a rule.
+#[test]
+fn load_and_store_validate_their_operands() {
+    assert_eq!(
+        parse_expect_error(include_str!(
+            "fixtures/upstream/invalid-load-missing-explicit-type.ll"
+        )),
+        "expected comma after load's type"
+    );
+
+    for (body, expected) in [
+        (
+            "%v = load i32, i32 0",
+            "load operand must be a pointer to a first class type",
+        ),
+        (
+            "%v = load atomic i32, ptr %p seq_cst",
+            "atomic load must have explicit non-zero alignment",
+        ),
+        (
+            "%v = load atomic i32, ptr %p release, align 4",
+            "atomic load cannot use Release ordering",
+        ),
+        ("store i32 0, i32 0", "store operand must be a pointer"),
+        (
+            "store atomic i32 0, ptr %p seq_cst",
+            "atomic store must have explicit non-zero alignment",
+        ),
+        (
+            "store atomic i32 0, ptr %p acquire, align 4",
+            "atomic store cannot use Acquire ordering",
+        ),
+    ] {
+        let src = format!("define void @f(ptr %p) {{\nentry:\n  {body}\n  ret void\n}}\n");
+        assert_eq!(parse_expect_error(&src), expected, "{body}");
+    }
+}
