@@ -19,6 +19,28 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Call, invoke and callbr
+
+- **Changed (breaking): call-site argument agreement is checked by the
+  parser.** llvmkit deferred it to the builder, which answered in its own
+  words (`call argument count mismatch: expected 0, got 1`); upstream carries
+  the same walk *verbatim* in `parseCall`, `parseInvoke` and `parseCallBr`,
+  which is why its three diagnostics each appear three times in
+  `LLParser.cpp`. Now `too many arguments specified`,
+  `argument is not of expected type '<T>'` and
+  `not enough parameters specified for call`, at upstream's anchors — the
+  first two on the offending *argument*, the last on the call itself.
+
+  `Invalid result type for LLVM function` lands with it: the
+  `resolveFunctionType` guard that rejects a bare return type LLVM cannot
+  return. The walk only bites on the explicit-signature form
+  (`call i32 (i32, i32) @f(i32 1)`) — otherwise the signature is *built* from
+  the arguments, so they agree by construction.
+
+  Six existing tests were updated: each already cited upstream's rule in its
+  doc comment and then asserted llvmkit's builder wording, so this is a
+  tightening onto the text they had named all along.
+
 ### Memory instructions
 
 - **Added: the instruction-side `getelementptr` validates its base and

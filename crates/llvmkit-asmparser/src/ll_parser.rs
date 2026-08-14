@@ -6334,6 +6334,48 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(())
     }
 
+    /// The argument-agreement walk `parseCall`, `parseInvoke` and
+    /// `parseCallBr` each carry *verbatim* — three copies of the same loop in
+    /// upstream, and the reason its three diagnostics appear three times each
+    /// in `LLParser.cpp`.
+    ///
+    /// It only bites when the callee was written with an explicit function
+    /// type (`call i32 (i32, i32) @f(i32 1)`): otherwise `resolveFunctionType`
+    /// *builds* the signature from the arguments, so they agree by
+    /// construction. llvmkit deferred all of this to the verifier, which the
+    /// no-divergence directive reverses.
+    fn check_call_argument_agreement(
+        &self,
+        fn_ty: llvmkit_ir::FunctionType<'ctx, B>,
+        arg_tys: &[Type<'ctx, B>],
+        arg_locs: &[Span],
+        call_loc: Span,
+    ) -> ParseResult<()> {
+        let params: Vec<Type<'ctx, B>> = fn_ty.params().collect();
+        let mut expected = params.iter();
+        for (arg_ty, arg_loc) in arg_tys.iter().zip(arg_locs) {
+            let expected_ty = match expected.next() {
+                Some(expected_ty) => Some(*expected_ty),
+                // A varargs signature simply stops checking once its declared
+                // parameters run out.
+                None if fn_ty.is_var_arg() => None,
+                None => return Err(self.message_at(*arg_loc, "too many arguments specified")),
+            };
+            if let Some(expected_ty) = expected_ty
+                && expected_ty != *arg_ty
+            {
+                return Err(self.message_at(
+                    *arg_loc,
+                    format!("argument is not of expected type '{expected_ty}'"),
+                ));
+            }
+        }
+        if expected.next().is_some() {
+            return Err(self.message_at(call_loc, "not enough parameters specified for call"));
+        }
+        Ok(())
+    }
+
     /// `parseFunctionHeader`'s redefinition arm.
     ///
     /// Upstream always creates a **fresh** `Function` for a header; only a
@@ -10135,13 +10177,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // convention, and rejects them below when the return type is not
         // floating-point.
         let fmf = self.parse_optional_fmf()?;
+        let call_loc = self.loc();
         let calling_conv = self.parse_optional_calling_conv()?;
         let return_attrs = self.parse_optional_return_attrs()?;
+        let ret_ty_loc = self.loc();
         let callee_ty = self.parse_type(true)?;
         let parsed_callee = self.parse_direct_callee_ref(state)?;
         self.expect_punct(PunctKind::LParen, "'(' in call argument list")?;
         let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
         let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
+        let mut arg_locs: Vec<Span> = Vec::new();
         let mut arg_attrs = Vec::new();
         let musttail = matches!(tail_kind, llvmkit_ir::instr_types::TailCallKind::MustTail);
         let enclosing_varargs = state.func.signature().is_var_arg();
@@ -10165,10 +10210,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     var_args = true;
                     break;
                 }
+                let arg_loc = self.loc();
                 let arg_ty = self.parse_type(false)?;
                 let one_arg_attrs = self.parse_optional_param_attrs()?;
                 let arg_v = self.parse_value(state, arg_ty)?;
                 arg_tys.push(arg_ty);
+                arg_locs.push(arg_loc);
                 arg_attrs.push(one_arg_attrs);
                 args.push(arg_v);
                 if !self.eat_punct(PunctKind::Comma)? {
@@ -10193,10 +10240,22 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         .function_attr_groups(function_attr_groups.into_boxed_slice())
         .operand_bundles(operand_bundles)
         .fast_math_flags(fmf);
+        // `resolveFunctionType`: an explicit function type is used as written;
+        // anything else is a bare *return* type and the signature is built
+        // from the arguments — which is why the walk below only bites on the
+        // explicit form.
         let parsed_fn_ty = match callee_ty.into_type_enum() {
             AnyTypeEnum::Function(fn_ty) => fn_ty,
-            _ => function_type_with_variadic(self.module, callee_ty, arg_tys, var_args),
+            _ => {
+                if !callee_ty.is_valid_function_return() {
+                    return Err(
+                        self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
+                    );
+                }
+                function_type_with_variadic(self.module, callee_ty, arg_tys.clone(), var_args)
+            }
         };
+        self.check_call_argument_agreement(parsed_fn_ty, &arg_tys, &arg_locs, call_loc)?;
         // `LLParser::parseCall`'s FMF guard, with its own wording.
         if !fmf.is_empty() && !is_fp_or_fp_vector_type(parsed_fn_ty.return_type()) {
             return Err(self.message(
@@ -11138,13 +11197,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         result_name: &LocalLhs,
     ) -> ParseResult<Option<llvmkit_ir::Value<'ctx, B>>> {
         // parse_lhs_before_invoke already consumed `invoke` and optionally LHS.
+        let call_loc = self.loc();
         let calling_conv = self.parse_optional_calling_conv()?;
         let return_attrs = self.parse_optional_return_attrs()?;
+        let ret_ty_loc = self.loc();
         let callee_ty = self.parse_type(true)?;
         let parsed_callee = self.parse_direct_callee_ref(state)?;
         self.expect_punct(PunctKind::LParen, "'(' in invoke argument list")?;
         let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
         let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
+        let mut arg_locs: Vec<Span> = Vec::new();
         let mut arg_attrs = Vec::new();
         // invoke can never be varargs-forwarding (only musttail calls are).
         let var_args = false;
@@ -11158,11 +11220,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.expected("unexpected ellipsis in argument list for non-musttail call")
                     );
                 }
+                let arg_loc = self.loc();
                 let arg_ty = self.parse_type(false)?;
                 let one_arg_attrs = self.parse_optional_param_attrs()?;
                 let arg_v = self.parse_value(state, arg_ty)?;
                 arg_attrs.push(one_arg_attrs);
                 arg_tys.push(arg_ty);
+                arg_locs.push(arg_loc);
                 args.push(arg_v);
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
@@ -11189,8 +11253,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // type IS the call-site type; otherwise infer from the arguments.
         let parsed_fn_ty = match callee_ty.into_type_enum() {
             AnyTypeEnum::Function(fn_ty) => fn_ty,
-            _ => function_type_with_variadic(self.module, callee_ty, arg_tys, var_args),
+            _ => {
+                if !callee_ty.is_valid_function_return() {
+                    return Err(
+                        self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
+                    );
+                }
+                function_type_with_variadic(self.module, callee_ty, arg_tys.clone(), var_args)
+            }
         };
+        self.check_call_argument_agreement(parsed_fn_ty, &arg_tys, &arg_locs, call_loc)?;
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty)?;
         let name = result_name.as_str();
         let (_, inst) = match callee {
@@ -11256,13 +11328,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         result_name: &LocalLhs,
     ) -> ParseResult<Option<llvmkit_ir::Value<'ctx, B>>> {
         self.bump()?; // eat `callbr`
+        let call_loc = self.loc();
         let calling_conv = self.parse_optional_calling_conv()?;
         let return_attrs = self.parse_optional_return_attrs()?;
+        let ret_ty_loc = self.loc();
         let callee_ty = self.parse_type(true)?;
         let parsed_callee = self.parse_direct_callee_ref(state)?;
         self.expect_punct(PunctKind::LParen, "'(' in callbr argument list")?;
         let mut args: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
         let mut arg_tys: Vec<Type<'ctx, B>> = Vec::new();
+        let mut arg_locs: Vec<Span> = Vec::new();
         let mut arg_attrs = Vec::new();
         // callbr can never be varargs-forwarding (only musttail calls are).
         let var_args = false;
@@ -11275,11 +11350,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.expected("unexpected ellipsis in argument list for non-musttail call")
                     );
                 }
+                let arg_loc = self.loc();
                 let arg_ty = self.parse_type(false)?;
                 let one_arg_attrs = self.parse_optional_param_attrs()?;
                 let arg_v = self.parse_value(state, arg_ty)?;
                 arg_attrs.push(one_arg_attrs);
                 arg_tys.push(arg_ty);
+                arg_locs.push(arg_loc);
                 args.push(arg_v);
                 if !self.eat_punct(PunctKind::Comma)? {
                     break;
@@ -11324,8 +11401,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // type IS the call-site type; otherwise infer from the arguments.
         let parsed_fn_ty = match callee_ty.into_type_enum() {
             AnyTypeEnum::Function(fn_ty) => fn_ty,
-            _ => function_type_with_variadic(self.module, callee_ty, arg_tys, var_args),
+            _ => {
+                if !callee_ty.is_valid_function_return() {
+                    return Err(
+                        self.message_at(ret_ty_loc, "Invalid result type for LLVM function")
+                    );
+                }
+                function_type_with_variadic(self.module, callee_ty, arg_tys.clone(), var_args)
+            }
         };
+        self.check_call_argument_agreement(parsed_fn_ty, &arg_tys, &arg_locs, call_loc)?;
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty)?;
         let name = result_name.as_str();
         let (_, inst) = match callee {

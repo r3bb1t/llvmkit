@@ -383,7 +383,7 @@ fn call_explicit_type_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_arg_type_mismatch_rejected",
         FIXTURE,
-        "expected valid call: call argument #0 type mismatch: expected i32, got float",
+        "argument is not of expected type 'i32'",
     );
 }
 
@@ -401,7 +401,7 @@ fn call_explicit_type_arg_width_mismatch_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_arg_width_mismatch_rejected",
         FIXTURE,
-        "expected valid call: call argument #0 type mismatch: expected i32, got i8",
+        "argument is not of expected type 'i32'",
     );
 }
 
@@ -417,7 +417,7 @@ fn call_explicit_type_too_few_args_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_too_few_args_rejected",
         FIXTURE,
-        "expected valid call: call argument count mismatch: expected 2, got 1",
+        "not enough parameters specified for call",
     );
 }
 
@@ -433,7 +433,7 @@ fn call_explicit_type_too_many_args_rejected() {
     assert_fixture_rejected(
         "call_explicit_type_too_many_args_rejected",
         FIXTURE,
-        "expected valid call: call argument count mismatch: expected 0, got 1",
+        "too many arguments specified",
     );
 }
 
@@ -449,7 +449,7 @@ fn call_vararg_missing_fixed_arg_rejected() {
     assert_fixture_rejected(
         "call_vararg_missing_fixed_arg_rejected",
         FIXTURE,
-        "expected valid call: call argument count mismatch: expected 1, got 0",
+        "not enough parameters specified for call",
     );
 }
 
@@ -480,7 +480,7 @@ fn indirect_call_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "indirect_call_arg_type_mismatch_rejected",
         FIXTURE,
-        "expected valid indirect call: call argument #0 type mismatch: expected i32, got float",
+        "argument is not of expected type 'i32'",
     );
 }
 
@@ -732,7 +732,7 @@ fn invoke_explicit_type_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "invoke_explicit_type_arg_type_mismatch_rejected",
         FIXTURE,
-        "expected valid invoke: call argument #0 type mismatch: expected i32, got float",
+        "argument is not of expected type 'i32'",
     );
 }
 
@@ -749,7 +749,7 @@ fn callbr_explicit_type_arg_type_mismatch_rejected() {
     assert_fixture_rejected(
         "callbr_explicit_type_arg_type_mismatch_rejected",
         FIXTURE,
-        "expected valid callbr: call argument #0 type mismatch: expected i32, got float",
+        "argument is not of expected type 'i32'",
     );
 }
 
