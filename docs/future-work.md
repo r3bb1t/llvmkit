@@ -12,6 +12,34 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## Parser — a self-typed aliasee does not parse, because constant expressions are type-directed (found 2026-08-13, LLParser parity W7)
+
+`@a = alias i32, bitcast (ptr @g to ptr)` does not parse, and neither do the
+`getelementptr`, `addrspacecast` or `inttoptr` spellings.
+
+`LLParser::parseAliasOrIFunc` branches on the aliasee's **first token**: those
+four keywords go through a bare `parseValID` — its comment says "the bitcast
+dest type is not present, it is implied by the dest type" — and anything else
+goes through `parseGlobalTypeAndValue`, which is TYPE VALUE. The result must
+be `ValID::t_Constant` or the diagnostic is `invalid aliasee`, and the pointer
+check then runs on the **aliasee value's** type, with the address space taken
+from it.
+
+An attempt to wire this up (reverted) got as far as the branch and the
+value-typed pointer check, then hit the real blocker:
+`Parser::parse_constant_expr` takes a `result_ty` and llvmkit has no entry
+point for a constant expression that types *itself*. Every constexpr arm is
+reached with the demanded type already in hand.
+
+This is W4's type-agnostic `ValID` refactor, applied one level down to
+constant expressions — the same shape, the same reason (a parser that reads
+the answer off the type it is meant to be checking), and the same likely
+payoff of turning up value bugs rather than just missing diagnostics. It is a
+wave-sized piece, not an alias fix, so it wants its own slot rather than
+being smuggled into W7.
+
+Blocked behind it: `invalid aliasee`, which is only reachable on that route.
+
 ## Two upstream calling-convention bugs: one reproduced, one not (found 2026-08-13, LLParser parity W6)
 
 Both were found by the round-trip drift lock in `calling_conv_drift.rs`, and
