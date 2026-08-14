@@ -180,6 +180,71 @@ fn local_linkage_constrains_dll_storage_class_everywhere() {
     }
 }
 
+/// `invalid type for global variable`, which llvmkit had no check for.
+///
+/// Two halves, and the second is the easy one to miss: `Ty->isFunctionTy()`
+/// rejects a global whose value type is a function, and
+/// `PointerType::isValidElementType` rejects `void`, `label`, `metadata`,
+/// `token` and `x86_amx` — a global's value type is the pointee of its own
+/// `ptr`, so it must be a legal pointer element.
+///
+/// Anchored at the *type*, and checked after the initializer, both of which
+/// are upstream's ordering. No upstream `.ll` pins it.
+#[test]
+fn a_global_of_invalid_type_is_rejected() {
+    fn parse_err(src: &str) -> String {
+        let m = llvmkit_ir::Module::dynamic("invalid_global_type");
+        Parser::new(src.as_bytes(), &m)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("invalid global value type is rejected")
+            .to_string()
+    }
+
+    for src in [
+        // The function-type case needs a declaration linkage to reach the
+        // check: with an initializer to parse, `parseGlobalValue` fails first
+        // — upstream included, since the type check runs after it.
+        "@g = external global void ()\n",
+        "@g = external global label\n",
+        "@g = external global metadata\n",
+        "@g = external global token\n",
+    ] {
+        assert_eq!(parse_err(src), "invalid type for global variable", "{src}");
+    }
+
+    // Bare `void` never reaches this check: `parseType` is called with
+    // `AllowVoid = false` and refuses it first, with its own message.
+    assert_eq!(
+        parse_err("@g = external global void\n"),
+        "void type only allowed for function results"
+    );
+}
+
+/// A declaration linkage means upstream never *looks* for an initializer —
+/// `if (!HasLinkage || !isValidDeclarationLinkage(Linkage))` guards the
+/// `parseGlobalValue` call, and there is no lookahead behind it.
+///
+/// So `@g = external global i32 0` leaves the `0` unconsumed and it fails at
+/// top level. llvmkit used to peek ahead and report an invented
+/// `no initializer: a global with 'external' linkage is a declaration` —
+/// the same rejection reached by guessing rather than by the rule.
+#[test]
+fn a_declaration_linkage_global_takes_no_initializer() {
+    let m = llvmkit_ir::Module::dynamic("declaration_linkage");
+    let err = Parser::new(b"@g = external global i32 0\n".as_slice(), &m)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("the initializer is never consumed")
+        .to_string();
+    assert_eq!(err, "expected top-level entity");
+
+    // Without the initializer it is an ordinary declaration.
+    let m = llvmkit_ir::Module::dynamic("declaration_linkage_ok");
+    parse_into("@g = external global i32\n", &m);
+    assert!(format!("{m}").contains("@g = external global i32"), "{m}");
+}
+
 /// The module-entity diagnostics that name a *property*, each verbatim.
 ///
 /// Three of them are prose that does not begin with "expected", and llvmkit
@@ -487,9 +552,14 @@ fn numbered_global_records_in_slot_mapping() {
     assert!(parsed.slot_mapping.global_values.get(1).is_some());
 }
 
-/// Mirrors `LLParser::parseType`'s `void` arm: void is rejected outside of
-/// function-result position. Upstream emits "void type only allowed for
-/// function results"; the Rust analogue uses a structured error.
+/// Ports `LLParser::parseType`'s `AllowVoid` guard: void is rejected outside
+/// function-result position, with upstream's text.
+///
+/// This used to assert llvmkit's own wording — `expected non-void type (void
+/// only allowed at function results)` — under a doc comment that named
+/// upstream's and called the difference "a structured error". It was neither
+/// structured nor upstream's; it was a divergence documented instead of
+/// fixed.
 #[test]
 fn void_in_value_position_is_rejected() {
     let err = {
@@ -497,10 +567,9 @@ fn void_in_value_position_is_rejected() {
         let parser = Parser::new(b"@x = global void 0\n", &m).unwrap();
         parser.parse_module().unwrap_err()
     };
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("non-void type") || msg.contains("only allowed at function results"),
-        "got: {msg}"
+    assert_eq!(
+        err.to_string(),
+        "void type only allowed for function results"
     );
 }
 

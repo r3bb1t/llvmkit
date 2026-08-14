@@ -21,6 +21,25 @@ cut, entries accumulate under **Unreleased**.
 
 ### Module-level entities
 
+- **Added: `invalid type for global variable`**, which llvmkit did not check
+  at all. Two halves: a function value type, and
+  `PointerType::isValidElementType` — `label`, `metadata`, `token`, `x86_amx`
+  — since a global's value type is the pointee of its own `ptr`.
+
+- **Changed: a declaration-linkage global takes no initializer, rather than
+  rejecting one.** `if (!HasLinkage || !isValidDeclarationLinkage(Linkage))`
+  guards upstream's `parseGlobalValue` call and there is no lookahead behind
+  it, so `@g = external global i32 0` leaves the `0` unconsumed and it fails
+  at top level. llvmkit peeked ahead and reported an invented
+  `no initializer: a global with 'external' linkage is a declaration` — the
+  same rejection reached by guessing instead of by the rule. The lookahead is
+  deleted.
+
+- **Changed: `void type only allowed for function results`.** llvmkit said
+  `expected non-void type (void only allowed at function results)`, under a
+  test whose doc comment named upstream's wording and called the difference
+  "a structured error". It was neither structured nor upstream's.
+
 - **Fixed: local linkage did not constrain visibility on globals or
   functions.** `@var = internal hidden global i32 0` and
   `define internal hidden void @f()` were both accepted;

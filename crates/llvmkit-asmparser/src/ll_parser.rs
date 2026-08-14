@@ -3684,9 +3684,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 _ => {
                     if !allow_void && matches!(result.into_type_enum(), AnyTypeEnum::Void(_)) {
-                        return Err(ParseError::Expected {
-                            expected: "non-void type (void only allowed at function results)"
-                                .into(),
+                        // `parseType`'s `AllowVoid` guard, verbatim.
+                        return Err(ParseError::Message {
+                            message: "void type only allowed for function results".into(),
                             loc: DiagLoc::span(type_loc),
                         });
                     }
@@ -4061,32 +4061,30 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(self.expected("'global' or 'constant' after linkage"));
         };
 
+        let type_loc = self.loc();
         let ty = self.parse_type(false)?;
+        // `if (!HasLinkage || !isValidDeclarationLinkage(Linkage))` — upstream
+        // simply does not *look* for an initializer when the linkage says the
+        // global is a declaration. It does not parse one and reject it, and it
+        // has no lookahead: `@g = external global i32 0` leaves the `0`
+        // unconsumed, and the token fails at top level.
+        //
+        // llvmkit used to peek with `starts_global_initializer` and report an
+        // invented `no initializer: a global with 'external' linkage is a
+        // declaration`. Same rejection, different message and a guess in place
+        // of a rule.
         let (initializer, deferred_initializer) = if has_linkage && is_declaration_linkage(linkage)
         {
-            // Upstream parses the initializer and then rejects it, so the
-            // diagnostic names the actual problem. Detect the same case here:
-            // anything that is not a property comma, a new top-level entity,
-            // or end of input can only be an initializer.
-            if self.starts_global_initializer() {
-                // `External` is the default linkage, so its keyword is the
-                // empty string; name it explicitly rather than printing ''.
-                let spelled = match linkage.keyword() {
-                    "" => "external",
-                    other => other,
-                };
-                return Err(ParseError::Expected {
-                    expected: format!(
-                        "no initializer: a global with '{spelled}' linkage is a declaration"
-                    )
-                    .into(),
-                    loc: DiagLoc::span(self.loc()),
-                });
-            }
             (None, None)
         } else {
             self.parse_global_initializer(ty)?
         };
+        // Checked *after* the initializer, as upstream does, and anchored at
+        // the type. `PointerType::isValidElementType` is the second half:
+        // a global's value type is the pointee of its own `ptr`.
+        if ty.is_function() || !ty.is_valid_pointer_element() {
+            return Err(self.message_at(type_loc, "invalid type for global variable"));
+        }
         let mut section = None;
         let mut partition = None;
         let mut align = MaybeAlign::NONE;
@@ -4371,20 +4369,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
         self.parse_constant(target_ty)?
             .ok_or_else(|| self.expected("alias or ifunc target constant"))
-    }
-
-    /// Whether the token after a global's type begins an initializer. The only
-    /// other legal continuations are a property list (`, section ...`), the
-    /// next top-level entity, or end of input.
-    fn starts_global_initializer(&self) -> bool {
-        match self.peek() {
-            Token::Eof | Token::Comma => false,
-            Token::Kw(keyword) => !keyword_starts_top_level_entity(*keyword),
-            Token::GlobalVar(_) | Token::GlobalId(_) => false,
-            Token::ComdatVar(_) | Token::LocalVar(_) | Token::LocalVarId(_) => false,
-            Token::Exclaim | Token::MetadataVar(_) => false,
-            _ => true,
-        }
     }
 
     fn parse_global_initializer(
