@@ -7647,6 +7647,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         &mut self,
         state: &PerFunctionState<'ctx, B>,
     ) -> ParseResult<Box<[llvmkit_ir::instr_types::OperandBundleData]>> {
+        let begin_loc = self.loc();
         if !self.eat_punct(PunctKind::LSquare)? {
             return Ok(Box::new([]));
         }
@@ -7675,6 +7676,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     break;
                 }
             }
+        }
+        // Checked *before* the `]` is eaten, and anchored at the `[` — a
+        // written-but-empty bundle set is an error, where an absent one is
+        // fine. llvmkit accepted `[]`.
+        if bundles.is_empty() {
+            return Err(self.message_at(begin_loc, "operand bundle set must not be empty"));
         }
         self.expect_punct(PunctKind::RSquare, "']' to close operand bundles")?;
         Ok(bundles.into_boxed_slice())
@@ -11380,22 +11387,23 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         )?;
         let fallthrough = self.parse_block_ref(state)?;
         // Optional `[ label %ind1, ... ]`
+        // The indirect-destination list is **mandatory**, and no comma
+        // precedes it: `parseCallBr` ends its `||` chain with
+        // `parseToken(lltok::lsquare, "expected '[' in callbr")`. llvmkit made
+        // the whole list optional and tolerated a leading comma, so
+        // `callbr void @f() to label %x` and `... to label %x, [...]` both
+        // parsed.
         let mut indirect: Vec<llvmkit_ir::BlockId<llvmkit_ir::Dyn, B>> = Vec::new();
-        if matches!(self.peek(), Token::Comma) || matches!(self.peek(), Token::LSquare) {
-            if matches!(self.peek(), Token::Comma) {
+        self.expect_punct(PunctKind::LSquare, "'[' in callbr")?;
+        loop {
+            if matches!(self.peek(), Token::RSquare) {
                 self.bump()?;
+                break;
             }
-            self.expect_punct(PunctKind::LSquare, "'[' in callbr indirect targets")?;
-            loop {
-                if matches!(self.peek(), Token::RSquare) {
-                    self.bump()?;
-                    break;
-                }
-                self.expect_primitive(PrimitiveTy::Label, "'label' in callbr indirect target")?;
-                let bb = self.parse_block_ref(state)?;
-                indirect.push(bb);
-                let _ = self.eat_punct(PunctKind::Comma)?;
-            }
+            self.expect_primitive(PrimitiveTy::Label, "'label' in callbr indirect target")?;
+            let bb = self.parse_block_ref(state)?;
+            indirect.push(bb);
+            let _ = self.eat_punct(PunctKind::Comma)?;
         }
         // Upstream `resolveFunctionType`: an explicitly written function
         // type IS the call-site type; otherwise infer from the arguments.

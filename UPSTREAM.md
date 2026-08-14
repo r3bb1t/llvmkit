@@ -19,15 +19,15 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2394. Recounted on 2026-08-14 at the LLParser-parity
-Wave 9a point via the documented attribute-anchored grep below
-(`crates/llvmkit-ir` 1543 + `crates/llvmkit-asmparser` 829 +
+Total `#[test]` functions: 2396. Recounted on 2026-08-14 at the LLParser-parity
+Wave 9b point via the documented attribute-anchored grep below
+(`crates/llvmkit-ir` 1543 + `crates/llvmkit-asmparser` 831 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
-`crates/llvmkit-macros` has none). The +159 over the 2235 point below is the
-LLParser-parity program's waves 0-9a.
+`crates/llvmkit-macros` has none). The +161 over the 2235 point below is the
+LLParser-parity program's waves 0-9b.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries 1954 rows. Matching them against the tree by test-function name
+below carries 1956 rows. Matching them against the tree by test-function name
 leaves **470 `#[test]` functions (469 distinct names) with no row**. The gap
 is inherited, not new: it accumulated across the type-safety and pass-API
 programs, where whole test files landed without rows, and it sits in
@@ -1018,6 +1018,8 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::load_and_store_validate_their_operands` | `test/Assembler/invalid-load-missing-explicit-type.ll`, vendored verbatim; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseLoad` and `LLParser::parseStore` — their operand, atomic-alignment, ordering and sizedness checks, none of which `test/Assembler` pins | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::atomicrmw_validates_its_operand_per_operation` | `test/Assembler/invalid-atomicrmw-add-must-be-integer-type.ll`, `invalid-atomicrmw-fadd-must-be-fp-type.ll`, `invalid-atomicrmw-fsub-must-be-fp-type.ll`, `invalid-atomicrmw-xchg-fp-vector.ll` and all five splits of `invalid-atomicrmw-scalable.ll`, all vendored verbatim; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseAtomicRMW`'s three-way operand switch and `AtomicRMWInst::getOperationName`. The `unordered` and power-of-two rules have no upstream fixture and cite the routine | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::cmpxchg_validates_its_orderings_and_operands` | `test/Assembler/cmpxchg-ordering.ll`, `cmpxchg-ordering-2.ll`, `cmpxchg-ordering-3.ll` and `cmpxchg-ordering-4.ll`, all vendored verbatim; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCmpXchg` with `AtomicCmpXchgInst::isValidSuccessOrdering` / `isValidFailureOrdering` (`llvm/IR/Instructions.h`) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::an_empty_operand_bundle_set_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseOptionalOperandBundles`, whose emptiness check runs before the `]` is eaten and reports at the `[` — no `test/Assembler` fixture pins it | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::a_callbr_indirect_destination_list_is_mandatory` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCallBr`, whose `\|\|` chain ends with `parseToken(lltok::lsquare, "expected '[' in callbr")` — the list is mandatory and takes no leading comma | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::getelementptr_validates_its_base_and_indices` | `test/Assembler/getelementptr_struct.ll`, `getelementptr_invalid_ptr.ll`, `invalid-gep-missing-explicit-type.ll`, `getelementptr_vscale_struct.ll` and `getelementptr_vec_struct.ll`, all vendored verbatim; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGetElementPtr`. The sized, scalable-struct and integer-index rules have no upstream fixture and cite the routine | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::fence_rejects_unordered_and_monotonic` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFence`'s two `tokError` rules — no `test/Assembler` fixture pins either | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_block_may_not_take_a_local_value_name` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::PerFunctionState::defineBB` reaching `getBB` → `getVal(Name, LabelTy)`, so blocks and local values share one namespace; the numbered twin is unreachable behind `checkValueID` and no `test/Assembler` fixture pins either | llvmkit-specific (rule anchor) |

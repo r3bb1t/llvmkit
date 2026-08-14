@@ -770,3 +770,54 @@ fn invoke_explicit_type_signature_round_trips() {
         &["invoke void @f(i8 1)", "to label %ok unwind label %lp"],
     );
 }
+
+/// `LLParser::parseOptionalOperandBundles` checks emptiness *before* it eats
+/// the `]`, and reports at the `[` — so an absent bundle set is fine while a
+/// written-but-empty one is an error. llvmkit accepted `[]`.
+///
+/// No `test/Assembler` fixture pins it, so the routine is the anchor.
+#[test]
+fn an_empty_operand_bundle_set_is_rejected() {
+    let src = "declare void @g()\n\
+               define void @f() {\nentry:\n  call void @g() []\n  ret void\n}\n";
+    assert_fixture_rejected(
+        "empty_operand_bundle_set",
+        src.as_bytes(),
+        "operand bundle set must not be empty",
+    );
+
+    // Absent is fine.
+    parse_and_render(
+        "declare void @g()\ndefine void @f() {\nentry:\n  call void @g()\n  ret void\n}\n",
+    );
+}
+
+/// `parseCallBr` ends its `||` chain with `parseToken(lltok::lsquare,
+/// "expected '[' in callbr")`, so the indirect-destination list is
+/// **mandatory** and no comma precedes it. llvmkit made the whole list
+/// optional and tolerated a leading comma, accepting both
+/// `callbr void @g() to label %x` and `... to label %x, [...]`.
+///
+/// An *empty* list is still legal — upstream only requires the brackets.
+#[test]
+fn a_callbr_indirect_destination_list_is_mandatory() {
+    for src in [
+        "declare void @g()\n\
+         define void @f() {\nentry:\n  callbr void @g() to label %ok\nok:\n  ret void\n}\n",
+        "declare void @g()\n\
+         define void @f() {\nentry:\n  callbr void @g() to label %ok, [label %ok]\nok:\n  ret void\n}\n",
+    ] {
+        assert_fixture_rejected(
+            "callbr_missing_bracket",
+            src.as_bytes(),
+            "expected '[' in callbr",
+        );
+    }
+
+    // The empty-bracket form is what upstream requires, and it round-trips.
+    let text = parse_and_render(
+        "declare void @g()\n\
+         define void @f() {\nentry:\n  callbr void @g() to label %ok []\nok:\n  ret void\n}\n",
+    );
+    assert_check_lines(&text, &["callbr void @g()", "to label %ok []"]);
+}

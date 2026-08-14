@@ -21,6 +21,18 @@ cut, entries accumulate under **Unreleased**.
 
 ### Call, invoke and callbr
 
+- **Added: `operand bundle set must not be empty`.** Checked before the `]` is
+  eaten and reported at the `[`, so an *absent* bundle set stays fine while a
+  written-but-empty `[]` is an error. llvmkit accepted `[]`.
+
+- **Changed (breaking): a `callbr`'s indirect-destination list is mandatory,
+  and no comma precedes it.** `parseCallBr` ends its chain with
+  `parseToken(lltok::lsquare, "expected '[' in callbr")`. llvmkit made the
+  whole list optional *and* tolerated a leading comma, so both
+  `callbr void @g() to label %x` and `... to label %x, [...]` parsed. The
+  empty-bracket form `to label %x []` remains legal, which is what upstream
+  actually requires.
+
 - **Changed (breaking): call-site argument agreement is checked by the
   parser.** llvmkit deferred it to the builder, which answered in its own
   words (`call argument count mismatch: expected 0, got 1`); upstream carries
