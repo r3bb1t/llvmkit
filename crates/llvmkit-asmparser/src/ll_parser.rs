@@ -11506,6 +11506,18 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
     }
 
     /// Define a textual basic block label.
+    ///
+    /// `PerFunctionState::defineBB` reaches the block through
+    /// `getBB(Name, Loc)` → `getVal(Name, LabelTy)`, so the name is looked up
+    /// in the function's **value** symbol table: a name already bound to a
+    /// non-block local makes the block uncreatable, and `getVal`'s own
+    /// `'%x' defined with type 'T' but expected 'label'` is then overwritten
+    /// by `defineBB`'s `unable to create block named '<n>'` — upstream's
+    /// `error()` keeps only the last message, so that is what a user sees.
+    ///
+    /// llvmkit keeps blocks in a map of their own (the split W2.2 already
+    /// merges back at leftover-reporting time), so the collision has to be
+    /// asked for explicitly rather than falling out of a shared lookup.
     fn define_named_block(
         &mut self,
         module: &'ctx Module<B, Unverified>,
@@ -11513,6 +11525,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> PerFunctionState<'ctx, B> {
         loc: Span,
     ) -> ParseResult<llvmkit_ir::BasicBlock<'ctx, llvmkit_ir::Dyn, llvmkit_ir::Unterminated, B>>
     {
+        if !self.blocks.contains_key(&name) && self.local_named.contains_key(&name) {
+            return Err(ParseError::Message {
+                message: format!("unable to create block named '{name}'").into(),
+                loc: DiagLoc::span(loc),
+            });
+        }
         self.defined_blocks.insert(name.clone());
         self.ensure_block(module, &name, loc)
     }

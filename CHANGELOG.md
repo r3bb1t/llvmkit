@@ -76,6 +76,12 @@ cut, entries accumulate under **Unreleased**.
   and notices when the symbol table renamed it; llvmkit installed the names
   unchecked, so a repeated `%x` silently won.
 
+- **Added: `unable to create block named '<n>'`.** `PerFunctionState::defineBB`
+  reaches a named block through `getVal(Name, LabelTy)`, so blocks and local
+  values share one namespace and a label cannot take an instruction result's
+  name. llvmkit kept blocks in a map of their own and created *both* — a
+  value `%x` and a block `%x` in the same function.
+
 - **Changed: three named-metadata texts, found in passing.**
   `LLParser::parseNamedMetadata`'s three-`parseToken` chain is
   `expected '=' here`, `Expected '!' here`, `Expected '{' here` — the last two

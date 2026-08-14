@@ -1097,6 +1097,31 @@ fn uselistorder_directives_come_after_every_block() {
     );
 }
 
+/// `PerFunctionState::defineBB` reaches a named block through
+/// `getVal(Name, LabelTy)`, so blocks and local values share one namespace: a
+/// label whose name is already an instruction result cannot be created.
+///
+/// llvmkit keeps blocks in a map of their own, so it used to create *both* —
+/// a value `%x` and a block `%x` in the same function.
+///
+/// The label must carry no forward reference: `br label %x` would reach
+/// `getVal` first and fail there instead, with
+/// `'%x' defined with type 'i32' but expected 'label'`.
+///
+/// The numbered twin (`unable to create block numbered '<N>'`) is not tested:
+/// `defineBB` runs `checkValueID` first, so a numbered label that collides
+/// has already failed with `label expected to be numbered 'N' or greater`,
+/// and no `test/Assembler` fixture reaches it.
+#[test]
+fn a_block_may_not_take_a_local_value_name() {
+    assert_eq!(
+        header_err(
+            "define void @f() {\nentry:\n  %x = add i32 0, 0\n  ret void\nx:\n  ret void\n}\n"
+        ),
+        "unable to create block named 'x'"
+    );
+}
+
 /// `parseFunctionHeader`'s argument-naming loop: upstream sets each name and
 /// notices when the symbol table renamed it. llvmkit installed the names
 /// without checking, so the second `%x` silently won.
