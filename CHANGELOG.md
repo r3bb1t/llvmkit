@@ -21,6 +21,28 @@ cut, entries accumulate under **Unreleased**.
 
 ### Memory instructions
 
+- **Added: the atomic instructions validate their operands.** All seventeen
+  diagnostics across `parseCmpXchg`, `parseAtomicRMW` and `parseFence` were
+  missing — every rejection came from the builder, in its own words.
+
+  The substantive piece is `atomicrmw`'s **three-way** operand rule, where the
+  operation's own name (`AtomicRMWInst::getOperationName`, the spelling the
+  AsmWriter prints) is part of every message: `xchg` takes an integer,
+  floating-point or pointer; the six FP operations take a floating-point;
+  everything else takes an integer. Its size rule reads
+  `getTypeStoreSizeInBits`, which rounds up to whole bytes — so `i4` is a
+  legal operand and only a non-power-of-two byte count trips
+  `atomicrmw operand must be power-of-two byte-sized integer`.
+
+  `AtomicCmpXchgInst::isValidSuccessOrdering` and `isValidFailureOrdering`
+  are ported with it; both are checked *before* the operand types, which is
+  why llvmkit reached neither.
+
+  Ports verbatim: `invalid-atomicrmw-{add-must-be-integer-type,
+  fadd-must-be-fp-type,fsub-must-be-fp-type,xchg-fp-vector}.ll`, all five
+  splits of `invalid-atomicrmw-scalable.ll`, and all four of
+  `cmpxchg-ordering{,-2,-3,-4}.ll`.
+
 - **Added: `alloca`, `load` and `store` validate their operands.** Twelve of
   the fourteen diagnostics `parseAlloc`, `parseLoad` and `parseStore` own were
   missing — llvmkit leaned on *builder* errors where upstream checks at parse

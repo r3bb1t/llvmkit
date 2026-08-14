@@ -631,6 +631,40 @@ fn is_fp_or_fp_vector_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bo
     }
 }
 
+/// Mirrors `AtomicCmpXchgInst::isValidSuccessOrdering`.
+fn cmpxchg_success_ordering_is_valid(ordering: AtomicOrdering) -> bool {
+    !matches!(
+        ordering,
+        AtomicOrdering::NotAtomic | AtomicOrdering::Unordered
+    )
+}
+
+/// Mirrors `AtomicCmpXchgInst::isValidFailureOrdering`, which additionally
+/// denies the two orderings that imply a release.
+fn cmpxchg_failure_ordering_is_valid(ordering: AtomicOrdering) -> bool {
+    !matches!(
+        ordering,
+        AtomicOrdering::NotAtomic
+            | AtomicOrdering::Unordered
+            | AtomicOrdering::AcquireRelease
+            | AtomicOrdering::Release
+    )
+}
+
+/// The `IsFP` flag `LLParser::parseAtomicRMW` sets in its operation switch —
+/// the operations whose operand must be floating-point.
+fn atomicrmw_op_is_floating_point(op: AtomicRmwBinOp) -> bool {
+    matches!(
+        op,
+        AtomicRmwBinOp::Fadd
+            | AtomicRmwBinOp::Fsub
+            | AtomicRmwBinOp::Fmax
+            | AtomicRmwBinOp::Fmin
+            | AtomicRmwBinOp::Fmaximum
+            | AtomicRmwBinOp::Fminimum
+    )
+}
+
 fn is_ptr_or_ptr_vector_type<'ctx, B: ModuleBrand + 'ctx>(ty: Type<'ctx, B>) -> bool {
     match AnyTypeEnum::from(ty) {
         AnyTypeEnum::Pointer(_) => true,
@@ -10636,6 +10670,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn parse_fence(&mut self, b: &ParsedBlockBuilder<'ctx, 'ctx, B>) -> ParseResult<()> {
         let sync_scope = self.parse_optional_syncscope()?;
         let ordering = self.parse_atomic_ordering()?;
+        // `parseFence`'s two rules, both `tokError` so both anchor at the
+        // token after the ordering. llvmkit had neither: the orderings
+        // reached the builder.
+        if ordering == AtomicOrdering::Unordered {
+            return Err(self.message("fence cannot be unordered"));
+        }
+        if ordering == AtomicOrdering::Monotonic {
+            return Err(self.message("fence cannot be monotonic"));
+        }
         let _ = b
             .fence(ordering, sync_scope, "")
             .map_err(|e| self.builder_err("fence", e))?;
@@ -10655,21 +10698,40 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let weak = self.eat_keyword(Keyword::Weak)?;
         let volatile = self.eat_keyword(Keyword::Volatile)?;
+        let ptr_loc = self.loc();
         let ptr_ty = self.parse_type(false)?;
         let ptr_v = self.parse_value(state, ptr_ty)?;
-        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
-            .try_into()
-            .map_err(|_| self.expected("ptr operand for cmpxchg"))?;
-        self.expect_punct(PunctKind::Comma, "',' in cmpxchg")?;
+        self.expect_punct(PunctKind::Comma, "',' after cmpxchg address")?;
         let cmp_ty = self.parse_type(false)?;
         let cmp_v = self.parse_value(state, cmp_ty)?;
-        self.expect_punct(PunctKind::Comma, "',' in cmpxchg after cmp")?;
+        self.expect_punct(PunctKind::Comma, "',' after cmpxchg cmp operand")?;
+        let new_loc = self.loc();
         let new_ty = self.parse_type(false)?;
         let new_v = self.parse_value(state, new_ty)?;
         let sync_scope = self.parse_optional_syncscope()?;
         let success_ord = self.parse_atomic_ordering()?;
         let failure_ord = self.parse_atomic_ordering()?;
         let align = self.parse_optional_comma_align()?;
+
+        // `parseCmpXchg`'s five checks, in its order. The two ordering rules
+        // are `tokError` and come *first*, before the operand types are even
+        // looked at; llvmkit reached none of them, since every rejection came
+        // from the builder.
+        if !cmpxchg_success_ordering_is_valid(success_ord) {
+            return Err(self.message("invalid cmpxchg success ordering"));
+        }
+        if !cmpxchg_failure_ordering_is_valid(failure_ord) {
+            return Err(self.message("invalid cmpxchg failure ordering"));
+        }
+        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
+            .try_into()
+            .map_err(|_| self.message_at(ptr_loc, "cmpxchg operand must be a pointer"))?;
+        if cmp_ty != new_ty {
+            return Err(self.message_at(new_loc, "compare value and new value type do not match"));
+        }
+        if !new_ty.is_first_class() {
+            return Err(self.message_at(new_loc, "cmpxchg operand must be a first class value"));
+        }
         let align = match align {
             Some(value) => llvmkit_ir::align::MaybeAlign::from(value),
             None => llvmkit_ir::align::MaybeAlign::NONE,
@@ -10702,17 +10764,59 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         let volatile = self.eat_keyword(Keyword::Volatile)?;
         let op = self.parse_atomicrmw_op()?;
+        let ptr_loc = self.loc();
         let ptr_ty = self.parse_type(false)?;
         let ptr_v = self.parse_value(state, ptr_ty)?;
-        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
-            .try_into()
-            .map_err(|_| self.expected("ptr operand for atomicrmw"))?;
-        self.expect_punct(PunctKind::Comma, "',' in atomicrmw")?;
+        self.expect_punct(PunctKind::Comma, "',' after atomicrmw address")?;
+        let val_loc = self.loc();
         let val_ty = self.parse_type(false)?;
         let val_v = self.parse_value(state, val_ty)?;
         let sync_scope = self.parse_optional_syncscope()?;
         let ordering = self.parse_atomic_ordering()?;
         let align = self.parse_optional_comma_align()?;
+
+        // `parseAtomicRMW`'s checks, in its order. llvmkit had none of them.
+        if ordering == AtomicOrdering::Unordered {
+            return Err(self.message("atomicrmw cannot be unordered"));
+        }
+        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
+            .try_into()
+            .map_err(|_| self.message_at(ptr_loc, "atomicrmw operand must be a pointer"))?;
+        if val_ty.is_scalable() {
+            return Err(self.message_at(val_loc, "atomicrmw operand may not be scalable"));
+        }
+        // The operand rule is three-way, and the operation's own name is part
+        // of every message — `AtomicRMWInst::getOperationName`, which is the
+        // same spelling the AsmWriter prints.
+        if op == AtomicRmwBinOp::Xchg {
+            if !val_ty.is_integer() && !val_ty.is_floating_point() && !val_ty.is_pointer() {
+                return Err(self.message_at(
+                    val_loc,
+                    format!(
+                        "atomicrmw {op} operand must be an integer, floating point, or pointer type"
+                    ),
+                ));
+            }
+        } else if atomicrmw_op_is_floating_point(op) {
+            if !is_fp_or_fp_vector_type(val_ty) {
+                return Err(self.message_at(
+                    val_loc,
+                    format!("atomicrmw {op} operand must be a floating point type"),
+                ));
+            }
+        } else if !val_ty.is_integer() {
+            return Err(self.message_at(
+                val_loc,
+                format!("atomicrmw {op} operand must be an integer"),
+            ));
+        }
+        let size = self.module.data_layout().type_store_size_in_bits(val_ty);
+        if size < 8 || !size.is_power_of_two() {
+            return Err(self.message_at(
+                val_loc,
+                "atomicrmw operand must be power-of-two byte-sized integer",
+            ));
+        }
         let align = match align {
             Some(value) => llvmkit_ir::align::MaybeAlign::from(value),
             None => llvmkit_ir::align::MaybeAlign::NONE,
@@ -10753,7 +10857,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::Kw(Keyword::UdecWrap) => Op::UdecWrap,
             Token::Kw(Keyword::UsubCond) => Op::UsubCond,
             Token::Kw(Keyword::UsubSat) => Op::UsubSat,
-            _ => return Err(self.expected("atomicrmw operation keyword")),
+            _ => return Err(self.message("expected binary operation in atomicrmw")),
         };
         self.bump()?;
         Ok(op)

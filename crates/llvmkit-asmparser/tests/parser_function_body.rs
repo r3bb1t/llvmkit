@@ -950,3 +950,136 @@ fn load_and_store_validate_their_operands() {
         assert_eq!(parse_expect_error(&src), expected, "{body}");
     }
 }
+
+/// Ports the whole upstream `atomicrmw` negative family verbatim —
+/// `invalid-atomicrmw-add-must-be-integer-type.ll`,
+/// `invalid-atomicrmw-fadd-must-be-fp-type.ll`,
+/// `invalid-atomicrmw-fsub-must-be-fp-type.ll`,
+/// `invalid-atomicrmw-xchg-fp-vector.ll`, and all five splits of
+/// `invalid-atomicrmw-scalable.ll`.
+///
+/// The family exists because `parseAtomicRMW`'s operand rule is **three-way**,
+/// and the operation's own name (`AtomicRMWInst::getOperationName`, the same
+/// spelling the AsmWriter prints) is part of every message: `xchg` takes an
+/// integer, floating-point *or* pointer; the six FP operations take a
+/// floating-point; everything else takes an integer.
+///
+/// The scalable rule is checked before all three, which is why a
+/// `<vscale x 2 x half>` operand of `xchg` reports scalability rather than the
+/// xchg type rule — the split fixtures cover both orders deliberately.
+///
+/// llvmkit had none of these: every rejection came from the builder.
+#[test]
+fn atomicrmw_validates_its_operand_per_operation() {
+    for (fixture, expected) in [
+        (
+            include_str!("fixtures/upstream/invalid-atomicrmw-add-must-be-integer-type.ll"),
+            "atomicrmw add operand must be an integer",
+        ),
+        (
+            include_str!("fixtures/upstream/invalid-atomicrmw-fadd-must-be-fp-type.ll"),
+            "atomicrmw fadd operand must be a floating point type",
+        ),
+        (
+            include_str!("fixtures/upstream/invalid-atomicrmw-fsub-must-be-fp-type.ll"),
+            "atomicrmw fsub operand must be a floating point type",
+        ),
+        (
+            include_str!("fixtures/upstream/invalid-atomicrmw-xchg-fp-vector.ll"),
+            "atomicrmw xchg operand must be an integer, floating point, or pointer type",
+        ),
+    ] {
+        assert_eq!(parse_expect_error(fixture), expected);
+    }
+
+    for fixture in [
+        include_str!(
+            "fixtures/upstream/invalid-atomicrmw-scalable/scalable_fp_vector_atomicrmw_xchg.ll"
+        ),
+        include_str!(
+            "fixtures/upstream/invalid-atomicrmw-scalable/scalable_int_vector_atomicrmw_xchg.ll"
+        ),
+        include_str!(
+            "fixtures/upstream/invalid-atomicrmw-scalable/scalable_ptr_vector_atomicrmw_xchg.ll"
+        ),
+        include_str!(
+            "fixtures/upstream/invalid-atomicrmw-scalable/scalable_fp_vector_atomicrmw_fadd.ll"
+        ),
+        include_str!(
+            "fixtures/upstream/invalid-atomicrmw-scalable/scalable_int_vector_atomicrmw_add.ll"
+        ),
+    ] {
+        assert_eq!(
+            parse_expect_error(fixture),
+            "atomicrmw operand may not be scalable"
+        );
+    }
+
+    // The two rules with no upstream fixture, both anchored on the routine.
+    assert_eq!(
+        parse_expect_error(
+            "define void @f(ptr %p) {\nentry:\n  atomicrmw add ptr %p, i32 1 unordered\n  ret void\n}\n"
+        ),
+        "atomicrmw cannot be unordered"
+    );
+    // The size rule reads `getTypeStoreSizeInBits`, which rounds up to whole
+    // bytes — so `i4` is a *legal* operand (store size 8 bits) and only a
+    // non-power-of-two byte count trips it. `i24` is 3 bytes.
+    assert_eq!(
+        parse_expect_error(
+            "define void @f(ptr %p) {\nentry:\n  atomicrmw add ptr %p, i24 1 seq_cst\n  ret void\n}\n"
+        ),
+        "atomicrmw operand must be power-of-two byte-sized integer"
+    );
+    parse_and_print(
+        "define void @f(ptr %p) {\nentry:\n  atomicrmw add ptr %p, i4 1 seq_cst\n  ret void\n}\n",
+    );
+}
+
+/// Ports all four of `test/Assembler/cmpxchg-ordering{,-2,-3,-4}.ll`
+/// verbatim, which between them cover both of `parseCmpXchg`'s ordering
+/// predicates: `AtomicCmpXchgInst::isValidSuccessOrdering` denies `NotAtomic`
+/// and `Unordered`, and `isValidFailureOrdering` additionally denies the two
+/// orderings that imply a release.
+///
+/// Both are `tokError` and run *before* the operand types are looked at,
+/// which is why llvmkit reached neither — every rejection came from the
+/// builder, after the operands.
+#[test]
+fn cmpxchg_validates_its_orderings_and_operands() {
+    assert_eq!(
+        parse_expect_error(include_str!("fixtures/upstream/cmpxchg-ordering.ll")),
+        "invalid cmpxchg success ordering"
+    );
+    for fixture in [
+        include_str!("fixtures/upstream/cmpxchg-ordering-2.ll"),
+        include_str!("fixtures/upstream/cmpxchg-ordering-3.ll"),
+        include_str!("fixtures/upstream/cmpxchg-ordering-4.ll"),
+    ] {
+        assert_eq!(
+            parse_expect_error(fixture),
+            "invalid cmpxchg failure ordering"
+        );
+    }
+
+    assert_eq!(
+        parse_expect_error(
+            "define void @f(ptr %p, i32 %b, i64 %c) {\nentry:\n  \
+             %x = cmpxchg ptr %p, i32 %b, i64 %c seq_cst seq_cst\n  ret void\n}\n"
+        ),
+        "compare value and new value type do not match"
+    );
+}
+
+/// `parseFence`'s two rules, neither of which has an upstream fixture. Both
+/// are `tokError`, so both anchor after the ordering keyword.
+#[test]
+fn fence_rejects_unordered_and_monotonic() {
+    for (ordering, expected) in [
+        ("unordered", "fence cannot be unordered"),
+        ("monotonic", "fence cannot be monotonic"),
+    ] {
+        let src = format!("define void @f() {{\nentry:\n  fence {ordering}\n  ret void\n}}\n");
+        assert_eq!(parse_expect_error(&src), expected, "{ordering}");
+    }
+}
