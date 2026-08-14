@@ -2599,7 +2599,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         self.define_md_slot(slot, content, loc)?;
                         Ok(())
                     }
-                    _ => Err(self.expected("metadata string or tuple")),
+                    // `parseMDTuple` -> `parseMDNodeVector`'s opening token.
+                    // Lowercase here, unlike `parseNamedMetadata`'s own
+                    // `Expected '{' here` a few lines away in the same file —
+                    // this path is the one `invalid-mdnode-vector.ll` pins.
+                    _ => Err(self.message("expected '{' here")),
                 }
             }
             Token::MetadataVar(_) => {
@@ -2783,14 +2787,25 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 | Token::LocalVar(_)
                 | Token::LocalVarId(_)
         ) {
+            let type_loc = self.loc();
             let ty = self.parse_type(false)?;
+            // `parseValueAsMetadata`'s guard, anchored at the type: a
+            // `metadata`-typed operand would round-trip metadata through a
+            // value and back. `!{metadata !0}` is the old syntax that hits it.
+            if matches!(ty.into_type_enum(), AnyTypeEnum::Metadata(_)) {
+                return Err(self.message_at(type_loc, "invalid metadata-value-metadata roundtrip"));
+            }
             let constant = self
                 .parse_constant(ty)?
                 .ok_or_else(|| self.expected("typed metadata constant"))?;
             return Ok(own_metadata(self.module.metadata_constant(constant)));
         }
 
-        self.expect_exclaim("'!' in metadata tuple operand")?;
+        // `parseMetadata`'s fallthrough: anything that is not `!` goes to
+        // `parseValueAsMetadata(MD, "expected metadata operand", PFS)`, so a
+        // token that begins neither a type nor a `!` reports *that*, not a
+        // complaint about the missing bang.
+        self.expect_exclaim("metadata operand")?;
         match self.peek() {
             Token::StringConstant(_) => {
                 let s = self.parse_string_constant("metadata string operand")?;

@@ -284,13 +284,16 @@ fn standalone_metadata_tuple_with_inline_dieexpression() {
 }
 
 /// Bare specialized metadata is not a metadata tuple operand.
-/// Mirrors `LLParser::parseMDTuple` rejecting non-metadata tokens.
+///
+/// `parseMetadata` sends anything that is not a `!` to
+/// `parseValueAsMetadata(MD, "expected metadata operand", PFS)`, so the
+/// complaint is about the operand, not about a missing bang. This used to
+/// accept llvmkit's own `'!' in metadata tuple operand` behind an `||`.
 #[test]
 fn standalone_metadata_tuple_bare_dieexpression_is_rejected() {
-    let err = parse_fails(r#"!0 = !{DIExpression()}"#);
-    assert!(
-        err.contains("'!' in metadata tuple operand") || err.contains("metadata tuple operand"),
-        "unexpected error: {err}"
+    assert_eq!(
+        parse_fails(r#"!0 = !{DIExpression()}"#),
+        "expected metadata operand"
     );
 }
 

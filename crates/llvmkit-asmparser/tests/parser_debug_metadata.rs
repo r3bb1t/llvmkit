@@ -451,6 +451,42 @@ fn diassignid_requires_distinct() {
     assert!(text.contains("distinct !DIAssignID()"), "output:\n{text}");
 }
 
+/// Ports the metadata negatives from `test/Assembler`, each verbatim with its
+/// CHECK line: `invalid-mdnode-vector.ll`, `invalid-mdnode-vector2.ll`,
+/// `invalid-mdnode-badref.ll`, `invalid-metadata-has-type.ll` and
+/// `invalid-metadata-attachment-has-type.ll`.
+///
+/// The last two are the "common error from old format" pair, as their own
+/// comments say: `metadata !{}` and `!{metadata !0}` were once legal, and
+/// upstream detects each with a message of its own rather than a generic
+/// failure.
+#[test]
+fn metadata_negative_fixtures_match_upstream_text() {
+    // invalid-mdnode-vector.ll
+    assert_eq!(parse_err("!0 = !\n").to_string(), "expected '{' here");
+    // invalid-mdnode-vector2.ll
+    assert_eq!(
+        parse_err("!0 = !{\n").to_string(),
+        "expected metadata operand"
+    );
+    // invalid-mdnode-badref.ll
+    assert_eq!(
+        parse_err("!named = !{!0}\n!0 = !{!0, !1}\n").to_string(),
+        "use of undefined metadata '!1'"
+    );
+    // invalid-metadata-has-type.ll
+    assert_eq!(
+        parse_err("!0 = metadata !{}\n").to_string(),
+        "unexpected type in metadata definition"
+    );
+    // invalid-metadata-attachment-has-type.ll
+    assert_eq!(
+        parse_err("define void @foo() {\n  ret void, !bar !{metadata !0}\n}\n!0 = !{}\n")
+            .to_string(),
+        "invalid metadata-value-metadata roundtrip"
+    );
+}
+
 /// `parseNamedMetadata`'s two special-cased operand spellings.
 ///
 /// A `!DIExpression(...)` may be written **inline** as a named-metadata

@@ -21,6 +21,21 @@ cut, entries accumulate under **Unreleased**.
 
 ### Module-level entities
 
+- **Changed: three metadata-operand diagnostics, and one new check.**
+  `expected '{' here` from `parseMDNodeVector` (llvmkit said
+  `expected metadata string or tuple`) — note it is lowercase where
+  `parseNamedMetadata`'s own copy a few lines away is capitalised, and this is
+  the path the fixture pins. `expected metadata operand` from
+  `parseMetadata`'s fallthrough to `parseValueAsMetadata`, where llvmkit
+  complained about a missing `!` instead of about the operand. And
+  `invalid metadata-value-metadata roundtrip`, which llvmkit did not check at
+  all: a `metadata`-typed operand would round-trip metadata through a value
+  and back, and `!{metadata !0}` is the old syntax that hits it.
+
+  With these, `invalid-mdnode-vector.ll`, `invalid-mdnode-vector2.ll`,
+  `invalid-mdnode-badref.ll`, `invalid-metadata-has-type.ll` and
+  `invalid-metadata-attachment-has-type.ll` all port verbatim.
+
 - **Added: an `ifunc` carries the shared prefix clauses and takes metadata
   attachments.** `parseAliasOrIFunc` reads `dllstorage`, `thread_local` and
   `unnamed_addr` before it knows whether it has an alias or an ifunc, and
