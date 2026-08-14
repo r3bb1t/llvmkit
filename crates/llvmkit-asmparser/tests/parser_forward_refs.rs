@@ -47,12 +47,17 @@ fn skip_value_numbers_invalid_is_rejected() {
     );
 }
 
-/// Ports the three function-scoped halves of
+/// Ports **all five** splits of
 /// `test/Assembler/skip-value-numbers-invalid.ll`, whose CHECK lines pin
 /// `LLParser::checkValueID`'s message for each `(Kind, Prefix)` pair. Note
 /// the `label` form carries **no** sigil, as upstream spells it.
 ///
 /// The rule is one-sided: a numbered slot may not go *backwards*.
+///
+/// The `function_smaller_id` split was unreachable until W8 wired
+/// `parseFunctionHeader`'s own `checkValueID(NameLoc, "function", "@", ...)`
+/// — a `@N` header used to take its number verbatim, so only three of the
+/// five splits were ported.
 #[test]
 fn numbered_slots_may_not_go_backwards() {
     for (fixture, expected) in [
@@ -67,6 +72,15 @@ fn numbered_slots_may_not_go_backwards() {
         (
             include_bytes!("fixtures/upstream/skip-value-numbers/block_smaller_id.ll").as_slice(),
             "label expected to be numbered '11' or greater",
+        ),
+        (
+            include_bytes!("fixtures/upstream/skip-value-numbers/global_smaller_id.ll").as_slice(),
+            "global expected to be numbered '@11' or greater",
+        ),
+        (
+            include_bytes!("fixtures/upstream/skip-value-numbers/function_smaller_id.ll")
+                .as_slice(),
+            "function expected to be numbered '@11' or greater",
         ),
     ] {
         let module = Module::dynamic("skip_value_numbers_invalid");

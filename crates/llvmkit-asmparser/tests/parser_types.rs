@@ -80,10 +80,18 @@ fn redefining_a_bodied_type_is_rejected() {
 /// identified struct to fill in later, it may not have been forward
 /// referenced. Mirrors the `if (Entry.first) return error(...)` arm of
 /// `LLParser::parseStructDefinition`.
+///
+/// The forward reference is made from a *struct body*, not from an argument
+/// list: `parseType`'s `%t` arm mints an **opaque** `StructType::create`, and
+/// `Type::isFirstClassType` (`lib/IR/Type.cpp`, whose `StructTyID` arm asks
+/// `isOpaque`) is therefore false for it — so `parseArgumentList`'s
+/// `isValidArgumentType` would reject `declare void @f(%t)` first, and this
+/// rule would never be reached. `StructType::isValidElementType` has no such
+/// clause, so a struct body carries the reference to end of module.
 #[test]
 fn a_forward_referenced_alias_is_rejected() {
     assert_eq!(
-        parse_err(b"declare void @f(%t)\n%t = type i32\n").to_string(),
+        parse_err(b"%s = type { %t }\n%t = type i32\n").to_string(),
         "forward references to non-struct type"
     );
 }
@@ -103,10 +111,14 @@ fn a_type_alias_resolves_to_the_aliased_type() {
 /// loop in `LLParser::validateEndOfModule`; llvmkit used to leave the
 /// reference as a silently opaque struct, with a comment asserting that
 /// upstream does not diagnose this.
+///
+/// Referenced from a struct body for the reason spelled out on
+/// [`a_forward_referenced_alias_is_rejected`]: an argument list rejects an
+/// opaque struct before end of module is ever reached.
 #[test]
 fn an_undefined_numbered_type_is_rejected() {
     assert_eq!(
-        parse_err(b"declare void @f(%3)\n").to_string(),
+        parse_err(b"%s = type { %3 }\n").to_string(),
         "use of undefined type '%3'"
     );
 }
@@ -116,7 +128,7 @@ fn an_undefined_numbered_type_is_rejected() {
 #[test]
 fn an_undefined_named_type_is_rejected() {
     assert_eq!(
-        parse_err(b"declare void @f(%t)\n").to_string(),
+        parse_err(b"%s = type { %t }\n").to_string(),
         "use of undefined type named 't'"
     );
 }

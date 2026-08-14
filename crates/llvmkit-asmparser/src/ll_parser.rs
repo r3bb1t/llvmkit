@@ -151,6 +151,35 @@ enum ParsedPersonalityFn<'ctx, B: ModuleBrand> {
     ForwardName { name: String, loc: Span },
 }
 
+/// One entry of a parsed argument list — mirrors `LLParser::ArgInfo`.
+///
+/// Upstream shares `parseArgumentList` between a function *type* and a
+/// function *header*, which is why an argument can carry a name and
+/// attributes that the type path then rejects.
+struct ArgInfo<'ctx, B: ModuleBrand> {
+    /// The argument type's first token. Upstream anchors *every* argument
+    /// diagnostic here (its `TypeLoc`), including the numbering check, which
+    /// reports at the type rather than at the `%N` that failed.
+    loc: Span,
+    ty: Type<'ctx, B>,
+    /// `None` when the argument carries no `%name`; its number is then the
+    /// matching entry of `parse_argument_list`'s `unnamed_arg_nums` output.
+    name: Option<String>,
+    /// Whether an attribute list followed the type. Upstream keeps the
+    /// `AttrBuilder` in `ArgInfo` and lets `parseFunctionType` ask
+    /// `hasAttributes()`; here the attributes are already installed at
+    /// `AttrIndex::Param(slot)`, so the answer travels instead of the set.
+    has_attributes: bool,
+}
+
+/// Whether `attrs` carries anything at `index`.
+///
+/// `AttributeStorage::get` is private to `llvmkit-ir`, so ask the public
+/// set-equality predicate against an empty storage instead.
+fn has_attributes_at(attrs: &AttributeStorage, index: AttrIndex) -> bool {
+    !attrs.index_has_same_attributes(&AttributeStorage::new(), index)
+}
+
 // ── Parser ───────────────────────────────────────────────────────────────────
 
 /// Core parser state. Holds the lexer, a one-token cache, the IR module
@@ -3877,6 +3906,100 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(ty)
     }
 
+    /// `'(' (ArgType (',' ArgType)* (',' '...')?)? ')'` — mirrors
+    /// `LLParser::parseArgumentList`, the one routine upstream shares between
+    /// a function *type* and a function *header*.
+    ///
+    /// Attributes for argument `i` are installed at `AttrIndex::Param(i)` in
+    /// `attrs`. `unnamed_arg_nums` collects the numbers upstream hands to
+    /// `PerFunctionState`, one entry per argument with no `%name` — a *named*
+    /// argument deliberately consumes no number.
+    ///
+    /// `argument can not have void type` is **not** reachable and so is not
+    /// spelled here: upstream reads the type with `AllowVoid = false`, so a
+    /// literal `void` is already refused by `parseType` as
+    /// `void type only allowed for function results`. Recorded rather than
+    /// invented a trigger for.
+    fn parse_argument_list(
+        &mut self,
+        attrs: &mut AttributeStorage,
+        unnamed_arg_nums: &mut Vec<u32>,
+    ) -> ParseResult<(Vec<ArgInfo<'ctx, B>>, bool)> {
+        // Both callers establish the `(` first — upstream records that as
+        // `assert(Lex.getKind() == lltok::lparen)`, and the header path's own
+        // `tokError` carries this same text.
+        self.expect_punct(PunctKind::LParen, "'(' in function argument list")?;
+        let mut args: Vec<ArgInfo<'ctx, B>> = Vec::new();
+        let mut cur_val_id: u32 = 0;
+        let mut is_var_arg = false;
+        if !matches!(self.peek(), Token::RParen) {
+            loop {
+                // `...` at the end of the arg list.
+                if matches!(self.peek(), Token::DotDotDot) {
+                    self.bump()?;
+                    is_var_arg = true;
+                    break;
+                }
+
+                // Otherwise must be an argument type.
+                let type_loc = self.loc();
+                let ty = self.parse_type(false)?;
+                let slot = u32::try_from(args.len()).map_err(|_| ParseError::Expected {
+                    expected: "parameter slot fits in u32".into(),
+                    loc: DiagLoc::span(type_loc),
+                })?;
+                let index = AttrIndex::Param(slot);
+                let groups = self.parse_fn_attribute_value_pairs(
+                    attrs,
+                    index,
+                    AttrListContext::ParamOrReturn,
+                )?;
+                if !groups.is_empty() {
+                    return Err(self.expected("attribute"));
+                }
+
+                let name = if let Token::LocalVar(_) = self.peek() {
+                    let name = self
+                        .current_str_payload()
+                        .ok_or_else(|| self.expected("local identifier payload"))?;
+                    self.bump()?;
+                    Some(name)
+                } else {
+                    let arg_id = if let Token::LocalVarId(id) = self.peek() {
+                        let id = *id;
+                        // Reported at the *type*, which is upstream's
+                        // `TypeLoc`, not at the `%N` token itself.
+                        check_value_id("argument", "%", cur_val_id, id, type_loc)?;
+                        self.bump()?;
+                        id
+                    } else {
+                        cur_val_id
+                    };
+                    unnamed_arg_nums.push(arg_id);
+                    cur_val_id = arg_id.saturating_add(1);
+                    None
+                };
+
+                if !ty.is_valid_function_argument() {
+                    return Err(self.message_at(type_loc, "invalid type for function argument"));
+                }
+
+                args.push(ArgInfo {
+                    loc: type_loc,
+                    ty,
+                    name,
+                    has_attributes: has_attributes_at(attrs, index),
+                });
+
+                if !self.eat_punct(PunctKind::Comma)? {
+                    break;
+                }
+            }
+        }
+        self.expect_punct(PunctKind::RParen, "')' at end of argument list")?;
+        Ok((args, is_var_arg))
+    }
+
     /// `T (params...)` — mirrors `LLParser::parseFunctionType`. The opening
     /// `(` is the lookahead that triggered this arm.
     fn parse_function_type_after_return(
@@ -3886,42 +4009,28 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         if !ret.is_valid_function_return() {
             return Err(self.message("invalid function return type"));
         }
-        self.expect_punct(PunctKind::LParen, "'(' in function type")?;
-        let mut params = Vec::new();
-        let mut var_args = false;
-        if !matches!(self.peek(), Token::RParen) {
-            loop {
-                if matches!(self.peek(), Token::DotDotDot) {
-                    self.bump()?;
-                    var_args = true;
-                    break;
-                }
-                let arg_loc = self.loc();
-                let param = self.parse_type(false)?;
-                if !param.is_valid_function_argument() {
-                    return Err(self.message_at(arg_loc, "invalid type for function argument"));
-                }
-                // Upstream shares `parseArgumentList` between a function
-                // *type* and a function *header*, so attributes and a name
-                // parse here and are rejected afterwards — which is why these
-                // two messages exist at all. Reading them keeps the diagnostic
-                // instead of a generic "expected ')'".
-                let attrs = self.parse_optional_param_attrs()?;
-                if !attrs.is_empty() {
-                    return Err(
-                        self.message_at(arg_loc, "argument attributes invalid in function type")
-                    );
-                }
-                if matches!(self.peek(), Token::LocalVar(_) | Token::LocalVarId(_)) {
-                    return Err(self.message_at(arg_loc, "argument name invalid in function type"));
-                }
-                params.push(param);
-                if !self.eat_punct(PunctKind::Comma)? {
-                    break;
-                }
+        // Upstream shares `parseArgumentList` here, so attributes and a name
+        // *parse* and are rejected afterwards — which is why these two
+        // messages exist at all. The scratch storage is discarded: a function
+        // type carries no attributes, and anything landing in it is exactly
+        // what the first rejection reports.
+        let mut scratch = AttributeStorage::new();
+        let mut unnamed_arg_nums = Vec::new();
+        let (args, var_args) = self.parse_argument_list(&mut scratch, &mut unnamed_arg_nums)?;
+
+        // Reject names on the arguments lists.
+        for arg in &args {
+            if arg.name.is_some() {
+                return Err(self.message_at(arg.loc, "argument name invalid in function type"));
+            }
+            if arg.has_attributes {
+                return Err(
+                    self.message_at(arg.loc, "argument attributes invalid in function type")
+                );
             }
         }
-        self.expect_punct(PunctKind::RParen, "')' to close function type")?;
+
+        let params: Vec<Type<'ctx, B>> = args.iter().map(|arg| arg.ty).collect();
         let fn_ty = function_type_with_variadic(self.module, ret, params, var_args);
         Ok(fn_ty.as_type())
     }
@@ -4018,6 +4127,17 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::GlobalId(n) => {
                 let id = *n;
                 let loc = self.loc();
+                // `parseUnnamedGlobal`'s `checkValueID(NameLoc, "global",
+                // "@", ...)`. Without it the collision reached
+                // `NumberedValues::add` instead and surfaced as llvmkit's own
+                // `invalid slot id 5: next unused is 11`.
+                check_value_id(
+                    "global",
+                    "@",
+                    self.numbered_globals.next_unused_id(),
+                    id,
+                    loc,
+                )?;
                 self.bump()?;
                 (NameOrId::Id(id), loc)
             }
@@ -6075,8 +6195,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             })
     }
 
-    fn parse_optional_function_linkage(&mut self, is_define: bool) -> ParseResult<Linkage> {
-        let loc = self.loc();
+    fn parse_optional_function_linkage(&mut self) -> ParseResult<Linkage> {
         let linkage = match self.peek() {
             Token::Kw(keyword) => match linkage_keyword(*keyword) {
                 Some(linkage) => {
@@ -6087,7 +6206,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             },
             _ => Linkage::External,
         };
+        Ok(linkage)
+    }
 
+    /// `parseFunctionHeader`'s "Verify that the linkage is ok" switch.
+    ///
+    /// Upstream runs it **after** the return type has parsed, and anchors it
+    /// at `LinkageLoc` — so a malformed return type is reported before a bad
+    /// linkage, and the caret sits on the linkage keyword rather than on the
+    /// function name.
+    fn check_function_linkage(linkage: Linkage, is_define: bool, loc: Span) -> ParseResult<()> {
         match linkage {
             Linkage::Appending | Linkage::Common => Err(ParseError::Message {
                 message: "invalid function linkage type".into(),
@@ -6111,7 +6239,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     loc: DiagLoc::span(loc),
                 })
             }
-            _ => Ok(linkage),
+            _ => Ok(()),
         }
     }
 
@@ -7345,7 +7473,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         while matches!(self.peek(), Token::MetadataVar(_)) {
             leading_metadata.push(self.parse_named_metadata_attachment()?);
         }
-        let linkage = self.parse_optional_function_linkage(false)?;
+        let linkage_loc = self.loc();
+        let linkage = self.parse_optional_function_linkage()?;
         let (dso_locality, visibility, dll_storage_class) =
             self.parse_optional_preemption_visibility_dll()?;
         let calling_conv = self.parse_optional_calling_conv()?;
@@ -7355,7 +7484,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             AttrIndex::Return,
             AttrListContext::ParamOrReturn,
         )?;
+        let ret_ty_loc = self.loc();
         let ret_ty = self.parse_type(true)?;
+        // `parseFunctionHeader`'s three post-type checks, in its order and at
+        // its anchors: the linkage switch and the linkage/visibility pair sit
+        // on `LinkageLoc`, the return type on `RetTypeLoc`. A declaration
+        // reaches all three, because `parseDeclare` calls the same routine.
+        Self::check_function_linkage(linkage, false, linkage_loc)?;
+        Self::check_linkage_agreement(linkage, visibility, dll_storage_class, linkage_loc)?;
+        if !ret_ty.is_valid_function_return() {
+            return Err(self.message_at(ret_ty_loc, "invalid function return type"));
+        }
+        let decl_loc = self.loc();
         let (name_id, name) = match self.peek() {
             Token::GlobalVar(_) => {
                 let name = self
@@ -7363,55 +7503,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .ok_or_else(|| self.expected("function name"))?;
                 (NameOrId::Name(name.clone()), name)
             }
-            Token::GlobalId(n) => (NameOrId::Id(*n), String::new()),
-            _ => return Err(self.expected("function name after return type")),
-        };
-        let decl_loc = self.loc();
-        self.bump()?;
-        // `parseDeclare` reaches `parseFunctionHeader` too, so a declaration
-        // gets the same linkage/visibility pair a definition does.
-        Self::check_linkage_agreement(linkage, visibility, dll_storage_class, decl_loc)?;
-        self.expect_punct(PunctKind::LParen, "'(' in function declaration")?;
-        let mut params = Vec::new();
-        let mut param_names: Vec<Option<String>> = Vec::new();
-        let mut var_args = false;
-        if !matches!(self.peek(), Token::RParen) {
-            loop {
-                if matches!(self.peek(), Token::DotDotDot) {
-                    self.bump()?;
-                    var_args = true;
-                    break;
-                }
-                let p_ty = self.parse_type(false)?;
-                let slot = u32::try_from(params.len()).map_err(|_| ParseError::Expected {
-                    expected: "parameter slot fits in u32".into(),
-                    loc: DiagLoc::span(decl_loc),
-                })?;
-                self.parse_fn_attribute_value_pairs(
-                    &mut attrs,
-                    AttrIndex::Param(slot),
-                    AttrListContext::ParamOrReturn,
+            Token::GlobalId(n) => {
+                let n = *n;
+                check_value_id(
+                    "function",
+                    "@",
+                    self.numbered_globals.next_unused_id(),
+                    n,
+                    decl_loc,
                 )?;
-                let p_name = if matches!(self.peek(), Token::LocalVar(_)) {
-                    let n = self
-                        .current_str_payload()
-                        .ok_or_else(|| self.expected("parameter name"))?;
-                    self.bump()?;
-                    Some(n)
-                } else if matches!(self.peek(), Token::LocalVarId(_)) {
-                    self.bump()?;
-                    None
-                } else {
-                    None
-                };
-                param_names.push(p_name);
-                params.push(p_ty);
-                if !self.eat_punct(PunctKind::Comma)? {
-                    break;
-                }
+                (NameOrId::Id(n), String::new())
             }
-        }
-        self.expect_punct(PunctKind::RParen, "')' to close function declaration")?;
+            _ => return Err(self.expected("function name")),
+        };
+        self.bump()?;
+        // `parseFunctionHeader` shares `parseArgumentList` with the function
+        // *type* production, so a declaration gets the same numbering check a
+        // definition does — llvmkit used to *discard* `%N` argument ids here.
+        let mut unnamed_arg_nums = Vec::new();
+        let (args, var_args) = self.parse_argument_list(&mut attrs, &mut unnamed_arg_nums)?;
+        let params: Vec<Type<'ctx, B>> = args.iter().map(|arg| arg.ty).collect();
+        let param_names: Vec<Option<String>> = args.iter().map(|arg| arg.name.clone()).collect();
         let unnamed_addr = self.parse_optional_function_unnamed_addr()?;
         // A function with no explicit `addrspace` lives in the *program*
         // address space, not 0. Mirrors `parseOptionalProgramAddrSpace`, which
@@ -7638,7 +7750,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// unnamed-address markers are preserved when present.
     fn parse_define(&mut self) -> ParseResult<()> {
         self.expect_keyword(Keyword::Define, "'define'")?;
-        let linkage = self.parse_optional_function_linkage(true)?;
+        let linkage_loc = self.loc();
+        let linkage = self.parse_optional_function_linkage()?;
         let (dso_locality, visibility, dll_storage_class) =
             self.parse_optional_preemption_visibility_dll()?;
         let calling_conv = self.parse_optional_calling_conv()?;
@@ -7648,7 +7761,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             AttrIndex::Return,
             AttrListContext::ParamOrReturn,
         )?;
+        let ret_ty_loc = self.loc();
         let ret_ty = self.parse_type(true)?;
+        // `parseFunctionHeader`'s three post-type checks, in its order and at
+        // its anchors. Note the pair anchors on `LinkageLoc` here while the
+        // global and alias sites anchor on `NameLoc` — one shared predicate,
+        // three call sites, and the caret is *not* shared.
+        Self::check_function_linkage(linkage, true, linkage_loc)?;
+        Self::check_linkage_agreement(linkage, visibility, dll_storage_class, linkage_loc)?;
+        if !ret_ty.is_valid_function_return() {
+            return Err(self.message_at(ret_ty_loc, "invalid function return type"));
+        }
+        let decl_loc = self.loc();
         let (name_id, name) = match self.peek() {
             Token::GlobalVar(_) => {
                 let name = self
@@ -7656,14 +7780,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .ok_or_else(|| self.expected("function name"))?;
                 (NameOrId::Name(name.clone()), name)
             }
-            Token::GlobalId(n) => (NameOrId::Id(*n), String::new()),
-            _ => return Err(self.expected("function name after return type")),
+            Token::GlobalId(n) => {
+                let n = *n;
+                check_value_id(
+                    "function",
+                    "@",
+                    self.numbered_globals.next_unused_id(),
+                    n,
+                    decl_loc,
+                )?;
+                (NameOrId::Id(n), String::new())
+            }
+            _ => return Err(self.expected("function name")),
         };
-        let decl_loc = self.loc();
         self.bump()?;
-        // `parseFunctionHeader`'s copy of the same pair the global and alias
-        // paths run, reported at the function's own name.
-        Self::check_linkage_agreement(linkage, visibility, dll_storage_class, decl_loc)?;
         match resolve_intrinsic_name(&name) {
             IntrinsicNameResolution::NonIntrinsic => {}
             IntrinsicNameResolution::UnknownIntrinsic => {
@@ -7679,51 +7809,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 });
             }
         }
-        self.expect_punct(PunctKind::LParen, "'(' in function header")?;
-
-        let mut param_types = Vec::new();
-        let mut param_names: Vec<Option<ParamName>> = Vec::new();
-        let mut var_args = false;
-        if !matches!(self.peek(), Token::RParen) {
-            loop {
-                if matches!(self.peek(), Token::DotDotDot) {
-                    self.bump()?;
-                    var_args = true;
-                    break;
-                }
-                let p_ty = self.parse_type(false)?;
-                let slot = u32::try_from(param_types.len()).map_err(|_| ParseError::Expected {
-                    expected: "parameter slot fits in u32".into(),
-                    loc: DiagLoc::span(decl_loc),
-                })?;
-                self.parse_fn_attribute_value_pairs(
-                    &mut attrs,
-                    AttrIndex::Param(slot),
-                    AttrListContext::ParamOrReturn,
-                )?;
-                let p_name = match self.peek() {
-                    Token::LocalVar(_) => {
-                        let s = self
-                            .current_str_payload()
-                            .ok_or_else(|| self.expected("local identifier payload"))?;
-                        self.bump()?;
-                        Some(ParamName::Named(s))
-                    }
-                    Token::LocalVarId(id) => {
-                        let id = *id;
-                        self.bump()?;
-                        Some(ParamName::Numbered(id))
-                    }
-                    _ => None,
-                };
-                param_types.push(p_ty);
-                param_names.push(p_name);
-                if !self.eat_punct(PunctKind::Comma)? {
-                    break;
-                }
-            }
-        }
-        self.expect_punct(PunctKind::RParen, "')' to close function header")?;
+        // One `parseArgumentList` for both header paths and the function
+        // *type* production, exactly as upstream shares it.
+        let mut unnamed_arg_nums = Vec::new();
+        let (args, var_args) = self.parse_argument_list(&mut attrs, &mut unnamed_arg_nums)?;
+        let param_types: Vec<Type<'ctx, B>> = args.iter().map(|arg| arg.ty).collect();
+        let param_names: Vec<Option<String>> = args.iter().map(|arg| arg.name.clone()).collect();
         let unnamed_addr = self.parse_optional_function_unnamed_addr()?;
         // A function with no explicit `addrspace` lives in the *program*
         // address space, not 0. Mirrors `parseOptionalProgramAddrSpace`, which
@@ -7783,7 +7874,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             f
         };
         for (slot, p) in param_names.iter().enumerate() {
-            if let Some(ParamName::Named(n)) = p {
+            if let Some(n) = p {
                 let slot_u32 = u32::try_from(slot).map_err(|_| ParseError::Expected {
                     expected: "parameter slot fits in u32".into(),
                     loc: DiagLoc::span(decl_loc),
@@ -7864,6 +7955,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_punct(PunctKind::LBrace, "'{' to open function body")?;
 
         let mut state = PerFunctionState::new(f);
+        // Mirrors `PerFunctionState::PerFunctionState`, which walks the
+        // created function's arguments and hands every *unnamed* one the next
+        // entry of `UnnamedArgNums`. The numbering rule itself lives in
+        // `parseArgumentList`'s `checkValueID`, so there is nothing to
+        // re-check here.
+        let mut unnamed = unnamed_arg_nums.into_iter();
         for (slot, name) in param_names.into_iter().enumerate() {
             let slot_u32 = u32::try_from(slot).map_err(|_| ParseError::Expected {
                 expected: "parameter slot fits in u32".into(),
@@ -7875,25 +7972,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             })?;
             let v = arg.as_erased();
             match name {
-                Some(ParamName::Named(n)) => {
+                Some(n) => {
                     state.local_named.insert(n, v);
                 }
-                Some(ParamName::Numbered(id)) => {
-                    check_value_id("argument", "%", state.next_unnamed_value_id, id, decl_loc)?;
-                    if state.local_numbered.contains_key(&id) {
-                        return Err(ParseError::InvalidSlotId {
-                            source: AddError::StaleId {
-                                id,
-                                next: state.next_unnamed_value_id,
-                            },
-                            loc: DiagLoc::span(decl_loc),
-                        });
-                    }
-                    state.local_numbered.insert(id, v);
-                    state.next_unnamed_value_id = id.saturating_add(1);
-                }
                 None => {
-                    let id = state.next_unnamed_value_id;
+                    let Some(id) = unnamed.next() else {
+                        unreachable!(
+                            "parse_argument_list pushes one number per unnamed argument, \
+                             and param_names is that same list"
+                        )
+                    };
                     state.local_numbered.insert(id, v);
                     state.next_unnamed_value_id = id.saturating_add(1);
                 }
@@ -11650,11 +11738,6 @@ fn numbered_label_id(name: &str) -> Option<u32> {
         return None;
     }
     name.parse().ok()
-}
-
-enum ParamName {
-    Named(String),
-    Numbered(u32),
 }
 
 enum LocalLhs {

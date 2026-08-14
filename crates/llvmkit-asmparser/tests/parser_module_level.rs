@@ -702,3 +702,179 @@ fn unknown_top_level_entity_is_typed_error() {
     };
     assert!(format!("{err}").contains("top-level entity"));
 }
+
+// ── parseFunctionHeader / parseArgumentList ───────────────────────────────
+
+fn header_err(src: &str) -> String {
+    let m = llvmkit_ir::Module::dynamic("function_header");
+    Parser::new(src.as_bytes(), &m)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("malformed function header is rejected")
+        .to_string()
+}
+
+/// `parseFunctionHeader` runs its checks in one fixed order, and the order is
+/// observable: the return **type** parses inside the same `||` chain as the
+/// linkage, so a type that fails to parse is reported before the linkage
+/// switch that would otherwise reject the header.
+///
+/// llvmkit used to fold the switch into `parse_optional_function_linkage`,
+/// which ran it before the type was ever read.
+///
+/// The trigger is `=` rather than a misspelled type name: llvmkit's lexer
+/// answers `unknown keyword 'x'` where upstream returns a silent error token
+/// for the parser to report on, and re-layering that is W14.
+#[test]
+fn the_return_type_is_read_before_the_linkage_switch() {
+    // `=` is not a type, so `parseType` fails first...
+    assert_eq!(header_err("declare private = void @f()\n"), "expected type");
+    // ...and with a well-formed type the linkage switch is what rejects it.
+    assert_eq!(
+        header_err("declare private void @f()\n"),
+        "invalid linkage for function declaration"
+    );
+    assert_eq!(
+        header_err("define extern_weak void @f() {\nentry:\n  ret void\n}\n"),
+        "invalid linkage for function definition"
+    );
+    assert_eq!(
+        header_err("declare common void @f()\n"),
+        "invalid function linkage type"
+    );
+}
+
+/// `FunctionType::isValidReturnType` (`lib/IR/Type.cpp`) rejects a function,
+/// label or metadata return, checked at `RetTypeLoc` in
+/// `LLParser::parseFunctionHeader`. llvmkit carried the check on the function
+/// *type* production only, so the header path had none.
+#[test]
+fn the_header_checks_its_return_type() {
+    for src in [
+        "declare label @f()\n",
+        "define metadata @f() {\nentry:\n  ret void\n}\n",
+    ] {
+        assert_eq!(header_err(src), "invalid function return type", "{src}");
+    }
+}
+
+/// Ports `test/Assembler/invalid-label.ll` and
+/// `test/Assembler/2007-01-02-Undefined-Arg-Type.ll`, both of which pin
+/// `parseArgumentList`'s `FunctionType::isValidArgumentType` check —
+/// `isFirstClassType() && !isLabelTy()`. Upstream shares `parseArgumentList`
+/// between a function *type* and a function *header*, so all three paths
+/// carry it; llvmkit had it on the type path only.
+///
+/// The second fixture is the one worth reading twice: its argument type is a
+/// `%typedef.bc_struct` whose `type opaque` definition is **commented out**,
+/// so the reference mints an opaque identified struct — and
+/// `Type::isFirstClassType` answers false for one (`lib/IR/Type.cpp`'s
+/// `StructTyID` arm asks `isOpaque`). That is why an undefined argument type
+/// is caught here rather than at `validateEndOfModule`.
+///
+/// `test/Assembler/invalid-label-call-arg.ll` shares the message but reaches
+/// it through a call's parameter list, which is W9b.
+#[test]
+fn the_header_checks_its_argument_types() {
+    for fixture in [
+        include_bytes!("fixtures/upstream/invalid-label.ll").as_slice(),
+        include_bytes!("fixtures/upstream/2007-01-02-Undefined-Arg-Type.ll").as_slice(),
+    ] {
+        let m = llvmkit_ir::Module::dynamic("invalid_argument_type");
+        let err = Parser::new(fixture, &m)
+            .expect("lexer primes")
+            .parse_module()
+            .expect_err("fixture is rejected")
+            .to_string();
+        assert_eq!(err, "invalid type for function argument");
+    }
+
+    // The declaration path and the function-type production reach the same
+    // check.
+    for src in ["declare void @f(label)\n", "%s = type i32 (%t)\n"] {
+        assert_eq!(
+            header_err(src),
+            "invalid type for function argument",
+            "{src}"
+        );
+    }
+}
+
+/// `parseArgumentList`'s `checkValueID`, which llvmkit ran for a `define` and
+/// **discarded** for a `declare` — the ids were parsed and thrown away.
+/// Reported at the argument's *type*, which is upstream's `TypeLoc`.
+///
+/// The `define` half is `test/Assembler/skip-value-numbers-invalid.ll`'s
+/// `arg_smaller_id` split, ported in
+/// `parser_forward_refs.rs::numbered_slots_may_not_go_backwards`; this pins
+/// that a *declaration* answers the same, and that a named argument consumes
+/// no number — `CurValID` advances only on the unnamed branch.
+#[test]
+fn a_declaration_checks_its_argument_numbering() {
+    assert_eq!(
+        header_err("declare void @f(i32 %1, i32 %0)\n"),
+        "argument expected to be numbered '%2' or greater"
+    );
+
+    // A name in between does not advance the counter, so `%1` is still the
+    // next legal number after `%0`.
+    let m = llvmkit_ir::Module::dynamic("named_argument_numbering");
+    parse_into("declare void @f(i32 %0, i32 %named, i32 %1)\n", &m);
+}
+
+/// A *numbered* argument is legal in a function type. `parseArgumentList`
+/// files `%0` under `UnnamedArgNums` rather than under `Name`, and
+/// `parseFunctionType`'s rejection loop only asks `!Arg.Name.empty()` — so
+/// only a `%name` trips `argument name invalid in function type`.
+///
+/// llvmkit rejected both spellings, which was stricter than upstream.
+#[test]
+fn a_function_type_accepts_a_numbered_argument_but_not_a_named_one() {
+    let m = llvmkit_ir::Module::dynamic("function_type_argument_names");
+    parse_into("%s = type i32 (i32 %0)\n", &m);
+
+    assert_eq!(
+        header_err("%s = type i32 (i32 %x)\n"),
+        "argument name invalid in function type"
+    );
+    assert_eq!(
+        header_err("%s = type i32 (i32 zeroext)\n"),
+        "argument attributes invalid in function type"
+    );
+}
+
+/// The two texts `parseArgumentList` reports for a malformed list, which
+/// llvmkit had replaced with four per-site spellings — `'(' in function
+/// declaration`, `'(' in function header`, `')' to close function
+/// declaration`, `')' to close function header`.
+#[test]
+fn the_argument_list_delimiters_use_upstream_text() {
+    assert_eq!(
+        header_err("declare void @f[]\n"),
+        "expected '(' in function argument list"
+    );
+    assert_eq!(
+        header_err("define void @f[] {\nentry:\n  ret void\n}\n"),
+        "expected '(' in function argument list"
+    );
+    assert_eq!(
+        header_err("declare void @f(i32 %a\n"),
+        "expected ')' at end of argument list"
+    );
+}
+
+/// `parseFunctionHeader`'s `tokError("expected function name")`. llvmkit
+/// appended ` after return type`, which upstream never says.
+///
+/// Note what `declare void ()` is *not*: `parseType`'s suffix loop turns
+/// `void (` into a function **type**, so that spelling is
+/// `invalid function return type` — a function returning a function — and
+/// never reaches the name check at all.
+#[test]
+fn a_missing_function_name_uses_upstream_text() {
+    assert_eq!(header_err("declare void 42\n"), "expected function name");
+    assert_eq!(
+        header_err("declare void ()\n"),
+        "invalid function return type"
+    );
+}

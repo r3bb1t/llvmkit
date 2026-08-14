@@ -19,15 +19,15 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2370. Recounted on 2026-08-14 at the LLParser-parity
-Wave 7 point (`dev` @ `61e378f`) via the documented attribute-anchored grep
-below (`crates/llvmkit-ir` 1543 + `crates/llvmkit-asmparser` 805 +
+Total `#[test]` functions: 2377. Recounted on 2026-08-14 in the LLParser-parity
+Wave 8 part 1 commit via the documented attribute-anchored grep below
+(`crates/llvmkit-ir` 1543 + `crates/llvmkit-asmparser` 812 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
-`crates/llvmkit-macros` has none). The +135 over the 2235 point below is the
-LLParser-parity program's waves 0-7.
+`crates/llvmkit-macros` has none). The +142 over the 2235 point below is the
+LLParser-parity program's waves 0-8.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries 1930 rows. Matching them against the tree by test-function name
+below carries 1937 rows. Matching them against the tree by test-function name
 leaves **470 `#[test]` functions (469 distinct names) with no row**. The gap
 is inherited, not new: it accumulated across the type-safety and pass-API
 programs, where whole test files landed without rows, and it sits in
@@ -997,6 +997,13 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_types.rs::the_addrspace_arm_words_the_void_rejection_differently` | the `lltok::kw_addrspace` arm of the same loop, which spells the void rejection with a semicolon where the `*` arm uses a dash — upstream's own inconsistency, pinned deliberately | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_types.rs::a_valid_typed_pointer_lowers_to_an_opaque_pointer` | the same loop's `PointerType::getUnqual` / `PointerType::get` results; llvmkit represents no pointee, but parses one | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_types.rs::a_pointer_to_an_undefined_named_type_is_rejected` | the `lltok::LocalVar` arm of `LLParser::parseType` reached through a pointer suffix, whose forward-reference entry `validateEndOfModule` then reports | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::the_return_type_is_read_before_the_linkage_switch` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` — the return type parses inside the same `\|\|` chain as the linkage, so the "Verify that the linkage is ok" switch runs after it; the three linkage texts are verbatim. `test/Assembler` pins none of them, so the routine is the anchor | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::the_header_checks_its_return_type` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader`'s `FunctionType::isValidReturnType` guard (`lib/IR/Type.cpp`) at `RetTypeLoc` — no `test/Assembler` fixture pins it | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::the_header_checks_its_argument_types` | `test/Assembler/invalid-label.ll` and `test/Assembler/2007-01-02-Undefined-Arg-Type.ll`, both vendored verbatim; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseArgumentList`'s `FunctionType::isValidArgumentType` guard. `test/Assembler/invalid-label-call-arg.ll` shares the message but reaches it through a call's parameter list (W9b) | mirror |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_declaration_checks_its_argument_numbering` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseArgumentList`'s `checkValueID(TypeLoc, "argument", "%", ...)` reached through `parseDeclare`; the `define` half is `test/Assembler/skip-value-numbers-invalid.ll`'s `arg_smaller_id` split, ported in `parser_forward_refs.rs` | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_function_type_accepts_a_numbered_argument_but_not_a_named_one` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionType`'s rejection loop, which asks `!Arg.Name.empty()` — a `%N` argument is filed under `UnnamedArgNums`, not under `Name`, so only a `%name` is rejected | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::the_argument_list_delimiters_use_upstream_text` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` (`expected '(' in function argument list`) and `LLParser::parseArgumentList` (`expected ')' at end of argument list`), verbatim | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_missing_function_name_uses_upstream_text` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader`'s `tokError("expected function name")`; the `void ()` half pins that `parseType`'s suffix loop makes it a function type first | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_types.rs::a_type_param_after_an_int_param_is_rejected` | `LLParser::parseTargetExtType`'s `SeenInt` guard — `expected uint32 param`, verbatim | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_types.rs::target_extension_type_arity_is_checked` | `TargetExtType::checkParams` (`llvm/lib/IR/Type.cpp`), all three named constraints, messages verbatim | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_types.rs::a_target_extension_type_may_take_a_void_parameter` | `parseType(TypeParam, /*AllowVoid=*/true)` in `LLParser::parseTargetExtType` | llvmkit-specific (rule anchor) |
@@ -2086,7 +2093,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::compare_operand_category_is_enforced` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCompare` (`icmp requires integer operands` / `fcmp requires floating point operands`) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::fast_math_flags_round_trip_on_select_phi_and_fp_casts` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseInstruction` (the `kw_select` / `kw_phi` / `kw_fptrunc` / `kw_fpext` fast-math arms); spellings from `test/Transforms/InstCombine/clamp-to-minmax.ll` (`select nnan ninf`) and `test/Transforms/SROA/propagate-fast-math-flags-on-phi.ll` (scalar and vector `phi nsz`) -- `test/Assembler` carries no fixture for these | mirror |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::fast_math_flags_on_non_fp_select_or_phi_are_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseInstruction` (`fast-math-flags specified for select/phi without floating-point scalar or vector return type`) | mirror |
-| `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::numbered_slots_may_not_go_backwards` | `test/Assembler/skip-value-numbers-invalid.ll` (the `instr_smaller_id` / `arg_smaller_id` / `block_smaller_id` splits); `llvm/lib/AsmParser/LLParser.cpp::LLParser::checkValueID` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::numbered_slots_may_not_go_backwards` | `test/Assembler/skip-value-numbers-invalid.ll`, all five splits (`instr_smaller_id` / `arg_smaller_id` / `block_smaller_id` / `global_smaller_id` / `function_smaller_id`); `llvm/lib/AsmParser/LLParser.cpp::LLParser::checkValueID` and its five call sites | mirror |
 | `crates/llvmkit-asmparser/tests/parser_forward_refs.rs::numbered_slots_may_skip_ahead` | `test/Assembler/skip-value-numbers.ll` (the `@instr` and `@blocks` cases, including its renumbering CHECK lines) | mirror |
 | `crates/llvmkit-asmparser/tests/parser_diagnostics.rs::unnamed_comdat_matches_upstream_text` | `test/Assembler/unnamed-comdat.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseOptionalComdat` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::bare_comdat_borrows_the_symbols_own_name` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseOptionalComdat` (the `GlobalName`-borrowing branch) -- `test/Assembler` covers only the failing case, so the accepting half is anchored on the routine | llvmkit-specific |

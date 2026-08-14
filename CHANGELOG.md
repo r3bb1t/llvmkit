@@ -19,6 +19,53 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Function headers
+
+- **Changed (breaking): one `parseArgumentList`, shared by every path that
+  parses an argument list.** llvmkit had three partial hand-written copies —
+  one in `declare`, one in `define`, one in the function-*type* production —
+  and each was missing different rules. They are now one routine, mirroring
+  the one upstream shares between `parseFunctionType` and
+  `parseFunctionHeader`. What that turned up:
+
+  - `invalid type for function argument` (`FunctionType::isValidArgumentType`)
+    reached only the function-type path, so `declare void @f(label)` parsed.
+    `test/Assembler/invalid-label.ll` and
+    `test/Assembler/2007-01-02-Undefined-Arg-Type.ll` now port verbatim; the
+    second is the interesting one, because its argument type is an *opaque*
+    identified struct and `Type::isFirstClassType` answers false for one.
+  - A `declare` **discarded** its `%N` argument numbers — parsed and thrown
+    away — so `parseArgumentList`'s `checkValueID` never ran on that path.
+  - A *numbered* argument in a function type (`%s = type i32 (i32 %0)`) was
+    rejected as a named one. Upstream files `%N` under `UnnamedArgNums`, and
+    only `!Arg.Name.empty()` trips `argument name invalid in function type`,
+    so this is now accepted.
+  - The four invented delimiter texts (`'(' in function declaration`,
+    `'(' in function header`, `')' to close function declaration`,
+    `')' to close function header`) collapse onto upstream's
+    `expected '(' in function argument list` and
+    `expected ')' at end of argument list`.
+
+- **Added: `invalid function return type` on the function header.**
+  `FunctionType::isValidReturnType` rejects a function, label or metadata
+  return at `RetTypeLoc`. llvmkit carried the check on the function *type*
+  production only, so `declare label @f()` parsed.
+
+- **Added: `checkValueID` on a numbered function and a numbered global.**
+  `@N` headers took their number verbatim, and a numbered global's collision
+  reached `NumberedValues::add` and surfaced as llvmkit's own
+  `invalid slot id 5: next unused is 11`. With both wired, all five splits of
+  `test/Assembler/skip-value-numbers-invalid.ll` port — previously three.
+
+- **Changed: the header's check order and diagnostic anchors.** Upstream
+  parses the return **type** inside the same `||` chain as the linkage, so the
+  "Verify that the linkage is ok" switch runs *after* it; llvmkit folded the
+  switch into linkage parsing and ran it before the type was read. The
+  linkage/visibility pair also anchors at `LinkageLoc` here, while the global
+  and alias sites anchor at `NameLoc` — one shared predicate, three call
+  sites, and the caret is not shared. `expected function name` loses the
+  ` after return type` suffix llvmkit had appended.
+
 ### Module-level entities
 
 - **Changed: three metadata-operand diagnostics, and one new check.**
