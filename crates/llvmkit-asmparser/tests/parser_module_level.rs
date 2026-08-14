@@ -245,6 +245,48 @@ fn a_declaration_linkage_global_takes_no_initializer() {
     assert!(format!("{m}").contains("@g = external global i32"), "{m}");
 }
 
+/// An `ifunc` with a linkage `GlobalIFunc::isValidLinkage` rejects **parses**,
+/// and is caught by the verifier.
+///
+/// `parseAliasOrIFunc` guards its `isValidLinkage` call with
+/// `if (IsAlias && ...)`, so upstream's parser checks aliases only and
+/// `Verifier::visitGlobalIFunc` carries the ifunc rule. llvmkit rejected it at
+/// parse time *and* in `GlobalIfuncBuilder::build`, which is stricter than
+/// upstream — a divergence in its own right — and made the real diagnostic
+/// unreachable. The alias half stays a parse error, as upstream has it.
+#[test]
+fn an_ifunc_linkage_is_a_verifier_rule_not_a_parse_rule() {
+    let m = llvmkit_ir::Module::dynamic("ifunc_linkage");
+    Parser::new(
+        b"declare ptr @r()\n@i = appending ifunc i32 (i32), ptr @r\n".as_slice(),
+        &m,
+    )
+    .expect("lexer primes")
+    .parse_module()
+    .expect("upstream's parser accepts any ifunc linkage");
+
+    let err = m.verify().expect_err("the verifier rejects it").to_string();
+    assert!(
+        err.contains(
+            "IFunc should have private, internal, linkonce, weak, linkonce_odr, \
+             weak_odr, or external linkage!"
+        ),
+        "got: {err}"
+    );
+
+    // The alias twin is a *parse* error, because upstream checks that one.
+    let m = llvmkit_ir::Module::dynamic("alias_linkage");
+    let err = Parser::new(
+        b"@g = global i32 0\n@a = appending alias i32, ptr @g\n".as_slice(),
+        &m,
+    )
+    .expect("lexer primes")
+    .parse_module()
+    .expect_err("an alias linkage is checked at parse time")
+    .to_string();
+    assert!(err.contains("invalid linkage type for alias"), "got: {err}");
+}
+
 /// The module-entity diagnostics that name a *property*, each verbatim.
 ///
 /// Three of them are prose that does not begin with "expected", and llvmkit

@@ -119,6 +119,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
         for g in self.module.iter_globals() {
             self.visit_global_variable(g)?;
         }
+        for i in self.module.iter_ifuncs::<B>() {
+            self.visit_global_ifunc(i)?;
+        }
         // Mirrors `Verifier::verify`'s module-level `visitModuleFlags()`
         // step between the global-value walk and the function walk.
         self.visit_module_flags()?;
@@ -133,6 +136,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> Verifier<'ctx, B> {
     /// invariants, scalable-type rejection). The intrinsic-globals
     /// (`llvm.global_ctors` / `llvm.used` / etc.) and metadata
     /// attachment rules are deferred -- they need the metadata layer.
+    /// Mirrors the linkage arm of `Verifier::visitGlobalIFunc`.
+    ///
+    /// It lives here, not in the parser, because upstream's parser has no such
+    /// check: `parseAliasOrIFunc` guards `isValidLinkage` with
+    /// `if (IsAlias && ...)`, so an ifunc with a bad linkage *parses* and is
+    /// caught at verify time. llvmkit used to reject it at parse time and
+    /// again in `GlobalIfuncBuilder::build`, which made the upstream
+    /// diagnostic unreachable.
+    fn visit_global_ifunc(&self, i: crate::GlobalIfunc<'ctx, B>) -> IrResult<()> {
+        if !crate::global_ifunc::is_valid_ifunc_linkage(i.linkage()) {
+            return Err(IrError::VerifierFailure {
+                rule: VerifierRule::IfuncInvalidLinkage,
+                function: Some(format!("@{}", i.name())),
+                block: None,
+                message: VerifierRule::IfuncInvalidLinkage.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     fn visit_global_variable(&self, g: GlobalVariable<'ctx, B>) -> IrResult<()> {
         let value_ty = g.value_type();
 

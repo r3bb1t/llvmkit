@@ -21,6 +21,16 @@ cut, entries accumulate under **Unreleased**.
 
 ### Module-level entities
 
+- **Fixed (over-strictness): an `ifunc` linkage is a verifier rule, not a
+  parse rule.** `parseAliasOrIFunc` guards its `isValidLinkage` call with
+  `if (IsAlias && ...)`, so upstream's parser checks *aliases* only and
+  `Verifier::visitGlobalIFunc` carries the ifunc rule. llvmkit rejected it at
+  parse time and again in `GlobalIfuncBuilder::build`, which is stricter than
+  upstream — a divergence in its own right — and made upstream's own message
+  unreachable. Both premature checks are gone; the new
+  `VerifierRule::IfuncInvalidLinkage` carries the text verbatim, bang
+  included. The alias half stays a parse error, as upstream has it.
+
 - **Added: `invalid type for global variable`**, which llvmkit did not check
   at all. Two halves: a function value type, and
   `PointerType::isValidElementType` — `label`, `metadata`, `token`, `x86_amx`

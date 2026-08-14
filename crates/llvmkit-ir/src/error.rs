@@ -380,6 +380,14 @@ pub enum VerifierRule {
     /// `Verifier::visitGlobalVariable` ("Globals cannot contain
     /// scalable types").
     GlobalScalableType,
+    /// `ifunc` carries a linkage `GlobalIFunc::isValidLinkage` rejects.
+    /// Mirrors `Verifier::visitGlobalIFunc`.
+    ///
+    /// This is a *verifier* rule because upstream's parser has none:
+    /// `parseAliasOrIFunc` checks `isValidLinkage` for aliases only
+    /// (`if (IsAlias && ...)`), so `@i = appending ifunc ...` parses and is
+    /// caught later.
+    IfuncInvalidLinkage,
     /// `!range` attached to an instruction kind other than load/call/invoke.
     /// Mirrors `Verifier::visitInstruction`.
     RangeMetadataInvalidAttachment,
@@ -543,6 +551,9 @@ impl fmt::Display for VerifierRule {
                 "common-linkage global must have a zero initializer, must not be constant, and must not be in a comdat"
             }
             Self::GlobalScalableType => "globals cannot contain scalable types",
+            Self::IfuncInvalidLinkage => {
+                "IFunc should have private, internal, linkonce, weak, linkonce_odr, weak_odr, or external linkage!"
+            }
             Self::RangeMetadataInvalidAttachment => {
                 "range metadata is only valid on loads, calls, and invokes"
             }

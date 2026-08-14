@@ -365,11 +365,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncBuilder<'ctx, B> {
     /// Resolve the id back into a borrowing [`GlobalIfunc`] with
     /// [`Module::view`](crate::Module::view).
     pub fn build(self) -> IrResult<GlobalIfuncId<B>> {
-        if !is_valid_ifunc_linkage(self.linkage) {
-            return Err(IrError::InvalidOperation {
-                message: "invalid linkage type for ifunc",
-            });
-        }
+        // The linkage is deliberately *not* checked here. Upstream rejects a
+        // bad ifunc linkage in `Verifier::visitGlobalIFunc`, not at
+        // construction and not in `parseAliasOrIFunc` — whose `isValidLinkage`
+        // guard is `if (IsAlias && ...)`. Checking it here made that
+        // diagnostic unreachable; it now lives in
+        // `VerifierRule::IfuncInvalidLinkage`.
         if self.module.module().context().value_data(self.resolver).ty != self.resolver_type {
             return Err(IrError::InvalidOperation {
                 message: "ifunc resolver type changed before build",

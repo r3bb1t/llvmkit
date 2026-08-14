@@ -4236,12 +4236,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(decl_loc),
             });
         }
-        if !is_alias && !llvmkit_ir::global_ifunc::is_valid_ifunc_linkage(linkage) {
-            return Err(ParseError::Expected {
-                expected: "invalid linkage type for ifunc".into(),
-                loc: DiagLoc::span(decl_loc),
-            });
-        }
+        // No ifunc counterpart: `parseAliasOrIFunc` guards `isValidLinkage`
+        // with `if (IsAlias && ...)`, so an ifunc with a bad linkage parses
+        // here and is rejected by the verifier
+        // (`VerifierRule::IfuncInvalidLinkage`). llvmkit rejecting it at parse
+        // time was stricter than upstream, which is a divergence in its own
+        // right.
         Self::check_linkage_agreement(linkage, visibility, dll_storage_class, decl_loc)?;
 
         let value_type = self.parse_type(false)?;
