@@ -9381,13 +9381,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
         }
         let source_ty = self.parse_type(false)?;
-        self.expect_punct(PunctKind::Comma, "',' after GEP source type")?;
+        self.expect_punct(PunctKind::Comma, "comma after getelementptr's type")?;
+        let base_loc = self.loc();
         let ptr_ty = self.parse_type(false)?;
         let ptr_v = self.parse_value(state, ptr_ty)?;
-        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v
-            .try_into()
-            .map_err(|_| self.expected("ptr-typed GEP base"))?;
-        let mut indices: Vec<llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B>> = Vec::new();
+        // `dyn_cast<PointerType>(BaseType->getScalarType())` — a *vector* of
+        // pointers is a legal base, which is why upstream asks the scalar
+        // type rather than the type itself.
+        let mut gep_width = vector_shape_type(ptr_v.ty());
+        if pointer_address_space_or_vector_element(ptr_v.ty()).is_none() {
+            return Err(self.message_at(base_loc, "base of getelementptr must be a pointer"));
+        }
+        let mut index_values: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
+        let mut index_locs: Vec<Span> = Vec::new();
         while matches!(self.peek(), Token::Comma) {
             let saved_lex = self.lex.clone();
             let saved_current = self.current.clone();
@@ -9402,12 +9408,61 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.current = saved_current;
                 break;
             }
+            let elt_loc = self.loc();
             let idx_ty = self.parse_type(false)?;
             let idx_v = self.parse_value(state, idx_ty)?;
-            let idx: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = idx_v
-                .try_into()
-                .map_err(|_| self.expected("integer GEP index"))?;
-            indices.push(idx);
+            if !is_int_or_int_vector_type(idx_v.ty()) {
+                return Err(self.message_at(elt_loc, "getelementptr index must be an integer"));
+            }
+            if let Some(index_shape) = vector_shape_type(idx_v.ty()) {
+                if gep_width.is_some_and(|width| width != index_shape) {
+                    return Err(self.message_at(
+                        elt_loc,
+                        "getelementptr vector index has a wrong number of elements",
+                    ));
+                }
+                gep_width = Some(index_shape);
+            }
+            index_values.push(idx_v);
+            index_locs.push(elt_loc);
+        }
+
+        // `parseGetElementPtr`'s three tail checks. Note the scalable rule
+        // differs from the constant-expression arm's: an *instruction* asks
+        // only whether the source type is a struct containing a scalable
+        // vector, where `ConstantExpr::isSupportedGetElementPtr` refuses any
+        // scalable source outright.
+        if !index_values.is_empty() && !source_ty.is_sized() {
+            return Err(self.message_at(base_loc, "base element of getelementptr must be sized"));
+        }
+        if source_ty.is_struct() && source_ty.is_scalable() {
+            return Err(self.message_at(
+                base_loc,
+                "getelementptr cannot target structure that contains scalable vector type",
+            ));
+        }
+        if llvmkit_ir::indexed_gep_type(source_ty, &index_values).is_none() {
+            return Err(self.message_at(base_loc, "invalid getelementptr indices"));
+        }
+
+        // Only now, once every one of upstream's rules has answered, does the
+        // *builder* shape matter. A vector base or a vector index is
+        // upstream-valid but not yet expressible — `gep_with_flags` takes a
+        // scalar `PointerValue` and `IntValue<IntDyn>` indices — so the
+        // conversion sits after the checks rather than before them, and the
+        // recorded IR gap is all that is left here. See `docs/future-work.md`.
+        let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v.try_into().map_err(|_| {
+            self.message_at(
+                base_loc,
+                "a vector-of-pointers getelementptr base is not yet supported",
+            )
+        })?;
+        let mut indices: Vec<llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B>> =
+            Vec::with_capacity(index_values.len());
+        for (index, loc) in index_values.iter().zip(&index_locs) {
+            indices.push((*index).try_into().map_err(|_| {
+                self.message_at(*loc, "vector getelementptr indices are not yet supported")
+            })?);
         }
         let name = result_name.as_str();
         let v = b

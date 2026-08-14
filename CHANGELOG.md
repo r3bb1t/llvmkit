@@ -21,6 +21,29 @@ cut, entries accumulate under **Unreleased**.
 
 ### Memory instructions
 
+- **Added: the instruction-side `getelementptr` validates its base and
+  indices.** `base of getelementptr must be a pointer` (asked of the base's
+  *scalar* type, since a vector of pointers is a legal base),
+  `getelementptr index must be an integer`,
+  `getelementptr vector index has a wrong number of elements`,
+  `base element of getelementptr must be sized`,
+  `getelementptr cannot target structure that contains scalable vector type`
+  and `invalid getelementptr indices` — plus upstream's
+  `expected comma after getelementptr's type` in place of llvmkit's
+  `',' after GEP source type`. The scalable rule differs from the
+  constant-expression arm W4 landed: an instruction asks only whether the
+  source type is a *struct* containing a scalable vector, where
+  `ConstantExpr::isSupportedGetElementPtr` refuses any scalable source.
+
+  The conversion to the builder's scalar shape now happens **after** every
+  check rather than before, so the recorded vector-GEP IR gap costs coverage
+  only where the input is otherwise valid:
+  `getelementptr_vscale_struct.ll` and `getelementptr_vec_struct.ll` both have
+  vector operands llvmkit cannot build and still report upstream's
+  `invalid getelementptr indices`. Ports verbatim with
+  `getelementptr_struct.ll`, `getelementptr_invalid_ptr.ll` and
+  `invalid-gep-missing-explicit-type.ll`.
+
 - **Added: the atomic instructions validate their operands.** All seventeen
   diagnostics across `parseCmpXchg`, `parseAtomicRMW` and `parseFence` were
   missing — every rejection came from the builder, in its own words.

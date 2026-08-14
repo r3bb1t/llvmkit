@@ -1071,6 +1071,73 @@ fn cmpxchg_validates_its_orderings_and_operands() {
     );
 }
 
+/// Ports the instruction-side `getelementptr` negatives W4 deferred here:
+/// `getelementptr_struct.ll`, `getelementptr_invalid_ptr.ll`,
+/// `invalid-gep-missing-explicit-type.ll`, `getelementptr_vscale_struct.ll`
+/// and `getelementptr_vec_struct.ll`, all verbatim.
+///
+/// The last two have **vector** bases and indices, which llvmkit's builder
+/// cannot yet express — but they still reach upstream's answer, because
+/// `parseGetElementPtr`'s rules all run before the instruction is built. That
+/// ordering is the point: the conversion to the builder's scalar shape sits
+/// *after* every check, so a recorded IR gap costs coverage only where the
+/// input is otherwise valid.
+///
+/// The scalable rule here differs from the constant-expression arm's, which
+/// W4 landed: an instruction asks only whether the source type is a struct
+/// containing a scalable vector, where `ConstantExpr::isSupportedGetElementPtr`
+/// refuses any scalable source outright.
+#[test]
+fn getelementptr_validates_its_base_and_indices() {
+    for (fixture, expected) in [
+        (
+            include_str!("fixtures/upstream/invalid-gep-missing-explicit-type.ll"),
+            "expected comma after getelementptr's type",
+        ),
+        (
+            include_str!("fixtures/upstream/getelementptr_invalid_ptr.ll"),
+            "base of getelementptr must be a pointer",
+        ),
+        (
+            include_str!("fixtures/upstream/getelementptr_struct.ll"),
+            "invalid getelementptr indices",
+        ),
+        (
+            include_str!("fixtures/upstream/getelementptr_vscale_struct.ll"),
+            "invalid getelementptr indices",
+        ),
+        (
+            include_str!("fixtures/upstream/getelementptr_vec_struct.ll"),
+            "invalid getelementptr indices",
+        ),
+    ] {
+        assert_eq!(parse_expect_error(fixture), expected);
+    }
+
+    // The two rules with no upstream fixture on the instruction path.
+    assert_eq!(
+        parse_expect_error(
+            "%t = type opaque\ndefine void @f(ptr %p) {\nentry:\n  \
+             %g = getelementptr %t, ptr %p, i32 0\n  ret void\n}\n"
+        ),
+        "base element of getelementptr must be sized"
+    );
+    assert_eq!(
+        parse_expect_error(
+            "define void @f(ptr %p) {\nentry:\n  \
+             %g = getelementptr { <vscale x 2 x i32> }, ptr %p, i32 0, i32 0\n  ret void\n}\n"
+        ),
+        "getelementptr cannot target structure that contains scalable vector type"
+    );
+    assert_eq!(
+        parse_expect_error(
+            "define void @f(ptr %p) {\nentry:\n  \
+             %g = getelementptr i32, ptr %p, ptr null\n  ret void\n}\n"
+        ),
+        "getelementptr index must be an integer"
+    );
+}
+
 /// `parseFence`'s two rules, neither of which has an upstream fixture. Both
 /// are `tokError`, so both anchor after the ordering keyword.
 #[test]
