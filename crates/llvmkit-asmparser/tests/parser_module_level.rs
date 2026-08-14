@@ -245,6 +245,82 @@ fn a_declaration_linkage_global_takes_no_initializer() {
     assert!(format!("{m}").contains("@g = external global i32"), "{m}");
 }
 
+/// `parseGlobal`'s redefinition route: a name already in the module is
+/// `redefinition of global '@x'`, unless it is there as a *forward reference*,
+/// which this definition satisfies instead.
+#[test]
+fn a_redefined_global_is_rejected_but_a_forward_reference_is_not() {
+    let m = llvmkit_ir::Module::dynamic("global_redefinition");
+    let err = Parser::new(b"@g = global i32 0\n@g = global i32 1\n".as_slice(), &m)
+        .expect("lexer primes")
+        .parse_module()
+        .expect_err("a second definition of @g is a redefinition")
+        .to_string();
+    assert_eq!(err, "redefinition of global '@g'");
+
+    // The forward-reference half: `@p` names `@g` before `@g` exists, and the
+    // later definition satisfies the reference rather than colliding with it.
+    let m = llvmkit_ir::Module::dynamic("global_forward");
+    parse_into("@p = global ptr @g\n@g = global i32 0\n", &m);
+    assert!(format!("{m}").contains("@p = global ptr @g"), "{m}");
+}
+
+/// An `ifunc` accepts metadata attachments and an alias does not.
+///
+/// `parseAliasOrIFunc`'s property loop guards that arm with
+/// `!IsAlias && Lex.getKind() == lltok::MetadataVar`, so the alias spelling
+/// falls through to `unknown alias or ifunc property!`. llvmkit accepted
+/// neither.
+#[test]
+fn an_ifunc_takes_metadata_attachments_but_an_alias_does_not() {
+    let m = llvmkit_ir::Module::dynamic("ifunc_metadata");
+    parse_into(
+        "declare ptr @r()\n@i = ifunc i32 (i32), ptr @r, !dbg !0\n!0 = !{}\n",
+        &m,
+    );
+
+    let m = llvmkit_ir::Module::dynamic("alias_metadata");
+    let err = Parser::new(
+        b"@g = global i32 0\n@a = alias i32, ptr @g, !dbg !0\n!0 = !{}\n".as_slice(),
+        &m,
+    )
+    .expect("lexer primes")
+    .parse_module()
+    .expect_err("an alias takes no metadata attachment")
+    .to_string();
+    assert_eq!(err, "unknown alias or ifunc property!");
+}
+
+/// The three clauses `parseAliasOrIFunc` reads before it knows whether it has
+/// an alias or an ifunc are stored on an ifunc too — upstream applies
+/// `setThreadLocalMode`, `setDLLStorageClass` and `setUnnamedAddr` to `GV` in
+/// both branches. It just never *prints* them for an ifunc, because
+/// `printIFunc` stops after visibility, so this asserts the round-trip drops
+/// them rather than asserting they reappear.
+#[test]
+fn an_ifunc_stores_but_does_not_print_the_shared_prefix_clauses() {
+    let m = llvmkit_ir::Module::dynamic("ifunc_prefix");
+    parse_into(
+        "declare ptr @r()\n@i = dllexport thread_local unnamed_addr ifunc i32 (i32), ptr @r\n",
+        &m,
+    );
+    let printed = format!("{m}");
+    // `printIFunc` emits linkage, DSO location and visibility, then `ifunc` —
+    // so all three clauses are dropped on the way out. That is upstream's
+    // behaviour, not a llvmkit shortcut.
+    assert!(
+        printed.contains("@i = ifunc i32 (i32), ptr @r"),
+        "{printed}"
+    );
+    assert!(!printed.contains("dllexport"), "{printed}");
+    assert!(!printed.contains("thread_local"), "{printed}");
+    assert!(!printed.contains("unnamed_addr"), "{printed}");
+
+    let round_tripped = llvmkit_ir::Module::dynamic("ifunc_prefix");
+    parse_into(printed.as_str(), &round_tripped);
+    assert_eq!(format!("{round_tripped}"), printed);
+}
+
 /// An `ifunc` with a linkage `GlobalIFunc::isValidLinkage` rejects **parses**,
 /// and is caught by the verifier.
 ///

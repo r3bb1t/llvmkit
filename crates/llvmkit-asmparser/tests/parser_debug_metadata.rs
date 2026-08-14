@@ -440,10 +440,39 @@ fn the_remaining_specialized_classes_parse_and_round_trip() {
 /// the class exists to give an assignment a unique identity.
 #[test]
 fn diassignid_requires_distinct() {
-    let _ = parse_err("!0 = !DIAssignID()\n");
+    // This used to be `let _ = parse_err(...)` — the error was discarded, so
+    // the message the doc comment names was never actually checked.
+    assert_eq!(
+        parse_err("!0 = !DIAssignID()\n").to_string(),
+        "missing 'distinct', required for !DIAssignID()"
+    );
     // The `distinct` form is the only accepted one.
     let text = parse_and_render("!named = !{!0}\n!0 = distinct !DIAssignID()\n");
     assert!(text.contains("distinct !DIAssignID()"), "output:\n{text}");
+}
+
+/// `parseNamedMetadata`'s two special-cased operand spellings.
+///
+/// A `!DIExpression(...)` may be written **inline** as a named-metadata
+/// operand — upstream's comment: "parse DIExpressions inline as a special
+/// case. They are still MDNodes, so they can still appear in named metadata."
+/// A `!DIArgList(...)` may not, because it can hold `LocalAsMetadata`
+/// arguments that need a function context, and it gets its own message.
+///
+/// llvmkit's loop accepted only `!N` slot references, so the inline form did
+/// not parse and the `DIArgList` rejection had no message of its own.
+#[test]
+fn named_metadata_operands_special_case_diexpression_and_diarglist() {
+    let text = parse_and_render("!named = !{!DIExpression(DW_OP_deref)}\n");
+    assert!(
+        text.contains("!DIExpression(DW_OP_deref)"),
+        "output:\n{text}"
+    );
+
+    assert_eq!(
+        parse_err("!named = !{!DIArgList()}\n").to_string(),
+        "found DIArgList outside of function"
+    );
 }
 
 /// llvmkit-specific: no upstream counterpart. Pins that the modelled set is the

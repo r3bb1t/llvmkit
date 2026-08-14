@@ -21,6 +21,33 @@ cut, entries accumulate under **Unreleased**.
 
 ### Module-level entities
 
+- **Added: an `ifunc` carries the shared prefix clauses and takes metadata
+  attachments.** `parseAliasOrIFunc` reads `dllstorage`, `thread_local` and
+  `unnamed_addr` before it knows whether it has an alias or an ifunc, and
+  applies all three to either — it simply never *prints* them for an ifunc,
+  because `printIFunc` stops after visibility. `GlobalIfunc` stores them now.
+  Separately, its property loop guards the metadata arm with
+  `!IsAlias && MetadataVar`, so `@i = ifunc ..., !dbg !0` is legal and the
+  alias spelling is `unknown alias or ifunc property!`; llvmkit accepted
+  neither.
+
+- **Fixed: `redefinition of global '@x'` was unreachable.** The variant and
+  its rendering existed and were unit-tested, but the collision reached the
+  *builder* first and surfaced as `expected valid global definition: a global
+  named "g" already exists in this module`. The check now runs where upstream
+  runs it, and skips a name that is present only as a forward reference —
+  which that definition satisfies rather than collides with.
+
+- **Fixed: `missing 'distinct', required for !DIAssignID()`.** llvmkit said
+  `expected 'distinct', ...`. Its test called `parse_err` and discarded the
+  result, so the message its doc comment named was never checked.
+
+- **Added: `parseNamedMetadata`'s two special-cased operands.** A
+  `!DIExpression(...)` may be written inline as a named-metadata operand and
+  now parses; a `!DIArgList(...)` may not, and gets its own
+  `found DIArgList outside of function`. llvmkit's loop accepted only `!N`
+  slot references.
+
 - **Fixed (over-strictness): an `ifunc` linkage is a verifier rule, not a
   parse rule.** `parseAliasOrIFunc` guards its `isValidLinkage` call with
   `if (IsAlias && ...)`, so upstream's parser checks *aliases* only and

@@ -7,11 +7,12 @@ use super::DebugLoc;
 use super::constant::{Constant, IsConstant};
 use super::derived_types::PointerType;
 use super::error::{IrError, IrResult, TypeKindLabel, ValueCategoryLabel};
-use super::global_value::{DsoLocality, Linkage, Visibility};
+use super::global_value::{DllStorageClass, DsoLocality, Linkage, ThreadLocalMode, Visibility};
 use super::metadata::MetadataAttachmentSet;
 use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
 use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::r#type::{Type, TypeKind, TypeSlot};
+use super::unnamed_addr::UnnamedAddr;
 use super::value::{
     GlobalFieldKind, HasDebugLoc, HasName, IsValue, Typed, Value, ValueKindData, ValueSlot, sealed,
 };
@@ -26,6 +27,12 @@ pub(super) struct GlobalIfuncData {
     pub(super) linkage: Cell<Linkage>,
     pub(super) dso_locality: Cell<DsoLocality>,
     pub(super) visibility: Cell<Visibility>,
+    /// `parseAliasOrIFunc` reads these three before it knows whether it is
+    /// looking at an alias or an ifunc, so an ifunc carries them too — the
+    /// grammar shares the whole prefix.
+    pub(super) dll_storage_class: Cell<DllStorageClass>,
+    pub(super) thread_local_mode: Cell<ThreadLocalMode>,
+    pub(super) unnamed_addr: Cell<UnnamedAddr>,
     pub(super) partition: RefCell<Option<String>>,
     pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
 }
@@ -182,6 +189,36 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfunc<'ctx, B> {
         self.data().visibility.set(visibility);
     }
 
+    #[inline]
+    pub fn dll_storage_class(self) -> DllStorageClass {
+        self.data().dll_storage_class.get()
+    }
+
+    #[inline]
+    pub fn set_dll_storage_class(self, _module: &'ctx Module<B, Unverified>, cls: DllStorageClass) {
+        self.data().dll_storage_class.set(cls);
+    }
+
+    #[inline]
+    pub fn thread_local_mode(self) -> ThreadLocalMode {
+        self.data().thread_local_mode.get()
+    }
+
+    #[inline]
+    pub fn set_thread_local_mode(self, _module: &'ctx Module<B, Unverified>, tlm: ThreadLocalMode) {
+        self.data().thread_local_mode.set(tlm);
+    }
+
+    #[inline]
+    pub fn unnamed_addr(self) -> UnnamedAddr {
+        self.data().unnamed_addr.get()
+    }
+
+    #[inline]
+    pub fn set_unnamed_addr(self, _module: &'ctx Module<B, Unverified>, value: UnnamedAddr) {
+        self.data().unnamed_addr.set(value);
+    }
+
     pub fn metadata(self) -> MetadataAttachmentSet<B> {
         MetadataAttachmentSet::from_stored(&self.data().metadata.borrow())
     }
@@ -306,6 +343,9 @@ pub struct GlobalIfuncBuilder<'ctx, B: ModuleBrand> {
     linkage: Linkage,
     dso_locality: DsoLocality,
     visibility: Visibility,
+    dll_storage_class: DllStorageClass,
+    thread_local_mode: ThreadLocalMode,
+    unnamed_addr: UnnamedAddr,
     partition: Option<String>,
 }
 
@@ -329,6 +369,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncBuilder<'ctx, B> {
             linkage: Linkage::External,
             dso_locality: DsoLocality::Default,
             visibility: Visibility::Default,
+            dll_storage_class: DllStorageClass::Default,
+            thread_local_mode: ThreadLocalMode::NotThreadLocal,
+            unnamed_addr: UnnamedAddr::None,
             partition: None,
         }
     }
@@ -350,6 +393,26 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncBuilder<'ctx, B> {
     #[must_use]
     pub fn visibility(mut self, visibility: Visibility) -> Self {
         self.visibility = visibility;
+        self
+    }
+
+    /// The three clauses `parseAliasOrIFunc` reads before it knows whether it
+    /// is looking at an alias or an ifunc, so an ifunc accepts them too.
+    #[must_use]
+    pub fn dll_storage_class(mut self, cls: DllStorageClass) -> Self {
+        self.dll_storage_class = cls;
+        self
+    }
+
+    #[must_use]
+    pub fn thread_local_mode(mut self, tlm: ThreadLocalMode) -> Self {
+        self.thread_local_mode = tlm;
+        self
+    }
+
+    #[must_use]
+    pub fn unnamed_addr(mut self, value: UnnamedAddr) -> Self {
+        self.unnamed_addr = value;
         self
     }
 
@@ -402,6 +465,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncBuilder<'ctx, B> {
             linkage,
             dso_locality,
             visibility,
+            dll_storage_class,
+            thread_local_mode,
+            unnamed_addr,
             partition,
         } = self;
         let data = GlobalIfuncData {
@@ -412,6 +478,9 @@ impl<'ctx, B: ModuleBrand + 'ctx> GlobalIfuncBuilder<'ctx, B> {
             linkage: Cell::new(linkage),
             dso_locality: Cell::new(dso_locality),
             visibility: Cell::new(visibility),
+            dll_storage_class: Cell::new(dll_storage_class),
+            thread_local_mode: Cell::new(thread_local_mode),
+            unnamed_addr: Cell::new(unnamed_addr),
             partition: RefCell::new(partition),
             metadata: RefCell::new(MetadataAttachmentSet::new()),
         };

@@ -2628,13 +2628,38 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.expect_punct(PunctKind::LBrace, "'{' in named metadata")?;
         let named_metadata_id = self.module.get_or_insert_named_metadata(name);
 
-        // Parse comma-separated `!N` operands
+        // Parse comma-separated operands. Almost all are `!N` slot
+        // references, but `parseNamedMetadata` special-cases two spellings
+        // that arrive as a single `MetadataVar` token.
         if !matches!(self.peek(), Token::RBrace) {
             loop {
-                self.expect_exclaim("'!' before metadata operand")?;
-                let loc = self.loc();
-                let slot = self.parse_uint32()?;
-                let id = self.resolve_md_slot(slot, loc);
+                let specialized = match self.peek() {
+                    Token::MetadataVar(bytes) => {
+                        std::str::from_utf8(bytes.as_ref()).ok().map(str::to_owned)
+                    }
+                    _ => None,
+                };
+                let id = match specialized.as_deref() {
+                    // "parse DIExpressions inline as a special case. They are
+                    // still MDNodes, so they can still appear in named
+                    // metadata."
+                    Some("DIExpression") => {
+                        let content = self.parse_md_node_after_bang(false)?;
+                        own_metadata(self.module.metadata_node(content))
+                    }
+                    // "DIArgLists should only appear inline in a function, as
+                    // they may contain LocalAsMetadata arguments which require
+                    // a function context."
+                    Some("DIArgList") => {
+                        return Err(self.message("found DIArgList outside of function"));
+                    }
+                    _ => {
+                        self.expect_exclaim("'!' before metadata operand")?;
+                        let loc = self.loc();
+                        let slot = self.parse_uint32()?;
+                        self.resolve_md_slot(slot, loc)
+                    }
+                };
                 // `named_metadata_id` came from `get_or_insert_named_metadata`
                 // on this same module, so neither handle can be foreign.
                 self.module
@@ -2838,7 +2863,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // the class exists only to give an assignment a unique identity, so a
         // uniqued one would be meaningless.
         if kind == llvmkit_ir::metadata::SpecializedMetadataKind::DiAssignId && !distinct {
-            return Err(self.expected("'distinct', required for !DIAssignID()"));
+            // `parseDIAssignID` says "missing", not "expected" — routing it
+            // through `Parser::expected` rendered the wrong first word.
+            return Err(self.message("missing 'distinct', required for !DIAssignID()"));
         }
         self.bump()?;
         if kind == llvmkit_ir::metadata::SpecializedMetadataKind::DiExpression {
@@ -4146,6 +4173,22 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             NameOrId::Name(n) => n.clone(),
             NameOrId::Id(_) => String::new(),
         };
+        // `else if (M->getNamedValue(Name))` — a name already in the module is
+        // a redefinition *unless* it is only there as a forward reference,
+        // which this definition satisfies. Without this, the collision reached
+        // the builder instead and surfaced as
+        // `expected valid global definition: a global named "g" already
+        // exists in this module`, so upstream's message was unreachable.
+        if !name_string.is_empty()
+            && !self.forward_ref_globals.contains_key(&name_string)
+            && self.module.global(&name_string).is_some()
+        {
+            return Err(ParseError::Redefinition {
+                kind: SymbolKind::Global,
+                id: SymbolId::Named(name_string),
+                loc: DiagLoc::span(decl_loc),
+            });
+        }
         let mut builder = self
             .module
             .global_builder(&name_string, ty)
@@ -4277,9 +4320,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
 
         let mut partition = None;
+        let mut ifunc_metadata = Vec::new();
         while self.eat_punct(PunctKind::Comma)? {
             if self.eat_keyword(Keyword::Partition)? {
                 partition = Some(self.parse_string_constant("partition name")?);
+            } else if !is_alias && matches!(self.peek(), Token::MetadataVar(_)) {
+                // `} else if (!IsAlias && Lex.getKind() == lltok::MetadataVar)`
+                // — an **ifunc** may carry metadata attachments and an alias
+                // may not, so `@a = alias i32, ptr @g, !dbg !0` stays the
+                // property error while the ifunc spelling parses.
+                ifunc_metadata.push(self.parse_named_metadata_attachment()?);
             } else {
                 // `parseAliasOrIFunc`'s property loop, bang included. It was
                 // routed through `expected`, which rendered
@@ -4334,7 +4384,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 .ifunc_builder(&name_string, value_type, target)
                 .linkage(linkage)
                 .dso_locality(dso_locality)
-                .visibility(visibility);
+                .visibility(visibility)
+                // Upstream applies all three to `GV` in the ifunc branch too —
+                // it simply never *prints* them, because `printIFunc` stops
+                // after visibility. Storing them keeps the model faithful.
+                .dll_storage_class(dll_storage_class)
+                .thread_local_mode(thread_local_mode)
+                .unnamed_addr(unnamed_addr);
             if let Some(p) = partition {
                 builder = builder.partition(p);
             }
@@ -4343,6 +4399,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(decl_loc),
             })?;
             let i_view = self.module.view(i);
+            for (kind, id) in ifunc_metadata {
+                own_metadata(i_view.set_metadata(self.module, kind, id));
+            }
             if let Some(name) = forward_target {
                 self.deferred_alias_targets.push(DeferredAliasTarget {
                     object: DeferredAliasObject::Ifunc(i_view),
