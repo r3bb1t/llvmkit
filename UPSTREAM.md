@@ -19,26 +19,30 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2400. Recounted on 2026-08-14 at the LLParser-parity
-Wave 9 point via the documented attribute-anchored grep below
-(`crates/llvmkit-ir` 1543 + `crates/llvmkit-asmparser` 835 +
+Total `#[test]` functions: 2435 (2430 distinct names). Recounted on 2026-08-15
+at the LLParser-parity Wave 11 point via the documented attribute-anchored grep
+below (`crates/llvmkit-ir` 1553 + `crates/llvmkit-asmparser` 860 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
-`crates/llvmkit-macros` has none). The +165 over the 2235 point below is the
-LLParser-parity program's waves 0-9.
+`crates/llvmkit-macros` has none). The +200 over the 2235 point below is the
+LLParser-parity program's waves 0-11.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries 1960 rows. Matching them against the tree by test-function name
-leaves **470 `#[test]` functions (469 distinct names) with no row**. The gap
-is inherited, not new: it accumulated across the type-safety and pass-API
-programs, where whole test files landed without rows, and it sits in
-`llvmkit-ir` (`verifier_module_flags.rs`, `analysis_preservation.rs`,
-`module_brands.rs`, `id_roundtrip.rs`, the `phi_raw_tests/` modules,
-`src/pass_context.rs`, `src/fp_class.rs`) rather than in the parser crates,
-whose waves add rows per commit. Closing it is the `UPSTREAM.md recount` item
-of the LLParser-parity program's final wave. Until then, read a missing row as
-missing *provenance* -- not as a claim that no upstream counterpart exists.
+below carries 1994 rows naming 1961 distinct tests -- the difference is rows
+for same-named tests in different files. Matching them against the tree by
+test-function name leaves **469 distinct `#[test]` functions with no row**, and
+**zero rows naming a test that no longer exists**. The gap is inherited, not
+new: it accumulated across the type-safety and pass-API programs, where whole
+test files landed without rows, and it sits in `llvmkit-ir`
+(`verifier_module_flags.rs`, `analysis_preservation.rs`, `module_brands.rs`,
+`id_roundtrip.rs`, the `phi_raw_tests/` modules, `src/pass_context.rs`,
+`src/fp_class.rs`) rather than in the parser crates, whose waves add rows per
+commit -- which is why the figure has moved by one since the Wave 9 recount
+despite 35 tests landing in between. Closing it is the `UPSTREAM.md recount`
+item of the LLParser-parity program's final wave. Until then, read a missing
+row as missing *provenance* -- not as a claim that no upstream counterpart
+exists.
 
-The same recount removed 26 rows naming tests that no longer exist, each
+An earlier recount (2026-08-14) removed 26 rows naming tests that no longer exist, each
 traced to the commit that deleted it: the pass-API v2 cutover (`2f1f390`,
 fourteen rows across `pass_manager_basic.rs`, `pass_instrumentation_basic.rs`,
 `pass_pipeline_data.rs`, `scalar_cleanup_passes.rs`, `type_safety_brand.rs`),

@@ -15,7 +15,7 @@ Out of scope: code generation, target backends, linking. In scope and merely unf
 Every gate runs on the pinned toolchain. CI installs rustc 1.96.0; an unpinned run rewords trybuild `.stderr` diagnostics and produces mismatches that look like regressions and are not. If you see a `.stderr` diff, re-run on `+1.96.0` before touching a fixture.
 
 ```bash
-cargo +1.96.0 test --workspace --all-targets --all-features    # full suite (~2200 tests)
+cargo +1.96.0 test --workspace --all-targets --all-features    # full suite (2435 tests, 212 binaries)
 cargo +1.96.0 test -p llvmkit-ir --test ap_float               # one integration file
 cargo +1.96.0 test <substring>                                 # one test by name
 cargo +1.96.0 clippy --workspace --all-targets --all-features -- -D warnings
@@ -62,6 +62,10 @@ Note the edge that is **not** there: `llvmkit-ir` does **not** depend on `llvmki
 
 When adding an opcode formatter, read the matching `printInstruction` arm first. A parser/printer disagreement is a bug in ours unless it is a documented deliberate improvement.
 
+The `^N` **module summary index** follows the same split, and its model lives in `llvmkit-ir` (`module_summary_index.rs`), not in the parser crate — upstream's own layering, since `AsmWriter.cpp` prints it. `^N` numbers are *not* stored: `SlotTracker::processIndex` re-derives them on output from sorted module paths, then ascending GUIDs, so input order is not preserved. `Module`'s `Display` does not append an index; a caller reproducing `llvm-dis` prints the module and then `ParsedModule::summary_index`.
+
+A caution the summary work paid for twice: **an upstream `.ll` `CHECK` block is a pipeline's output, not `AsmWriter`'s.** Several `test/Assembler` fixtures run through `llvm-as | llvm-dis`, and the bitcode writer drops fields the printer would emit (`relbf` on a combined summary, memprof stack ids under `-combined-index-memprof-context=false`). Check what the fixture's `RUN` line does to a field before treating a mismatch as a bug.
+
 ### Pass model — capabilities, not declarations
 
 A pass declares a **rung** (`Inspect` / `PatchBody` / `ReshapeCfg` / `RewriteModule`) plus its `Requires` analyses, and writes one `run(cx)`. Preservation is **derived from the rung, never declared** — the report constructor is `pub(crate)`, so over-claiming is unspellable. An `Inspect` context has no `cx.mutate()` at all. A pipeline's output typestate is likewise derived: any mutating member downgrades the module to `Unverified` until `verify()` runs again.
@@ -102,7 +106,7 @@ Conventional Commits — `type(scope): summary`, `!` after the scope for a break
 - `README.md` — user-facing docs, authoritative Doctrine D1–D11 prose.
 - `ROADMAP.md` — milestones, release sequence, the crates.io checklist.
 - `docs/future-work.md` — the live backlog: what is known-missing, what was deferred, and **why** in each case. Read before proposing work that looks unfinished; it is often deliberate.
-- `UPSTREAM.md` — per-test provenance registry.
+- `UPSTREAM.md` — per-test provenance registry. Coverage is **not** total and the header says so: 2435 tests, 1994 rows, 469 tests with no row, all inherited from the type-safety and pass-API programs. A missing row means missing *provenance*, never "no upstream counterpart".
 - `docs/inkwell-migration.md` — per-API delta against inkwell.
 
 ## Before you start
