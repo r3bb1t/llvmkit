@@ -1075,7 +1075,10 @@ impl ModuleSummaryIndex {
     /// defined. llvmkit records the coordinates instead and comes back through
     /// this accessor, which is why it exists.
     pub fn summary_mut(&mut self, guid: Guid, index: usize) -> Option<&mut GlobalValueSummary> {
-        self.global_values.get_mut(&guid)?.summary_list.get_mut(index)
+        self.global_values
+            .get_mut(&guid)?
+            .summary_list
+            .get_mut(index)
     }
 
     /// Whether `guid` has a summary that came from `module_path`.

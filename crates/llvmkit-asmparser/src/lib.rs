@@ -28,7 +28,6 @@ pub mod file_loc;
 pub mod ll_lexer;
 pub mod ll_parser;
 pub mod ll_token;
-pub mod module_summary;
 pub mod numbered_values;
 pub mod parse_error;
 pub mod parser;
@@ -46,9 +45,9 @@ use std::io::{self, Read};
 /// The `parse_type*` / `parse_constant_value*` family parses one fragment
 /// against an existing module, mirroring `Parser.h`'s standalone entry points.
 pub use parser::{
-    parse_assembly, parse_assembly_file, parse_assembly_with_context, parse_branded,
-    parse_constant_value, parse_constant_value_with_slots, parse_dynamic, parse_file_branded,
-    parse_file_dynamic, parse_into, parse_summary_index_assembly,
+    parse_assembly, parse_assembly_file, parse_assembly_with_context, parse_assembly_with_index,
+    parse_branded, parse_constant_value, parse_constant_value_with_slots, parse_dynamic,
+    parse_file_branded, parse_file_dynamic, parse_into, parse_summary_index_assembly,
     parse_summary_index_assembly_file, parse_type, parse_type_at_beginning,
     parse_type_at_beginning_with_slots, parse_type_with_slots,
 };
@@ -58,7 +57,8 @@ pub use parser::{
 /// the parser state machine stay module-scoped — they mirror LLVM's
 /// `LLLexer` / `LLParser` plumbing rather than the surface a caller drives.
 pub use ll_parser::ParsedModule;
-pub use module_summary::ModuleSummaryIndex;
+#[doc(inline)]
+pub use llvmkit_ir::module_summary_index::ModuleSummaryIndex;
 pub use parse_error::{DiagLoc, ParseError, ParseResult, SymbolId, SymbolKind};
 pub use slot_mapping::{GlobalRef, SlotMapping};
 

@@ -16,8 +16,9 @@ use super::file_loc::{FileLoc, FileLocRange};
 use super::asm_parser_context::AsmParserContext;
 use super::asm_parser_context::LocationError;
 use super::ll_lexer::LexError;
+use llvmkit_ir::module_summary_index::ModuleSummaryIndex;
+
 use super::ll_parser::{ParsedModule, Parser};
-use super::module_summary::{self, ModuleSummaryIndex};
 use super::parse_error::DiagLoc;
 use super::parse_error::{ParseError, ParseResult};
 use super::slot_mapping::SlotMapping;
@@ -240,9 +241,36 @@ where
     parse_assembly_with_name(module_name, bytes, f)
 }
 
-/// Parse a textual LLVM module summary index.
+/// Parse a complete textual IR module *and* the module summary index its `^N`
+/// entries describe.
+///
+/// Mirrors `parseAssemblyWithIndex`: [`parse_assembly`] passes upstream a null
+/// `ModuleSummaryIndex` and so skips every summary entry, where this one fills
+/// [`ParsedModule::summary_index`].
+///
+/// The closure receives the module by reference; see [`parse_assembly`].
+pub fn parse_assembly_with_index<R, S, F>(src: S, f: F) -> ParseResult<R>
+where
+    S: AsRef<[u8]>,
+    F: for<'ctx> FnOnce(&'ctx Module<DynBrand, Unverified>, ParsedModule<'ctx, DynBrand>) -> R,
+{
+    let module = Module::dynamic("asm");
+    let parsed = Parser::with_summary_index(src.as_ref(), &module)?.parse_module()?;
+    Ok(f(&module, parsed))
+}
+
+/// Parse a textual LLVM module summary index, reading past everything else.
+///
+/// Mirrors `parseSummaryIndexAssembly`, which runs `LLParser` with a null
+/// `Module`: only `^N` entries and `source_filename` are read, and every other
+/// top-level entity is lexed past.
 pub fn parse_summary_index_assembly<S: AsRef<[u8]>>(src: S) -> ParseResult<ModuleSummaryIndex> {
-    module_summary::parse_summary_index(src.as_ref())
+    // The module exists only so the parser has somewhere to record the source
+    // file name, which is what a local symbol's GUID is computed from. Nothing
+    // is built into it, and the index does not borrow it.
+    let module = Module::dynamic("summary");
+    let parsed = Parser::summary_index_only(src.as_ref(), &module)?.parse_module()?;
+    Ok(parsed.summary_index.unwrap_or_default())
 }
 
 /// Read and parse a textual LLVM module summary index.

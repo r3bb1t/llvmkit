@@ -36,6 +36,7 @@ use llvmkit_ir::DataLayout;
 use llvmkit_ir::attributes::{
     AttrIndex, AttrKind, Attribute, AttributeStorage, MemoryEffects, MemoryLocation, ModRefInfo,
 };
+use llvmkit_ir::constant_range::ConstantRange;
 use llvmkit_ir::metadata::{
     DebugMetadataOperand, DebugRecord, MetadataAttachmentKind, MetadataFieldValue, MetadataId,
     MetadataKind,
@@ -61,7 +62,17 @@ use super::asm_parser_context::AsmParserContext;
 use super::ll_lexer::{LexError, Lexer};
 use super::ll_token::Opcode;
 use super::ll_token::{IntLit, Keyword, NumBase, PrimitiveTy, Sign, Token};
-use super::module_summary::ModuleSummaryIndex;
+use llvmkit_ir::module_summary_index::{
+    AccessSpecifier, AliasSummary, AllocationInfo, AllocationType, CallEdge, CallsiteInfo,
+    ConstantVirtualCall, FunctionFlags, FunctionSummary, GlobalValueFlags, GlobalValueSummary,
+    GlobalVariableFlags, GlobalVariableSummary, Guid, Hotness, ImportKind, IndexFlags,
+    MemoryInfoBlock, ModuleSummaryIndex, PARAMETER_ACCESS_RANGE_WIDTH, ParameterAccess,
+    ParameterAccessCall, SummaryKind, TypeIdInfo, TypeIdOffsetVtableInfo, TypeIdSummary,
+    TypeTestResolution, TypeTestResolutionKind, VCallVisibility, ValueReference, VirtualFunctionId,
+    VirtualFunctionOffset, WholeProgramDevirtByArg, WholeProgramDevirtByArgKind,
+    WholeProgramDevirtKind, WholeProgramDevirtResolution, global_identifier,
+};
+
 use super::numbered_values::AddError;
 use super::numbered_values::NumberedValues;
 use super::parse_error::{DiagLoc, ParseError, ParseResult};
@@ -229,8 +240,141 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     /// `@N` referenced before it was defined. Mirrors
     /// `LLParser::ForwardRefValIDs`.
     forward_ref_global_ids: BTreeMap<u32, ForwardRef<'ctx, B>>,
+
+    /// The summary index being filled, when the caller asked for one. Mirrors
+    /// `LLParser::Index`: a `None` here is upstream's null `Index`, which makes
+    /// `parseSummaryEntry` skip the entry rather than parse it.
+    summary_index: Option<ModuleSummaryIndex>,
+    /// Whether module-level entities are parsed at all. Mirrors upstream's
+    /// non-null `LLParser::M`; a `false` here is its index-only mode, where
+    /// `parseTopLevelEntities` reads `^N` and `source_filename` and lexes past
+    /// everything else.
+    parses_module_entities: bool,
+    /// `^N` of a module entry to its path. Mirrors `LLParser::ModuleIdMap`.
+    summary_module_paths: BTreeMap<u32, String>,
+    /// `^N` of a global-value entry to the GUID it resolved to. Mirrors
+    /// `LLParser::NumberedValueInfos`, whose holes are empty `ValueInfo`s.
+    numbered_value_infos: Vec<Option<Guid>>,
+    /// Sites that referenced a `^N` before it was defined, keyed by that `^N`.
+    /// Mirrors `LLParser::ForwardRefValueInfos`; ordered because
+    /// `validateEndOfIndex` reports `begin()`.
+    forward_ref_summary_values: BTreeMap<u32, Vec<(SummaryValueRefSite, Span)>>,
+    /// Alias summaries whose aliasee `^N` was not yet defined. Mirrors
+    /// `LLParser::ForwardRefAliasees`.
+    forward_ref_summary_aliasees: BTreeMap<u32, Vec<(SummaryAliaseeSite, Span)>>,
+    /// Sites that referenced a type identifier's `^N` before it was defined.
+    /// Mirrors `LLParser::ForwardRefTypeIds`.
+    forward_ref_summary_type_ids: BTreeMap<u32, Vec<(SummaryTypeIdRefSite, Span)>>,
+    /// References the summary currently being parsed made to `^N`s that are not
+    /// yet defined, before the summary has a place in the index to name them
+    /// by. Drained by [`Parser::add_global_value_to_index`].
+    ///
+    /// Upstream needs no equivalent: it saves raw `ValueInfo *` pointers into
+    /// vectors that are still local and stay valid across the move into the
+    /// summary. llvmkit patches by coordinate, and coordinates only exist once
+    /// the summary is in the index.
+    pending_summary_value_refs: Vec<(u32, SummaryValueRefField, Span)>,
+    /// Type-identifier references, same shape and for the same reason.
+    pending_summary_type_ids: Vec<(u32, SummaryTypeIdRefField, Span)>,
+    /// The aliasee `^N` of the alias summary being parsed, when it was not yet
+    /// defined.
+    pending_summary_aliasee: Option<(u32, Span)>,
     _brand: PhantomData<B>,
 }
+
+/// Where inside the index a `ValueInfo` that named a forward `^N` lives.
+///
+/// Upstream records the same thing as a `ValueInfo *`. That works because the
+/// vectors it points into are heap-allocated and survive the move into the
+/// summary; llvmkit records where to look instead.
+#[derive(Clone, Debug)]
+struct SummaryValueRefSite {
+    /// The global value whose summary carries the reference.
+    owner: Guid,
+    /// Which of that value's summaries.
+    summary: usize,
+    /// Which field of it.
+    field: SummaryValueRefField,
+}
+
+/// The field of one summary that carries a `ValueInfo`.
+#[derive(Clone, Debug)]
+enum SummaryValueRefField {
+    /// `calls: ((callee: ^N, ...))`.
+    Call(usize),
+    /// `refs: (^N)`.
+    Reference(usize),
+    /// `vTableFuncs: ((virtFunc: ^N, ...))`.
+    VtableFunction(usize),
+    /// `callsites: ((callee: ^N, ...))`.
+    Callsite(usize),
+    /// `params: ((param: N, ..., calls: ((callee: ^N, ...))))`.
+    ParameterAccessCall { parameter: usize, call: usize },
+    /// `typeidCompatibleVTable: (name: "...", summary: ((offset: N, ^M)))`,
+    /// which hangs off a type identifier rather than a global value.
+    CompatibleVtable { type_id: String, index: usize },
+}
+
+/// The alias summary whose `aliasee:` named a forward `^N`.
+#[derive(Clone, Copy, Debug)]
+struct SummaryAliaseeSite {
+    owner: Guid,
+    summary: usize,
+}
+
+/// Where inside the index a type-identifier GUID that named a forward `^N`
+/// lives. Upstream records a `GlobalValue::GUID *`.
+#[derive(Clone, Debug)]
+struct SummaryTypeIdRefSite {
+    owner: Guid,
+    summary: usize,
+    field: SummaryTypeIdRefField,
+}
+
+/// One `funcFlags:` field, named so the keyword can be matched before the
+/// value is read without holding a borrow of the flag struct across the read.
+#[derive(Clone, Copy, Debug)]
+enum FunctionFlagField {
+    ReadNone,
+    ReadOnly,
+    NoRecurse,
+    ReturnDoesNotAlias,
+    NoInline,
+    AlwaysInline,
+    NoUnwind,
+    MayThrow,
+    HasUnknownCall,
+    MustBeUnreachable,
+}
+
+/// A `^N` reference as `parseGVReference` leaves it: the value it resolved to
+/// (a placeholder when it did not), the id it named, and whether the id is
+/// still owed a definition.
+#[derive(Clone, Copy, Debug)]
+struct ParsedGvReference {
+    value: ValueReference,
+    summary_id: u32,
+    is_forward: bool,
+}
+
+/// The field of one function summary that carries a type-identifier GUID.
+#[derive(Clone, Copy, Debug)]
+enum SummaryTypeIdRefField {
+    /// `typeIdInfo: (typeTests: (^N))`.
+    Test(usize),
+    /// `typeIdInfo: (typeTestAssumeVCalls: (vFuncId: (^N, ...)))`.
+    AssumeVcall(usize),
+    /// `typeIdInfo: (typeCheckedLoadVCalls: (vFuncId: (^N, ...)))`.
+    CheckedLoadVcall(usize),
+    /// `typeIdInfo: (typeTestAssumeConstVCalls: ((vFuncId: (^N, ...))))`.
+    AssumeConstVcall(usize),
+    /// `typeIdInfo: (typeCheckedLoadConstVCalls: ((vFuncId: (^N, ...))))`.
+    CheckedLoadConstVcall(usize),
+}
+
+/// One parsed `ParamAccess` and, for each of its calls that named a forward
+/// `^N`, the call's index in the access plus that id and its span.
+type ParsedParameterAccess = (ParameterAccess, Vec<(usize, u32, Span)>);
 
 /// A cursor summary, not a dump. The parser owns every module-level slot
 /// table it has filled so far, so a derived `Debug` would print each parsed
@@ -1038,8 +1182,42 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             forward_ref_comdats: BTreeMap::new(),
             forward_ref_globals: BTreeMap::new(),
             forward_ref_global_ids: BTreeMap::new(),
+            summary_index: None,
+            parses_module_entities: true,
+            summary_module_paths: BTreeMap::new(),
+            numbered_value_infos: Vec::new(),
+            forward_ref_summary_values: BTreeMap::new(),
+            forward_ref_summary_aliasees: BTreeMap::new(),
+            forward_ref_summary_type_ids: BTreeMap::new(),
+            pending_summary_value_refs: Vec::new(),
+            pending_summary_type_ids: Vec::new(),
+            pending_summary_aliasee: None,
             _brand: PhantomData,
         })
+    }
+
+    /// A parser that also builds a [`ModuleSummaryIndex`] from the file's `^N`
+    /// entries. Mirrors constructing `LLParser` with a non-null `Index`, which
+    /// is what `parseAssemblyWithIndex` does.
+    pub fn with_summary_index(
+        src: &'src [u8],
+        module: &'ctx Module<B, Unverified>,
+    ) -> ParseResult<Self> {
+        let mut parser = Self::new(src, module)?;
+        parser.summary_index = Some(ModuleSummaryIndex::new());
+        Ok(parser)
+    }
+
+    /// A parser that builds only a [`ModuleSummaryIndex`], lexing past every
+    /// module-level entity. Mirrors constructing `LLParser` with a null `M`,
+    /// which is what `parseSummaryIndexAssembly` does.
+    pub fn summary_index_only(
+        src: &'src [u8],
+        module: &'ctx Module<B, Unverified>,
+    ) -> ParseResult<Self> {
+        let mut parser = Self::with_summary_index(src, module)?;
+        parser.parses_module_entities = false;
+        Ok(parser)
     }
 
     pub fn with_slot_mapping(
@@ -1171,6 +1349,29 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // *before* anything that depends on it. We don't ship that callback
         // path yet; the dispatch loop below handles `target` keywords as a
         // top-level entity directly.
+        // Upstream's `!M` mode: with no module to build, only summary entries
+        // and the source file name are read and everything else is lexed past.
+        if !self.parses_module_entities {
+            loop {
+                match self.current.value {
+                    Token::Eof => break,
+                    Token::SummaryId(_) => self.parse_summary_entry()?,
+                    Token::Kw(Keyword::SourceFilename) => self.parse_source_filename()?,
+                    _ => {
+                        self.bump()?;
+                    }
+                }
+            }
+            // `validateEndOfModule` opens with `if (!M) return false;`, so the
+            // module-level resolution below is skipped whole.
+            self.validate_end_of_index()?;
+            let summary_index = self.summary_index.take();
+            return Ok(ParsedModule {
+                slot_mapping: self.into_slot_mapping(),
+                summary_index,
+            });
+        }
+
         loop {
             match self.current.value {
                 Token::Eof => break,
@@ -1188,6 +1389,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Token::Kw(Keyword::Attributes) => self.parse_unnamed_attr_group()?,
                 Token::Exclaim => self.parse_standalone_metadata()?,
                 Token::MetadataVar(_) => self.parse_named_metadata()?,
+                Token::SummaryId(_) => self.parse_summary_entry()?,
                 _ => return Err(self.token_error("top-level entity")),
             }
         }
@@ -1212,10 +1414,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.validate_forward_ref_comdats()?;
         self.resolve_forward_ref_globals()?;
         self.validate_forward_function_decls()?;
+        // `Run` is `parseTopLevelEntities() || validateEndOfModule(...) ||
+        // validateEndOfIndex()`, in that order, so an unresolved `^N` is
+        // reported only once the module itself is whole.
+        self.validate_end_of_index()?;
 
+        let summary_index = self.summary_index.take();
         Ok(ParsedModule {
             slot_mapping: self.into_slot_mapping(),
-            summary_index: None,
+            summary_index,
         })
     }
 
@@ -2366,6 +2573,2081 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let source_filename = self.parse_string_constant("source-filename string constant")?;
         self.module.set_source_filename(source_filename);
         Ok(())
+    }
+
+    // ── Module summary index ──────────────────────────────────────────────
+    //
+    // Ports the `^N` half of `LLParser.cpp`. Upstream keeps these routines in
+    // the same class as the rest of the parser and shares its lexer, its
+    // `parseToken` helper and its diagnostics; llvmkit used to keep a second,
+    // more permissive parser with a lexer of its own, which is why it accepted
+    // a module entry with no `hash:` and discarded a `typeid:` payload whole.
+
+    /// The index under construction. `None` is upstream's null `Index`.
+    fn summary_index_mut(&mut self) -> Option<&mut ModuleSummaryIndex> {
+        self.summary_index.as_mut()
+    }
+
+    /// SummaryEntry
+    ///   ::= SummaryID '=' GVEntry | ModuleEntry | TypeIdEntry
+    ///
+    /// Mirrors `LLParser::parseSummaryEntry`, whose early returns deliberately
+    /// leave the lexer in colon-splitting mode: a failed `'='` and the
+    /// no-index skip both bypass the `setIgnoreColonInIdentifiers(false)` at
+    /// the bottom.
+    fn parse_summary_entry(&mut self) -> ParseResult<()> {
+        let Token::SummaryId(summary_id) = self.current.value else {
+            return Err(self.token_error("summary id"));
+        };
+
+        // Inside a summary entry a colon is a token of its own rather than the
+        // tail of a label.
+        self.lex.ignore_colon_in_idents = true;
+
+        self.bump()?;
+        self.expect_punct(PunctKind::Equal, "'=' here")?;
+
+        if self.summary_index.is_none() {
+            return self.skip_module_summary_entry();
+        }
+
+        let loc = self.loc();
+        let result = match self.peek() {
+            Token::Kw(Keyword::Gv) => self.parse_gv_entry(summary_id),
+            Token::Kw(Keyword::Module) => self.parse_module_entry(summary_id),
+            Token::Kw(Keyword::Typeid) => self.parse_type_id_entry(summary_id),
+            Token::Kw(Keyword::TypeidCompatibleVtable) => {
+                self.parse_type_id_compatible_vtable_entry(summary_id)
+            }
+            Token::Kw(Keyword::Flags) => self.parse_summary_index_flags(),
+            Token::Kw(Keyword::Blockcount) => self.parse_block_count(),
+            _ => Err(self.message_at(loc, "unexpected summary kind")),
+        };
+        self.lex.ignore_colon_in_idents = false;
+        result
+    }
+
+    /// Mirrors `LLParser::skipModuleSummaryEntry`. Note the keyword guard does
+    /// not list `typeidCompatibleVTable`, so that spelling is rejected here
+    /// even though `parseSummaryEntry` dispatches it when an index is present.
+    fn skip_module_summary_entry(&mut self) -> ParseResult<()> {
+        if !matches!(
+            self.peek(),
+            Token::Kw(
+                Keyword::Gv
+                    | Keyword::Module
+                    | Keyword::Typeid
+                    | Keyword::Flags
+                    | Keyword::Blockcount
+            )
+        ) {
+            return Err(self.message(
+                "Expected 'gv', 'module', 'typeid', 'flags' or 'blockcount' at the start of summary entry",
+            ));
+        }
+        if matches!(self.peek(), Token::Kw(Keyword::Flags)) {
+            return self.parse_summary_index_flags();
+        }
+        if matches!(self.peek(), Token::Kw(Keyword::Blockcount)) {
+            return self.parse_block_count();
+        }
+        self.bump()?;
+        self.expect_punct(PunctKind::Colon, "':' at start of summary entry")?;
+        self.expect_punct(PunctKind::LParen, "'(' at start of summary entry")?;
+
+        // Walk the parenthesized entry until the count of open parentheses
+        // returns to zero; the first `(` was consumed above.
+        let mut open_parens = 1u32;
+        loop {
+            match self.peek() {
+                Token::LParen => open_parens += 1,
+                Token::RParen => open_parens -= 1,
+                Token::Eof => {
+                    return Err(self.message("found end of file while parsing summary entry"));
+                }
+                // Skip everything in between parentheses.
+                _ => {}
+            }
+            self.bump()?;
+            if open_parens == 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Mirrors `LLParser::parseModuleEntry`. The hash clause is *not* optional.
+    fn parse_module_entry(&mut self, id: u32) -> ParseResult<()> {
+        self.expect_keyword(Keyword::Module, "'module' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+        self.expect_keyword(Keyword::Path, "'path' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        let path = self.parse_string_constant("string constant")?;
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        self.expect_keyword(Keyword::Hash_, "'hash' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+
+        let mut hash = [0u32; 5];
+        for (position, word) in hash.iter_mut().enumerate() {
+            if position != 0 {
+                self.expect_punct(PunctKind::Comma, "',' here")?;
+            }
+            *word = self.parse_uint32()?;
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+
+        if let Some(index) = self.summary_index_mut() {
+            index.add_module(path.clone(), hash);
+        }
+        self.summary_module_paths.insert(id, path);
+        Ok(())
+    }
+
+    /// Mirrors `LLParser::parseSummaryIndexFlags`.
+    fn parse_summary_index_flags(&mut self) -> ParseResult<()> {
+        self.expect_keyword(Keyword::Flags, "'flags' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        let flags = self.parse_uint64()?;
+        if let Some(index) = self.summary_index_mut() {
+            index.set_flags(IndexFlags::from_raw(flags));
+        }
+        Ok(())
+    }
+
+    /// Mirrors `LLParser::parseBlockCount`.
+    fn parse_block_count(&mut self) -> ParseResult<()> {
+        self.expect_keyword(Keyword::Blockcount, "'blockcount' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        let block_count = self.parse_uint64()?;
+        if let Some(index) = self.summary_index_mut() {
+            index.set_block_count(block_count);
+        }
+        Ok(())
+    }
+
+    /// GVEntry
+    ///   ::= 'gv' ':' '(' ('name' ':' STRINGCONSTANT | 'guid' ':' UInt64)
+    ///         [',' 'summaries' ':' Summary[',' Summary]* ]? ')'
+    ///
+    /// Mirrors `LLParser::parseGVEntry`.
+    fn parse_gv_entry(&mut self, id: u32) -> ParseResult<()> {
+        self.expect_keyword(Keyword::Gv, "'gv' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+
+        let loc = self.loc();
+        let mut name = String::new();
+        let mut guid = None;
+        match self.peek() {
+            Token::Kw(Keyword::Name) => {
+                self.bump()?;
+                self.expect_punct(PunctKind::Colon, "':' here")?;
+                // The GUID cannot be computed until the linkage is known.
+                name = self.parse_string_constant("string constant")?;
+            }
+            Token::Kw(Keyword::Guid) => {
+                self.bump()?;
+                self.expect_punct(PunctKind::Colon, "':' here")?;
+                guid = Some(Guid::from_raw(self.parse_uint64()?));
+            }
+            _ => return Err(self.message_at(loc, "expected name or guid tag")),
+        }
+
+        if !self.eat_punct(PunctKind::Comma)? {
+            // No summaries. This entry was created for a call to an external or
+            // indirect target: a GUID with no summary came from a `VALUE_GUID`
+            // record, a name with no GUID from an external definition. External
+            // linkage is passed because it is only consulted when the GUID must
+            // be computed from the name, and then the symbol must be external.
+            self.expect_punct(PunctKind::RParen, "')' here")?;
+            return self.add_global_value_to_index(&name, guid, Linkage::External, id, None, loc);
+        }
+
+        self.expect_keyword(Keyword::Summaries, "'summaries' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+        loop {
+            let kind_loc = self.loc();
+            match self.peek() {
+                Token::Kw(Keyword::Function) => self.parse_function_summary(&name, guid, id)?,
+                Token::Kw(Keyword::Variable) => self.parse_variable_summary(&name, guid, id)?,
+                Token::Kw(Keyword::Alias) => self.parse_alias_summary(&name, guid, id)?,
+                _ => return Err(self.message_at(kind_loc, "expected summary type")),
+            }
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok(())
+    }
+
+    /// FunctionSummary
+    ///   ::= 'function' ':' '(' 'module' ':' ModuleReference ',' GVFlags
+    ///         ',' 'insts' ':' UInt32 [',' OptionalFFlags]? [',' OptionalCalls]?
+    ///         [',' OptionalTypeIdInfo]? [',' OptionalParamAccesses]?
+    ///         [',' OptionalRefs]? ')'
+    ///
+    /// Mirrors `LLParser::parseFunctionSummary`.
+    fn parse_function_summary(
+        &mut self,
+        name: &str,
+        guid: Option<Guid>,
+        id: u32,
+    ) -> ParseResult<()> {
+        let loc = self.loc();
+        self.expect_keyword(Keyword::Function, "'function' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+        let module_path = self.parse_module_reference()?;
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        let flags = self.parse_gv_flags()?;
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        self.expect_keyword(Keyword::Insts, "'insts' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        let instruction_count = self.parse_uint32()?;
+
+        let mut summary = FunctionSummary {
+            instruction_count,
+            ..FunctionSummary::default()
+        };
+        let mut references = Vec::new();
+        let mut type_id_info = TypeIdInfo::default();
+
+        while self.eat_punct(PunctKind::Comma)? {
+            let field_loc = self.loc();
+            match self.peek() {
+                Token::Kw(Keyword::FuncFlags) => {
+                    summary.function_flags = self.parse_optional_function_flags()?;
+                }
+                Token::Kw(Keyword::Calls) => summary.calls = self.parse_optional_calls()?,
+                Token::Kw(Keyword::TypeIdInfo) => {
+                    type_id_info = self.parse_optional_type_id_info()?;
+                }
+                Token::Kw(Keyword::Refs) => references = self.parse_optional_refs()?,
+                Token::Kw(Keyword::Params) => {
+                    summary.parameter_accesses = self.parse_optional_param_accesses()?;
+                }
+                Token::Kw(Keyword::Allocs) => {
+                    summary.allocations = self.parse_optional_allocs()?;
+                }
+                Token::Kw(Keyword::Callsites) => {
+                    summary.callsites = self.parse_optional_callsites()?;
+                }
+                _ => {
+                    return Err(
+                        self.message_at(field_loc, "expected optional function summary field")
+                    );
+                }
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+
+        // `FunctionSummary`'s constructor leaves `TIdInfo` null unless one of
+        // its five lists is non-empty, and a null `TIdInfo` is what suppresses
+        // the whole `typeIdInfo:` clause on output.
+        if !type_id_info.is_empty() {
+            summary.type_id_info = Some(type_id_info);
+        }
+
+        let linkage = flags.linkage;
+        self.add_global_value_to_index(
+            name,
+            guid,
+            linkage,
+            id,
+            Some(GlobalValueSummary {
+                module_path,
+                flags,
+                references,
+                kind: SummaryKind::Function(summary),
+            }),
+            loc,
+        )
+    }
+
+    /// VariableSummary
+    ///   ::= 'variable' ':' '(' 'module' ':' ModuleReference ',' GVFlags
+    ///         ',' GVarFlags [',' OptionalVTableFuncs]? [',' OptionalRefs]? ')'
+    ///
+    /// Mirrors `LLParser::parseVariableSummary`.
+    fn parse_variable_summary(
+        &mut self,
+        name: &str,
+        guid: Option<Guid>,
+        id: u32,
+    ) -> ParseResult<()> {
+        let loc = self.loc();
+        self.expect_keyword(Keyword::Variable, "'variable' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+        let module_path = self.parse_module_reference()?;
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        let flags = self.parse_gv_flags()?;
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        let variable_flags = self.parse_gvar_flags()?;
+
+        let mut summary = GlobalVariableSummary {
+            variable_flags,
+            vtable_functions: Vec::new(),
+        };
+        let mut references = Vec::new();
+
+        while self.eat_punct(PunctKind::Comma)? {
+            let field_loc = self.loc();
+            match self.peek() {
+                Token::Kw(Keyword::VtableFuncs) => {
+                    summary.vtable_functions = self.parse_optional_vtable_funcs()?;
+                }
+                Token::Kw(Keyword::Refs) => references = self.parse_optional_refs()?,
+                _ => {
+                    return Err(
+                        self.message_at(field_loc, "expected optional variable summary field")
+                    );
+                }
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+
+        let linkage = flags.linkage;
+        self.add_global_value_to_index(
+            name,
+            guid,
+            linkage,
+            id,
+            Some(GlobalValueSummary {
+                module_path,
+                flags,
+                references,
+                kind: SummaryKind::Variable(summary),
+            }),
+            loc,
+        )
+    }
+
+    /// AliasSummary
+    ///   ::= 'alias' ':' '(' 'module' ':' ModuleReference ',' GVFlags ','
+    ///         'aliasee' ':' GVReference ')'
+    ///
+    /// Mirrors `LLParser::parseAliasSummary`.
+    fn parse_alias_summary(&mut self, name: &str, guid: Option<Guid>, id: u32) -> ParseResult<()> {
+        let loc = self.loc();
+        self.expect_keyword(Keyword::Alias, "'alias' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+        let module_path = self.parse_module_reference()?;
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        let flags = self.parse_gv_flags()?;
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        self.expect_keyword(Keyword::Aliasee, "'aliasee' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+
+        let mut aliasee = None;
+        if !self.eat_keyword(Keyword::Null)? {
+            let reference = self.parse_gv_reference()?;
+            if reference.is_forward {
+                // Recorded rather than resolved: the aliasee is not parsed yet.
+                self.pending_summary_aliasee = Some((reference.summary_id, loc));
+            } else {
+                // Upstream looks the aliasee's summary up in the same module
+                // and asserts it is a definition. The lookup answers the same
+                // GUID the reference already carries, and the assert is not a
+                // diagnostic, so only the GUID is kept.
+                aliasee = Some(reference.value.guid);
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+
+        let linkage = flags.linkage;
+        self.add_global_value_to_index(
+            name,
+            guid,
+            linkage,
+            id,
+            Some(GlobalValueSummary {
+                module_path,
+                flags,
+                references: Vec::new(),
+                kind: SummaryKind::Alias(AliasSummary { aliasee }),
+            }),
+            loc,
+        )
+    }
+
+    /// Stores the given name/GUID and summary into the index, and resolves any
+    /// forward reference to this entry's `^N`.
+    ///
+    /// Mirrors `LLParser::addGlobalValueToIndex`, with one reordering. Upstream
+    /// resolves forward references *before* moving the summary into the index,
+    /// because it patches through `ValueInfo *` pointers that stay valid across
+    /// the move. llvmkit patches by coordinate, and a coordinate only exists
+    /// once the summary is in the index, so the summary is added first and the
+    /// pending references are registered against it. The verdicts are the same,
+    /// including a summary that references its own `^N`.
+    fn add_global_value_to_index(
+        &mut self,
+        name: &str,
+        guid: Option<Guid>,
+        linkage: Linkage,
+        id: u32,
+        summary: Option<GlobalValueSummary>,
+        loc: Span,
+    ) -> ParseResult<()> {
+        // First determine the ValueInfo, from the GUID or from the name.
+        let guid = match guid {
+            Some(guid) => {
+                if let Some(index) = self.summary_index_mut() {
+                    index.global_value_entry(guid);
+                }
+                guid
+            }
+            None if self.parses_module_entities => {
+                // With a module in hand the name must name something in it, and
+                // the GUID comes from that value's own linkage.
+                let global = self
+                    .resolve_global_name_as_ref(name.to_owned())
+                    .map_err(|_| {
+                        self.message_at(loc, format!("Reference to undefined global \"{name}\""))
+                    })?;
+                let guid = self.guid_of_global(global);
+                if let Some(index) = self.summary_index_mut() {
+                    index.global_value_entry_named(guid, name);
+                }
+                guid
+            }
+            None => {
+                // Index-only mode. Upstream asserts a local linkage has a
+                // source file name to distinguish it by; without one,
+                // `getGlobalIdentifier` substitutes `<unknown>`, which is what
+                // llvmkit does rather than crash.
+                let source_filename = self
+                    .module
+                    .source_filename()
+                    .map(|name| name.to_string())
+                    .unwrap_or_default();
+                let guid =
+                    Guid::of_global_identifier(&global_identifier(name, linkage, &source_filename));
+                if let Some(index) = self.summary_index_mut() {
+                    index.global_value_entry_named(guid, name);
+                }
+                guid
+            }
+        };
+
+        // Add the summary, which is what gives this entry's own forward
+        // references somewhere to be recorded against.
+        let summary_position = match summary {
+            Some(summary) => {
+                let position = self
+                    .summary_index_mut()
+                    .map(|index| {
+                        let entry = index.global_value_entry(guid);
+                        entry.summary_list.push(summary);
+                        entry.summary_list.len() - 1
+                    })
+                    .unwrap_or_default();
+                Some(position)
+            }
+            None => None,
+        };
+
+        if let Some(position) = summary_position {
+            for (target, field, span) in std::mem::take(&mut self.pending_summary_value_refs) {
+                self.forward_ref_summary_values
+                    .entry(target)
+                    .or_default()
+                    .push((
+                        SummaryValueRefSite {
+                            owner: guid,
+                            summary: position,
+                            field,
+                        },
+                        span,
+                    ));
+            }
+            for (target, field, span) in std::mem::take(&mut self.pending_summary_type_ids) {
+                self.forward_ref_summary_type_ids
+                    .entry(target)
+                    .or_default()
+                    .push((
+                        SummaryTypeIdRefSite {
+                            owner: guid,
+                            summary: position,
+                            field,
+                        },
+                        span,
+                    ));
+            }
+            if let Some((target, span)) = self.pending_summary_aliasee.take() {
+                self.forward_ref_summary_aliasees
+                    .entry(target)
+                    .or_default()
+                    .push((
+                        SummaryAliaseeSite {
+                            owner: guid,
+                            summary: position,
+                        },
+                        span,
+                    ));
+            }
+        }
+
+        // Resolve forward references from calls, refs and the rest.
+        if let Some(sites) = self.forward_ref_summary_values.remove(&id) {
+            for (site, _) in sites {
+                self.patch_summary_value_ref(&site, guid);
+            }
+        }
+
+        // Resolve forward references from aliases.
+        if let Some(sites) = self.forward_ref_summary_aliasees.remove(&id) {
+            for (site, _) in sites {
+                if let Some(index) = self.summary_index_mut()
+                    && let Some(summary) = index.summary_mut(site.owner, site.summary)
+                    && let SummaryKind::Alias(alias) = &mut summary.kind
+                {
+                    alias.aliasee = Some(guid);
+                }
+            }
+        }
+
+        // Save the ValueInfo for later references by id. Upstream resizes to
+        // accept non-continuous numbering, which is what makes test
+        // simplification easier.
+        let Ok(slot) = usize::try_from(id) else {
+            return Err(self.message_at(loc, "expected summary id to fit in a machine word"));
+        };
+        if slot >= self.numbered_value_infos.len() {
+            self.numbered_value_infos.resize(slot + 1, None);
+        }
+        self.numbered_value_infos[slot] = Some(guid);
+        Ok(())
+    }
+
+    /// The GUID of a global value already in the module, which upstream reaches
+    /// through `GlobalValue::getGUID`: the value's own linkage and the module's
+    /// source file name decide the identifier.
+    fn guid_of_global(&self, global: GlobalRef<'ctx, B>) -> Guid {
+        let (name, linkage) = match global {
+            GlobalRef::Function(f) => (f.name().to_owned(), f.linkage()),
+            GlobalRef::Variable(g) => (g.name().to_owned(), g.linkage()),
+            GlobalRef::Alias(a) => (a.name().to_owned(), a.linkage()),
+            GlobalRef::Ifunc(i) => (i.name().to_owned(), i.linkage()),
+        };
+        let source_filename = self
+            .module
+            .source_filename()
+            .map(|name| name.to_string())
+            .unwrap_or_default();
+        Guid::of_global_identifier(&global_identifier(&name, linkage, &source_filename))
+    }
+
+    /// Point one recorded reference site at `guid`.
+    fn patch_summary_value_ref(&mut self, site: &SummaryValueRefSite, guid: Guid) {
+        let Some(index) = self.summary_index.as_mut() else {
+            return;
+        };
+        if let SummaryValueRefField::CompatibleVtable {
+            type_id,
+            index: position,
+        } = &site.field
+        {
+            if let Some(entry) = index.type_id_compatible_vtable(type_id).get_mut(*position) {
+                entry.vtable.guid = guid;
+            }
+            return;
+        }
+        let Some(summary) = index.summary_mut(site.owner, site.summary) else {
+            return;
+        };
+        match &site.field {
+            SummaryValueRefField::Reference(position) => {
+                if let Some(reference) = summary.references.get_mut(*position) {
+                    reference.guid = guid;
+                }
+            }
+            // Every remaining field belongs to exactly one summary kind, and
+            // the site was minted by the routine that parses that kind, so a
+            // mismatch here would mean the coordinate was built for a different
+            // summary than the one it names.
+            SummaryValueRefField::Call(position) => {
+                let SummaryKind::Function(function) = &mut summary.kind else {
+                    unreachable!("a call edge is only recorded while parsing a function summary")
+                };
+                if let Some(call) = function.calls.get_mut(*position) {
+                    call.callee.guid = guid;
+                }
+            }
+            SummaryValueRefField::Callsite(position) => {
+                let SummaryKind::Function(function) = &mut summary.kind else {
+                    unreachable!("a callsite is only recorded while parsing a function summary")
+                };
+                if let Some(callsite) = function.callsites.get_mut(*position)
+                    && let Some(callee) = &mut callsite.callee
+                {
+                    callee.guid = guid;
+                }
+            }
+            SummaryValueRefField::ParameterAccessCall { parameter, call } => {
+                let SummaryKind::Function(function) = &mut summary.kind else {
+                    unreachable!(
+                        "a parameter access is only recorded while parsing a function summary"
+                    )
+                };
+                if let Some(access) = function.parameter_accesses.get_mut(*parameter)
+                    && let Some(call) = access.calls.get_mut(*call)
+                {
+                    call.callee.guid = guid;
+                }
+            }
+            SummaryValueRefField::VtableFunction(position) => {
+                let SummaryKind::Variable(variable) = &mut summary.kind else {
+                    unreachable!(
+                        "a vtable function is only recorded while parsing a variable summary"
+                    )
+                };
+                if let Some(entry) = variable.vtable_functions.get_mut(*position) {
+                    entry.function.guid = guid;
+                }
+            }
+            SummaryValueRefField::CompatibleVtable { .. } => {
+                unreachable!("handled before the summary lookup")
+            }
+        }
+    }
+
+    /// Flag
+    ///   ::= [0|1]
+    ///
+    /// Mirrors `LLParser::parseFlag`, which takes the token's *boolean* value:
+    /// any non-zero unsigned integer reads as set, and only a signed one is
+    /// rejected. Signedness is the token's own — a negative decimal and an
+    /// `s0x…` literal are both signed, an `u0x…` one is not — so the check is
+    /// `APSInt::isSigned`, not "does it look negative".
+    fn parse_summary_flag(&mut self) -> ParseResult<bool> {
+        let value = match self.peek() {
+            Token::IntegerLit(IntLit {
+                sign: Sign::Pos,
+                base: NumBase::Dec | NumBase::HexUnsigned,
+                digits,
+            }) => digits.chars().any(|digit| digit != '0'),
+            _ => return Err(self.expected("integer")),
+        };
+        self.bump()?;
+        Ok(value)
+    }
+
+    /// ModuleReference
+    ///   ::= 'module' ':' SummaryID
+    ///
+    /// Mirrors `LLParser::parseModuleReference`, whose lookup is an assert:
+    /// every module entry is parsed before anything that references one.
+    fn parse_module_reference(&mut self) -> ParseResult<String> {
+        self.expect_keyword(Keyword::Module, "'module' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        let Token::SummaryId(module_id) = self.current.value else {
+            return Err(self.expected("module ID"));
+        };
+        self.bump()?;
+        Ok(self
+            .summary_module_paths
+            .get(&module_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// GVReference
+    ///   ::= ['readonly'|'writeonly'] SummaryID
+    ///
+    /// Mirrors `LLParser::parseGVReference`, which mints an empty `ValueInfo`
+    /// for a `^N` it has not seen and leaves the caller to record the site.
+    fn parse_gv_reference(&mut self) -> ParseResult<ParsedGvReference> {
+        let read_only = self.eat_keyword(Keyword::Readonly)?;
+        let write_only = if read_only {
+            false
+        } else {
+            self.eat_keyword(Keyword::Writeonly)?
+        };
+        let Token::SummaryId(summary_id) = self.current.value else {
+            return Err(self.expected("GV ID"));
+        };
+        self.bump()?;
+
+        let resolved = usize::try_from(summary_id)
+            .ok()
+            .and_then(|slot| self.numbered_value_infos.get(slot).copied().flatten());
+        let access = if read_only {
+            AccessSpecifier::ReadOnly
+        } else if write_only {
+            AccessSpecifier::WriteOnly
+        } else {
+            AccessSpecifier::None
+        };
+        Ok(ParsedGvReference {
+            value: ValueReference {
+                // A forward reference carries a placeholder that is either
+                // patched when its `^N` is defined or reported by
+                // `validate_end_of_index`.
+                guid: resolved.unwrap_or_default(),
+                access,
+            },
+            summary_id,
+            is_forward: resolved.is_none(),
+        })
+    }
+
+    /// GVFlags
+    ///   ::= 'flags' ':' '(' Flag [',' Flag]* ')'
+    ///
+    /// Mirrors `LLParser::parseGVFlags`.
+    fn parse_gv_flags(&mut self) -> ParseResult<GlobalValueFlags> {
+        self.expect_keyword(Keyword::Flags, "'flags' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+
+        let mut flags = GlobalValueFlags::default();
+        loop {
+            let field_loc = self.loc();
+            match self.peek() {
+                Token::Kw(Keyword::Linkage) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    // `parseOptionalLinkageAux` answers external linkage for a
+                    // keyword it does not know and consumes it anyway; the
+                    // `HasLinkage` guard upstream pairs it with is an assert,
+                    // so a release build accepts the token silently.
+                    if let Token::Kw(keyword) = self.peek() {
+                        flags.linkage = linkage_keyword(*keyword).unwrap_or(Linkage::External);
+                    } else {
+                        flags.linkage = Linkage::External;
+                    }
+                    self.bump()?;
+                }
+                Token::Kw(Keyword::Visibility) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    flags.visibility = self.parse_optional_visibility()?;
+                }
+                Token::Kw(Keyword::NotEligibleToImport) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    flags.not_eligible_to_import = self.parse_summary_flag()?;
+                }
+                Token::Kw(Keyword::Live) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    flags.live = self.parse_summary_flag()?;
+                }
+                Token::Kw(Keyword::DsoLocal_) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    flags.dso_local = self.parse_summary_flag()?;
+                }
+                Token::Kw(Keyword::CanAutoHide) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    flags.can_auto_hide = self.parse_summary_flag()?;
+                }
+                Token::Kw(Keyword::ImportType) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    flags.import_type = self.parse_optional_import_type()?;
+                }
+                _ => return Err(self.message_at(field_loc, "expected gv flag type")),
+            }
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok(flags)
+    }
+
+    /// Mirrors `LLParser::parseOptionalImportType`.
+    fn parse_optional_import_type(&mut self) -> ParseResult<ImportKind> {
+        let kind = match self.peek() {
+            Token::Kw(Keyword::Definition) => ImportKind::Definition,
+            Token::Kw(Keyword::Declaration) => ImportKind::Declaration,
+            _ => {
+                return Err(self.message("unknown import kind. Expect definition or declaration."));
+            }
+        };
+        self.bump()?;
+        Ok(kind)
+    }
+
+    /// GVarFlags
+    ///   ::= 'varFlags' ':' '(' 'readonly' ':' Flag
+    ///                      ',' 'writeonly' ':' Flag
+    ///                      ',' 'constant' ':' Flag ')'
+    ///
+    /// Mirrors `LLParser::parseGVarFlags`. `vcall_visibility` goes through
+    /// `parseFlag` upstream too, so only `0` and `1` are expressible.
+    fn parse_gvar_flags(&mut self) -> ParseResult<GlobalVariableFlags> {
+        self.expect_keyword(Keyword::VarFlags, "'varFlags' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+
+        let mut flags = GlobalVariableFlags::default();
+        loop {
+            let field_loc = self.loc();
+            match self.peek() {
+                Token::Kw(Keyword::Readonly) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    flags.maybe_read_only = self.parse_summary_flag()?;
+                }
+                Token::Kw(Keyword::Writeonly) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    flags.maybe_write_only = self.parse_summary_flag()?;
+                }
+                Token::Kw(Keyword::Constant) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    flags.constant = self.parse_summary_flag()?;
+                }
+                Token::Kw(Keyword::VcallVisibility) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    flags.vcall_visibility = if self.parse_summary_flag()? {
+                        VCallVisibility::LinkageUnit
+                    } else {
+                        VCallVisibility::Public
+                    };
+                }
+                _ => return Err(self.message_at(field_loc, "expected gvar flag type")),
+            }
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok(flags)
+    }
+
+    /// OptionalFFlags
+    ///   ::= 'funcFlags' ':' '(' ['readNone' ':' Flag]? ... ')'
+    ///
+    /// Mirrors `LLParser::parseOptionalFFlags`.
+    fn parse_optional_function_flags(&mut self) -> ParseResult<FunctionFlags> {
+        self.expect_keyword(Keyword::FuncFlags, "'funcFlags' here")?;
+        self.expect_punct(PunctKind::Colon, "':' in funcFlags")?;
+        self.expect_punct(PunctKind::LParen, "'(' in funcFlags")?;
+
+        let mut flags = FunctionFlags::default();
+        loop {
+            let field_loc = self.loc();
+            let field = match self.peek() {
+                Token::Kw(Keyword::ReadNone) => FunctionFlagField::ReadNone,
+                Token::Kw(Keyword::ReadOnly) => FunctionFlagField::ReadOnly,
+                Token::Kw(Keyword::NoRecurse) => FunctionFlagField::NoRecurse,
+                Token::Kw(Keyword::ReturnDoesNotAlias) => FunctionFlagField::ReturnDoesNotAlias,
+                Token::Kw(Keyword::NoInline) => FunctionFlagField::NoInline,
+                Token::Kw(Keyword::AlwaysInline) => FunctionFlagField::AlwaysInline,
+                Token::Kw(Keyword::NoUnwind) => FunctionFlagField::NoUnwind,
+                Token::Kw(Keyword::MayThrow) => FunctionFlagField::MayThrow,
+                Token::Kw(Keyword::HasUnknownCall) => FunctionFlagField::HasUnknownCall,
+                Token::Kw(Keyword::MustBeUnreachable) => FunctionFlagField::MustBeUnreachable,
+                _ => return Err(self.message_at(field_loc, "expected function flag type")),
+            };
+            self.bump()?;
+            self.expect_punct(PunctKind::Colon, "':'")?;
+            let value = self.parse_summary_flag()?;
+            match field {
+                FunctionFlagField::ReadNone => flags.read_none = value,
+                FunctionFlagField::ReadOnly => flags.read_only = value,
+                FunctionFlagField::NoRecurse => flags.no_recurse = value,
+                FunctionFlagField::ReturnDoesNotAlias => flags.return_does_not_alias = value,
+                FunctionFlagField::NoInline => flags.no_inline = value,
+                FunctionFlagField::AlwaysInline => flags.always_inline = value,
+                FunctionFlagField::NoUnwind => flags.no_unwind = value,
+                FunctionFlagField::MayThrow => flags.may_throw = value,
+                FunctionFlagField::HasUnknownCall => flags.has_unknown_call = value,
+                FunctionFlagField::MustBeUnreachable => flags.must_be_unreachable = value,
+            }
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' in funcFlags")?;
+        Ok(flags)
+    }
+
+    /// OptionalCalls
+    ///   := 'calls' ':' '(' Call [',' Call]* ')'
+    ///
+    /// Mirrors `LLParser::parseOptionalCalls`.
+    fn parse_optional_calls(&mut self) -> ParseResult<Vec<CallEdge>> {
+        self.expect_keyword(Keyword::Calls, "'calls' here")?;
+        self.expect_punct(PunctKind::Colon, "':' in calls")?;
+        self.expect_punct(PunctKind::LParen, "'(' in calls")?;
+
+        let mut calls: Vec<CallEdge> = Vec::new();
+        loop {
+            self.expect_punct(PunctKind::LParen, "'(' in call")?;
+            self.expect_keyword(Keyword::Callee, "'callee' in call")?;
+            self.expect_punct(PunctKind::Colon, "':'")?;
+
+            let loc = self.loc();
+            let callee = self.parse_gv_reference()?;
+
+            let mut hotness = Hotness::Unknown;
+            let mut relative_block_frequency = 0u32;
+            let mut has_tail_call = false;
+            while self.eat_punct(PunctKind::Comma)? {
+                let field_loc = self.loc();
+                match self.peek() {
+                    Token::Kw(Keyword::Hotness) => {
+                        self.bump()?;
+                        self.expect_punct(PunctKind::Colon, "':'")?;
+                        hotness = self.parse_hotness()?;
+                    }
+                    Token::Kw(Keyword::Relbf) => {
+                        self.bump()?;
+                        self.expect_punct(PunctKind::Colon, "':'")?;
+                        relative_block_frequency = self.parse_uint32()?;
+                    }
+                    Token::Kw(Keyword::Tail) => {
+                        self.bump()?;
+                        self.expect_punct(PunctKind::Colon, "':'")?;
+                        has_tail_call = self.parse_summary_flag()?;
+                    }
+                    _ => return Err(self.message_at(field_loc, "expected hotness, relbf, or tail")),
+                }
+            }
+            if hotness != Hotness::Unknown && relative_block_frequency > 0 {
+                return Err(self.message("Expected only one of hotness or relbf"));
+            }
+            if callee.is_forward {
+                self.pending_summary_value_refs.push((
+                    callee.summary_id,
+                    SummaryValueRefField::Call(calls.len()),
+                    loc,
+                ));
+            }
+            calls.push(CallEdge {
+                callee: callee.value,
+                hotness,
+                relative_block_frequency: (relative_block_frequency > 0)
+                    .then_some(relative_block_frequency),
+                has_tail_call,
+            });
+
+            self.expect_punct(PunctKind::RParen, "')' in call")?;
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' in calls")?;
+        Ok(calls)
+    }
+
+    /// Hotness
+    ///   := ('unknown'|'cold'|'none'|'hot'|'critical')
+    ///
+    /// Mirrors `LLParser::parseHotness`.
+    fn parse_hotness(&mut self) -> ParseResult<Hotness> {
+        let loc = self.loc();
+        let hotness = match self.peek() {
+            Token::Kw(Keyword::Unknown) => Hotness::Unknown,
+            Token::Kw(Keyword::Cold) => Hotness::Cold,
+            Token::Kw(Keyword::None) => Hotness::None,
+            Token::Kw(Keyword::Hot) => Hotness::Hot,
+            Token::Kw(Keyword::Critical) => Hotness::Critical,
+            _ => return Err(self.message_at(loc, "invalid call edge hotness")),
+        };
+        self.bump()?;
+        Ok(hotness)
+    }
+
+    /// OptionalVTableFuncs
+    ///   := 'vTableFuncs' ':' '(' VTableFunc [',' VTableFunc]* ')'
+    ///
+    /// Mirrors `LLParser::parseOptionalVTableFuncs`, including the message that
+    /// names `'callee'` where the token is `virtFunc`.
+    fn parse_optional_vtable_funcs(&mut self) -> ParseResult<Vec<VirtualFunctionOffset>> {
+        self.expect_keyword(Keyword::VtableFuncs, "'vTableFuncs' here")?;
+        self.expect_punct(PunctKind::Colon, "':' in vTableFuncs")?;
+        self.expect_punct(PunctKind::LParen, "'(' in vTableFuncs")?;
+
+        let mut entries: Vec<VirtualFunctionOffset> = Vec::new();
+        loop {
+            self.expect_punct(PunctKind::LParen, "'(' in vTableFunc")?;
+            self.expect_keyword(Keyword::VirtFunc, "'callee' in vTableFunc")?;
+            self.expect_punct(PunctKind::Colon, "':'")?;
+
+            let loc = self.loc();
+            let function = self.parse_gv_reference()?;
+
+            self.expect_punct(PunctKind::Comma, "comma")?;
+            self.expect_keyword(Keyword::Offset, "offset")?;
+            self.expect_punct(PunctKind::Colon, "':'")?;
+            let vtable_offset = self.parse_uint64()?;
+
+            if function.is_forward {
+                self.pending_summary_value_refs.push((
+                    function.summary_id,
+                    SummaryValueRefField::VtableFunction(entries.len()),
+                    loc,
+                ));
+            }
+            entries.push(VirtualFunctionOffset {
+                function: function.value,
+                vtable_offset,
+            });
+
+            self.expect_punct(PunctKind::RParen, "')' in vTableFunc")?;
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' in vTableFuncs")?;
+        Ok(entries)
+    }
+
+    /// OptionalRefs
+    ///   := 'refs' ':' '(' GVReference [',' GVReference]* ')'
+    ///
+    /// Mirrors `LLParser::parseOptionalRefs`, which sorts the references so
+    /// that the read-only and write-only ones sit at the end — the order
+    /// `FunctionSummary::specialRefCounts` and the printer both rely on.
+    /// Upstream's sort is `llvm::sort`, which is unstable and is deliberately
+    /// shuffled first under expensive checks; llvmkit sorts stably, so ties
+    /// keep source order rather than an unspecified one.
+    fn parse_optional_refs(&mut self) -> ParseResult<Vec<ValueReference>> {
+        self.expect_keyword(Keyword::Refs, "'refs' here")?;
+        self.expect_punct(PunctKind::Colon, "':' in refs")?;
+        self.expect_punct(PunctKind::LParen, "'(' in refs")?;
+
+        let mut parsed = Vec::new();
+        loop {
+            let loc = self.loc();
+            let reference = self.parse_gv_reference()?;
+            parsed.push((reference, loc));
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+        parsed.sort_by_key(|(reference, _)| reference.value.access);
+
+        let mut references = Vec::with_capacity(parsed.len());
+        for (reference, loc) in parsed {
+            if reference.is_forward {
+                self.pending_summary_value_refs.push((
+                    reference.summary_id,
+                    SummaryValueRefField::Reference(references.len()),
+                    loc,
+                ));
+            }
+            references.push(reference.value);
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' in refs")?;
+        Ok(references)
+    }
+
+    /// Mirrors `LLParser::validateEndOfIndex`, reporting the lowest unresolved
+    /// `^N` of each kind at its first use.
+    fn validate_end_of_index(&mut self) -> ParseResult<()> {
+        if let Some((id, sites)) = self.forward_ref_summary_values.iter().next()
+            && let Some((_, span)) = sites.first()
+        {
+            return Err(self.message_at(*span, format!("use of undefined summary '^{id}'")));
+        }
+        if let Some((id, sites)) = self.forward_ref_summary_aliasees.iter().next()
+            && let Some((_, span)) = sites.first()
+        {
+            return Err(self.message_at(*span, format!("use of undefined summary '^{id}'")));
+        }
+        if let Some((id, sites)) = self.forward_ref_summary_type_ids.iter().next()
+            && let Some((_, span)) = sites.first()
+        {
+            return Err(self.message_at(*span, format!("use of undefined type id summary '^{id}'")));
+        }
+        Ok(())
+    }
+
+    /// TypeIdEntry
+    ///   ::= 'typeid' ':' '(' 'name' ':' STRINGCONSTANT ',' TypeIdSummary ')'
+    ///
+    /// Mirrors `LLParser::parseTypeIdEntry`.
+    fn parse_type_id_entry(&mut self, id: u32) -> ParseResult<()> {
+        self.expect_keyword(Keyword::Typeid, "'typeid' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+        self.expect_keyword(Keyword::Name, "'name' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        let name = self.parse_string_constant("string constant")?;
+
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        let summary = self.parse_type_id_summary()?;
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+
+        if let Some(index) = self.summary_index_mut() {
+            *index.type_id_summary(&name) = summary;
+        }
+        self.resolve_forward_ref_type_ids(id, &name);
+        Ok(())
+    }
+
+    /// TypeIdSummary
+    ///   ::= 'summary' ':' '(' TypeTestResolution [',' OptionalWpdResolutions]? ')'
+    ///
+    /// Mirrors `LLParser::parseTypeIdSummary`.
+    fn parse_type_id_summary(&mut self) -> ParseResult<TypeIdSummary> {
+        self.expect_keyword(Keyword::Summary, "'summary' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+        let type_test_resolution = self.parse_type_test_resolution()?;
+
+        let mut whole_program_devirt_resolutions = BTreeMap::new();
+        if self.eat_punct(PunctKind::Comma)? {
+            self.parse_optional_wpd_resolutions(&mut whole_program_devirt_resolutions)?;
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok(TypeIdSummary {
+            type_test_resolution,
+            whole_program_devirt_resolutions,
+        })
+    }
+
+    /// TypeIdCompatibleVtableEntry
+    ///   ::= 'typeidCompatibleVTable' ':' '(' 'name' ':' STRINGCONSTANT ','
+    ///       TypeIdCompatibleVtableInfo ')'
+    ///
+    /// Mirrors `LLParser::parseTypeIdCompatibleVtableEntry`.
+    fn parse_type_id_compatible_vtable_entry(&mut self, id: u32) -> ParseResult<()> {
+        self.expect_keyword(
+            Keyword::TypeidCompatibleVtable,
+            "'typeidCompatibleVTable' here",
+        )?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+        self.expect_keyword(Keyword::Name, "'name' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        let name = self.parse_string_constant("string constant")?;
+
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        self.expect_keyword(Keyword::Summary, "'summary' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+
+        // The list may already hold entries from an earlier occurrence of this
+        // type identifier, and the recorded indices are into the whole of it.
+        let base = self
+            .summary_index_mut()
+            .map(|index| index.type_id_compatible_vtable(&name).len())
+            .unwrap_or_default();
+
+        let mut entries = Vec::new();
+        let mut pending = Vec::new();
+        loop {
+            self.expect_punct(PunctKind::LParen, "'(' here")?;
+            self.expect_keyword(Keyword::Offset, "'offset' here")?;
+            self.expect_punct(PunctKind::Colon, "':' here")?;
+            let address_point_offset = self.parse_uint64()?;
+            self.expect_punct(PunctKind::Comma, "',' here")?;
+
+            let loc = self.loc();
+            let vtable = self.parse_gv_reference()?;
+            if vtable.is_forward {
+                pending.push((vtable.summary_id, base + entries.len(), loc));
+            }
+            entries.push(TypeIdOffsetVtableInfo {
+                address_point_offset,
+                vtable: vtable.value,
+            });
+
+            self.expect_punct(PunctKind::RParen, "')' in call")?;
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        if let Some(index) = self.summary_index_mut() {
+            index.type_id_compatible_vtable(&name).extend(entries);
+        }
+        for (summary_id, position, loc) in pending {
+            self.forward_ref_summary_values
+                .entry(summary_id)
+                .or_default()
+                .push((
+                    SummaryValueRefSite {
+                        // The owner is unused for this field: a compatible
+                        // vtable hangs off a type identifier, not a value.
+                        owner: Guid::default(),
+                        summary: 0,
+                        field: SummaryValueRefField::CompatibleVtable {
+                            type_id: name.clone(),
+                            index: position,
+                        },
+                    },
+                    loc,
+                ));
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+
+        self.resolve_forward_ref_type_ids(id, &name);
+        Ok(())
+    }
+
+    /// Retire every recorded reference to this type identifier's `^N`, now
+    /// that its name — and so its GUID — is known. Mirrors the `ForwardRefTypeIds`
+    /// block both type-identifier entries end with.
+    fn resolve_forward_ref_type_ids(&mut self, id: u32, name: &str) {
+        let Some(sites) = self.forward_ref_summary_type_ids.remove(&id) else {
+            return;
+        };
+        let guid = Guid::of_global_identifier(name);
+        for (site, _) in sites {
+            let Some(index) = self.summary_index.as_mut() else {
+                return;
+            };
+            let Some(summary) = index.summary_mut(site.owner, site.summary) else {
+                continue;
+            };
+            let SummaryKind::Function(function) = &mut summary.kind else {
+                unreachable!("a type identifier is only referenced from a function summary")
+            };
+            let Some(info) = &mut function.type_id_info else {
+                continue;
+            };
+            match site.field {
+                SummaryTypeIdRefField::Test(position) => {
+                    if let Some(slot) = info.type_tests.get_mut(position) {
+                        *slot = guid;
+                    }
+                }
+                SummaryTypeIdRefField::AssumeVcall(position) => {
+                    if let Some(call) = info.type_test_assume_vcalls.get_mut(position) {
+                        call.guid = guid;
+                    }
+                }
+                SummaryTypeIdRefField::CheckedLoadVcall(position) => {
+                    if let Some(call) = info.type_checked_load_vcalls.get_mut(position) {
+                        call.guid = guid;
+                    }
+                }
+                SummaryTypeIdRefField::AssumeConstVcall(position) => {
+                    if let Some(call) = info.type_test_assume_const_vcalls.get_mut(position) {
+                        call.virtual_function.guid = guid;
+                    }
+                }
+                SummaryTypeIdRefField::CheckedLoadConstVcall(position) => {
+                    if let Some(call) = info.type_checked_load_const_vcalls.get_mut(position) {
+                        call.virtual_function.guid = guid;
+                    }
+                }
+            }
+        }
+    }
+
+    /// TypeTestResolution
+    ///   ::= 'typeTestRes' ':' '(' 'kind' ':' ... ')'
+    ///
+    /// Mirrors `LLParser::parseTypeTestResolution`.
+    fn parse_type_test_resolution(&mut self) -> ParseResult<TypeTestResolution> {
+        self.expect_keyword(Keyword::TypeTestRes, "'typeTestRes' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+        self.expect_keyword(Keyword::Kind, "'kind' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+
+        let kind_loc = self.loc();
+        let kind = match self.peek() {
+            Token::Kw(Keyword::Unknown) => TypeTestResolutionKind::Unknown,
+            Token::Kw(Keyword::Unsat) => TypeTestResolutionKind::Unsat,
+            Token::Kw(Keyword::ByteArray) => TypeTestResolutionKind::ByteArray,
+            Token::Kw(Keyword::Inline) => TypeTestResolutionKind::Inline,
+            Token::Kw(Keyword::Single) => TypeTestResolutionKind::Single,
+            Token::Kw(Keyword::AllOnes) => TypeTestResolutionKind::AllOnes,
+            _ => return Err(self.message_at(kind_loc, "unexpected TypeTestResolution kind")),
+        };
+        self.bump()?;
+
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        self.expect_keyword(Keyword::SizeM1BitWidth, "'sizeM1BitWidth' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        let size_minus_one_bit_width = self.parse_uint32()?;
+
+        let mut resolution = TypeTestResolution {
+            kind,
+            size_minus_one_bit_width,
+            ..TypeTestResolution::default()
+        };
+        while self.eat_punct(PunctKind::Comma)? {
+            let field_loc = self.loc();
+            match self.peek() {
+                Token::Kw(Keyword::AlignLog2) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    resolution.align_log2 = self.parse_uint64()?;
+                }
+                Token::Kw(Keyword::SizeM1) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    resolution.size_minus_one = self.parse_uint64()?;
+                }
+                Token::Kw(Keyword::BitMask) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    // Upstream reads a `uint32`, asserts it fits a byte, and
+                    // then narrows with a C cast — so a release build keeps the
+                    // low eight bits rather than diagnosing or saturating.
+                    let value = self.parse_uint32()?;
+                    resolution.bit_mask = u8::try_from(value & 0xFF)
+                        .unwrap_or_else(|_| unreachable!("a value masked to 8 bits fits a u8"));
+                }
+                Token::Kw(Keyword::InlineBits) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':'")?;
+                    resolution.inline_bits = self.parse_uint64()?;
+                }
+                _ => {
+                    return Err(
+                        self.message_at(field_loc, "expected optional TypeTestResolution field")
+                    );
+                }
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok(resolution)
+    }
+
+    /// OptionalWpdResolutions
+    ///   ::= 'wpdResolutions' ':' '(' WpdResolution [',' WpdResolution]* ')'
+    ///
+    /// Mirrors `LLParser::parseOptionalWpdResolutions`.
+    fn parse_optional_wpd_resolutions(
+        &mut self,
+        resolutions: &mut BTreeMap<u64, WholeProgramDevirtResolution>,
+    ) -> ParseResult<()> {
+        self.expect_keyword(Keyword::WpdResolutions, "'wpdResolutions' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+
+        loop {
+            self.expect_punct(PunctKind::LParen, "'(' here")?;
+            self.expect_keyword(Keyword::Offset, "'offset' here")?;
+            self.expect_punct(PunctKind::Colon, "':' here")?;
+            let offset = self.parse_uint64()?;
+            self.expect_punct(PunctKind::Comma, "',' here")?;
+            let resolution = self.parse_wpd_res()?;
+            self.expect_punct(PunctKind::RParen, "')' here")?;
+            resolutions.insert(offset, resolution);
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok(())
+    }
+
+    /// WpdRes
+    ///   ::= 'wpdRes' ':' '(' 'kind' ':' ... [',' OptionalResByArg]? ')'
+    ///
+    /// Mirrors `LLParser::parseWpdRes`.
+    fn parse_wpd_res(&mut self) -> ParseResult<WholeProgramDevirtResolution> {
+        self.expect_keyword(Keyword::WpdRes, "'wpdRes' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+        self.expect_keyword(Keyword::Kind, "'kind' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+
+        let kind_loc = self.loc();
+        let kind = match self.peek() {
+            Token::Kw(Keyword::Indir) => WholeProgramDevirtKind::Indir,
+            Token::Kw(Keyword::SingleImpl) => WholeProgramDevirtKind::SingleImpl,
+            Token::Kw(Keyword::BranchFunnel) => WholeProgramDevirtKind::BranchFunnel,
+            _ => {
+                return Err(
+                    self.message_at(kind_loc, "unexpected WholeProgramDevirtResolution kind")
+                );
+            }
+        };
+        self.bump()?;
+
+        let mut resolution = WholeProgramDevirtResolution {
+            kind,
+            ..WholeProgramDevirtResolution::default()
+        };
+        while self.eat_punct(PunctKind::Comma)? {
+            let field_loc = self.loc();
+            match self.peek() {
+                Token::Kw(Keyword::SingleImplName) => {
+                    self.bump()?;
+                    self.expect_punct(PunctKind::Colon, "':' here")?;
+                    resolution.single_impl_name = self.parse_string_constant("string constant")?;
+                }
+                Token::Kw(Keyword::ResByArg) => {
+                    self.parse_optional_res_by_arg(&mut resolution.resolutions_by_argument)?;
+                }
+                _ => {
+                    return Err(self.message_at(
+                        field_loc,
+                        "expected optional WholeProgramDevirtResolution field",
+                    ));
+                }
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok(resolution)
+    }
+
+    /// OptionalResByArg
+    ///   ::= 'resByArg' ':' '(' ResByArg[, ResByArg]* ')'
+    ///
+    /// Mirrors `LLParser::parseOptionalResByArg`, including its unbalanced
+    /// quote in `expected 'byArg here`.
+    fn parse_optional_res_by_arg(
+        &mut self,
+        resolutions: &mut BTreeMap<Vec<u64>, WholeProgramDevirtByArg>,
+    ) -> ParseResult<()> {
+        self.expect_keyword(Keyword::ResByArg, "'resByArg' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+
+        loop {
+            let args = self.parse_summary_args()?;
+            self.expect_punct(PunctKind::Comma, "',' here")?;
+            self.expect_keyword(Keyword::ByArg, "'byArg here")?;
+            self.expect_punct(PunctKind::Colon, "':' here")?;
+            self.expect_punct(PunctKind::LParen, "'(' here")?;
+            self.expect_keyword(Keyword::Kind, "'kind' here")?;
+            self.expect_punct(PunctKind::Colon, "':' here")?;
+
+            let kind_loc = self.loc();
+            let kind = match self.peek() {
+                Token::Kw(Keyword::Indir) => WholeProgramDevirtByArgKind::Indir,
+                Token::Kw(Keyword::UniformRetVal) => WholeProgramDevirtByArgKind::UniformRetVal,
+                Token::Kw(Keyword::UniqueRetVal) => WholeProgramDevirtByArgKind::UniqueRetVal,
+                Token::Kw(Keyword::VirtualConstProp) => {
+                    WholeProgramDevirtByArgKind::VirtualConstProp
+                }
+                _ => {
+                    return Err(self.message_at(
+                        kind_loc,
+                        "unexpected WholeProgramDevirtResolution::ByArg kind",
+                    ));
+                }
+            };
+            self.bump()?;
+
+            let mut by_arg = WholeProgramDevirtByArg {
+                kind,
+                ..WholeProgramDevirtByArg::default()
+            };
+            while self.eat_punct(PunctKind::Comma)? {
+                let field_loc = self.loc();
+                match self.peek() {
+                    Token::Kw(Keyword::Info) => {
+                        self.bump()?;
+                        self.expect_punct(PunctKind::Colon, "':' here")?;
+                        by_arg.info = self.parse_uint64()?;
+                    }
+                    Token::Kw(Keyword::Byte) => {
+                        self.bump()?;
+                        self.expect_punct(PunctKind::Colon, "':' here")?;
+                        by_arg.byte = self.parse_uint32()?;
+                    }
+                    Token::Kw(Keyword::Bit) => {
+                        self.bump()?;
+                        self.expect_punct(PunctKind::Colon, "':' here")?;
+                        by_arg.bit = self.parse_uint32()?;
+                    }
+                    _ => {
+                        return Err(self.message_at(
+                            field_loc,
+                            "expected optional whole program devirt field",
+                        ));
+                    }
+                }
+            }
+
+            self.expect_punct(PunctKind::RParen, "')' here")?;
+            resolutions.insert(args, by_arg);
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok(())
+    }
+
+    /// Args
+    ///   ::= 'args' ':' '(' UInt64[, UInt64]* ')'
+    ///
+    /// Mirrors `LLParser::parseArgs`.
+    fn parse_summary_args(&mut self) -> ParseResult<Vec<u64>> {
+        self.expect_keyword(Keyword::Args, "'args' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+
+        let mut args = Vec::new();
+        loop {
+            args.push(self.parse_uint64()?);
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok(args)
+    }
+
+    /// OptionalTypeIdInfo
+    ///   := 'typeIdInfo' ':' '(' [TypeTests]? [',' TypeTestAssumeVCalls]? ... ')'
+    ///
+    /// Mirrors `LLParser::parseOptionalTypeIdInfo`.
+    fn parse_optional_type_id_info(&mut self) -> ParseResult<TypeIdInfo> {
+        self.expect_keyword(Keyword::TypeIdInfo, "'typeIdInfo' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' in typeIdInfo")?;
+
+        let mut info = TypeIdInfo::default();
+        loop {
+            let field_loc = self.loc();
+            match self.peek() {
+                Token::Kw(Keyword::TypeTests) => {
+                    info.type_tests = self.parse_type_tests()?;
+                }
+                Token::Kw(Keyword::TypeTestAssumeVcalls) => {
+                    info.type_test_assume_vcalls = self.parse_vfunc_id_list(
+                        Keyword::TypeTestAssumeVcalls,
+                        SummaryTypeIdRefField::AssumeVcall,
+                    )?;
+                }
+                Token::Kw(Keyword::TypeCheckedLoadVcalls) => {
+                    info.type_checked_load_vcalls = self.parse_vfunc_id_list(
+                        Keyword::TypeCheckedLoadVcalls,
+                        SummaryTypeIdRefField::CheckedLoadVcall,
+                    )?;
+                }
+                Token::Kw(Keyword::TypeTestAssumeConstVcalls) => {
+                    info.type_test_assume_const_vcalls = self.parse_const_vcall_list(
+                        Keyword::TypeTestAssumeConstVcalls,
+                        SummaryTypeIdRefField::AssumeConstVcall,
+                    )?;
+                }
+                Token::Kw(Keyword::TypeCheckedLoadConstVcalls) => {
+                    info.type_checked_load_const_vcalls = self.parse_const_vcall_list(
+                        Keyword::TypeCheckedLoadConstVcalls,
+                        SummaryTypeIdRefField::CheckedLoadConstVcall,
+                    )?;
+                }
+                _ => return Err(self.message_at(field_loc, "invalid typeIdInfo list type")),
+            }
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' in typeIdInfo")?;
+        Ok(info)
+    }
+
+    /// TypeTests
+    ///   ::= 'typeTests' ':' '(' (SummaryID | UInt64) [',' (SummaryID | UInt64)]* ')'
+    ///
+    /// Mirrors `LLParser::parseTypeTests`.
+    fn parse_type_tests(&mut self) -> ParseResult<Vec<Guid>> {
+        self.expect_keyword(Keyword::TypeTests, "'typeTests' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' in typeIdInfo")?;
+
+        let mut tests = Vec::new();
+        loop {
+            if let Token::SummaryId(summary_id) = self.current.value {
+                let loc = self.loc();
+                self.pending_summary_type_ids.push((
+                    summary_id,
+                    SummaryTypeIdRefField::Test(tests.len()),
+                    loc,
+                ));
+                self.bump()?;
+                tests.push(Guid::default());
+            } else {
+                tests.push(Guid::from_raw(self.parse_uint64()?));
+            }
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' in typeIdInfo")?;
+        Ok(tests)
+    }
+
+    /// VFuncIdList
+    ///   ::= Kind ':' '(' VFuncId [',' VFuncId]* ')'
+    ///
+    /// Mirrors `LLParser::parseVFuncIdList`.
+    fn parse_vfunc_id_list(
+        &mut self,
+        keyword: Keyword,
+        field: fn(usize) -> SummaryTypeIdRefField,
+    ) -> ParseResult<Vec<VirtualFunctionId>> {
+        self.expect_keyword(keyword, "list keyword here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+
+        let mut ids = Vec::new();
+        loop {
+            let (id, pending) = self.parse_vfunc_id()?;
+            if let Some((summary_id, loc)) = pending {
+                self.pending_summary_type_ids
+                    .push((summary_id, field(ids.len()), loc));
+            }
+            ids.push(id);
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok(ids)
+    }
+
+    /// ConstVCallList
+    ///   ::= Kind ':' '(' ConstVCall [',' ConstVCall]* ')'
+    ///
+    /// Mirrors `LLParser::parseConstVCallList`.
+    fn parse_const_vcall_list(
+        &mut self,
+        keyword: Keyword,
+        field: fn(usize) -> SummaryTypeIdRefField,
+    ) -> ParseResult<Vec<ConstantVirtualCall>> {
+        self.expect_keyword(keyword, "list keyword here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+
+        let mut calls = Vec::new();
+        loop {
+            let (call, pending) = self.parse_const_vcall()?;
+            if let Some((summary_id, loc)) = pending {
+                self.pending_summary_type_ids
+                    .push((summary_id, field(calls.len()), loc));
+            }
+            calls.push(call);
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok(calls)
+    }
+
+    /// ConstVCall
+    ///   ::= '(' VFuncId ',' Args ')'
+    ///
+    /// Mirrors `LLParser::parseConstVCall`.
+    fn parse_const_vcall(&mut self) -> ParseResult<(ConstantVirtualCall, Option<(u32, Span)>)> {
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+        let (virtual_function, pending) = self.parse_vfunc_id()?;
+
+        let mut arguments = Vec::new();
+        if self.eat_punct(PunctKind::Comma)? {
+            arguments = self.parse_summary_args()?;
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok((
+            ConstantVirtualCall {
+                virtual_function,
+                arguments,
+            },
+            pending,
+        ))
+    }
+
+    /// VFuncId
+    ///   ::= 'vFuncId' ':' '(' (SummaryID | 'guid' ':' UInt64) ','
+    ///         'offset' ':' UInt64 ')'
+    ///
+    /// Mirrors `LLParser::parseVFuncId`.
+    fn parse_vfunc_id(&mut self) -> ParseResult<(VirtualFunctionId, Option<(u32, Span)>)> {
+        self.expect_keyword(Keyword::VfuncId, "'vFuncId' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+
+        let mut guid = Guid::default();
+        let mut pending = None;
+        if let Token::SummaryId(summary_id) = self.current.value {
+            pending = Some((summary_id, self.loc()));
+            self.bump()?;
+        } else {
+            self.expect_keyword(Keyword::Guid, "'guid' here")?;
+            self.expect_punct(PunctKind::Colon, "':' here")?;
+            guid = Guid::from_raw(self.parse_uint64()?);
+        }
+
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        self.expect_keyword(Keyword::Offset, "'offset' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        let offset = self.parse_uint64()?;
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+
+        Ok((VirtualFunctionId { guid, offset }, pending))
+    }
+
+    /// ParamNo
+    ///   := 'param' ':' UInt64
+    ///
+    /// Mirrors `LLParser::parseParamNo`.
+    fn parse_param_no(&mut self) -> ParseResult<u64> {
+        self.expect_keyword(Keyword::Param, "'param' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.parse_uint64()
+    }
+
+    /// ParamAccessOffset
+    ///   := 'offset' ':' '[' APSINTVAL ',' APSINTVAL ']'
+    ///
+    /// Mirrors `LLParser::parseParamAccessOffset`, which reads each bound at
+    /// the token's own width, sign-extends it to 64 bits, and then makes the
+    /// range half-open by incrementing the upper bound.
+    fn parse_param_access_offset(&mut self) -> ParseResult<ConstantRange> {
+        self.expect_keyword(Keyword::Offset, "'offset' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LSquare, "'[' here")?;
+        let lower = self.parse_param_access_bound()?;
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        let upper = self.parse_param_access_bound()?;
+        self.expect_punct(PunctKind::RSquare, "']' here")?;
+
+        let one = ApInt::new(
+            PARAMETER_ACCESS_RANGE_WIDTH,
+            1,
+            Signedness::Unsigned,
+            llvmkit_ir::ap_int::ApIntTruncation::Truncate,
+        )
+        .map_err(|err| self.builder_err("parameter access offset", err))?;
+        let upper = upper.wrapping_add(&one);
+        if lower == upper && !lower.is_max_signed_value() {
+            return Ok(ConstantRange::empty(PARAMETER_ACCESS_RANGE_WIDTH));
+        }
+        ConstantRange::new(lower, upper)
+            .map_err(|err| self.builder_err("parameter access offset", err))
+    }
+
+    /// One bound of a `ParamAccessOffset`, read the way upstream's inner
+    /// `ParseAPSInt` lambda reads it.
+    fn parse_param_access_bound(&mut self) -> ParseResult<ApInt> {
+        if !matches!(self.peek(), Token::IntegerLit(_)) {
+            return Err(self.expected("integer"));
+        }
+        let literal = self.parse_int_literal()?;
+        Ok(literal.extend_or_truncate(PARAMETER_ACCESS_RANGE_WIDTH))
+    }
+
+    /// ParamAccessCall
+    ///   := '(' 'callee' ':' GVReference ',' ParamNo ',' ParamAccessOffset ')'
+    ///
+    /// Mirrors `LLParser::parseParamAccessCall`.
+    fn parse_param_access_call(
+        &mut self,
+    ) -> ParseResult<(ParameterAccessCall, Option<(u32, Span)>)> {
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+        self.expect_keyword(Keyword::Callee, "'callee' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+
+        let loc = self.loc();
+        let callee = self.parse_gv_reference()?;
+
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        let parameter_number = self.parse_param_no()?;
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        let offsets = self.parse_param_access_offset()?;
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+
+        Ok((
+            ParameterAccessCall {
+                parameter_number,
+                callee: callee.value,
+                offsets,
+            },
+            callee.is_forward.then_some((callee.summary_id, loc)),
+        ))
+    }
+
+    /// ParamAccess
+    ///   := '(' ParamNo ',' ParamAccessOffset [',' OptionalParamAccessCalls]? ')'
+    ///
+    /// Mirrors `LLParser::parseParamAccess`.
+    fn parse_param_access(&mut self) -> ParseResult<ParsedParameterAccess> {
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+        let parameter_number = self.parse_param_no()?;
+        self.expect_punct(PunctKind::Comma, "',' here")?;
+        let use_range = self.parse_param_access_offset()?;
+
+        let mut calls = Vec::new();
+        let mut pending = Vec::new();
+        if self.eat_punct(PunctKind::Comma)? {
+            self.expect_keyword(Keyword::Calls, "'calls' here")?;
+            self.expect_punct(PunctKind::Colon, "':' here")?;
+            self.expect_punct(PunctKind::LParen, "'(' here")?;
+            loop {
+                let (call, forward) = self.parse_param_access_call()?;
+                if let Some((summary_id, loc)) = forward {
+                    pending.push((calls.len(), summary_id, loc));
+                }
+                calls.push(call);
+                if !self.eat_punct(PunctKind::Comma)? {
+                    break;
+                }
+            }
+            self.expect_punct(PunctKind::RParen, "')' here")?;
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok((
+            ParameterAccess {
+                parameter_number,
+                use_range,
+                calls,
+            },
+            pending,
+        ))
+    }
+
+    /// OptionalParamAccesses
+    ///   := 'params' ':' '(' ParamAccess [',' ParamAccess]* ')'
+    ///
+    /// Mirrors `LLParser::parseOptionalParamAccesses`.
+    fn parse_optional_param_accesses(&mut self) -> ParseResult<Vec<ParameterAccess>> {
+        self.expect_keyword(Keyword::Params, "'params' here")?;
+        self.expect_punct(PunctKind::Colon, "':' here")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+
+        let mut accesses = Vec::new();
+        let mut pending = Vec::new();
+        loop {
+            let (access, forward) = self.parse_param_access()?;
+            for (call, summary_id, loc) in forward {
+                pending.push((accesses.len(), call, summary_id, loc));
+            }
+            accesses.push(access);
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+
+        for (parameter, call, summary_id, loc) in pending {
+            self.pending_summary_value_refs.push((
+                summary_id,
+                SummaryValueRefField::ParameterAccessCall { parameter, call },
+                loc,
+            ));
+        }
+        Ok(accesses)
+    }
+
+    /// OptionalAllocs
+    ///   := 'allocs' ':' '(' Alloc [',' Alloc]* ')'
+    ///
+    /// Mirrors `LLParser::parseOptionalAllocs`.
+    fn parse_optional_allocs(&mut self) -> ParseResult<Vec<AllocationInfo>> {
+        self.expect_keyword(Keyword::Allocs, "'allocs' here")?;
+        self.expect_punct(PunctKind::Colon, "':' in allocs")?;
+        self.expect_punct(PunctKind::LParen, "'(' in allocs")?;
+
+        let mut allocations = Vec::new();
+        loop {
+            self.expect_punct(PunctKind::LParen, "'(' in alloc")?;
+            self.expect_keyword(Keyword::Versions, "'versions' in alloc")?;
+            self.expect_punct(PunctKind::Colon, "':'")?;
+            self.expect_punct(PunctKind::LParen, "'(' in versions")?;
+
+            let mut versions = Vec::new();
+            loop {
+                versions.push(self.parse_alloc_type()?);
+                if !self.eat_punct(PunctKind::Comma)? {
+                    break;
+                }
+            }
+
+            self.expect_punct(PunctKind::RParen, "')' in versions")?;
+            self.expect_punct(PunctKind::Comma, "',' in alloc")?;
+            let memory_info_blocks = self.parse_mem_profs()?;
+            allocations.push(AllocationInfo {
+                versions,
+                memory_info_blocks,
+            });
+            self.expect_punct(PunctKind::RParen, "')' in alloc")?;
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' in allocs")?;
+        Ok(allocations)
+    }
+
+    /// MemProfs
+    ///   := 'memProf' ':' '(' MemProf [',' MemProf]* ')'
+    ///
+    /// Mirrors `LLParser::parseMemProfs`.
+    fn parse_mem_profs(&mut self) -> ParseResult<Vec<MemoryInfoBlock>> {
+        self.expect_keyword(Keyword::MemProf, "'memProf' here")?;
+        self.expect_punct(PunctKind::Colon, "':' in memprof")?;
+        self.expect_punct(PunctKind::LParen, "'(' in memprof")?;
+
+        let mut blocks = Vec::new();
+        loop {
+            self.expect_punct(PunctKind::LParen, "'(' in memprof")?;
+            self.expect_keyword(Keyword::Type, "'type' in memprof")?;
+            self.expect_punct(PunctKind::Colon, "':'")?;
+            let allocation_type = self.parse_alloc_type()?;
+
+            self.expect_punct(PunctKind::Comma, "',' in memprof")?;
+            self.expect_keyword(Keyword::StackIds, "'stackIds' in memprof")?;
+            self.expect_punct(PunctKind::Colon, "':'")?;
+            self.expect_punct(PunctKind::LParen, "'(' in stackIds")?;
+            let stack_id_indices = self.parse_summary_stack_ids()?;
+            self.expect_punct(PunctKind::RParen, "')' in stackIds")?;
+
+            blocks.push(MemoryInfoBlock {
+                allocation_type,
+                stack_id_indices,
+            });
+            self.expect_punct(PunctKind::RParen, "')' in memprof")?;
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' in memprof")?;
+        Ok(blocks)
+    }
+
+    /// The `stackIds` list body, which a combined-index record may leave empty.
+    /// Shared by `parseMemProfs` and `parseOptionalCallsites`, which spell it
+    /// identically.
+    fn parse_summary_stack_ids(&mut self) -> ParseResult<Vec<u32>> {
+        let mut indices = Vec::new();
+        if matches!(self.peek(), Token::RParen) {
+            return Ok(indices);
+        }
+        loop {
+            let stack_id = self.parse_uint64()?;
+            if let Some(index) = self.summary_index_mut() {
+                indices.push(index.stack_id_index(stack_id));
+            }
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+        Ok(indices)
+    }
+
+    /// AllocType
+    ///   := ('none'|'notcold'|'cold'|'hot')
+    ///
+    /// Mirrors `LLParser::parseAllocType`.
+    fn parse_alloc_type(&mut self) -> ParseResult<AllocationType> {
+        let loc = self.loc();
+        let allocation_type = match self.peek() {
+            Token::Kw(Keyword::None) => AllocationType::None,
+            Token::Kw(Keyword::Notcold) => AllocationType::NotCold,
+            Token::Kw(Keyword::Cold) => AllocationType::Cold,
+            Token::Kw(Keyword::Hot) => AllocationType::Hot,
+            _ => return Err(self.message_at(loc, "invalid alloc type")),
+        };
+        self.bump()?;
+        Ok(allocation_type)
+    }
+
+    /// OptionalCallsites
+    ///   := 'callsites' ':' '(' Callsite [',' Callsite]* ')'
+    ///
+    /// Mirrors `LLParser::parseOptionalCallsites`.
+    fn parse_optional_callsites(&mut self) -> ParseResult<Vec<CallsiteInfo>> {
+        self.expect_keyword(Keyword::Callsites, "'callsites' here")?;
+        self.expect_punct(PunctKind::Colon, "':' in callsites")?;
+        self.expect_punct(PunctKind::LParen, "'(' in callsites")?;
+
+        let mut callsites: Vec<CallsiteInfo> = Vec::new();
+        loop {
+            self.expect_punct(PunctKind::LParen, "'(' in callsite")?;
+            self.expect_keyword(Keyword::Callee, "'callee' in callsite")?;
+            self.expect_punct(PunctKind::Colon, "':'")?;
+
+            let loc = self.loc();
+            let mut callee = None;
+            let mut forward = None;
+            if !self.eat_keyword(Keyword::Null)? {
+                let reference = self.parse_gv_reference()?;
+                if reference.is_forward {
+                    forward = Some(reference.summary_id);
+                }
+                callee = Some(reference.value);
+            }
+
+            self.expect_punct(PunctKind::Comma, "',' in callsite")?;
+            self.expect_keyword(Keyword::Clones, "'clones' in callsite")?;
+            self.expect_punct(PunctKind::Colon, "':'")?;
+            self.expect_punct(PunctKind::LParen, "'(' in clones")?;
+            let mut clones = Vec::new();
+            loop {
+                clones.push(self.parse_uint32()?);
+                if !self.eat_punct(PunctKind::Comma)? {
+                    break;
+                }
+            }
+            self.expect_punct(PunctKind::RParen, "')' in clones")?;
+
+            self.expect_punct(PunctKind::Comma, "',' in callsite")?;
+            self.expect_keyword(Keyword::StackIds, "'stackIds' in callsite")?;
+            self.expect_punct(PunctKind::Colon, "':'")?;
+            self.expect_punct(PunctKind::LParen, "'(' in stackIds")?;
+            let stack_id_indices = self.parse_summary_stack_ids()?;
+            self.expect_punct(PunctKind::RParen, "')' in stackIds")?;
+
+            if let Some(summary_id) = forward {
+                self.pending_summary_value_refs.push((
+                    summary_id,
+                    SummaryValueRefField::Callsite(callsites.len()),
+                    loc,
+                ));
+            }
+            callsites.push(CallsiteInfo {
+                callee,
+                clones,
+                stack_id_indices,
+            });
+
+            self.expect_punct(PunctKind::RParen, "')' in callsite")?;
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' in callsites")?;
+        Ok(callsites)
     }
 
     /// Reference a comdat by name, recording a forward reference when no

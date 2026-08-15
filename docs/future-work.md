@@ -12,6 +12,45 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## Summary index — printing a module and its index is two calls (found 2026-08-15, LLParser parity W10)
+
+`llvm-dis` prints a module and its summary index together because
+`AssemblyWriter` is handed both, and `printModuleSummaryIndex` runs after
+`printModule`. llvmkit keeps them apart: the index comes back in
+`ParsedModule::summary_index`, it is not attached to the `Module`, and
+`format!("{module}")` therefore never emits `^N` entries. A caller reproducing
+`llvm-dis` writes the module and then the index.
+
+That is a plumbing difference, not a byte difference — `Display for
+ModuleSummaryIndex` reproduces `printModuleSummaryIndex` exactly, leading blank
+line included. It is recorded so the absence of `^N` from a printed module is
+not read as a missing feature. Attaching the index to the module would mean
+giving `Module` a field that only the parser ever fills, which is a bigger
+question than W10 needed to answer.
+
+## Summary index — two things the `.ll` surface cannot reach (found 2026-08-15, LLParser parity W10)
+
+Both are recorded so a later reader can tell "deliberately outside the textual
+surface" from "missed".
+
+**`AllocationType` models the four values the parser accepts, not the ORed
+set.** Upstream's `enum class AllocationType : uint8_t` has `None = 0`,
+`NotCold = 1`, `Cold = 2`, `Hot = 4` and `All = 7`, and the values are powers
+of two *so that a context reaching an allocation more than one way can OR
+them*. `AllocInfo::Versions` is a `SmallVector<uint8_t>` for exactly that
+reason. But `LLParser::parseAllocType` reads one of four keywords, and
+`AssemblyWriter::printFunctionSummary`'s `AllocTypeName` lambda handles those
+four and `llvm_unreachable`s on anything else — so an ORed value can only come
+from bitcode, which llvmkit does not have. The enum is the `.ll` surface,
+exactly.
+
+**`test/Assembler/thinlto-vtable-summary2.ll` is not ported.** Its `RUN` line
+is `opt %s -S -module-summary`, which *generates* a summary index from the
+module's type metadata rather than parsing one; there is no `^N` block in the
+input at all. That is the module-summary analysis, not the parser, and llvmkit
+has neither. The other sixteen summary fixtures in `test/Assembler` are ported
+in `crates/llvmkit-asmparser/tests/parser_summary.rs`.
+
 ## Parser — `parseUInt64` is narrower than upstream's in two ways (found 2026-08-15, LLParser parity W10)
 
 `LLParser::parseUInt64` accepts any `lltok::APSInt` whose value is *unsigned*

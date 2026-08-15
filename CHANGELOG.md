@@ -51,6 +51,58 @@ cut, entries accumulate under **Unreleased**.
   renders byte-for-byte; the parser crate's hand-written `Display` impls are on
   their way out with the parser rework.
 
+- **Changed: the summary parser moves into `LLParser`.** llvmkit had a second
+  parser for `^N` entries — its own lexer instance, its own diagnostics, its own
+  entry point — where upstream has one `LLParser` that reads summary entries
+  from the same top-level loop as everything else. That is the W8 finding in a
+  new shape, and the same consequence followed: **a routine transcribed twice
+  diverges twice.** The standalone parser accepted a `module:` entry with no
+  `hash:` clause (upstream's comma is mandatory), took a `typeid:` entry with
+  no `summary:` payload and **discarded** it, and had no notion of a forward
+  `^N`, a GUID, or a slot number.
+
+  `^N` now joins the top-level dispatch, so a file that mixes IR and summary
+  entries parses as one thing. All 43 of upstream's summary parse members are
+  ported, with their ~111 diagnostics.
+
+- **Added: the three parsing modes upstream distinguishes.** `parse_assembly`
+  keeps passing a null index, which is why it *skips* summary entries whole —
+  `skipModuleSummaryEntry`, including its own narrower keyword guard, which
+  rejects `typeidCompatibleVTable` even though the real dispatch accepts it.
+  New `parse_assembly_with_index` mirrors `parseAssemblyWithIndex`, and
+  `parse_summary_index_assembly` now runs the real parser in upstream's
+  null-module mode: `^N` and `source_filename` are read, everything else is
+  lexed past.
+
+- **Added: forward `^N` references and `validateEndOfIndex`.** A summary may
+  reference a `^N` defined later, in a call edge, a ref, an aliasee, a vtable
+  function, a callsite, a parameter access or a type test. Upstream back-patches
+  raw `ValueInfo *` pointers into vectors that stay valid across the move into
+  the summary; llvmkit records the coordinate and comes back to it, which is
+  the one place its shape differs and why the summary is added to the index
+  before the pending references are registered. The verdicts match, including a
+  summary that references its own `^N`. Unresolved ids are
+  `use of undefined summary '^N'` and `use of undefined type id summary '^N'`.
+
+- **Fixed: a summary flag reads the token's signedness, not its sign.**
+  `LLParser::parseFlag` takes `APSInt::getBoolValue` and rejects a *signed*
+  token. `s0x1` is signed and `u0x1` is not, whatever they look like — so
+  checking for a leading `-` accepts `live: s0x1`, which upstream refuses.
+  Found by re-reading the routine against the port, not by a fixture: every
+  flag in `test/Assembler` is spelled `0` or `1`. The same pass caught
+  `typeTestRes`'s `bitMask`, which upstream narrows with a C cast after an
+  assert — so a release build keeps the low eight bits where llvmkit had been
+  saturating.
+
+- **Fixed: five texts the plan expected are asserts, not diagnostics.**
+  `Need a source_filename to compute GUID for local`,
+  `Forward referenced ValueInfo expected to be empty`,
+  `Forward referencing alias already has aliasee`, `Aliasee must be a definition`
+  and `Linkage not optional in summary entry` are all `assert` strings. A
+  release LLVM does not emit them, so `flags: (linkage: <unknown keyword>)`
+  silently reads as `external` — which is now what llvmkit does too, rather
+  than being stricter than the thing it mirrors.
+
 - **Added: `Linkage::is_local` and the two `summary_name` accessors.**
   `isLocalLinkage` had been spelled inline at its one call site; a summary index
   needs it too, and `getLinkageName` / `getVisibilityName` spell `external` and

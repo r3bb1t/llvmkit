@@ -244,6 +244,8 @@ When porting, anchor the work on these files:
 | Parser (entry: `parseAssembly*`) | `llvm/include/llvm/AsmParser/{LLParser,Parser}.h` | `llvm/lib/AsmParser/{LLParser,Parser}.cpp` (LLParser.cpp is ~11k lines) |
 | Slot numbering / mapping | `llvm/include/llvm/AsmParser/{SlotMapping,NumberedValues}.h`, `llvm/include/llvm/IR/ModuleSlotTracker.h` | `SlotTracker` lives **inside** `llvm/lib/IR/AsmWriter.cpp` (not exported) |
 | Optional source-location capture | `llvm/include/llvm/AsmParser/{AsmParserContext,FileLoc}.h` | `llvm/lib/AsmParser/AsmParserContext.cpp` |
+| Module summary index (`^N` entries) | `llvm/include/llvm/IR/ModuleSummaryIndex.h` | parsed by the summary members of `llvm/lib/AsmParser/LLParser.cpp`, printed by `AssemblyWriter::printModuleSummaryIndex` in `llvm/lib/IR/AsmWriter.cpp`. The **model** lives in `IR`, not in `AsmParser` — llvmkit follows: `crates/llvmkit-ir/src/module_summary_index.rs` |
+| Global value GUIDs | `llvm/include/llvm/Support/MD5.h`, `llvm/include/llvm/IR/GlobalValue.h` | `GlobalValue::getGUIDAssumingExternalLinkage` is `MD5Hash(getGlobalIdentifier(...))`; llvmkit ports MD5 into `crates/llvmkit-ir/src/md5.rs` because the index is keyed by it |
 | Printer / `Module::print` / `Value::print` | `llvm/include/llvm/IR/AssemblyAnnotationWriter.h` | `llvm/lib/IR/AsmWriter.cpp` (~5.5k lines) |
 | Format-dispatch wrapper (sniffs bitcode magic, falls back to `.ll`) | `llvm/include/llvm/IRReader/IRReader.h` | `llvm/lib/IRReader/IRReader.cpp` |
 
@@ -443,7 +445,6 @@ anchors, not as an exhaustive inventory):
         │   ├── file_loc.rs          # FileLoc.h
         │   ├── slot_mapping.rs      # SlotMapping.h
         │   ├── numbered_values.rs   # NumberedValues.h
-        │   ├── module_summary.rs    # summary/index record placeholders parsed from .ll
         │   ├── parse_error.rs       # parser diagnostics
         │   ├── ll_token.rs          # LLToken.h
         │   └── ll_lexer/            # private lexer helpers
