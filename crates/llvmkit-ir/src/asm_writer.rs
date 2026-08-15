@@ -28,6 +28,7 @@ use super::basic_block::BasicBlock;
 use super::block_state::BlockTerminationState;
 use super::comdat::ComdatRef;
 use super::constant::{ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode};
+use super::constant_range::ConstantRange;
 use super::function::FunctionValue;
 use super::global_alias::GlobalAlias;
 use super::global_ifunc::GlobalIfunc;
@@ -56,6 +57,13 @@ use super::metadata::{
 };
 use super::module::{
     DynBrand, ModuleBrand, ModuleCore, ModuleView, UseListOrderBbRecord, UseListOrderRecord,
+};
+use super::module_summary_index::{
+    AliasSummary, ConstantVirtualCall, FunctionSummary, GlobalValueSummary, GlobalValueSummaryInfo,
+    GlobalVariableSummary, Guid, Hotness, ModuleSummaryIndex, REGULAR_LTO_MODULE_NAME,
+    SummaryIndexSlots, SummaryKind, TypeIdInfo, TypeIdOffsetVtableInfo, TypeIdSummary,
+    TypeTestResolution, VirtualFunctionId, WholeProgramDevirtByArgKind, WholeProgramDevirtKind,
+    WholeProgramDevirtResolution,
 };
 use super::sync_scope::SyncScope;
 use super::r#type::{StructBody, Type, TypeData, TypeSlot};
@@ -3451,4 +3459,632 @@ fn fmt_select(
     let fv = Value::from_parts(s.false_val.get(), module, fd.ty);
     write!(f, "{} ", fv.ty())?;
     fmt_operand_ref(f, fv, Some(slots))
+}
+
+// ---------------------------------------------------------------------------
+// Module summary index
+// ---------------------------------------------------------------------------
+
+/// Writes a `^N` slot reference.
+///
+/// `SlotTracker::getGUIDSlot` and its siblings answer `-1` for an entity the
+/// index does not carry, and `AsmWriter` streams that answer straight into the
+/// `^` form, so a dangling reference prints as `^-1` rather than crashing.
+fn fmt_summary_slot(f: &mut fmt::Formatter<'_>, slot: Option<u32>) -> fmt::Result {
+    match slot {
+        Some(slot) => write!(f, "^{slot}"),
+        None => f.write_str("^-1"),
+    }
+}
+
+/// Mirrors `AssemblyWriter::printTypeTestResolution`.
+fn fmt_type_test_resolution(
+    f: &mut fmt::Formatter<'_>,
+    resolution: &TypeTestResolution,
+) -> fmt::Result {
+    write!(
+        f,
+        "typeTestRes: (kind: {}, sizeM1BitWidth: {}",
+        resolution.kind, resolution.size_minus_one_bit_width
+    )?;
+
+    // These fields are only used when the target cannot store constants in
+    // absolute symbols; upstream prints them only when non-zero.
+    if resolution.align_log2 != 0 {
+        write!(f, ", alignLog2: {}", resolution.align_log2)?;
+    }
+    if resolution.size_minus_one != 0 {
+        write!(f, ", sizeM1: {}", resolution.size_minus_one)?;
+    }
+    if resolution.bit_mask != 0 {
+        write!(f, ", bitMask: {}", resolution.bit_mask)?;
+    }
+    if resolution.inline_bits != 0 {
+        write!(f, ", inlineBits: {}", resolution.inline_bits)?;
+    }
+
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printArgs`.
+fn fmt_summary_args(f: &mut fmt::Formatter<'_>, args: &[u64]) -> fmt::Result {
+    f.write_str("args: (")?;
+    for (position, arg) in args.iter().enumerate() {
+        if position != 0 {
+            f.write_str(", ")?;
+        }
+        write!(f, "{arg}")?;
+    }
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printWPDRes`.
+fn fmt_whole_program_devirt_resolution(
+    f: &mut fmt::Formatter<'_>,
+    resolution: &WholeProgramDevirtResolution,
+) -> fmt::Result {
+    write!(f, "wpdRes: (kind: {}", resolution.kind)?;
+
+    if resolution.kind == WholeProgramDevirtKind::SingleImpl {
+        write!(f, ", singleImplName: \"{}\"", resolution.single_impl_name)?;
+    }
+
+    if !resolution.resolutions_by_argument.is_empty() {
+        f.write_str(", resByArg: (")?;
+        for (position, (args, by_arg)) in resolution.resolutions_by_argument.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            fmt_summary_args(f, args)?;
+            write!(f, ", byArg: (kind: {}", by_arg.kind)?;
+            if matches!(
+                by_arg.kind,
+                WholeProgramDevirtByArgKind::UniformRetVal
+                    | WholeProgramDevirtByArgKind::UniqueRetVal
+            ) {
+                write!(f, ", info: {}", by_arg.info)?;
+            }
+            // Only used when the target cannot store constants in absolute
+            // symbols; upstream prints the pair only when either is non-zero.
+            if by_arg.byte != 0 || by_arg.bit != 0 {
+                write!(f, ", byte: {}, bit: {}", by_arg.byte, by_arg.bit)?;
+            }
+            f.write_str(")")?;
+        }
+        f.write_str(")")?;
+    }
+
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printTypeIdSummary`.
+fn fmt_type_id_summary(f: &mut fmt::Formatter<'_>, summary: &TypeIdSummary) -> fmt::Result {
+    f.write_str(", summary: (")?;
+    fmt_type_test_resolution(f, &summary.type_test_resolution)?;
+    if !summary.whole_program_devirt_resolutions.is_empty() {
+        f.write_str(", wpdResolutions: (")?;
+        for (position, (offset, resolution)) in
+            summary.whole_program_devirt_resolutions.iter().enumerate()
+        {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "(offset: {offset}, ")?;
+            fmt_whole_program_devirt_resolution(f, resolution)?;
+            f.write_str(")")?;
+        }
+        f.write_str(")")?;
+    }
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printTypeIdCompatibleVtableSummary`.
+fn fmt_type_id_compatible_vtable_summary(
+    f: &mut fmt::Formatter<'_>,
+    entries: &[TypeIdOffsetVtableInfo],
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    f.write_str(", summary: (")?;
+    for (position, entry) in entries.iter().enumerate() {
+        if position != 0 {
+            f.write_str(", ")?;
+        }
+        write!(f, "(offset: {}, ", entry.address_point_offset)?;
+        fmt_summary_slot(f, slots.guid(entry.vtable.guid))?;
+        f.write_str(")")?;
+    }
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printVFuncId`, which falls back to the raw GUID
+/// when the index carries no type identifier for it, and otherwise prints one
+/// entry per type identifier sharing that GUID.
+fn fmt_virtual_function_id(
+    f: &mut fmt::Formatter<'_>,
+    id: &VirtualFunctionId,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    let Some(entries) = index.type_ids().get(&id.guid) else {
+        return write!(f, "vFuncId: (guid: {}, offset: {})", id.guid, id.offset);
+    };
+    for (position, (name, _)) in entries.iter().enumerate() {
+        if position != 0 {
+            f.write_str(", ")?;
+        }
+        f.write_str("vFuncId: (")?;
+        fmt_summary_slot(f, slots.type_id(name))?;
+        write!(f, ", offset: {})", id.offset)?;
+    }
+    Ok(())
+}
+
+/// Mirrors `AssemblyWriter::printNonConstVCalls`.
+fn fmt_non_const_virtual_calls(
+    f: &mut fmt::Formatter<'_>,
+    calls: &[VirtualFunctionId],
+    tag: &str,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    write!(f, "{tag}: (")?;
+    for (position, id) in calls.iter().enumerate() {
+        if position != 0 {
+            f.write_str(", ")?;
+        }
+        fmt_virtual_function_id(f, id, index, slots)?;
+    }
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printConstVCalls`.
+fn fmt_const_virtual_calls(
+    f: &mut fmt::Formatter<'_>,
+    calls: &[ConstantVirtualCall],
+    tag: &str,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    write!(f, "{tag}: (")?;
+    for (position, call) in calls.iter().enumerate() {
+        if position != 0 {
+            f.write_str(", ")?;
+        }
+        f.write_str("(")?;
+        fmt_virtual_function_id(f, &call.virtual_function, index, slots)?;
+        if !call.arguments.is_empty() {
+            f.write_str(", ")?;
+            fmt_summary_args(f, &call.arguments)?;
+        }
+        f.write_str(")")?;
+    }
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printTypeIdInfo`.
+fn fmt_type_id_info(
+    f: &mut fmt::Formatter<'_>,
+    info: &TypeIdInfo,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    f.write_str(", typeIdInfo: (")?;
+    let mut written = false;
+
+    if !info.type_tests.is_empty() {
+        written = true;
+        f.write_str("typeTests: (")?;
+        let mut first = true;
+        for guid in &info.type_tests {
+            match index.type_ids().get(guid) {
+                // No type identifier carries this GUID: print it raw.
+                None => {
+                    if !first {
+                        f.write_str(", ")?;
+                    }
+                    first = false;
+                    write!(f, "{guid}")?;
+                }
+                // Print every type identifier that shares this GUID.
+                Some(entries) => {
+                    for (name, _) in entries {
+                        if !first {
+                            f.write_str(", ")?;
+                        }
+                        first = false;
+                        fmt_summary_slot(f, slots.type_id(name))?;
+                    }
+                }
+            }
+        }
+        f.write_str(")")?;
+    }
+    if !info.type_test_assume_vcalls.is_empty() {
+        if written {
+            f.write_str(", ")?;
+        }
+        written = true;
+        fmt_non_const_virtual_calls(
+            f,
+            &info.type_test_assume_vcalls,
+            "typeTestAssumeVCalls",
+            index,
+            slots,
+        )?;
+    }
+    if !info.type_checked_load_vcalls.is_empty() {
+        if written {
+            f.write_str(", ")?;
+        }
+        written = true;
+        fmt_non_const_virtual_calls(
+            f,
+            &info.type_checked_load_vcalls,
+            "typeCheckedLoadVCalls",
+            index,
+            slots,
+        )?;
+    }
+    if !info.type_test_assume_const_vcalls.is_empty() {
+        if written {
+            f.write_str(", ")?;
+        }
+        written = true;
+        fmt_const_virtual_calls(
+            f,
+            &info.type_test_assume_const_vcalls,
+            "typeTestAssumeConstVCalls",
+            index,
+            slots,
+        )?;
+    }
+    if !info.type_checked_load_const_vcalls.is_empty() {
+        if written {
+            f.write_str(", ")?;
+        }
+        fmt_const_virtual_calls(
+            f,
+            &info.type_checked_load_const_vcalls,
+            "typeCheckedLoadConstVCalls",
+            index,
+            slots,
+        )?;
+    }
+    f.write_str(")")
+}
+
+/// Mirrors the `PrintRange` lambda in `AssemblyWriter::printFunctionSummary`.
+fn fmt_summary_range(f: &mut fmt::Formatter<'_>, range: &ConstantRange) -> fmt::Result {
+    write!(f, "[{}, {}]", range.signed_min(), range.signed_max())
+}
+
+/// Mirrors `AssemblyWriter::printAliasSummary`.
+fn fmt_alias_summary(
+    f: &mut fmt::Formatter<'_>,
+    summary: &AliasSummary,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    f.write_str(", aliasee: ")?;
+    // A distributed backend's index may omit the aliasee summary; upstream
+    // emits "null" for that case as well as for an explicitly null aliasee.
+    match summary.aliasee {
+        Some(guid) => fmt_summary_slot(f, slots.guid(guid)),
+        None => f.write_str("null"),
+    }
+}
+
+/// Mirrors `AssemblyWriter::printGlobalVarSummary`.
+fn fmt_global_variable_summary(
+    f: &mut fmt::Formatter<'_>,
+    summary: &GlobalVariableSummary,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    write!(
+        f,
+        ", varFlags: (readonly: {}, writeonly: {}, constant: {}",
+        u8::from(summary.variable_flags.maybe_read_only),
+        u8::from(summary.variable_flags.maybe_write_only),
+        u8::from(summary.variable_flags.constant),
+    )?;
+    if !summary.vtable_functions.is_empty() {
+        write!(
+            f,
+            ", vcall_visibility: {}",
+            summary.variable_flags.vcall_visibility.numeric()
+        )?;
+    }
+    f.write_str(")")?;
+
+    if !summary.vtable_functions.is_empty() {
+        f.write_str(", vTableFuncs: (")?;
+        for (position, entry) in summary.vtable_functions.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str("(virtFunc: ")?;
+            fmt_summary_slot(f, slots.guid(entry.function.guid))?;
+            write!(f, ", offset: {})", entry.vtable_offset)?;
+        }
+        f.write_str(")")?;
+    }
+    Ok(())
+}
+
+/// Resolves stack-id indices back to the 64-bit ids the index stores, as
+/// `printFunctionSummary` does through `getStackIdAtIndex`.
+fn fmt_stack_ids(
+    f: &mut fmt::Formatter<'_>,
+    indices: &[u32],
+    index: &ModuleSummaryIndex,
+) -> fmt::Result {
+    for (position, stack_id_index) in indices.iter().enumerate() {
+        if position != 0 {
+            f.write_str(", ")?;
+        }
+        match index.stack_id_at_index(*stack_id_index) {
+            Some(stack_id) => write!(f, "{stack_id}")?,
+            // Upstream asserts the index is in range; a hand-built index that
+            // breaks the invariant prints the index itself rather than crashing.
+            None => write!(f, "{stack_id_index}")?,
+        }
+    }
+    Ok(())
+}
+
+/// Mirrors `AssemblyWriter::printFunctionSummary`.
+fn fmt_function_summary(
+    f: &mut fmt::Formatter<'_>,
+    summary: &FunctionSummary,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    write!(f, ", insts: {}", summary.instruction_count)?;
+    if summary.function_flags.any_flag_set() {
+        write!(f, ", {}", summary.function_flags)?;
+    }
+
+    if !summary.calls.is_empty() {
+        f.write_str(", calls: (")?;
+        for (position, call) in summary.calls.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str("(callee: ")?;
+            fmt_summary_slot(f, slots.guid(call.callee.guid))?;
+            if call.hotness != Hotness::Unknown {
+                write!(f, ", hotness: {}", call.hotness)?;
+            } else if let Some(frequency) = call.relative_block_frequency {
+                write!(f, ", relbf: {frequency}")?;
+            }
+            // Flags print as booleans, but only when true, to avoid
+            // unnecessary verbosity and test churn.
+            if call.has_tail_call {
+                f.write_str(", tail: 1")?;
+            }
+            f.write_str(")")?;
+        }
+        f.write_str(")")?;
+    }
+
+    if let Some(info) = &summary.type_id_info {
+        fmt_type_id_info(f, info, index, slots)?;
+    }
+
+    if !summary.allocations.is_empty() {
+        f.write_str(", allocs: (")?;
+        for (position, allocation) in summary.allocations.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str("(versions: (")?;
+            for (position, version) in allocation.versions.iter().enumerate() {
+                if position != 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{version}")?;
+            }
+            f.write_str("), memProf: (")?;
+            for (position, block) in allocation.memory_info_blocks.iter().enumerate() {
+                if position != 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "(type: {}, stackIds: (", block.allocation_type)?;
+                fmt_stack_ids(f, &block.stack_id_indices, index)?;
+                f.write_str("))")?;
+            }
+            f.write_str("))")?;
+        }
+        f.write_str(")")?;
+    }
+
+    if !summary.callsites.is_empty() {
+        f.write_str(", callsites: (")?;
+        for (position, callsite) in summary.callsites.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            match callsite.callee {
+                Some(callee) => {
+                    f.write_str("(callee: ")?;
+                    fmt_summary_slot(f, slots.guid(callee.guid))?;
+                }
+                None => f.write_str("(callee: null")?,
+            }
+            f.write_str(", clones: (")?;
+            for (position, clone) in callsite.clones.iter().enumerate() {
+                if position != 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{clone}")?;
+            }
+            f.write_str("), stackIds: (")?;
+            fmt_stack_ids(f, &callsite.stack_id_indices, index)?;
+            f.write_str("))")?;
+        }
+        f.write_str(")")?;
+    }
+
+    if !summary.parameter_accesses.is_empty() {
+        f.write_str(", params: (")?;
+        for (position, access) in summary.parameter_accesses.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "(param: {}, offset: ", access.parameter_number)?;
+            fmt_summary_range(f, &access.use_range)?;
+            if !access.calls.is_empty() {
+                f.write_str(", calls: (")?;
+                for (position, call) in access.calls.iter().enumerate() {
+                    if position != 0 {
+                        f.write_str(", ")?;
+                    }
+                    f.write_str("(callee: ")?;
+                    fmt_summary_slot(f, slots.guid(call.callee.guid))?;
+                    write!(f, ", param: {}, offset: ", call.parameter_number)?;
+                    fmt_summary_range(f, &call.offsets)?;
+                    f.write_str(")")?;
+                }
+                f.write_str(")")?;
+            }
+            f.write_str(")")?;
+        }
+        f.write_str(")")?;
+    }
+
+    Ok(())
+}
+
+/// Mirrors `AssemblyWriter::printSummary`.
+fn fmt_global_value_summary(
+    f: &mut fmt::Formatter<'_>,
+    summary: &GlobalValueSummary,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    write!(f, "{}: (module: ", summary.kind.keyword())?;
+    fmt_summary_slot(f, slots.module_path(&summary.module_path))?;
+    write!(
+        f,
+        ", flags: (linkage: {}, visibility: {}, notEligibleToImport: {}, live: {}, dsoLocal: {}, canAutoHide: {}, importType: {})",
+        summary.flags.linkage.summary_name(),
+        summary.flags.visibility.summary_name(),
+        u8::from(summary.flags.not_eligible_to_import),
+        u8::from(summary.flags.live),
+        u8::from(summary.flags.dso_local),
+        u8::from(summary.flags.can_auto_hide),
+        summary.flags.import_type,
+    )?;
+
+    match &summary.kind {
+        SummaryKind::Alias(alias) => fmt_alias_summary(f, alias, slots)?,
+        SummaryKind::Function(function) => fmt_function_summary(f, function, index, slots)?,
+        SummaryKind::Variable(variable) => fmt_global_variable_summary(f, variable, slots)?,
+    }
+
+    if !summary.references.is_empty() {
+        f.write_str(", refs: (")?;
+        for (position, reference) in summary.references.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str(reference.access.prefix())?;
+            fmt_summary_slot(f, slots.guid(reference.guid))?;
+        }
+        f.write_str(")")?;
+    }
+
+    f.write_str(")")
+}
+
+/// Mirrors `AssemblyWriter::printSummaryInfo`.
+fn fmt_summary_info(
+    f: &mut fmt::Formatter<'_>,
+    slot: Option<u32>,
+    guid: Guid,
+    info: &GlobalValueSummaryInfo,
+    index: &ModuleSummaryIndex,
+    slots: &SummaryIndexSlots<'_>,
+) -> fmt::Result {
+    fmt_summary_slot(f, slot)?;
+    f.write_str(" = gv: (")?;
+    match info.printable_name() {
+        Some(name) => write!(f, "name: \"{name}\"")?,
+        None => write!(f, "guid: {guid}")?,
+    }
+    if !info.summary_list.is_empty() {
+        f.write_str(", summaries: (")?;
+        for (position, summary) in info.summary_list.iter().enumerate() {
+            if position != 0 {
+                f.write_str(", ")?;
+            }
+            fmt_global_value_summary(f, summary, index, slots)?;
+        }
+        f.write_str(")")?;
+    }
+    f.write_str(")")?;
+    if info.printable_name().is_some() {
+        write!(f, " ; guid = {guid}")?;
+    }
+    writeln!(f)
+}
+
+impl fmt::Display for ModuleSummaryIndex {
+    /// Mirrors `AssemblyWriter::printModuleSummaryIndex`, including its leading
+    /// blank line — the separator from the module body it is printed after.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let slots = self.slots();
+        writeln!(f)?;
+
+        // Module paths, in the sorted order their slots were assigned in.
+        for (path, hash) in self.module_paths() {
+            // An empty module path is the special entry for the regular-LTO
+            // module created during the thin link.
+            let printed = if path.is_empty() {
+                REGULAR_LTO_MODULE_NAME
+            } else {
+                path.as_str()
+            };
+            fmt_summary_slot(f, slots.module_path(path))?;
+            f.write_str(" = module: (path: \"")?;
+            print_escaped_string(f, printed.as_bytes())?;
+            f.write_str("\", hash: (")?;
+            for (position, word) in hash.iter().enumerate() {
+                if position != 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{word}")?;
+            }
+            f.write_str("))\n")?;
+        }
+
+        for (guid, info) in self.global_values() {
+            fmt_summary_info(f, slots.guid(*guid), *guid, info, self, &slots)?;
+        }
+
+        for (guid, entries) in self.type_ids() {
+            for (name, summary) in entries {
+                fmt_summary_slot(f, slots.type_id(name))?;
+                write!(f, " = typeid: (name: \"{name}\"")?;
+                fmt_type_id_summary(f, summary)?;
+                writeln!(f, ") ; guid = {guid}")?;
+            }
+        }
+
+        for (name, entries) in self.type_id_compatible_vtables() {
+            let guid = Guid::of_global_identifier(name);
+            fmt_summary_slot(f, slots.type_id_compatible_vtable(name))?;
+            write!(f, " = typeidCompatibleVTable: (name: \"{name}\"")?;
+            fmt_type_id_compatible_vtable_summary(f, entries, &slots)?;
+            writeln!(f, ") ; guid = {guid}")?;
+        }
+
+        // Flags are zero by default and are not emitted when they carry
+        // nothing.
+        let mut trailing_slot = slots.total();
+        if self.flags().raw() != 0 {
+            writeln!(f, "^{trailing_slot} = flags: {}", self.flags().raw())?;
+            trailing_slot += 1;
+        }
+        writeln!(f, "^{trailing_slot} = blockcount: {}", self.block_count())
+    }
 }

@@ -12,6 +12,28 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## Parser — `parseUInt64` is narrower than upstream's in two ways (found 2026-08-15, LLParser parity W10)
+
+`LLParser::parseUInt64` accepts any `lltok::APSInt` whose value is *unsigned*
+and takes `APSInt::getLimitedValue()`, which **saturates** at `UINT64_MAX`.
+llvmkit's `parse_uint64` (`ll_parser.rs`) accepts only a positive **decimal**
+literal and fails outright when the digits do not fit in a `u64`. Two
+divergences follow:
+
+- `u0x10` is an unsigned APSInt upstream and is accepted wherever a `uint64` is
+  wanted; llvmkit answers `expected integer`.
+- a literal wider than 64 bits saturates upstream and is rejected here.
+
+`parse_uint32` has the same shape, though its saturation is unobservable: the
+`0xFFFFFFFF + 1` limit makes any oversized value fail the range check either
+way, which is what `align-param-attr-error2.ll` pins.
+
+Not fixed in W10 because it is a W5-owned routine with 25 call sites, no
+fixture in `test/Assembler` reaches either case, and the honest fix reads the
+token through `parse_int_literal` — the APSInt token model — which changes
+where the diagnostic's span comes from. It is recorded rather than smuggled
+into the summary-index wave.
+
 ## llvmkit-ir — three copies of the aggregate index walk (found 2026-08-14, LLParser parity W9c)
 
 `ExtractValueInst::getIndexedType` now has a public port,

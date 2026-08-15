@@ -72,6 +72,27 @@ impl Linkage {
         Self::Common,
     ];
 
+    /// Whether this linkage is local to its translation unit.
+    ///
+    /// Mirrors `GlobalValue::isLocalLinkage`. It decides whether a symbol's
+    /// global identifier takes a source-file-name prefix, and whether its
+    /// visibility and DLL storage class are constrained to their defaults.
+    pub const fn is_local(self) -> bool {
+        matches!(self, Self::Internal | Self::Private)
+    }
+
+    /// This linkage's name in a module summary index, where `External` is
+    /// spelled out rather than left implicit.
+    ///
+    /// Mirrors `AsmWriter.cpp::getLinkageName`; [`keyword`](Self::keyword) is
+    /// the `getLinkageNameWithSpace` half, which prints nothing for `External`.
+    pub const fn summary_name(self) -> &'static str {
+        match self {
+            Self::External => "external",
+            other => other.keyword(),
+        }
+    }
+
     /// `.ll` keyword for this linkage, or `""` for `External` (which
     /// has no explicit keyword in textual IR).
     pub const fn keyword(self) -> &'static str {
@@ -134,6 +155,17 @@ impl Visibility {
     /// Every variant, in declaration order. See
     /// [`Linkage::VARIANTS`] for why it exists.
     pub const VARIANTS: [Self; 3] = [Self::Default, Self::Hidden, Self::Protected];
+
+    /// This visibility's name in a module summary index, where `Default` is
+    /// spelled out rather than left implicit.
+    ///
+    /// Mirrors `AsmWriter.cpp::getVisibilityName`.
+    pub const fn summary_name(self) -> &'static str {
+        match self.keyword() {
+            Some(keyword) => keyword,
+            None => "default",
+        }
+    }
 
     /// `.ll` keyword for this visibility, or `None` for
     /// [`Self::Default`] (no keyword in textual IR).

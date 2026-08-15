@@ -19,6 +19,43 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Module summary index
+
+- **Added: `llvmkit_ir::module_summary_index`, the whole-program `^N` model.**
+  It moves out of `llvmkit-asmparser`, where a summary index was an AST the
+  parser crate both built and printed, and into `llvmkit-ir` beside the rest of
+  the IR — upstream's own layering (`llvm/IR/ModuleSummaryIndex.h`), and the
+  precondition for printing it through the AsmWriter.
+
+  The model is upstream's: `GlobalValueSummary` with a `SummaryKind`
+  discriminator over alias / function / variable, `TypeIdSummary` with its
+  type-test resolution and whole-program-devirtualization map, the memprof
+  allocation and callsite summaries, and the parameter-access ranges.
+
+  **`^N` numbers are not part of it.** `SlotTracker::processIndex` re-derives
+  them when printing — module paths sorted by path string, then global values
+  in ascending GUID order, then compatible-vtable entries by name, then type
+  identifiers by GUID — and `test/Assembler/index-value-order.ll` exists
+  precisely to prove input order is not preserved. The design annex had
+  sketched a `^N`-ordered entry vector; that shape cannot reproduce upstream's
+  bytes, so it is not what shipped.
+
+- **Added: `llvmkit_ir::md5`,** a port of `llvm/Support/MD5.h`. A summary index
+  is keyed by `GlobalValue::getGUIDAssumingExternalLinkage`, which is the low
+  64 bits of the MD5 digest of a value's global identifier, so the hash is not
+  optional. `GlobalValue::getGlobalIdentifier` comes with it, including the
+  source-file-name prefix a local linkage takes.
+
+- **Added: the summary index prints.** `AssemblyWriter::printModuleSummaryIndex`
+  and its eleven helpers are ported into `asm_writer.rs`, so a summary index
+  renders byte-for-byte; the parser crate's hand-written `Display` impls are on
+  their way out with the parser rework.
+
+- **Added: `Linkage::is_local` and the two `summary_name` accessors.**
+  `isLocalLinkage` had been spelled inline at its one call site; a summary index
+  needs it too, and `getLinkageName` / `getVisibilityName` spell `external` and
+  `default` out where the `.ll` keyword forms leave them implicit.
+
 ### Instruction operands
 
 - **Added: the instruction remainder validates its operands.** 22 of the 27
