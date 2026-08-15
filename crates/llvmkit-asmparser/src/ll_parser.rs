@@ -6334,6 +6334,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(())
     }
 
+    /// The scope-token guard `parseCatchSwitch`, `parseCatchPad` and
+    /// `parseCleanupPad` each run right after their `within`: the next token
+    /// must be `none` or a local, and anything else is
+    /// `expected scope value for <pad>` rather than whatever reading a value
+    /// would have said. Three call sites, three nouns, one shape.
+    fn check_pad_scope_token(&self, pad: &'static str) -> ParseResult<()> {
+        if matches!(
+            self.peek(),
+            Token::Kw(Keyword::None) | Token::LocalVar(_) | Token::LocalVarId(_)
+        ) {
+            return Ok(());
+        }
+        Err(self.message(format!("expected scope value for {pad}")))
+    }
+
     /// The argument-agreement walk `parseCall`, `parseInvoke` and
     /// `parseCallBr` each carry *verbatim* — three copies of the same loop in
     /// upstream, and the reason its three diagnostics appear three times each
@@ -8616,8 +8631,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: ParsedBlockBuilder<'ctx, 'ctx, B>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `ret`
+        // `parseRet` compares against the *enclosing function's* return type
+        // and reports at the returned type's own token, in both arms.
+        let type_loc = self.loc();
+        let result_ty = state.func.signature().return_type();
         if let Token::PrimitiveType(PrimitiveTy::Void) = self.peek() {
             self.bump()?;
+            if !result_ty.is_void() {
+                return Err(self.message_at(
+                    type_loc,
+                    format!("value doesn't match function result type '{result_ty}'"),
+                ));
+            }
             let _ = b.ret_void().map_err(|e| ParseError::Expected {
                 expected: format!("valid ret void: {e}").into(),
                 loc: DiagLoc::span(self.loc()),
@@ -8626,6 +8651,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         let ty = self.parse_type(false)?;
         let v = self.parse_value(state, ty)?;
+        if result_ty != v.ty() {
+            return Err(self.message_at(
+                type_loc,
+                format!("value doesn't match function result type '{result_ty}'"),
+            ));
+        }
         let _ = b.ret(v).map_err(|e| ParseError::Expected {
             expected: format!("valid ret: {e}").into(),
             loc: DiagLoc::span(self.loc()),
@@ -8651,18 +8682,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Ok(());
         }
         // Conditional: `i1 %cond, label %t, label %f`.
+        let cond_loc = self.loc();
         let cond_ty = self.parse_type(false)?;
         if !matches!(
             cond_ty.into_type_enum(),
             AnyTypeEnum::Int(t) if t.bit_width() == 1
         ) {
-            return Err(self.expected("'i1' condition for cond-br"));
+            return Err(self.message_at(cond_loc, "branch condition must have 'i1' type"));
         }
         let cond_v = self.parse_value(state, cond_ty)?;
-        self.expect_punct(PunctKind::Comma, "',' after br condition")?;
+        self.expect_punct(PunctKind::Comma, "',' after branch condition")?;
         self.expect_primitive(PrimitiveTy::Label, "'label' for then-target")?;
         let then_bb = self.parse_block_ref(state)?;
-        self.expect_punct(PunctKind::Comma, "',' between br targets")?;
+        self.expect_punct(PunctKind::Comma, "',' after true destination")?;
         self.expect_primitive(PrimitiveTy::Label, "'label' for else-target")?;
         let else_bb = self.parse_block_ref(state)?;
         let cond_iv: IntValue<'ctx, IntDyn, B> = cond_v
@@ -8715,10 +8747,24 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         ) && self.eat_keyword(Keyword::Exact)?;
         let disjoint_or = matches!(op, IntBinOp::Or) && self.eat_keyword(Keyword::Disjoint)?;
 
+        let operand_loc = self.loc();
         let ty = self.parse_type(false)?;
         let lhs_v = self.parse_value(state, ty)?;
         self.expect_punct(PunctKind::Comma, "',' between binop operands")?;
         let rhs_v = self.parse_value_no_type(state, ty)?;
+
+        // `parseArithmetic`'s operand rule for the integer opcodes, and
+        // `parseLogical`'s — the two differ only in wording, and upstream
+        // routes `and` / `or` / `xor` through the second. Neither existed
+        // here: a non-integer operand reached the builder.
+        if !is_int_or_int_vector_type(ty) {
+            let message = if matches!(op, IntBinOp::And | IntBinOp::Or | IntBinOp::Xor) {
+                "instruction requires integer or integer vector operands"
+            } else {
+                "invalid operand type for instruction"
+            };
+            return Err(self.message_at(operand_loc, message));
+        }
 
         // Vector operands take the erased builder. The typed `int_*`
         // family routes both operands through `IntoIntValue<W>`, whose
@@ -8863,7 +8909,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::Kw(Keyword::Ule) => llvmkit_ir::IntPredicate::Ule,
             Token::Kw(Keyword::Ugt) => llvmkit_ir::IntPredicate::Ugt,
             Token::Kw(Keyword::Uge) => llvmkit_ir::IntPredicate::Uge,
-            _ => return Err(self.expected("integer compare predicate")),
+            // `parseCmpPredicate`'s default arm, which names an example.
+            _ => return Err(self.message("expected icmp predicate (e.g. 'eq')")),
         };
         self.bump()?;
         let operand_loc = self.loc();
@@ -9121,7 +9168,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::Kw(Keyword::Une) => P::Une,
             Token::Kw(Keyword::True) => P::True,
             Token::Kw(Keyword::False) => P::False,
-            _ => return Err(self.expected("floating-point compare predicate")),
+            // The `Instruction::FCmp` half of `parseCmpPredicate`'s default
+            // arm — a different example predicate from the icmp twin.
+            _ => return Err(self.message("expected fcmp predicate (e.g. 'oeq')")),
         };
         self.bump()?;
         let operand_loc = self.loc();
@@ -9810,14 +9859,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        // `ExtractElementInst::isValidOperands` is one predicate over both
+        // operands, so upstream has one message for every way it can fail,
+        // anchored on the *vector*.
+        let operand_loc = self.loc();
         let vec_ty = self.parse_type(false)?;
         let vec_v = self.parse_value(state, vec_ty)?;
-        self.expect_punct(PunctKind::Comma, "',' in extractelement")?;
+        self.expect_punct(PunctKind::Comma, "',' after extract value")?;
         let idx_ty = self.parse_type(false)?;
         let idx_v = self.parse_value(state, idx_ty)?;
+        if !is_vector_type(vec_ty) || !idx_ty.is_integer() {
+            return Err(self.message_at(operand_loc, "invalid extractelement operands"));
+        }
         let idx: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = idx_v
             .try_into()
-            .map_err(|_| self.expected("integer index for extractelement"))?;
+            .map_err(|_| self.message_at(operand_loc, "invalid extractelement operands"))?;
         let v = b
             .extract_element(vec_v, idx, result_name.as_str())
             .map_err(|e| self.builder_err("extractelement", e))?;
@@ -9834,17 +9890,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        // `InsertElementInst::isValidOperands`: a vector, an element matching
+        // its element type, and an integer index — one message for all three.
+        let operand_loc = self.loc();
         let vec_ty = self.parse_type(false)?;
         let vec_v = self.parse_value(state, vec_ty)?;
-        self.expect_punct(PunctKind::Comma, "',' after vector in insertelement")?;
+        self.expect_punct(PunctKind::Comma, "',' after insertelement value")?;
         let elt_ty = self.parse_type(false)?;
         let elt_v = self.parse_value(state, elt_ty)?;
-        self.expect_punct(PunctKind::Comma, "',' after element in insertelement")?;
+        self.expect_punct(PunctKind::Comma, "',' after insertelement value")?;
         let idx_ty = self.parse_type(false)?;
         let idx_v = self.parse_value(state, idx_ty)?;
+        let element_matches = match AnyTypeEnum::from(vec_ty) {
+            AnyTypeEnum::Vector(vector) => vector.element() == elt_ty,
+            _ => false,
+        };
+        if !element_matches || !idx_ty.is_integer() {
+            return Err(self.message_at(operand_loc, "invalid insertelement operands"));
+        }
         let idx: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = idx_v
             .try_into()
-            .map_err(|_| self.expected("integer index for insertelement"))?;
+            .map_err(|_| self.message_at(operand_loc, "invalid insertelement operands"))?;
         let v = b
             .insert_element(vec_v, elt_v, idx, result_name.as_str())
             .map_err(|e| self.builder_err("insertelement", e))?;
@@ -9862,12 +9928,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        // `ShuffleVectorInst::isValidOperands` requires both source operands
+        // to be vectors of the *same* type; upstream reports every failure
+        // with one message, anchored on the first operand.
+        let operand_loc = self.loc();
         let v1_ty = self.parse_type(false)?;
         let v1 = self.parse_value(state, v1_ty)?;
-        self.expect_punct(PunctKind::Comma, "',' after v1 in shufflevector")?;
+        self.expect_punct(PunctKind::Comma, "',' after shuffle mask")?;
         let v2_ty = self.parse_type(false)?;
         let v2 = self.parse_value(state, v2_ty)?;
-        self.expect_punct(PunctKind::Comma, "',' before mask in shufflevector")?;
+        self.expect_punct(PunctKind::Comma, "',' after shuffle value")?;
+        if !is_vector_type(v1_ty) || v1_ty != v2_ty {
+            return Err(self.message_at(operand_loc, "invalid shufflevector operands"));
+        }
         // Parse mask as the upstream typed constant operand.
         let mask = self.parse_shuffle_mask(v1_ty)?;
         let v = b
@@ -9924,30 +9997,54 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        let operand_loc = self.loc();
         let agg_ty = self.parse_type(false)?;
         let agg_v = self.parse_value(state, agg_ty)?;
-        let mut indices = Vec::new();
-        while matches!(self.peek(), Token::Comma) {
-            let saved_lex = self.lex.clone();
-            let saved_current = self.current.clone();
-            self.bump()?;
-            // A trailing `, !dbg !N` attachment is not an index. Upstream
-            // breaks out of the index loop on `MetadataVar` and reports the
-            // comma as already eaten (`InstExtraComma`); llvmkit restores it
-            // so `skip_trailing_metadata` sees the comma it expects, the same
-            // backtrack `parse_optional_comma_array_size` uses for alloca.
-            if matches!(self.peek(), Token::MetadataVar(_)) {
-                self.lex = saved_lex;
-                self.current = saved_current;
-                break;
-            }
-            let idx = self.parse_uint32()?;
-            indices.push(idx);
+        let indices = self.parse_index_list()?;
+        if !agg_ty.is_aggregate() {
+            return Err(self.message_at(operand_loc, "extractvalue operand must be aggregate type"));
+        }
+        if llvmkit_ir::indexed_aggregate_type(agg_ty, &indices).is_none() {
+            return Err(self.message_at(operand_loc, "invalid indices for extractvalue"));
         }
         let v = b
             .extract_value_dyn(agg_v, &indices, result_name.as_str())
             .map_err(|e| self.builder_err("extractvalue", e))?;
         Ok(b.view(v))
+    }
+
+    /// `(',' uint32)+` — mirrors `LLParser::parseIndexList`, which
+    /// `parseExtractValue` and `parseInsertValue` share.
+    ///
+    /// The **first** comma is required, so `extractvalue {i32} %a` with no
+    /// index at all is rejected; llvmkit's two copies of this loop simply
+    /// produced an empty index list and accepted it. A `, !dbg !N` after at
+    /// least one index ends the list, and with *no* index it is
+    /// `expected index` rather than a silent empty list.
+    fn parse_index_list(&mut self) -> ParseResult<Vec<u32>> {
+        if !matches!(self.peek(), Token::Comma) {
+            return Err(self.message("expected ',' as start of index list"));
+        }
+        let mut indices = Vec::new();
+        while matches!(self.peek(), Token::Comma) {
+            let saved_lex = self.lex.clone();
+            let saved_current = self.current.clone();
+            self.bump()?;
+            if matches!(self.peek(), Token::MetadataVar(_)) {
+                if indices.is_empty() {
+                    return Err(self.message("expected index"));
+                }
+                // Upstream reports the comma as already eaten
+                // (`InstExtraComma`); llvmkit restores it so
+                // `skip_trailing_metadata` sees the comma it expects — the
+                // same backtrack `parse_optional_comma_array_size` uses.
+                self.lex = saved_lex;
+                self.current = saved_current;
+                return Ok(indices);
+            }
+            indices.push(self.parse_uint32()?);
+        }
+        Ok(indices)
     }
 
     /// `insertvalue <agg-ty> <agg>, <elt-ty> <elt>, <idx>, ...`. Mirrors
@@ -9960,28 +10057,30 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+        let agg_loc = self.loc();
         let agg_ty = self.parse_type(false)?;
         let agg_v = self.parse_value(state, agg_ty)?;
-        self.expect_punct(PunctKind::Comma, "',' after agg in insertvalue")?;
+        self.expect_punct(PunctKind::Comma, "comma after insertvalue operand")?;
+        let elt_loc = self.loc();
         let elt_ty = self.parse_type(false)?;
         let elt_v = self.parse_value(state, elt_ty)?;
-        let mut indices = Vec::new();
-        while matches!(self.peek(), Token::Comma) {
-            let saved_lex = self.lex.clone();
-            let saved_current = self.current.clone();
-            self.bump()?;
-            // A trailing `, !dbg !N` attachment is not an index. Upstream
-            // breaks out of the index loop on `MetadataVar` and reports the
-            // comma as already eaten (`InstExtraComma`); llvmkit restores it
-            // so `skip_trailing_metadata` sees the comma it expects, the same
-            // backtrack `parse_optional_comma_array_size` uses for alloca.
-            if matches!(self.peek(), Token::MetadataVar(_)) {
-                self.lex = saved_lex;
-                self.current = saved_current;
-                break;
-            }
-            let idx = self.parse_uint32()?;
-            indices.push(idx);
+        let indices = self.parse_index_list()?;
+        // `parseInsertValue`'s three checks. Note the anchors differ: the
+        // aggregate rules report at the *aggregate*, the disagreement at the
+        // inserted value.
+        if !agg_ty.is_aggregate() {
+            return Err(self.message_at(agg_loc, "insertvalue operand must be aggregate type"));
+        }
+        let Some(indexed_ty) = llvmkit_ir::indexed_aggregate_type(agg_ty, &indices) else {
+            return Err(self.message_at(agg_loc, "invalid indices for insertvalue"));
+        };
+        if indexed_ty != elt_ty {
+            return Err(self.message_at(
+                elt_loc,
+                format!(
+                    "insertvalue operand and field disagree in type: '{elt_ty}' instead of '{indexed_ty}'"
+                ),
+            ));
         }
         let v = b
             .insert_value_dyn(agg_v, elt_v, &indices, result_name.as_str())
@@ -10010,7 +10109,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         // flags.
         let fmf_loc = self.loc();
         let fmf = self.parse_optional_fmf()?;
+        let type_loc = self.loc();
         let ty = self.parse_type(false)?;
+        // `parsePHI`'s own first check, before any incoming is read.
+        if !ty.is_first_class() {
+            return Err(self.message_at(type_loc, "phi node must have first class type"));
+        }
         if !fmf.is_empty() && !ty.is_float_or_float_vector() {
             return Err(self.message_at(
                 fmf_loc,
@@ -10678,8 +10782,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let list_ptr: llvmkit_ir::PointerValue<'ctx, B> = list_v
             .try_into()
             .map_err(|_| self.expected("ptr-typed va_arg list operand"))?;
-        self.expect_punct(PunctKind::Comma, "',' in va_arg")?;
+        self.expect_punct(PunctKind::Comma, "',' after vaarg operand")?;
+        let result_type_loc = self.loc();
         let result_ty = self.parse_type(false)?;
+        if !result_ty.is_first_class() {
+            return Err(self.message_at(
+                result_type_loc,
+                "va_arg requires operand with first class type",
+            ));
+        }
         let v = b
             .va_arg(list_ptr, result_ty, result_name.as_str())
             .map_err(|e| self.builder_err("va_arg", e))?;
@@ -10713,27 +10824,47 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: ParsedBlockBuilder<'ctx, 'ctx, B>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `switch`
+        let cond_loc = self.loc();
         let cond_ty = self.parse_type(false)?;
         let cond_v = self.parse_value(state, cond_ty)?;
         self.expect_punct(PunctKind::Comma, "',' after switch condition")?;
         self.expect_primitive(PrimitiveTy::Label, "'label' for switch default")?;
         let default_bb = self.parse_block_ref(state)?;
+        // Case list: `[ ty N, label %bb, ... ]`. Upstream demands the `[`
+        // *before* checking the condition's type, so a malformed table is
+        // reported ahead of a bad condition.
+        self.expect_punct(PunctKind::LSquare, "'[' with switch table")?;
+        if !cond_ty.is_integer() {
+            return Err(self.message_at(cond_loc, "switch condition must have integer type"));
+        }
         let (_, mut sw) = b
             .switch_dyn(cond_v, default_bb, "")
             .map_err(|e| self.builder_err("switch", e))?;
-        // Case list: `[ ty N, label %bb, ... ]`
-        self.expect_punct(PunctKind::LSquare, "'[' to open switch case list")?;
+        // `SmallPtrSet<Value*, 32> SeenCases` — duplicate *values*, compared
+        // by identity, which for uniqued constants is equality.
+        let mut seen_cases: Vec<llvmkit_ir::Value<'ctx, B>> = Vec::new();
         loop {
             if matches!(self.peek(), Token::RSquare) {
                 self.bump()?;
                 break;
             }
+            let case_loc = self.loc();
             let case_ty = self.parse_type(false)?;
             let case_v = self.parse_value(state, case_ty)?;
+            if seen_cases.contains(&case_v) {
+                return Err(self.message_at(case_loc, "duplicate case value in switch"));
+            }
+            seen_cases.push(case_v);
+            // `!isa<ConstantInt>(Constant)` — an *integer* is not enough; an
+            // `i32 %arg` is an integer value and still not a case value.
+            // Converting straight to `IntValue` would accept one.
+            if llvmkit_ir::Constant::try_from(case_v).is_err() {
+                return Err(self.message_at(case_loc, "case value is not a constant integer"));
+            }
             let case_int: llvmkit_ir::IntValue<'ctx, llvmkit_ir::IntDyn, B> = case_v
                 .try_into()
-                .map_err(|_| self.expected("integer switch case value"))?;
-            self.expect_punct(PunctKind::Comma, "',' between case value and label")?;
+                .map_err(|_| self.message_at(case_loc, "case value is not a constant integer"))?;
+            self.expect_punct(PunctKind::Comma, "',' after case value")?;
             self.expect_primitive(PrimitiveTy::Label, "'label' for switch case destination")?;
             let case_bb = self.parse_block_ref(state)?;
             sw = sw
@@ -10754,20 +10885,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: ParsedBlockBuilder<'ctx, 'ctx, B>,
     ) -> ParseResult<()> {
         self.bump()?; // eat `indirectbr`
+        let addr_loc = self.loc();
         let addr_ty = self.parse_type(false)?;
         let addr_v = self.parse_value(state, addr_ty)?;
         self.expect_punct(PunctKind::Comma, "',' after indirectbr address")?;
+        // As in `parseSwitch`, the `[` is demanded before the address type is
+        // checked.
+        self.expect_punct(PunctKind::LSquare, "'[' with indirectbr")?;
         let addr: PointerValue<'ctx, B> = addr_v
             .try_into()
-            .map_err(|_| self.expected("ptr-typed indirectbr address"))?;
+            .map_err(|_| self.message_at(addr_loc, "indirectbr address must have pointer type"))?;
         let (_, mut ibr) = b
             .indirectbr(addr, "")
             .map_err(|e| self.builder_err("indirectbr", e))?;
-        // Destination list: `[ label %dest, ... ]`
-        self.expect_punct(
-            PunctKind::LSquare,
-            "'[' to open indirectbr destination list",
-        )?;
         loop {
             if matches!(self.peek(), Token::RSquare) {
                 self.bump()?;
@@ -11006,16 +11136,40 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             match self.peek() {
                 Token::Kw(Keyword::Catch) => {
                     self.bump()?;
+                    let clause_loc = self.loc();
                     let clause_ty = self.parse_type(false)?;
                     let clause_v = self.parse_value(state, clause_ty)?;
+                    // "A 'catch' type expects a non-array constant. A filter
+                    // clause expects an array constant." — upstream's comment.
+                    if clause_ty.is_array() {
+                        return Err(
+                            self.message_at(clause_loc, "'catch' clause has an invalid type")
+                        );
+                    }
+                    if llvmkit_ir::Constant::try_from(clause_v).is_err() {
+                        return Err(
+                            self.message_at(clause_loc, "clause argument must be a constant")
+                        );
+                    }
                     lp = lp
                         .add_catch_clause(clause_v)
                         .map_err(|e| self.builder_err("landingpad.catch", e))?;
                 }
                 Token::Kw(Keyword::Filter) => {
                     self.bump()?;
+                    let clause_loc = self.loc();
                     let filter_ty = self.parse_type(false)?;
                     let filter_v = self.parse_value(state, filter_ty)?;
+                    if !filter_ty.is_array() {
+                        return Err(
+                            self.message_at(clause_loc, "'filter' clause has an invalid type")
+                        );
+                    }
+                    if llvmkit_ir::Constant::try_from(filter_v).is_err() {
+                        return Err(
+                            self.message_at(clause_loc, "clause argument must be a constant")
+                        );
+                    }
                     lp = lp
                         .add_filter_clause(filter_v)
                         .map_err(|e| self.builder_err("landingpad.filter", e))?;
@@ -11036,7 +11190,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        self.expect_keyword(Keyword::Within, "'within' in cleanuppad")?;
+        self.expect_keyword(Keyword::Within, "'within' after cleanuppad")?;
+        // `parseCleanupPad` checks the scope token itself before reading a
+        // value, so anything that is not `none` or a local gets its own
+        // message rather than a generic value error.
+        self.check_pad_scope_token("cleanuppad")?;
         let parent_pad = self.parse_optional_pad_token(state)?;
         let args = self.parse_bracket_value_list(state)?;
         let v = match parent_pad {
@@ -11057,7 +11215,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         b: &ParsedBlockBuilder<'ctx, 'ctx, B>,
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
-        self.expect_keyword(Keyword::Within, "'within' in catchpad")?;
+        self.expect_keyword(Keyword::Within, "'within' after catchpad")?;
+        self.check_pad_scope_token("catchpad")?;
         let parent_ty = self.parse_type(false)?;
         let parent_v = self.parse_value(state, parent_ty)?;
         let args = self.parse_bracket_value_list(state)?;
@@ -11149,7 +11308,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         result_name: &LocalLhs,
     ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         self.bump()?; // eat `catchswitch`
-        self.expect_keyword(Keyword::Within, "'within' in catchswitch")?;
+        self.expect_keyword(Keyword::Within, "'within' after catchswitch")?;
+        self.check_pad_scope_token("catchswitch")?;
         let parent_pad = self.parse_optional_pad_token(state)?;
         // `[handler1, handler2, ...]`
         self.expect_punct(PunctKind::LSquare, "'[' in catchswitch handlers")?;

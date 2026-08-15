@@ -12,6 +12,38 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## llvmkit-ir — three copies of the aggregate index walk (found 2026-08-14, LLParser parity W9c)
+
+`ExtractValueInst::getIndexedType` now has a public port,
+`llvmkit_ir::indexed_aggregate_type` (`instructions.rs`), because the parser
+needs it for `invalid indices for {extract,insert}value`. Two private
+near-copies already existed and were left in place:
+
+- `ir_builder.rs::walk_aggregate_for_builder`
+- `verifier.rs::walk_aggregate_path` (which additionally distinguishes
+  *why* the walk failed, via `AggWalkErr`)
+
+All three implement the same upstream routine. This is the shape W4 found with
+`type_contains_scalable_vector` — three private copies, none matching the
+upstream predicate exactly — and the fix is the same: one port, three callers.
+The verifier's error-distinguishing variant needs a richer return type than
+`Option`, so the consolidation is not a pure deletion.
+
+Not urgent: all three currently agree. It is recorded because a predicate with
+three implementations is one diagnostic away from having three behaviours.
+
+## Parser — `%x = catchswitch` is not dispatched (found 2026-08-14, LLParser parity W9c)
+
+`catchswitch` produces a token value and may be written with an explicit
+result name. llvmkit dispatches the *bare* form but its named-result table has
+no `CatchSwitch` arm, so `%cs = catchswitch within none [label %h] unwind to
+caller` answers `expected instruction opcode supported by this parser (got
+CatchSwitch)`.
+
+Valid IR that does not parse, so a P0 in the W1 sense rather than a missing
+message. Found while testing `expected scope value for catchswitch`, which the
+bare form reaches.
+
 ## Parser — a forward-referenced function is a *typed* `Function`, so a later definition may not change its signature (found 2026-08-14, LLParser parity W8)
 
 `declare`/`define` reuse a function that a call already forward-referenced,

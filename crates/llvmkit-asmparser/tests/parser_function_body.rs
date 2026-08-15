@@ -1138,6 +1138,186 @@ fn getelementptr_validates_its_base_and_indices() {
     );
 }
 
+/// The four terminator routines' operand rules — `parseRet`, `parseBr`,
+/// `parseSwitch` and `parseIndirectBr`. llvmkit had none of the six: every
+/// rejection came from the builder, in its own words.
+///
+/// Two ordering details are upstream's and are pinned here: `parseSwitch` and
+/// `parseIndirectBr` both demand the `[` **before** checking the condition or
+/// address type, so a malformed table is reported ahead of a bad operand.
+///
+/// No `test/Assembler` fixture pins any of these, so the routines are the
+/// anchors.
+#[test]
+fn terminators_validate_their_operands() {
+    for (src, expected) in [
+        (
+            "define i32 @f() {\nentry:\n  ret void\n}\n",
+            "value doesn't match function result type 'i32'",
+        ),
+        (
+            "define void @f() {\nentry:\n  ret i32 0\n}\n",
+            "value doesn't match function result type 'void'",
+        ),
+        (
+            "define void @f(i32 %c) {\nentry:\n  br i32 %c, label %a, label %b\na:\n  ret void\nb:\n  ret void\n}\n",
+            "branch condition must have 'i1' type",
+        ),
+        (
+            "define void @f(ptr %p) {\nentry:\n  switch ptr %p, label %d [ ]\nd:\n  ret void\n}\n",
+            "switch condition must have integer type",
+        ),
+        (
+            "define void @f(i32 %c) {\nentry:\n  switch i32 %c, label %d [ i32 1, label %d i32 1, label %d ]\nd:\n  ret void\n}\n",
+            "duplicate case value in switch",
+        ),
+        (
+            "define void @f(i32 %c, i32 %v) {\nentry:\n  switch i32 %c, label %d [ i32 %v, label %d ]\nd:\n  ret void\n}\n",
+            "case value is not a constant integer",
+        ),
+        (
+            "define void @f(i32 %a) {\nentry:\n  indirectbr i32 %a, [ label %d ]\nd:\n  ret void\n}\n",
+            "indirectbr address must have pointer type",
+        ),
+    ] {
+        assert_eq!(parse_expect_error(src), expected, "{src}");
+    }
+}
+
+/// `LLParser::parseIndexList`, which `parseExtractValue` and
+/// `parseInsertValue` share, plus the aggregate rules that follow it.
+///
+/// llvmkit had **two** copies of the index loop (and a third in the GEP path)
+/// where upstream has one, and both copies silently produced an *empty* index
+/// list — so `extractvalue {i32} %a` with no index at all parsed. Upstream's
+/// grammar is `(',' uint32)+`: that first comma is required.
+#[test]
+fn aggregate_index_lists_and_operands_are_validated() {
+    for (src, expected) in [
+        (
+            "define void @f({i32} %a) {\nentry:\n  %v = extractvalue {i32} %a\n  ret void\n}\n",
+            "expected ',' as start of index list",
+        ),
+        (
+            "define void @f(i32 %a) {\nentry:\n  %v = extractvalue i32 %a, 0\n  ret void\n}\n",
+            "extractvalue operand must be aggregate type",
+        ),
+        (
+            "define void @f({i32} %a) {\nentry:\n  %v = extractvalue {i32} %a, 3\n  ret void\n}\n",
+            "invalid indices for extractvalue",
+        ),
+        (
+            "define void @f({i32} %a) {\nentry:\n  %v = insertvalue {i32} %a, i64 0, 0\n  ret void\n}\n",
+            "insertvalue operand and field disagree in type: 'i64' instead of 'i32'",
+        ),
+    ] {
+        assert_eq!(parse_expect_error(src), expected, "{src}");
+    }
+}
+
+/// The remaining per-instruction operand rules: `parsePHI`, `parseVAArg`,
+/// `parseArithmetic`/`parseLogical` (which differ only in wording — upstream
+/// routes `and`/`or`/`xor` through the second), `parseCmpPredicate`'s two
+/// default arms, and the three `isValidOperands` predicates behind
+/// `extractelement` / `insertelement` / `shufflevector`.
+///
+/// Each `isValidOperands` message covers *every* way its predicate can fail,
+/// which is why upstream needs one text where llvmkit had several invented
+/// per-operand labels.
+#[test]
+fn instruction_operand_rules_match_upstream_text() {
+    for (src, expected) in [
+        (
+            "define void @f() {\nentry:\n  br label %m\nm:\n  %p = phi i32 (i32)\n  ret void\n}\n",
+            "phi node must have first class type",
+        ),
+        (
+            "define void @f(ptr %p) {\nentry:\n  %v = va_arg ptr %p, void\n  ret void\n}\n",
+            "void type only allowed for function results",
+        ),
+        (
+            "define void @f(float %a) {\nentry:\n  %v = add float %a, %a\n  ret void\n}\n",
+            "invalid operand type for instruction",
+        ),
+        (
+            "define void @f(float %a) {\nentry:\n  %v = and float %a, %a\n  ret void\n}\n",
+            "instruction requires integer or integer vector operands",
+        ),
+        // The trigger is `oeq`, a real *fcmp* predicate in an icmp — llvmkit's
+        // lexer answers `unknown keyword 'x'` for a misspelling, where
+        // upstream returns a silent error token, and re-layering that is W14.
+        (
+            "define void @f(i32 %a) {\nentry:\n  %v = icmp oeq i32 %a, %a\n  ret void\n}\n",
+            "expected icmp predicate (e.g. 'eq')",
+        ),
+        (
+            "define void @f(i32 %a) {\nentry:\n  %v = extractelement i32 %a, i32 0\n  ret void\n}\n",
+            "invalid extractelement operands",
+        ),
+        (
+            "define void @f(<2 x i32> %a) {\nentry:\n  %v = insertelement <2 x i32> %a, i64 0, i32 0\n  ret void\n}\n",
+            "invalid insertelement operands",
+        ),
+        (
+            "define void @f(<2 x i32> %a, <4 x i32> %b) {\nentry:\n  \
+             %v = shufflevector <2 x i32> %a, <4 x i32> %b, <2 x i32> zeroinitializer\n  ret void\n}\n",
+            "invalid shufflevector operands",
+        ),
+    ] {
+        assert_eq!(parse_expect_error(src), expected, "{src}");
+    }
+}
+
+/// `parseLandingPad`'s clause rules, whose asymmetry is the point: a `catch`
+/// clause takes a **non**-array constant and a `filter` clause takes an array
+/// one, with `clause argument must be a constant` shared by both.
+///
+/// And the three EH pads' scope guard, which each run immediately after their
+/// `within` so a bad scope token gets its own message rather than whatever
+/// reading a value would have said. Their `'within'` labels were wrong too:
+/// upstream says `after`, llvmkit said `in`.
+#[test]
+fn eh_clause_and_scope_rules_match_upstream_text() {
+    let prelude = "declare i32 @__gxx_personality_v0(...)\n";
+    for (body, expected) in [
+        (
+            "  %lp = landingpad i32 catch [1 x ptr] zeroinitializer\n",
+            "'catch' clause has an invalid type",
+        ),
+        (
+            "  %lp = landingpad i32 filter ptr null\n",
+            "'filter' clause has an invalid type",
+        ),
+    ] {
+        let src = format!(
+            "{prelude}define void @f() personality ptr @__gxx_personality_v0 {{\nentry:\n{body}  ret void\n}}\n"
+        );
+        assert_eq!(parse_expect_error(&src), expected, "{body}");
+    }
+
+    for (body, expected) in [
+        (
+            "  %cp = cleanuppad within 3 []\n  ret void\n",
+            "expected scope value for cleanuppad",
+        ),
+        (
+            "  %cp = catchpad within 3 []\n  ret void\n",
+            "expected scope value for catchpad",
+        ),
+        // `catchswitch` is a *terminator*, so it ends its block. Written
+        // without an explicit `%cs =`: llvmkit dispatches the named form
+        // through a table that has no `CatchSwitch` arm, which is a
+        // pre-existing gap unrelated to this rule.
+        (
+            "  catchswitch within 3 [label %entry] unwind to caller\n",
+            "expected scope value for catchswitch",
+        ),
+    ] {
+        let src = format!("define void @f() {{\nentry:\n{body}}}\n");
+        assert_eq!(parse_expect_error(&src), expected, "{body}");
+    }
+}
+
 /// `parseFence`'s two rules, neither of which has an upstream fixture. Both
 /// are `tokError`, so both anchor after the ordering keyword.
 #[test]

@@ -19,6 +19,51 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Instruction operands
+
+- **Added: the instruction remainder validates its operands.** 22 of the 27
+  diagnostics across the terminators, aggregates, EH pads and the arithmetic,
+  compare and vector-element families were missing; every rejection came from
+  the builder, in its own words.
+
+  Terminators: `value doesn't match function result type '<T>'`,
+  `branch condition must have 'i1' type`,
+  `switch condition must have integer type`,
+  `duplicate case value in switch`, `case value is not a constant integer`
+  and `indirectbr address must have pointer type`. Two ordering details are
+  upstream's: `parseSwitch` and `parseIndirectBr` demand the `[` *before*
+  checking the condition or address, so a malformed table is reported first.
+
+  Aggregates: `LLParser::parseIndexList` is now one routine, as upstream has
+  it. llvmkit had **two** copies (a third in the GEP path) and both silently
+  produced an *empty* index list, so `extractvalue {i32} %a` with no index
+  parsed — upstream's grammar is `(',' uint32)+` and requires that comma.
+  With it: `expected index`, `extractvalue operand must be aggregate type`,
+  `invalid indices for {extract,insert}value` and
+  `insertvalue operand and field disagree in type`.
+
+  Per-instruction: `phi node must have first class type`,
+  `va_arg requires operand with first class type`,
+  `invalid operand type for instruction`,
+  `instruction requires integer or integer vector operands` (upstream routes
+  `and`/`or`/`xor` through `parseLogical`, whose wording differs from
+  `parseArithmetic`'s), both `expected {i,f}cmp predicate (e.g. …)` texts, and
+  the three `isValidOperands` messages for `extractelement`, `insertelement`
+  and `shufflevector` — each of which covers every way its predicate can
+  fail, where llvmkit had several invented per-operand labels.
+
+  EH: `parseLandingPad`'s clause asymmetry (a `catch` takes a **non**-array
+  constant, a `filter` takes an array one, `clause argument must be a
+  constant` shared), and `expected scope value for
+  {catchswitch,catchpad,cleanuppad}` — a guard all three run immediately
+  after their `within`. Their `'within'` labels were wrong too: upstream says
+  `after`, llvmkit said `in`.
+
+- **Added: `llvmkit_ir::indexed_aggregate_type`**, a port of
+  `ExtractValueInst::getIndexedType`. Two private near-copies of the walk
+  already existed in `ir_builder.rs` and `verifier.rs` with no public entry
+  point; consolidating them is recorded in `docs/future-work.md`.
+
 ### Call, invoke and callbr
 
 - **Added: `operand bundle set must not be empty`.** Checked before the `]` is

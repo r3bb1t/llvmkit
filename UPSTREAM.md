@@ -19,15 +19,15 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2396. Recounted on 2026-08-14 at the LLParser-parity
-Wave 9b point via the documented attribute-anchored grep below
-(`crates/llvmkit-ir` 1543 + `crates/llvmkit-asmparser` 831 +
+Total `#[test]` functions: 2400. Recounted on 2026-08-14 at the LLParser-parity
+Wave 9 point via the documented attribute-anchored grep below
+(`crates/llvmkit-ir` 1543 + `crates/llvmkit-asmparser` 835 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
-`crates/llvmkit-macros` has none). The +161 over the 2235 point below is the
-LLParser-parity program's waves 0-9b.
+`crates/llvmkit-macros` has none). The +165 over the 2235 point below is the
+LLParser-parity program's waves 0-9.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries 1956 rows. Matching them against the tree by test-function name
+below carries 1960 rows. Matching them against the tree by test-function name
 leaves **470 `#[test]` functions (469 distinct names) with no row**. The gap
 is inherited, not new: it accumulated across the type-safety and pass-API
 programs, where whole test files landed without rows, and it sits in
@@ -1021,6 +1021,10 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::an_empty_operand_bundle_set_is_rejected` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseOptionalOperandBundles`, whose emptiness check runs before the `]` is eaten and reports at the `[` — no `test/Assembler` fixture pins it | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::a_callbr_indirect_destination_list_is_mandatory` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseCallBr`, whose `\|\|` chain ends with `parseToken(lltok::lsquare, "expected '[' in callbr")` — the list is mandatory and takes no leading comma | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::getelementptr_validates_its_base_and_indices` | `test/Assembler/getelementptr_struct.ll`, `getelementptr_invalid_ptr.ll`, `invalid-gep-missing-explicit-type.ll`, `getelementptr_vscale_struct.ll` and `getelementptr_vec_struct.ll`, all vendored verbatim; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseGetElementPtr`. The sized, scalable-struct and integer-index rules have no upstream fixture and cite the routine | mirror |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::terminators_validate_their_operands` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseRet`, `parseBr`, `parseSwitch` and `parseIndirectBr` — their six operand rules, and the ordering by which `parseSwitch` / `parseIndirectBr` demand the `[` before checking the condition or address. No `test/Assembler` fixture pins any of them | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::aggregate_index_lists_and_operands_are_validated` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseIndexList` (shared by `parseExtractValue` and `parseInsertValue`, and requiring the first comma) plus those two routines' aggregate and field-type checks | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::instruction_operand_rules_match_upstream_text` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parsePHI`, `parseVAArg`, `parseArithmetic` / `parseLogical` (which differ only in wording), `parseCmpPredicate`, and the `isValidOperands` predicates of `ExtractElementInst` / `InsertElementInst` / `ShuffleVectorInst` (`llvm/lib/IR/Instructions.cpp`) | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_function_body.rs::eh_clause_and_scope_rules_match_upstream_text` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseLandingPad`'s catch/filter clause asymmetry, and the scope-token guard `parseCatchSwitch` / `parseCatchPad` / `parseCleanupPad` each run after their `within` | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::fence_rejects_unordered_and_monotonic` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFence`'s two `tokError` rules — no `test/Assembler` fixture pins either | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_block_may_not_take_a_local_value_name` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::PerFunctionState::defineBB` reaching `getBB` → `getVal(Name, LabelTy)`, so blocks and local values share one namespace; the numbered twin is unreachable behind `checkValueID` and no `test/Assembler` fixture pins either | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_types.rs::a_type_param_after_an_int_param_is_rejected` | `LLParser::parseTargetExtType`'s `SeenInt` guard — `expected uint32 param`, verbatim | llvmkit-specific (rule anchor) |

@@ -279,11 +279,12 @@ merge:
   ret void
 }
 ";
-    let err = parse_err(src);
-    let msg = err.to_string();
-    assert!(
-        msg.contains("phi") && msg.contains("result type"),
-        "expected a non-first-class phi result-type parse error, got: {msg}"
+    // `parsePHI`'s own first check, verbatim. This used to assert only that
+    // the message mentioned "phi" and "result type" — llvmkit's own wording —
+    // which is a substring test over a diagnostic upstream spells exactly.
+    assert_eq!(
+        parse_err(src).to_string(),
+        "phi node must have first class type"
     );
 }
 

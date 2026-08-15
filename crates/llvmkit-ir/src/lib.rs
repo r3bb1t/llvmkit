@@ -275,7 +275,7 @@ pub use instructions::{
     SremInst, StoreInst, SubInst, SwitchInst, TruncInst, TypedCallInst, UdivInst, UiToFpInst,
     UnreachableInst, UremInst, VaArgInst, XorInst, ZextInst,
 };
-pub use instructions::{cast_is_valid, indexed_gep_type};
+pub use instructions::{cast_is_valid, indexed_aggregate_type, indexed_gep_type};
 pub use intrinsic_inst::{IntrinsicInst, LifetimeIntrinsic, MemIntrinsic};
 pub use intrinsics::{
     BinaryIntrinsic, IntrinsicDescriptor, IntrinsicId, IntrinsicNameResolution,

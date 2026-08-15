@@ -3996,6 +3996,38 @@ pub fn indexed_gep_type<'ctx, B: ModuleBrand + 'ctx>(
         .map(|indexed| Type::new(indexed, module))
 }
 
+/// The type an `extractvalue` / `insertvalue` index list arrives at, or
+/// `None` when the list does not index into `agg_ty`. Port of
+/// `ExtractValueInst::getIndexedType` (`llvm/lib/IR/Instructions.cpp`), which
+/// **rejects** rather than clamps an index at or past the element count.
+///
+/// Unlike [`indexed_gep_type`] every index applies to the aggregate itself —
+/// there is no leading pointer step — so an empty list arrives at `agg_ty`.
+///
+/// Two private near-copies of this walk exist, in `ir_builder.rs` and
+/// `verifier.rs`; consolidating them onto this one is recorded in
+/// `docs/future-work.md`.
+pub fn indexed_aggregate_type<'ctx, B: ModuleBrand + 'ctx>(
+    agg_ty: Type<'ctx, B>,
+    indices: &[u32],
+) -> Option<Type<'ctx, B>> {
+    use crate::AnyTypeEnum;
+    let mut current = agg_ty;
+    for &index in indices {
+        current = match AnyTypeEnum::from(current) {
+            AnyTypeEnum::Array(array) => {
+                if u64::from(index) >= array.len() {
+                    return None;
+                }
+                array.element()
+            }
+            AnyTypeEnum::Struct(structure) => structure.field_type(usize::try_from(index).ok()?)?,
+            _ => return None,
+        };
+    }
+    Some(current)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
