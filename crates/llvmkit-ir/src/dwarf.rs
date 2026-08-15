@@ -593,6 +593,15 @@ pub(crate) const DISP_FLAGS: &[(&str, u32)] = &[
     ("DISPFlagLargest", 0x800),
 ];
 
+/// `DW_APPLE_ENUM_KIND_*` name/value pairs, in `Dwarf.def` order.
+///
+/// The smallest family in the file — `HANDLE_DW_APPLE_ENUM_KIND` has two
+/// entries — and the one `DICompositeType`'s `enumKind:` field is drawn from.
+pub(crate) const APPLE_ENUM_KINDS: &[(&str, u32)] = &[
+    ("DW_APPLE_ENUM_KIND_Closed", 0x00),
+    ("DW_APPLE_ENUM_KIND_Open", 0x01),
+];
+
 /// Look `name` up in `table`.
 fn lookup(table: &[(&str, u32)], name: &str) -> Option<u32> {
     table
@@ -658,3 +667,9 @@ decl_lookup!(
 decl_lookup!(macinfo, macinfo_string, MACINFO_TYPES, "`DW_MACINFO_*`");
 decl_lookup!(di_flag, di_flag_string, DI_FLAGS, "`DIFlag*`");
 decl_lookup!(disp_flag, disp_flag_string, DISP_FLAGS, "`DISPFlag*`");
+decl_lookup!(
+    apple_enum_kind,
+    apple_enum_kind_string,
+    APPLE_ENUM_KINDS,
+    "`DW_APPLE_ENUM_KIND_*`"
+);

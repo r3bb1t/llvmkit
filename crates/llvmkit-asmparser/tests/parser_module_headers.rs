@@ -70,7 +70,7 @@ fn bare_comdat_borrows_the_symbols_own_name() {
 fn declare_accepts_metadata_before_the_header() {
     let printed = parse_module(
         "declare !dbg !0 void @f()\n\
-         !0 = !DISubprogram(name: \"f\", spFlags: DISPFlagDefinition)\n",
+         !0 = distinct !DISubprogram(name: \"f\", spFlags: DISPFlagDefinition)\n",
     );
     assert!(printed.contains("declare !dbg !0 void @f()"), "{printed}");
 }

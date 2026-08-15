@@ -3071,6 +3071,25 @@ fn fmt_metadata_node(
         MetadataKind::Specialized(node) => {
             fmt_specialized_metadata_node(f, node, module, store, slots)
         }
+        // `AsmWriter::writeDIArgList` — each operand printed as a typed value,
+        // which is what makes the list a `ValueAsMetadata` list rather than a
+        // metadata tuple.
+        MetadataKind::ArgList { arguments } => {
+            f.write_str("!DIArgList(")?;
+            for (position, argument) in arguments.iter().enumerate() {
+                if position != 0 {
+                    f.write_str(", ")?;
+                }
+                let value = Value::<DynBrand>::from_parts(
+                    argument.slot(),
+                    module,
+                    module.context().value_data(argument.slot()).ty,
+                );
+                write!(f, "{} ", value.ty())?;
+                fmt_operand_ref(f, value, None)?;
+            }
+            f.write_str(")")
+        }
         MetadataKind::Constant(id) => {
             let slot = id.slot();
             let data = module.context().value_data(slot);
@@ -3180,13 +3199,23 @@ fn fmt_metadata_operand(
     }
 }
 
+/// Whether a node is written out where it is used rather than as a `!N`
+/// reference.
+///
+/// Mirrors the head of `WriteAsOperandInternal(raw_ostream&, const Metadata*,
+/// …)`: "Write DIExpressions and DIArgLists inline when used as a value.
+/// Improves readability of debug info intrinsics." A `DIArgList` additionally
+/// *cannot* be spelled as a definition — its operands may be function-local —
+/// so inline is its only form.
 fn is_inline_metadata_node(node: &MetadataKind<StoredBrand>) -> bool {
-    matches!(node, MetadataKind::Null | MetadataKind::Constant(_))
-        || matches!(
-            node,
-            MetadataKind::Specialized(s)
-                if s.kind() == SpecializedMetadataKind::DiExpression
-        )
+    matches!(
+        node,
+        MetadataKind::Null | MetadataKind::Constant(_) | MetadataKind::ArgList { .. }
+    ) || matches!(
+        node,
+        MetadataKind::Specialized(s)
+            if s.kind() == SpecializedMetadataKind::DiExpression
+    )
 }
 
 fn metadata_slot_map(nodes: &[MetadataKind<StoredBrand>]) -> Vec<Option<usize>> {

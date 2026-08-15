@@ -2568,6 +2568,20 @@ pub enum MetadataKind<B: ModuleBrand> {
     Ref(MetadataId<B>),
     /// `!DIFile(...)`, `!DILocation(...)`, and sibling specialized nodes.
     Specialized(SpecializedMetadataNode<B>),
+    /// `!DIArgList(i32 %a, i64 7)` — a positional list of value-as-metadata
+    /// operands.
+    ///
+    /// Mirrors `DIArgList`, which `Metadata.def` declares as a top-level
+    /// `HANDLE_METADATA_LEAF` rather than a specialized `DI*` node — which is
+    /// why [`SpecializedMetadataKind`] is correctly complete without it, and
+    /// why it lives here beside [`Constant`](Self::Constant) instead.
+    ///
+    /// Three properties follow from `LLParser::parseDIArgList` and are enforced
+    /// by the parser: it is always uniqued (there is no `distinct !DIArgList`
+    /// spelling to parse), an empty list is legal, and it may only ever appear
+    /// as an *inline* operand — never as an `!N = ` definition — because its
+    /// operands may be function-local values.
+    ArgList { arguments: Vec<ValueId<B>> },
 }
 
 impl<B: ModuleBrand> MetadataKind<B> {
@@ -2589,6 +2603,12 @@ impl<B: ModuleBrand> MetadataKind<B> {
             },
             Self::Ref(id) => MetadataKind::Ref(id.into_stored(owner)?),
             Self::Specialized(node) => MetadataKind::Specialized(node.into_stored(owner)?),
+            Self::ArgList { arguments } => MetadataKind::ArgList {
+                arguments: arguments
+                    .into_iter()
+                    .map(|id| value_id_into_stored(id, owner))
+                    .collect::<IrResult<Vec<_>>>()?,
+            },
         })
     }
 
@@ -2609,6 +2629,13 @@ impl<B: ModuleBrand> MetadataKind<B> {
             MetadataKind::Specialized(node) => {
                 Self::Specialized(SpecializedMetadataNode::from_stored(node))
             }
+            MetadataKind::ArgList { arguments } => Self::ArgList {
+                arguments: arguments
+                    .iter()
+                    .copied()
+                    .map(value_id_from_stored)
+                    .collect(),
+            },
         }
     }
 }
@@ -2748,6 +2775,19 @@ impl MetadataStore {
     ) -> MetadataSlot {
         let id = MetadataSlot(self.nodes.len());
         self.nodes.push(MetadataKind::Specialized(node));
+        id
+    }
+
+    /// Intern a `!DIArgList`.
+    ///
+    /// `DIArgList::get` uniques, but its operands may be function-local values,
+    /// so two lists that look alike across functions are not the same node.
+    /// This keeps them distinct by construction — the same choice
+    /// [`get_specialized`](Self::get_specialized) makes, and for the same
+    /// reason.
+    pub(crate) fn get_arg_list(&mut self, arguments: Vec<ValueId<StoredBrand>>) -> MetadataSlot {
+        let id = MetadataSlot(self.nodes.len());
+        self.nodes.push(MetadataKind::ArgList { arguments });
         id
     }
 

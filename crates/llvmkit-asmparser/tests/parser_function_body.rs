@@ -674,7 +674,7 @@ fn index_lists_stop_at_trailing_metadata() {
          }\n\
          !0 = !DILocation(line: 1, column: 1, scope: !1)\n\
          !1 = distinct !DISubprogram(name: \"f\", unit: !2)\n\
-         !2 = !DICompileUnit(language: DW_LANG_C11, file: !3, producer: \"llvmkit\")\n\
+         !2 = distinct !DICompileUnit(language: DW_LANG_C11, file: !3, producer: \"llvmkit\")\n\
          !3 = !DIFile(filename: \"a.c\", directory: \"/tmp\")\n",
     );
     assert!(

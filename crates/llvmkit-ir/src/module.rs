@@ -2562,24 +2562,32 @@ impl<'ctx> ModuleCore {
         let (slot, value_use) = {
             let mut store = self.metadata.borrow_mut();
             match kind {
-                MetadataKind::String(s) => (store.get_string(s), None),
-                MetadataKind::Tuple { distinct, operands } => {
-                    (store.get_tuple_with_distinct(distinct, operands), None)
-                }
-                MetadataKind::Specialized(node) => (store.get_specialized(node), None),
+                MetadataKind::String(s) => (store.get_string(s), Vec::new()),
+                MetadataKind::Tuple { distinct, operands } => (
+                    store.get_tuple_with_distinct(distinct, operands),
+                    Vec::new(),
+                ),
+                MetadataKind::Specialized(node) => (store.get_specialized(node), Vec::new()),
                 MetadataKind::Constant(value_id) => {
                     let slot = store.get_constant(value_id);
-                    (slot, Some(value_id.slot()))
+                    (slot, vec![value_id.slot()])
                 }
-                MetadataKind::Ref(id) => (id.slot(), None),
+                MetadataKind::Ref(id) => (id.slot(), Vec::new()),
                 MetadataKind::Null => {
                     let slot = store.reserve();
                     store.set(slot, MetadataKind::Null);
-                    (slot, None)
+                    (slot, Vec::new())
+                }
+                // Every operand of a `!DIArgList` is a real use of its value,
+                // so all of them are registered — not just a first one.
+                MetadataKind::ArgList { arguments } => {
+                    let uses = arguments.iter().map(|id| id.slot()).collect();
+                    let slot = store.get_arg_list(arguments);
+                    (slot, uses)
                 }
             }
         };
-        if let Some(value_slot) = value_use {
+        for value_slot in value_use {
             self.register_metadata_value_use(slot, value_slot);
         }
         Ok(MetadataId::from_raw(self.id, slot))
@@ -2608,19 +2616,28 @@ impl<'ctx> ModuleCore {
     {
         let slot = self.metadata_slot_of(id)?;
         let kind = kind.into_stored(self.id)?;
-        if let Some(MetadataKind::Constant(value_id)) = self.metadata.borrow().get(slot).cloned() {
-            self.deregister_metadata_value_use(slot, value_id.slot());
+        match self.metadata.borrow().get(slot).cloned() {
+            Some(MetadataKind::Constant(value_id)) => {
+                self.deregister_metadata_value_use(slot, value_id.slot());
+            }
+            Some(MetadataKind::ArgList { arguments }) => {
+                for value_id in arguments {
+                    self.deregister_metadata_value_use(slot, value_id.slot());
+                }
+            }
+            _ => {}
         }
-        let value_use = match kind {
-            MetadataKind::Constant(value_id) => Some(value_id.slot()),
+        let value_use: Vec<_> = match &kind {
+            MetadataKind::Constant(value_id) => vec![value_id.slot()],
+            MetadataKind::ArgList { arguments } => arguments.iter().map(|id| id.slot()).collect(),
             MetadataKind::Null
             | MetadataKind::String(_)
             | MetadataKind::Tuple { .. }
             | MetadataKind::Ref(_)
-            | MetadataKind::Specialized(_) => None,
+            | MetadataKind::Specialized(_) => Vec::new(),
         };
         self.metadata.borrow_mut().set(slot, kind);
-        if let Some(value_slot) = value_use {
+        for value_slot in value_use {
             self.register_metadata_value_use(slot, value_slot);
         }
         Ok(())

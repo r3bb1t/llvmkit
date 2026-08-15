@@ -245,6 +245,34 @@ fn di_flag_table_matches_the_vendored_def() {
     }
 }
 
+/// Mirrors `dwarf::getEnumKind` (`lib/BinaryFormat/Dwarf.cpp`), whose
+/// `StringSwitch` is built from `HANDLE_DW_APPLE_ENUM_KIND` with a
+/// `DW_APPLE_ENUM_KIND_` prefix. It is the table behind `DICompositeType`'s
+/// `enumKind:` field, and the smallest family in the file — which is exactly
+/// why it went unmodelled until the drift lock was asked for it.
+#[test]
+fn dw_apple_enum_kind_table_matches_the_vendored_def() {
+    let derived = rows(DWARF_DEF, "DW_APPLE_ENUM_KIND");
+    assert!(!derived.is_empty(), "HANDLE_DW_APPLE_ENUM_KIND rows moved");
+    for (name, value) in &derived {
+        let spelled = format!("DW_APPLE_ENUM_KIND_{name}");
+        assert_eq!(
+            dwarf::apple_enum_kind(&spelled),
+            Some(*value),
+            "{spelled} should be {value:#x}"
+        );
+        assert_eq!(
+            dwarf::apple_enum_kind_string(*value),
+            Some(spelled.as_str())
+        );
+    }
+    // The reverse direction too: nothing llvmkit accepts may be absent from the
+    // `.def`, which is what stops the table growing a spelling upstream refuses.
+    for name in ["DW_APPLE_ENUM_KIND_Bogus", "DW_APPLE_ENUM_KIND_"] {
+        assert_eq!(dwarf::apple_enum_kind(name), None, "{name}");
+    }
+}
+
 /// Mirrors `DISubprogram::getFlag` / `getFlagString`, built from
 /// `HANDLE_DISP_FLAG` with a `DISPFlag` prefix.
 #[test]

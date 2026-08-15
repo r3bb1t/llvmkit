@@ -279,6 +279,18 @@ pub struct Parser<'src, 'ctx, B: ModuleBrand> {
     /// The aliasee `^N` of the alias summary being parsed, when it was not yet
     /// defined.
     pending_summary_aliasee: Option<(u32, Span)>,
+
+    /// Whether a `#dbg_*` record has been seen. Mirrors
+    /// `LLParser::SeenNewDbgInfoFormat`.
+    seen_new_dbg_info_format: bool,
+    /// Whether a call to `llvm.dbg.declare` / `.value` / `.assign` has been
+    /// seen. Mirrors `LLParser::SeenOldDbgInfoFormat`.
+    ///
+    /// A module may use one debug-info format or the other, never both, and
+    /// the two flags are what catch the mixture. Upstream asserts they are
+    /// never both set by the time `validateEndOfModule` runs, which is exactly
+    /// the invariant these two diagnostics maintain.
+    seen_old_dbg_info_format: bool,
     _brand: PhantomData<B>,
 }
 
@@ -707,6 +719,23 @@ fn linkage_keyword(keyword: Keyword) -> Option<Linkage> {
         Keyword::Common => Linkage::Common,
         _ => return None,
     })
+}
+
+/// Whether `name` is one of the three debug intrinsics that the record-based
+/// debug-info format replaces.
+///
+/// Mirrors `llvm::isOldDbgFormatIntrinsic`, including its early exit: the
+/// `llvm.dbg.` prefix is checked first because almost every call is not one of
+/// these, and only `dbg_declare` / `dbg_value` / `dbg_assign` count —
+/// `llvm.dbg.label`, for instance, does not.
+fn is_old_dbg_format_intrinsic(name: &str) -> bool {
+    if !name.starts_with("llvm.dbg.") {
+        return false;
+    }
+    matches!(
+        name,
+        "llvm.dbg.declare" | "llvm.dbg.value" | "llvm.dbg.assign"
+    )
 }
 
 fn is_declaration_linkage(linkage: Linkage) -> bool {
@@ -1192,6 +1221,8 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             pending_summary_value_refs: Vec::new(),
             pending_summary_type_ids: Vec::new(),
             pending_summary_aliasee: None,
+            seen_new_dbg_info_format: false,
+            seen_old_dbg_info_format: false,
             _brand: PhantomData,
         })
     }
@@ -1988,6 +2019,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             self.bump()
         } else {
             Err(self.expected(expected))
+        }
+    }
+
+    /// [`expect_punct`](Self::expect_punct) for the handful of `parseToken`
+    /// labels upstream writes with a capital `E`, which therefore cannot go
+    /// through [`ParseError::Expected`]'s prefix-adding rendering. The message
+    /// is carried verbatim.
+    fn expect_message_punct(&mut self, t: PunctKind, message: &'static str) -> ParseResult<Span> {
+        if t.matches(self.peek()) {
+            self.bump()
+        } else {
+            Err(self.message(message))
         }
     }
 
@@ -5047,7 +5090,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
         }
 
-        self.expect_punct(PunctKind::RBrace, "'}' closing named metadata")?;
+        // `parseNamedMetadata` and `parseMDNodeVector` close with the same
+        // label, a few lines from the capital-`E` pair above.
+        self.expect_punct(PunctKind::RBrace, "end of metadata node")?;
         Ok(())
     }
 
@@ -5056,10 +5101,33 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// `LLParser::parseMetadataAsValue` delegating to `parseMetadata`: slot
     /// refs (`!N`), inline tuples (`!{...}`), and MDStrings (`!"..."`) are
     /// all legal metadata values.
-    fn parse_metadata_value_operand(&mut self) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
+    fn parse_metadata_value_operand(
+        &mut self,
+        pfs: Option<&PerFunctionState<'ctx, B>>,
+    ) -> ParseResult<llvmkit_ir::Value<'ctx, B>> {
         if matches!(self.peek(), Token::MetadataVar(_)) {
             let kind = self.parse_md_node_after_bang(false)?;
             let id = own_metadata(self.module.metadata_node(kind));
+            return Ok(own_metadata(self.module.metadata_as_value(id)));
+        }
+
+        // `parseMetadata`'s fallthrough: anything that is not a `!` at all is a
+        // `ValueAsMetadata` — a *type and value* pair, which is how every
+        // old-format debug intrinsic spells its operands
+        // (`llvm.dbg.value(metadata i32 %a, …)`). llvmkit demanded the sigil
+        // here and so could not parse them at all.
+        if !matches!(self.peek(), Token::Exclaim) {
+            let ty = self
+                .parse_type(false)
+                .map_err(|_| self.expected("metadata operand"))?;
+            let value_id = match pfs {
+                Some(state) => self.parse_value(state, ty)?.id(),
+                None => self.parse_global_value(ty)?.as_erased().id(),
+            };
+            let id = own_metadata(
+                self.module
+                    .metadata_node(llvmkit_ir::metadata::MetadataKind::Constant(value_id)),
+            );
             return Ok(own_metadata(self.module.metadata_as_value(id)));
         }
 
@@ -5080,7 +5148,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         }
                     }
                 }
-                self.expect_punct(PunctKind::RBrace, "'}' closing metadata tuple")?;
+                self.expect_punct(PunctKind::RBrace, "end of metadata node")?;
                 own_metadata(self.module.metadata_tuple(operands))
             }
             Token::SpecializedMetadata(_) | Token::MetadataVar(_) => {
@@ -5116,7 +5184,11 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     }
                 }
             }
-            _ => Err(self.expected("metadata attachment operand")),
+            // `parseMDNode` falls through to
+            // `parseToken(lltok::exclaim, "expected '!' here")`, so anything
+            // that is neither a specialized node nor a `!` is reported as the
+            // missing sigil rather than as a missing operand.
+            _ => Err(self.expected("'!' here")),
         }
     }
 
@@ -5208,19 +5280,19 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         }
                     }
                 }
-                self.expect_punct(PunctKind::RBrace, "'}' closing metadata tuple")?;
+                self.expect_punct(PunctKind::RBrace, "end of metadata node")?;
                 Ok(llvmkit_ir::metadata::MetadataKind::Tuple { distinct, operands })
             }
             Token::SpecializedMetadata(name) => {
                 let kind = llvmkit_ir::metadata::SpecializedMetadataKind::from_name(name)
-                    .ok_or_else(|| self.expected("specialized metadata kind"))?;
+                    .ok_or_else(|| self.expected("metadata type"))?;
                 self.parse_specialized_metadata_body(kind, distinct)
             }
             Token::MetadataVar(bytes) => {
                 let name = std::str::from_utf8(bytes.as_ref())
-                    .map_err(|_| self.expected("specialized metadata kind"))?;
+                    .map_err(|_| self.expected("metadata type"))?;
                 let kind = llvmkit_ir::metadata::SpecializedMetadataKind::from_name(name)
-                    .ok_or_else(|| self.expected("specialized metadata kind"))?;
+                    .ok_or_else(|| self.expected("metadata type"))?;
                 self.parse_specialized_metadata_body(kind, distinct)
             }
             Token::StringConstant(_) => {
@@ -5254,11 +5326,22 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             // through `Parser::expected` rendered the wrong first word.
             return Err(self.message("missing 'distinct', required for !DIAssignID()"));
         }
+        // `parseDICompileUnit` opens with the same guard, before it reads a
+        // single field.
+        if kind == llvmkit_ir::metadata::SpecializedMetadataKind::DiCompileUnit && !distinct {
+            return Err(self.message("missing 'distinct', required for !DICompileUnit"));
+        }
+        // The node-wide diagnostics below are reported at the `!DIFoo` token,
+        // which is where upstream's `LocTy Loc = Lex.getLoc()` is taken —
+        // `parseMDFieldsImpl` only eats it afterwards.
+        let node_loc = self.loc();
         self.bump()?;
         if kind == llvmkit_ir::metadata::SpecializedMetadataKind::DiExpression {
             return self.parse_di_expression_body(distinct);
         }
-        self.expect_punct(PunctKind::LParen, "'(' in specialized metadata")?;
+        // `parseMDFieldsImpl` and `parseMDFieldsImplBody` label the frame; the
+        // per-class `VISIT_MD_FIELDS` macro never gets a say in it.
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
         let mut fields: Vec<llvmkit_ir::metadata::MetadataField<B>> = Vec::new();
         if !matches!(self.peek(), Token::RParen) {
             loop {
@@ -5267,7 +5350,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     Token::LabelStr(bytes) => std::str::from_utf8(bytes.as_ref())
                         .map_err(|_| self.expected("valid UTF-8 metadata field name"))?
                         .to_owned(),
-                    _ => return Err(self.expected("metadata field name")),
+                    _ => return Err(self.expected("field label here")),
                 };
                 if !kind.accepts_field(&field_name) {
                     return Err(ParseError::InvalidMetadataField {
@@ -5297,7 +5380,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
         }
         let closing_loc = DiagLoc::span(self.loc());
-        self.expect_punct(PunctKind::RParen, "')' closing specialized metadata")?;
+        self.expect_punct(PunctKind::RParen, "')' here")?;
         for required in kind.required_fields() {
             if !fields.iter().any(|f| f.name() == required.name()) {
                 return Err(ParseError::MissingRequiredMetadataField {
@@ -5307,6 +5390,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 });
             }
         }
+        self.check_specialized_metadata_agreement(kind, distinct, &fields, node_loc)?;
         Ok(llvmkit_ir::metadata::MetadataKind::Specialized({
             let mut node = llvmkit_ir::metadata::SpecializedMetadataNode::new(kind);
             if distinct {
@@ -5336,15 +5420,36 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<llvmkit_ir::metadata::MetadataKind<B>> {
         use llvmkit_ir::metadata::DwarfExpressionOperand;
 
-        self.expect_punct(PunctKind::LParen, "'(' in specialized metadata")?;
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
         let mut operands: Vec<DwarfExpressionOperand> = Vec::new();
         if !matches!(self.peek(), Token::RParen) {
             loop {
                 let operand = match self.peek() {
                     // `DW_OP_*` and `DW_ATE_*` are the two keyword families
-                    // upstream accepts here.
-                    Token::DwarfOp(s) | Token::DwarfAttEncoding(s) => {
+                    // upstream accepts here, and each is looked up in its own
+                    // table: a spelling the table does not carry is rejected
+                    // by name rather than stored and printed straight back.
+                    Token::DwarfOp(s) => {
                         let name = (*s).to_owned();
+                        if llvmkit_ir::dwarf::operation_encoding(&name).is_none() {
+                            return Err(ParseError::InvalidMetadataFieldValue {
+                                what: "DWARF op",
+                                value: name,
+                                loc: DiagLoc::span(self.loc()),
+                            });
+                        }
+                        self.bump()?;
+                        DwarfExpressionOperand::Operation(name)
+                    }
+                    Token::DwarfAttEncoding(s) => {
+                        let name = (*s).to_owned();
+                        if llvmkit_ir::dwarf::attribute_encoding(&name).is_none() {
+                            return Err(ParseError::InvalidMetadataFieldValue {
+                                what: "DWARF attribute encoding",
+                                value: name,
+                                loc: DiagLoc::span(self.loc()),
+                            });
+                        }
                         self.bump()?;
                         DwarfExpressionOperand::Operation(name)
                     }
@@ -5362,8 +5467,13 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         else {
                             return Err(self.expected("unsigned integer"));
                         };
+                        // A literal that will not fit is a *separate*
+                        // diagnostic upstream: the value is read as an APSInt
+                        // first and only then measured against `UINT64_MAX`.
                         let Ok(value) = digits.parse::<u64>() else {
-                            return Err(self.expected("unsigned integer"));
+                            return Err(
+                                self.message(format!("element too large, limit is {}", u64::MAX))
+                            );
                         };
                         self.bump()?;
                         DwarfExpressionOperand::Literal(value)
@@ -5375,7 +5485,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
             }
         }
-        self.expect_punct(PunctKind::RParen, "')' closing specialized metadata")?;
+        self.expect_punct(PunctKind::RParen, "')' here")?;
         Ok(llvmkit_ir::metadata::MetadataKind::Specialized({
             let mut node = llvmkit_ir::metadata::SpecializedMetadataNode::new(
                 llvmkit_ir::metadata::SpecializedMetadataKind::DiExpression,
@@ -5399,6 +5509,110 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// tables are the vendored `Dwarf.def` / `DebugInfoFlags.def` (see
     /// `dwarf_def_drift.rs`). A field that upstream lets you write either as a
     /// keyword or as a raw encoding accepts both here too.
+    /// The rules a specialized node applies *after* every field is read, where
+    /// one field's presence or value constrains another's.
+    ///
+    /// Upstream writes each of these as a hand-written `if` at the bottom of
+    /// the class's own `parse##CLASS`, below the `PARSE_MD_FIELDS()` macro —
+    /// they are the reason those routines have a body at all beyond the macro.
+    fn check_specialized_metadata_agreement(
+        &self,
+        kind: llvmkit_ir::metadata::SpecializedMetadataKind,
+        distinct: bool,
+        fields: &[llvmkit_ir::metadata::MetadataField<B>],
+        node_loc: Span,
+    ) -> ParseResult<()> {
+        use llvmkit_ir::metadata::SpecializedMetadataKind as Kind;
+
+        let seen = |name: &str| fields.iter().any(|field| field.name() == name);
+        let value = |name: &str| {
+            fields
+                .iter()
+                .find(|field| field.name() == name)
+                .map(llvmkit_ir::metadata::MetadataField::value)
+        };
+
+        match kind {
+            // `parseDICompileUnit`: `language` and `sourceLanguageName` are
+            // each `OPTIONAL`, but exactly one of them is required, and the
+            // version rides on the second.
+            Kind::DiCompileUnit => {
+                if !seen("language") && !seen("sourceLanguageName") {
+                    return Err(self.message_at(
+                        node_loc,
+                        "missing one of 'language' or 'sourceLanguageName', required for !DICompileUnit",
+                    ));
+                }
+                if seen("language") && seen("sourceLanguageName") {
+                    return Err(self.message_at(
+                        node_loc,
+                        "can only specify one of 'language' and 'sourceLanguageName' on !DICompileUnit",
+                    ));
+                }
+                if seen("sourceLanguageVersion") && !seen("sourceLanguageName") {
+                    return Err(self.message_at(
+                        node_loc,
+                        "'sourceLanguageVersion' requires an associated 'sourceLanguageName' on !DICompileUnit",
+                    ));
+                }
+            }
+            // `parseDIEnumerator`: a `tokError`, so it anchors at whatever
+            // follows the closing paren rather than at the offending field.
+            Kind::DiEnumerator => {
+                let is_unsigned = matches!(
+                    value("isUnsigned"),
+                    Some(llvmkit_ir::metadata::MetadataFieldValue::Bool(true))
+                );
+                let negative = matches!(
+                    value("value"),
+                    Some(llvmkit_ir::metadata::MetadataFieldValue::Integer(v)) if *v < 0
+                );
+                if is_unsigned && negative {
+                    return Err(self.message("unsigned enumerator with negative value"));
+                }
+            }
+            // `parseDIFile`: the checksum is a pair, and half a pair is an
+            // error rather than a silently dropped field.
+            Kind::DiFile => {
+                if seen("checksumkind") != seen("checksum") {
+                    return Err(
+                        self.message("'checksumkind' and 'checksum' must be provided together")
+                    );
+                }
+            }
+            // `parseDISubprogram`: the guard reads the *computed* `SPFlags`, so
+            // an explicit `spFlags:` carrying `DISPFlagDefinition` trips it
+            // just as `isDefinition: true` does — and `spFlags:`, when given,
+            // is what `toSPFlags` is skipped in favour of.
+            Kind::DiSubprogram => {
+                // `DISPFlagDefinition` is looked up rather than spelled as a
+                // literal so the bit stays tied to the vendored table.
+                let definition_bit = llvmkit_ir::dwarf::disp_flag("DISPFlagDefinition")
+                    .unwrap_or_else(|| unreachable!("DISPFlagDefinition is in the DISPFlag table"));
+                let is_definition = match value("spFlags") {
+                    Some(llvmkit_ir::metadata::MetadataFieldValue::Enum(flags)) => flags
+                        .split('|')
+                        .any(|flag| flag.trim() == "DISPFlagDefinition"),
+                    Some(llvmkit_ir::metadata::MetadataFieldValue::Integer(bits)) => {
+                        bits & i128::from(definition_bit) != 0
+                    }
+                    _ => matches!(
+                        value("isDefinition"),
+                        Some(llvmkit_ir::metadata::MetadataFieldValue::Bool(true))
+                    ),
+                };
+                if is_definition && !distinct {
+                    return Err(self.message_at(
+                        node_loc,
+                        "missing 'distinct', required for !DISubprogram that is a Definition",
+                    ));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn check_metadata_field_value(
         &self,
         field: llvmkit_ir::metadata::SpecializedMetadataField,
@@ -5486,7 +5700,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
             MetadataFieldKind::Signed { min, max } => {
                 let MetadataFieldValue::Integer(parsed) = value else {
-                    return Ok(());
+                    // `parseMDField(MDSignedField&)` opens by demanding an
+                    // `APSInt`; anything else never reaches the range checks.
+                    return Err(self.expected("signed integer"));
                 };
                 if *parsed < i128::from(min) {
                     return Err(ParseError::MetadataFieldValueTooSmall {
@@ -5532,10 +5748,26 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             MetadataFieldKind::NameTableKind => keyword("nameTable kind", name_table_kind),
             MetadataFieldKind::ChecksumKind => keyword("checksum kind", checksum_kind),
             MetadataFieldKind::FixedPointKind => keyword("fixed-point kind", fixed_point_kind),
-            // `DwarfEnumKindField`'s table lives in `DICompositeType`'s Apple
-            // enum-kind set rather than `Dwarf.def`; unmodelled, so unchecked.
-            MetadataFieldKind::DwarfEnumKind
-            | MetadataFieldKind::ApsInt
+            // `parseMDField(DwarfEnumKindField&)` splits its rejection in two:
+            // a token that is neither an integer nor a `DW_APPLE_ENUM_KIND_*`
+            // keyword is `expected DWARF enum kind code`, while a keyword the
+            // table does not carry is `invalid DWARF enum kind code '...'`.
+            MetadataFieldKind::DwarfEnumKind => match value {
+                MetadataFieldValue::Integer(_) => Ok(()),
+                MetadataFieldValue::Enum(spelling) => {
+                    if llvmkit_ir::dwarf::apple_enum_kind(spelling).is_some() {
+                        Ok(())
+                    } else {
+                        Err(ParseError::InvalidMetadataFieldValue {
+                            what: "DWARF enum kind code",
+                            value: spelling.clone(),
+                            loc,
+                        })
+                    }
+                }
+                _ => Err(self.expected("DWARF enum kind code")),
+            },
+            MetadataFieldKind::ApsInt
             | MetadataFieldKind::MetadataList
             | MetadataFieldKind::SignedOrMetadata => Ok(()),
         }
@@ -5662,10 +5894,61 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
 
     /// Parse one `#dbg_*` record operand: either a metadata node/reference or
     /// an ordinary typed value wrapped as debug metadata.
+    /// `!DIArgList(i32 %a, i64 7)`.
+    ///
+    /// Mirrors `LLParser::parseDIArgList`, which `parseMetadata` special-cases
+    /// ahead of `parseSpecializedMDNode` because its operands are a
+    /// `ValueAsMetadata` list and therefore need a function state — the same
+    /// reason `parseNamedMetadata` refuses one outright.
+    fn parse_di_arg_list(
+        &mut self,
+        state: &PerFunctionState<'ctx, B>,
+    ) -> ParseResult<MetadataId<B>> {
+        self.bump()?; // eat `!DIArgList`
+        self.expect_punct(PunctKind::LParen, "'(' here")?;
+
+        let mut arguments = Vec::new();
+        // An empty list is legal; upstream guards the loop with the same
+        // lookahead rather than requiring one operand.
+        if !matches!(self.peek(), Token::RParen) {
+            loop {
+                let ty = self
+                    .parse_type(false)
+                    .map_err(|_| self.expected("value-as-metadata operand"))?;
+                let value = self.parse_value(state, ty)?;
+                arguments.push(value.id());
+                if !self.eat_punct(PunctKind::Comma)? {
+                    break;
+                }
+            }
+        }
+
+        self.expect_punct(PunctKind::RParen, "')' here")?;
+        Ok(own_metadata(self.module.metadata_node(
+            llvmkit_ir::metadata::MetadataKind::ArgList { arguments },
+        )))
+    }
+
+    /// Whether the lookahead is the `!DIArgList` spelling, which is a
+    /// `MetadataVar` like any other specialized node name but is dispatched
+    /// before them.
+    fn peek_is_di_arg_list(&self) -> bool {
+        match self.peek() {
+            Token::MetadataVar(bytes) => bytes.as_ref() == b"DIArgList",
+            Token::SpecializedMetadata(name) => *name == "DIArgList",
+            _ => false,
+        }
+    }
+
     fn parse_debug_metadata_operand(
         &mut self,
         state: &PerFunctionState<'ctx, B>,
     ) -> ParseResult<DebugMetadataOperand<B>> {
+        if self.peek_is_di_arg_list() {
+            return Ok(DebugMetadataOperand::Metadata(
+                self.parse_di_arg_list(state)?,
+            ));
+        }
         if matches!(
             self.peek(),
             Token::Exclaim | Token::SpecializedMetadata(_) | Token::MetadataVar(_)
@@ -5685,18 +5968,25 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     ) -> ParseResult<DebugRecord<B>> {
         use llvmkit_ir::metadata::{DebugRecord, DebugVariableRecord, DebugVariableRecordKind};
 
+        // `parseDebugRecord` frames the whole record with **capital-`E`**
+        // labels — `Expected '(' here`, `Expected ',' here`, `Expected ')'
+        // here` — a spelling it shares with `parseNamedMetadata` and with
+        // nothing else nearby. Only the opening `expected debug record type
+        // here` is lowercase, and it is an `error` at the record-type token
+        // rather than a `tokError`.
+        let record_loc = self.loc();
         let record_type = match self.peek() {
             Token::DbgRecordType(name) => *name,
-            _ => return Err(self.expected("debug record type")),
+            _ => return Err(self.message_at(record_loc, "expected debug record type here")),
         };
         self.bump()?;
-        self.expect_punct(PunctKind::LParen, "'(' in debug record")?;
+        self.expect_message_punct(PunctKind::LParen, "Expected '(' here")?;
 
         if record_type == "label" {
             let label = self.parse_metadata_attachment_operand()?;
-            self.expect_punct(PunctKind::Comma, "',' after debug label")?;
+            self.expect_message_punct(PunctKind::Comma, "Expected ',' here")?;
             let debug_loc = self.parse_metadata_attachment_operand()?;
-            self.expect_punct(PunctKind::RParen, "')' closing debug record")?;
+            self.expect_message_punct(PunctKind::RParen, "Expected ')' here")?;
             return Ok(DebugRecord::Label { label, debug_loc });
         }
 
@@ -5705,24 +5995,27 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             "value" => DebugVariableRecordKind::Value,
             "assign" => DebugVariableRecordKind::Assign,
             "declare_value" => DebugVariableRecordKind::DeclareValue,
-            _ => return Err(self.expected("known debug record type")),
+            // The lexer produces `DbgRecordType` for exactly these five
+            // spellings and no others, which is why upstream's `StringSwitch`
+            // needs no `Default` arm.
+            other => unreachable!("the lexer cannot produce #dbg_{other}"),
         };
 
         let location = self.parse_debug_metadata_operand(state)?;
-        self.expect_punct(PunctKind::Comma, "',' after debug location operand")?;
+        self.expect_message_punct(PunctKind::Comma, "Expected ',' here")?;
         let variable = self.parse_metadata_attachment_operand()?;
-        self.expect_punct(PunctKind::Comma, "',' after debug variable")?;
+        self.expect_message_punct(PunctKind::Comma, "Expected ',' here")?;
         let expression = self.parse_metadata_attachment_operand()?;
-        self.expect_punct(PunctKind::Comma, "',' after debug expression")?;
+        self.expect_message_punct(PunctKind::Comma, "Expected ',' here")?;
 
         let (assign_id, address_location, address_expression) =
             if kind == DebugVariableRecordKind::Assign {
                 let assign_id = self.parse_metadata_attachment_operand()?;
-                self.expect_punct(PunctKind::Comma, "',' after DIAssignID")?;
+                self.expect_message_punct(PunctKind::Comma, "Expected ',' here")?;
                 let address_location = self.parse_debug_metadata_operand(state)?;
-                self.expect_punct(PunctKind::Comma, "',' after debug address location")?;
+                self.expect_message_punct(PunctKind::Comma, "Expected ',' here")?;
                 let address_expression = self.parse_metadata_attachment_operand()?;
-                self.expect_punct(PunctKind::Comma, "',' after debug address expression")?;
+                self.expect_message_punct(PunctKind::Comma, "Expected ',' here")?;
                 (
                     Some(assign_id),
                     Some(address_location),
@@ -5733,7 +6026,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             };
 
         let debug_loc = self.parse_metadata_attachment_operand()?;
-        self.expect_punct(PunctKind::RParen, "')' closing debug record")?;
+        self.expect_message_punct(PunctKind::RParen, "Expected ')' here")?;
         let mut record = DebugVariableRecord::new(kind, location, variable, expression, debug_loc);
         if let Some(assign_id) = assign_id {
             record = record.with_assign_id(assign_id);
@@ -5814,8 +6107,10 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             .ok_or_else(|| self.expected("named type identifier"))?;
         let name_loc = self.loc();
         self.bump()?; // eat LocalVar
-        self.expect_punct(PunctKind::Equal, "'=' after type name")?;
-        self.expect_keyword(Keyword::Type, "'type' after '='")?;
+        // Both directives say `'=' after name`; only the *second* label differs
+        // between them, and it is `parseNamedType` that says `after name`.
+        self.expect_punct(PunctKind::Equal, "'=' after name")?;
+        self.expect_keyword(Keyword::Type, "'type' after name")?;
         self.parse_struct_definition(Some(name), None, name_loc)
     }
 
@@ -5827,7 +6122,9 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         };
         let loc = self.loc();
         self.bump()?;
-        self.expect_punct(PunctKind::Equal, "'=' after type id")?;
+        // `parseUnnamedType` says `after name` for the `=` and `after '='` for
+        // the keyword, where `parseNamedType` says `after name` for both.
+        self.expect_punct(PunctKind::Equal, "'=' after name")?;
         self.expect_keyword(Keyword::Type, "'type' after '='")?;
         self.parse_struct_definition(None, Some(id), loc)
     }
@@ -7288,14 +7585,28 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 if !ty.is_metadata() {
                     return Err(self.expected("`metadata` type for a metadata operand"));
                 }
-                Ok(ValId::Value(self.parse_metadata_value_operand()?))
+                // `parseMetadata` reaches `parseDIArgList` before it reaches
+                // `parseSpecializedMDNode`, and only when a function state is
+                // in hand — the intrinsic call form
+                // `llvm.dbg.value(metadata !DIArgList(...), ...)` is what gets
+                // here.
+                if self.peek_is_di_arg_list() {
+                    let Some(pfs) = pfs else {
+                        return Err(self.message("found DIArgList outside of function"));
+                    };
+                    let id = self.parse_di_arg_list(pfs)?;
+                    return Ok(ValId::Value(own_metadata(
+                        self.module.metadata_as_value(id),
+                    )));
+                }
+                Ok(ValId::Value(self.parse_metadata_value_operand(pfs)?))
             }
             Token::Exclaim => {
                 let ty = expected_ty.ok_or_else(|| self.expected("metadata operand type"))?;
                 if !ty.is_metadata() {
                     return Err(self.expected("`metadata` type for a metadata operand"));
                 }
-                Ok(ValId::Value(self.parse_metadata_value_operand()?))
+                Ok(ValId::Value(self.parse_metadata_value_operand(pfs)?))
             }
             Token::Kw(Keyword::Ptrauth) => self.parse_ptrauth_constant().map(ValId::Constant),
             Token::Kw(Keyword::Splat) => {
@@ -10637,6 +10948,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let mut seen_non_phi = false;
         loop {
             while matches!(self.peek(), Token::Hash) {
+                // `parseBasicBlock`'s debug-record loop is one half of the
+                // format-intermix guard; the `llvm.dbg.*` call site in
+                // `parseCall` is the other.
+                if self.seen_old_dbg_info_format {
+                    return Err(self.message(
+                        "debug record should not appear in a module containing debug info intrinsics",
+                    ));
+                }
+                self.seen_new_dbg_info_format = true;
                 self.bump()?;
                 pending_debug_records.push(self.parse_debug_record(state)?);
             }
@@ -11565,6 +11885,12 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     /// Optional `, addrspace(N)` clause for `alloca` (after any align),
     /// mirroring `LLParser::parseAlloc`. Uses the same save/restore peek so a
     /// trailing `, !dbg` metadata comma is left intact.
+    /// Mirrors `LLParser::parseOptionalCommaAddrSpace`: after a comma only an
+    /// address space or trailing metadata may follow, and anything else is an
+    /// error rather than a silent stop. Metadata is the early exit, which
+    /// llvmkit spells by putting the comma back so the caller's own metadata
+    /// loop reads it — upstream instead keeps the comma eaten and reports it
+    /// through `AteExtraComma`.
     fn parse_optional_comma_addrspace(&mut self) -> ParseResult<Option<u32>> {
         if !matches!(self.peek(), Token::Comma) {
             return Ok(None);
@@ -11572,13 +11898,45 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let saved_lex = self.lex.clone();
         let saved_current = self.current.clone();
         self.bump()?;
-        if !matches!(self.peek(), Token::Kw(Keyword::Addrspace)) {
+        if matches!(self.peek(), Token::MetadataVar(_)) {
             self.lex = saved_lex;
             self.current = saved_current;
             return Ok(None);
         }
+        if !matches!(self.peek(), Token::Kw(Keyword::Addrspace)) {
+            return Err(self.expected("metadata or 'addrspace'"));
+        }
         self.bump()?;
         Ok(Some(self.parse_addr_space_paren()?))
+    }
+
+    /// Mirrors `LLParser::parseOptionalCommaAlign`, the load/store/cmpxchg/
+    /// atomicrmw form: after a comma only `align` or trailing metadata may
+    /// follow.
+    ///
+    /// `parseAlloc` deliberately does **not** use it — it hand-rolls a nested
+    /// dispatch because an `addrspace` clause may follow the comma too, which
+    /// is why [`parse_optional_comma_align`] keeps its backtracking shape for
+    /// that one caller.
+    fn parse_optional_comma_align_strict(&mut self) -> ParseResult<Option<Align>> {
+        let mut alignment = None;
+        loop {
+            if !matches!(self.peek(), Token::Comma) {
+                return Ok(alignment);
+            }
+            let saved_lex = self.lex.clone();
+            let saved_current = self.current.clone();
+            self.bump()?;
+            if matches!(self.peek(), Token::MetadataVar(_)) {
+                self.lex = saved_lex;
+                self.current = saved_current;
+                return Ok(alignment);
+            }
+            if !matches!(self.peek(), Token::Kw(Keyword::Align)) {
+                return Err(self.expected("metadata or 'align'"));
+            }
+            alignment = Some(self.parse_align_val()?);
+        }
     }
 
     /// `load [volatile] TYPE, ptr PTR [, align N]` or
@@ -11610,7 +11968,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else {
             None
         };
-        let align = self.parse_optional_comma_align()?;
+        let align = self.parse_optional_comma_align_strict()?;
 
         // `parseLoad`'s checks, in its order and at its anchors.
         let ptr: llvmkit_ir::PointerValue<'ctx, B> = ptr_v.try_into().map_err(|_| {
@@ -11690,7 +12048,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         } else {
             None
         };
-        let align = self.parse_optional_comma_align()?;
+        let align = self.parse_optional_comma_align_strict()?;
 
         // `parseStore`'s checks, in its order. Note the anchors differ: the
         // pointer rule reports at `PtrLoc`, everything else at the *value*.
@@ -12606,7 +12964,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let arg_loc = self.loc();
                 let arg_ty = self.parse_type(false)?;
                 let one_arg_attrs = self.parse_optional_param_attrs()?;
-                let arg_v = self.parse_value(state, arg_ty)?;
+                // `parseParameterList` branches on the argument type: a
+                // `metadata` parameter takes `parseMetadataAsValue`, not
+                // `parseValue`, which is what makes `metadata i32 %a` — every
+                // old-format debug intrinsic operand — legal.
+                let arg_v = if arg_ty.is_metadata() {
+                    self.parse_metadata_value_operand(Some(state))?
+                } else {
+                    self.parse_value(state, arg_ty)?
+                };
                 arg_tys.push(arg_ty);
                 arg_locs.push(arg_loc);
                 arg_attrs.push(one_arg_attrs);
@@ -12654,6 +13020,20 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             return Err(self.message(
                 "fast-math-flags specified for call without floating-point scalar or vector return type",
             ));
+        }
+        // The old-format half of the debug-info intermix guard. It keys on the
+        // callee's *ValID* being a global name, so an indirect call through a
+        // pointer that happens to hold `llvm.dbg.value` does not trip it.
+        if let ParsedDirectCallee::Name { name, .. } = &parsed_callee
+            && is_old_dbg_format_intrinsic(name)
+        {
+            if self.seen_new_dbg_info_format {
+                return Err(self.message_at(
+                    call_loc,
+                    "llvm.dbg intrinsic should not appear in a module using non-intrinsic debug info",
+                ));
+            }
+            self.seen_old_dbg_info_format = true;
         }
         let callee = self.resolve_direct_callee(parsed_callee, parsed_fn_ty)?;
         let name = result_name.as_str();
@@ -13244,7 +13624,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let sync_scope = self.parse_optional_syncscope()?;
         let success_ord = self.parse_atomic_ordering()?;
         let failure_ord = self.parse_atomic_ordering()?;
-        let align = self.parse_optional_comma_align()?;
+        let align = self.parse_optional_comma_align_strict()?;
 
         // `parseCmpXchg`'s five checks, in its order. The two ordering rules
         // are `tokError` and come *first*, before the operand types are even
@@ -13306,7 +13686,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         let val_v = self.parse_value(state, val_ty)?;
         let sync_scope = self.parse_optional_syncscope()?;
         let ordering = self.parse_atomic_ordering()?;
-        let align = self.parse_optional_comma_align()?;
+        let align = self.parse_optional_comma_align_strict()?;
 
         // `parseAtomicRMW`'s checks, in its order. llvmkit had none of them.
         if ordering == AtomicOrdering::Unordered {
@@ -13672,7 +14052,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let arg_loc = self.loc();
                 let arg_ty = self.parse_type(false)?;
                 let one_arg_attrs = self.parse_optional_param_attrs()?;
-                let arg_v = self.parse_value(state, arg_ty)?;
+                // `parseParameterList` branches on the argument type: a
+                // `metadata` parameter takes `parseMetadataAsValue`, not
+                // `parseValue`, which is what makes `metadata i32 %a` — every
+                // old-format debug intrinsic operand — legal.
+                let arg_v = if arg_ty.is_metadata() {
+                    self.parse_metadata_value_operand(Some(state))?
+                } else {
+                    self.parse_value(state, arg_ty)?
+                };
                 arg_attrs.push(one_arg_attrs);
                 arg_tys.push(arg_ty);
                 arg_locs.push(arg_loc);
@@ -13802,7 +14190,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let arg_loc = self.loc();
                 let arg_ty = self.parse_type(false)?;
                 let one_arg_attrs = self.parse_optional_param_attrs()?;
-                let arg_v = self.parse_value(state, arg_ty)?;
+                // `parseParameterList` branches on the argument type: a
+                // `metadata` parameter takes `parseMetadataAsValue`, not
+                // `parseValue`, which is what makes `metadata i32 %a` — every
+                // old-format debug intrinsic operand — legal.
+                let arg_v = if arg_ty.is_metadata() {
+                    self.parse_metadata_value_operand(Some(state))?
+                } else {
+                    self.parse_value(state, arg_ty)?
+                };
                 arg_attrs.push(one_arg_attrs);
                 arg_tys.push(arg_ty);
                 arg_locs.push(arg_loc);

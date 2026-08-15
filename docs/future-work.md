@@ -1195,16 +1195,27 @@ says that too rather than inventing one.
   enum. **Deferred to the debug-info/metadata round-trip work**
   (`ROADMAP.md`, Milestone 12), where a consumer that needs the values exists.
 
-  One consequence is now load-bearing and worth stating plainly.
-  `DIExpression` operands (`DwarfExpressionOperand::Operation`) keep their
-  source spelling instead of the `uint64_t` upstream stores through
-  `dwarf::getOperationEncoding` / `getAttributeEncoding`
-  (`LLParser::parseDIExpressionBody`). Round-tripping is unaffected —
-  `AsmWriter.cpp`'s `writeDIExpression` prints a known operation back by name —
-  but **an unrecognised `DW_OP_*` round-trips through llvmkit where `llvm-as`
-  rejects it with `invalid DWARF op '...'`**. Closing that needs the encoding
-  table, i.e. this same milestone; it is the one place the encodings would
-  actually be read.
+  One consequence is worth stating plainly. `DIExpression` operands
+  (`DwarfExpressionOperand::Operation`) keep their source spelling instead of
+  the `uint64_t` upstream stores through `dwarf::getOperationEncoding` /
+  `getAttributeEncoding` (`LLParser::parseDIExpressionBody`).
+
+  **Half of that gap closed in LLParser-parity W11 (2026-08-15).** The
+  spellings are now *validated* against the same tables on the way in, so an
+  unrecognised `DW_OP_*` or `DW_ATE_*` is rejected with upstream's
+  `invalid DWARF op '...'` / `invalid DWARF attribute encoding '...'` rather
+  than round-tripping silently. What remains is storage: llvmkit keeps the
+  name, upstream keeps the encoding, and the difference is only observable
+  through **normalisation** — `!DIExpression(15)` prints back as `15` here
+  where `llvm-dis` prints `DW_OP_...` for the operation that value encodes.
+  Closing it needs the reverse tables to be consulted at print time, which is
+  this same milestone.
+
+  The parity plan recorded this divergence as *closed* at W11. It was not: the
+  claim was written from the plan's own intent rather than from the tree, and
+  the operands were still unvalidated names when W11 opened them. Recorded
+  here because a false "closed" is worse than an open item.
+  [[verify-recorded-premises]]
 - **`DIFlags` / `DISPFlags` are not bitflags.** Upstream spells them as two
   `uint32_t` bitfields with `getFlag` / `getFlagString` / `splitFlags`
   (`DINode::DIFlags` and `DISubprogram::DISPFlags`, `DebugInfoMetadata.h`);

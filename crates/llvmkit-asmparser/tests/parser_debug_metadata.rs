@@ -23,7 +23,7 @@ entry:
 }
 
 !0 = !DIFile(filename: "a.c", directory: "/tmp")
-!1 = !DICompileUnit(file: !0, language: DW_LANG_C, producer: "llvmkit")
+!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, producer: "llvmkit")
 !2 = !DISubroutineType(types: !{!7, !7})
 !3 = distinct !DISubprogram(name: "f", file: !0, type: !2, unit: !1)
 !4 = !DILocation(line: 1, column: 2, scope: !3)
@@ -103,7 +103,7 @@ entry:
 !1 = !DILocalVariable(name: "x", scope: !0, type: !5)
 !2 = !DILocation(line: 1, column: 17, scope: !0)
 !3 = !DISubroutineType(types: !{null, !5})
-!4 = !DICompileUnit(language: DW_LANG_C11, file: !6, producer: "llvmkit")
+!4 = distinct !DICompileUnit(language: DW_LANG_C11, file: !6, producer: "llvmkit")
 !5 = !DIBasicType(name: "double", size: 64, encoding: DW_ATE_float)
 !6 = !DIFile(filename: "test.c", directory: "/tmp")
 "#,
@@ -128,7 +128,7 @@ entry:
 }
 
 !0 = !DIFile(filename: "a.c", directory: "/tmp")
-!1 = !DICompileUnit(file: !0, language: DW_LANG_C, producer: "llvmkit")
+!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, producer: "llvmkit")
 !2 = !DISubroutineType(types: !{null})
 !3 = distinct !DISubprogram(name: "f", file: !0, type: !2, unit: !1)
 !4 = !DILocation(line: 1, column: 1, scope: !3)
@@ -558,7 +558,7 @@ fn keyword_families_reject_a_spelling_upstream_does_not_know() {
             "DW_VIRTUALITY_bogus",
         ),
         (
-            "!0 = !{}\n!1 = !DICompileUnit(file: !0, language: DW_LANG_bogus)\n",
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_bogus)\n",
             "DWARF language",
             "DW_LANG_bogus",
         ),
@@ -611,7 +611,7 @@ fn keyword_families_accept_the_spellings_upstream_knows() {
 !0 = !{}
 !1 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !0, flags: DIFlagPublic | DIFlagStaticMember)
 !2 = !DIBasicType(encoding: DW_ATE_signed)
-!3 = !DICompileUnit(file: !0, language: DW_LANG_C99, emissionKind: FullDebug, nameTableKind: GNU)
+!3 = distinct !DICompileUnit(file: !0, language: DW_LANG_C99, emissionKind: FullDebug, nameTableKind: GNU)
 !4 = !DIFile(filename: "a", directory: "b", checksumkind: CSK_MD5, checksum: "abc")
 "#,
     );
@@ -706,8 +706,8 @@ fn a_bool_field_rejects_a_non_boolean() {
 #[test]
 fn exact_word_kind_families_reject_an_unknown_spelling() {
     for src in [
-        "!0 = !{}\n!1 = !DICompileUnit(file: !0, emissionKind: Bogus)\n",
-        "!0 = !{}\n!1 = !DICompileUnit(file: !0, nameTableKind: Bogus)\n",
+        "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: Bogus)\n",
+        "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, nameTableKind: Bogus)\n",
         "!0 = !DIFixedPointType(kind: Bogus)\n",
     ] {
         let _ = parse_err(src);
@@ -731,14 +731,14 @@ fn exact_word_kind_families_accept_every_spelling_the_lexer_produces() {
         r#"
 !named = !{!1, !2, !3, !4, !5, !6, !7, !8, !9, !10, !11}
 !0 = !{}
-!1 = !DICompileUnit(file: !0, emissionKind: NoDebug)
-!2 = !DICompileUnit(file: !0, emissionKind: FullDebug)
-!3 = !DICompileUnit(file: !0, emissionKind: LineTablesOnly)
-!4 = !DICompileUnit(file: !0, emissionKind: DebugDirectivesOnly)
-!5 = !DICompileUnit(file: !0, nameTableKind: Default)
-!6 = !DICompileUnit(file: !0, nameTableKind: GNU)
-!7 = !DICompileUnit(file: !0, nameTableKind: Apple)
-!8 = !DICompileUnit(file: !0, nameTableKind: None)
+!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: NoDebug)
+!2 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: FullDebug)
+!3 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: LineTablesOnly)
+!4 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: DebugDirectivesOnly)
+!5 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, nameTableKind: Default)
+!6 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, nameTableKind: GNU)
+!7 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, nameTableKind: Apple)
+!8 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, nameTableKind: None)
 !9 = !DIFixedPointType(kind: Binary)
 !10 = !DIFixedPointType(kind: Decimal)
 !11 = !DIFixedPointType(kind: Rational)
@@ -759,4 +759,231 @@ fn exact_word_kind_families_accept_every_spelling_the_lexer_produces() {
     ] {
         assert!(text.contains(needle), "missing {needle} in:\n{text}");
     }
+}
+
+// --------------------------------------------------------------------------
+// Debug records: `#dbg_*`, `!DIArgList`, and the debug-format intermix guard
+// --------------------------------------------------------------------------
+
+const DBG_RECORD_INVALID_1: &str =
+    include_str!("fixtures/upstream/dbg-record-invalid/dbg-record-invalid-1.ll");
+const DBG_RECORD_INVALID_2: &str =
+    include_str!("fixtures/upstream/dbg-record-invalid/dbg-record-invalid-2.ll");
+const DBG_RECORD_INVALID_3: &str =
+    include_str!("fixtures/upstream/dbg-record-invalid/dbg-record-invalid-3.ll");
+const DBG_RECORD_INVALID_4: &str =
+    include_str!("fixtures/upstream/dbg-record-invalid/dbg-record-invalid-4.ll");
+const DBG_RECORD_INVALID_6: &str =
+    include_str!("fixtures/upstream/dbg-record-invalid/dbg-record-invalid-6.ll");
+const DBG_RECORD_INVALID_7: &str =
+    include_str!("fixtures/upstream/dbg-record-invalid/dbg-record-invalid-7.ll");
+const DBG_RECORD_INVALID_8: &str =
+    include_str!("fixtures/upstream/dbg-record-invalid/dbg-record-invalid-8.ll");
+
+/// Ports `test/Assembler/dbg-record-invalid-1.ll`: a `#dbg_value` record and a
+/// `llvm.dbg.value` call in one module, record first.
+///
+/// Mirrors `LLParser`'s `SeenNewDbgInfoFormat` / `SeenOldDbgInfoFormat` pair,
+/// whose whole job is to catch the mixture — upstream asserts the two are never
+/// both set by the time `validateEndOfModule` runs.
+#[test]
+fn a_dbg_intrinsic_after_a_debug_record_is_rejected() {
+    assert_eq!(
+        parse_err(DBG_RECORD_INVALID_1).to_string(),
+        "llvm.dbg intrinsic should not appear in a module using non-intrinsic debug info"
+    );
+}
+
+/// Ports `test/Assembler/dbg-record-invalid-3.ll`: the same mixture the other
+/// way round, call first.
+#[test]
+fn a_debug_record_after_a_dbg_intrinsic_is_rejected() {
+    assert_eq!(
+        parse_err(DBG_RECORD_INVALID_3).to_string(),
+        "debug record should not appear in a module containing debug info intrinsics"
+    );
+}
+
+/// Ports `test/Assembler/dbg-record-invalid-4.ll` as far as llvmkit can reach
+/// it: `#dbg_invalid` is not one of the five spellings the lexer turns into a
+/// `DbgRecordType`.
+///
+/// **Same verdict, different layer.** Upstream's `LLLexer` hands the parser a
+/// token it does not recognise and `parseDebugRecord`'s opening check answers
+/// `expected debug record type here` — the one lowercase label in an otherwise
+/// capital-`E` routine. llvmkit's lexer rejects the unknown keyword itself, so
+/// the parser never sees it. Closing the gap is the W14 lexer re-layering (a
+/// `Token::Error` variant so an unknown word can reach the parser), which the
+/// three `memory-attribute-errors.ll` splits are queued behind for the same
+/// reason. Recorded rather than papered over: the assertion below is what
+/// llvmkit *does* say, so this test starts failing the moment the layering
+/// changes and the message can be tightened.
+#[test]
+fn an_unknown_debug_record_type_is_rejected() {
+    assert_eq!(
+        parse_err(DBG_RECORD_INVALID_4).to_string(),
+        "unknown keyword 'dbg_invalid'"
+    );
+}
+
+/// Ports `test/Assembler/dbg-record-invalid-2.ll` and `-6.ll`: a `#dbg_value`
+/// field that should be a metadata node but is a bare value. `parseMDNode`
+/// falls through to its `expected '!' here`, whichever field it is.
+#[test]
+fn a_debug_record_field_that_is_not_a_metadata_node_is_rejected() {
+    for source in [DBG_RECORD_INVALID_2, DBG_RECORD_INVALID_6] {
+        assert_eq!(parse_err(source).to_string(), "expected '!' here");
+    }
+}
+
+/// Ports `test/Assembler/dbg-record-invalid-7.ll` and `-8.ll`: a missing
+/// separator inside a `#dbg_value`. `parseDebugRecord` labels every one of its
+/// commas with a **capital** `E`, a spelling it shares only with
+/// `parseNamedMetadata`.
+#[test]
+fn a_debug_record_missing_a_separator_reports_the_capital_e_label() {
+    for source in [DBG_RECORD_INVALID_7, DBG_RECORD_INVALID_8] {
+        assert_eq!(parse_err(source).to_string(), "Expected ',' here");
+    }
+}
+
+/// `!DIArgList(i32 %a, i32 %b)` in a `#dbg_value` record, which is the only
+/// place it can appear: its operands are a `ValueAsMetadata` list, so it needs
+/// a function state, which is why `parseMetadata` special-cases it ahead of
+/// `parseSpecializedMDNode` and why `parseNamedMetadata` refuses one outright.
+///
+/// llvmkit-specific in its assembly — `test/Assembler` carries `!DIArgList`
+/// only inside the `dbg-record-invalid-*` negatives, where the parse never
+/// reaches the list — so the round trip is pinned against
+/// `AsmWriter::writeDIArgList`, which prints each operand as a typed value.
+#[test]
+fn di_arg_list_round_trips_inside_a_debug_record() {
+    let text = parse_and_render(
+        r#"
+define void @f(i32 %a, i32 %b) !dbg !3 {
+entry:
+    #dbg_value(!DIArgList(i32 %a, i32 %b), !5, !DIExpression(), !4)
+  ret void
+}
+
+!0 = !DIFile(filename: "a.c", directory: "/tmp")
+!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, producer: "llvmkit")
+!2 = !DISubroutineType(types: !{null})
+!3 = distinct !DISubprogram(name: "f", file: !0, type: !2, unit: !1)
+!4 = !DILocation(line: 1, column: 1, scope: !3)
+!5 = !DILocalVariable(name: "x", file: !0, type: !6, scope: !3)
+!6 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+"#,
+    );
+    assert!(
+        text.contains("#dbg_value(!DIArgList(i32 %a, i32 %b), !"),
+        "output:\n{text}"
+    );
+}
+
+/// An empty `!DIArgList()` is legal — `parseDIArgList` guards its operand loop
+/// with a `rparen` lookahead rather than requiring one.
+#[test]
+fn an_empty_di_arg_list_is_accepted() {
+    let text = parse_and_render(
+        r#"
+define void @f() !dbg !3 {
+entry:
+    #dbg_value(!DIArgList(), !5, !DIExpression(), !4)
+  ret void
+}
+
+!0 = !DIFile(filename: "a.c", directory: "/tmp")
+!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, producer: "llvmkit")
+!2 = !DISubroutineType(types: !{null})
+!3 = distinct !DISubprogram(name: "f", file: !0, type: !2, unit: !1)
+!4 = !DILocation(line: 1, column: 1, scope: !3)
+!5 = !DILocalVariable(name: "x", file: !0, type: !6, scope: !3)
+!6 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+"#,
+    );
+    assert!(
+        text.contains("#dbg_value(!DIArgList(), !"),
+        "output:\n{text}"
+    );
+}
+
+/// Mirrors `LLParser::parseNamedMetadata`'s explicit refusal: "DIArgLists
+/// should only appear inline in a function, as they may contain
+/// LocalAsMetadata arguments which require a function context."
+#[test]
+fn a_di_arg_list_outside_a_function_is_rejected() {
+    assert_eq!(
+        parse_err("!named = !{!DIArgList(i32 0)}\n").to_string(),
+        "found DIArgList outside of function"
+    );
+}
+
+/// Mirrors the four field-interaction rules that live *below* the
+/// `PARSE_MD_FIELDS()` macro in their classes' own `parse##CLASS` routines —
+/// the reason those routines have a body at all beyond the macro.
+#[test]
+fn specialized_nodes_enforce_their_field_agreement_rules() {
+    for (source, message) in [
+        (
+            "!0 = !DIFile(filename: \"a\", directory: \"b\")\n\
+             !1 = !DICompileUnit(file: !0, language: DW_LANG_C)\n",
+            "missing 'distinct', required for !DICompileUnit",
+        ),
+        (
+            "!0 = !DIFile(filename: \"a\", directory: \"b\")\n\
+             !1 = distinct !DICompileUnit(file: !0)\n",
+            "missing one of 'language' or 'sourceLanguageName', required for !DICompileUnit",
+        ),
+        (
+            "!0 = !DIFile(filename: \"a\", directory: \"b\")\n\
+             !1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, sourceLanguageName: DW_LNAME_C)\n",
+            "can only specify one of 'language' and 'sourceLanguageName' on !DICompileUnit",
+        ),
+        (
+            "!0 = !DIFile(filename: \"a\", directory: \"b\")\n\
+             !1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, sourceLanguageVersion: 1)\n",
+            "'sourceLanguageVersion' requires an associated 'sourceLanguageName' on !DICompileUnit",
+        ),
+        (
+            "!0 = !DIFile(filename: \"a\", directory: \"b\", checksumkind: CSK_MD5)\n",
+            "'checksumkind' and 'checksum' must be provided together",
+        ),
+        (
+            "!0 = !DIEnumerator(name: \"A\", value: -1, isUnsigned: true)\n",
+            "unsigned enumerator with negative value",
+        ),
+        (
+            "!0 = !DISubprogram(name: \"f\", spFlags: DISPFlagDefinition)\n",
+            "missing 'distinct', required for !DISubprogram that is a Definition",
+        ),
+        (
+            "!0 = !DISubprogram(name: \"f\", isDefinition: true)\n",
+            "missing 'distinct', required for !DISubprogram that is a Definition",
+        ),
+    ] {
+        assert_eq!(parse_err(source).to_string(), message, "source: {source}");
+    }
+}
+
+/// Mirrors `LLParser::parseDIExpressionBody`, which looks each `DW_OP_*` and
+/// `DW_ATE_*` spelling up in its own table and rejects one the table does not
+/// carry — llvmkit used to store the name as written and print it straight
+/// back. The oversized-element case is a message of its own, split from
+/// `expected unsigned integer` because the value is read first and measured
+/// second.
+#[test]
+fn di_expression_validates_its_operands() {
+    assert_eq!(
+        parse_err("!0 = !DIExpression(DW_OP_bogus)\n").to_string(),
+        "invalid DWARF op 'DW_OP_bogus'"
+    );
+    assert_eq!(
+        parse_err("!0 = !DIExpression(DW_ATE_bogus)\n").to_string(),
+        "invalid DWARF attribute encoding 'DW_ATE_bogus'"
+    );
+    assert_eq!(
+        parse_err("!0 = !DIExpression(18446744073709551616)\n").to_string(),
+        "element too large, limit is 18446744073709551615"
+    );
 }

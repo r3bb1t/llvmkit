@@ -19,6 +19,85 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Metadata tail
+
+- **Fixed (P0): `metadata i32 %a` did not parse at all.** `parseParameterList`
+  branches on the argument type — a `metadata` parameter takes
+  `parseMetadataAsValue`, not `parseValue` — and llvmkit went straight to
+  `parseValue`, which has no arm for a type-and-value pair. That is the
+  `ValueAsMetadata` form, and it is how **every** old-format debug intrinsic
+  spells its operands: `call void @llvm.dbg.value(metadata i32 %a, metadata
+  !12, metadata !DIExpression())`. Any module produced before the
+  record-based debug format was rejected outright.
+
+- **Added: `DIArgList`.** A new `MetadataKind::ArgList`, because `Metadata.def`
+  declares `DIArgList` as a top-level `HANDLE_METADATA_LEAF` and not as a
+  specialized `DI*` node — which is why the 32-variant
+  `SpecializedMetadataKind` was correctly complete without it. It is uniqued,
+  an empty list is legal, and it may only appear inline: its operands can be
+  function-local, which is why `parseMetadata` special-cases it ahead of
+  `parseSpecializedMDNode` and `parseNamedMetadata` refuses one outright.
+  Its operands register real use edges, all of them.
+
+- **Added: the debug-format intermix guard.** `llvm.dbg intrinsic should not
+  appear in a module using non-intrinsic debug info` and `debug record should
+  not appear in a module containing debug info intrinsics`, at the two sites
+  that set upstream's `SeenNewDbgInfoFormat` / `SeenOldDbgInfoFormat` pair.
+
+- **Added: the field-agreement rules.** The checks that live *below* the
+  `PARSE_MD_FIELDS()` macro in each class's own routine, and are the reason
+  those routines have a body at all beyond the macro: `!DICompileUnit`'s
+  `distinct` requirement plus its three language rules, `!DIFile`'s
+  `'checksumkind' and 'checksum' must be provided together`, `!DIEnumerator`'s
+  `unsigned enumerator with negative value`, and `!DISubprogram`'s definition
+  guard — which reads the *computed* `SPFlags`, so an explicit
+  `spFlags: DISPFlagDefinition` trips it exactly as `isDefinition: true` does.
+
+- **Fixed: llvmkit's own debug-metadata fixtures encoded invalid IR.**
+  Enforcing the `distinct` requirement broke seven tests at once: nineteen
+  `!DICompileUnit` sites across five files were non-`distinct`, and most also
+  omitted `language:` entirely, which upstream rejects too. The fixtures were
+  written against a parser that never checked either. They are corrected to IR
+  upstream accepts, so each test still tests what it meant to.
+
+- **Added: `DW_APPLE_ENUM_KIND_*` and its drift lock.** `DICompositeType`'s
+  `enumKind:` field was unvalidated because the table was unmodelled. It now
+  lives in `llvmkit_ir::dwarf` with a `dwarf_def_drift.rs` case pinning it to
+  the vendored `Dwarf.def` in both directions, and the field reports
+  `expected DWARF enum kind code` / `invalid DWARF enum kind code '...'` as
+  upstream splits them.
+
+- **Fixed: `!DIArgList` printed as a numbered node.** `WriteAsOperandInternal`
+  writes DIExpressions *and* DIArgLists inline when used as a value; llvmkit
+  had only the first, so a `#dbg_value` hoisted its argument list into a `!N =`
+  definition — a spelling `DIArgList` cannot legally have.
+
+- **Fixed: `parseOptionalCommaAlign` was a silent stop, not an error.** After a
+  comma only `align` or trailing metadata may follow a load, store, cmpxchg or
+  atomicrmw, and anything else is `expected metadata or 'align'`. llvmkit
+  backtracked instead. `parseAlloc` deliberately does *not* use that routine —
+  it hand-rolls a nested dispatch because an `addrspace` clause may follow —
+  so alloca keeps the backtracking form and the other four got a strict one.
+  `parseOptionalCommaAddrSpace` gains its own `expected metadata or
+  'addrspace'` the same way.
+
+- **Fixed: ten more label divergences.** `parseDebugRecord`'s four capital-`E`
+  texts, `expected end of metadata node` at all three closing braces,
+  `expected field label here`, `expected metadata type`, `expected '!' here`,
+  `expected signed integer`, and the `parseNamedType` / `parseUnnamedType`
+  pair — where one routine says `after name` for both labels and the other says
+  `after '='` for the second.
+
+- **Corrected a recorded claim: DIExpression operands are still names, not
+  encodings.** `docs/future-work.md` had this divergence marked closed. Reading
+  the code, operands are stored as the spelling as written and neither
+  `DW_OP_*` nor `DW_ATE_*` was validated, so an unknown one round-tripped
+  silently. Both now validate against the `dwarf` tables, and `element too
+  large, limit is 18446744073709551615` is split from `expected unsigned
+  integer` as upstream splits them. Storing encodings — and with it the
+  normalisation that would print `tag: 15` as `DW_TAG_pointer_type` — remains
+  open and is now recorded accurately.
+
 ### Module summary index
 
 - **Added: `llvmkit_ir::module_summary_index`, the whole-program `^N` model.**
