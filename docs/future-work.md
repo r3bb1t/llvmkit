@@ -306,9 +306,11 @@ cannot share because the scratch project has its own target directory.
 
 ### Where the gate's time actually goes
 
-Across all 212 binaries, **test execution totals 109.05 s** — only 22 binaries
-have a non-zero time at all. The rest of a ~17-minute gate is compile and
-link. The slowest five:
+Measured at the W12 boundary, when the suite was 212 binaries: **test execution
+totals 109.05 s**, and only 22 binaries have a non-zero time at all. The rest
+of a ~17-minute gate is compile and link. The ratio is what matters and it does
+not move with the binary count — the suite is 214 binaries as of W14 and the
+execution time is dominated by the same handful below. The slowest five:
 
 | secs | tests | binary |
 |---|---|---|
