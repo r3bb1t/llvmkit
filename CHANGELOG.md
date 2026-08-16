@@ -19,6 +19,69 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### Ordered use-lists and `uselistorder` (LLParser parity W12)
+
+- **Breaking: `Display for Module` no longer emits `uselistorder`
+  directives.** That is `Module::print`'s default — `ShouldPreserveUseListOrder
+  = false`, what `llvm-dis` passes. Ask for them with the new
+  `Module::preserving_use_list_order()`, the `llvm-as` /
+  `opt -S -preserve-ll-uselistorder` behaviour.
+
+- **Breaking: the stored-directive model is gone.** `UseListOrderRecord`,
+  `UseListOrderBbRecord`, `Module::append_use_list_order{,_bb}` and
+  `FunctionValue::append_use_list_order` are deleted. llvmkit used to replay
+  the directives an input carried; it now *derives* them from the actual
+  use-list order, porting `AsmWriter.cpp`'s `orderModule`,
+  `predictValueUseListOrder` and `predictUseListOrder`. A module assembled by
+  hand prints directives just as readily as one parsed from `.ll`.
+
+- **Changed: the use list is newest-first.** `ValueData::add_use` prepends,
+  mirroring `Value::addUse` → `Use::addToList`, and RAUW moves a value's uses
+  onto its replacement *reversed*, mirroring the drain loop in
+  `Value::replaceAllUsesWith`. That reversal is what
+  `predictValueUseListOrder` compensates for with `GetsReversed`, so
+  reproducing it is what makes a forward-referenced value's shuffle match
+  upstream. `Value::users()` iterates in that order.
+
+- **Added: basic blocks carry use edges.** `BranchInst`, `SwitchInst`,
+  `IndirectBrInst`, `InvokeInst`, `CallBrInst`, `CatchSwitchInst`,
+  `CleanupReturnInst` and `CatchReturnInst` all hold their successors as
+  `Use`s upstream, and `BlockAddress`'s operands are `[Function, BasicBlock]`.
+  llvmkit registered none of them, so every block's use list was empty and
+  `uselistorder label %bb` reported `value has no uses`. A phi still uses no
+  block — upstream keeps its incoming blocks out of the use list too.
+
+- **Fixed: a global's uses were counted against an interned wrapper.** llvmkit
+  interns a pointer-typed `GlobalValueRef` to stand for `@g` where a constant
+  is wanted; because it is interned, three aliases of one global shared one
+  node and `num_uses` answered 1 where upstream answers 3. Alias, ifunc
+  resolver, initializer, personality, prefix and prologue edges now register
+  against the global itself.
+
+- **Fixed: `parseValID` no longer rejects a function-local name early.**
+  Upstream records `t_LocalName` / `t_LocalID` unresolved and lets
+  `convertValIDToValue` answer `invalid use of function-local name`; llvmkit
+  rejected at parse time with an invented `expected global constant value`,
+  which shadowed upstream's message and made `parseUseListOrderBB` — which
+  reads both operands with `parseValID(…, nullptr)` precisely so it can
+  inspect `ID.Kind` — impossible to port.
+
+- **Added:** `Value::sort_use_list` (`LLParser::sortUseListOrder`) with its
+  three diagnostics as `UseListOrderError`; `Value::has_use_list`
+  (`Value::hasUseList`) and `Constant::is_constant_data`, so a `uselistorder`
+  naming a `ConstantInt` is the silent no-op upstream makes it.
+
+- **Added: the full `parseUseListOrderIndexes` validation** — the `Offset`,
+  `Max` and `IsOrdered` accumulators and all four of its texts. llvmkit used
+  to accept `{}` and any out-of-range or duplicated vector.
+
+- **Added: `parseUseListOrderBB` proper**, with its six diagnostics, routed
+  through `parseValID` like upstream instead of through hand-written token
+  matching.
+
+- **New:** `docs/divergences.md`, a ledger of the behavioural differences from
+  upstream that are known and still open, with a fix sketch for each.
+
 ### Metadata tail
 
 - **Fixed (P0): `metadata i32 %a` did not parse at all.** `parseParameterList`

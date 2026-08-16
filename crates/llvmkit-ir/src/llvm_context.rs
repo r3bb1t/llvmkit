@@ -576,11 +576,28 @@ impl Context {
             return;
         };
         data.for_each_operand(|operand| {
-            self.value_data(operand)
-                .use_list
-                .borrow_mut()
-                .push(ValueUse::Constant(user));
+            self.value_data(operand).add_use(ValueUse::Constant(user));
         });
+    }
+
+    /// The value a use edge should be registered against.
+    ///
+    /// llvmkit gives a global object its *value* type and interns a separate
+    /// pointer-typed [`ConstantData::GlobalValueRef`] to stand for `@name`
+    /// where a constant is wanted. Upstream has no such node: a `GlobalValue`
+    /// **is** a pointer-typed `Constant`, so a field naming one is a `Use` of
+    /// the global itself.
+    ///
+    /// Registering on the wrapper instead would not merely relabel the edge,
+    /// it would lose count — the wrapper is *interned*, so three aliases of
+    /// one global share one node and `getNumUses` answers 1 where upstream
+    /// answers 3. `uselistorder`, whose index vector has to name every use
+    /// exactly once, is where that stops being invisible.
+    pub(crate) fn use_edge_target(&self, value: ValueSlot) -> ValueSlot {
+        match &self.value_data(value).kind {
+            ValueKindData::Constant(ConstantData::GlobalValueRef { value: global }) => *global,
+            _ => value,
+        }
     }
 
     /// Move a global object's single-slot field edge from `old` to `new`.
@@ -596,6 +613,8 @@ impl Context {
         old: Option<ValueSlot>,
         new: Option<ValueSlot>,
     ) {
+        let old = old.map(|slot| self.use_edge_target(slot));
+        let new = new.map(|slot| self.use_edge_target(slot));
         if old == new {
             return;
         }
@@ -608,7 +627,7 @@ impl Context {
             }
         }
         if let Some(new) = new {
-            self.value_data(new).use_list.borrow_mut().push(edge);
+            self.value_data(new).add_use(edge);
         }
     }
 
@@ -623,14 +642,39 @@ impl Context {
         from: ValueSlot,
         replacement: ValueSlot,
     ) {
+        // The edge is registered against the global itself (see
+        // [`Self::use_edge_target`]) while the cell may hold the interned
+        // pointer wrapper standing for it, so matching goes through the same
+        // unwrap — and re-wrapping the replacement *re-interns* rather than
+        // mutating, per the constant-uniquing law.
+        let rewritten = |held: ValueSlot| -> ValueSlot {
+            if held == from {
+                return replacement;
+            }
+            match &self.value_data(replacement).kind {
+                // A global object is not itself a `Constant` in llvmkit, so a
+                // cell that held a wrapper needs one again.
+                ValueKindData::Function(_)
+                | ValueKindData::GlobalAlias(_)
+                | ValueKindData::GlobalIfunc(_)
+                | ValueKindData::GlobalVariable(_) => {
+                    let ty = self.value_data(held).ty;
+                    self.intern_constant_global_value_ref(ty, replacement)
+                }
+                _ => replacement,
+            }
+        };
         let swap = |cell: &Cell<Option<ValueSlot>>| {
-            if cell.get() == Some(from) {
-                cell.set(Some(replacement));
+            if let Some(held) = cell.get()
+                && self.use_edge_target(held) == from
+            {
+                cell.set(Some(rewritten(held)));
             }
         };
         let swap_required = |cell: &Cell<ValueSlot>| {
-            if cell.get() == from {
-                cell.set(replacement);
+            let held = cell.get();
+            if self.use_edge_target(held) == from {
+                cell.set(rewritten(held));
             }
         };
         match (&self.value_data(owner).kind, field) {
@@ -913,6 +957,8 @@ impl Context {
             kind: ValueKindData::Constant(ConstantData::BlockAddress { function, block }),
             use_list: core::cell::RefCell::new(Vec::new()),
         });
+        // A `blockaddress` is a `User` of its function and its block.
+        self.register_constant_operand_uses(id);
         self.block_address_constants.borrow_mut().insert(key, id);
         id
     }

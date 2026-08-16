@@ -25,9 +25,11 @@ use std::collections::HashMap;
 use super::atomic_ordering::AtomicOrdering;
 use super::attributes::{AttrKind, AttributeStorage, AttributeStored};
 use super::basic_block::BasicBlock;
-use super::block_state::BlockTerminationState;
+use super::block_state::{BlockTerminationState, Terminated};
 use super::comdat::ComdatRef;
-use super::constant::{ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode};
+use super::constant::{
+    Constant, ConstantData, ConstantExprData, ConstantExprFlags, ConstantExprOpcode,
+};
 use super::constant_range::ConstantRange;
 use super::function::FunctionValue;
 use super::global_alias::GlobalAlias;
@@ -55,9 +57,7 @@ use super::metadata::{
     DebugMetadataOperand, DebugRecord, MetadataAttachmentSet, MetadataKind, MetadataSlot,
     MetadataStore, SpecializedMetadataKind, SpecializedMetadataNode, StoredBrand,
 };
-use super::module::{
-    DynBrand, ModuleBrand, ModuleCore, ModuleView, UseListOrderBbRecord, UseListOrderRecord,
-};
+use super::module::{DynBrand, ModuleBrand, ModuleCore, ModuleView};
 use super::module_summary_index::{
     AliasSummary, ConstantVirtualCall, FunctionSummary, GlobalValueSummary, GlobalValueSummaryInfo,
     GlobalVariableSummary, Guid, Hotness, ModuleSummaryIndex, REGULAR_LTO_MODULE_NAME,
@@ -274,43 +274,379 @@ fn fmt_indexes(f: &mut fmt::Formatter<'_>, indexes: &[u32]) -> fmt::Result {
     f.write_str(" }")
 }
 
+// --------------------------------------------------------------------------
+// Use-list order prediction
+//
+// `AsmWriter.cpp` stores no `uselistorder` directives. When a caller asks for
+// `ShouldPreserveUseListOrder` it *derives* them: `orderModule` numbers every
+// value the writer will serialize, and `predictValueUseListOrder` then asks,
+// per value, what shuffle turns the use-list order a re-parse would rebuild
+// into the order the module actually has. Deriving rather than replaying is
+// what lets a module built by hand — not only one parsed from `.ll` — print
+// directives at all.
+// --------------------------------------------------------------------------
+
+/// One derived directive: the value it names and the shuffle that restores
+/// its use-list order. Mirrors an entry of `AsmWriter.cpp`'s `UseListOrderMap`
+/// inner `MapVector`.
+struct UseListOrderDirective {
+    value: ValueSlot,
+    shuffle: Vec<u32>,
+}
+
+/// `AsmWriter.cpp`'s file-local `OrderMap`. A `MapVector` upstream, so both
+/// the ids and the insertion order carry weight.
+#[derive(Default)]
+struct OrderMap {
+    ids: HashMap<ValueSlot, usize>,
+    order: Vec<ValueSlot>,
+}
+
+impl OrderMap {
+    /// `OM.lookup(V)`. Upstream's `DenseMap` answers `0` for an absent value
+    /// and real ids start at `1`, so zero means "will not be serialized" —
+    /// a distinction `predictValueUseListOrder` relies on.
+    fn lookup(&self, value: ValueSlot) -> usize {
+        self.ids.get(&value).copied().unwrap_or(0)
+    }
+}
+
+/// `isa<GlobalValue>`. llvmkit gives each global object its own value kind
+/// rather than making it a `Constant` subclass, and additionally interns a
+/// pointer-typed `GlobalValueRef` constant that stands for `@name` in a
+/// constant expression — both answer yes.
+fn is_global_value(kind: &ValueKindData) -> bool {
+    matches!(
+        kind,
+        ValueKindData::Function(_)
+            | ValueKindData::GlobalAlias(_)
+            | ValueKindData::GlobalIfunc(_)
+            | ValueKindData::GlobalVariable(_)
+            | ValueKindData::Constant(ConstantData::GlobalValueRef { .. })
+    )
+}
+
+/// `isa<ConstantData>` — asked of a slot rather than of a handle.
+fn slot_is_constant_data(m: &ModuleCore, value: ValueSlot) -> bool {
+    let ty = m.context().value_data(value).ty;
+    Constant::try_from(Value::<DynBrand>::from_parts(value, m, ty))
+        .is_ok_and(Constant::is_constant_data)
+}
+
+/// Mirrors `AsmWriter.cpp`'s `orderValue`.
+fn order_value(m: &ModuleCore, value: ValueSlot, om: &mut OrderMap) {
+    if om.lookup(value) != 0 {
+        return;
+    }
+    if let ValueKindData::Constant(data) = &m.context().value_data(value).kind {
+        if slot_is_constant_data(m, value) {
+            return;
+        }
+        // `C->getNumOperands() && !isa<GlobalValue>(C)`. A `GlobalValueRef`
+        // is llvmkit's `isa<GlobalValue>` case and carries one operand, so
+        // it has to be excluded here rather than falling out of an empty
+        // operand list.
+        if !is_global_value(&m.context().value_data(value).kind) {
+            data.for_each_operand(|operand| {
+                let kind = &m.context().value_data(operand).kind;
+                if !matches!(kind, ValueKindData::BasicBlock(_)) && !is_global_value(kind) {
+                    order_value(m, operand, om);
+                }
+            });
+        }
+    }
+    // Deliberately re-read the size here, exactly as upstream's comment
+    // insists: inserting changes it, and that is what makes the ids dense.
+    let id = om.order.len() + 1;
+    om.ids.insert(value, id);
+    om.order.push(value);
+}
+
+/// `orderModule`'s `OrderConstantValue` lambda: only a constant or an inline
+/// asm blob reached from an operand position gets numbered.
+fn order_constant_value(m: &ModuleCore, value: ValueSlot, om: &mut OrderMap) {
+    let kind = &m.context().value_data(value).kind;
+    if matches!(
+        kind,
+        ValueKindData::Constant(_) | ValueKindData::InlineAsm(_)
+    ) || is_global_value(kind)
+    {
+        order_value(m, value, om);
+    }
+}
+
+/// `skipMetadataWrapper` — unwrap a `MetadataAsValue` holding a
+/// `ValueAsMetadata`, leaving anything else alone.
+fn skip_metadata_wrapper(m: &ModuleCore, value: ValueSlot) -> ValueSlot {
+    let ValueKindData::MetadataAsValue(node) = m.context().value_data(value).kind else {
+        return value;
+    };
+    let store = m.metadata_store();
+    match store.nodes().get(node.0) {
+        Some(MetadataKind::Constant(wrapped)) => wrapped.slot(),
+        _ => value,
+    }
+}
+
+/// Mirrors `AsmWriter.cpp`'s `orderModule`. The walk order *is* the numbering,
+/// so every loop below sits exactly where upstream's does.
+fn order_module(m: &ModuleCore) -> OrderMap {
+    let mut om = OrderMap::default();
+
+    for global in m.iter_globals::<DynBrand>() {
+        if let Some(initializer) = global.initializer()
+            && !is_global_value(&m.context().value_data(initializer.as_erased().slot()).kind)
+        {
+            order_value(m, initializer.as_erased().slot(), &mut om);
+        }
+        order_value(m, global.as_erased().slot(), &mut om);
+    }
+    for alias in m.iter_aliases::<DynBrand>() {
+        let aliasee = alias.aliasee().as_erased().slot();
+        if !is_global_value(&m.context().value_data(aliasee).kind) {
+            order_value(m, aliasee, &mut om);
+        }
+        order_value(m, alias.as_erased().slot(), &mut om);
+    }
+    for ifunc in m.iter_ifuncs::<DynBrand>() {
+        let resolver = ifunc.resolver().as_erased().slot();
+        if !is_global_value(&m.context().value_data(resolver).kind) {
+            order_value(m, resolver, &mut om);
+        }
+        order_value(m, ifunc.as_erased().slot(), &mut om);
+    }
+
+    for function in m.iter_functions::<DynBrand>() {
+        // `for (const Use &U : F.operands())` — a `Function`'s hung-off
+        // operands are personality, prefix and prologue, in that order
+        // (`Function::setHungOffOperand<0..2>`).
+        let operands = [
+            function.personality_fn().map(|v| v.as_erased().slot()),
+            function.prefix_data().map(|v| v.as_erased().slot()),
+            function.prologue_data().map(|v| v.as_erased().slot()),
+        ];
+        for operand in operands.into_iter().flatten() {
+            if !is_global_value(&m.context().value_data(operand).kind) {
+                order_value(m, operand, &mut om);
+            }
+        }
+        order_value(m, function.as_erased().slot(), &mut om);
+        // `F.isDeclaration()` — llvmkit spells it as an empty block list, the
+        // same test `printFunction` uses to choose `declare` over `define`.
+        if function.basic_blocks().count() == 0 {
+            continue;
+        }
+        for argument in function.params() {
+            order_value(m, IsValue::slot(argument), &mut om);
+        }
+        for block in function.basic_blocks() {
+            order_value(m, block.slot(), &mut om);
+            for instruction in block.instructions() {
+                // Debug records sit outside the `Value` hierarchy, so any
+                // constant they name is reachable only through them —
+                // upstream's `OrderConstantFromMetadata` over the record's
+                // location (and, for a `#dbg_assign`, its address).
+                for record in instruction.debug_records_stored().iter() {
+                    record.for_each_value(|value| order_constant_value(m, value, &mut om));
+                }
+                for operand in inst_kind_data(&instruction).operand_ids() {
+                    let operand = skip_metadata_wrapper(m, operand);
+                    let kind = &m.context().value_data(operand).kind;
+                    let orderable = (matches!(kind, ValueKindData::Constant(_))
+                        && !is_global_value(kind))
+                        || matches!(kind, ValueKindData::InlineAsm(_));
+                    if orderable {
+                        order_value(m, operand, &mut om);
+                    }
+                }
+                order_value(m, instruction.slot(), &mut om);
+            }
+        }
+    }
+    om
+}
+
+/// Mirrors `AsmWriter.cpp`'s `predictValueUseListOrder`. An empty result means
+/// "no directive needed" — either the order is already what a re-parse would
+/// rebuild, or too few of the users survive into the output to state one.
+fn predict_value_use_list_order(
+    m: &ModuleCore,
+    value: ValueSlot,
+    id: usize,
+    om: &OrderMap,
+) -> Vec<u32> {
+    // `for (const Use &U : V->uses()) if (OM.lookup(U.getUser()))`. Only the
+    // edges upstream models as `Use`s take part — see
+    // `ValueUse::is_operand_use`.
+    let mut list: Vec<(ValueSlot, usize)> = Vec::new();
+    for user in m.context().value_data(value).operand_users() {
+        if om.lookup(user) != 0 {
+            let position = list.len();
+            list.push((user, position));
+        }
+    }
+    if list.len() < 2 {
+        return Vec::new();
+    }
+
+    // "When referencing a value before its declaration, a temporary value is
+    // created, which will later be RAUWed with the actual value. This reverses
+    // the use list." — the reversal `ValueData::prepend_moved_uses` reproduces.
+    let gets_reversed = !matches!(
+        m.context().value_data(value).kind,
+        ValueKindData::BasicBlock(_)
+    );
+    let id = match m.context().value_data(value).kind {
+        ValueKindData::Constant(ConstantData::BlockAddress { block, .. }) => om.lookup(block),
+        _ => id,
+    };
+
+    // `llvm::sort` under upstream's comparator. The operand-number tie-break
+    // for two uses by the *same* user has no llvmkit counterpart — its use
+    // list holds one indistinguishable edge per reference — so those compare
+    // equal and a stable sort leaves them where they are. Recorded in
+    // `docs/future-work.md`.
+    list.sort_by(|left, right| {
+        let left_id = om.lookup(left.0);
+        let right_id = om.lookup(right.0);
+        let left_first = if left_id < right_id {
+            gets_reversed && right_id <= id
+        } else if right_id < left_id {
+            !(gets_reversed && left_id <= id)
+        } else {
+            false
+        };
+        let right_first = if right_id < left_id {
+            gets_reversed && left_id <= id
+        } else if left_id < right_id {
+            !(gets_reversed && right_id <= id)
+        } else {
+            false
+        };
+        match (left_first, right_first) {
+            (true, false) => core::cmp::Ordering::Less,
+            (false, true) => core::cmp::Ordering::Greater,
+            _ => core::cmp::Ordering::Equal,
+        }
+    });
+
+    // `if (llvm::is_sorted(List, llvm::less_second())) return {};`
+    if list.windows(2).all(|pair| pair[0].1 <= pair[1].1) {
+        return Vec::new();
+    }
+    list.into_iter()
+        .map(|(_, position)| u32::try_from(position).unwrap_or(u32::MAX))
+        .collect()
+}
+
+/// `BasicBlock::getParent` on a slot.
+fn block_parent_function(m: &ModuleCore, block: ValueSlot) -> Option<ValueSlot> {
+    match &m.context().value_data(block).kind {
+        ValueKindData::BasicBlock(data) => *data.parent.borrow(),
+        _ => None,
+    }
+}
+
+/// Mirrors `AsmWriter.cpp`'s `predictUseListOrder`. The key is the function a
+/// directive belongs under — `None` for upstream's `nullptr`, i.e. module
+/// level.
+fn predict_use_list_order(
+    m: &ModuleCore,
+) -> HashMap<Option<ValueSlot>, Vec<UseListOrderDirective>> {
+    let om = order_module(m);
+    let mut result: HashMap<Option<ValueSlot>, Vec<UseListOrderDirective>> = HashMap::new();
+    for value in &om.order {
+        let value = *value;
+        let data = m.context().value_data(value);
+        if data.operand_users().len() < 2 {
+            continue;
+        }
+        let shuffle = predict_value_use_list_order(m, value, om.lookup(value), &om);
+        if shuffle.is_empty() {
+            continue;
+        }
+        let parent = match &data.kind {
+            ValueKindData::Instruction(instruction) => {
+                block_parent_function(m, instruction.parent.get())
+            }
+            ValueKindData::Argument { parent_fn, .. } => Some(*parent_fn),
+            ValueKindData::BasicBlock(_) => block_parent_function(m, value),
+            _ => None,
+        };
+        result
+            .entry(parent)
+            .or_default()
+            .push(UseListOrderDirective { value, shuffle });
+    }
+    result
+}
+
+/// Mirrors `AssemblyWriter::printUseListOrder`. `slots` is present exactly
+/// when upstream's `Machine.getFunction()` is non-null, which is what decides
+/// both the two-space indent and the `_bb` spelling.
 fn fmt_use_list_order(
     f: &mut fmt::Formatter<'_>,
     m: &ModuleCore,
-    record: &UseListOrderRecord,
+    directive: &UseListOrderDirective,
     slots: Option<&SlotTracker>,
 ) -> fmt::Result {
-    let value_ty = record.value_type();
-    write!(f, "uselistorder {} ", Type::<DynBrand>::new(value_ty, m))?;
-    let value = Value::<DynBrand>::from_parts(record.value(), m, value_ty);
-    fmt_operand_ref(f, value, slots)?;
+    let in_function = slots.is_some();
+    if in_function {
+        f.write_str("  ")?;
+    }
+    f.write_str("uselistorder")?;
+    let data = m.context().value_data(directive.value);
+    let block_at_module_level = !in_function && matches!(data.kind, ValueKindData::BasicBlock(_));
+    if block_at_module_level {
+        // `predictUseListOrder` files a block under its parent function, so
+        // this arm is unreachable from a derived directive — upstream's is
+        // too. It is kept because the shape is upstream's and because the
+        // *parser* half (`parseUseListOrderBB`) is reachable from
+        // hand-written `.ll`.
+        let block = BasicBlock::<Dyn, Terminated, DynBrand>::from_parts(
+            directive.value,
+            ModuleView::new(m),
+            data.ty,
+        );
+        let Some(parent_slot) = block_parent_function(m, directive.value) else {
+            unreachable!("a block reached through orderModule always has a parent function")
+        };
+        let parent = FunctionValue::<Dyn, DynBrand>::from_parts_unchecked(parent_slot, m);
+        f.write_str("_bb ")?;
+        fmt_operand_ref(f, parent.as_erased(), None)?;
+        f.write_str(", ")?;
+        let parent_slots = SlotTracker::for_function(parent);
+        fmt_operand_ref(f, block.to_erased(), Some(&parent_slots))?;
+    } else {
+        f.write_str(" ")?;
+        fmt_operand(
+            f,
+            Value::<DynBrand>::from_parts(directive.value, m, data.ty),
+            slots,
+        )?;
+    }
     f.write_str(", ")?;
-    fmt_indexes(f, record.indexes())
+    fmt_indexes(f, &directive.shuffle)
 }
 
-fn fmt_use_list_order_bb(
+/// Mirrors `AssemblyWriter::printUseLists`, including its section comment.
+/// `slots` stands in for upstream's incorporated `SlotTracker`, so passing
+/// `None` is `printUseLists(nullptr)`.
+fn fmt_use_lists(
     f: &mut fmt::Formatter<'_>,
     m: &ModuleCore,
-    record: &UseListOrderBbRecord,
+    directives: Option<&Vec<UseListOrderDirective>>,
+    slots: Option<&SlotTracker>,
 ) -> fmt::Result {
-    let function_id = record.function();
-    let function_data = m.context().value_data(function_id);
-    let function_ty = function_data.ty;
-    let block_ty = m.label_type::<DynBrand>().as_type().id();
-    let function = Value::<DynBrand>::from_parts(function_id, m, function_ty);
-    let block = Value::<DynBrand>::from_parts(record.block(), m, block_ty);
-    let slots = match &function_data.kind {
-        ValueKindData::Function(_) => Some(SlotTracker::for_function(
-            FunctionValue::<Dyn, DynBrand>::from_parts_unchecked(function_id, m),
-        )),
-        _ => None,
+    let Some(directives) = directives else {
+        return Ok(());
     };
-    f.write_str("uselistorder_bb ")?;
-    fmt_operand_ref(f, function, None)?;
-    f.write_str(", ")?;
-    fmt_operand_ref(f, block, slots.as_ref())?;
-    f.write_str(", ")?;
-    fmt_indexes(f, record.indexes())
+    f.write_str("\n; uselistorder directives\n")?;
+    for directive in directives {
+        fmt_use_list_order(f, m, directive, slots)?;
+        f.write_str("\n")?;
+    }
+    Ok(())
 }
 
 /// Print the `asm`-callee body shared by `fmt_operand_ref` and
@@ -2623,6 +2959,17 @@ pub(super) fn fmt_function<B: ModuleBrand>(
     f: &mut fmt::Formatter<'_>,
     func: FunctionValue<'_, Dyn, B>,
 ) -> fmt::Result {
+    fmt_function_with_use_lists(f, func, None)
+}
+
+/// `AssemblyWriter::printFunction`. `use_lists` carries the directives
+/// `predictUseListOrder` filed under this function, present only when the
+/// caller asked to preserve use-list order.
+fn fmt_function_with_use_lists<B: ModuleBrand>(
+    f: &mut fmt::Formatter<'_>,
+    func: FunctionValue<'_, Dyn, B>,
+    use_lists: Option<&Vec<UseListOrderDirective>>,
+) -> fmt::Result {
     let slots = SlotTracker::for_function(func);
     let sig = func.signature();
     let linkage = func.linkage();
@@ -2788,11 +3135,7 @@ pub(super) fn fmt_function<B: ModuleBrand>(
         fmt_basic_block(f, bb, &slots, first_block)?;
         first_block = false;
     }
-    for directive in func.use_list_orders() {
-        f.write_str("  ")?;
-        fmt_use_list_order(f, func.module().core_ref(), &directive, Some(&slots))?;
-        f.write_str("\n")?;
-    }
+    fmt_use_lists(f, func.module().core_ref(), use_lists, Some(&slots))?;
     f.write_str("}\n")
 }
 
@@ -2822,6 +3165,18 @@ fn fmt_struct_body(f: &mut fmt::Formatter<'_>, body: &StructBody, m: &ModuleCore
 }
 
 pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Result {
+    fmt_module_with_options(f, m, false)
+}
+
+/// `AssemblyWriter::printModule`. `preserve_use_list_order` is upstream's
+/// `ShouldPreserveUseListOrder` — false for `Module::print`'s default and for
+/// `llvm-dis`, true for `llvm-as` and `opt -S -preserve-ll-uselistorder`.
+pub(super) fn fmt_module_with_options(
+    f: &mut fmt::Formatter<'_>,
+    m: &ModuleCore,
+    preserve_use_list_order: bool,
+) -> fmt::Result {
+    let use_lists = preserve_use_list_order.then(|| predict_use_list_order(m));
     writeln!(f, "; ModuleID = '{}'", m.name())?;
     if let Some(source_filename) = m.source_filename() {
         f.write_str("source_filename = \"")?;
@@ -2940,8 +3295,22 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
             f.write_str("\n")?;
         }
         first = false;
-        fmt_function(f, func)?;
+        fmt_function_with_use_lists(
+            f,
+            func,
+            use_lists
+                .as_ref()
+                .and_then(|lists| lists.get(&Some(func.as_erased().slot()))),
+        )?;
     }
+    // Module-level use-lists sit between the functions and the attribute
+    // groups — `printUseLists(nullptr)` in `printModule`.
+    fmt_use_lists(
+        f,
+        m,
+        use_lists.as_ref().and_then(|lists| lists.get(&None)),
+        None,
+    )?;
     {
         let mut groups = m.attribute_groups();
         groups.sort_by_key(|(slot, _)| *slot);
@@ -2976,15 +3345,6 @@ pub(super) fn fmt_module(f: &mut fmt::Formatter<'_>, m: &ModuleCore) -> fmt::Res
                 f.write_str("}\n")?;
             }
         }
-    }
-
-    for directive in m.iter_use_list_orders() {
-        fmt_use_list_order(f, m, &directive, None)?;
-        f.write_str("\n")?;
-    }
-    for directive in m.iter_use_list_order_bbs() {
-        fmt_use_list_order_bb(f, m, &directive)?;
-        f.write_str("\n")?;
     }
 
     // Numbered metadata nodes. Mirrors the

@@ -56,10 +56,7 @@ use super::intrinsics::{IntrinsicDescriptor, IntrinsicFunctionData, IntrinsicId}
 use super::marker::{Dyn, ReturnMarker};
 use super::metadata::MetadataAttachmentSet;
 use super::metadata::{MetadataAttachmentKind, MetadataId, StoredBrand};
-use super::module::{
-    Module, ModuleBrand, ModuleRef, ModuleView, Unverified, UseListOrderRecord,
-    validate_use_list_order_indexes,
-};
+use super::module::{Module, ModuleBrand, ModuleRef, ModuleView, Unverified};
 use super::pass_context::FunctionView;
 use super::r#type::{Type, TypeData, TypeSlot};
 use super::unnamed_addr::UnnamedAddr;
@@ -105,7 +102,6 @@ pub(super) struct FunctionData {
     pub(super) basic_blocks: RefCell<Vec<ValueSlot>>,
     pub(super) attributes: RefCell<AttributeStorage>,
     pub(super) function_attr_groups: RefCell<Vec<u32>>,
-    pub(super) use_list_orders: RefCell<Vec<UseListOrderRecord>>,
     pub(super) metadata: RefCell<MetadataAttachmentSet<StoredBrand>>,
     pub(super) intrinsic: Option<IntrinsicFunctionData>,
     pub(super) symbol_table: ValueSymbolTable,
@@ -141,7 +137,6 @@ impl FunctionData {
             basic_blocks: RefCell::new(Vec::new()),
             attributes: RefCell::new(AttributeStorage::new()),
             function_attr_groups: RefCell::new(Vec::new()),
-            use_list_orders: RefCell::new(Vec::new()),
             metadata: RefCell::new(MetadataAttachmentSet::new()),
             intrinsic,
             symbol_table: ValueSymbolTable::new(),
@@ -943,17 +938,6 @@ impl<'ctx, R: ReturnMarker, B: ModuleBrand + 'ctx> FunctionValue<'ctx, R, B> {
         let ids: Vec<ValueSlot> = self.data().basic_blocks.borrow().clone();
         ids.into_iter()
             .map(move |id| BasicBlock::from_parts(id, self.module, label_ty))
-    }
-
-    /// Append a function-local `uselistorder` record.
-    pub fn append_use_list_order(self, record: UseListOrderRecord) -> IrResult<()> {
-        validate_use_list_order_indexes(record.indexes())?;
-        self.data().use_list_orders.borrow_mut().push(record);
-        Ok(())
-    }
-
-    pub(super) fn use_list_orders(self) -> Vec<UseListOrderRecord> {
-        self.data().use_list_orders.borrow().clone()
     }
 
     pub fn entry_block(self) -> Option<BasicBlock<'ctx, R, Terminated, B>> {

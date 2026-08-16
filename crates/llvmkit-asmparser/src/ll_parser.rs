@@ -51,10 +51,11 @@ use llvmkit_ir::{
     FpClassTest, GepNoWrapFlags, IntCastFlags, IntDyn, IntType, IntValue, IntrinsicNameResolution,
     IrBuilder, IrError, IrResult, Linkage, MaybeAlign, Module, ModuleBrand, NoFolder, PointerValue,
     Positioned, RoundingMode, SelectionKind, ShuffleMaskElem, Signedness, StructType, SyncScope,
-    ThreadLocalMode, Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, UseListOrderBbRecord,
-    UseListOrderRecord, Visibility, derived_types::PointerType, resolve_intrinsic_name,
+    ThreadLocalMode, Type, TypeKind, UiToFpFlags, UnnamedAddr, Unverified, ValueCategory,
+    Visibility, derived_types::PointerType, resolve_intrinsic_name,
     shufflevector_mask_from_constant,
 };
+use llvmkit_ir::{FunctionValue, IsValue};
 use llvmkit_macros::Branded;
 use llvmkit_support::{Span, Spanned};
 
@@ -666,6 +667,34 @@ enum ValId<'ctx, B: ModuleBrand> {
     /// `<{ ... }>`, kept distinct so the packedness check has something to
     /// compare against.
     PackedConstantStruct(Vec<llvmkit_ir::Constant<'ctx, B>>),
+}
+
+/// `Function::getValueSymbolTable()->lookup(Name)` — one lookup across every
+/// named local a function owns: arguments, basic blocks and value-producing
+/// instructions alike. Upstream keeps them in a single symbol table, which is
+/// why `parseUseListOrderBB` can find an argument where it wanted a block and
+/// has to reject it by class afterwards; llvmkit has no such table, so the
+/// walk stands in for it.
+fn function_local_by_name<'ctx, B: ModuleBrand + 'ctx>(
+    function: FunctionValue<'ctx, Dyn, B>,
+    name: &str,
+) -> Option<llvmkit_ir::Value<'ctx, B>> {
+    for argument in function.params() {
+        if argument.name().as_deref() == Some(name) {
+            return Some(argument.as_erased());
+        }
+    }
+    for block in function.basic_blocks() {
+        if block.name().as_deref() == Some(name) {
+            return Some(block.to_erased());
+        }
+        for instruction in block.instructions() {
+            if instruction.name().as_deref() == Some(name) {
+                return Some(IsValue::as_erased(instruction));
+            }
+        }
+    }
+    None
 }
 
 /// The over-estimate `APSInt::APSInt(StringRef)` opens with, before
@@ -1409,7 +1438,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Token::Kw(Keyword::Target) => self.parse_target_definition()?,
                 Token::Kw(Keyword::SourceFilename) => self.parse_source_filename()?,
                 Token::Kw(Keyword::Module) => self.parse_module_asm()?,
-                Token::Kw(Keyword::Uselistorder) => self.parse_module_use_list_order()?,
+                Token::Kw(Keyword::Uselistorder) => self.parse_use_list_order(None)?,
                 Token::Kw(Keyword::UselistorderBb) => self.parse_use_list_order_bb()?,
                 Token::ComdatVar(_) => self.parse_comdat_definition()?,
                 Token::LocalVar(_) => self.parse_named_type_definition()?,
@@ -2086,6 +2115,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn message_at(&self, loc: Span, message: impl Into<Cow<'static, str>>) -> ParseError {
         ParseError::Message {
             message: message.into(),
+            loc: DiagLoc::span(loc),
+        }
+    }
+
+    /// [`Self::expected`] anchored at an explicit span — the `error(LocTy, …)`
+    /// counterpart for the messages that do begin with `expected `.
+    fn expected_at(&self, loc: Span, expected: impl Into<Cow<'static, str>>) -> ParseError {
+        ParseError::Expected {
+            expected: expected.into(),
             loc: DiagLoc::span(loc),
         }
     }
@@ -4801,170 +4839,152 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         Ok(())
     }
 
+    /// `'{' uint32 (',' uint32)+ '}'`. Mirrors
+    /// `LLParser::parseUseListOrderIndexes`.
     fn parse_use_list_order_indexes(&mut self) -> ParseResult<Box<[u32]>> {
-        self.expect_punct(PunctKind::LBrace, "'{' before uselistorder indexes")?;
-        let mut indexes = Vec::new();
-        if !matches!(self.peek(), Token::RBrace) {
-            loop {
-                indexes.push(self.parse_uint32()?);
-                if !self.eat_punct(PunctKind::Comma)? {
-                    break;
-                }
+        let loc = self.loc();
+        self.expect_punct(PunctKind::LBrace, "'{' here")?;
+        if matches!(self.peek(), Token::RBrace) {
+            return Err(self.expected("non-empty list of uselistorder indexes"));
+        }
+        // Upstream's three consistency accumulators, kept under their own
+        // names. `Offset` is `unsigned` arithmetic there and relies on
+        // wrapping — it sums `Index - position` over the whole vector and is
+        // zero exactly when the indexes sum to `0 + 1 + … + (n-1)`.
+        let mut offset: u32 = 0;
+        let mut max: u32 = 0;
+        let mut is_ordered = true;
+        let mut indexes: Vec<u32> = Vec::new();
+        loop {
+            let index = self.parse_uint32()?;
+            let position = u32::try_from(indexes.len()).unwrap_or(u32::MAX);
+            offset = offset.wrapping_add(index.wrapping_sub(position));
+            max = max.max(index);
+            is_ordered &= index == position;
+            indexes.push(index);
+            if !self.eat_punct(PunctKind::Comma)? {
+                break;
             }
         }
-        self.expect_punct(PunctKind::RBrace, "'}' after uselistorder indexes")?;
+        self.expect_punct(PunctKind::RBrace, "'}' here")?;
+
+        let count = u32::try_from(indexes.len()).unwrap_or(u32::MAX);
+        if indexes.len() < 2 {
+            return Err(self.expected_at(loc, ">= 2 uselistorder indexes"));
+        }
+        if offset != 0 || max >= count {
+            return Err(self.expected_at(loc, "distinct uselistorder indexes in range [0, size)"));
+        }
+        if is_ordered {
+            return Err(self.expected_at(loc, "uselistorder indexes to change the order"));
+        }
         Ok(indexes.into_boxed_slice())
     }
 
-    fn parse_use_list_order_directive(
-        &mut self,
-        pfs: Option<&PerFunctionState<'ctx, B>>,
-    ) -> ParseResult<UseListOrderRecord> {
+    /// `'uselistorder' Type Value ',' UseListOrderIndexes`. Mirrors
+    /// `LLParser::parseUseListOrder`; `pfs` is its `PerFunctionState *`,
+    /// null at module level.
+    fn parse_use_list_order(&mut self, pfs: Option<&PerFunctionState<'ctx, B>>) -> ParseResult<()> {
         let loc = self.loc();
-        self.expect_keyword(Keyword::Uselistorder, "'uselistorder'")?;
+        self.expect_keyword(Keyword::Uselistorder, "uselistorder directive")?;
         let ty = self.parse_type(false)?;
         let val_id = self.parse_val_id(pfs, Some(ty))?;
         let value = self.convert_val_id_to_value(ty, val_id, pfs)?;
-        self.expect_punct(PunctKind::Comma, "',' before uselistorder indexes")?;
+        self.expect_punct(PunctKind::Comma, "comma in uselistorder directive")?;
         let indexes = self.parse_use_list_order_indexes()?;
-        UseListOrderRecord::new(value.slot(), ty.id(), indexes).map_err(|e| match e {
-            IrError::InvalidOperation { message } => ParseError::Expected {
-                expected: message.into(),
-                loc: DiagLoc::span(loc),
-            },
-            other => self.builder_err("uselistorder", other),
-        })
+        self.sort_use_list_order(value, &indexes, loc)
     }
 
-    fn parse_module_use_list_order(&mut self) -> ParseResult<()> {
-        let loc = self.loc();
-        let record = self.parse_use_list_order_directive(None)?;
-        self.module
-            .append_use_list_order(record)
-            .map_err(|e| match e {
-                IrError::InvalidOperation { message } => ParseError::Expected {
-                    expected: message.into(),
-                    loc: DiagLoc::span(loc),
-                },
-                other => self.builder_err("uselistorder", other),
-            })
-    }
-
-    fn parse_function_use_list_order(
-        &mut self,
-        state: &PerFunctionState<'ctx, B>,
+    /// `LLParser::sortUseListOrder`'s tail: apply the permutation and render
+    /// its three `error(Loc, …)` texts, all of which anchor at the directive's
+    /// first token rather than the current one.
+    fn sort_use_list_order(
+        &self,
+        value: llvmkit_ir::Value<'ctx, B>,
+        indexes: &[u32],
+        loc: Span,
     ) -> ParseResult<()> {
-        let loc = self.loc();
-        let record = self.parse_use_list_order_directive(Some(state))?;
-        state
-            .func
-            .append_use_list_order(record)
-            .map_err(|e| match e {
-                IrError::InvalidOperation { message } => ParseError::Expected {
-                    expected: message.into(),
-                    loc: DiagLoc::span(loc),
-                },
-                other => self.builder_err("uselistorder", other),
-            })
+        value
+            .sort_use_list(indexes)
+            .map_err(|e| self.message_at(loc, e.to_string()))
     }
 
+    /// `'uselistorder_bb' @foo ',' %bar ',' UseListOrderIndexes`. Mirrors
+    /// `LLParser::parseUseListOrderBB`, including its use of the *untyped*
+    /// `parseValID` for both operands: neither is resolved through
+    /// `convertValIDToValue`, so the diagnostics below are the only route.
     fn parse_use_list_order_bb(&mut self) -> ParseResult<()> {
         let loc = self.loc();
         self.expect_keyword(Keyword::UselistorderBb, "'uselistorder_bb'")?;
-        let function = match self.peek() {
-            Token::GlobalVar(_) => {
-                let name = self
-                    .current_str_payload()
-                    .ok_or_else(|| self.expected("function name in uselistorder_bb"))?;
-                self.bump()?;
-                let fn_id =
-                    self.module
-                        .function_dyn(&name)
-                        .ok_or_else(|| ParseError::UndefinedSymbol {
-                            kind: SymbolKind::Global,
-                            id: SymbolId::Named(name),
-                            loc: DiagLoc::span(loc),
-                        })?;
-                self.module.view(fn_id)
-            }
-            Token::GlobalId(id) => {
-                let id = *id;
-                self.bump()?;
-                self.resolve_global_id_as_function(id)?
-            }
-            _ => return Err(self.expected("function name in uselistorder_bb")),
-        };
-        self.expect_punct(PunctKind::Comma, "',' after uselistorder_bb function")?;
-        let block = match self.peek() {
-            Token::LocalVar(_) => {
-                let name = self
-                    .current_str_payload()
-                    .ok_or_else(|| self.expected("basic block in uselistorder_bb"))?;
-                self.bump()?;
-                function
-                    .basic_blocks()
-                    .find(|bb| bb.name().as_deref() == Some(name.as_str()))
-                    .ok_or_else(|| ParseError::UndefinedSymbol {
-                        kind: SymbolKind::Block,
-                        id: SymbolId::Named(name),
-                        loc: DiagLoc::span(loc),
-                    })?
-            }
-            Token::LocalVarId(id) => {
-                let id = *id;
-                self.bump()?;
-                let mut next = 0u32;
-                for arg in function.params() {
-                    if arg.name().is_none() {
-                        next = next.saturating_add(1);
-                    }
-                }
-                let mut found = None;
-                'blocks: for bb in function.basic_blocks() {
-                    if bb.name().is_none() {
-                        if next == id {
-                            found = Some(bb);
-                            break 'blocks;
-                        }
-                        next = next.saturating_add(1);
-                    }
-                    for inst in bb.instructions() {
-                        if !inst.ty().is_void() && inst.name().is_none() {
-                            next = next.saturating_add(1);
-                        }
-                    }
-                }
-                found.ok_or_else(|| ParseError::UndefinedSymbol {
-                    kind: SymbolKind::Block,
-                    id: SymbolId::Numbered(id),
-                    loc: DiagLoc::span(loc),
-                })?
-            }
-            _ => return Err(self.expected("basic block in uselistorder_bb")),
-        };
-        self.expect_punct(PunctKind::Comma, "',' before uselistorder_bb indexes")?;
+
+        let function_loc = self.loc();
+        let function_id = self.parse_val_id(None, None)?;
+        self.expect_punct(PunctKind::Comma, "comma in uselistorder_bb directive")?;
+        let label_loc = self.loc();
+        let label_id = self.parse_val_id(None, None)?;
+        self.expect_punct(PunctKind::Comma, "comma in uselistorder_bb directive")?;
         let indexes = self.parse_use_list_order_indexes()?;
-        let record = UseListOrderBbRecord::new(
-            function.as_erased().slot(),
-            block.to_erased().slot(),
-            indexes,
-        )
-        .map_err(|e| match e {
-            IrError::InvalidOperation { message } => ParseError::Expected {
-                expected: message.into(),
-                loc: DiagLoc::span(loc),
-            },
-            other => self.builder_err("uselistorder_bb", other),
-        })?;
-        self.module
-            .append_use_list_order_bb(record)
-            .map_err(|e| match e {
-                IrError::InvalidOperation { message } => ParseError::Expected {
-                    expected: message.into(),
-                    loc: DiagLoc::span(loc),
-                },
-                other => self.builder_err("uselistorder_bb", other),
-            })
+
+        // Check the function. `M->getNamedValue` / `NumberedVals.get` answer
+        // with any global value, so "not a function" and "not defined yet" are
+        // separate verdicts with separate texts.
+        let global = match &function_id {
+            ValId::GlobalName(name) => self.named_global_value(name),
+            ValId::GlobalId(id) => self.numbered_globals.get(*id).copied(),
+            _ => {
+                return Err(self.expected_at(function_loc, "function name in uselistorder_bb"));
+            }
+        };
+        let Some(global) = global else {
+            return Err(self.message_at(
+                function_loc,
+                "invalid function forward reference in uselistorder_bb",
+            ));
+        };
+        let GlobalRef::Function(function) = global else {
+            return Err(self.expected_at(function_loc, "function name in uselistorder_bb"));
+        };
+        // `F->isDeclaration()` — a function with no body.
+        if function.basic_blocks().count() == 0 {
+            return Err(self.message_at(function_loc, "invalid declaration in uselistorder_bb"));
+        }
+
+        // Check the basic block. Upstream looks the label up in the function's
+        // *value* symbol table, which holds arguments and named instructions
+        // too — hence the "found, but not a block" arm.
+        let name = match &label_id {
+            ValId::LocalId(_) => {
+                return Err(self.message_at(label_loc, "invalid numeric label in uselistorder_bb"));
+            }
+            ValId::LocalName(name) => name,
+            _ => {
+                return Err(self.expected_at(label_loc, "basic block name in uselistorder_bb"));
+            }
+        };
+        let Some(local) = function_local_by_name(function, name) else {
+            return Err(self.message_at(label_loc, "invalid basic block in uselistorder_bb"));
+        };
+        if local.category() != ValueCategory::BasicBlock {
+            return Err(self.expected_at(label_loc, "basic block in uselistorder_bb"));
+        }
+
+        self.sort_use_list_order(local, &indexes, loc)
+    }
+
+    /// `Module::getNamedValue` — the one symbol table every global value kind
+    /// shares. llvmkit keeps four maps, so the lookup is spelled as four.
+    fn named_global_value(&self, name: &str) -> Option<GlobalRef<'ctx, B>> {
+        if let Some(id) = self.module.function_dyn(name) {
+            Some(GlobalRef::Function(self.module.view(id)))
+        } else if let Some(id) = self.module.global(name) {
+            Some(GlobalRef::Variable(self.module.view(id)))
+        } else if let Some(id) = self.module.alias(name) {
+            Some(GlobalRef::Alias(self.module.view(id)))
+        } else {
+            self.module
+                .ifunc(name)
+                .map(|id| GlobalRef::Ifunc(self.module.view(id)))
+        }
     }
 
     /// `module asm STRING`. Mirrors `LLParser::parseModuleAsm`.
@@ -7403,10 +7423,15 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
 
         match self.peek() {
+            // No `PerFunctionState` gate here, deliberately: upstream's
+            // `parseValID` records `t_LocalName` / `t_LocalID` untyped and
+            // unresolved, and `convertValIDToValue` is where a null `PFS`
+            // becomes `invalid use of function-local name`. Rejecting early
+            // made that message unreachable, and made `parseUseListOrderBB`
+            // — which reads both its operands with `parseValID(…, nullptr)`
+            // precisely so it can inspect `ID.Kind` itself — impossible to
+            // port.
             Token::LocalVar(_) => {
-                if pfs.is_none() {
-                    return Err(self.expected("global constant value"));
-                }
                 let name = self
                     .current_str_payload()
                     .ok_or_else(|| self.expected("local SSA name"))?;
@@ -7414,9 +7439,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 Ok(ValId::LocalName(name))
             }
             Token::LocalVarId(id) => {
-                if pfs.is_none() {
-                    return Err(self.expected("global constant value"));
-                }
                 let id = *id;
                 self.bump()?;
                 Ok(ValId::LocalId(id))
@@ -8244,23 +8266,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         self.numbered_globals
             .get(id)
             .copied()
-            .ok_or_else(|| ParseError::UndefinedSymbol {
-                kind: SymbolKind::Global,
-                id: SymbolId::Numbered(id),
-                loc: DiagLoc::span(self.loc()),
-            })
-    }
-
-    fn resolve_global_id_as_function(
-        &self,
-        id: u32,
-    ) -> ParseResult<llvmkit_ir::FunctionValue<'ctx, llvmkit_ir::Dyn, B>> {
-        self.numbered_globals
-            .get(id)
-            .and_then(|r| match r {
-                GlobalRef::Function(f) => Some(*f),
-                _ => None,
-            })
             .ok_or_else(|| ParseError::UndefinedSymbol {
                 kind: SymbolKind::Global,
                 id: SymbolId::Numbered(id),
@@ -10903,7 +10908,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
         // Then, and only then, the `uselistorder` directives.
         while !matches!(self.peek(), Token::RBrace) {
-            self.parse_function_use_list_order(state)?;
+            self.parse_use_list_order(Some(state))?;
         }
         Ok(())
     }

@@ -1526,89 +1526,6 @@ impl<B: ModuleBrand> core::fmt::Display for ModuleView<'_, B> {
 // Module
 // --------------------------------------------------------------------------
 
-/// Structured `uselistorder Type Value, { ... }` record.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UseListOrderRecord {
-    value: ValueSlot,
-    value_ty: TypeSlot,
-    indexes: Box<[u32]>,
-}
-
-impl UseListOrderRecord {
-    pub fn new<Indexes>(value: ValueSlot, value_ty: TypeSlot, indexes: Indexes) -> IrResult<Self>
-    where
-        Indexes: Into<Box<[u32]>>,
-    {
-        let indexes = indexes.into();
-        validate_use_list_order_indexes(&indexes)?;
-        Ok(Self {
-            value,
-            value_ty,
-            indexes,
-        })
-    }
-
-    pub fn value(&self) -> ValueSlot {
-        self.value
-    }
-
-    pub fn value_type(&self) -> TypeSlot {
-        self.value_ty
-    }
-
-    pub fn indexes(&self) -> &[u32] {
-        &self.indexes
-    }
-}
-
-/// Structured `uselistorder_bb @function, %block, { ... }` record.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UseListOrderBbRecord {
-    function: ValueSlot,
-    block: ValueSlot,
-    indexes: Box<[u32]>,
-}
-
-impl UseListOrderBbRecord {
-    pub fn new<Indexes>(function: ValueSlot, block: ValueSlot, indexes: Indexes) -> IrResult<Self>
-    where
-        Indexes: Into<Box<[u32]>>,
-    {
-        let indexes = indexes.into();
-        validate_use_list_order_indexes(&indexes)?;
-        Ok(Self {
-            function,
-            block,
-            indexes,
-        })
-    }
-
-    pub fn function(&self) -> ValueSlot {
-        self.function
-    }
-
-    pub fn block(&self) -> ValueSlot {
-        self.block
-    }
-
-    pub fn indexes(&self) -> &[u32] {
-        &self.indexes
-    }
-}
-
-pub(super) fn validate_use_list_order_indexes(indexes: &[u32]) -> IrResult<()> {
-    let identity = indexes
-        .iter()
-        .enumerate()
-        .all(|(i, idx)| u32::try_from(i).is_ok_and(|i| i == *idx));
-    if identity {
-        return Err(IrError::InvalidOperation {
-            message: "expected uselistorder indexes to change the order",
-        });
-    }
-    Ok(())
-}
-
 /// Top-level IR container.
 pub(super) struct ModuleCore {
     id: ModuleId,
@@ -1653,9 +1570,7 @@ pub(super) struct ModuleCore {
     /// Stored as a single `String` joined by newlines (one entry
     /// per `module asm "..."` directive).
     module_asm: core::cell::RefCell<String>,
-    use_list_orders: core::cell::RefCell<Vec<UseListOrderRecord>>,
     attribute_groups: core::cell::RefCell<Vec<(u32, AttributeStorage)>>,
-    use_list_order_bbs: core::cell::RefCell<Vec<UseListOrderBbRecord>>,
     /// Module-level metadata node arena. Mirrors `LLVMContextImpl`'s
     /// metadata store (scoped to the module for simplicity).
     metadata: core::cell::RefCell<MetadataStore>,
@@ -1799,8 +1714,6 @@ impl<'ctx> ModuleCore {
             data_layout: core::cell::RefCell::new(DataLayout::default()),
             target_triple: core::cell::RefCell::new(None),
             module_asm: core::cell::RefCell::new(String::new()),
-            use_list_orders: core::cell::RefCell::new(Vec::new()),
-            use_list_order_bbs: core::cell::RefCell::new(Vec::new()),
             attribute_groups: core::cell::RefCell::new(Vec::new()),
             metadata: core::cell::RefCell::new(MetadataStore::default()),
             named_metadata: core::cell::RefCell::new(Vec::new()),
@@ -2438,26 +2351,6 @@ impl<'ctx> ModuleCore {
         }
         buf.push_str(line.as_ref());
     }
-    pub fn append_use_list_order(&self, record: UseListOrderRecord) -> IrResult<()> {
-        validate_use_list_order_indexes(record.indexes())?;
-        self.use_list_orders.borrow_mut().push(record);
-        Ok(())
-    }
-
-    pub fn append_use_list_order_bb(&self, record: UseListOrderBbRecord) -> IrResult<()> {
-        validate_use_list_order_indexes(record.indexes())?;
-        self.use_list_order_bbs.borrow_mut().push(record);
-        Ok(())
-    }
-
-    pub fn iter_use_list_orders(&self) -> impl ExactSizeIterator<Item = UseListOrderRecord> {
-        self.use_list_orders.borrow().clone().into_iter()
-    }
-
-    pub fn iter_use_list_order_bbs(&self) -> impl ExactSizeIterator<Item = UseListOrderBbRecord> {
-        self.use_list_order_bbs.borrow().clone().into_iter()
-    }
-
     pub fn set_attribute_group(&self, id: u32, storage: AttributeStorage) {
         let mut groups = self.attribute_groups.borrow_mut();
         if let Some((_, existing)) = groups.iter_mut().find(|(slot, _)| *slot == id) {
@@ -2694,9 +2587,7 @@ impl<'ctx> ModuleCore {
     fn register_metadata_value_use(&self, metadata_slot: MetadataSlot, value_id: ValueSlot) {
         self.ctx
             .value_data(value_id)
-            .use_list
-            .borrow_mut()
-            .push(ValueUse::Metadata(metadata_slot));
+            .add_use(ValueUse::Metadata(metadata_slot));
     }
 
     fn deregister_metadata_value_use(&self, metadata_slot: MetadataSlot, value_id: ValueSlot) {
@@ -4701,14 +4592,6 @@ impl<'ctx, B: ModuleBrand + 'ctx> Module<B, Unverified> {
         self.metadata_tuple([behavior_md, key_md, value])
     }
 
-    pub fn append_use_list_order(&'ctx self, record: UseListOrderRecord) -> IrResult<()> {
-        self.core().append_use_list_order(record)
-    }
-
-    pub fn append_use_list_order_bb(&'ctx self, record: UseListOrderBbRecord) -> IrResult<()> {
-        self.core().append_use_list_order_bb(record)
-    }
-
     pub fn set_attribute_group(&'ctx self, id: u32, storage: AttributeStorage) {
         self.core().set_attribute_group(id, storage);
     }
@@ -4783,10 +4666,41 @@ impl<B: ModuleBrand> Module<B, Unverified> {
 // is — so a module can be moved to another thread mid-authoring and finished
 // there. See `tests/module_send.rs`.
 
+impl<B: ModuleBrand, S> Module<B, S> {
+    /// Print this module with `uselistorder` directives, mirroring
+    /// `Module::print` with `ShouldPreserveUseListOrder` set — what `llvm-as`
+    /// and `opt -S -preserve-ll-uselistorder` pass, and what plain
+    /// [`Display`](core::fmt::Display) (the `llvm-dis` default) does not.
+    pub fn preserving_use_list_order(&self) -> PreservedUseListOrder<'_, B, S> {
+        PreservedUseListOrder { module: self }
+    }
+}
+
 impl<B: ModuleBrand, S> core::fmt::Display for Module<B, S> {
     /// Print the module as textual `.ll`. Mirrors `Module::print` from
-    /// `llvm/lib/IR/AsmWriter.cpp`.
+    /// `llvm/lib/IR/AsmWriter.cpp` **with its defaults**, which include
+    /// `ShouldPreserveUseListOrder = false` — so no `uselistorder` directives,
+    /// exactly as `llvm-dis` prints. Ask for
+    /// [`Module::preserving_use_list_order`] to get them.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         crate::asm_writer::fmt_module(f, &self.core)
+    }
+}
+
+/// A [`Display`](core::fmt::Display) adapter that prints a module with
+/// `uselistorder` / `uselistorder_bb` directives, mirroring `Module::print`
+/// with `ShouldPreserveUseListOrder` set.
+///
+/// Nothing is stored to make this work: the directives are *derived* from the
+/// module's actual use lists by `AsmWriter::predictUseListOrder`, so a module
+/// assembled by hand prints them as readily as one parsed from `.ll`.
+#[must_use = "this is a Display adapter; it prints nothing until formatted"]
+pub struct PreservedUseListOrder<'a, B: ModuleBrand, S> {
+    module: &'a Module<B, S>,
+}
+
+impl<B: ModuleBrand, S> core::fmt::Display for PreservedUseListOrder<'_, B, S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        crate::asm_writer::fmt_module_with_options(f, &self.module.core, true)
     }
 }

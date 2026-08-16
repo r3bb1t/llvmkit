@@ -1087,13 +1087,16 @@ fn uselistorder_directives_come_after_every_block() {
     );
 
     // Once the directives start, the only things left are more directives or
-    // the `}` — `parseUseListOrder`'s own `parseToken` reports the label.
+    // the `}` — `parseUseListOrder`'s own `parseToken` reports the label, and
+    // its payload is `expected uselistorder directive`. W8 recorded llvmkit as
+    // already matching upstream here; it did not, and the invented
+    // `expected 'uselistorder'` this line used to assert is what hid that.
     assert_eq!(
         header_err(
             "define i32 @f(i32 %a) {\nentry:\n  %b = add i32 %a, %a\n  ret i32 %b\n\
              uselistorder i32 %a, { 1, 0 }\nsecond:\n  ret i32 0\n}\n"
         ),
-        "expected 'uselistorder'"
+        "expected uselistorder directive"
     );
 }
 

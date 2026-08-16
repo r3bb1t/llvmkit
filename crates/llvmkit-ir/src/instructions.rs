@@ -1695,9 +1695,7 @@ impl<'ctx, W: IntWidth, B: ModuleBrand + 'ctx> PhiInst<'ctx, W, B> {
             module
                 .context()
                 .value_data(value_id)
-                .use_list
-                .borrow_mut()
-                .push(ValueUse::Instruction(self.id));
+                .add_use(ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
@@ -1937,9 +1935,7 @@ impl<'ctx, K: FloatKind, B: ModuleBrand + 'ctx> FpPhiInst<'ctx, K, B> {
             module
                 .context()
                 .value_data(value_id)
-                .use_list
-                .borrow_mut()
-                .push(ValueUse::Instruction(self.id));
+                .add_use(ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
@@ -2146,9 +2142,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> PointerPhiInst<'ctx, B> {
             module
                 .context()
                 .value_data(value_id)
-                .use_list
-                .borrow_mut()
-                .push(ValueUse::Instruction(self.id));
+                .add_use(ValueUse::Instruction(self.id));
             Ok(self)
         } else {
             Err(crate::IrError::TypeMismatch {
@@ -2798,9 +2792,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> AtomicRmwInst<'ctx, B> {
         module
             .context()
             .value_data(value.id)
-            .use_list
-            .borrow_mut()
-            .push(ValueUse::Instruction(self.id));
+            .add_use(ValueUse::Instruction(self.id));
         Ok(())
     }
     pub fn align(self) -> Option<Align> {
@@ -3044,13 +3036,16 @@ impl<'ctx, B: ModuleBrand + 'ctx, W: IntWidth> SwitchInst<'ctx, TermOpen, B, W> 
             .cases
             .borrow_mut()
             .push((core::cell::Cell::new(v_id), target.slot()));
-        self.module
-            .module()
-            .context()
+        let context = self.module.module().context();
+        context
             .value_data(v_id)
-            .use_list
-            .borrow_mut()
-            .push(ValueUse::Instruction(self.id));
+            .add_use(ValueUse::Instruction(self.id));
+        // `SwitchInst::addCase` grows the operand list by *two* — the case
+        // value and its destination — so the block gets an edge as well.
+        // Registered after the value, matching `[…, CaseVal, CaseDest]`.
+        context
+            .value_data(target.slot())
+            .add_use(ValueUse::Instruction(self.id));
         self
     }
 }
@@ -3215,6 +3210,12 @@ impl<'ctx, B: ModuleBrand + 'ctx> IndirectBrInst<'ctx, TermOpen, B> {
         let target = target.into_basic_block_label(self.module)?;
         require_no_block_parameters(self.module, target.slot())?;
         self.payload().destinations.borrow_mut().push(target.slot());
+        // `IndirectBrInst::addDestination` appends a real operand.
+        self.module
+            .module()
+            .context()
+            .value_data(target.slot())
+            .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Consume the open `indirectbr` and return its [`TermClosed`] view.
@@ -3538,9 +3539,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
         module
             .context()
             .value_data(v.id)
-            .use_list
-            .borrow_mut()
-            .push(ValueUse::Instruction(self.id));
+            .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Append a `filter <ty> <val>` clause.
@@ -3554,9 +3553,7 @@ impl<'ctx, B: ModuleBrand + 'ctx> LandingPadInst<'ctx, TermOpen, B> {
         module
             .context()
             .value_data(v.id)
-            .use_list
-            .borrow_mut()
-            .push(ValueUse::Instruction(self.id));
+            .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }
     /// Consume the open landingpad and return its [`TermClosed`] view.
@@ -3857,10 +3854,14 @@ impl<'ctx, B: ModuleBrand + 'ctx> CatchSwitchInst<'ctx, TermOpen, B> {
         R: ReturnMarker,
         Handler: IntoBasicBlockLabel<'ctx, R, B>,
     {
-        self.payload()
-            .handlers
-            .borrow_mut()
-            .push(handler.into_basic_block_label(self.module)?.slot());
+        let handler = handler.into_basic_block_label(self.module)?;
+        self.payload().handlers.borrow_mut().push(handler.slot());
+        // `CatchSwitchInst::addHandler` appends a real operand.
+        self.module
+            .module()
+            .context()
+            .value_data(handler.slot())
+            .add_use(ValueUse::Instruction(self.id));
         Ok(self)
     }
     #[inline]

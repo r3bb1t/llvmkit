@@ -299,8 +299,7 @@ pub use metadata::{
 };
 pub use module::{
     ComdatView, DynBrand, GlobalAliasView, GlobalIfuncView, GlobalVariableView, Module,
-    ModuleBrand, ModuleId, ModuleRef, ModuleView, Unverified, UseListOrderBbRecord,
-    UseListOrderRecord, Verified,
+    ModuleBrand, ModuleId, ModuleRef, ModuleView, PreservedUseListOrder, Unverified, Verified,
 };
 pub use module_flags::{ModuleFlagBehavior, ModuleFlagEntry, ModuleFlagKey};
 pub use named_md_node::{NamedMetadataId, NamedMetadataName};
@@ -366,8 +365,8 @@ pub use r#use::Use;
 pub use user::User;
 pub use value::{
     ArrayValue, FloatValue, FunctionTypedValue, HasDebugLoc, HasName, IntValue, IntoErasedValue,
-    IntoPointerValue, IsValue, PointerValue, StructValue, Typed, Value, ValueCategory, ValueSlot,
-    VectorValue,
+    IntoPointerValue, IsValue, PointerValue, StructValue, Typed, UseListOrderError, Value,
+    ValueCategory, ValueSlot, VectorValue,
 };
 pub use value_id::{
     AtomicCmpXchgInstId, AtomicRmwInstId, BlockId, CallInstId, FloatValueId, FpPhiInstId,

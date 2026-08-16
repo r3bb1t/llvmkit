@@ -913,9 +913,7 @@ where
         self.module
             .context()
             .value_data(val.id)
-            .use_list
-            .borrow_mut()
-            .push(ValueUse::Instruction(phi_val.id));
+            .add_use(ValueUse::Instruction(phi_val.id));
         Ok(())
     }
 
@@ -951,9 +949,7 @@ where
             self.module
                 .context()
                 .value_data(op)
-                .use_list
-                .borrow_mut()
-                .push(ValueUse::Instruction(id));
+                .add_use(ValueUse::Instruction(id));
         }
         let label_ty = self.module.label_type::<B>().as_type().id();
         let bb = BasicBlock::<Dyn, Unterminated, B>::from_parts(
@@ -8869,7 +8865,15 @@ where
         // `llvm/lib/IR/User.cpp`, which threads each `Use` into its
         // operand's use-list at construction time.
         let operand_ids = match &value.kind {
-            ValueKindData::Instruction(i) => i.kind.operand_ids(),
+            ValueKindData::Instruction(i) => {
+                // Block successors are `Use`s upstream (`BranchInst`,
+                // `SwitchInst`, `InvokeInst`, …), so they are registered here
+                // too — after the value operands, which is the operand-index
+                // order every one of those constructors uses.
+                let mut ids = i.kind.operand_ids();
+                ids.extend(i.kind.block_operand_ids());
+                ids
+            }
             // append_instruction always builds an Instruction-kind value.
             _ => unreachable!("append_instruction built non-instruction value"),
         };
@@ -8878,9 +8882,7 @@ where
             self.module
                 .context()
                 .value_data(op)
-                .use_list
-                .borrow_mut()
-                .push(ValueUse::Instruction(id));
+                .add_use(ValueUse::Instruction(id));
         }
         match self.insert_before {
             Some(anchor) => {
@@ -9063,9 +9065,7 @@ where
             self.module
                 .context()
                 .value_data(op)
-                .use_list
-                .borrow_mut()
-                .push(ValueUse::Instruction(id));
+                .add_use(ValueUse::Instruction(id));
         }
         // Unlike `append_instruction`, placement ignores the builder's
         // insert cursor: phis always land at the block's phi head.

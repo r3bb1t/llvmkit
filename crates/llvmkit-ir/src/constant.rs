@@ -385,6 +385,21 @@ impl ConstantData {
                 f(*addr_discriminator);
                 f(*deactivation_symbol);
             }
+            // `BlockAddress`'s operands are `[Function, BasicBlock]`
+            // (`BlockAddress::BlockAddress`), and both are real `Use`s — a
+            // `blockaddress` is why a block can have a use from outside its
+            // own function.
+            Self::BlockAddress { function, block } => {
+                f(*function);
+                f(*block);
+            }
+            // The rest name no operand llvmkit can hand back. Note the ones
+            // that *should*: `GlobalValueRef`, `DsoLocalEquivalent`, `NoCfi`,
+            // `GepOffset` and the `SymbolDelta` pair all wrap a global, and
+            // upstream counts each as a use of it. Yielding them here would
+            // register the edge against llvmkit's *interned* wrapper rather
+            // than the global, which loses count rather than fixing it —
+            // see `docs/divergences.md` (D2/D3).
             Self::Int(_)
             | Self::Float(_)
             | Self::GlobalValueRef { .. }
@@ -393,7 +408,6 @@ impl ConstantData {
             | Self::GepOffset { .. }
             | Self::SymbolDelta { .. }
             | Self::SymbolDeltaPlus { .. }
-            | Self::BlockAddress { .. }
             | Self::DsoLocalEquivalent { .. }
             | Self::NoCfi { .. }
             | Self::TokenNone
@@ -651,6 +665,54 @@ impl<'ctx, B: ModuleBrand + 'ctx> Constant<'ctx, B> {
         // null. Asking it this way also reaches a *scalable* `zeroinitializer`
         // mask, which has no element list to walk.
         at(shuffle_mask).is_null_value().then(|| at(splat))
+    }
+
+    /// Whether this constant belongs to upstream's `ConstantData` class —
+    /// the operand-less, context-shared corner of the constant hierarchy that
+    /// `isa<ConstantData>` selects and `Value::hasUseList` negates.
+    ///
+    /// Upstream's members are `ConstantInt`, `ConstantFP`,
+    /// `ConstantPointerNull`, `ConstantTokenNone`, `ConstantTargetNone`,
+    /// `UndefValue`, `PoisonValue`, `ConstantAggregateZero` and
+    /// `ConstantDataSequential`. Everything else that is a `Constant` —
+    /// constant expressions, `ConstantAggregate`, every `GlobalValue`,
+    /// `BlockAddress`, `DSOLocalEquivalent`, `NoCFIValue`, `ConstantPtrAuth`
+    /// — is not.
+    ///
+    /// Two arms need a note. llvmkit has no distinct `ConstantAggregateZero`
+    /// or `ConstantDataSequential`: an aggregate is always an element list,
+    /// and upstream builds a `ConstantAggregateZero` from exactly the lists
+    /// whose elements are all null, so that arm asks
+    /// [`Self::is_null_value`] rather than testing a class. And
+    /// `ForwardRefPlaceholder` is llvmkit's own; upstream's stand-in for a
+    /// forward reference is an ordinary `GlobalValue` or instruction, which
+    /// must keep a use list for RAUW to reach — so it answers `false`.
+    pub fn is_constant_data(self) -> bool {
+        // Matched exhaustively on purpose: a new constant kind has to be
+        // classified against upstream's hierarchy, not defaulted.
+        let ValueKindData::Constant(data) = &self.as_erased().data().kind else {
+            unreachable!("a Constant view only ever wraps ValueKindData::Constant")
+        };
+        match data {
+            ConstantData::Int(_)
+            | ConstantData::Float(_)
+            | ConstantData::PointerNull
+            | ConstantData::TokenNone
+            | ConstantData::TargetExtNone
+            | ConstantData::Undef
+            | ConstantData::Poison => true,
+            ConstantData::Aggregate(_) => self.is_null_value(),
+            ConstantData::Expr(_)
+            | ConstantData::GlobalValueRef { .. }
+            | ConstantData::ForwardRefPlaceholder
+            | ConstantData::GepOffset { .. }
+            | ConstantData::SymbolDelta { .. }
+            | ConstantData::SymbolDeltaPlus { .. }
+            | ConstantData::BlockAddress { .. }
+            | ConstantData::DsoLocalEquivalent { .. }
+            | ConstantData::NoCfi { .. }
+            | ConstantData::PtrAuth { .. } => false,
+        }
     }
 
     /// Whether this constant is the all-zero value of its type.

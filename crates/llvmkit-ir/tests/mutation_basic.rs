@@ -16,7 +16,7 @@ use llvmkit_ir::{
     Dyn, IntValue, IrBuilder, IrError, Linkage, NoFolder, iter::BlockCursor, module_new,
 };
 
-/// Port of `unittests/IR/UseTest.cpp::TEST(UseTest, sort)` setup body.
+/// Port of `unittests/IR/UseTest.cpp::TEST(UseTest, sort)`, whole.
 /// Upstream:
 /// ```text
 /// define void @f(i32 %x) {
@@ -31,13 +31,22 @@ use llvmkit_ir::{
 ///   ret void
 /// }
 /// ```
-/// Upstream then `sortUseList`s `%x` and asserts the iteration order.
-/// We don't ship `sortUseList` (mutation primitive deferred); the
-/// portable assertion is the registration count and that every user
-/// in `X.users()` is the corresponding `add` instruction. That is
-/// what `ASSERT_EQ(8u, I)` in the upstream loop validates.
+/// It then `sortUseList`s `%x` by ascending user name and asserts
+/// `X.users()` yields `v0 … v7`, re-sorts descending and asserts `v7 … v0`,
+/// with `ASSERT_EQ(8u, I)` after each loop.
+///
+/// This used to be a *setup-only* port: its doc comment said "we don't ship
+/// `sortUseList` (mutation primitive deferred)" and it asserted registration
+/// order instead — an llvmkit-specific claim with no upstream counterpart,
+/// and one that happened to be wrong, since upstream's use list is
+/// newest-first. `Value::sort_use_list_by` closed the gap, so the port is
+/// finished here rather than left approximated.
+///
+/// llvmkit builds the module with `IrBuilder` where upstream parses a string:
+/// `llvmkit-ir` does not depend on the parser crate. The instruction sequence
+/// is upstream's, in its order.
 #[test]
-fn use_test_sort_setup_registers_eight_users() -> Result<(), IrError> {
+fn use_test_sort() -> Result<(), IrError> {
     let m = module_new!("u")?;
     let void_ty = m.void_type();
     let i32_ty = m.i32_type();
@@ -48,28 +57,74 @@ fn use_test_sort_setup_registers_eight_users() -> Result<(), IrError> {
     let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
 
     // Order matches the upstream string -- declaration order, not value index.
-    let v0 = b.int_add(x, 0_i32, "v0")?;
-    let v2 = b.int_add(x, 2_i32, "v2")?;
-    let v5 = b.int_add(x, 5_i32, "v5")?;
-    let v1 = b.int_add(x, 1_i32, "v1")?;
-    let v3 = b.int_add(x, 3_i32, "v3")?;
-    let v7 = b.int_add(x, 7_i32, "v7")?;
-    let v6 = b.int_add(x, 6_i32, "v6")?;
-    let v4 = b.int_add(x, 4_i32, "v4")?;
+    for (addend, name) in [
+        (0_i32, "v0"),
+        (2, "v2"),
+        (5, "v5"),
+        (1, "v1"),
+        (3, "v3"),
+        (7, "v7"),
+        (6, "v6"),
+        (4, "v4"),
+    ] {
+        b.int_add(x, addend, name)?;
+    }
     b.ret_void()?;
 
-    // Upstream: `ASSERT_EQ(8u, I)` after iterating `X.users()`.
-    assert_eq!(x.as_erased().num_uses(), 8);
+    let names = |value: llvmkit_ir::Value<'_, _>| -> Vec<String> {
+        value
+            .users()
+            .map(|user| user.name().expect("every add is named"))
+            .collect()
+    };
 
-    // The set of users is exactly the 8 adds (registration order).
-    let users: Vec<_> = x.as_erased().users().collect();
-    assert_eq!(users.len(), 8);
-    let expected_value_ids: Vec<_> = [v0, v2, v5, v1, v3, v7, v6, v4]
-        .iter()
-        .map(|iv| m.view(*iv).as_erased())
+    // `X.sortUseList([](L, R) { return L.getUser()->getName() < ...; })`
+    x.as_erased()
+        .sort_use_list_by(|left, right| left.name().cmp(&right.name()));
+    let ascending = names(x.as_erased());
+    assert_eq!(ascending.len(), 8, "upstream's ASSERT_EQ(8u, I)");
+    assert_eq!(ascending, ["v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7"]);
+
+    // The same list re-sorted the other way; upstream asserts `v(7 - I)`.
+    x.as_erased()
+        .sort_use_list_by(|left, right| right.name().cmp(&left.name()));
+    let descending = names(x.as_erased());
+    assert_eq!(descending.len(), 8, "upstream's ASSERT_EQ(8u, I)");
+    assert_eq!(descending, ["v7", "v6", "v5", "v4", "v3", "v2", "v1", "v0"]);
+    Ok(())
+}
+
+/// The use-list order a *fresh* module has, before anything sorts it.
+///
+/// llvmkit-specific: upstream has no unit test pinning this directly — it is
+/// asserted implicitly by `AsmWriter::predictValueUseListOrder`'s
+/// `GetsReversed` logic and by every `verify-uselistorder` fixture. It is
+/// pinned here because it is a contract three separate things depend on
+/// (`uselistorder` index vectors, the printer's shuffle, and RAUW's merge
+/// order), and because llvmkit got it backwards until wave 12: `Value::addUse`
+/// forwards to `Use::addToList`, which makes each new use the **head**.
+#[test]
+fn use_list_reads_newest_first() -> Result<(), IrError> {
+    let m = module_new!("u")?;
+    let void_ty = m.void_type();
+    let i32_ty = m.i32_type();
+    let fn_ty = m.function_type(void_ty, [i32_ty.as_type()]);
+    let f = m.add_function_dyn("f", fn_ty, Linkage::External)?;
+    let entry = m.view(f).append_basic_block(&m, "entry");
+    let b = IrBuilder::new_for::<Dyn>(&m).position_at_end(entry);
+    let x: IntValue<'_, i32, _> = m.view(f).param(0)?.try_into()?;
+
+    b.int_add(x, 0_i32, "first")?;
+    b.int_add(x, 1_i32, "second")?;
+    b.int_add(x, 2_i32, "third")?;
+    b.ret_void()?;
+
+    let order: Vec<String> = x
+        .as_erased()
+        .users()
+        .map(|user| user.name().expect("every add is named"))
         .collect();
-    let user_value_ids: Vec<_> = users.iter().map(|inst| inst.to_erased()).collect();
-    assert_eq!(user_value_ids, expected_value_ids);
+    assert_eq!(order, ["third", "second", "first"]);
     Ok(())
 }
 

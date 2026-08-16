@@ -257,6 +257,111 @@ impl InstructionKindData {
             Self::Unreachable(_) => Vec::new(),
         }
     }
+
+    /// The **basic-block** operands this instruction holds, in upstream's
+    /// operand-index order.
+    ///
+    /// Upstream makes no such split: a terminator's successor is an ordinary
+    /// `Use`, which is why `uselistorder label %bb` has something to permute.
+    /// llvmkit keeps it separate because [`Self::operand_ids`] is the list
+    /// every analysis walks and those callers assume a first-class SSA value;
+    /// the edges are registered *alongside* rather than merged in.
+    ///
+    /// The order is not cosmetic. `BranchInst`'s constructor carries the
+    /// comment "Assign in order of operand index to make use-list order
+    /// predictable", and `AsmWriter::predictValueUseListOrder` breaks ties
+    /// between two uses by one user on `Use::getOperandNo()`.
+    ///
+    /// `Phi` yields nothing, deliberately: `PHINode` keeps its incoming
+    /// blocks in a hung-off array reached by `block_begin`, which is *not* a
+    /// use list — a phi does not use the blocks it names.
+    pub(super) fn block_operand_ids(&self) -> Vec<ValueSlot> {
+        match self {
+            // `BranchInst::BranchInst` assigns `[Cond, IfFalse, IfTrue]`, so
+            // the false edge precedes the true one.
+            Self::Br(b) => match &*b.kind.borrow() {
+                BranchKind::Unconditional(target) => vec![*target],
+                BranchKind::Conditional {
+                    then_bb, else_bb, ..
+                } => vec![*else_bb, *then_bb],
+            },
+            // `SwitchInst::init`: `[Cond, DefaultDest, (CaseVal, CaseDest)*]`.
+            Self::Switch(s) => {
+                let mut v = vec![s.default_bb.get()];
+                v.extend(s.cases.borrow().iter().map(|(_, dest)| *dest));
+                v
+            }
+            // `IndirectBrInst::init`: `[Address, Dest*]`.
+            Self::IndirectBr(i) => i.destinations.borrow().clone(),
+            // `InvokeInst::init` writes the tail as `[…, NormalDest,
+            // UnwindDest, Callee]`.
+            Self::Invoke(i) => vec![i.normal_dest.get(), i.unwind_dest.get()],
+            // `CallBrInst::init` writes `[…, DefaultDest, IndirectDest*,
+            // Callee]`.
+            Self::CallBr(c) => {
+                let mut v = vec![c.default_dest.get()];
+                v.extend(c.indirect_dests.iter().map(|d| d.get()));
+                v
+            }
+            // `CatchSwitchInst::init`: `[ParentPad, UnwindDest?, Handler*]`.
+            Self::CatchSwitch(s) => {
+                let mut v: Vec<ValueSlot> = s.unwind_dest.get().into_iter().collect();
+                v.extend(s.handlers.borrow().iter().copied());
+                v
+            }
+            // `CleanupReturnInst::init`: `[CleanupPad, UnwindBB?]`.
+            Self::CleanupReturn(r) => r.unwind_dest.into_iter().collect(),
+            // `CatchReturnInst::init`: `[CatchPad, BB]`.
+            Self::CatchReturn(r) => vec![r.target_bb],
+            // Matched exhaustively on purpose: a new terminator has to declare
+            // whether it names blocks, rather than defaulting to "no".
+            Self::Add(_)
+            | Self::Sub(_)
+            | Self::Mul(_)
+            | Self::Udiv(_)
+            | Self::Sdiv(_)
+            | Self::Urem(_)
+            | Self::Srem(_)
+            | Self::Shl(_)
+            | Self::Lshr(_)
+            | Self::Ashr(_)
+            | Self::And(_)
+            | Self::Or(_)
+            | Self::Xor(_)
+            | Self::Fadd(_)
+            | Self::Fsub(_)
+            | Self::Fmul(_)
+            | Self::Fdiv(_)
+            | Self::Frem(_)
+            | Self::Cast(_)
+            | Self::Alloca(_)
+            | Self::Load(_)
+            | Self::Store(_)
+            | Self::Gep(_)
+            | Self::Call(_)
+            | Self::Select(_)
+            | Self::Icmp(_)
+            | Self::Fcmp(_)
+            | Self::Phi(_)
+            | Self::Ret(_)
+            | Self::Fneg(_)
+            | Self::Freeze(_)
+            | Self::VaArg(_)
+            | Self::ExtractValue(_)
+            | Self::InsertValue(_)
+            | Self::ExtractElement(_)
+            | Self::InsertElement(_)
+            | Self::ShuffleVector(_)
+            | Self::Fence(_)
+            | Self::AtomicCmpXchg(_)
+            | Self::AtomicRmw(_)
+            | Self::LandingPad(_)
+            | Self::Resume(_)
+            | Self::CleanupPad(_)
+            | Self::CatchPad(_)
+            | Self::Unreachable(_) => Vec::new(),
+        }
+    }
     pub(super) fn is_terminator(&self) -> bool {
         matches!(
             self,
@@ -1099,15 +1204,19 @@ impl<'ctx, B: ModuleBrand + 'ctx> Instruction<'ctx, state::Attached, B> {
                 ValueUse::Constant(_) => {}
             }
         }
-        // Migrate use-list entries: drain ours, push onto replacement.
+        // Migrate use-list entries: drain ours, prepend onto the replacement.
+        // `Value::replaceAllUsesWith` takes the *head* of the old list each
+        // time round and `Use::set`s it, which prepends to the new list, so
+        // the moved run lands reversed — the reversal
+        // `AsmWriter::predictValueUseListOrder` names `GetsReversed`.
         {
             let mut self_uses = module.context().value_data(self_id).use_list.borrow_mut();
             self_uses.clear();
         }
-        {
-            let mut new_uses = module.context().value_data(new_id).use_list.borrow_mut();
-            new_uses.extend(user_edges);
-        }
+        module
+            .context()
+            .value_data(new_id)
+            .prepend_moved_uses(&user_edges);
         Ok(())
     }
 
@@ -1501,7 +1610,13 @@ pub(super) fn rewrite_operand_cells(kind: &InstructionKindData, from: ValueSlot,
 fn deregister_operand_uses(inst_id: ValueSlot, kind: &InstructionKindData, module: &ModuleCore) {
     use std::collections::HashMap;
     let mut occurrences: HashMap<ValueSlot, usize> = HashMap::new();
-    for op_id in kind.operand_ids() {
+    // Block successors are `Use`s upstream and are registered as such here, so
+    // erasing a terminator has to drop them too.
+    for op_id in kind
+        .operand_ids()
+        .into_iter()
+        .chain(kind.block_operand_ids())
+    {
         *occurrences.entry(op_id).or_insert(0) += 1;
     }
     for (op_id, n) in occurrences {
@@ -1528,9 +1643,7 @@ fn register_debug_record_uses(
         module
             .context()
             .value_data(value_id)
-            .use_list
-            .borrow_mut()
-            .push(ValueUse::DebugRecord {
+            .add_use(ValueUse::DebugRecord {
                 inst: inst_id,
                 record: record_index,
             });

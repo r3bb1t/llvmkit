@@ -1266,12 +1266,7 @@ fn replace_instruction_operand<'ctx, B: ModuleBrand + 'ctx>(
         old_uses.remove(pos);
     }
     drop(old_uses);
-    module
-        .context()
-        .value_data(new_id)
-        .use_list
-        .borrow_mut()
-        .push(edge);
+    module.context().value_data(new_id).add_use(edge);
     Ok(true)
 }
 

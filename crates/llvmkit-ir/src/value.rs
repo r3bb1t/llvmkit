@@ -123,9 +123,64 @@ pub(super) struct ValueData {
     /// RAUW / erase.
     ///
     /// Entries may appear more than once if the same user references this value
-    /// in multiple slots (e.g. `add %x, %x`). Order is registration-order for
-    /// determinism.
+    /// in multiple slots (e.g. `add %x, %x`).
+    ///
+    /// **Order is newest-first**, mirroring upstream exactly — see
+    /// [`ValueData::add_use`]. The order is observable: it is what a
+    /// `uselistorder` index vector permutes and what
+    /// `AsmWriter::predictValueUseListOrder` states its shuffle in terms of.
     pub(super) use_list: RefCell<Vec<ValueUse>>,
+}
+
+impl ValueData {
+    /// Register `edge` as a new use of this value.
+    ///
+    /// Mirrors `Value::addUse` (`Value.h`), which forwards to
+    /// `Use::addToList` (`Use.h`): upstream threads its use list through the
+    /// uses themselves and a new one becomes the **head**, so the list reads
+    /// newest-first. llvmkit stores the same sequence rather than appending,
+    /// because the sequence is contractual — `LLParser::sortUseListOrder`
+    /// keys each use by its position in it, and
+    /// `AsmWriter::predictValueUseListOrder` emits a shuffle against it.
+    pub(super) fn add_use(&self, edge: ValueUse) {
+        self.use_list.borrow_mut().insert(0, edge);
+    }
+
+    /// Move `edges` — a head-first snapshot of another value's use list —
+    /// onto the head of this one's.
+    ///
+    /// Mirrors the drain loop in `Value::replaceAllUsesWith`
+    /// (`lib/IR/Value.cpp`), which repeatedly takes the *head* of the old
+    /// list and `Use::set`s it, prepending each in turn to the new list. The
+    /// net effect reverses the moved run — which is exactly the reversal
+    /// `AsmWriter::predictValueUseListOrder` compensates for with its
+    /// `GetsReversed` flag, so reproducing it here is what makes a
+    /// forward-referenced value's printed shuffle match upstream's.
+    /// The use list as upstream's `Value::uses()` reads it: the edges that
+    /// correspond to a `Use`, in use-list order, named by their *user*.
+    ///
+    /// This — not [`Value::num_uses`] — is what `getNumUses`, a
+    /// `uselistorder` index vector, `sortUseListOrder` and
+    /// `predictValueUseListOrder` all count. See
+    /// [`ValueUse::is_operand_use`] for why the two differ.
+    pub(super) fn operand_users(&self) -> Vec<ValueSlot> {
+        self.use_list
+            .borrow()
+            .iter()
+            .filter_map(|edge| edge.user())
+            .collect()
+    }
+
+    pub(super) fn prepend_moved_uses(&self, edges: &[ValueUse]) {
+        if edges.is_empty() {
+            return;
+        }
+        let mut list = self.use_list.borrow_mut();
+        let mut merged = Vec::with_capacity(edges.len() + list.len());
+        merged.extend(edges.iter().rev().copied());
+        merged.append(&mut list);
+        *list = merged;
+    }
 }
 
 /// One reverse use-list edge for a value. Instruction operands, constants,
@@ -151,6 +206,50 @@ pub(super) enum ValueUse {
         owner: ValueSlot,
         field: GlobalFieldKind,
     },
+}
+
+impl ValueUse {
+    /// The `User` this edge hangs off, when upstream models the edge as a
+    /// `Use` at all.
+    ///
+    /// llvmkit's use list is deliberately wider than upstream's: a metadata
+    /// node or a debug record keeps a value alive and must be reached by
+    /// RAUW, so each gets an edge. Upstream tracks those through
+    /// `ReplaceableMetadataImpl` instead — a `ValueAsMetadata` creates no
+    /// `Use`, which is exactly why `AsmWriter::orderModule` has to reach
+    /// *through* `MetadataAsValue` wrappers and debug records to find the
+    /// constants hiding behind them. Anything phrased in terms of
+    /// `Value::uses()` therefore sees only the narrower set.
+    pub(super) fn user(self) -> Option<ValueSlot> {
+        match self {
+            ValueUse::Instruction(user) | ValueUse::Constant(user) => Some(user),
+            ValueUse::GlobalField { owner, .. } => Some(owner),
+            ValueUse::Metadata(_) | ValueUse::DebugRecord { .. } => None,
+        }
+    }
+
+    /// Whether this edge is one upstream models as a `Use`. See
+    /// [`Self::user`].
+    pub(super) fn is_operand_use(self) -> bool {
+        self.user().is_some()
+    }
+}
+
+/// Why a `uselistorder` index vector could not be applied to a value's use
+/// list. One variant per `error(...)` arm of `LLParser::sortUseListOrder`;
+/// the `Display` texts are that routine's, byte for byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum UseListOrderError {
+    /// The named value is not used anywhere.
+    #[error("value has no uses")]
+    NoUses,
+    /// Exactly one use — there is no order to state.
+    #[error("value only has one use")]
+    OneUse,
+    /// The vector does not name every use exactly once. `expected` is the
+    /// value's actual use count, which is what upstream's `Twine` renders.
+    #[error("wrong number of indexes, expected {expected}")]
+    WrongIndexCount { expected: usize },
 }
 
 /// Which single-slot field of a global object a [`ValueUse::GlobalField`]
@@ -435,9 +534,10 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     /// `users()` expect concrete instruction views.
     ///
     /// The list is a snapshot, not a live view: callers may mutate the IR
-    /// (erase, RAUW) without invalidating the iterator. Order is
-    /// registration-order; user ids may appear more than once if the same
-    /// instruction references this value in multiple slots.
+    /// (erase, RAUW) without invalidating the iterator. Order is the use-list
+    /// order — newest-first, as upstream's `Value::uses()` reads — and user
+    /// ids may appear more than once if the same instruction references this
+    /// value in multiple slots.
     pub fn users(
         self,
     ) -> impl ExactSizeIterator<Item = InstructionView<'ctx, B>>
@@ -483,6 +583,131 @@ impl<'ctx, B: ModuleBrand + 'ctx> Value<'ctx, B> {
     #[inline]
     pub fn num_uses(self) -> usize {
         self.data().use_list.borrow().len()
+    }
+
+    /// `true` when this value keeps a use list at all. Mirrors
+    /// `Value::hasUseList` (`Value.h`), spelled there as
+    /// `!isa<ConstantData>(this)`.
+    ///
+    /// `ConstantData` is the operand-less corner of upstream's constant
+    /// hierarchy — `ConstantInt`, `ConstantFP`, `ConstantPointerNull`,
+    /// `ConstantTokenNone`, `ConstantTargetNone`, `UndefValue`,
+    /// `PoisonValue`, `ConstantAggregateZero` and `ConstantDataSequential`.
+    /// Its members are shared by every module in a context, so upstream
+    /// tracks no users for them and a `uselistorder` naming one is a silent
+    /// no-op rather than an error.
+    ///
+    /// llvmkit *does* record uses for these values — one arena per module
+    /// makes that affordable and `num_uses` is the better answer for a
+    /// caller asking who reads a constant. This predicate is therefore about
+    /// upstream's classification, not about whether
+    /// [`Self::users`] will yield anything.
+    #[inline]
+    pub fn has_use_list(self) -> bool {
+        !crate::Constant::try_from(self).is_ok_and(crate::Constant::is_constant_data)
+    }
+
+    /// Sort this value's use list with `compare`. Mirrors
+    /// `Value::sortUseList` (`Value.h`), a stable merge sort over the uses.
+    ///
+    /// Upstream's comparator takes two `Use`s; llvmkit hands it each use's
+    /// **user** instead, which is what upstream's own comparators read —
+    /// `LLParser::sortUseListOrder`'s keys off a side map,
+    /// `AsmWriter::predictValueUseListOrder`'s off `getUser()`, and
+    /// `UseTest`'s off `getUser()->getName()`. The one thing a `Use` offers
+    /// that a user does not is `getOperandNo`, which llvmkit's use list
+    /// cannot answer at all (`docs/divergences.md` D4).
+    ///
+    /// Only the edges upstream models as `Use`s take part; metadata and
+    /// debug-record edges keep their slots. A value with fewer than two of
+    /// them is left alone, as upstream's `!UseList || !UseList->Next` guard
+    /// does.
+    pub fn sort_use_list_by<F>(self, mut compare: F)
+    where
+        F: FnMut(Value<'ctx, B>, Value<'ctx, B>) -> core::cmp::Ordering,
+    {
+        let module = self.module;
+        let user_value = |slot: ValueSlot| {
+            let data = module.value_data(slot);
+            Value::from_parts(slot, module, data.ty)
+        };
+        let mut uses = self.data().use_list.borrow_mut();
+        let positions: Vec<usize> = uses
+            .iter()
+            .enumerate()
+            .filter(|(_, edge)| edge.is_operand_use())
+            .map(|(position, _)| position)
+            .collect();
+        if positions.len() < 2 {
+            return;
+        }
+        let mut selected: Vec<ValueUse> =
+            positions.iter().map(|position| uses[*position]).collect();
+        selected.sort_by(|left, right| {
+            match (left.user(), right.user()) {
+                (Some(left), Some(right)) => compare(user_value(left), user_value(right)),
+                // `is_operand_use` filtered the list, so both sides have a
+                // user by construction.
+                _ => core::cmp::Ordering::Equal,
+            }
+        });
+        for (position, edge) in positions.iter().zip(selected) {
+            uses[*position] = edge;
+        }
+    }
+
+    /// Permute this value's use list so that the use currently sitting at
+    /// position `i` moves to index `indexes[i]`. Mirrors
+    /// `LLParser::sortUseListOrder`, whose three `error(...)` arms are the
+    /// three [`UseListOrderError`] variants.
+    ///
+    /// A value with no use list (see [`Self::has_use_list`]) is accepted and
+    /// left alone, exactly as upstream's leading `if (!V->hasUseList())
+    /// return false` does.
+    pub fn sort_use_list(self, indexes: &[u32]) -> Result<(), UseListOrderError> {
+        if !self.has_use_list() {
+            return Ok(());
+        }
+        let mut uses = self.data().use_list.borrow_mut();
+        // Only the edges upstream models as `Use`s take part, and the ones
+        // that do not keep their slots — see [`ValueUse::is_operand_use`].
+        let positions: Vec<usize> = uses
+            .iter()
+            .enumerate()
+            .filter(|(_, edge)| edge.is_operand_use())
+            .map(|(position, _)| position)
+            .collect();
+        if positions.is_empty() {
+            return Err(UseListOrderError::NoUses);
+        }
+        // Upstream walks the use list keying each use by its position, and
+        // stops one use *past* what the vector can name — so `walked` is the
+        // count its `NumUses` ends on and `keyed` the size its `Order` map
+        // ends on. Both comparisons below are its own.
+        let keyed = positions.len().min(indexes.len());
+        let walked = positions.len().min(indexes.len().saturating_add(1));
+        if walked < 2 {
+            return Err(UseListOrderError::OneUse);
+        }
+        if keyed != indexes.len() || walked > indexes.len() {
+            return Err(UseListOrderError::WrongIndexCount {
+                expected: positions.len(),
+            });
+        }
+        // `Value::sortUseList` is a stable merge sort under
+        // `Order.lookup(&L) < Order.lookup(&R)`; `sort_by_key` is stable too,
+        // so a duplicated key orders the same way. The parser rejects
+        // duplicates upstream of here regardless.
+        let mut keyed_uses: Vec<(u32, ValueUse)> = indexes
+            .iter()
+            .copied()
+            .zip(positions.iter().map(|position| uses[*position]))
+            .collect();
+        keyed_uses.sort_by_key(|(index, _)| *index);
+        for (position, (_, edge)) in positions.iter().zip(keyed_uses) {
+            uses[*position] = edge;
+        }
+        Ok(())
     }
 
     /// If this value is a constant integer, its arbitrary-precision value.

@@ -1736,12 +1736,12 @@ fn replace_value_uses_with(
         .use_list
         .borrow_mut()
         .clear();
+    // Reversed, per `Value::replaceAllUsesWith` — see
+    // `ValueData::prepend_moved_uses`.
     module
         .context()
         .value_data(replacement_id)
-        .use_list
-        .borrow_mut()
-        .extend(direct_users);
+        .prepend_moved_uses(&direct_users);
     Ok(())
 }
 

@@ -4,6 +4,13 @@ The live backlog: what is known-missing, what was deliberately deferred, and
 **why** in each case. Several rustdoc comments in `crates/` point here rather
 than restating a deferral inline, so entries are written to be read cold.
 
+> **Behavioural differences from LLVM live in [`divergences.md`](divergences.md).**
+> This file is the backlog — work not done. That one is the ledger of places
+> where llvmkit is *observably* different from the vendored reference: input
+> accepted or rejected differently, different diagnostic text, different
+> printed bytes, a public query answering differently. When an entry here is
+> also a divergence, it is cross-referenced rather than duplicated.
+
 Each item cites its source — a file and symbol, an upstream reference, or the
 cycle that decided it. Items that later shipped are struck through and dated
 rather than deleted, so a reader can tell "never done" from "done, here is what
