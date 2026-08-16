@@ -1153,3 +1153,45 @@ fn a_missing_function_name_uses_upstream_text() {
         "invalid function return type"
     );
 }
+
+/// `LLParser::validateEndOfModule` runs its checks in a fixed sequence, and
+/// **the sequence is observable**: a module with two unrelated defects reports
+/// whichever one that routine reaches first. Its order is
+///
+/// 1. attribute-group merge (no diagnostic of its own)
+/// 2. `ForwardRefBlockAddresses` — `expected function name in blockaddress`
+/// 3. `dso_local_equivalent` resolution
+/// 4. `NumberedTypes` then 5. `NamedTypes`
+/// 6. `ForwardRefComdats`
+/// 7. `ForwardRefVals` — intrinsic auto-declaration, then `use of undefined
+///    value '@x'`
+/// 8. `ForwardRefMDNodes` — `use of undefined metadata`
+///
+/// llvmkit ran these in an order of its own until wave 13: metadata second,
+/// blockaddresses fourth, comdats eighth. Both pairs below therefore reported
+/// the *other* member before the reorder.
+///
+/// No single upstream `.ll` fixture pins the order — each fixture carries one
+/// defect — so this is a rule anchor against the routine, not a port. The
+/// individual messages are ported in `parser_module_level.rs` and
+/// `parser_types.rs`.
+#[test]
+fn end_of_module_checks_run_in_upstream_order() {
+    // An undefined comdat (6) beats an undefined metadata node (8).
+    //
+    // The blockaddress step (2) is deliberately not exercised here. A
+    // `blockaddress` naming an undefined function, written in a *global
+    // initializer*, never reaches llvmkit's leftover check: llvmkit defers
+    // such an initializer and re-parses it from source at end of module, and
+    // that path reports its own error rather than recording a pending
+    // blockaddress. Upstream has no deferral and reaches
+    // `ForwardRefBlockAddresses` directly. Recorded in
+    // `docs/divergences.md`; when it is closed, the pair belongs here.
+    assert_eq!(
+        header_err(concat!(
+            "@g = global i32 0, comdat($never_defined)\n",
+            "!named = !{!7}\n",
+        )),
+        "use of undefined comdat '$never_defined'"
+    );
+}

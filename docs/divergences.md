@@ -192,6 +192,85 @@ see a different answer from upstream on a value a debug record names.
 
 ---
 
+## End of module
+
+### D7 — `dso_local_equivalent` forward references are not deferred
+
+**Severity:** rejects-valid, wrong-message
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` —
+`parse_dso_local_equivalent_constant`
+
+**LLVM:** `parseValID`'s `kw_dso_local_equivalent` arm *defers* when the named
+global is absent or still a forward reference, recording it in
+`ForwardRefDSOLocalEquivalentIDs` / `…Names`. `validateEndOfModule` resolves
+both maps — IDs first, then names — with two diagnostics:
+`unknown function '<name>' referenced by dso_local_equivalent` and
+`expected a function, alias to function, or ifunc in dso_local_equivalent`.
+
+**llvmkit:** resolves eagerly through `resolve_global_name_as_ref`, so an
+unknown name fails at the reference with `use of undefined global '@f'` —
+wrong text, and at the wrong time, since it preempts every check that
+upstream orders earlier. It survives the common
+`@g = global ptr dso_local_equivalent @f` case only because global
+initializers are deferred and re-parsed wholesale; the same expression in a
+function body fails outright.
+
+**Note the upstream quirk to reproduce:** for the numbered form the `ValID`'s
+`StrVal` is empty, so the message is literally
+`unknown function '' referenced by dso_local_equivalent`.
+
+**Fix:** add the two forward-reference maps and resolve them at
+`validateEndOfModule`'s position 3, IDs before names.
+
+### D8 — A `blockaddress` in a global initializer never reaches the leftover check
+
+**Severity:** wrong-message
+**Where:** `crates/llvmkit-asmparser/src/ll_parser.rs` —
+`resolve_deferred_global_initializers`, `resolve_deferred_block_addresses`
+
+**LLVM:** `expected function name in blockaddress` fires from
+`validateEndOfModule`'s `ForwardRefBlockAddresses` guard, position 2 — before
+the type, comdat, value and metadata leftovers.
+
+**llvmkit:** an initializer containing a `blockaddress` is deferred and
+re-parsed from source at end of module, and that path reports its own error
+instead of recording a pending blockaddress. So the leftover guard is
+reachable only from a function body.
+
+**Fix:** falls out of removing the initializer deferral, which exists because
+llvmkit cannot parse a forward `blockaddress` inline.
+
+### D9 — Attribute groups are never merged, and the alignment move is half-ported
+
+**Severity:** wrong-output, model-gap
+**Where:** `crates/llvmkit-ir/src/function.rs` — `function_attr_groups`;
+`crates/llvmkit-asmparser/src/ll_parser.rs` — `parse_optional_function_suffix`
+
+**LLVM:** `validateEndOfModule`'s first step merges every referenced
+`#N` into the object's own attribute set, for five object kinds — `Function`,
+`CallInst`, `InvokeInst`, `CallBrInst`, `GlobalVariable`. In the `Function`
+arm only, an alignment that arrived as an *attribute* is moved to the
+alignment field and removed. Upstream then discards the parsed numbering:
+`AsmWriter` re-derives `#N` from `SlotTracker`'s dedup, so `attributes #7` on
+input can print as `#0`.
+
+**llvmkit:** no merge. Group ids are kept on the object and resolved lazily on
+lookup and at print time, so the input numbering round-trips. The alignment
+move exists only for *inline* attributes — mirroring upstream's other copy of
+the same hack in `parseFunctionHeader` — so `define void @f() #0` with
+`attributes #0 = { align 8 }` leaves `align` as a plain function attribute
+instead of setting the field.
+
+**Also:** an undefined `#N` is silently ignored by upstream (the
+`NumberedAttrBuilders` lookup simply misses). llvmkit likewise never errors,
+but then prints a dangling `#N` with no `attributes #N = { … }` line —
+output that does not re-parse.
+
+**Fix:** this is the item W7 blocked on, and it has to land with the
+group-*forming* half of the printer, because the merge decides what survives
+into the printed group. Brings `globalvariable-attributes.ll`'s `@g1`–`@g4`
+and `test/Bitcode/attributes.ll` with it.
+
 ## Parser
 
 ### D6 — Self-typed aliasee does not parse

@@ -1454,8 +1454,46 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             }
         }
 
-        self.validate_forward_ref_types()?;
+        // --- end of module ---
+        //
+        // The sequence below is `LLParser::validateEndOfModule`'s, in its
+        // order. **The order is part of parity**: every step here can be the
+        // one that fails, so which error a module with two unrelated defects
+        // reports is observable. llvmkit used to run these in an order of its
+        // own — metadata second, blockaddresses fourth, comdats eighth — so a
+        // module with an undefined comdat *and* an undefined metadata node
+        // reported the metadata where upstream reports the comdat, and a
+        // dangling `blockaddress` lost to an undefined type.
+        //
+        // Two llvmkit-only steps lead, each standing in for something upstream
+        // does earlier than this routine:
+        //
+        // - deferred global initializers: upstream parses an initializer
+        //   inline, so an error in one is a *parse* error and precedes every
+        //   check here.
+        // - deferred intrinsic-attribute checks: these need a function's
+        //   attribute groups merged, which is `validateEndOfModule`'s own
+        //   first step (not yet ported — see `docs/future-work.md`), so they
+        //   sit at that step's position.
+        self.resolve_deferred_global_initializers()?;
+        self.validate_deferred_intrinsic_attribute_checks()?;
 
+        // `if (!ForwardRefBlockAddresses.empty())` — before the type, comdat
+        // and value leftovers, not after.
+        self.resolve_deferred_block_addresses()?;
+        // The `NumberedTypes` then `NamedTypes` loops.
+        self.validate_forward_ref_types()?;
+        // `if (!ForwardRefComdats.empty())`.
+        self.validate_forward_ref_comdats()?;
+        // The `ForwardRefVals` loop: intrinsic auto-declaration first, then
+        // `use of undefined value '@x'`. llvmkit spreads the same work over
+        // the personality, aliasee and global-reference maps.
+        self.resolve_deferred_personality_fns()?;
+        self.resolve_deferred_alias_targets()?;
+        self.resolve_forward_ref_globals()?;
+        self.validate_forward_function_decls()?;
+        // `if (!ForwardRefMDNodes.empty())` — metadata is the *last* of the
+        // leftovers, after every value one.
         for (slot, entry) in &self.metadata_slots {
             if !entry.defined {
                 return Err(ParseError::UndefinedSymbol {
@@ -1465,15 +1503,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 });
             }
         }
-
-        self.resolve_deferred_global_initializers()?;
-        self.resolve_deferred_block_addresses()?;
-        self.resolve_deferred_personality_fns()?;
-        self.resolve_deferred_alias_targets()?;
-        self.validate_deferred_intrinsic_attribute_checks()?;
-        self.validate_forward_ref_comdats()?;
-        self.resolve_forward_ref_globals()?;
-        self.validate_forward_function_decls()?;
         // `Run` is `parseTopLevelEntities() || validateEndOfModule(...) ||
         // validateEndOfIndex()`, in that order, so an unresolved `^N` is
         // reported only once the module itself is whole.
