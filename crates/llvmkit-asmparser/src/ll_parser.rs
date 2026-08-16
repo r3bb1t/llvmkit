@@ -2355,32 +2355,18 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         mut self,
         ty: Type<'ctx, B>,
     ) -> ParseResult<llvmkit_ir::Constant<'ctx, B>> {
-        let scalar_start = matches!(
-            self.peek(),
-            Token::IntegerLit(_)
-                | Token::FloatLit(_)
-                | Token::GlobalVar(_)
-                | Token::GlobalId(_)
-                | Token::Kw(
-                    Keyword::True
-                        | Keyword::False
-                        | Keyword::Null
-                        | Keyword::Zeroinitializer
-                        | Keyword::Undef
-                        | Keyword::Poison
-                )
-        );
+        // No re-wording. `LLParser::parseStandaloneConstantValue` propagates
+        // `parseValID`, and its own `expected end of string` is a *parser*
+        // diagnostic — `ErrorPriority::Parser` — so where the lexer already
+        // recorded one (`end of file in string constant`, say) upstream's
+        // priority rule keeps the lexer's and drops the parser's. A trailing
+        // token that merely fails to lex is `Token::Error`, which
+        // `require_eof` below reports as `expected end of string` on its own.
+        // The arm that used to rewrite every `ParseError::Lex` into that
+        // message therefore both duplicated the working case and mis-worded
+        // the one upstream reports differently.
         let loc = self.loc();
-        let id = match self.parse_val_id(None, Some(ty)) {
-            Ok(id) => id,
-            Err(ParseError::Lex(_)) if scalar_start => {
-                return Err(ParseError::Expected {
-                    expected: "end of string".into(),
-                    loc: DiagLoc::span(self.loc()),
-                });
-            }
-            Err(err) => return Err(err),
-        };
+        let id = self.parse_val_id(None, Some(ty))?;
         // `LLParser::parseConstantValue` switches on the *kind* and accepts a
         // fixed set. Everything outside it — a local or global name, inline
         // asm, `[]` — is `expected a constant value`, even where
@@ -5640,7 +5626,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.expect_punct(PunctKind::RBrace, "end of metadata node")?;
                 own_metadata(self.module.metadata_tuple(operands))
             }
-            Token::SpecializedMetadata(_) | Token::MetadataVar(_) => {
+            Token::MetadataVar(_) => {
                 let kind = self.parse_md_node_after_bang(false)?;
                 own_metadata(self.module.metadata_node(kind))
             }
@@ -5662,7 +5648,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::Exclaim => {
                 self.bump()?;
                 match self.peek() {
-                    Token::LBrace | Token::SpecializedMetadata(_) | Token::MetadataVar(_) => {
+                    Token::LBrace | Token::MetadataVar(_) => {
                         let kind = self.parse_md_node_after_bang(false)?;
                         Ok(own_metadata(self.module.metadata_node(kind)))
                     }
@@ -5744,7 +5730,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 let s = self.parse_string_constant("metadata string operand")?;
                 Ok(self.module.metadata_string(s))
             }
-            Token::LBrace | Token::SpecializedMetadata(_) | Token::MetadataVar(_) => {
+            Token::LBrace | Token::MetadataVar(_) => {
                 let content = self.parse_md_node_after_bang(false)?;
                 Ok(own_metadata(self.module.metadata_node(content)))
             }
@@ -5771,11 +5757,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 self.expect_punct(PunctKind::RBrace, "end of metadata node")?;
                 Ok(llvmkit_ir::metadata::MetadataKind::Tuple { distinct, operands })
-            }
-            Token::SpecializedMetadata(name) => {
-                let kind = llvmkit_ir::metadata::SpecializedMetadataKind::from_name(name)
-                    .ok_or_else(|| self.expected("metadata type"))?;
-                self.parse_specialized_metadata_body(kind, distinct)
             }
             Token::MetadataVar(bytes) => {
                 let name = std::str::from_utf8(bytes.as_ref())
@@ -5860,7 +5841,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                     .unwrap_or_else(|| unreachable!("accepts_field just matched {field_name}"));
                 self.bump()?;
                 let value_loc = DiagLoc::span(self.loc());
-                let value = self.parse_metadata_field_value()?;
+                let value = self.parse_metadata_field_value(declared.kind())?;
                 self.check_metadata_field_value(declared, &value, value_loc)?;
                 fields.push(llvmkit_ir::metadata::MetadataField::new(field_name, value));
                 if !self.eat_punct(PunctKind::Comma)? {
@@ -6262,7 +6243,21 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
         }
     }
 
-    fn parse_metadata_field_value(&mut self) -> ParseResult<MetadataFieldValue<B>> {
+    /// Parse one `name: value` right-hand side.
+    ///
+    /// `declared` is the field's declared kind, and it is here for one reason:
+    /// upstream has no generic "metadata field value" production. Each
+    /// `LLParser::parseMDField` overload is typed, and every one opens by
+    /// checking the token kind against the one it wants — `expected DWARF
+    /// tag`, `expected emission kind`, `expected nameTable kind`,
+    /// `expected fixed-point kind`. A word matching no keyword lexes as
+    /// `Token::Error` and lands in exactly that check, so the fallthrough
+    /// below has to name the field's family rather than the syntactic
+    /// category.
+    fn parse_metadata_field_value(
+        &mut self,
+        declared: llvmkit_ir::metadata::MetadataFieldKind,
+    ) -> ParseResult<MetadataFieldValue<B>> {
         use llvmkit_ir::metadata::MetadataFieldValue;
         match self.peek() {
             Token::Kw(Keyword::Null) => {
@@ -6313,7 +6308,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                         let s = self.parse_string_constant("metadata string")?;
                         Ok(MetadataFieldValue::Metadata(self.module.metadata_string(s)))
                     }
-                    Token::SpecializedMetadata(_) | Token::MetadataVar(_) => {
+                    Token::MetadataVar(_) => {
                         let content = self.parse_md_node_after_bang(false)?;
                         Ok(MetadataFieldValue::Metadata(own_metadata(
                             self.module.metadata_node(content),
@@ -6368,7 +6363,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 }
                 Ok(MetadataFieldValue::Enum(value))
             }
-            _ => Err(self.expected("metadata field value")),
+            _ => Err(self.expected(expected_for_metadata_field_kind(declared))),
         }
     }
 
@@ -6424,7 +6419,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
     fn peek_is_di_arg_list(&self) -> bool {
         match self.peek() {
             Token::MetadataVar(bytes) => bytes.as_ref() == b"DIArgList",
-            Token::SpecializedMetadata(name) => *name == "DIArgList",
             _ => false,
         }
     }
@@ -6438,10 +6432,7 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 self.parse_di_arg_list(state)?,
             ));
         }
-        if matches!(
-            self.peek(),
-            Token::Exclaim | Token::SpecializedMetadata(_) | Token::MetadataVar(_)
-        ) {
+        if matches!(self.peek(), Token::Exclaim | Token::MetadataVar(_)) {
             let id = self.parse_metadata_attachment_operand()?;
             return Ok(DebugMetadataOperand::Metadata(id));
         }
@@ -11403,20 +11394,25 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::RBrace | Token::Kw(Keyword::Uselistorder)
         ) {
             match self.peek() {
+                // `parseBasicBlock`'s `(LabelStr|LabelID)?` prologue: a
+                // `LabelStr` fills `Name`, a `LabelID` fills `NameID`, and
+                // `defineBB` is handed whichever one the lexer produced. The
+                // split is the lexer's, so `"42":` — a `LabelStr` out of
+                // `LLLexer::LexQuote` — names a block `42` while bare `42:`
+                // numbers one.
                 Token::LabelStr(_) => {
                     let label_loc = self.loc();
                     let label = self
                         .current_label_str()
                         .ok_or_else(|| self.expected("basic-block label"))?;
                     self.bump()?;
-                    let header = if !self.label_span_is_quoted(label_loc) {
-                        numbered_label_id(&label)
-                            .map(BlockHeader::Numbered)
-                            .unwrap_or(BlockHeader::Named(label))
-                    } else {
-                        BlockHeader::Named(label)
-                    };
-                    self.parse_basic_block(state, header, label_loc)?;
+                    self.parse_basic_block(state, BlockHeader::Named(label), label_loc)?;
+                }
+                Token::LabelId(id) => {
+                    let label_loc = self.loc();
+                    let id = *id;
+                    self.bump()?;
+                    self.parse_basic_block(state, BlockHeader::Numbered(id), label_loc)?;
                 }
                 _ => {
                     // LLVM defines an unlabeled block with the next shared
@@ -11438,13 +11434,6 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
             Token::LabelStr(bytes) => std::str::from_utf8(bytes.as_ref()).ok().map(str::to_owned),
             _ => None,
         }
-    }
-
-    fn label_span_is_quoted(&self, loc: Span) -> bool {
-        usize::try_from(loc.start)
-            .ok()
-            .and_then(|idx| self.src.get(idx))
-            .is_some_and(|byte| *byte == b'"')
     }
 
     /// `parseBasicBlock`, minus its instruction loop — which lives in
@@ -13279,17 +13268,16 @@ impl<'src, 'ctx, B: ModuleBrand + 'ctx> Parser<'src, 'ctx, B> {
                 loc: DiagLoc::span(loc),
             });
         }
-        let mask = self.parse_global_value(mask_ty).map_err(|err| match err {
-            ParseError::Lex(LexError::UnknownToken { span, .. }) => ParseError::Expected {
-                expected: "valid shufflevector mask element".into(),
-                loc: DiagLoc::span(span),
-            },
-            ParseError::Expected { .. } => ParseError::Expected {
-                expected: "valid shufflevector mask".into(),
-                loc: DiagLoc::span(loc),
-            },
-            other => other,
-        })?;
+        // No re-wording of what the operand parse says. `LLParser::
+        // parseShuffleVector` propagates `parseTypeAndValue`'s failure
+        // untouched — an element that is not a value is `expected value
+        // token`, from `LLParser::parseValID`'s `default:`. The two arms that
+        // used to rewrite this into `valid shufflevector mask element` /
+        // `valid shufflevector mask` existed because llvmkit's lexer failed
+        // outright on an unlexable element and the parser had nothing to say;
+        // with `Token::Error` reaching `parse_val_id`, upstream's own message
+        // arrives on its own.
+        let mask = self.parse_global_value(mask_ty)?;
         shufflevector_mask_from_constant(mask).ok_or_else(|| ParseError::Expected {
             expected: "valid shufflevector mask".into(),
             loc: DiagLoc::span(loc),
@@ -15782,14 +15770,6 @@ enum BlockHeader {
     Implicit,
 }
 
-fn numbered_label_id(name: &str) -> Option<u32> {
-    let bytes = name.as_bytes();
-    if bytes.is_empty() || !bytes.iter().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    name.parse().ok()
-}
-
 enum LocalLhs {
     Named(String),
     Numbered(u32),
@@ -16046,6 +16026,57 @@ where
         module.variadic_function_type(return_type, parameters)
     } else {
         module.function_type(return_type, parameters)
+    }
+}
+
+/// What a `name:` field wants, when nothing usable follows the colon.
+///
+/// Upstream has no shared "metadata field value" production: `PARSE_MD_FIELDS`
+/// expands to one typed `LLParser::parseMDField` overload per field class, and
+/// each opens with a token-kind check naming its own family. This is that
+/// vocabulary, collected — the phrase is the argument to `tokError`, minus the
+/// leading `expected `.
+///
+/// The families left at the syntactic phrase are the ones whose upstream
+/// overload does not have a determinate one:
+///
+/// * `MDField`, `MDStringField`, `MDFieldList`, and the two `…OrMDField`
+///   pairs delegate to `parseMetadata` / `parseStringConstant` /
+///   `parseMDNodeVector`, whose own message depends on how far that routine
+///   got.
+/// * `ChecksumKindField` is upstream's odd one out: it reports
+///   `invalid checksum kind '…'` interpolating `Lex.getStrVal()` **even when
+///   the token kind is wrong**, so on an error token the quoted name is
+///   whatever the previous token happened to leave in `StrVal`. llvmkit does
+///   not carry a stale `StrVal`, so it cannot reproduce that string
+///   (`docs/divergences.md`).
+fn expected_for_metadata_field_kind(kind: llvmkit_ir::metadata::MetadataFieldKind) -> &'static str {
+    use llvmkit_ir::metadata::MetadataFieldKind;
+    match kind {
+        MetadataFieldKind::Unsigned { .. } => "unsigned integer",
+        MetadataFieldKind::Signed { .. } => "signed integer",
+        MetadataFieldKind::Bool => "'true' or 'false'",
+        MetadataFieldKind::ApsInt => "integer",
+        MetadataFieldKind::DwarfTag => "DWARF tag",
+        MetadataFieldKind::DwarfAttEncoding => "DWARF type attribute encoding",
+        MetadataFieldKind::DwarfVirtuality => "DWARF virtuality code",
+        MetadataFieldKind::DwarfLang => "DWARF language",
+        MetadataFieldKind::DwarfSourceLangName => "DWARF source language name",
+        MetadataFieldKind::DwarfCc => "DWARF calling convention",
+        MetadataFieldKind::DwarfMacinfoType => "DWARF macinfo type",
+        MetadataFieldKind::DwarfEnumKind => "DWARF enum kind code",
+        // Both flag overloads spell it the same way; only the *invalid*
+        // message distinguishes them.
+        MetadataFieldKind::DiFlags | MetadataFieldKind::DispFlags => "debug info flag",
+        MetadataFieldKind::EmissionKind => "emission kind",
+        MetadataFieldKind::NameTableKind => "nameTable kind",
+        MetadataFieldKind::FixedPointKind => "fixed-point kind",
+        MetadataFieldKind::Metadata { .. }
+        | MetadataFieldKind::MetadataString { .. }
+        | MetadataFieldKind::MetadataList
+        | MetadataFieldKind::SignedOrMetadata
+        | MetadataFieldKind::UnsignedOrMetadata { .. }
+        | MetadataFieldKind::ChecksumKind => "metadata field value",
     }
 }
 

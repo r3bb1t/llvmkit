@@ -19,6 +19,206 @@ cut, entries accumulate under **Unreleased**.
 > `build_int_binop_erased`, `ZExtFlags`, ...). The program's bullets are the
 > mapping to today's names; no earlier entry was rewritten to hide the change.
 
+### The parity ledger and every doc count are re-derived from the tree (LLParser parity W14d)
+
+Documentation and measurement only — no crate source changed, so there is no
+API or behavioural delta in this entry.
+
+- **Changed: `UPSTREAM.md`'s header carries a real recount**, which its own
+  warning block had been demanding since Wave 11. At this commit: **2508
+  `#[test]` functions** (2503 distinct names), **2077 rows**, **2180 distinct
+  tests with provenance**, **323 with none**, and **zero rows naming a test that
+  no longer exists**. The count agrees with the gate, which reports 2508 passed
+  across 214 test binaries.
+
+- **Changed: the recount expands group rows.** Through Wave 11 the audit matched
+  rows by looking for a `path.rs::name` reference, which skipped the 19 rows
+  covering a whole file or a named run (`(whole file)`, `(all seven)`,
+  `` `a` … `z` ``, `` `*_display_and_from_str_round_trip` ``). Those are real
+  provenance. Counting the old way at this commit gives 2037 covered / 466
+  unrowed, so **143 of the 146-row improvement is the counting fix, not new
+  rows** — the header says so rather than letting the number flatter the work.
+
+- **Changed: `CLAUDE.md`'s suite figures**, `2435 tests, 212 binaries` ->
+  `2508 tests, 214 binaries`, and its `UPSTREAM.md` summary to match the
+  recount. The trybuild figure it carries was re-derived and is unchanged: 87
+  registered fixtures (86 `compile_fail` + 1 `pass`), all 87 present on disk,
+  none unregistered.
+
+- **Added: `docs/future-work.md` records what Wave 14 leaves** — of the 516
+  exact `LLParser.cpp` message literals, 466 are covered and 50 are not, of
+  which **4 are `N/A`** (no reachable trigger) and **46 are real gaps**, each
+  classified with upstream's function and channel.
+
+- **Recorded: `-non-global-value-max-name-size` is a divergence, not a missing
+  string.** `NonGlobalValueMaxNameSize` is `cl::init(1024)` in `lib/IR/Function.cpp`,
+  not off, so LLVM truncates and then rejects a function-local name longer than
+  1024 characters where llvmkit accepts it. `getVal`'s `name is too long …`
+  fires only after that rename, so it cannot be reached until llvmkit's
+  function-local symbol table grows a name cap.
+
+- **Corrected: the program's recorded parity numbers were measured with a broken
+  tool.** The ledger generator's llvmkit-side extractor was a regex over
+  `"..."`, which desynchronizes permanently at the first lone `"` inside a `//`
+  comment — llvmkit has one in `ll_parser.rs` — and it harvested only
+  `#[error("…")]` from `llvmkit-ir`, missing the ptrauth checks that carry text
+  in a `message:` field. Both are fixed, and a template column now credits the
+  34 upstream literals llvmkit renders through one interpolated message
+  (`{opcode} constexprs are no longer supported` and two others) — and, applied
+  to the lexer section, takes `LLLexer.cpp` to **11 of 11 covered**. The
+  consequence is that the recorded "411 present / 105 missing" was never right:
+  Wave 11 re-measures at 412/104 and Waves 12-13 at 427/89, where the old tool
+  reported 335 — a 76-message "regression" that never happened.
+
+### `llvm/test/Assembler` is classified end to end, and 491 fixtures move into the corpus (LLParser parity W14c)
+
+- **Added: `docs/fixture-coverage.md`**, a per-fixture classification of all 500
+  `llvm/test/Assembler/*.ll` fixtures into `ported` (397), `blocked-model` (102,
+  each naming one of 21 catalogued gaps) or `N/A` (1). It is measured, not
+  asserted: every fixture was parsed, verified, printed, re-parsed and
+  re-printed, and every negative was matched against its own `FileCheck` lines
+  under FileCheck's substring rule, with the fixture's real check prefixes and
+  `[[@LINE±N]]` resolved. The 21 `split-file` containers are split the way
+  `llvm/utils/split-file` splits them, giving 624 units rather than 500 files.
+
+- **Changed: `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt`
+  grows from 11 rows to 502**, adding 491 byte-for-byte copies of upstream
+  fixtures (or of one `split-file` part). 307 are negatives that must be
+  rejected — 302 of them pinning upstream's own diagnostic text and 52 also
+  pinning its `<stdin>:LINE:COL:`. 192 (up from 8) are positives that must
+  parse, verify and round-trip.
+
+- **Changed: `parser_corpus.rs`** gains a `reject` status with `error=` and
+  `loc=` pins, a `config=allow-incomplete-ir` option mapping to
+  `ParserConfig::allow_incomplete_ir`, and a **round-trip stability** assertion
+  on every `pass` row: printing the module, re-parsing the print and printing
+  again must reproduce the first print byte for byte.
+
+- **Fixed (breaking, printer): named metadata now prints *before* numbered
+  metadata**, as `AssemblyWriter::printModule` does — it runs its
+  `M->named_metadata()` loop ahead of `writeAllMDNodes()`. llvmkit had the two
+  sections the other way round, which was also why 12 upstream debug-info
+  fixtures printed text that re-parsed to different metadata numbering.
+
+- **Fixed (breaking, printer): a function's `addrspace(...)` is printed whenever
+  the module's program address space is non-zero**, matching
+  `printFunction`'s `ForcePrintAddressSpace`. Printing `define ptr
+  addrspace(0) @f() addrspace(0)` under `target datalayout = "P2"` used to drop
+  the `addrspace(0)`, so the printed module re-parsed into the program address
+  space instead — a silent miscompile of the text form.
+
+### The keyword and token tables are diffed against `LLLexer.cpp`, and locked (LLParser parity W14b)
+
+- **Added: `crates/llvmkit-asmparser/tests/lexer_token_drift.rs`**, the fifth
+  drift guard, and the first to cover the lexer's own tables rather than one
+  vocabulary they carry. `lib/AsmParser/LLLexer.cpp` and
+  `include/llvm/AsmParser/LLToken.h` are now vendored under
+  `crates/llvmkit-asmparser/tablegen/llvm-22.1.4/`, and the test reads their
+  `KEYWORD` / `TYPEKEYWORD` / `INSTKEYWORD` / `DWKEYWORD` /
+  `DBGRECORDTYPEKEYWORD` macro tables, the six hand-written tails (`DIFlag`,
+  `DISPFlag`, `CSK_`, emission kind, name-table kind, fixed-point kind) and
+  the punctuation arms of `LLLexer::LexToken`. Every spelling is probed
+  through the public `Lexer`,
+  so a word routed to the *wrong* family fails as loudly as a missing one; the
+  backward direction is closed against an explicit `NON_UPSTREAM_KEYWORDS`
+  list, and the `lltok::Kind` enum itself is checked entry by entry.
+
+- **Removed (breaking): `Token::SpecializedMetadata`.** It had no `lltok`
+  counterpart and carried a hand-written list of eighteen of the thirty-two
+  `DI*` node names — a second, stale keyword table nothing cross-checked.
+  `!DIFile` was never lexed through it (`LLLexer::LexExclaim` makes that a
+  `MetadataVar`, and so does llvmkit), so the variant only ever fired on a
+  *bare* `DIFile`, which upstream lexes as `lltok::Error`. It now does here too.
+
+- **Added (breaking): `Token::LabelId(u32)`, a port of `lltok::LabelID`.**
+  llvmkit had no numeric-label token, so `42:` and `"42":` were both
+  `Token::LabelStr` and the parser rebuilt the distinction downstream by
+  re-testing the label text for digits and peeking at the source byte under
+  its span. The consequence was live: `4294967296:` built a basic block
+  *named* `4294967296` and printed it back as `"4294967296":`, where `llvm-as`
+  reports `invalid value number (too large)`. It now reports that too, and a
+  label wider than 64 bits reports `constant bigger than 64 bits detected` —
+  which gives `LexError::IntegerOverflow64` its first construction site.
+
+- **Fixed: the `cc` rewind fires where `LLLexer`'s does.** `LexIdentifier`'s
+  `// If this is "cc1234", return this as just "cc".` case tests the two source
+  bytes, so any otherwise-unknown word opening `cc` becomes `kw_cc` plus its
+  tail; llvmkit required the tail be all digits, making `ccfoo` a lex error
+  here and a calling convention there.
+
+- **Recorded: `exnref` is an llvmkit extension** (`docs/divergences.md` 103).
+  It is the one spelling the two keyword tables disagree on. LLVM 22.1.4 has no
+  `exnref` type keyword, no `Type::TypeID` for it and no `IIT_VT<exnref>`;
+  llvmkit models the type so the WebAssembly exception intrinsics get
+  well-formed signatures, and the keyword exists so that printed output
+  re-parses. Removing the keyword alone would open a print-but-not-parse hole,
+  so it stays, listed and argued for rather than silent.
+
+### The lexer stops writing diagnostics the parser is supposed to write (LLParser parity W14a)
+
+- **Added: `Token::Error`, a port of `lltok::Error`.** `LLLexer` produces one
+  at twenty-one places, and records no message at eleven of them; `LLParser`
+  answers those from the production it was in the middle of. llvmkit's lexer
+  instead failed outright with a message of its own, so every one of upstream's
+  was unreachable behind a misspelled word.
+
+- **Removed (breaking): `LexError::UnknownToken`, `LexError::StraySlash` and
+  the whole `UnknownTokenReason` enum.** The seven diagnostics they carried —
+  `no token starts with '?'`, `expected a comdat name after '$'`,
+  `'.' is a token only as part of '...'`,
+  `expected '.' in the '+'-prefixed floating-point literal`,
+  `expected hexadecimal digits after '0xK'`,
+  `expected '*' after '/' to start block comment` and
+  `unknown keyword 'nocalback'` — had no upstream counterpart and displaced
+  the ones that do. Those sites now yield `Ok(Token::Error)` with `LLLexer`'s
+  own cursor position (`TokStart+1`, or `TokStart+3` after a bad `[us]0x`
+  prefix, or `TokStart+2` after a `/` with no `*`). `LexError` is now exactly
+  the set of `LLLexer::LexError` call sites — the failures upstream *does*
+  write a message for, and ranks above the parser's via
+  `LLLexer::ErrorPriority`.
+
+- **Changed: eighteen upstream fixtures that could not be ported are now
+  ported.** All eight splits of `test/Assembler/memory-attribute-errors.ll`
+  (was five), all eleven `byref-parse-error-*.ll` (was four),
+  `invalid-inline-constraint.ll`, `uwtable-1.ll`, `uwtable-2.ll`, the
+  `invalid-component` split of `captures-errors.ll`,
+  `invalid-c-style-comment2.ll`, `invalid-specialized-mdnode.ll`,
+  `invalid-hexint.ll`, and `dbg-record-invalid-4.ll` — which now asserts
+  upstream's `expected debug record type here` instead of llvmkit's
+  `unknown keyword 'dbg_invalid'`. `invalid-c-style-comment{1,3}.ll` land
+  alongside them: they were never blocked, only unported, and the family
+  reads better whole.
+
+- **Added: a metadata field now names its own family when nothing usable
+  follows the colon.** `parse_metadata_field_value` takes the declared
+  `MetadataFieldKind` and reports what that field's `LLParser::parseMDField`
+  overload reports: `expected emission kind`, `expected nameTable kind`,
+  `expected fixed-point kind`, `expected DWARF tag`, `expected DWARF type
+  attribute encoding`, `expected DWARF virtuality code`, `expected DWARF
+  language`, `expected DWARF source language name`, `expected DWARF calling
+  convention` and `expected DWARF macinfo type` — ten strings llvmkit could
+  not produce at all before, where it said `expected metadata field value`.
+  No upstream `.ll` covers them (`test/Assembler` writes only the `invalid …`
+  triggers), so they are rule-anchored on the overloads. What each field
+  *accepts* is unchanged; `docs/divergences.md` entry 34 carries that half.
+
+- **Changed: all three `ParseError::Lex`-to-`Expected` rewrites deleted.** They
+  existed because the lexer failed where upstream hands over a token, and each
+  displaced a message.
+  - `valid shufflevector mask element` is gone — `LLParser::parseShuffleVector`
+    re-words nothing, so a bad mask element is `expected value token` from
+    `parseValID`.
+  - `parse_type`'s trailing-garbage remap is gone; the `expected end of string`
+    it produced now comes from `require_eof`, which is where `llvm::parseType`
+    gets it.
+  - `parse_constant_value`'s is gone too, and that one was also mis-wording a
+    real failure: `parse_constant_value("42 \"unterminated", …)` answered
+    `expected end of string`, burying the lexer's
+    `end of file in string constant`. Upstream's `ErrorPriority` says the
+    opposite — `parseStandaloneConstantValue`'s `expected end of string` is a
+    *parser* diagnostic and is dropped in favour of the lexer's — so the
+    lexer's message is now what surfaces.
+
 ### AutoUpgrade — the module-level half (LLParser parity W13d)
 
 - **Added: `llvmkit_ir::auto_upgrade`, a port of `llvm/lib/IR/AutoUpgrade.cpp`.**

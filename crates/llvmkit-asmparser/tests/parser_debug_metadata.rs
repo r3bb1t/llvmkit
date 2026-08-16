@@ -173,6 +173,19 @@ fn dilocation_rejects_a_field_its_class_does_not_declare() {
     assert_eq!(err.to_string(), "invalid field 'bad'");
 }
 
+/// llvmkit-specific (no upstream fixture emits it): `parseMDFieldsImpl`'s
+/// first statement is `if (Lex.getKind() != lltok::LabelStr) return
+/// tokError("expected field label here")`, and a fully-numeric label is
+/// `lltok::LabelID`, not `LabelStr` — so `!DIFile(42: 1)` fails on the *label*
+/// rather than being reported as an unknown field. llvmkit answered
+/// `invalid field '42'` until W14b, because it had no numeric-label token and
+/// `42:` arrived as a `LabelStr` named `42`.
+#[test]
+fn a_numeric_label_is_not_a_metadata_field_name() {
+    let err = parse_err("!0 = !DIFile(42: 1)\n");
+    assert_eq!(err.to_string(), "expected field label here");
+}
+
 /// Ports `test/Assembler/invalid-dilocation-field-twice.ll`, whose CHECK line
 /// is `error: field 'line' cannot be specified more than once`.
 #[test]
@@ -696,21 +709,69 @@ fn a_bool_field_rejects_a_non_boolean() {
 
 /// The three families `LLLexer` matches as **exact words** rather than by
 /// prefix — `EmissionKind`, `NameTableKind`, `FixedPointKind`
-/// (`LLLexer.cpp::LexIdentifier`). An unknown spelling never becomes one of
-/// those tokens in either implementation, so the parser's `invalid ... kind`
-/// arm is unreachable for it and the rejection happens a layer earlier.
+/// (`LLLexer::LexIdentifier`). An unknown spelling never becomes one of those
+/// tokens: it falls through to a silent `lltok::Error`, which is what makes
+/// the *`expected …`* arm of each `LLParser::parseMDField` overload the one
+/// that fires, and the `invalid … kind '…'` arm beside it dead for this input.
 ///
-/// Same accept/reject verdict as upstream, different diagnostic: `llvm-as`
-/// reaches `expected emission kind` from `parseMDField`, while llvmkit's lexer
-/// rejects the unknown keyword outright. Recorded rather than papered over.
+/// llvmkit used to answer `unknown keyword 'Bogus'` from the lexer instead, so
+/// all three messages were unreachable.
 #[test]
 fn exact_word_kind_families_reject_an_unknown_spelling() {
-    for src in [
-        "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: Bogus)\n",
-        "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, nameTableKind: Bogus)\n",
-        "!0 = !DIFixedPointType(kind: Bogus)\n",
+    for (src, expected) in [
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, emissionKind: Bogus)\n",
+            "expected emission kind",
+        ),
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: DW_LANG_C, nameTableKind: Bogus)\n",
+            "expected nameTable kind",
+        ),
+        (
+            "!0 = !DIFixedPointType(kind: Bogus)\n",
+            "expected fixed-point kind",
+        ),
     ] {
-        let _ = parse_err(src);
+        assert_eq!(parse_err(src).to_string(), expected, "for {src:?}");
+    }
+}
+
+/// The same shape for the `DW_*`-prefixed families, whose `parseMDField`
+/// overloads open with the identical token-kind check. A word matching no
+/// keyword — as opposed to a `DW_TAG_*` spelling the table does not carry,
+/// which is the `invalid …` arm — reaches the `expected …` arm.
+///
+/// Anchored on the `parseMDField` overloads for `DwarfTagField`,
+/// `DwarfLangField`, `DwarfAttEncodingField`, `DwarfVirtualityField`,
+/// `DwarfCCField` and `DwarfMacinfoTypeField`; no upstream `.ll` covers them
+/// (`test/Assembler` writes only the `invalid …` triggers), so the fixtures
+/// are llvmkit's and the expected text is upstream's verbatim.
+#[test]
+fn dwarf_kind_families_reject_a_word_that_is_no_keyword() {
+    for (src, expected) in [
+        ("!0 = !DIBasicType(tag: Bogus)\n", "expected DWARF tag"),
+        (
+            "!0 = !DIBasicType(encoding: Bogus)\n",
+            "expected DWARF type attribute encoding",
+        ),
+        (
+            "!0 = !{}\n!1 = distinct !DICompileUnit(file: !0, language: Bogus)\n",
+            "expected DWARF language",
+        ),
+        (
+            "!0 = !{}\n!1 = distinct !DISubprogram(scope: !0, virtuality: Bogus)\n",
+            "expected DWARF virtuality code",
+        ),
+        (
+            "!0 = !DISubroutineType(cc: Bogus, types: !1)\n!1 = !{}\n",
+            "expected DWARF calling convention",
+        ),
+        (
+            "!0 = !DIMacro(type: Bogus, line: 1, name: \"x\")\n",
+            "expected DWARF macinfo type",
+        ),
+    ] {
+        assert_eq!(parse_err(src).to_string(), expected, "for {src:?}");
     }
 }
 
@@ -804,25 +865,16 @@ fn a_debug_record_after_a_dbg_intrinsic_is_rejected() {
     );
 }
 
-/// Ports `test/Assembler/dbg-record-invalid-4.ll` as far as llvmkit can reach
-/// it: `#dbg_invalid` is not one of the five spellings the lexer turns into a
-/// `DbgRecordType`.
-///
-/// **Same verdict, different layer.** Upstream's `LLLexer` hands the parser a
-/// token it does not recognise and `parseDebugRecord`'s opening check answers
-/// `expected debug record type here` — the one lowercase label in an otherwise
-/// capital-`E` routine. llvmkit's lexer rejects the unknown keyword itself, so
-/// the parser never sees it. Closing the gap is the W14 lexer re-layering (a
-/// `Token::Error` variant so an unknown word can reach the parser), which the
-/// three `memory-attribute-errors.ll` splits are queued behind for the same
-/// reason. Recorded rather than papered over: the assertion below is what
-/// llvmkit *does* say, so this test starts failing the moment the layering
-/// changes and the message can be tightened.
+/// Ports `test/Assembler/dbg-record-invalid-4.ll`: `#dbg_invalid` is not one
+/// of the five spellings `LLLexer`'s `DBGRECORDTYPEKEYWORD` turns into a
+/// `DbgRecordType`, so the word reaches `parseDebugRecord` as a silent
+/// `lltok::Error` and its opening check answers `expected debug record type
+/// here` — the one lowercase label in an otherwise capital-`E` routine.
 #[test]
 fn an_unknown_debug_record_type_is_rejected() {
     assert_eq!(
         parse_err(DBG_RECORD_INVALID_4).to_string(),
-        "unknown keyword 'dbg_invalid'"
+        "expected debug record type here"
     );
 }
 

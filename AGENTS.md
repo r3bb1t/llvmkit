@@ -434,7 +434,10 @@ anchors, not as an exhaustive inventory):
     │       └── compile_fail/        # 87 trybuild fixtures (86 compile_fail + 1 pass)
     └── llvmkit-asmparser/
         ├── README.md
-        ├── tablegen/                # vendored Attributes.td (tracked; read by the drift guard)
+        ├── tablegen/                # vendored upstream sources, tracked (orig_cpp/ is not):
+        │                            #   Attributes.td, CallingConv.h, Dwarf.def,
+        │                            #   DebugInfoFlags.def, FixedMetadataKinds.def,
+        │                            #   LLLexer.cpp, LLToken.h — read by the five drift guards
         ├── src/
         │   ├── lib.rs
         │   ├── ll_lexer.rs          # LLLexer.h + LLLexer.cpp

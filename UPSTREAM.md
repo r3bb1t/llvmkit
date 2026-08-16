@@ -19,28 +19,49 @@ Categories:
 
 Reference root: `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/`.
 
-Total `#[test]` functions: 2435 (2430 distinct names). Recounted on 2026-08-15
-at the LLParser-parity Wave 11 point via the documented attribute-anchored grep
-below (`crates/llvmkit-ir` 1553 + `crates/llvmkit-asmparser` 860 +
+Total `#[test]` functions: 2508 (2503 distinct names). Recounted on 2026-08-16
+at the LLParser-parity Wave 14 point via the documented attribute-anchored grep
+below (`crates/llvmkit-ir` 1554 + `crates/llvmkit-asmparser` 932 +
 `crates/llvmkit-support` 12 + `crates/llvmkit-tablegen` 9 + `llvmkit` 1;
-`crates/llvmkit-macros` has none). The +200 over the 2235 point below is the
-LLParser-parity program's waves 0-11.
+`crates/llvmkit-macros` has none). The +273 over the 2235 point below is the
+LLParser-parity program's waves 0-14. The figure agrees with the gate: a
+`cargo +1.96.0 test --release --workspace --all-targets --all-features` run at
+this commit reports 2508 passed, 0 failed across 214 test binaries.
 
 **Registry coverage is not total, and this is the honest count.** The table
-below carries 1994 rows naming 1961 distinct tests -- the difference is rows
-for same-named tests in different files. Matching them against the tree by
-test-function name leaves **469 distinct `#[test]` functions with no row**, and
-**zero rows naming a test that no longer exists**. The gap is inherited, not
-new: it accumulated across the type-safety and pass-API programs, where whole
-test files landed without rows, and it sits in `llvmkit-ir`
-(`verifier_module_flags.rs`, `analysis_preservation.rs`, `module_brands.rs`,
-`id_roundtrip.rs`, the `phi_raw_tests/` modules, `src/pass_context.rs`,
-`src/fp_class.rs`) rather than in the parser crates, whose waves add rows per
-commit -- which is why the figure has moved by one since the Wave 9 recount
-despite 35 tests landing in between. Closing it is the `UPSTREAM.md recount`
-item of the LLParser-parity program's final wave. Until then, read a missing
-row as missing *provenance* -- not as a claim that no upstream counterpart
-exists.
+below carries **2077 rows**. 13 of them name a trybuild `compile_fail/*.rs`
+fixture rather than a `#[test]` function -- those fixtures are `fn main()`
+programs and are not part of the test-function accounting. The remaining 2064
+rows give provenance for **2180 of the 2503 distinct `#[test]` functions**,
+leaving **323 with no row** and **zero rows naming a test that no longer
+exists**.
+
+> **Methodology, because the previous header's numbers are not comparable.**
+> Through Wave 11 the audit matched rows to tests by looking for a
+> `path.rs::name` reference, which silently skipped the rows that cover a group
+> --- `` `…/module_ownership.rs` (whole file) ``,
+> `` `…/parser_vector_select.rs` (all seven) ``,
+> `` `…::is_splat_value_00` … `is_splat_value_select_binop` ``,
+> `` `…/global_value.rs` (the five `*_display_and_from_str_round_trip` tests) ``
+> and 15 more. Those rows are real provenance, so this recount expands them
+> against the file they cite. That, not a burst of new rows, is most of the
+> 469 -> 323 move: rows grew by 83, credited tests by 219. Recounting the old
+> way at this commit gives 2037 covered and 466 unrowed (2037 + 466 = 2503) ---
+> so 143 of the 146 closed are the group rows finally being credited, not new
+> provenance.
+
+The gap is inherited, not new: it accumulated across the type-safety and
+pass-API programs, where whole test files landed without rows, and it sits in
+`llvmkit-ir` (`src/pass_context.rs` 20, `src/fp_class.rs` 19,
+`constant_folding_analysis.rs` 18, `analysis_preservation.rs` 17,
+`module_brands.rs` 15, `id_roundtrip.rs` 14, `block_args_terminators.rs` 13)
+rather than in the parser crates, whose waves add rows per commit. 56 files
+contain at least one unrowed test. Until the gap closes, read a missing row as
+missing *provenance* -- not as a claim that no upstream counterpart exists.
+
+One row is stale in its sub-count rather than its target:
+`` `crates/llvmkit-asmparser/tests/dwarf_def_drift.rs` (12 tests) `` --- the
+file now holds 13.
 
 An earlier recount (2026-08-14) removed 26 rows naming tests that no longer exist, each
 traced to the commit that deleted it: the pass-API v2 cutover (`2f1f390`,
@@ -489,7 +510,15 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::slash_without_star_errors` | `lib/AsmParser/LLLexer.cpp` | mirror |
 | `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::unknown_token_for_question_mark` | `lib/AsmParser/LLLexer.cpp` | mirror |
 | `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::id_overflow_errors` | `lib/AsmParser/LLLexer.cpp` | mirror |
-| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::lex_error_carries_span` | `lib/AsmParser/LLLexer.cpp` | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::lex_error_carries_span` | `lib/AsmParser/LLLexer.cpp::LexError` / `LLLexer::getLoc`; LLVM ships no `LLLexer` unit tests, so there is no fixture to port | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::error_token_carries_span` | `lib/AsmParser/LLLexer.cpp::getLoc` (the span `LLParser::tokError` reports at); no upstream `LLLexer` unit test exists | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::silent_error_tokens::a_stray_byte_is_an_error_token` | `lib/AsmParser/LLLexer.cpp::LexToken` `default:` arm — silent `lltok::Error`; no upstream `LLLexer` unit test exists | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::silent_error_tokens::an_incomplete_sigil_is_an_error_token` | `lib/AsmParser/LLLexer.cpp::LexVar` / `LexUIntID` / `LexDollar` / `LexCaret` / `LexPositive` / `LexDigitOrNegative` silent `lltok::Error` exits | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::silent_error_tokens::a_lone_dot_is_an_error_token` | `lib/AsmParser/LLLexer.cpp::LexToken` `case '.'` | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::silent_error_tokens::a_positive_integer_is_an_error_token` | `lib/AsmParser/LLLexer.cpp::LexPositive`'s `CurPtr = TokStart+1` rewind | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::silent_error_tokens::a_hex_fp_prefix_without_digits_is_an_error_token` | `lib/AsmParser/LLLexer.cpp::Lex0x` "Bad token, return it as an error" | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::silent_error_tokens::a_bad_hex_apsint_tail_rewinds_past_the_prefix` | `lib/AsmParser/LLLexer.cpp::LexIdentifier`'s `[us]0x` block and its `CurPtr = TokStart+3` rewind | llvmkit-specific |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::silent_error_tokens::an_unknown_keyword_is_an_error_token` | `lib/AsmParser/LLLexer.cpp::LexIdentifier` final fallthrough (`CurPtr = TokStart+1; return lltok::Error;`) | llvmkit-specific |
 | `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::no_escape_borrows` | `lib/AsmParser/LLLexer.cpp` | mirror |
 | `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::escape_owns` | `lib/AsmParser/LLLexer.cpp` | mirror |
 | `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::nul_byte_is_whitespace` | `-` | mirror |
@@ -964,7 +993,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::global_variable_reference` | `test/Assembler/globalvariable.ll`; `LLParser::parseValID` `@global` resolution | mirror |
 | `crates/llvmkit-asmparser/tests/parser_value_forms.rs::function_call_global_reference` | `test/Assembler/call.ll`; `LLParser::parseCall` with `@func` callee reference | mirror |
 | `crates/llvmkit-asmparser/tests/parser_errors.rs::malformed_integer_type_rejects_width_overflow` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseType` integer width rejection | mirror |
-| `crates/llvmkit-asmparser/tests/parser_errors.rs::malformed_shuffle_mask_rejects_bad_element` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` shufflevector mask element parsing | mirror |
+| `crates/llvmkit-asmparser/tests/parser_errors.rs::malformed_shuffle_mask_rejects_bad_element` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID`'s `default:` (`expected value token`), reached through `parseShuffleVector`, which re-words nothing | mirror |
 | `crates/llvmkit-asmparser/tests/parser_errors.rs::shufflevector_rejects_non_i32_mask_type` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseShuffleVector` lines 8295-8306; `llvm/lib/IR/Instructions.cpp::ShuffleVectorInst::isValidOperands` lines 1805-1853 | mirror |
 | `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_assembly_string_round_trips_module` | `unittests/AsmParser/AsmParserTest.cpp::TEST(AsmParserTest, ParseAssemblyString)` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_facade.rs::parse_assembly_file_reads_file` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` | mirror |
@@ -1094,7 +1123,8 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_expr_gep_with_no_operands_reports_the_missing_base` | `LLParser::parseGlobalValueVector`'s empty-list early return and `parseValID`'s `Elts.size() == 0` base check | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::dso_local_equivalent_requires_a_function_referent` | `LLParser::parseValID`'s `kw_dso_local_equivalent` arm (`llvm/lib/AsmParser/LLParser.cpp`); upstream's only fixture, `test/Assembler/dso_local_equivalent.ll`, is a positive round-trip | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::captures_components_round_trip` | `LLParser::parseCapturesAttr`, `CaptureComponents` / `CaptureInfo` (`llvm/Support/ModRef.h`), and `operator<<(raw_ostream &, CaptureInfo)` which is what `Attribute::getAsString` emits; printed forms are those `test/Assembler/captures.ll` pins | mirror |
-| `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::captures_diagnostics_match_upstream_text` | `LLParser::parseCapturesAttr`'s own diagnostics, verbatim | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::captures_diagnostics_match_upstream_text` | `LLParser::parseCapturesAttr`'s own diagnostics, verbatim, including the `invalid-component` split of `test/Assembler/captures-errors.ll` (`captures(foo)`) | mirror (partial) |
+| `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::uwtable_fixtures_match_upstream_text` | `test/Assembler/uwtable-1.ll` and `uwtable-2.ll`, both verbatim, asserting their CHECK lines; `LLParser::parseFnAttributeValuePairs`'s `kw_uwtable` arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::captures_none_round_trips_as_itself` | `CaptureInfo::none` and its printing; replaces a test that asserted other components must fail to parse | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::an_ifunc_takes_metadata_attachments_but_an_alias_does_not` | `LLParser::parseAliasOrIFunc`'s `!IsAlias && Lex.getKind() == lltok::MetadataVar` property arm | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::an_ifunc_stores_but_does_not_print_the_shared_prefix_clauses` | `parseAliasOrIFunc`'s `setThreadLocalMode` / `setDLLStorageClass` / `setUnnamedAddr` applied in both branches, against `AssemblyWriter::printIFunc`, which stops after visibility | llvmkit-specific (rule anchor) |
@@ -1106,7 +1136,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_declaration_linkage_global_takes_no_initializer` | `LLParser::parseGlobal`'s `!HasLinkage \|\| !isValidDeclarationLinkage(Linkage)` guard on `parseGlobalValue` — no lookahead, so the token fails at top level | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::local_linkage_constrains_visibility_everywhere` | `test/Assembler/{internal,private}-{hidden,protected}-{alias,function,variable}.ll` — all twelve, verbatim, each asserting its CHECK line; `isValidVisibilityForLinkage` (`LLParser.cpp`) at its three call sites | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::local_linkage_constrains_dll_storage_class_everywhere` | `isValidDLLStorageClassForLinkage` (`LLParser.cpp`), checked beside the visibility one at all three sites; no upstream fixture covers it | llvmkit-specific (rule anchor) |
-| `crates/llvmkit-asmparser/tests/parser_module_level.rs::module_entity_property_diagnostics_match_upstream_text` | `LLParser::parseTargetDefinition`, `parseGlobal`, `parseAliasOrIFunc` and `parseStandaloneMetadata`, each message verbatim; triggers are keywords in the wrong place because a misspelling is intercepted by llvmkit's lexer (W14) | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_module_level.rs::module_entity_property_diagnostics_match_upstream_text` | `LLParser::parseTargetDefinition`, `parseGlobal`, `parseAliasOrIFunc` and `parseStandaloneMetadata`, each message verbatim; the triggers are keywords in the wrong place, which reach the same arms a misspelling does | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::global_sanitizer_and_code_model_round_trip` | `test/Assembler/globalvariable-attributes.ll`, the `@g5`–`@g14` half, verbatim with its CHECK lines; `LLParser::parseSanitizer` / `parseOptionalCodeModel` and `AssemblyWriter::printGlobal`. `@g1`–`@g4` need the global attribute list and the attribute-group printer (W7) | mirror (partial) |
 | `crates/llvmkit-asmparser/tests/parser_module_level.rs::a_bad_code_model_reports_upstream_text` | `LLParser::parseOptionalCodeModel`'s single `expected global code model string`, used for both failure modes; no upstream `.ll` exercises it | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::alloca_addrspace_parse_errors_match_upstream_text` | `test/Assembler/alloca-addrspace-parse-error-{0,1}.ll`, both verbatim, asserting their CHECK line; `LLParser::parseInstructionMetadata` | mirror |
@@ -1117,7 +1147,30 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/calling_conv_drift.rs::a_bare_riscv_vls_cc_swallows_the_next_token` | the double-`Lex.Lex()` in `parseOptionalCallingConv`'s `kw_riscv_vls_cc` arm — a reproduced upstream bug, recorded in `docs/future-work.md` | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/calling_conv_drift.rs::the_numeric_calling_convention_form_round_trips` | `parseOptionalCallingConv`'s `kw_cc` arm (`parseUInt32(CC)`, unbounded) | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-ir/src/calling_conv.rs::tests::max_id_does_not_bound_construction` | `MaxID` in `include/llvm/IR/CallingConv.h` documented as the bitcode bound, not a validity rule | llvmkit-specific (rule anchor) |
-| `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::byref_parse_errors_match_upstream_text` | `test/Assembler/byref-parse-error-{0,1,3,5}.ll`, asserting their CHECK texts; `LLParser::parseRequiredTypeAttr` | mirror |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::vendored_lllexer_cpp_is_parseable` | the vendored `lib/AsmParser/LLLexer.cpp` macro tables and `include/llvm/IR/Attributes.td`; guard on this file's own readers | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::llvmkit_keyword_table_is_readable` | no upstream counterpart — guard on the reverse-direction scrape of `ll_lexer/keywords.rs`, which has no enumerable API | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::every_upstream_keyword_lexes_as_a_keyword` | `LLLexer::LexIdentifier`'s `KEYWORD(...)` block plus the `ATTRIBUTE_ENUM` names `Attributes.inc` splices into it | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::every_upstream_type_keyword_lexes_as_a_type` | `LLLexer::LexIdentifier`'s `TYPEKEYWORD("...", ...)` table | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::every_upstream_instruction_keyword_lexes_as_an_opcode` | `LLLexer::LexIdentifier`'s `INSTKEYWORD(..., ...)` table | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::every_upstream_punctuation_character_lexes_to_its_own_token` | the single-character `case 'X': return lltok::Y;` arms of `LLLexer::LexToken` | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::every_upstream_dwarf_family_lexes_to_its_own_token` | `LLLexer::LexIdentifier`'s nine `DWKEYWORD(TYPE, TOKEN)` families and their `StrVal.assign(Keyword.begin(), Keyword.end())` payload | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::every_upstream_debug_record_type_lexes_with_its_suffix` | `LLLexer::LexIdentifier`'s `DBGRECORDTYPEKEYWORD(STR)` table, whose payload is `#STR` rather than the whole word | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::the_tail_prefix_families_still_match_by_prefix` | the `Keyword.starts_with("DIFlag")` / `("DISPFlag")` / `("CSK_")` arms at the tail of `LLLexer::LexIdentifier` | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::the_tail_exact_word_families_accept_exactly_upstreams_words` | the `Keyword == "..."` chains returning `lltok::EmissionKind` / `NameTableKind` / `FixedPointKind` — the only lexer word lists with no `.def` or `.td` behind them | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::llvmkit_knows_no_keyword_upstream_dropped` | the whole `LexIdentifier` exact-match vocabulary, backward: an llvmkit-only spelling makes llvmkit accept what `llvm-as` rejects | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::llvmkit_knows_every_keyword_upstream_has` | the same vocabulary, forward, as a set relation rather than per-word | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::the_extension_list_has_no_stale_entries` | no upstream counterpart — retires a `NON_UPSTREAM_KEYWORDS` entry a later LLVM adopts | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::no_upstream_keyword_is_also_claimed_by_a_prefixed_family` | `LexIdentifier`'s check order (`KEYWORD`/`TYPEKEYWORD`/`INSTKEYWORD` before the prefixed families); llvmkit inverts it, and this is what proves the inversion unobservable | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::an_unknown_word_opening_cc_rewinds_to_kw_cc` | `LexIdentifier`'s `// If this is "cc1234", return this as just "cc".` rewind (`CurPtr = TokStart+2; return lltok::kw_cc;`) | mirror |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::a_word_no_family_claims_is_an_error_token` | `LexIdentifier`'s `// Finally, if this isn't known, return an error.` tail, and `LLLexer::LexExclaim` returning `lltok::MetadataVar` for `!DIFile` | mirror |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::every_lltok_kind_has_a_llvmkit_token` | the non-`kw_` half of `lltok::Kind` in `include/llvm/AsmParser/LLToken.h` | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/lexer_token_drift.rs::the_lltok_keyword_space_matches_what_the_lexer_lexes` | the `kw_*` half of `lltok::Kind` against `LLLexer.cpp`'s `KEYWORD`/`INSTKEYWORD` tables — upstream cannot drift here, which is what makes it an anchor for this file's readers | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_numeric_label_is_not_a_metadata_field_name` | `LLParser::parseMDFieldsImpl`'s `if (Lex.getKind() != lltok::LabelStr) return tokError("expected field label here")`, reached because `42:` is `lltok::LabelID`; no upstream `.ll` emits it | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::labels::numeric_label` | `LLLexer::LexDigitOrNegative`'s fully-numeric-label arm returning `lltok::LabelID` with `UIntVal` | mirror |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::labels::quoted_numeric_label_stays_a_name` | `LLLexer::LexQuote`'s label arm, which never reaches the numeric one — `"42":` is a `lltok::LabelStr` | mirror |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::labels::numeric_label_too_large_for_unsigned` | `LexDigitOrNegative`'s `if ((unsigned)Val != Val) LexError("invalid value number (too large)")`; fatality diverges (divergence 101) | mirror (message only) |
+| `crates/llvmkit-asmparser/src/ll_lexer_tests.rs::labels::numeric_label_wider_than_64_bits` | `LLLexer::atoull`'s wraparound guard, `constant bigger than 64 bits detected`, reached through the numeric-label arm's `atoull` call | mirror (message only) |
+| `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::byref_parse_errors_match_upstream_text` | `test/Assembler/byref-parse-error-{0..10}.ll`, all eleven, each asserting its CHECK text; `LLParser::parseRequiredTypeAttr` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::attribute_argument_fixtures_match_upstream_text` | `test/Assembler/align-param-attr-error{0,2}.ll`, `allockind-missing.ll`, `invalid-attrgrp.ll`, each asserting its CHECK text | mirror |
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::a_uint32_field_reports_its_own_overflow` | `LLParser::parseUInt32`'s `expected 32-bit integer (too large)`; no upstream fixture emits it | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::argument_carrying_attributes_parse_on_a_function_header` | `LLParser::parseFunctionHeader` entering `parseFnAttributeValuePairs` with no lookahead gate; llvmkit-specific because upstream has no predicate to test | llvmkit-specific (rule anchor) |
@@ -1125,10 +1178,10 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::attribute_group_equals_grammar_round_trips` | `Attribute::getAsString`'s `InAttrGrp` arms (`lib/IR/Attributes.cpp`) and `parseEnumAttribute`'s `InAttrGroup` branches; `test/Bitcode/attributes.ll` line 598 pins `attributes #13 = { alignstack=4 }` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::attribute_group_equals_grammar_is_context_exclusive` | the same two symbols, from the rejecting side: the paren/bare forms inside a group and the equals form outside one | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::alignment_value_checks_match_upstream_text` | `LLParser::parseOptionalAlignment`, `parseOptionalStackAlignment`, `parseOptionalDerefAttrBytes`; `Value::MaximumAlignment` (`llvm/IR/Value.h`); the instruction/parameter paths are pinned upstream by `align-param-attr-error{0,1,2}.ll` and `align-inst-*.ll` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::attribute_group_diagnostics_match_upstream_text` | `LLParser::parseUnnamedAttrGrp` and `parseFnAttributeValuePairs`'s `InAttrGrp` arms; upstream's `unterminated attribute group` and `expected unwind table kind` fixtures spell their trigger with a misspelled keyword the llvmkit lexer intercepts, so the triggers here are a type keyword, an integer and EOF | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::attribute_group_diagnostics_match_upstream_text` | `LLParser::parseUnnamedAttrGrp` and `parseFnAttributeValuePairs`'s `InAttrGrp` arms, verbatim. No upstream `.ll` pins `unterminated attribute group` (a grep of `test/` finds none), so the four triggers -- a type keyword, an integer, a misspelled keyword and EOF -- are llvmkit's | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::legacy_memory_keywords_intersect` | `upgradeMemoryAttr` + `LLParser::parseFnAttributeValuePairs`'s end-of-list `addMemoryAttr` (`LLParser.cpp`), `MemoryEffectsBase::operator&=` (`llvm/Support/ModRef.h`); no upstream `.ll` CHECKs the intersection — `test/Analysis/AliasSet/argmemonly.ll` and `test/Bitcode/upgrade-masked-keep-metadata.ll` use it without a CHECK | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::legacy_memory_keyword_overwrites_explicit_memory` | the same epilogue plus `addAttributeImpl`'s replace-by-kind `std::swap` branch (`lib/IR/Attributes.cpp`); no upstream `.ll` combines a legacy keyword with an explicit `memory(...)` | llvmkit-specific (rule anchor) |
-| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::memory_access_kind_diagnostic_fires_on_keyword_input` | `LLParser::parseMemoryAttr`'s `expected access kind` arm; upstream's own trigger (`memory(argmem: foo)`) turns on a non-keyword word the llvmkit lexer intercepts, so the trigger here is a keyword | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::memory_access_kind_diagnostic_fires_on_keyword_input` | `LLParser::parseMemoryAttr`'s `expected access kind` arm, reached with a real keyword (`readonly`) rather than upstream's non-token `foo`; the upstream trigger is ported separately in `memory_attribute_errors_match_upstream_text` | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::range_attribute_shapes_round_trip` | `LLParser::parseRangeAttr` positive shapes; `range(i8 0, 0)` legality from the zero exemption in its empty-set check, and the wrapped `range(i8 1, 0)` parsing cleanly per `test/Verifier/range-attr.ll` | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::range_diagnostics_match_upstream_text` | `test/Assembler/range-attribute-invalid-range.ll` and `test/Assembler/range-attribute-invalid-type.ll`, asserting their CHECK texts; the `integer is too large for the bit width of specified type` cases have **no** upstream fixture and are derived from `LLParser::parseRangeAttr`'s `ParseAPSInt` lambda, `APSInt::APSInt(StringRef)` and `LLLexer::lexIdentifier`'s `[us]0x` rule | mirror |
 | `crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs::initializes_round_trips` | `test/Bitcode/attributes.ll`'s `@initializes` function and its CHECK line, the only fixture pinning the printed form; `Attribute::getAsString`'s `Attribute::Initializes` arm and `ConstantRangeList::print` | mirror |
@@ -1156,7 +1209,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/constants_expr.rs::blockaddress_constant_round_trips` | `test/Assembler/pr119818.ll`; `test/Assembler/uselistorder_bb.ll`; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constants_expr.rs::blockaddress_constant_uses_function_address_space` | `llvm/lib/IR/Constants.cpp::BlockAddress::get(Function*, BasicBlock*)` uses the parent function pointer type | mirror |
 | `crates/llvmkit-ir/tests/constants_expr.rs::token_none_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` `kw_none` arm; `llvm/lib/IR/AsmWriter.cpp::writeConstantInternal` | mirror |
-| `crates/llvmkit-asmparser/tests/parser_corpus.rs::parser_corpus_round_trips_checked_in_fixtures` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile`; fixture-level provenance in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_corpus.rs::parser_corpus_round_trips_checked_in_fixtures` | `llvm/lib/AsmParser/Parser.cpp::parseAssemblyFile` over 502 fixtures; fixture-level provenance in `crates/llvmkit-asmparser/tests/fixtures/parser_corpus_manifest.txt`, one row per upstream file or `split-file` part, and the classification of the whole of `llvm/test/Assembler` (500 fixtures, ported / blocked-model / N/A) in `docs/fixture-coverage.md` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_linkage_definition_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` linkage prefix | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_local_unnamed_addr_round_trips` | `test/Assembler/unnamed-addr.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` optional unnamed-address arm | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::extern_weak_declaration_with_unnamed_addr_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseFunctionHeader` declaration linkage validation | mirror |
@@ -1305,6 +1358,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_sideeffect_alignstack_round_trips` | `test/Assembler/alignstack.ll` `@test2`; `LLParser::parseCall` inline-asm modifier arms | mirror |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_inteldialect_unwind_round_trips` | `test/Bindings/llvm-c/echo.ll` `@call_inline_asm` modifier spelling with named-value/no-tail parser subset; `LLParser::parseCall` inline-asm modifier arms | llvmkit-specific subset |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_constraint_errors_match_upstream_text` | `test/Assembler/inline-asm-constraint-error.ll`, all nine `split-file` splits verbatim, each asserting its own CHECK line; the rule is `InlineAsm::verify` (`llvm/lib/IR/InlineAsm.cpp`) | port |
+| `crates/llvmkit-asmparser/tests/parser_calls.rs::a_corrupted_inline_asm_body_still_reports_the_constraint_failure` | `test/Assembler/invalid-inline-constraint.ll` (LLVM bug 24646), fixture vendored byte-identical including its stray `0x1C`; CHECK is `failed to parse constraints` from `InlineAsm::verify` via `LLParser::convertValIDToValue` | port |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_without_a_function_type_is_rejected` | `test/Assembler/invalid-untyped-metadata.ll`, fixture verbatim (LLVM bug 24645); the rule is `LLParser::convertValIDToValue`'s null-`FTy` guard | port |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::inline_asm_label_constraint_rules_are_verifier_rules` | `Verifier::verifyInlineAsmCall` (`llvm/lib/IR/Verifier.cpp`), both label rules, asserted verbatim; upstream's `inline-asm-constraint-error.ll` splits all stop at `InlineAsm::verify`, so the two fixtures are llvmkit-authored | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_calls.rs::callbr_successor_structure_round_trips` | `test/Assembler/callbr.ll` successor structure with upstream `@llvm.amdgcn.kill`; `llvm/include/llvm/IR/IntrinsicsAMDGPU.td::int_amdgcn_kill` | mirror |
@@ -1383,12 +1437,16 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_non_empty_string_field_rejects_the_empty_string` | `LLParser::parseMDField(MDStringField&)` with `EmptyIs::Error` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_bool_field_rejects_a_non_boolean` | `LLParser::parseMDField(MDBoolField&)` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_diagnostics.rs::unterminated_block_comment_matches_upstream_text` | `test/Assembler/invalid-c-style-comment0.ll` (CHECK: `error: unterminated comment`); `llvm/lib/AsmParser/LLLexer.cpp::LLLexer::SkipCComment` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_diagnostics.rs::c_style_comment_fixtures_match_upstream_text` | `test/Assembler/invalid-c-style-comment{1,2,3}.ll`, fixtures verbatim, each asserting its CHECK line; `LLLexer::LexToken`'s `case '/'` and `LLLexer::SkipCComment` | port |
+| `crates/llvmkit-asmparser/tests/parser_diagnostics.rs::an_unknown_specialized_metadata_name_matches_upstream_text` | `test/Assembler/invalid-specialized-mdnode.ll`, fixture verbatim (CHECK: `error: expected metadata type`); `LLParser::parseMetadata` | mirror |
+| `crates/llvmkit-asmparser/tests/parser_diagnostics.rs::a_malformed_hex_apsint_matches_upstream_text` | `test/Assembler/invalid-hexint.ll`, fixture verbatim (CHECK: `error: expected value token`); `LLLexer::LexIdentifier`'s `[us]0x` block and `LLParser::parseValID`'s `default:` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_diagnostics.rs::integer_bitwidth_out_of_range_matches_upstream_text` | `test/Assembler/invalid-inttype.ll` (CHECK: `error: bitwidth for integer type out of range`); `llvm/lib/AsmParser/LLLexer.cpp::LLLexer::LexIdentifier` against `IntegerType::MAX_INT_BITS` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_diagnostics.rs::hex_float_overflow_matches_upstream_text` | `test/Assembler/hex-float-overflow.ll` (both `HALF` and `BFLOAT` CHECK prefixes); `llvm/lib/AsmParser/LLLexer.cpp::LLLexer::Lex0x` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_diagnostics.rs::internal_hidden_alias_matches_upstream_text` | `test/Assembler/internal-hidden-alias.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseAliasOrIFunc` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_diagnostics.rs::ptrauth_builder_message_is_not_prefixed` | `test/Assembler/invalid-ptrauth-const1.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseValID` (`lltok::kw_ptrauth` arm) -- locks that the builder's upstream-worded message is rendered verbatim, not re-prefixed | mirror |
 | `crates/llvmkit-asmparser/tests/parser_diagnostics.rs::musttail_ellipsis_message_says_expected_once` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseParameterList` (the varargs-musttail `...` rule) -- llvmkit-specific rendering lock: the `expected ` prefix must be contributed once by `ParseError::Expected`, not also stored in the payload | llvmkit-specific |
-| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::exact_word_kind_families_reject_an_unknown_spelling` | `LLLexer.cpp::LexIdentifier`'s exact-word rules for `lltok::{EmissionKind,NameTableKind,FixedPointKind}` | llvmkit-specific |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::exact_word_kind_families_reject_an_unknown_spelling` | `LLParser::parseMDField`'s `EmissionKindField` / `NameTableKindField` / `FixedPointKindField` overloads, each `expected … kind` verbatim; reached because `LLLexer::LexIdentifier`'s exact-word rules leave an unknown spelling a silent `lltok::Error`. No upstream `.ll` covers them | llvmkit-specific (rule anchor) |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::dwarf_kind_families_reject_a_word_that_is_no_keyword` | `LLParser::parseMDField`'s `DwarfTagField` / `DwarfAttEncodingField` / `DwarfLangField` / `DwarfVirtualityField` / `DwarfCCField` / `DwarfMacinfoTypeField` overloads, each `expected …` verbatim. No upstream `.ll` covers them -- `test/Assembler` writes only the `invalid …` triggers | llvmkit-specific (rule anchor) |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::exact_word_kind_families_accept_every_spelling_the_lexer_produces` | same lexer rules, pinning the parser's C++-enum-derived tables against them (no `.def` exists for these) | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::attribute_group_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseUnnamedAttrGroup` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::function_full_header_round_trips` | `llvm/lib/AsmParser/LLParser.cpp::parseFunctionHeader` | mirror |
@@ -1487,7 +1545,7 @@ and is the number to trust going forward.
 | `crates/llvmkit-ir/tests/constant_fold.rs::commuted_desirable_binop_with_constant_expr_rhs_builds_swapped_expr` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 783-789 constant-int LHS commutation to desirable ConstantExpr | llvmkit-specific regression |
 | `crates/llvmkit-ir/tests/constant_fold.rs::insertelement_fixed_vector_replaces_lane` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldInsertElementInstruction` lines 398-438 fixed-vector in-range index rebuild behavior and undef-only poison-vector index rule | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::shufflevector_fixed_mask_selects_lanes` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldShuffleVectorInstruction` lines 448-479 individual poison-mask elements become undef; all-poison mask returns poison vector | llvmkit-specific subset |
-| `crates/llvmkit-ir/tests/constant_fold.rs::shufflevector_scalable_all_poison_mask_folds` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldShuffleVectorInstruction` lines 448-469 all-poison masks fold before scalable-vector iteration bailout | llvmkit-specific regression |
+| `crates/llvmkit-ir/tests/constant_fold.rs::shufflevector_scalable_all_poison_mask_folds` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldShuffleVectorInstruction` all-poison masks fold before scalable-vector iteration bailout | llvmkit-specific regression |
 | `crates/llvmkit-ir/tests/constant_fold.rs::insertvalue_array_replaces_element` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldInsertValueInstruction` aggregate rebuild behavior | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::undef_cast_rules_fold_to_zero_or_undef` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldCastInstruction` lines 129-136 undef cast rules | llvmkit-specific subset |
 | `crates/llvmkit-ir/tests/constant_fold.rs::fp_undef_binary_rules_fold_to_undef_or_nan` | `llvm/lib/IR/ConstantFold.cpp::ConstantFoldBinaryInstruction` lines 693-712 FP undef rules | llvmkit-specific subset |
@@ -2176,14 +2234,14 @@ and is the number to trust going forward.
 | `crates/llvmkit-asmparser/tests/parser_diagnostics.rs::unnamed_comdat_matches_upstream_text` | `test/Assembler/unnamed-comdat.ll`; `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseOptionalComdat` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::bare_comdat_borrows_the_symbols_own_name` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseOptionalComdat` (the `GlobalName`-borrowing branch) -- `test/Assembler` covers only the failing case, so the accepting half is anchored on the routine | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_module_headers.rs::declare_accepts_metadata_before_the_header` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDeclare` (the pre-header `MetadataVar` loop) and `llvm/lib/IR/AsmWriter.cpp::AssemblyWriter::printFunction` (declaration attachments after the `declare` keyword, space-separated) | mirror |
-| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::memory_attribute_errors_match_upstream_text` | `test/Assembler/memory-attribute-errors.ll` (the `missing-args`, `empty`, `unterminated`, `missing-colon` and `default-after-loc` splits); `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseMemoryAttr`. The `invalid-kind`, `other` and `invalid-access-kind` splits are not yet portable -- they hinge on a non-keyword word, which llvmkit's lexer rejects itself instead of handing the parser an error token | mirror |
+| `crates/llvmkit-asmparser/tests/parser_modifiers.rs::memory_attribute_errors_match_upstream_text` | `test/Assembler/memory-attribute-errors.ll`, all eight `split-file` splits verbatim, each asserting its own CHECK line; the rule is `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseMemoryAttr` | port |
 | `crates/llvmkit-asmparser/tests/parser_modifiers.rs::memory_attribute_tolerates_space_before_the_colon` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseMemoryAttr` (`Lex.setIgnoreColonInIdentifiers(true)`) -- `test/Assembler` writes only the unspaced form, so the routine is the anchor | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::index_lists_stop_at_trailing_metadata` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseIndexList` and `LLParser::parseGetElementPtr` (both break out of the index loop on `MetadataVar`) -- `test/Assembler` pairs neither opcode with `!dbg`, so the routines are the anchor | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_function_body.rs::alloca_accepts_every_upstream_clause_order` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseAlloc` (its comma arm branches four ways, and the element-count arm repeats the same three-way branch) -- `test/Assembler/align-inst.ll` and `alloca-addrspace*.ll` cover single clauses, not the combinations | llvmkit-specific |
 | `crates/llvmkit-asmparser/tests/parser_constants.rs::constant_select_survives_parsing_as_an_instruction` | `test/Assembler/ConstantExprFoldSelect.ll` body, parsed rather than optimized -- that fixture's RUN line is `opt -S -passes=instsimplify`, so its CHECK line is a pass result; the parser side is `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseSelect`, which ends in an unconditional `SelectInst::Create`. The folding half is covered by `crates/llvmkit-ir/tests/constant_fold.rs` through the API | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_dbg_intrinsic_after_a_debug_record_is_rejected` | `test/Assembler/dbg-record-invalid-1.ll` -- a `#dbg_value` record then a `llvm.dbg.value` call in one module; `LLParser`'s `SeenNewDbgInfoFormat` / `SeenOldDbgInfoFormat` pair | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_debug_record_after_a_dbg_intrinsic_is_rejected` | `test/Assembler/dbg-record-invalid-3.ll` -- the same mixture, call first | mirror |
-| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::an_unknown_debug_record_type_is_rejected` | `test/Assembler/dbg-record-invalid-4.ll`, ported as far as llvmkit reaches it. Same verdict, different layer: upstream's lexer hands `parseDebugRecord` a token it rejects with `expected debug record type here`, where llvmkit's lexer refuses the unknown keyword itself. Blocked on the W14 `Token::Error` re-layering, as three `memory-attribute-errors.ll` splits are | mirror |
+| `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::an_unknown_debug_record_type_is_rejected` | `test/Assembler/dbg-record-invalid-4.ll`, fixture verbatim, asserting its CHECK line `expected debug record type here` from `LLParser::parseDebugRecord`'s opening check | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_debug_record_field_that_is_not_a_metadata_node_is_rejected` | `test/Assembler/dbg-record-invalid-2.ll` and `-6.ll` -- `parseMDNode`'s fallthrough `expected '!' here` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::a_debug_record_missing_a_separator_reports_the_capital_e_label` | `test/Assembler/dbg-record-invalid-7.ll` and `-8.ll` -- `parseDebugRecord` labels every comma with a capital `E` | mirror |
 | `crates/llvmkit-asmparser/tests/parser_debug_metadata.rs::di_arg_list_round_trips_inside_a_debug_record` | `llvm/lib/AsmParser/LLParser.cpp::LLParser::parseDIArgList` and `AsmWriter.cpp::writeDIArgList`. `test/Assembler` carries `!DIArgList` only inside the `dbg-record-invalid-*` negatives, where the parse never reaches the list, so the routines are the anchor | llvmkit-specific |

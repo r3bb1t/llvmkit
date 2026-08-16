@@ -413,7 +413,6 @@ pub type ParseResult<T> = Result<T, ParseError>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ll_lexer::UnknownTokenReason;
 
     /// Ports the wording used by `LLParser::tokError("expected ...")` in
     /// `LLParser.cpp`. The Rust analogue routes the message through a
@@ -512,20 +511,24 @@ mod tests {
         assert_eq!(err.loc(), None);
     }
 
-    /// llvmkit-specific: lexer errors flow through [`ParseError::Lex`]
-    /// without re-encoding. Closest upstream anchor: `LLParser` calling
-    /// `Lex.Error(...)` and propagating through `LLParser::error`.
+    /// llvmkit-specific (**no upstream counterpart**): lexer errors flow
+    /// through [`ParseError::Lex`] without re-encoding. Closest upstream
+    /// anchor: `LLLexer::LexError` recording at `ErrorPriority::Lexer`, which
+    /// outranks the parser's own message for exactly this set of failures.
     #[test]
     fn lex_error_passes_through() {
-        let lex = LexError::UnknownToken {
-            reason: UnknownTokenReason::StrayByte { byte: b'?' },
-            span: Span::new(0, 1),
+        let lex = LexError::UnterminatedString {
+            span: Span::new(0, 4),
         };
         let err: ParseError = lex.clone().into();
         assert_eq!(err.loc().map(|l| l.span), Some(lex.span()));
-        // The reason survives the conversion rather than being flattened to a
-        // generic string, so a caller can still match on it.
-        assert!(format!("{err}").contains("no token starts with '?'"));
+        // The variant survives the conversion rather than being flattened to
+        // a generic string, so a caller can still match on it.
+        assert!(matches!(
+            err,
+            ParseError::Lex(LexError::UnterminatedString { .. })
+        ));
+        assert_eq!(format!("{err}"), "end of file in string constant");
     }
 
     /// Ports the out-of-range `iN` rejection, whose text upstream fixes in

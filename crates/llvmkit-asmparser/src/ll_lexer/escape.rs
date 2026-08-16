@@ -1,7 +1,6 @@
 //! Escape-sequence decoding for quoted names and string constants.
 //!
-//! Mirrors `UnEscapeLexed` from
-//! `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLLexer.cpp:124`.
+//! Mirrors `UnEscapeLexed` in `lib/AsmParser/LLLexer.cpp`.
 //!
 //! Rules (LangRef + LLLexer):
 //! * `\\\\` → one literal backslash byte (`b'\\'`).

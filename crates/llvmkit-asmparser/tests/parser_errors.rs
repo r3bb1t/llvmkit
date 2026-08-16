@@ -26,8 +26,14 @@ fn malformed_integer_type_rejects_width_overflow() {
     }
 }
 
-/// Mirrors `LLParser.cpp::parseValID`: a shufflevector mask element must be a
-/// valid integer literal or poison marker, never a silently substituted value.
+/// Mirrors `LLParser::parseValID`'s `default:` arm: a shufflevector mask
+/// element must be a valid value token, never a silently substituted value.
+///
+/// The message used to be llvmkit's own `valid shufflevector mask element`,
+/// re-worded from a lexer failure inside `parse_shuffle_mask`.
+/// `LLParser::parseShuffleVector` re-words nothing — it propagates
+/// `parseTypeAndValue` — and now so does llvmkit, so upstream's own text
+/// arrives.
 #[test]
 fn malformed_shuffle_mask_rejects_bad_element() {
     let err = parse_err(
@@ -38,9 +44,7 @@ entry:\n\
 }\n",
     );
     match err {
-        ParseError::Expected { expected, .. } => {
-            assert_eq!(expected, "valid shufflevector mask element")
-        }
+        ParseError::Expected { expected, .. } => assert_eq!(expected, "value token"),
         other => panic!("unexpected error variant: {other:?}"),
     }
 }

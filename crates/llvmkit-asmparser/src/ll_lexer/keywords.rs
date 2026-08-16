@@ -2,8 +2,8 @@
 //!
 //! Maps a previously-extracted identifier byte slice to the corresponding
 //! [`Token`]. Returns `None` when the slice is not a known keyword (the lexer
-//! treats that case as "must be a label or an error", per `LexIdentifier`'s
-//! tail in `LLLexer.cpp:1066-1074`).
+//! treats that case as "must be a `cc<tail>` rewind or an error", per
+//! `LLLexer::LexIdentifier`'s tail).
 //!
 //! Special-case handlers that *cannot* live in this table because they need a
 //! borrowed payload from the source buffer (or carry numeric data) are
@@ -17,11 +17,16 @@
 //! * `GNU` / `Apple` / `None` / `Default` — `NameTableKind`.
 //! * `Binary` / `Decimal` / `Rational` — `FixedPointKind`.
 //! * `[us]0x[0-9A-Fa-f]+` — APSInt-style hex literal.
-//! * `cc<digits>` rewind — emit `kw_cc` and roll back the cursor.
+//! * `cc<tail>` rewind — emit `kw_cc` and roll back the cursor.
 //!
-//! TODO(tablegen): the attribute keyword list is hand-mirrored from
-//! `orig_cpp/llvm-project-llvmorg-22.1.4/llvm/include/llvm/IR/Attributes.td`
-//! (LLVM 22.1.4). Replace with a build-time tablegen port in a later revision.
+//! The attribute keyword list is hand-mirrored from LLVM 22.1.4's
+//! `include/llvm/IR/Attributes.td`, where upstream `#include`s the generated
+//! `Attributes.inc` instead. So is every other family here — which is what
+//! `crates/llvmkit-asmparser/tests/lexer_token_drift.rs` exists to check: it
+//! reads the vendored `LLLexer.cpp` and `Attributes.td` and diffs both
+//! directions against this table. Nothing may be added below without a
+//! matching upstream entry, or an entry in that test's
+//! `NON_UPSTREAM_KEYWORDS` naming why not.
 
 use super::{Keyword, Opcode, PrimitiveTy, Token};
 
@@ -498,7 +503,8 @@ pub(super) fn classify_word(word: &[u8]) -> Option<Token<'static>> {
         b"catch" => kw(Catch),
         b"filter" => kw(Filter),
 
-        // ── Summary index keywords (LLLexer.cpp:788-877) ──
+        // ── Summary index keywords (the `// Summary index keywords.` block of
+        // `LLLexer::LexIdentifier`) ──
         b"path" => kw(Path),
         b"hash" => kw(Hash_),
         b"gv" => kw(Gv),

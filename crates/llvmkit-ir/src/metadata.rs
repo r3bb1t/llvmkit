@@ -485,7 +485,8 @@ pub enum MetadataFieldKind {
     NameTableKind,
     /// `ChecksumKindField` — `CSK_MD5` / `CSK_SHA1` / `CSK_SHA256`.
     ChecksumKind,
-    /// `FixedPointKindField` — `Unsigned` / `Signed` / `Rational`.
+    /// `FixedPointKindField` — `Binary` / `Decimal` / `Rational`, the three
+    /// spellings `DIFixedPointType::getFixedPointKind` accepts.
     FixedPointKind,
 }
 

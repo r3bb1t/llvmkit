@@ -877,6 +877,69 @@ orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp:6725 `LLPar
 
 </details>
 
+### 101. Six `LLLexer::LexError` sites are non-fatal upstream and fatal (or absent) here
+
+*lexer* — crates/llvmkit-asmparser/src/ll_lexer.rs (`lex_uint`, `LexError::IntegerOverflow64` / `IntegerOverflow128`)
+
+Found 2026-08-16 while auditing `LexError`'s call sites for W14a; not previously recorded.
+
+- **LLVM:** `LLLexer::LexError` *records* a message and returns; it does not
+  end the lex. Eleven of upstream's seventeen call sites then return
+  `lltok::Error` anyway, but six do not:
+  - `LLLexer::LexUIntID` — `invalid value number (too large)`, then
+    `UIntVal = unsigned(Val); return Token;`. `@4294967296` becomes `@0`.
+  - `LLLexer::LexDigitOrNegative`'s numeric-label arm — the same message, then
+    `return lltok::LabelID`.
+  - `LLLexer::atoull` and `LLLexer::HexIntToVal` —
+    `constant bigger than 64 bits detected` on wraparound, then `0` is
+    returned as the value.
+  - `LLLexer::HexToIntPair` and `LLLexer::FP80HexToIntPair` —
+    `constant bigger than 128 bits detected` when hexits remain, then the
+    truncated pair is used.
+
+  The recorded message carries `ErrorPriority::Lexer`, so if the parse fails
+  later for any reason it is the message reported. If the parse *succeeds*,
+  `LLParser::Run` returns false and the message is discarded — the module is
+  built from the truncated value with no diagnostic at all.
+- **llvmkit:** two different shapes, neither upstream's.
+  - The two `LexUIntID`-style sites are `Err(LexError::IdOverflow)`, which
+    aborts the parse. Same text, different fatality: llvmkit rejects input
+    `llvm-as` accepts (silently and wrongly).
+  - `IntegerOverflow128` is declared and never constructed, because llvmkit's
+    lexer stores the numeric lexeme and lets the parser decode it at the
+    destination width rather than accumulating and watching for wraparound.
+    Where upstream truncates and records, llvmkit either parses exactly or
+    reports a different, narrower error (`bitwidth for integer type out of
+    range` for `iN`).
+- **Correction, 2026-08-16 (W14b).** The `LexDigitOrNegative` numeric-label
+  bullet above was wrong about llvmkit twice over. It was not one of the "two
+  `LexUIntID`-style sites": llvmkit had **no numeric-label token at all** —
+  no `Token::LabelId`, no `lltok::LabelID` counterpart — so `42:` and `"42":`
+  were the same `Token::LabelStr` and the too-large check had nothing to run
+  on. `4294967296:` therefore built a basic block *named* `4294967296` and
+  printed it back as `"4294967296":`, where `llvm-as` reports
+  `invalid value number (too large)`. The parser reconstructed the
+  distinction downstream instead, re-testing the label text for all-digits and
+  peeking at the source byte under the span to tell a quoted `"42":` from a
+  bare one. W14b added `Token::LabelId(u32)`, which is what the numeric arm
+  now returns; `parse_function_body` matches it directly and both hacks are
+  gone. `IntegerOverflow64` gained its first construction site there too — the
+  `atoull` message for a label wider than 64 bits — so only
+  `IntegerOverflow128` remains unconstructed. The fatality half of the entry
+  is unchanged and still open: both messages abort the parse here and are
+  recorded-and-ignored upstream.
+- **Why:** not a decision — nobody had compared the `LexError(...)` call sites
+  against which of them also `return lltok::Error`. W14a's split of "the lexer
+  writes a message" from "the lexer forms no token" is what made the two
+  groups visible, and it is also what surfaced the two dead variants.
+- **Fix:** needs the error-*retention* model upstream has and llvmkit does
+  not: a single recorded diagnostic with a priority, consulted only if the
+  parse fails. That is the same missing machinery entry 32 needs, and the two
+  should land together. Reproducing the truncation without it would trade a
+  wrong rejection for a silent wrong value, which is worse. Until then the two
+  unconstructed variants should either gain their sites or be deleted — a
+  public variant nothing produces is a claim the tree does not honour.
+
 ## Accepts invalid input
 
 llvmkit accepts IR that LLVM rejects, so a malformed module survives into the rest of the pipeline.
@@ -959,6 +1022,51 @@ crates/llvmkit-asmparser/tests/parser_corpus.rs: line 99 is `CorpusStatus::Xfail
 
 </details>
 
+### 103. `exnref` is a type keyword llvmkit has and LLVM 22.1.4 does not
+
+*lexer / IR model* — crates/llvmkit-asmparser/src/ll_lexer/keywords.rs (`classify_word`), crates/llvmkit-asmparser/src/ll_token.rs (`PrimitiveTy::WasmExnRef`), crates/llvmkit-ir/src/type.rs (`TypeData::WasmExnRef`), crates/llvmkit-tablegen/src/lib.rs (`CUSTOM_IIT_WASM_EXNREF`)
+
+Found 2026-08-16 by W14b's mechanical diff of `LLLexer.cpp`'s tables; the one
+spelling the two sides disagree on, and the reason the W14 inventory's earlier
+diff missed it is that it never expanded `Attributes.inc` and read the whole
+llvmkit-only remainder as attribute keywords.
+
+- **LLVM:** there is no `exnref` in the `.ll` grammar.
+  `LLLexer::LexIdentifier`'s `TYPEKEYWORD` table holds thirteen spellings and
+  `exnref` is not among them, `Type::TypeID` has no case for it, and
+  `AsmWriter` can never print it. The name exists only in TableGen:
+  `include/llvm/CodeGen/ValueTypes.td` declares `def exnref : ValueType<0>`
+  and `IntrinsicsWebAssembly.td` uses `llvm_exnref_ty` for the
+  `int_wasm_ref_null_exn` / `table_*_exnref` family. That is itself
+  inconsistent upstream — `Intrinsics.td` gives no `IIT_VT<exnref>`, so
+  `LLVMType<exnref>`'s `IITs` filter yields the empty list and the type
+  contributes nothing to the intrinsic's encoded signature. Upstream `.ll`
+  spells these reference types as address-space pointers instead
+  (`%externref = type ptr addrspace(10)` in `test/CodeGen/WebAssembly`).
+- **llvmkit:** models the type. `llvmkit-tablegen` assigns
+  `CUSTOM_IIT_WASM_EXNREF = 54`, immediately past upstream's `IIT_V4096 = 53`,
+  so the WebAssembly intrinsic signatures come out well-formed instead of
+  silently losing an operand type; `llvmkit-ir` carries `TypeData::WasmExnRef`
+  with `Display` printing `exnref`; and the lexer matches `exnref` as a
+  `TYPEKEYWORD` so that printed output re-parses. `declare exnref
+  @llvm.wasm.ref.null.exn()` therefore parses here and does not upstream.
+- **Why:** deliberate, and kept as a unit. Dropping the *keyword* alone would
+  leave `llvmkit-ir` printing a type `llvmkit-asmparser` cannot read — a
+  print-but-not-parse hole in the parser/printer contract, which is worse than
+  the extension. Dropping the *type* means either remapping the WebAssembly
+  exception intrinsics onto `externref`/`funcref` (wrong signatures) or
+  reproducing upstream's dropped-operand encoding (wrong for a different
+  reason). Neither is a lexer decision.
+- **Fix:** if it is to be closed, it closes in `llvmkit-tablegen` and
+  `llvmkit-ir` first — pick a representation for the WebAssembly exception
+  reference that upstream also has (an address-space pointer, or a target
+  extension type), then remove `PrimitiveTy::WasmExnRef` and the keyword. The
+  keyword is the last thing to go, not the first.
+- **Guarded by:** `crates/llvmkit-asmparser/tests/lexer_token_drift.rs`'s
+  `NON_UPSTREAM_KEYWORDS`, which is the only permitted way to spell an
+  llvmkit-only keyword; `the_extension_list_has_no_stale_entries` retires the
+  entry automatically if a later LLVM adopts the spelling.
+
 ## Different diagnostic text
 
 Same verdict, different wording. Upstream's text is contractual, including its own inconsistencies.
@@ -994,75 +1102,15 @@ Claim is accurate and unchanged. (1) crates/llvmkit-asmparser/src/ll_parser.rs, 
 
 </details>
 
-### 28. Unknown debug-record type rejected by the lexer, not by parseDebugRecord
-
-*lexer / parser (LLParser parity W14)* — crates/llvmkit-asmparser/tests/parser_debug_metadata.rs:807-827; UPSTREAM.md:2149
-
-- **LLVM:** `test/Assembler/dbg-record-invalid-4.ll` CHECKs `expected debug record type here`. `LLLexer` hands `parseDebugRecord` a token it does not recognise (a silent `lltok::Error`), and `parseDebugRecord`'s opening check produces that message — the one lowercase label in an otherwise capital-`E` routine.
-- **llvmkit:** The test asserts `"unknown keyword 'dbg_invalid'"`. llvmkit's lexer rejects the unknown keyword itself, so the parser never sees the token and the upstream message is unreachable.
-- **Why:** Recorded, in the doc comment and in the `UPSTREAM.md` row: "Closing the gap is the W14 lexer re-layering (a `Token::Error` variant so an unknown word can reach the parser)". Deliberately pinned as-is so the test fails the moment the layering changes.
-- **Fix:** W14: add a `Token::Error` variant to `ll_lexer` so an unrecognised word becomes a silent error token instead of a lexer diagnostic, and move the rejection into each `parse*` routine. Then `an_unknown_debug_record_type_is_rejected` asserts `expected debug record type here`. This one change also unblocks the four items below.
-- **Correction from verification:** Substantially accurate and still present, with one wording fix. Real and unchanged: upstream's LLLexer::LexIdentifier falls through to a silent `lltok::Error` for an unrecognized word, LLLexer::LexHash returns bare `lltok::hash`, and LLParser::parseDebugRecord's opening check answers `expected debug record type here` (the one lowercase label in a routine whose other labels are capital-E). llvmkit's lexer instead rejects `dbg_invalid` itself with `unknown keyword 'dbg_invalid'`, and the ported test at crates/llvmkit-asmparser/tests/parser_debug_metadata.rs:821-827 asserts that message and passes today. Correction: the claim's phrase "the upstream message is unreachable" overstates it. llvmkit DOES implement the message, at crates/llvmkit-asmparser/src/ll_parser.rs:6003 (`return Err(self.message_at(record_loc, "expected debug record type here"))`), and it IS reachable — a probe module containing `#add(!0, !1)` (a word the lexer recognizes as a keyword, so a token does reach parse_debug_record) produces exactly `expected debug record type here`. The message is unreachable only for the unknown-word input that dbg-record-invalid-4.ll uses; it is not dead code. The blocking W14 work is likewise unstarted: no `Token::Error` variant exists in ll_token.rs, and the working tree's only asmparser changes are W12 uselistorder work in parser_use_list.rs.
-
-<details><summary>Verification evidence</summary>
-
-orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLLexer.cpp: LexHash returns `lltok::hash` unless a digit follows; LexIdentifier's final fallthrough is `CurPtr = TokStart+1; return lltok::Error;` with no diagnostic; the DBGRECORDTYPEKEYWORD macro admits only value/declare/assign/label/declare_value. LLParser.cpp: parseFunctionBody's `while (Lex.getKind() == lltok::hash)` loop consumes the `#` then calls parseDebugRecord, which opens `if (Lex.getKind() != lltok::DbgRecordType) return error(DVRLoc, "expected debug record type here");` followed by capital-E `Expected '(' here` / `Expected ',' here`. test/Assembler/dbg-record-invalid-4.ll CHECKs `error: expected debug record type here`; the vendored copy at crates/llvmkit-asmparser/tests/fixtures/upstream/dbg-record-invalid/dbg-record-invalid-4.ll is byte-identical. llvmkit side: crates/llvmkit-asmparser/src/ll_lexer.rs:994-1007 (classify_prefixed returns None for `dbg_invalid`) then :980-989 (LexError::UnknownToken{UnknownKeyword} -> "unknown keyword '{word}'"); crates/llvmkit-asmparser/src/ll_parser.rs:5988-6004 (parse_debug_record and its "expected debug record type here" arm) with call site at :10958-10969 gated on Token::Hash; crates/llvmkit-asmparser/tests/parser_debug_metadata.rs:807-827 (doc comment plus the assertion). Ran `cargo +1.96.0 test --release -p llvmkit-asmparser --test parser_debug_metadata an_unknown_debug_record_type_is_rejected` -> 1 passed, so the "unknown keyword 'dbg_invalid'" assertion holds today. Ran a temporary probe test (since deleted) parsing `#add(!0, !1)` inside a function body -> error text was exactly `expected debug record type here`, proving that parser branch is live. crates/llvmkit-asmparser/src/ll_token.rs has no `Token::Error` variant. UPSTREAM.md:2149 carries the matching provenance row with the same "same verdict, different layer" caveat. `git diff --stat crates/llvmkit-asmparser/` shows only ll_parser.rs and tests/parser_use_list.rs modified (W12 uselistorder), nothing touching this path.
-
-</details>
-
-### 29. Three of eight memory-attribute-errors.ll splits unported
-
-*parser (attributes) / lexer* — crates/llvmkit-asmparser/tests/parser_modifiers.rs:257-294
-
-- **LLVM:** `test/Assembler/memory-attribute-errors.ll` has eight splits; `memory(foo)`, `memory(other: read)` and `memory(argmem: foo)` each turn on a word matching no keyword, and upstream's `LLParser::parseMemoryAttr` reports the location/access-kind diagnostic.
-- **llvmkit:** Only five splits are ported. The other three cannot be reached: llvmkit's lexer raises `unknown keyword '...'` before `parseMemoryAttr` runs. Doc: "Same rejection, wrong layer and wrong text".
-- **Why:** Recorded — named as "the lexer-parity item recorded for the end of the parity program" (W14).
-- **Fix:** Same `Token::Error` re-layering as above; then vendor the three remaining splits under `tests/fixtures/upstream/memory-attribute-errors/` and add them to the existing table in `memory_attribute_errors_match_upstream_text`.
-
-<details><summary>Verification evidence</summary>
-
-Verified at source level and empirically; claim #46 is accurate. 1. Upstream fixture — C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/Assembler/memory-attribute-errors.ll has exactly eight RUN/split pairs: missing-args, empty, unterminated, invalid-kind (`memory(foo)`), other (`memory(other: read)`), missing-colon, invalid-access-kind (`memory(argmem: foo)`), default-after-loc. The three named in the claim are the ones whose trigger word matches no keyword; upstream expects "expected memory location (argmem, inaccessiblemem, errnomem) or access kind (...)" for the first two and "expected access kind (none, read, write, readwrite)" for the third. 2. Ported set — C:/Users/olegg/Desktop/llvmkit/crates/llvmkit-asmparser/tests/fixtures/upstream/memory-attribute-errors/ contains exactly five files: default_after_loc.ll, empty.ll, missing_args.ll, missing_colon.ll, unterminated.ll. The test at crates/llvmkit-asmparser/tests/parser_modifiers.rs:257-294 (`memory_attribute_errors_match_upstream_text`) drives those five and its doc comment states the three-split gap verbatim ("Same rejection, wrong layer and wrong text"). A repo-wide grep for `memory(foo`, `memory(other`, `argmem: foo`, `invalid-kind`, `invalid-access-kind` outside orig_cpp finds no other port — only that doc comment plus UPSTREAM.md:2142 recording the same gap. 3. Mechanism — upstream LLLexer::LexIdentifier ends with `CurPtr = TokStart+1; return lltok::Error;` (silent, no message; llvm/lib/AsmParser/LLLexer.cpp), so LLParser reports. llvmkit's equivalent fallthrough at crates/llvmkit-asmparser/src/ll_lexer.rs:985-989 returns `Err(LexError::UnknownToken { reason: UnknownTokenReason::UnknownKeyword { word }, span })`, and the parser's `bump()` (crates/llvmkit-asmparser/src/ll_parser.rs:1935-1939) maps any lex error straight into a ParseError — there is no `Token::Error` variant in ll_token.rs to recover through. Both upstream messages are in fact implemented in llvmkit at crates/llvmkit-asmparser/src/ll_parser.rs:10129-10135; the non-keyword trigger just never reaches them (the access-kind arm is exercised instead by the llvmkit-specific keyword trigger `memory(argmem: readonly)` at parser_modifiers.rs:398). 4. Empirical check on the current working tree — `cargo +1.96.0 run --release -p llvmkit-asmparser --example parse_file` on each of the three inputs: - `declare void @fn() memory(foo)` -> `1:27: unknown keyword 'foo'` - `declare void @fn() memory(other: read)` -> `1:27: unknown keyword 'other'` - `declare void @fn() memory(argmem: foo)` -> `1:35: unknown keyword 'foo'` None produces the upstream parseMemoryAttr diagnostic. One wording nit (does not change the substance): the lexer error surfaces while parse_memory_attribute_body is already running — the token after `(` is lexed by `eat_punct(LParen)`'s `bump()` — rather than strictly "before parseMemoryAttr runs"; the effect is the same, the error escapes before the location/access-kind arm can report.
-
-</details>
-
-### 30. invalid-inline-constraint.ll unported behind the same lexer blocker
-
-*parser (calls / inline asm)* — crates/llvmkit-asmparser/tests/parser_calls.rs:72-78
-
-- **LLVM:** `test/Assembler/invalid-inline-constraint.ll` pins `failed to parse constraints` from `LLParser::convertValIDToValue`; its body is deliberately corrupted past the call and upstream's lexer returns a silent `lltok::Error` there.
-- **llvmkit:** Not ported. llvmkit's lexer raises `unknown keyword 'ounwi'` before the parser can report. The nine splits of the sibling `inline-asm-constraint-error.ll` are ported and do pass.
-- **Why:** Recorded: "Same blocker as three splits of `memory-attribute-errors.ll`; see the lexer-parity item recorded for the end of the parity program."
-- **Fix:** W14 `Token::Error`; then add the fixture as a tenth entry in `inline_asm_constraint_errors_match_upstream_text`'s `SPLITS` table.
-
-<details><summary>Verification evidence</summary>
-
-Claim confirmed on every point, including the exact error string. 1. Not ported. A repo-wide grep for "invalid-inline-constraint" (excluding orig_cpp) returns exactly one hit: the doc comment at C:\Users\olegg\Desktop\llvmkit\crates\llvmkit-asmparser\tests\parser_calls.rs:72-78, whose text matches the claim verbatim. There is no fixture file, no include_bytes!, and no UPSTREAM.md row. C:\Users\olegg\Desktop\llvmkit\crates\llvmkit-asmparser\tests\fixtures\upstream\inline-asm-constraint-error\ contains the nine sibling splits (parse-fail, input-before-output, input-after-clobber, must-return-void, cannot-be-struct, incorrect-struct-elements, incorrect-arg-num, label-after-clobber, output-after-label) matching the 9 "not llvm-as" RUN lines of the upstream file, and `cargo +1.96.0 test -p llvmkit-asmparser --release --test parser_calls inline_asm_constraint_errors_match_upstream_text` passes (1 passed, 0 failed) -- so "the nine splits are ported and do pass" is also accurate. 2. The blocker is real and reproduced at runtime. I copied orig_cpp\llvm-project-llvmorg-22.1.4\llvm\test\Assembler\invalid-inline-constraint.ll byte-for-byte into a temporary integration test in crates\llvmkit-asmparser\tests\ and ran it on +1.96.0 --release. llvmkit's parse_module() returned exactly `unknown keyword 'ounwi'`, not `failed to parse constraints`. (Temp files deleted afterward; git status clean of them.) 3. Mechanism on the llvmkit side. crates\llvmkit-asmparser\src\ll_parser.rs:12993 -- parse_call does expect_punct(PunctKind::LParen/RParen...), and the RParen bump() lexes the following token, which is `ounwi`. The inline-asm callee is only resolved at resolve_direct_callee (line 13046) and the constraint check lives behind it, so the lex error preempts it. crates\llvmkit-asmparser\src\ll_lexer.rs:980-989 is the site: it rewinds `self.pos = self.tok_start + 1` (upstream's cursor behavior) but returns `Err(LexError::UnknownToken { reason: UnknownKeyword { word }, span })`. The UnknownTokenReason doc at ll_lexer.rs:97-103 states the divergence explicitly: "LLLexer returns a bare lltok::Error at every one of these sites and records no message." 4. Mechanism on the upstream side, confirming LLVM does reach the message. lib/AsmParser/LLLexer.cpp LexIdentifier's final fallthrough is `CurPtr = TokStart+1; return lltok::Error;` with no LexError() call -- genuinely silent, as claimed. lib/AsmParser/LLParser.cpp parseCall then calls parseFnAttributeValuePairs(FnAttrs, FwdRefAttrGrps, /*InAttrGrp=*/false, BuiltinLoc); inside it, `tokenToAttribute(Token)` yields Attribute::None and, because !InAttrGrp, the loop takes `break` and returns HaveError == false rather than erroring. Control reaches convertValIDToValue, whose `case ValID::t_InlineAsm:` arm runs `if (Error Err = InlineAsm::verify(ID.FTy, ID.StrVal2)) return error(ID.Loc, toString(std::move(Err)));`, and the string itself is `return makeStringError("failed to parse constraints")` at lib/IR/InlineAsm.cpp:282. Minor provenance nuance, not a correction: the claim attributes the message to LLParser::convertValIDToValue, which is the reporting site; the literal text originates in InlineAsm::verify. llvmkit's own crates\llvmkit-ir\src\inline_asm.rs:685 (and its comment at :381) attributes it the same way, so the claim's phrasing follows the codebase's own convention.
-
-</details>
-
-### 31. captures(bogus) diagnostic unreachable
-
-*parser (attributes)* — crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs:496-507
-
-- **LLVM:** `LLParser::parseCapturesAttr` answers `expected one of 'none', 'address', 'address_is_null', 'provenance' or 'read_provenance'` for any unrecognised component word, including `captures(bogus)`.
-- **llvmkit:** `captures(bogus)` never reaches the arm — the lexer answers `unknown keyword 'bogus'`. The test substitutes `captures()`, which reaches the arm only because `)` is a token the parser sees.
-- **Why:** Recorded inline: "Blocked on the same lexer re-layering as three splits of `memory-attribute-errors.ll`."
-- **Fix:** W14 `Token::Error`; then add `parse_err("captures(bogus)")` alongside the existing `captures()` assertion.
-
-<details><summary>Verification evidence</summary>
-
-Confirmed on all three legs, plus an empirical run. (1) llvmkit test, unchanged at the cited location: crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs:496-507 still carries the comment "`captures(bogus)` would pin the same message, but a word matching no keyword never reaches the parser: llvmkit's lexer raises `unknown keyword 'bogus'` where upstream returns a silent error token" and asserts the message via `captures()` instead. (2) Mechanism, read in source: crates/llvmkit-asmparser/src/ll_parser.rs:9928-9932 holds the `_ =>` arm with the exact upstream string. But `expect_punct(PunctKind::LParen, "'('")` at line 9887 calls `bump()` (line 1935-1939), which does `self.lex.next_token().map_err(map_lex_error)?` — it lexes the token *after* `(`. crates/llvmkit-asmparser/src/ll_lexer.rs:985-989 makes an unrecognised word `Err(LexError::UnknownToken { UnknownKeyword })`, rendered transparently by `ParseError::Lex` (parse_error.rs:163-164). So the error escapes from `expect_punct` before the component loop's first iteration; the arm is unreachable for any word token. (3) Empirical: built a temporary probe test in crates/llvmkit-asmparser/tests/ (since deleted) and ran `cargo +1.96.0 test -p llvmkit-asmparser --release`. Output: `captures(foo)` => "unknown keyword 'foo'"; `captures(bogus)` => "unknown keyword 'bogus'"; `captures()` => "expected one of 'none', 'address', 'address_is_null', 'provenance' or 'read_provenance'". Exactly the claimed split. (4) Upstream side: orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/AsmParser/LLParser.cpp:3282-3284 (`parseCapturesAttr`) emits that tokError from the `else` of the four `EatIfPresent` component tests, so an `lltok::Error` token lands there. LLLexer.cpp:1072-1074 is the fallthrough that produces that silent error token (`CurPtr = TokStart+1; return lltok::Error;`) with no message of its own. And orig_cpp/.../llvm/test/Assembler/captures-errors.ll lines 40-45 pin it directly: `define void @test(ptr captures(foo) %p)` expecting `<stdin>:43:32: error: expected one of 'none', 'address', 'address_is_null', 'provenance' or 'read_provenance'`, column 32 being the start of `foo`. Two refinements that do not change the claim's substance: upstream's fixture spells the unrecognised word `foo`, not `bogus` (`bogus` is llvmkit's own placeholder in the comment); and that fixture, test/Assembler/captures-errors.ll, has no row anywhere in the repo's .md files (grep for "captures-errors" and "invalid-component" across *.md returns nothing), so the untestable split is recorded only in this inline test comment.
-
-</details>
-
 ### 32. Attribute-group reference error is fatal here, non-fatal upstream
 
 *parser (attribute groups)* — crates/llvmkit-asmparser/tests/parser_attribute_matrix.rs:899-935
 
 - **LLVM:** `LLParser::parseUnnamedAttrGrp` reports `cannot have an attribute group reference in an attribute group` non-fatally — it keeps parsing and accumulates further diagnostics.
-- **llvmkit:** llvmkit reports the first and stops. The message text matches; the recovery does not. The same doc also notes that `unterminated attribute group`'s upstream trigger (a misspelled keyword) is intercepted by llvmkit's lexer, so the test substitutes a type keyword, an integer, and end-of-file.
+- **llvmkit:** llvmkit reports the first and stops. The message text matches; the recovery does not.
+- **Superseded, 2026-08-16 (W14a):** the second half of this entry — that a misspelled keyword is intercepted by llvmkit's lexer, so `unterminated attribute group` had to be triggered with a type keyword, an integer and end-of-file — is closed. A misspelled keyword now arrives as `Token::Error` and is a fourth trigger in `attribute_group_diagnostics_match_upstream_text`. The evidence block below predates that and says otherwise. (Separately: no upstream `.ll` pins `unterminated attribute group` at all, so "upstream's trigger" was itself a wrong premise.)
 - **Why:** Recorded — "the same choice already recorded for the position diagnostics", i.e. llvmkit's parser is fail-fast by design where upstream accumulates.
-- **Fix:** Either accept it as a documented global policy (then say so once, in `AGENTS.md`, rather than per-test) or give `ParseError` an accumulating mode so multi-diagnostic fixtures can be ported whole. The lexer half rides on the W14 `Token::Error` change.
+- **Fix:** Either accept it as a documented global policy (then say so once, in `AGENTS.md`, rather than per-test) or give `ParseError` an accumulating mode so multi-diagnostic fixtures can be ported whole.
 - **Correction from verification:** The divergence is real and still present, but one phrase is imprecise: upstream does NOT "accumulate further diagnostics" in the sense of retaining a list. `LLLexer::ErrorInfo` (LLLexer.h) holds exactly one `SMDiagnostic &Error` plus an `ErrorPriority`, and `LLLexer::Error` is `if (Priority < ErrorInfo.Priority) return; ErrorInfo.Error = ...`. Every `LLParser::error` goes through `Lex.ParseError` at `ErrorPriority::Parser`, so an equal-priority later error is NOT less-than and therefore OVERWRITES the earlier one. `HaveError` is only a bool that forces the eventual `return true`. Corrected statement: `LLParser::parseFnAttributeValuePairs` reports `cannot have an attribute group reference in an attribute group` non-fatally (`HaveError |= error(...)`, then `Lex.Lex(); continue;`) and keeps parsing the rest of the group, so the message the user finally sees is the LAST parser diagnostic the group produced, not this one. llvmkit returns `Err` at the first `#N` and stops, so it always reports THIS message. The consequence is sharper than "the recovery does not match" — it is an observable message-text divergence on inputs with a second fault: for `attributes #0 = { #1 i32 }` upstream ends at `unterminated attribute group` (the `Attr == Attribute::None` + `InAttrGrp` arm overwrites), while llvmkit reports `cannot have an attribute group reference in an attribute group` (confirmed empirically). Two lesser notes: (a) the test actually spans lines 899-955, not 899-935 — the cited range stops mid-test after the fifth assert; (b) the doc's "upstream's fixture spells it with a misspelled keyword" is not backed by a fixture I could locate — `test/Assembler/invalid-attrgrp.ll` is the only attrgrp fixture and it pins only `expected attribute group id`; no `.ll` under `test/Assembler` pins `unterminated attribute group` or the attrgrp-reference message at all. The *mechanism* described is nonetheless correct.
 
 <details><summary>Verification evidence</summary>
@@ -1071,31 +1119,48 @@ UPSTREAM (C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/ll
 
 </details>
 
-### 33. Lexer reports unknown keywords itself instead of returning an error token
+### 34. A metadata field accepts values its `parseMDField` overload rejects (plan divergence #2, residual)
 
-*lexer* — crates/llvmkit-asmparser/src/ll_lexer.rs, crates/llvmkit-asmparser/src/ll_token.rs:22, crates/llvmkit-asmparser/src/ll_lexer/keywords.rs, crates/llvmkit-asmparser/src/ll_parser.rs
+**Severity:** accepts-invalid
 
-- **LLVM:** `LLLexer::LexIdentifier` (and its siblings) return a silent `lltok::Error` token on an unrecognised word; the *parser* then emits the message for the construct it was reading — `LLParser::parseMemoryAttr`, `parseOptionalCaptures`, `parseFnAttributeValuePairs`, `parseDIExpressionBody`, the debug-record parser, and every `parseMDField` kind overload.
-- **llvmkit:** `ll_lexer.rs` returns `Err(LexError)` (e.g. `unknown keyword 'x'`) which propagates out immediately; `Token` has no `Error` variant, so the parser can never say what it wanted. Verified: `enum Token` at ll_token.rs:22 has no `Error` arm.
-- **Why:** Recorded: this is a structural re-layering, not a wording fix, and it was deferred to W14 from W0 onwards. The handoff calls it "the single highest-leverage item left — roughly a third of the remaining ledger gap". The same bullet also owns the seven llvmkit-invented lexer diagnostics (StraySlash, StrayByte, IncompleteSigil, LoneDot, PositiveFpWithoutPoint, HexFpWithoutDigits, UnknownKeyword) that W0 explicitly refused to fix in place.
-- **Fix:** Add `Token::Error` (carrying the offending span/text), make the lexer emit it instead of `Err`, and let each parser routine's existing `_ => break`/default arm produce upstream's message. Then finish `parser_modifiers.rs::memory_attribute_errors_match_upstream_text` and port the queued fixtures: three `memory-attribute-errors.ll` splits (`memory(foo)`, `memory(other: read)`, `memory(argmem: foo)`), `invalid-inline-constraint.ll`, `invalid-hexint.ll`, `uwtable-{1,2}.ll`, seven `byref-parse-error-*.ll`, `dbg-record-invalid-4.ll` (`#dbg_invalid`), and `captures(bogus)`.
-- **Correction from verification:** Substantively accurate; two details need refinement. (1) The upstream captures parser is `LLParser::parseCapturesAttr` (LLParser.cpp:3240), not `parseOptionalCaptures`. (2) "the parser can never say what it wanted" is true as the architecture but has two hand-rolled exceptions where llvmkit re-maps a `ParseError::Lex` into an `Expected`: ll_parser.rs:1991 (constant value -> "end of string") and ll_parser.rs:12622 (`ParseError::Lex(LexError::UnknownToken { span, .. }) => ParseError::Expected { expected: "valid shufflevector mask element" }`). Otherwise exact: `Token` has no `Error` arm, `lex_identifier` returns `Err(LexError::UnknownToken { reason: UnknownKeyword, .. })`, and upstream's `LLLexer` returns a silent `lltok::Error` (22 sites, no message) that `LLParser` never names (0 references to `lltok::Error` in LLParser.cpp) and instead lets each production's own `tokError` describe.
+*metadata parser* — crates/llvmkit-asmparser/src/ll_parser.rs (`check_metadata_field_value`)
 
-<details><summary>Verification evidence</summary>
-
-crates/llvmkit-asmparser/src/ll_token.rs: `pub enum Token<'src>` opens at line 22; a grep for "Error" across the file returns only doc-comment prose, no variant. The only `Token::Error` text anywhere under crates/ is a comment at tests/parser_debug_metadata.rs:816 describing the variant as missing. crates/llvmkit-asmparser/src/ll_lexer.rs:985-989 — `lex_identifier`'s final fallthrough constructs `UnknownTokenReason::UnknownKeyword { word }`, rewinds `self.pos = self.tok_start + 1`, and returns `Err(LexError::UnknownToken { reason, span })`; line 130 renders it as `unknown keyword '{word}'`; the doc comment at lines 97-103 says this "has no upstream counterpart, deliberately" because LLLexer records no message. crates/llvmkit-asmparser/src/ll_parser.rs:10108-10155 — `parse_memory_attribute_body` carries upstream's exact "memory location (argmem, inaccessiblemem, errnomem) or access kind..." string, but reaching it requires the offending word to already be a token, so an unknown keyword dies in the preceding `eat_punct(...)?`. Upstream: orig_cpp/.../llvm/lib/AsmParser/LLLexer.cpp `LLLexer::LexIdentifier` (line 495) ends `// Finally, if this isn't known, return an error. CurPtr = TokStart+1; return lltok::Error;` — 22 `return lltok::Error` sites in the file, none with a message; include/llvm/AsmParser/LLToken.h:21 declares the bare `Error` kind; `grep -c "lltok::Error" lib/AsmParser/LLParser.cpp` returns 0, and the named productions all exist and emit their own text (`parseMemoryAttr` 2581 with "expected memory location…"/"expected access kind…", `parseFnAttributeValuePairs` 1692, `parseDIExpressionBody` 6257, `parseDebugRecord` 7164 with "expected debug record type here", `parseMDField` overloads 4917-5239 with "expected DWARF tag"/"expected DWARF language"/etc.). The repo itself still tracks this as open, not closed: docs/future-work.md:451-478, UPSTREAM.md:2149, and comments in parser_attribute_matrix.rs:496-501, parser_modifiers.rs:264, parser_module_level.rs:378 and :726, parser_calls.rs:75, parser_debug_metadata.rs:814-825 all cite it as blocked on the W14 `Token::Error` re-layering.
-
-</details>
-
-### 34. Exact-word metadata kind families are rejected one layer too early (plan divergence #2)
-
-*lexer / metadata parser* — crates/llvmkit-asmparser/src/ll_lexer/keywords.rs, crates/llvmkit-asmparser/src/ll_parser.rs (`parse_metadata_field_value`)
-
-- **LLVM:** The `LLParser::parseMDField` overloads for the emission-kind, name-table-kind and fixed-point-kind fields receive an ordinary identifier/error token and reject it themselves with `expected emission kind` / `expected nameTable kind` / `expected fixed-point kind`.
-- **llvmkit:** The lexer hard-rejects any spelling outside its keyword table in those positions, so llvmkit answers with its own `unknown keyword '...'` and upstream's three messages are unreachable.
-- **Why:** Recorded: W11 states plainly that "Bullet 2 (divergence #2, the exact-word kind families) stays blocked" behind the `Token::Error` re-layering. Same root cause as the entry above, but it is tracked as its own named divergence with its own message set.
-- **Fix:** Falls out of `Token::Error`: pass the unknown spelling through as a plain identifier/error token and let the three field parsers reject it with upstream's text. Applies to any other exact-word family the lexer currently owns.
-- **Correction from verification:** REAL and still present, but the description is imprecise in three ways and understates the impact in a fourth. Corrected statement: (1) Mechanism. Both lexers carry the *same* word lists — upstream `LLLexer::LexIdentifier` matches `NoDebug|FullDebug|LineTablesOnly|DebugDirectivesOnly`, `GNU|Apple|None|Default`, `Binary|Decimal|Rational` exactly as llvmkit does. The divergence is not that llvmkit's table is narrower "in those positions"; it is that llvmkit's lexer signals an unrecognized word *anywhere* as `Err(LexError::UnknownToken { UnknownKeyword })`, aborting the parse, where upstream returns a `lltok::Error` **token** that flows to the parser and gets described by the surrounding production. This is the generic `Token::Error` re-layering gap, observed here. (2) Location. The three word lists are in `crates/llvmkit-asmparser/src/ll_lexer.rs`, `Lexer::classify_prefixed` (lines 1060-1067) — not in `ll_lexer/keywords.rs`, which only names them in a module doc comment (lines 17-18). The rejecting arms are in `ll_parser.rs::check_metadata_field_value` (lines 5770-5773 via the `keyword` closure at 5652), not `parse_metadata_field_value` (line 5799), which merely turns the token into `MetadataFieldValue::Enum`. (3) The relationship is exactly inverted, not merely "one message unreachable". Upstream's reachable message is `expected <family> kind`; its `invalid <family> kind '...'` arms are dead, because the lexer word lists are byte-identical to the `StringSwitch` cases in `DICompileUnit::getEmissionKind` / `getNameTableKind` / `DIFixedPointType::getFixedPointKind`. llvmkit has no `expected ... kind` message at all, and its `invalid ... kind '...'` — upstream's dead arm — is the reachable one, fired when a *differently-lexed* token lands in the slot. (4) Understated: this is not only a diagnostic difference. llvmkit **accepts IR that upstream rejects**, because the `keyword` closure falls through with `_ => Ok(())` for every non-`Enum` value and the kind has no `max`. `emissionKind: null`, `emissionKind: "x"`, `nameTableKind: null`, and `emissionKind: 99` all parse and round-trip cleanly in llvmkit; upstream rejects the first three with `expected emission kind` / `expected nameTable kind` and the fourth with `value for 'emissionKind' too large, limit is 3` (`EmissionKindField : MDUnsignedField(0, DICompileUnit::LastEmissionKind)`).
+- **Closed half (W14a):** the diagnostic half of this entry is gone. A word
+  matching no keyword now lexes as `Token::Error` and reaches the field
+  parser, so `emissionKind: Bogus` / `nameTableKind: Bogus` /
+  `!DIFixedPointType(kind: Bogus)` answer `expected emission kind` /
+  `expected nameTable kind` / `expected fixed-point kind`, and the sibling
+  `DW_*` families answer their own `expected …` the same way. Pinned by
+  `parser_debug_metadata.rs::exact_word_kind_families_reject_an_unknown_spelling`
+  and `::dwarf_kind_families_reject_a_word_that_is_no_keyword`.
+- **LLVM:** each `LLParser::parseMDField` overload is *typed*: the token must
+  be `lltok::APSInt` or the one kind that overload wants. Anything else —
+  `null`, a string, a metadata reference — is `expected <family>`, and an
+  integer past the field's `Max` is `value for '<name>' too large, limit is
+  <max>`.
+- **llvmkit:** the value is parsed first and validated afterwards, and
+  `check_metadata_field_value`'s `keyword` closure only rejects an `Enum`
+  spelling its table does not carry (`_ => Ok(())` for everything else), with
+  no `max` on the kind families. So `emissionKind: null`, `emissionKind: "x"`,
+  `nameTableKind: null` and `emissionKind: 99` all parse and round-trip, where
+  upstream rejects the first three with `expected emission kind` /
+  `expected nameTable kind` and the fourth with `value for 'emissionKind' too
+  large, limit is 3` (`EmissionKindField : MDUnsignedField(0,
+  DICompileUnit::LastEmissionKind)`).
+- **Why:** parse-then-validate is llvmkit's own shape for `PARSE_MD_FIELDS`,
+  and narrowing what each field *accepts* changes round-tripping, not just
+  wording. `expected_for_metadata_field_kind` (`ll_parser.rs`) already carries
+  the per-family phrase for the no-value-at-all case; the acceptance rule is
+  the part still outstanding.
+- **Fix:** make `parse_metadata_field_value` typed the way upstream's
+  overloads are — accept only `APSInt` plus the family's own token, and route
+  the range check through `MDUnsignedField`'s `Max` for the kind families
+  rather than leaving it unbounded.
+- **Note on `ChecksumKindField`:** upstream's is the one overload that reports
+  `invalid checksum kind '<Lex.getStrVal()>'` even when the *token kind* is
+  wrong, so on an error token it quotes whatever the previous token left in
+  `StrVal`. llvmkit carries no stale `StrVal` and cannot reproduce that
+  string; it answers `expected metadata field value` instead.
 
 <details><summary>Verification evidence</summary>
 
@@ -1184,6 +1249,37 @@ C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/lib/Asm
 
 </details>
 
+### 102. The shufflevector *mask* half reports an invented message
+
+**Severity:** wrong-message
+
+*parser — vector instructions* — crates/llvmkit-asmparser/src/ll_parser.rs (`parse_shuffle_mask`)
+
+Found 2026-08-16 during W14a, which deleted the sibling invention
+(`valid shufflevector mask element`) and left this one; not previously
+recorded.
+
+- **LLVM:** `LLParser::parseShuffleVector` has exactly **one** message of its
+  own. It reads three `TypeAndValue`s, propagating whatever they say, and then
+  runs `ShuffleVectorInst::isValidOperands(Op0, Op1, Op2)` once —
+  `error(Loc, "invalid shufflevector operands")`, anchored at the **first
+  operand**. The mask's type and shape are part of that one check.
+- **llvmkit:** `parse_shufflevector` gets the `Op0`/`Op1` half right (same
+  message, same anchor), then hands the mask to `parse_shuffle_mask`, which
+  has two checks of its own and reports both as
+  `expected valid shufflevector mask`, anchored at the *mask*: one before the
+  operand is read (the mask type is not an `<N x i32>` of matching
+  scalability) and one after (`shufflevector_mask_from_constant` cannot decode
+  it). Neither string exists upstream.
+- **Why:** not a decision — `parse_shuffle_mask` grew its own validity check
+  because llvmkit's builder needs a decoded `Vec<ShuffleMaskElem>`, not a
+  `Constant`, and the check was worded locally instead of folded into the
+  operand check. `parser_errors.rs::shufflevector_rejects_non_i32_mask_type`
+  pins the invented text today.
+- **Fix:** move both checks into `parse_shufflevector`'s existing
+  `isValidOperands` arm so all three operands share one
+  `invalid shufflevector operands` at `operand_loc`, and re-point that test.
+
 ## Different printed bytes
 
 The parser/printer contract is that printed output matches `AsmWriter.cpp` byte for byte and re-parses.
@@ -1223,6 +1319,15 @@ See above.
 
 *printer* — crates/llvmkit-ir/src/calling_conv.rs:326 (`Display`), :359-365 (`FromStr`'s `cc ` branch); locked by crates/llvmkit-asmparser/tests/calling_conv_drift.rs
 
+- **Sub-divergence closed, 2026-08-16 (W14b).** The last sentence of the
+  correction bullet — llvmkit's `cc` rewind firing only for an all-digit tail
+  where `LLLexer`'s fires for any word opening `cc` — is fixed.
+  `Lexer::lex_identifier` now guards on the two source bytes the way upstream
+  does (`TokStart[0] == 'c' && TokStart[1] == 'c'`), so `ccfoo` is `kw_cc`
+  followed by `foo` here too;
+  `lexer_token_drift.rs::an_unknown_word_opening_cc_rewinds_to_kw_cc` pins it.
+  The printer half of this entry — `cc 11` versus `cc11` — is untouched and
+  still open.
 - **LLVM:** `AssemblyWriter::printCallingConv`'s default arm is `Out << "cc" << cc`, so a convention with no mnemonic prints as `cc11` — which `LLLexer` then reads as a single unknown identifier. `llvm-as` therefore cannot re-parse `llvm-dis`'s own output for `HiPE`, `AVR_BUILTIN`, `MSP430_BUILTIN`, `WASM_EmscriptenInvoke`, `M68k_INTR` or the two ARM64EC thunks.
 - **llvmkit:** `CallingConv`'s `Display` writes `cc {n}` with a space — the spelling `LLParser::parseOptionalCallingConv`'s `kw_cc` arm actually accepts. llvmkit's output round-trips through its own parser and remains valid input to `llvm-as`, at the cost of one byte of difference from `llvm-dis`.
 - **Why:** Recorded, and deliberate: this is the one place the byte-for-byte printer rule is knowingly broken, and it is broken in the safe direction — reproducing upstream would mean emitting text neither parser can read back. The sibling upstream bug found by the same drift lock (bare `riscv_vls_cc` consuming the following token) *was* reproduced, on the ground that the contract is upstream's behaviour rather than its intent.
@@ -1944,11 +2049,43 @@ crates/llvmkit-ir/src/module_summary_index.rs:501-571 — `pub enum AllocationTy
 
 </details>
 
-### 87. No token-set drift test outside attributes, calling conventions and summary keywords
+### 87. No token-set drift test outside attributes, calling conventions and summary keywords — **FIXED (W14b)**
 
 *lexer* — crates/llvmkit-asmparser/src/ll_lexer/keywords.rs, crates/llvmkit-asmparser/src/ll_token.rs, crates/llvmkit-asmparser/tests/
 
+- **Closed, 2026-08-16 (W14b).** `crates/llvmkit-asmparser/tests/lexer_token_drift.rs`
+  is the fifth drift test. `LLLexer.cpp` and `LLToken.h` are now vendored under
+  `crates/llvmkit-asmparser/tablegen/llvm-22.1.4/`, and the test reads their
+  macro tables directly: `KEYWORD` (plus the `Attributes.td` names
+  `Attributes.inc` splices into it), `TYPEKEYWORD`, `INSTKEYWORD`, the nine
+  `DWKEYWORD` families, `DBGRECORDTYPEKEYWORD`, the three prefix tails
+  (`DIFlag`, `DISPFlag`, `CSK_`), the three exact-word tails (emission kind,
+  name-table kind, fixed-point kind) and the thirteen payload-free punctuation
+  arms of `LLLexer::LexToken` — each probed through the public
+  `Lexer`, so a spelling routed to the *wrong* family fails too. Both set
+  directions are closed as well, the backward one against an explicit
+  `NON_UPSTREAM_KEYWORDS` list, and `every_lltok_kind_has_a_llvmkit_token`
+  pins the `lltok::Kind` enum itself.
+- **What the missing guard was hiding.** The correction bullet below concluded
+  "every llvmkit-only word is an Attributes.td-generated attribute keyword".
+  That is wrong, and it is wrong because the diff it describes never expanded
+  `Attributes.inc`: it took the 510 llvmkit spellings, subtracted the 409 it
+  read straight out of `LLLexer.cpp`, and called the remainder attributes
+  without checking. Two corrections to those numbers. The 409 counts
+  `DISPLAY_NAME`, the `ATTRIBUTE_ENUM` macro parameter — the bullet says so
+  itself and then leaves it in the total — so the explicit tables hold 408
+  spellings (329 `KEYWORD` + 13 `TYPEKEYWORD` + 66 `INSTKEYWORD`). That makes
+  the unchecked remainder 102, not 101, and `Attributes.td` declares exactly
+  101 enum-valued attributes. The odd one out is `exnref`, a `TYPEKEYWORD`
+  LLVM 22.1.4 does not have — now divergence 103. Upstream's total is 509
+  spellings against llvmkit's 510, and the new drift test asserts all five
+  numbers separately so none can be arrived at by subtraction again.
+- **Two further inventions the spelling diff could not see**, both closed by
+  the same change: `Token::SpecializedMetadata`, a token with no `lltok`
+  counterpart carrying a hand-written list of eighteen of the thirty-two `DI*`
+  node names; and the missing `lltok::LabelID` (see entry 101).
 - **LLVM:** `LLLexer.cpp`'s keyword and token tables define the accepted vocabulary; a keyword llvmkit does not know is silently mis-parsed rather than reported.
+- **Note, 2026-08-16 (W14a):** the correction bullet below is still right that a missing keyword is *reported*, not silently mis-parsed — but its mechanism has changed. `lex_identifier`'s fallthrough is now `Ok(Token::Error)` with the same `TokStart+1` rewind, so the rejection comes from whichever parser production was running (`expected top-level entity`, `unterminated attribute group`, …) rather than from `unknown keyword '…'`. The failure modes drift would produce are unchanged.
 - **llvmkit:** `attribute_td_drift.rs` and `calling_conv_drift.rs` cross-check two families and the summary keywords were verified by inventory; the instruction keywords and the misc `kw_` families have never been mechanically diffed against upstream.
 - **Why:** Recorded as a W14 item. The program's own W6 lesson is the reason it matters: "a table nothing cross-checks is wrong" — 28 calling conventions parsed as `ccc` and printed back wrong, invisibly, because every test used a convention that already worked.
 - **Fix:** Mechanically diff `LLLexer.cpp`'s tables against `keywords.rs` + `ll_token.rs` for every remaining family, and add a drift test wherever a vendorable source exists (note `orig_cpp/` is gitignored — anything a test reads must be vendored under `crates/llvmkit-asmparser/tablegen/llvm-22.1.4/`).
@@ -2104,7 +2241,7 @@ C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/As
 
 </details>
 
-### 97. The ledger's `present` column is a string proxy and its Twine column undercounts by construction
+### 97. The ledger's `present` column is a string proxy and its Twine column undercounts by construction — **TOOL FIXED (W14d); the proxy itself remains**
 
 *measurement / ledger* — ~/.claude/plans/llparser-parity-ledger.md, ~/.claude/plans/llparser-tools/ledger_v2.py
 
@@ -2112,6 +2249,8 @@ C:/Users/olegg/Desktop/llvmkit/orig_cpp/llvm-project-llvmorg-22.1.4/llvm/test/As
 - **llvmkit:** `ledger_v2.py` globs every string literal under `crates/llvmkit-asmparser/src`, so `present` proves the text exists in the sources — never that a code path reaches it (W7's lesson: `redefinition of global '@x'` had a variant, a `Display` and a unit test and never fired). The Twine-fragment column matches fragments literally while llvmkit builds those texts with `format!`, so correctly-ported messages read unticked.
 - **Why:** Recorded in both documents. Current standing: 411 present / 105 missing of 516 at the W11 boundary. W14's ledger v3 targets `MISSING = 0`, every row EXACT-with-a-citing-test or `N/A(rationale)`.
 - **Fix:** Regenerate before quoting any count — `python ledger_v2.py <orig_cpp/llvm-project-llvmorg-22.1.4> <workspace root, NOT src> <ledger path>`; passing `src` yields `present=0` silently. Read `present` as a ceiling on parity, and treat only the 516 exact-literal column as a scoreboard.
+- **W14d update — two extraction defects fixed, and the recorded history retired.** (1) `llvmkit_strings` no longer regexes `"..."`; it lexes Rust (line and nested block comments, raw/byte/C strings, char literals, lifetimes). The regex desynchronized permanently at the first lone `"` inside a `//` comment — `ll_parser.rs`'s `DIExpression` arm of `parse_named_metadata` has one — hiding every literal after it. (2) It now harvests every literal under `crates/llvmkit-ir/src`, not only `#[error("...")]`: the five `constant ptrauth …` checks carry their text in a plain `message:` field of a struct variant and were counted missing while llvmkit emits them. (3) A new `[~]` template column credits the 34 upstream literals llvmkit renders through one interpolated message — `{opcode} constexprs are no longer supported` (29), `expected scope value for {pad}` (3), `invalid type for {what} constant` (2) — which no literal search can match. Point (2) of the correction above is confirmed and now moot: with doc comments correctly skipped, the Twine column's spurious tick set is gone and it reads 0 of 84, all of them `format!`-built. **Standing after the fix: 516 exact — 466 covered (432 literal + 34 template), 50 missing, of which 4 are `N/A` and 46 are real gaps**, classified per message in the ledger. The proxy nature is unchanged: `covered` still proves only that the text exists, never that a path reaches it.
+- **The program's recorded numbers were measured with the broken tool and should not be compared across this commit.** Re-measuring with the fixed extractor gives W11 (`2ac3e3a`) 412 present / 104 missing — not the recorded 411/105 — and W12 (`dfcb43d`) through W13d (`bd90449`) 427/89. The old tool reported 335 at those same W12/W13 commits, i.e. an apparent 76-message regression that never happened; it was the `//`-comment desync landing in W12.
 - **Correction from verification:** Substantially accurate; two refinements, one of which makes the defect worse than claimed. (1) Scope imprecision: `ledger_v2.py` does not glob only `crates/llvmkit-asmparser/src`. `llvmkit_strings()` (ledger_v2.py:223-241) globs every string literal under `crates/llvmkit-asmparser/src/**/*.rs` AND every `#[error("...")]` attribute under `crates/llvmkit-ir/src/**/*.rs`, then synthesizes an `"expected " + s` variant of each. The ir-crate glob is deliberate (its comment: "some diagnostics originate as IrError text") and is load-bearing — two ticked messages, `value has no uses` and `value only has one use`, are present only via `llvmkit-ir/src/value.rs:244,247`, which is correct because `ll_parser.rs:4904 sort_use_list_order` renders the IrError with `e.to_string()`. (2) The Twine column is worse than "undercounts": it is simultaneously a false-negative and a false-positive machine. It ticks 3 of 84 fragments. One is the bare `'` character. The other two — `redefinition of global '@` and `use of undefined value '@` — are ticked ONLY because of doc comments quoting the C++ source (`parse_error.rs:66`, `:90`, `:460`); no llvmkit code path contains either literal, since both are built structurally via `#[error("redefinition of {kind} '{sigil}{id}'", sigil = .kind.sigil())]` at parse_error.rs:202. So the column's entire meaningful tick set is spurious. One qualification on the `present` column: the mechanism is unchanged, but the tree currently exhibits zero demonstrable false positives in it. I probed for three W7-shaped classes across all 426 ticked messages and found none: 0 ticked with every occurrence inside a `//` comment, 0 ticked with every occurrence inside a `#[cfg(test)]` module or `ll_lexer_tests.rs`, and 0 `ParseError` variants declared in parse_error.rs but never named elsewhere in the crate. The specific W7 instance is closed — `ParseError::Redefinition` is now constructed at 4 sites, 5 of them with `SymbolKind::Global`. The tool that failed to catch it is unchanged, so the proxy would not catch a recurrence. Separately: the checked-in ledger is stale. It records "516 exact — 411 present, 105 missing"; regenerating against the tree today gives 426 present / 90 missing.
 
 <details><summary>Verification evidence</summary>
@@ -2120,7 +2259,7 @@ Ran `~/.claude/plans/llparser-tools/ledger_v2.py` against the current tree: outp
 
 </details>
 
-### 98. UPSTREAM.md provenance debt: 469 tests with no row
+### 98. UPSTREAM.md provenance debt: 323 tests with no row (was 469; recounted W14d)
 
 *tests / provenance* — UPSTREAM.md, crates/llvmkit-ir/tests/, crates/llvmkit-ir/src/
 
@@ -2128,6 +2267,7 @@ Ran `~/.claude/plans/llparser-tools/ledger_v2.py` against the current tree: outp
 - **llvmkit:** 2435 tests against 1994 rows, leaving 469 tests unrowed (measured at the W7 boundary as 470 tests / 1930 rows, plus 26 rows naming tests deleted long ago, removed in that recount).
 - **Why:** Recorded in both documents and in `UPSTREAM.md`'s own header: the debt is inherited from the type-safety and pass-API programs — it sits in `llvmkit-ir` (`verifier_module_flags.rs`, `analysis_preservation.rs`, `module_brands.rs`, `id_roundtrip.rs`, `phi_raw_tests/`, `src/pass_context.rs`, `src/fp_class.rs`), not in the parser crates. The parity waves have added a row per commit. Nothing in CI counts these files.
 - **Fix:** W14's recount item: enforce the per-wave rule (a row in the same commit) and clear the backlog file by file. A missing row means missing *provenance*, never "no upstream counterpart" — so each backfill has to name a real source or say explicitly that the test is llvmkit-specific.
+- **W14d update — recounted.** At this commit: 2508 `#[test]` functions (2503 distinct), 2077 rows, 2180 distinct tests covered, **323 unrowed**, zero rows naming a test that no longer exists. Most of the 469 -> 323 move is a counting fix, not new rows: the pre-W14 audit matched only `path.rs::name` references and therefore ignored the 19 rows that cover a whole file or a named run (`(whole file)`, `(all seven)`, `` `a` … `z` ``, `` `*_display_and_from_str_round_trip` ``), which are real provenance. Counting the old way at this commit gives 2037 covered / 466 unrowed, so 143 of the 146 is methodology and 3 is genuine new rows. The correction above — that the arithmetic must be distinct-tests minus distinct-rowed-names, and that ~30 file-scoped rows name no test function — is what motivated the change; the file-scoped rows are now expanded rather than discarded, and the 13 that point at `tests/compile_fail/*.rs` trybuild fixtures are counted separately since those contain no `#[test]` at all. One row is stale in its sub-count only: `dwarf_def_drift.rs` is labelled `(12 tests)` and now holds 13. Concentration is unchanged and still in `llvmkit-ir`: `src/pass_context.rs` 20, `src/fp_class.rs` 19, `constant_folding_analysis.rs` 18, `analysis_preservation.rs` 17, `module_brands.rs` 15, `id_roundtrip.rs` 14, `block_args_terminators.rs` 13; 56 files in all.
 - **Correction from verification:** Substantively accurate and still present, with two precision fixes. (1) "1994 rows" is the distinct-reference count, not the literal row count: UPSTREAM.md carries 1995 data rows, one of which -- the file-scoped `crates/llvmkit-ir/tests/verifier_module_flags.rs` row -- appears twice verbatim. Moreover only 1961 rows name a test function; the other 30 are file-scoped rows with no `::test` suffix (several point at `tests/compile_fail/*.rs` trybuild fixtures, which contain no `#[test]` at all). So the correct arithmetic is 2430 distinct tests minus 1961 distinct rowed test names = 469 unrowed, not 2435 minus 1994. (2) The "470 at the W7 boundary vs 469 today" drift is an artifact of instance-vs-distinct counting, not a real change: both the W7 point and HEAD are 470 unrowed instances / 469 distinct names. UPSTREAM.md's own header narrative ("the figure has moved by one since the Wave 9 recount") makes the same mis-comparison -- commit 2337a0f states "470 `#[test]` functions (469 distinct names) with no row", identical to today. Everything else verifies exactly: 2435 tests / 2430 distinct at HEAD, 469 distinct unrowed, zero orphan rows, and the W7 recount (04545ad) did carry 1930 rows and did drop exactly 26 dead rows (parent 61e378f had 1956).
 
 <details><summary>Verification evidence</summary>

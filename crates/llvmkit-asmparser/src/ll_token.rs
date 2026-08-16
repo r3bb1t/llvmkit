@@ -24,6 +24,31 @@ pub enum Token<'src> {
     /// End of input.
     Eof,
 
+    /// No token could be formed here. Mirrors `lltok::Error`.
+    ///
+    /// This is a **token**, not a failure: eleven of `LLLexer`'s twenty-one
+    /// `lltok::Error` sites record no message at all, leaving `LLParser` to
+    /// describe the failure from the surrounding production —
+    /// `expected top-level entity`, `expected memory location (argmem, …)`,
+    /// `expected debug record type here`. A lexer that instead failed with
+    /// "unknown keyword 'foo'" would make every one of those messages
+    /// unreachable, which is what llvmkit did until this variant existed.
+    ///
+    /// The cursor is left exactly where `LLLexer` leaves it — one byte past
+    /// `TokStart` at nearly every site — so lexing can continue, and the span
+    /// starts at `TokStart`, which is what `LLLexer::getLoc` reports.
+    ///
+    /// The sites that *do* carry an upstream message (`LLLexer::LexError`
+    /// callers: `unterminated comment`, `end of file in string constant`,
+    /// `NUL character is not allowed in names`,
+    /// `bitwidth for integer type out of range`,
+    /// `hexadecimal constant too large for half (16-bit)`) stay
+    /// [`LexError`](crate::ll_lexer::LexError)s. Upstream keeps them apart the
+    /// same way, through `LLLexer::ErrorPriority`: a lexer message outranks
+    /// the parser's, so it is what a reader sees even though the parser also
+    /// runs its `expected …` arm.
+    Error,
+
     // ── Punctuation ──
     /// `...`
     DotDotDot,
@@ -64,6 +89,15 @@ pub enum Token<'src> {
     // borrowed and only allocate when decoding actually shortens the slice.
     /// `foo:` or `"quoted":`
     LabelStr(Cow<'src, [u8]>),
+    /// `42:` — a fully-numeric label, which is a *number*, not a name.
+    ///
+    /// Upstream keeps `lltok::LabelID` separate from `lltok::LabelStr` for a
+    /// reason `LLParser::parseBasicBlock` makes plain: the two feed different
+    /// `PerFunctionState::defineBB` arguments, `Name` and `NameID`, and only
+    /// the numeric one is checked against the function's value numbering.
+    /// A quoted `"42":` is still a `LabelStr` — `LLLexer::LexQuote` never
+    /// reaches the numeric arm — so the distinction is lexical, not textual.
+    LabelId(u32),
     /// `@foo` or `@"foo"`
     GlobalVar(Cow<'src, [u8]>),
     /// `@42`
@@ -114,10 +148,8 @@ pub enum Token<'src> {
     NameTableKind(&'src str),
     /// `Binary` / `Decimal` / `Rational`.
     FixedPointKind(&'src str),
-    /// `DIFile`, `DILocation`, and sibling specialized metadata node names.
-    SpecializedMetadata(&'src str),
     /// `dbg_*` — payload is the **suffix** (`value`, `declare`, …),
-    /// matching `LLLexer::DBGRECORDTYPEKEYWORD` (LLLexer.cpp:998).
+    /// matching `LLLexer`'s `DBGRECORDTYPEKEYWORD` macro.
     DbgRecordType(&'src str),
 
     // ── Type tokens ──
@@ -147,6 +179,7 @@ impl core::fmt::Display for Token<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let text = match self {
             Token::Eof => "<eof>",
+            Token::Error => "<error>",
             Token::DotDotDot => "'...'",
             Token::Equal => "'='",
             Token::Comma => "','",
@@ -163,7 +196,7 @@ impl core::fmt::Display for Token<'_> {
             Token::Bar => "'|'",
             Token::Colon => "':'",
             Token::Hash => "'#'",
-            Token::LabelStr(_) => "label",
+            Token::LabelStr(_) | Token::LabelId(_) => "label",
             Token::GlobalVar(_) | Token::GlobalId(_) => "global identifier",
             Token::LocalVar(_) | Token::LocalVarId(_) => "local identifier",
             Token::ComdatVar(_) => "comdat identifier",
@@ -195,7 +228,6 @@ impl core::fmt::Display for Token<'_> {
             Token::EmissionKind(_) => "emission kind",
             Token::NameTableKind(_) => "name-table kind",
             Token::FixedPointKind(_) => "fixed-point kind",
-            Token::SpecializedMetadata(_) => "specialized metadata kind",
             Token::DbgRecordType(_) => "dbg record type",
         };
         f.write_str(text)
@@ -240,11 +272,17 @@ fn keyword_text(k: Keyword) -> &'static str {
 
 /// Type-keyword tokens that resolve to a stateless primitive type.
 ///
-/// Mirrors `TYPEKEYWORD(...)` entries in `LLLexer.cpp` plus the `i[0-9]+`
-/// integer-type fast path. `ptr` is the default-address-space pointer; the
-/// `addrspace(N)` form is parser-level (it composes `Token::Kw(Keyword::Ptr)`
-/// — wait, actually `ptr` is the default. Let me re-read.) — see `LLParser.cpp`
-/// for `addrspace(N)` handling.
+/// Mirrors the `TYPEKEYWORD(...)` entries of `LLLexer::LexIdentifier` plus its
+/// `i[0-9]+` integer-type fast path — the two paths that reach `lltok::Type`.
+/// [`Ptr`](PrimitiveTy::Ptr) is `PointerType::getUnqual`, the
+/// default-address-space pointer; `ptr addrspace(N)` is not a keyword at all,
+/// and `LLParser::parseType` assembles it from this token plus
+/// `kw_addrspace`.
+///
+/// [`WasmExnRef`](PrimitiveTy::WasmExnRef) is the one entry with no upstream
+/// `TYPEKEYWORD` — see divergence 103 in `docs/divergences.md` and
+/// `NON_UPSTREAM_KEYWORDS` in
+/// `crates/llvmkit-asmparser/tests/lexer_token_drift.rs`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum PrimitiveTy {
     Void,
@@ -276,7 +314,8 @@ pub enum Sign {
 pub enum NumBase {
     /// Plain decimal integer (`42`, `-1`).
     Dec,
-    /// `s0x...` — explicitly signed APSInt (LLLexer.cpp:1047).
+    /// `s0x...` — explicitly signed APSInt (the
+    /// `[us]0x[0-9A-Fa-f]+` block of `LLLexer::LexIdentifier`).
     HexSigned,
     /// `u0x...` — explicitly unsigned APSInt.
     HexUnsigned,
@@ -288,7 +327,8 @@ pub enum NumBase {
 /// borrowing as `&str` is sound without any UTF-8 round-trip cost.
 ///
 /// For `[us]0x...` forms `sign` is always [`Sign::Pos`] — those forms cannot
-/// carry a leading `-` (LLLexer.cpp:1047-1064).
+/// carry a leading `-` — `LLLexer::LexIdentifier` reaches them only from a
+/// leading `u` or `s`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct IntLit<'src> {
     pub sign: Sign,
@@ -303,7 +343,9 @@ pub struct IntLit<'src> {
 /// destination IR type is known.
 ///
 /// * `Decimal` is the full lexeme including any leading sign, decimal point,
-///   and exponent — it parses as `IEEEdouble` per LLLexer.cpp:1225/1262.
+///   and exponent — it parses as `IEEEdouble`, per the closing
+///   `APFloatVal = APFloat(APFloat::IEEEdouble(), StringRef(...))` of both
+///   `LLLexer::LexDigitOrNegative` and `LLLexer::LexPositive`.
 /// * The `Hex*` variants strip `0x` and (where present) the format marker
 ///   (`K`, `L`, `M`, `H`, `R`); the remaining slice is hex digits only.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -461,9 +503,11 @@ pub enum Opcode {
 
 /// Plain (non-instruction, non-type, non-prefix) keywords.
 ///
-/// Every entry mirrors a `KEYWORD(...)` line in `LLLexer.cpp` (lines 543-877)
-/// or an `ATTRIBUTE_ENUM` entry from `Attributes.td` (LLVM 22.1.4 snapshot, see
-/// `keywords.rs`).
+/// Every entry mirrors a `KEYWORD(...)` line of `LLLexer::LexIdentifier` or an
+/// `ATTRIBUTE_ENUM` entry from `Attributes.td` — which upstream splices into
+/// the same block by `#include`-ing the generated `Attributes.inc`. Both
+/// directions are locked by
+/// `crates/llvmkit-asmparser/tests/lexer_token_drift.rs`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Keyword {
     // Booleans / declarations
@@ -853,7 +897,8 @@ pub enum Keyword {
     Catch,
     Filter,
 
-    // ── Summary index keywords (LLLexer.cpp:788-877) ──
+    // ── Summary index keywords (the `// Summary index keywords.` block of
+    // `LLLexer::LexIdentifier`) ──
     Path,
     Hash_, // `hash` — collides with Token::Hash punctuation; renamed enum-side.
     Gv,
@@ -961,6 +1006,7 @@ mod tests {
     #[test]
     fn token_display_names_the_family() {
         assert_eq!(Token::Eof.to_string(), "<eof>");
+        assert_eq!(Token::Error.to_string(), "<error>");
         assert_eq!(Token::Comma.to_string(), "','");
         assert_eq!(Token::DotDotDot.to_string(), "'...'");
         assert_eq!(Token::LBrace.to_string(), "'{'");

@@ -19,6 +19,136 @@ actually landed".
 It began as the residue of the `feature-1/irbuilder-type-safety` audits and has
 accumulated every cycle since; the oldest sections are still organised that way.
 
+## LLParser diagnostics — 46 real gaps left of 516 messages (recounted 2026-08-16, LLParser parity W14d)
+
+The parity ledger was regenerated at this commit. Of the **516 exact message
+literals** `LLParser.cpp` reaches through its five diagnostic channels
+(`tokError`, `error`, `parseToken`, `checkValueID`, `parseValueAsMetadata`),
+**466 are covered** and **50 are not**. Of those 50, **4 are `N/A`** and
+**46 are real gaps**.
+
+The four `N/A`s, each checked against `LLParser.cpp` rather than assumed:
+
+- `Can't read textual IR with a Context that discards named Values` — no
+  discard-names mode exists to check (D10 in [`divergences.md`](divergences.md)).
+- `argument can not have void type` — dead upstream: `parseArgumentList` reads
+  the type with `AllowVoid = false`, so `parseType` has already refused a
+  literal `void`.
+- `non-sanitizer token passed to LLParser::parseSanitizer()` — assert-only; the
+  sole call site is guarded by `isSanitizer(Lex.getKind())`.
+- `name is too long …` — see the divergence below.
+
+The 46 are almost all one shape: llvmkit runs the check at the same point and
+words it differently (`expected 'from' in catchret` for upstream's `expected
+'from' after catchret`, `expected '>' at end of packed struct` where upstream
+says `expected '}' at end of struct`). They are concentrated in the funclet EH
+terminators (`parseCatchSwitch` 4, `parseCleanupRet` 3), `parseValID`'s
+blockaddress and vector-splat forms (5), `parseArrayVectorType` (4) and `parsePHI`
+(2). This overlaps gap **G17** in [`fixture-coverage.md`](fixture-coverage.md)
+but is not the same set: G17 counts *fixtures* that fail on wording, this counts
+*messages*. The full per-message list, with llvmkit's current spelling beside
+each, is the classification section of the parity ledger.
+
+### The ledger tool undercounted, twice, and the recorded history is wrong
+
+Two defects in `ledger_v2.py`, both found here, both of which had been silently
+deflating the score:
+
+1. **Its llvmkit-side extractor was a regex over `"..."`.** A lone `"` inside a
+   `//` comment desynchronizes it for the rest of the file, and llvmkit quotes
+   upstream prose that way — `ll_parser.rs` has one at the `DIExpression` arm of
+   `parse_named_metadata`, so every literal after it was invisible. It now
+   lexes Rust properly (line and nested block comments, raw/byte/C strings, char
+   literals, lifetimes).
+2. **It harvested only `#[error("…")]` from `llvmkit-ir`.** The ptrauth constant
+   checks carry their text in a plain `message:` field of a struct variant, so
+   five messages llvmkit *does* emit were counted missing. It now reads every
+   literal in `llvmkit-ir/src`, as it already did for the parser crate.
+
+A third effect is not a defect but was mistaken for one: llvmkit collapses
+upstream's per-opcode copies into one interpolated message, so
+`{opcode} constexprs are no longer supported`, `expected scope value for {pad}`
+and `invalid type for {what} constant` cover **34** upstream literals that no
+literal search can match. The ledger now has a `[~]` template column for these.
+With it applied to the lexer section too, **`LLLexer.cpp`'s 11 messages are
+11/11 covered** — the last two, `hexadecimal constant too large for half/bfloat
+(16-bit)`, come from one `#[error("… for {} (16-bit)", .target.upstream_name())]`
+in `ll_lexer.rs` and had been reading as gaps.
+
+**Consequence for the record: the "411 present / 105 missing" figure carried in
+the program's notes was never right.** Re-measuring the W11 commit with the
+fixed extractor gives 412/104, and the W12/W13 commits give 427/89 — where the
+old tool reported 335, which would have read as a 76-message regression that
+never happened. Numbers from before this commit should not be compared with
+numbers after it.
+
+### `-non-global-value-max-name-size` has no counterpart (divergence, not just a message)
+
+`getVal`'s `name is too long which can result in name collisions…` fires only
+when `ValueSymbolTable` renamed a value on insert, which it does when the name
+exceeds `MaxNameSize` — fed by `NonGlobalValueMaxNameSize` in `lib/IR/Function.cpp`.
+That option is `cl::init(1024)`, **not** off by default, so this is a real
+behavioural difference and not merely an unimplemented flag: LLVM truncates and
+then rejects a function-local name longer than 1024 characters, and llvmkit
+accepts it unchanged. Closing it means giving llvmkit's function-local symbol
+table a name cap, not adding a string. Upstream pins the behaviour in
+`test/Assembler/non-global-value-max-name-size.ll`, which drives it with an
+explicit `-non-global-value-max-name-size=4`; that fixture is the single `N/A`
+row in [`fixture-coverage.md`](fixture-coverage.md). (Its `-2.ll` sibling is
+`ported` — under `-non-global-value-max-name-size=5` it only checks that
+inlining does not *generate* an over-long label, which parses either way.)
+
+### `UPSTREAM.md` — 323 tests still have no provenance row
+
+The registry recount that this wave owed is done: 2508 `#[test]` functions
+(2503 distinct), 2077 rows, 2180 distinct tests covered, **323 with no row**,
+zero rows naming a test that no longer exists. The residue is inherited from the
+type-safety and pass-API programs and sits in `llvmkit-ir` —
+`src/pass_context.rs` (20), `src/fp_class.rs` (19),
+`constant_folding_analysis.rs` (18), `analysis_preservation.rs` (17),
+`module_brands.rs` (15), `id_roundtrip.rs` (14), `block_args_terminators.rs`
+(13) — across 56 files in all. See `UPSTREAM.md`'s header for why 469 -> 323 is
+mostly a counting fix rather than 146 new rows.
+
+## `llvm/test/Assembler` — 102 of 500 fixtures blocked, on 21 named gaps (measured 2026-08-16, LLParser parity W14c)
+
+[`fixture-coverage.md`](fixture-coverage.md) classifies every fixture in
+`llvm/test/Assembler` as `ported` (397), `blocked-model` (102) or `N/A` (1), and
+each blocked row names one of 21 catalogued gaps. **That file is the backlog for
+this area** — this section exists so the backlog points at it rather than
+restating 102 rows.
+
+The three largest gaps, by fixture count:
+
+- **G18** (19) — a check upstream's `llvm-as` performs at parse or verify time
+  that llvmkit does not: `MDField` range bounds (`count`, `lowerBound`,
+  `emissionKind`, `language`, `tag`), attribute applicability (`align` on a
+  function, `byval` on an unsized type, `captures(none)` on a non-pointer), and
+  target-extension-type legality.
+- **G17** (15) — diagnostic text that differs from upstream's. Most of it is one
+  wording bug: a complete upstream message routed through llvmkit's
+  `expected …` wrapper (`expected invalid type for null constant`, `expected
+  valid mask value for 'nofpclass'`, `expected intrinsic signature mismatch`),
+  where upstream reaches it through `error(...)` rather than
+  `tokError("expected …")`. This is the cheapest parity work left in the
+  directory.
+- **G1** (13) — `AutoUpgrade` coverage, which the section below tracks in its
+  own right.
+
+One more worth pulling out because it is small and self-contained: **G22** — two
+fixtures (`2004-02-27-SelfUseAssertError.ll`, `2004-06-07-VerifierBug.ll`) that
+`llvm-as` accepts and llvmkit's Verifier rejects, because
+`Verifier::verifyDominatesUse` returns early when
+`!DT.isReachableFromEntry(...)` and llvmkit's dominance/self-use checks have no
+such exemption. Both fixtures exist precisely to pin that unreachable-block
+behaviour.
+
+`docs/fixture-coverage.md` also records the provenance defect this measurement
+turned up: **34 citations in the tree name `test/Assembler/*.ll` files that do
+not exist** in the vendored tree, eight of which exist nowhere under
+`llvm/test/`. The tests are real; their cited source is not. Repointing them is
+open work.
+
 ## AutoUpgrade — six of nine `validateEndOfModule` call sites still open (measured 2026-08-16, LLParser parity W13d)
 
 `crates/llvmkit-ir/src/auto_upgrade.rs` exists now and carries the
@@ -187,6 +317,16 @@ link. The slowest five:
 | 9.28 | 6 | `constant_range_dispatch` |
 | 7.44 | 9 | `llvmkit_tablegen` (lib) |
 | 7.13 | 4 | `constant_range_saturating` |
+
+> **Re-measured at W14d: 214 binaries, 65.48 s, 21 with a non-zero time.** The
+> shape of the finding is unchanged but the total is not comparable — that run
+> had a warm trybuild scratch crate, which drops `typestate_compile_fail` from
+> 66.07 s to 26.49 s and accounts for essentially the whole difference. The
+> table above is the cold-cache number and is the one that describes a CI run;
+> keep both in mind before quoting either. On the binary count: the tree holds
+> 193 integration-test files against 192 at `bd90449`, the one addition being
+> W14b's `lexer_token_drift.rs`; the earlier 212 predates that and one other
+> target added before it.
 
 The 66 s entry is one `#[test]` that is really 87 `rustc` invocations plus that
 dev-profile dependency build. It is on the slow `cargo build` path rather than
@@ -658,34 +798,38 @@ was declared later did not re-parse.~~ **Fixed:** forward targets become a null
 placeholder patched at end of module, mirroring `personality`. Covered by
 `parser_attribute_matrix.rs::alias_and_ifunc_forward_targets`.
 
-## ~~Parser — lexer diagnostics carry no text~~ (found 2026-07-31, fixed 2026-07-31)
+## ~~Parser — lexer diagnostics carry no text~~ (found 2026-07-31, "fixed" 2026-07-31, **reverted** 2026-08-16, LLParser parity W14a)
 
 ~~`LexError::UnknownToken` renders as a bare `invalid token`, so an unknown
 attribute keyword, a bogus global property, and a malformed `uwtable(...)` kind
-all produce the same uninformative message.~~ **Fixed** in
+all produce the same uninformative message. Fixed in
 `feature-39/lexer-diagnostics`: the variant gained a
 `reason: UnknownTokenReason` payload and every one of the ten construction
 sites names its own failure — `unknown keyword 'nocalback'`, `no token starts
 with '\x01'`, `expected a comdat name after '$'`, `expected hexadecimal digits
-after '0xK'`, and so on. `LexError::UnknownToken` stays a single variant on
-purpose: the parser genuinely uses it as the category "the lexer could not form
-a token here, let me supply production context", and splitting it would have
-forced both re-mapping sites to enumerate every reason.
+after '0xK'`, and so on.~~
 
-Two things worth knowing for anyone extending it:
+**This was the wrong fix, and W14a undid it.** The entry's own caveat — "there
+is no upstream message to port … so these messages are a deliberate
+improvement on upstream rather than a port" — was the tell. `LLLexer` returns a
+silent `lltok::Error` **token** at those sites precisely so that `LLParser` can
+answer from the production it is in the middle of; writing a message in the
+lexer instead does not add information, it *replaces* upstream's message with a
+worse one and makes it unreachable. Eighteen `test/Assembler` fixtures and
+splits could not be ported for exactly that reason, and the seven invented
+messages were named as the highest-leverage remaining item in the parity
+ledger.
 
-- **There is no upstream message to port.** `LLLexer` returns a bare
-  `lltok::Error` at all of these sites and records nothing
-  (every `return lltok::Error` in `LLLexer`); `LLParser` supplies
-  the wording from the surrounding production. That is adequate when the parser
-  is always the caller, which is true for `llvm-as` and false for llvmkit,
-  whose lexer is public. So these messages are a deliberate improvement on
-  upstream rather than a port, and the tests say so.
-- **The unknown-keyword span was widened to the whole word** while the cursor
-  rewind (`self.pos = tok_start + 1`, upstream's `LLLexer::LexIdentifier`
-  behaviour)
-  was kept exactly. A caret under the `n` of `nocalback` helps nobody. Lexing
-  behaviour is unchanged; only the reported span moved.
+`Token::Error` now carries those sites, `UnknownTokenReason` is gone, and
+`LexError` is exactly the set of `LLLexer::LexError` call sites — the ones
+where upstream *does* record a message and `ErrorPriority::Lexer` makes it
+outrank the parser's.
+
+The lesson to carry: **a "deliberate improvement" on a routine being ported
+1:1 is a divergence with better marketing.** If the improvement is worth
+having, it belongs behind an API that does not displace the ported behaviour —
+here, a caller that wants the lexeme can read the `Token::Error` span out of
+the source and say so itself.
 
 ## ~~ApFloat / `ApInt` bit-exactness audit~~ — closed (2026-08-01)
 
@@ -1467,6 +1611,17 @@ says that too rather than inventing one.
   than vendoring a `.td`. The two halves are pinned against each other instead
   (`required_fields ⊆ fields`, per kind), which catches a typo'd or dropped
   required field but not upstream adding one.
+
+  **Half of that reason is now spent (W14b, 2026-08-16).** `LLLexer.cpp` and
+  `LLToken.h` *are* vendored under `crates/llvmkit-asmparser/tablegen/`, and
+  `lexer_token_drift.rs` scrapes their `KEYWORD` / `TYPEKEYWORD` /
+  `INSTKEYWORD` / `DWKEYWORD` macro tables with a paren-balanced reader — so
+  "vendored and tracked" is no longer a property only `.td` files have, and
+  scraping C++ macro text is no longer unprecedented. What still holds for
+  `LLParser.cpp` is the size (8k lines against `LLLexer.cpp`'s 1.2k) and the
+  shape: `VISIT_MD_FIELDS` interleaves the field name with a *type* and a
+  default, so a reader must parse three things per entry rather than lift one
+  identifier. Weigh it on those grounds now, not on the vendoring question.
 - **`Module::target_triple` returns `Option<String>`.** The triple is stored
   and printed verbatim, never decoded, so nothing can ask for the architecture,
   vendor, OS or environment without re-splitting the string. A structured

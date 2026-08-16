@@ -64,8 +64,10 @@ fn unsigned_hex_i129_literal_round_trips() {
 /// build the literal straight at `i8` and refuse it as an overflow.
 ///
 /// No upstream `.ll` pins either: `test/Assembler/invalid-hexint.ll` is the
-/// tree's only `[us]0x` fixture and it turns on a malformed token, which is
-/// blocked on the lexer's error-token layering. Anchored by symbol instead.
+/// tree's only `[us]0x` fixture and it turns on a *malformed* token, so it
+/// says nothing about a well-formed one's width. (It is ported, in
+/// `parser_diagnostics.rs::a_malformed_hex_apsint_matches_upstream_text`.)
+/// Anchored by symbol instead.
 #[test]
 fn integer_literals_carry_the_lexers_own_width() {
     let text = parse_and_render(

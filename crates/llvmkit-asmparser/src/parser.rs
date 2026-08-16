@@ -11,11 +11,9 @@ use std::path::Path;
 use llvmkit_ir::{Constant, DynBrand, IrError, Module, ModuleBrand, Type, Unverified};
 
 use super::asm_parser_context::AsmParserContext;
-use super::ll_lexer::LexError;
 use llvmkit_ir::module_summary_index::ModuleSummaryIndex;
 
 use super::ll_parser::{ParsedModule, Parser};
-use super::parse_error::DiagLoc;
 use super::parse_error::{ParseError, ParseResult};
 use super::slot_mapping::SlotMapping;
 
@@ -551,27 +549,19 @@ where
     Ok(f(&module, parsed, context))
 }
 
-/// Map the standalone-type trailing-garbage lex error to the canonical
-/// "end of string" diagnostic. Shared by [`parse_type`] and
-/// [`parse_type_with_slots`].
-fn standalone_type_result<'ctx, B: ModuleBrand + 'ctx>(
-    parser: Parser<'_, 'ctx, B>,
-) -> ParseResult<Type<'ctx, B>> {
-    parser.parse_standalone_type().map_err(|err| match err {
-        ParseError::Lex(LexError::UnknownToken { span, .. }) => ParseError::Expected {
-            expected: "end of string".into(),
-            loc: DiagLoc::span(span),
-        },
-        other => other,
-    })
-}
-
 /// Parse a single LLVM type and require end-of-input.
+///
+/// Mirrors `llvm::parseType` (`Parser.cpp`), which runs
+/// `parseTypeAtBeginning` and then reports `expected end of string` when the
+/// type did not consume the whole buffer. llvmkit reaches the same message
+/// through `require_eof`, because trailing garbage now arrives as
+/// [`Token::Error`](crate::ll_token::Token::Error) rather than aborting the
+/// lexer.
 pub fn parse_type<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
     src: S,
     module: &'ctx Module<B, Unverified>,
 ) -> ParseResult<Type<'ctx, B>> {
-    standalone_type_result(Parser::new(src.as_ref(), module)?)
+    Parser::new(src.as_ref(), module)?.parse_standalone_type()
 }
 
 /// [`parse_type`], resolving numbered/named forward references through a
@@ -581,7 +571,7 @@ pub fn parse_type_with_slots<'ctx, B: ModuleBrand + 'ctx, S: AsRef<[u8]>>(
     module: &'ctx Module<B, Unverified>,
     slots: &SlotMapping<'ctx, B>,
 ) -> ParseResult<Type<'ctx, B>> {
-    standalone_type_result(Parser::with_slot_mapping(src.as_ref(), module, slots)?)
+    Parser::with_slot_mapping(src.as_ref(), module, slots)?.parse_standalone_type()
 }
 
 /// Parse one LLVM type prefix and report the number of consumed bytes.

@@ -99,6 +99,36 @@ fn uwtable_kind_grammar() {
     assert!(printed.contains("uwtable"), "{printed}");
 }
 
+/// Ports `test/Assembler/uwtable-1.ll` and `test/Assembler/uwtable-2.ll`
+/// verbatim — both files are a run of declarations whose last line is the one
+/// that fails, so the accepted spellings above them are part of each fixture.
+///
+/// `uwtable-1.ll`'s trigger is `unsync`, a word matching no keyword. It was
+/// unreachable while llvmkit's lexer failed on such a word instead of handing
+/// the parser an error token, so `expected unwind table kind` — which
+/// `LLParser::parseFnAttributeValuePairs` writes in its `kw_uwtable` arm — had
+/// no fixture behind it.
+#[test]
+fn uwtable_fixtures_match_upstream_text() {
+    assert_eq!(
+        parse_dynamic(
+            "declare void @f0() uwtable\n\
+             declare void @f1() uwtable(sync)\n\
+             declare void @f2() uwtable(async)\n\
+             declare void @f3() uwtable(unsync)\n",
+        )
+        .expect_err("uwtable-1.ll")
+        .to_string(),
+        "expected unwind table kind"
+    );
+    assert_eq!(
+        parse_dynamic("declare void @f() uwtable(sync x\n")
+            .expect_err("uwtable-2.ll")
+            .to_string(),
+        "expected ')'"
+    );
+}
+
 // -- parameter attributes ----------------------------------------------------
 
 #[test]
@@ -493,14 +523,15 @@ fn captures_diagnostics_match_upstream_text() {
         parse_err("captures(none, address)"),
         "cannot use 'none' with other component"
     );
-    // `captures(bogus)` would pin the same message, but a word matching no
-    // keyword never reaches the parser: llvmkit's lexer raises
-    // `unknown keyword 'bogus'` where upstream returns a silent error token.
-    // Blocked on the same lexer re-layering as three splits of
-    // `memory-attribute-errors.ll`. `captures()` reaches the arm instead,
-    // because `)` *is* a token the parser sees.
-    //
+    // The `invalid-component.ll` split of `test/Assembler/captures-errors.ll`,
+    // reachable since a word matching no keyword became `Token::Error` rather
+    // than a lexer failure.
+    assert_eq!(
+        parse_err("captures(foo)"),
+        "expected one of 'none', 'address', 'address_is_null', 'provenance' or 'read_provenance'"
+    );
     // `captures()` is not an empty set: the loop demands a component first.
+    // No upstream split writes it; the arm is upstream's.
     assert_eq!(
         parse_err("captures()"),
         "expected one of 'none', 'address', 'address_is_null', 'provenance' or 'read_provenance'"
@@ -806,13 +837,15 @@ fn argument_carrying_attributes_parse_on_a_function_header() {
     }
 }
 
-/// Ports the four portable splits of `test/Assembler/byref-parse-error-*.ll`,
-/// which pin `parseRequiredTypeAttr`'s bare texts. `-0` and `-5` give
-/// `expected '('` in parameter and return position; `-1` and `-3` fall through
-/// to `parseType`'s own `expected type`.
+/// Ports all eleven splits of `test/Assembler/byref-parse-error-*.ll`, which
+/// pin `LLParser::parseRequiredTypeAttr`'s two bare texts: `expected '('` when
+/// the parenthesis is missing, and `parseType`'s own `expected type` when what
+/// follows it is not one.
 ///
-/// The other seven splits of that family turn on a type llvmkit's `parse_type`
-/// rejects with a different message, and belong with the W3 type work.
+/// Seven of these were recorded as unportable — "they turn on a type llvmkit's
+/// `parse_type` rejects with a different message". That was wrong: they were
+/// blocked by the same lexer layering as the rest of this wave, and every one
+/// answers upstream's text (and upstream's column) now.
 #[test]
 fn byref_parse_errors_match_upstream_text() {
     fn parse_err(src: &str) -> String {
@@ -821,26 +854,67 @@ fn byref_parse_errors_match_upstream_text() {
             .to_string()
     }
 
-    // byref-parse-error-0.ll
-    assert_eq!(
-        parse_err("define void @test_byref(ptr byref) {\n  ret void\n}\n"),
-        "expected '('"
-    );
-    // byref-parse-error-5.ll — the same check in return position.
-    assert_eq!(
-        parse_err("define byref ptr @test_byref() {\n  ret void\n}\n"),
-        "expected '('"
-    );
-    // byref-parse-error-1.ll
-    assert_eq!(
-        parse_err("define void @test_byref(ptr byref() {\n  ret void\n}\n"),
-        "expected type"
-    );
-    // byref-parse-error-3.ll
-    assert_eq!(
-        parse_err("define void @test_byref(ptr byref(-1)) {\n  ret void\n}\n"),
-        "expected type"
-    );
+    for (split, src, expected) in [
+        (
+            0,
+            "define void @test_byref(ptr byref) {\n  ret void\n}\n",
+            "expected '('",
+        ),
+        (
+            1,
+            "define void @test_byref(ptr byref() {\n  ret void\n}\n",
+            "expected type",
+        ),
+        (
+            2,
+            "define void @test_byref(ptr byref()) {\n  ret void\n}\n",
+            "expected type",
+        ),
+        (
+            3,
+            "define void @test_byref(ptr byref(-1)) {\n  ret void\n}\n",
+            "expected type",
+        ),
+        (
+            4,
+            "define void @test_byref(ptr byref(0)) {\n  ret void\n}\n",
+            "expected type",
+        ),
+        // -5 and -6: the same check in return position.
+        (
+            5,
+            "define byref ptr @test_byref() {\n  ret void\n}\n",
+            "expected '('",
+        ),
+        (
+            6,
+            "define byref 8 ptr @test_byref() {\n  ret void\n}\n",
+            "expected '('",
+        ),
+        (
+            7,
+            "define byref(8) ptr @test_byref() {\n  ret void\n}\n",
+            "expected type",
+        ),
+        // -8 to -10: and in function-attribute position.
+        (
+            8,
+            "define void @test_byref() byref {\n  ret void\n}\n",
+            "expected '('",
+        ),
+        (
+            9,
+            "define void @test_byref() byref=4 {\n  ret void\n}\n",
+            "expected '('",
+        ),
+        (
+            10,
+            "define void @test_byref() byref(4) {\n  ret void\n}\n",
+            "expected type",
+        ),
+    ] {
+        assert_eq!(parse_err(src), expected, "byref-parse-error-{split}.ll");
+    }
 }
 
 /// Ports `test/Assembler/align-param-attr-error{0,2}.ll` and
@@ -899,12 +973,18 @@ fn a_uint32_field_reports_its_own_overflow() {
 /// `parseUnnamedAttrGrp` and its loop's own diagnostics.
 ///
 /// `unterminated attribute group` fires for any token that is not an
-/// attribute — upstream's fixture spells it with a misspelled keyword, which
-/// llvmkit's lexer intercepts, so the triggers here are a type keyword, an
-/// integer, and end-of-file. `cannot have an attribute group reference in an
-/// attribute group` is non-fatal upstream (it keeps parsing and accumulates);
-/// llvmkit reports the first and stops, the same choice already recorded for
-/// the position diagnostics.
+/// attribute. No upstream `.ll` pins it — a grep of `test/` for the string
+/// returns nothing — so the four triggers are llvmkit's, anchored on
+/// `LLParser::parseFnAttributeValuePairs`'s `Attr == Attribute::None` arm: a
+/// type keyword, an integer, a misspelled keyword, and end-of-file. The
+/// misspelled one is the shape upstream's own lexer produces (a silent
+/// `lltok::Error`), and was unreachable until llvmkit's lexer stopped failing
+/// on such a word.
+///
+/// `cannot have an attribute group reference in an attribute group` is
+/// non-fatal upstream (it keeps parsing and accumulates); llvmkit reports the
+/// first and stops, the same choice already recorded for the position
+/// diagnostics.
 #[test]
 fn attribute_group_diagnostics_match_upstream_text() {
     fn parse_err(src: &str) -> String {
@@ -919,6 +999,10 @@ fn attribute_group_diagnostics_match_upstream_text() {
     );
     assert_eq!(
         parse_err("attributes #0 = { 42 }\n"),
+        "unterminated attribute group"
+    );
+    assert_eq!(
+        parse_err("attributes #0 = { nounwindd }\n"),
         "unterminated attribute group"
     );
     assert_eq!(

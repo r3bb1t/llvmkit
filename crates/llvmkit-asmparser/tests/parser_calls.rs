@@ -68,14 +68,6 @@ fn inline_asm_inteldialect_unwind_round_trips() {
 /// asserting its own `FileCheck` line. The nine splits are exactly the nine
 /// messages `InlineAsm::verify` can produce, and
 /// `LLParser::convertValIDToValue` prints each verbatim.
-///
-/// `test/Assembler/invalid-inline-constraint.ll` pins the same
-/// `failed to parse constraints` message but is not portable yet: its body is
-/// deliberately corrupted past the call, and llvmkit's lexer raises
-/// `unknown keyword 'ounwi'` before the parser can report. Upstream's lexer
-/// returns a silent `lltok::Error` token there. Same blocker as three splits
-/// of `memory-attribute-errors.ll`; see the lexer-parity item recorded for the
-/// end of the parity program.
 #[test]
 fn inline_asm_constraint_errors_match_upstream_text() {
     const SPLITS: &[(&str, &[u8], &str)] = &[
@@ -132,6 +124,24 @@ fn inline_asm_constraint_errors_match_upstream_text() {
         let err = parse_fixture_err(name, fixture);
         assert_eq!(err.to_string(), *expected, "split {name}");
     }
+}
+
+/// `test/Assembler/invalid-inline-constraint.ll` (LLVM bug 24646), fixture
+/// verbatim — including the stray `0x1C` byte upstream's corrupted body
+/// carries. It reaches the same `failed to parse constraints` as the
+/// `parse-fail` split above, but through wreckage rather than a tidy bad
+/// clobber: the deliberate garbage after the call (`ounwi`, `ounwindret`)
+/// lexes as `Token::Error`, which the attribute loop ends on, so
+/// `InlineAsm::verify` still runs on the constraint string. llvmkit's lexer
+/// used to fail on `unknown keyword 'ounwi'` first.
+#[test]
+fn a_corrupted_inline_asm_body_still_reports_the_constraint_failure() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/inline-asm-constraint-error/invalid-inline-constraint.ll"
+    );
+
+    let err = parse_fixture_err("invalid-inline-constraint", FIXTURE);
+    assert_eq!(err.to_string(), "failed to parse constraints");
 }
 
 /// `test/Assembler/invalid-untyped-metadata.ll` (LLVM bug 24645), fixture

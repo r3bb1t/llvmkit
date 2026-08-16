@@ -42,6 +42,76 @@ fn unterminated_block_comment_matches_upstream_text() {
     );
 }
 
+/// Ports the other three splits of the `invalid-c-style-comment` family,
+/// fixtures verbatim. Together with `-0` above they cover every exit
+/// `LLLexer`'s `case '/'` has.
+///
+/// * `-1`: `/*` does not nest, so the inner one closes the outer and the
+///   second `@B` is a redefinition — the comment is *not* the diagnostic.
+/// * `-2`: a stray `*/`. The `*` is `lltok::star`, which `LLParser::parseType`
+///   eats as a pointer suffix on the preceding `i32`, so the error lands on
+///   the `/` at column 2 — and the `/` is a silent `lltok::Error`, which is
+///   why `expected top-level entity` is what a reader sees. llvmkit answered
+///   its own `expected '*' after '/' to start block comment` until W14a.
+/// * `-3`: `SkipCComment`'s *second* `unterminated comment`, the one for a
+///   comment whose last byte is the `*` of a would-be `*/`.
+#[test]
+fn c_style_comment_fixtures_match_upstream_text() {
+    for (name, fixture, expected) in [
+        (
+            "invalid-c-style-comment1",
+            include_bytes!("fixtures/upstream/invalid-c-style-comment/invalid-c-style-comment1.ll")
+                .as_slice(),
+            "redefinition of global '@B'",
+        ),
+        (
+            "invalid-c-style-comment2",
+            include_bytes!("fixtures/upstream/invalid-c-style-comment/invalid-c-style-comment2.ll")
+                .as_slice(),
+            "expected top-level entity",
+        ),
+        (
+            "invalid-c-style-comment3",
+            include_bytes!("fixtures/upstream/invalid-c-style-comment/invalid-c-style-comment3.ll")
+                .as_slice(),
+            "unterminated comment",
+        ),
+    ] {
+        assert_eq!(parse_err(name, fixture), expected, "{name}");
+    }
+}
+
+/// Ports `test/Assembler/invalid-specialized-mdnode.ll`, fixture verbatim:
+/// `!Invalid` is no specialized-metadata name, so `LLLexer` hands
+/// `LLParser::parseMetadata` a silent `lltok::Error` and it answers
+/// `expected metadata type`. llvmkit's lexer used to refuse the word itself.
+#[test]
+fn an_unknown_specialized_metadata_name_matches_upstream_text() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "fixtures/upstream/invalid-specialized-mdnode/invalid-specialized-mdnode.ll"
+    );
+
+    assert_eq!(
+        parse_err("invalid-specialized-mdnode", FIXTURE),
+        "expected metadata type"
+    );
+}
+
+/// Ports `test/Assembler/invalid-hexint.ll`, fixture verbatim: `u0x0p001` has
+/// a hexadecimal prefix and a non-hexadecimal tail, so `LLLexer::LexIdentifier`
+/// takes its `[us]0x` block's "Bad token, return it as an error" exit —
+/// rewinding to `TokStart+3` — and `LLParser::parseValID`'s `default:` reports
+/// `expected value token`.
+///
+/// This is the tree's only `[us]0x` fixture, and it was unportable while the
+/// lexer failed on the malformed token itself.
+#[test]
+fn a_malformed_hex_apsint_matches_upstream_text() {
+    const FIXTURE: &[u8] = include_bytes!("fixtures/upstream/invalid-hexint/invalid-hexint.ll");
+
+    assert_eq!(parse_err("invalid-hexint", FIXTURE), "expected value token");
+}
+
 /// Ports `test/Assembler/invalid-inttype.ll`, whose CHECK line is
 /// `error: bitwidth for integer type out of range` (`LLLexer::LexIdentifier`).
 ///

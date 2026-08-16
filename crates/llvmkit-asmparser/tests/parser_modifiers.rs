@@ -257,13 +257,11 @@ fn memory_attribute_round_trips() {
 /// Ports `test/Assembler/memory-attribute-errors.ll`. Each split's CHECK line
 /// pins one `LLParser::parseMemoryAttr` diagnostic verbatim.
 ///
-/// Five of the fixture's eight splits are here. The other three —
-/// `memory(foo)`, `memory(other: read)` and `memory(argmem: foo)` — turn on a
-/// word that matches no keyword. Upstream's lexer returns a silent
-/// `lltok::Error` there and lets `parseMemoryAttr` report; llvmkit's lexer
-/// raises `unknown keyword '...'` itself, so the parser never sees the token.
-/// Same rejection, wrong layer and wrong text; re-layering that is the
-/// lexer-parity item recorded for the end of the parity program.
+/// All eight splits. The last three — `memory(foo)`, `memory(other: read)` and
+/// `memory(argmem: foo)` — turn on a word that matches no keyword, and were
+/// unreachable until llvmkit's lexer started returning `Token::Error` for one
+/// instead of failing outright: the message came from the lexer naming the
+/// lexeme, where upstream's comes from `parseMemoryAttr` naming what it wanted.
 #[test]
 fn memory_attribute_errors_match_upstream_text() {
     for (fixture, expected) in [
@@ -287,6 +285,19 @@ fn memory_attribute_errors_match_upstream_text() {
             include_bytes!("fixtures/upstream/memory-attribute-errors/default_after_loc.ll")
                 .as_slice(),
             "default access kind must be specified first",
+        ),
+        (
+            include_bytes!("fixtures/upstream/memory-attribute-errors/invalid_kind.ll").as_slice(),
+            "expected memory location (argmem, inaccessiblemem, errnomem) or access kind (none, read, write, readwrite)",
+        ),
+        (
+            include_bytes!("fixtures/upstream/memory-attribute-errors/other.ll").as_slice(),
+            "expected memory location (argmem, inaccessiblemem, errnomem) or access kind (none, read, write, readwrite)",
+        ),
+        (
+            include_bytes!("fixtures/upstream/memory-attribute-errors/invalid_access_kind.ll")
+                .as_slice(),
+            "expected access kind (none, read, write, readwrite)",
         ),
     ] {
         assert_eq!(parse_err(fixture).to_string(), expected);
@@ -389,12 +400,16 @@ fn legacy_memory_keyword_overwrites_explicit_memory() {
     }
 }
 
-/// `expected access kind (none, read, write, readwrite)` fired only on inputs
-/// whose trigger word matches no keyword, which the lexer intercepts — so the
-/// message was implemented but untestable from the upstream fixture. A
-/// *keyword* in access-kind position reaches it: `readonly` is a token
-/// `keywordToModRef` does not accept. Anchored on `LLParser::parseMemoryAttr`
-/// (D11: no upstream counterpart uses a keyword trigger).
+/// The same `expected access kind (none, read, write, readwrite)` arm, reached
+/// from the *other* side: `readonly` is a real token that `keywordToModRef`
+/// does not accept, where the upstream fixture's `foo` is a word that is no
+/// token at all.
+///
+/// This existed because the upstream trigger was unreachable; it is ported now
+/// (`memory_attribute_errors_match_upstream_text`, the `invalid-access-kind`
+/// split), and this stays as the keyword-trigger half. Anchored on
+/// `LLParser::parseMemoryAttr` (D11: no upstream counterpart uses a keyword
+/// trigger).
 #[test]
 fn memory_access_kind_diagnostic_fires_on_keyword_input() {
     assert_eq!(

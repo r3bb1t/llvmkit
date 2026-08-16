@@ -374,10 +374,10 @@ fn an_ifunc_linkage_is_a_verifier_rule_not_a_parse_rule() {
 /// `Metadata id is already used` capitalises its first word, joining
 /// `parseScope`'s and `parseOrdering`'s messages as the only ones that do.
 ///
-/// Each trigger is a real keyword in the wrong place (`nounwind`), not a
-/// misspelling: llvmkit's lexer answers `unknown keyword '...'` for a word it
-/// does not know, so a misspelled trigger never reaches the parser. That is
-/// the same re-layering the `memory(...)` and `uwtable` fixtures wait on.
+/// Each trigger is a real keyword in the wrong place (`nounwind`) rather than
+/// a misspelling. Both shapes reach these arms — a word matching no keyword
+/// arrives as `Token::Error`, exactly as `LLLexer` delivers it — so the
+/// keyword triggers are kept only because they were already here.
 #[test]
 fn module_entity_property_diagnostics_match_upstream_text() {
     fn parse_err(src: &str) -> String {
@@ -722,9 +722,9 @@ fn header_err(src: &str) -> String {
 /// llvmkit used to fold the switch into `parse_optional_function_linkage`,
 /// which ran it before the type was ever read.
 ///
-/// The trigger is `=` rather than a misspelled type name: llvmkit's lexer
-/// answers `unknown keyword 'x'` where upstream returns a silent error token
-/// for the parser to report on, and re-layering that is W14.
+/// The trigger is `=` rather than a misspelled type name; either reaches
+/// `parseType`'s `default:` now that a word matching no keyword arrives as
+/// `Token::Error`.
 #[test]
 fn the_return_type_is_read_before_the_linkage_switch() {
     // `=` is not a type, so `parseType` fails first...

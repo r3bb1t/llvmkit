@@ -3063,7 +3063,15 @@ fn fmt_function_with_use_lists<B: ModuleBrand>(
     if let Some(kw) = func.unnamed_addr().keyword() {
         write!(f, " {kw}")?;
     }
-    if func.address_space() != 0 {
+    // Mirrors `AssemblyWriter::printFunction`'s `ForcePrintAddressSpace`: the
+    // function's address space is printed when it is non-zero, *and* whenever
+    // the module's program address space is non-zero, so that a file carrying
+    // `target datalayout = "P2"` still re-parses to the same IR. Without the
+    // second half a `define ptr addrspace(0) @f() addrspace(0)` under `P2`
+    // prints without its `addrspace(0)` and re-parses into the program address
+    // space instead. llvmkit has no `!Mod` case: a function always has one.
+    let force_address_space = func.module().data_layout().program_addr_space() != 0;
+    if func.address_space() != 0 || force_address_space {
         write!(f, " addrspace({})", func.address_space())?;
     }
     for group in func.function_attr_groups() {
@@ -3347,6 +3355,30 @@ pub(super) fn fmt_module_with_options(
         }
     }
 
+    // Named metadata, then numbered metadata. Mirrors the tail of
+    // `AssemblyWriter::printModule`, which runs
+    // `for (const NamedMDNode &Node : M->named_metadata()) printNamedMDNode(...)`
+    // *before* `writeAllMDNodes()`, each preceded by a blank line when its
+    // section is non-empty.
+    {
+        let nmd = m.named_metadata_list();
+        if !nmd.is_empty() {
+            let md = m.metadata_store();
+            let slots = metadata_slot_map(md.nodes());
+            f.write_str("\n")?;
+            for node in nmd.iter() {
+                write!(f, "!{} = !{{", node.name_str())?;
+                for (j, op) in node.operands().iter().enumerate() {
+                    if j > 0 {
+                        f.write_str(", ")?;
+                    }
+                    fmt_metadata_operand(f, op.slot(), m, &md, &slots)?;
+                }
+                f.write_str("}\n")?;
+            }
+        }
+    }
+
     // Numbered metadata nodes. Mirrors the
     // `for (const auto &[Slot, Node] : ...NumberedMetadata())`
     // loop in `printModule`. MDStrings are not numbered; they print inline
@@ -3363,26 +3395,6 @@ pub(super) fn fmt_module_with_options(
                     fmt_metadata_node(f, node, m, &md, &slots)?;
                     f.write_str("\n")?;
                 }
-            }
-        }
-    }
-
-    // Named metadata. Mirrors the `for (const NamedMDNode &NMD :
-    // M->named_metadata())` loop in `printModule`.
-    {
-        let nmd = m.named_metadata_list();
-        if !nmd.is_empty() {
-            let md = m.metadata_store();
-            let slots = metadata_slot_map(md.nodes());
-            for node in nmd.iter() {
-                write!(f, "!{} = !{{", node.name_str())?;
-                for (j, op) in node.operands().iter().enumerate() {
-                    if j > 0 {
-                        f.write_str(", ")?;
-                    }
-                    fmt_metadata_operand(f, op.slot(), m, &md, &slots)?;
-                }
-                f.write_str("}\n")?;
             }
         }
     }

@@ -56,11 +56,13 @@ Shipped today:
   kind grammar, both `dereferenceable` forms — plus `dso_local` on every global
   object and `c"..."` string constants. **`clang -O0` and `-O2` output parses,
   verifies, and round-trips**, asserted on whole programs in
-  `tests/parser_attribute_matrix.rs`. A companion guard parses the vendored
-  `Attributes.td` and fails CI if an upstream attribute is neither accepted nor
-  listed as deliberately unmodeled, so the keyword table cannot silently drift
-  from LLVM again. Not yet modeled: bitcode, and the 42 attributes named in
-  that guard's `NOT_YET_MODELED` list.
+  `tests/parser_attribute_matrix.rs`. Companion guards parse the vendored
+  upstream sources and fail CI on drift: `tests/attribute_td_drift.rs` against
+  `Attributes.td` (its `NOT_YET_MODELED` list is empty — every attribute LLVM
+  22.1.4 declares is accepted in every position it declares), and
+  `tests/lexer_token_drift.rs` against `LLLexer.cpp` and `LLToken.h`, which
+  diffs the whole keyword and token vocabulary in both directions. Not yet
+  modeled: bitcode.
 - **Typed IR data model** — done. `llvmkit-ir` ships interned types, typed
   values, typed constants, functions, basic blocks, globals, comdats, data
   layout, target triple, module asm directives, and LLVM-style function-local

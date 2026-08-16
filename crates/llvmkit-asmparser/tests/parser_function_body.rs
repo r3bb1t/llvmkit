@@ -1243,9 +1243,9 @@ fn instruction_operand_rules_match_upstream_text() {
             "define void @f(float %a) {\nentry:\n  %v = and float %a, %a\n  ret void\n}\n",
             "instruction requires integer or integer vector operands",
         ),
-        // The trigger is `oeq`, a real *fcmp* predicate in an icmp — llvmkit's
-        // lexer answers `unknown keyword 'x'` for a misspelling, where
-        // upstream returns a silent error token, and re-layering that is W14.
+        // The trigger is `oeq`, a real *fcmp* predicate in an icmp. A
+        // misspelling reaches the same arm now that a word matching no
+        // keyword arrives as `Token::Error`.
         (
             "define void @f(i32 %a) {\nentry:\n  %v = icmp oeq i32 %a, %a\n  ret void\n}\n",
             "expected icmp predicate (e.g. 'eq')",

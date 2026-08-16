@@ -51,6 +51,31 @@ fn first_err(src: &str) -> LexError {
     }
 }
 
+/// Span of the first [`Token::Error`], paired with the lexer's cursor
+/// immediately after producing it.
+///
+/// Both halves matter. The span opens at `TokStart`, which is what
+/// `LLLexer::getLoc` hands `LLParser::tokError`, so it is where the
+/// diagnostic points. The cursor is where the *next* token is lexed from, and
+/// `LLLexer` parks it deliberately at each silent `lltok::Error` site —
+/// usually `TokStart+1`, but `TokStart+3` after a bad `[us]0x` prefix and
+/// `TokStart+2` after a `/` with no `*`.
+fn error_token_span_and_cursor(src: &str) -> (Span, u32) {
+    let mut lex = Lexer::from(src);
+    loop {
+        match lex.next_token() {
+            Ok(spanned) if matches!(spanned.value, Token::Error) => {
+                return (spanned.span, lex.position());
+            }
+            Ok(Spanned {
+                value: Token::Eof, ..
+            }) => panic!("expected an error token for {src:?}, got EOF"),
+            Ok(_) => continue,
+            Err(e) => panic!("expected an error token for {src:?}, got {e:?}"),
+        }
+    }
+}
+
 /// Upstream provenance: punctuation tokens emitted by
 /// `LLLexer::LexToken` in `lib/AsmParser/LLLexer.cpp`.
 mod structural {
@@ -285,15 +310,51 @@ mod labels {
         }
     }
 
-    /// Mirrors numeric-literal+colon promotion to label in
-    /// `lib/AsmParser/LLLexer.cpp::LexDigitOrNegative`.
+    /// Mirrors the fully-numeric-label arm of
+    /// `lib/AsmParser/LLLexer.cpp::LexDigitOrNegative`, which returns
+    /// `lltok::LabelID` with `UIntVal` — a *different token* from the
+    /// `lltok::LabelStr` a named label produces. This test asserted
+    /// `LabelStr("42")` until W14b, pinning llvmkit's own collapse of the two.
     #[test]
     fn numeric_label() {
-        let toks = kinds("42:");
+        assert_eq!(kinds("42:")[0], Token::LabelId(42));
+    }
+
+    /// Mirrors `LLLexer::LexQuote`'s label arm: a quoted label never reaches
+    /// `LexDigitOrNegative`, so `"42":` is a `lltok::LabelStr` *named* `42`
+    /// and not the numeric `lltok::LabelID`.
+    #[test]
+    fn quoted_numeric_label_stays_a_name() {
+        let toks = kinds(r#""42":"#);
         match &toks[0] {
             Token::LabelStr(c) => assert_eq!(c.as_ref(), b"42"),
-            _ => panic!(),
+            other => panic!("expected LabelStr, got {other:?}"),
         }
+    }
+
+    /// Mirrors `LexDigitOrNegative`'s
+    /// `if ((unsigned)Val != Val) LexError("invalid value number (too large)")`
+    /// guard on the numeric-label arm. Upstream records the message and keeps
+    /// the truncated id; llvmkit fails, the same treatment `lex_uint` gives
+    /// `@4294967296` (recorded as divergence 101). Before W14b there was no
+    /// numeric-label token at all, so `4294967296:` silently became a block
+    /// *named* `4294967296`.
+    #[test]
+    fn numeric_label_too_large_for_unsigned() {
+        let err = Lexer::from("4294967296:")
+            .next_token()
+            .expect_err("does not fit an unsigned");
+        assert_eq!(err.to_string(), "invalid value number (too large)");
+    }
+
+    /// Mirrors `LLLexer::atoull`'s wraparound guard, which the numeric-label
+    /// arm reaches through its `atoull(TokStart, CurPtr)` call.
+    #[test]
+    fn numeric_label_wider_than_64_bits() {
+        let err = Lexer::from("99999999999999999999999999:")
+            .next_token()
+            .expect_err("wider than 64 bits");
+        assert_eq!(err.to_string(), "constant bigger than 64 bits detected");
     }
 
     /// Mirrors `-N:` negative numeric label in
@@ -315,7 +376,7 @@ mod labels {
         let mut lex = Lexer::from("ret:");
         lex.ignore_colon_in_idents = true;
         // The `:` survives as its own token instead of being absorbed into a
-        // label. Mirrors `LLLexer::IgnoreColonInIdentifiers` (LLLexer.cpp:511).
+        // label. Mirrors `LLLexer::IgnoreColonInIdentifiers`.
         assert_eq!(
             lex.next_token().unwrap().value,
             Token::Instruction(Opcode::Ret)
@@ -403,16 +464,9 @@ mod types {
     #[test]
     fn i_alone_is_unknown() {
         // Bare `i` with no digits has no integer-type interpretation and is
-        // not a keyword → error. (Matches LLLexer.cpp:1073 fallthrough.)
-        let err = first_err("i ");
-        let LexError::UnknownToken {
-            reason: UnknownTokenReason::UnknownKeyword { word },
-            ..
-        } = &err
-        else {
-            panic!("expected an unknown-keyword reason; got {err:?}");
-        };
-        assert_eq!(&**word, "i");
+        // not a keyword → the final `CurPtr = TokStart+1; return
+        // lltok::Error;` fallthrough of `LLLexer::LexIdentifier`.
+        assert_eq!(error_token_span_and_cursor("i "), (Span::new(0, 1), 1));
     }
 }
 
@@ -536,14 +590,7 @@ mod numbers {
     /// `lib/AsmParser/LLLexer.cpp::LexPositive` (rejects bare sign).
     #[test]
     fn plus_without_digit_errors() {
-        let err = first_err("+");
-        assert!(matches!(
-            err,
-            LexError::UnknownToken {
-                reason: UnknownTokenReason::IncompleteSigil { sigil: '+', .. },
-                ..
-            }
-        ));
+        assert_eq!(error_token_span_and_cursor("+"), (Span::new(0, 1), 1));
     }
 }
 
@@ -850,10 +897,13 @@ mod comments {
 
     /// Mirrors `LLLexer::LexToken` `/`-without-`*` rejection in
     /// `lib/AsmParser/LLLexer.cpp` (lone `/` is not a token).
+    ///
+    /// The `case '/'` arm tests `getNextChar() != '*'`, so the byte after the
+    /// slash is consumed before the silent `lltok::Error` — the cursor lands
+    /// at `TokStart+2`, not `TokStart+1`.
     #[test]
     fn slash_without_star_errors() {
-        let err = first_err("/x");
-        assert!(matches!(err, LexError::StraySlash { .. }));
+        assert_eq!(error_token_span_and_cursor("/x"), (Span::new(0, 2), 2));
     }
 }
 
@@ -863,18 +913,12 @@ mod comments {
 mod errors {
     use super::*;
 
-    /// Mirrors `LLLexer::LexToken` unknown-character diagnostic in
-    /// `lib/AsmParser/LLLexer.cpp`.
+    /// Mirrors `LLLexer::LexToken`'s `default:` arm in
+    /// `lib/AsmParser/LLLexer.cpp` — a byte that is neither a letter nor `_`
+    /// falls through to `return lltok::Error;`.
     #[test]
     fn unknown_token_for_question_mark() {
-        let err = first_err("?");
-        assert!(matches!(
-            err,
-            LexError::UnknownToken {
-                reason: UnknownTokenReason::StrayByte { byte: b'?' },
-                ..
-            }
-        ));
+        assert_eq!(error_token_span_and_cursor("?"), (Span::new(0, 1), 1));
     }
 
     /// Mirrors `LLLexer::LexAt` numeric-id overflow diagnostic in
@@ -886,114 +930,120 @@ mod errors {
         assert!(matches!(err, LexError::IdOverflow { .. }));
     }
 
-    /// llvmkit-specific: structured `Span` carried by every `LexError`.
-    /// Closest upstream: `LLLexer::Error(SMLoc, ...)` reporting in
-    /// `lib/AsmParser/LLLexer.cpp`.
+    /// llvmkit-specific (**no upstream counterpart**): `LLLexer` has no unit
+    /// tests; its spans are observable only through `SMDiagnostic` columns in
+    /// `test/Assembler`. Closest upstream anchor: `LLLexer::Error(SMLoc, …)`
+    /// and `LLLexer::getLoc`, which reports `TokStart`.
     #[test]
     fn lex_error_carries_span() {
-        // Two valid tokens followed by an unknown one; span must point at the
-        // bad byte, not the start of input.
-        let err = first_err("42 ?");
-        assert_eq!(err.span(), Span::new(3, 4));
+        // A real `LexError` — one that upstream's `LLLexer::LexError` also
+        // records a message for — must point at the offending lexeme rather
+        // than the start of input.
+        let err = first_err("42 @8589934592");
+        assert!(matches!(err, LexError::IdOverflow { .. }));
+        assert_eq!(err.span(), Span::new(3, 14));
+    }
+
+    /// The same for an error *token*: the span opens at `TokStart`, which is
+    /// what `LLLexer::getLoc` reports the parser's diagnostic at.
+    ///
+    /// llvmkit-specific (**no upstream counterpart**), as above.
+    #[test]
+    fn error_token_carries_span() {
+        assert_eq!(error_token_span_and_cursor("42 ?"), (Span::new(3, 4), 4));
     }
 }
 
-/// llvmkit-specific, with **no upstream counterpart**: `LLLexer` records no
-/// message at any of these sites (it returns a bare `lltok::Error` and lets
-/// `LLParser` describe the failure from context). These tests pin that every
-/// reason reaches the rendered message, so a user learns what the lexer
-/// choked on rather than reading "invalid token" eleven different ways.
-mod unknown_token_reasons {
+/// llvmkit-specific, with **no upstream counterpart**: LLVM ships no unit
+/// tests for `LLLexer`, so these have no `unittests/` fixture to port. They
+/// pin the routine llvmkit ported instead — every site where `LLLexer`
+/// returns a **silent** `lltok::Error` (no `LLLexer::LexError` call), and the
+/// cursor position it leaves behind.
+///
+/// The distinction is the whole point of the layering. A silent
+/// `lltok::Error` is a *token*: it reaches `LLParser`, which then names the
+/// production it was parsing — `expected top-level entity`, `expected memory
+/// location (argmem, inaccessiblemem, errnomem) or access kind (…)`,
+/// `expected debug record type here`. Those messages are unreachable if the
+/// lexer fails instead, which is what llvmkit did until 0.0.4. The end-to-end
+/// evidence for each of them is a ported `test/Assembler` fixture; what is
+/// tested here is only the lexer half.
+mod silent_error_tokens {
     use super::*;
 
-    /// Every one of these must render its own message; the shared prefix of
-    /// the old behaviour was the defect.
-    fn reason_of(src: &str) -> UnknownTokenReason {
-        match first_err(src) {
-            LexError::UnknownToken { reason, .. } => reason,
-            other => panic!("expected UnknownToken for {src:?}; got {other:?}"),
-        }
+    /// `LLLexer::LexToken`'s `default:` arm — a byte that starts no token.
+    /// The cursor sits one past it, because `getNextChar` consumed it.
+    #[test]
+    fn a_stray_byte_is_an_error_token() {
+        assert_eq!(error_token_span_and_cursor("?"), (Span::new(0, 1), 1));
+        assert_eq!(error_token_span_and_cursor("\u{1}"), (Span::new(0, 1), 1));
     }
 
+    /// The sigil lexers that have nothing to lex: `LLLexer::LexVar` falling
+    /// into `LexUIntID` for `@` / `%`, `LLLexer::LexDollar`'s tail,
+    /// `LLLexer::LexCaret` (also `LexUIntID`),
+    /// `LLLexer::LexPositive`'s leading `!isdigit` guard, and
+    /// `LLLexer::LexDigitOrNegative`'s "not a number after the -" exit. Every
+    /// one leaves the cursor at `TokStart+1`.
     #[test]
-    fn stray_byte_names_the_character() {
-        assert_eq!(reason_of("?"), UnknownTokenReason::StrayByte { byte: b'?' });
-        assert_eq!(format!("{}", reason_of("?")), "no token starts with '?'");
-    }
-
-    /// A non-printable byte must not be pasted raw into the message.
-    #[test]
-    fn stray_byte_escapes_non_printables() {
-        assert_eq!(
-            format!("{}", reason_of("\u{1}")),
-            r"no token starts with '\x01'"
-        );
-    }
-
-    #[test]
-    fn each_sigil_names_what_it_wanted() {
-        for (src, sigil, expected) in [
-            ("@", '@', "a name or a number"),
-            ("%", '%', "a name or a number"),
-            ("$", '$', "a comdat name"),
-            ("^x", '^', "a summary id"),
-            ("+", '+', "a digit"),
-            ("-", '-', "a number or a label"),
-        ] {
+    fn an_incomplete_sigil_is_an_error_token() {
+        for src in ["@", "%", "$", "^x", "+", "-"] {
             assert_eq!(
-                reason_of(src),
-                UnknownTokenReason::IncompleteSigil { sigil, expected },
+                error_token_span_and_cursor(src),
+                (Span::new(0, 1), 1),
                 "for input {src:?}"
             );
         }
     }
 
+    /// `LLLexer::LexToken`'s `case '.'`, which returns `lltok::Error` when the
+    /// dot opens neither a label tail nor `...`.
     #[test]
-    fn lone_dot_says_so() {
-        assert_eq!(reason_of("."), UnknownTokenReason::LoneDot);
+    fn a_lone_dot_is_an_error_token() {
+        assert_eq!(error_token_span_and_cursor("."), (Span::new(0, 1), 1));
+        assert_eq!(kinds("..."), vec![Token::DotDotDot]);
     }
 
     /// `-42` is a valid integer literal; `+42` is not a token at all, because
-    /// a `+`-prefixed literal must be floating-point.
+    /// a `+`-prefixed literal must be floating-point. `LLLexer::LexPositive`
+    /// rewinds past the digits it already skipped — `CurPtr = TokStart+1` —
+    /// before returning the error.
     #[test]
-    fn positive_integer_is_not_a_token() {
-        assert_eq!(reason_of("+42"), UnknownTokenReason::PositiveFpWithoutPoint);
+    fn a_positive_integer_is_an_error_token() {
+        assert_eq!(error_token_span_and_cursor("+42"), (Span::new(0, 1), 1));
         assert_eq!(kinds("+4.2"), vec![Token::FloatLit(FpLit::Decimal("+4.2"))]);
     }
 
+    /// `LLLexer::Lex0x`'s "Bad token, return it as an error" — the same
+    /// `CurPtr = TokStart+1` rewind, whether or not a format marker was
+    /// consumed.
     #[test]
-    fn hex_fp_prefix_is_reported_whole() {
-        let UnknownTokenReason::HexFpWithoutDigits { prefix } = reason_of("0xZ") else {
-            panic!("expected a hex-fp reason");
-        };
-        assert_eq!(&*prefix, "0x");
-
-        let UnknownTokenReason::HexFpWithoutDigits { prefix } = reason_of("0xKZ") else {
-            panic!("expected a hex-fp reason");
-        };
-        assert_eq!(&*prefix, "0xK");
+    fn a_hex_fp_prefix_without_digits_is_an_error_token() {
+        assert_eq!(error_token_span_and_cursor("0xZ"), (Span::new(0, 1), 1));
+        assert_eq!(error_token_span_and_cursor("0xKZ"), (Span::new(0, 1), 1));
     }
 
-    /// The headline case: a misspelled attribute keyword. This is what the
-    /// old bare "invalid token" cost a user the most.
+    /// The `[us]0x…` block inside `LLLexer::LexIdentifier` has its own "Bad
+    /// token" exit, and it rewinds to `TokStart+3` — past the prefix, not past
+    /// the first byte. `s0xZ` never enters the block at all (the guard tests
+    /// the first hex digit) and takes the plain unknown-word path instead.
     #[test]
-    fn unknown_keyword_names_the_word() {
-        let reason = reason_of("nocalback");
+    fn a_bad_hex_apsint_tail_rewinds_past_the_prefix() {
+        assert_eq!(error_token_span_and_cursor("s0xAZ"), (Span::new(0, 3), 3));
+        assert_eq!(error_token_span_and_cursor("u0xAZ"), (Span::new(0, 3), 3));
+        assert_eq!(error_token_span_and_cursor("s0xZ"), (Span::new(0, 1), 1));
+    }
+
+    /// The headline case: a misspelled attribute keyword. `LLLexer::
+    /// LexIdentifier`'s final fallthrough — "Finally, if this isn't known,
+    /// return an error" — rewinds to `TokStart+1` and says nothing, so the
+    /// parser's own `expected …` message is what a reader sees.
+    #[test]
+    fn an_unknown_keyword_is_an_error_token() {
         assert_eq!(
-            reason,
-            UnknownTokenReason::UnknownKeyword {
-                word: "nocalback".into()
-            }
+            error_token_span_and_cursor("nocalback"),
+            (Span::new(0, 1), 1)
         );
-        assert_eq!(format!("{reason}"), "unknown keyword 'nocalback'");
-    }
-
-    /// The reported span covers the whole word even though the cursor rewinds
-    /// to one byte (upstream's `LLLexer::LexIdentifier` behaviour, kept): a caret
-    /// under the `n` of `nocalback` would help nobody.
-    #[test]
-    fn unknown_keyword_span_covers_the_whole_word() {
-        assert_eq!(first_err("nocalback").span(), Span::new(0, 9));
     }
 }
 
@@ -1030,11 +1080,11 @@ mod escape_round_trip {
 mod whitespace {
     use super::*;
 
-    /// Mirrors `LLLexer.cpp::LexToken` mid-buffer NUL skip
-    /// (LLLexer.cpp:182 case).
+    /// Mirrors `LLLexer::LexToken`'s mid-buffer NUL skip — the `case 0:` arm
+    /// that falls through to the whitespace `case ' '`.
     #[test]
     fn nul_byte_is_whitespace() {
-        // Mirrors LLLexer.cpp:182. A mid-buffer NUL is silently skipped.
+        // A mid-buffer NUL is silently skipped.
         let src = b"\x00@x\x00";
         let mut lex = Lexer::new(src);
         let t = lex.next_token().unwrap().value;

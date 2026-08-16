@@ -1,0 +1,43 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+; RUN: not llvm-as %t/vec_dst_fewer_elems.ll -o /dev/null 2>&1 | FileCheck -check-prefix=VEC_DST_FEWER_ELEMS %s --implicit-check-not="error:"
+@g = global <2 x i64> ptrtoaddr (<4 x ptr> <ptr @g, ptr @g, ptr @g, ptr @g> to <2 x i64>)
+; VEC_DST_FEWER_ELEMS: [[#@LINE-1]]:23: error: invalid cast opcode for cast from '<4 x ptr>' to '<2 x i64>'
